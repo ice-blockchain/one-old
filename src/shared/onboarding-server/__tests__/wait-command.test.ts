@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { onboardingBootstrapCommand, onboardingWaitCommand, onboardingWaitScriptPath } from '../wait-command';
+import {
+  onboardingBootstrapCommand,
+  onboardingSyncSessionId,
+  onboardingUseBootstrapCommand,
+  onboardingWaitCommand,
+  onboardingWaitScriptPath,
+} from '../wait-command';
 import { isOnboardingBootstrapCommand, isOnboardingWaitCommand } from '../../tool-classify';
 
 function shellQuote(value: string): string {
@@ -30,6 +36,25 @@ test('onboardingWaitCommand: stamps --host so the spawned runner detects the hos
   assert.equal(detectHost({}, ['node', '/p/onboarding-wait.cjs', '/proj', '--host=cursor']), 'cursor');
   // Omitting host keeps the original two-arg shape.
   assert.equal(onboardingWaitCommand('/proj').includes('--host='), false);
+});
+
+test('onboarding commands carry only a bounded inert sync-session identity', () => {
+  const raw = `parent:with spaces/$shell-${'x'.repeat(160)}`;
+  const normalized = onboardingSyncSessionId(raw);
+  assert.match(normalized, /^[A-Za-z0-9._-]{1,96}$/);
+  assert.equal(normalized.length, 96);
+
+  const waiter = onboardingWaitCommand('/proj', 'cursor', raw);
+  const useBootstrap = onboardingUseBootstrapCommand('/proj', 'cursor', 'build a dashboard application', raw);
+  assert.ok(waiter.includes(`'--sync-session=${normalized}'`));
+  assert.ok(useBootstrap.includes(`'--sync-session=${normalized}'`));
+  assert.equal(isOnboardingWaitCommand('Bash', { command: waiter }), true);
+  assert.equal(isOnboardingBootstrapCommand('Bash', { command: useBootstrap }), true);
+
+  const runner = shellQuote(onboardingWaitScriptPath());
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `node ${runner} '/proj' '--sync-session=${'x'.repeat(97)}'` }), false, 'overlong identity rejected');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `node ${runner} '/proj' '--sync-session=ok' '--sync-session=again'` }), false, 'duplicate identity rejected');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `node ${runner} '--decline' '/proj' '--sync-session=ok'` }), false, 'decline never carries a sync identity');
 });
 
 test('onboardingBootstrapCommand: puts --bootstrap-only before cwd for a reusable approval prefix', () => {

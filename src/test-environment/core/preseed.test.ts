@@ -5,8 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { HOST_IDS } from '../../config/model-tiers';
-import { hostModelSnapshot } from '../../shared/model-tiers';
-import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
+import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { readEffectiveState, readProjectPrefs } from '../../shared/state';
 import { preseed } from './preseed';
 
@@ -42,13 +41,9 @@ test('preseed writes complete performance preferences for the active host across
       const prefs = readProjectPrefs(dir);
       const active = (prefs.hosts as Record<string, Record<string, unknown>>)[host];
       assert.ok(active, host);
-      assert.deepEqual(active.performance, { level: 'balanced', source: 'prompted' }, host);
+      const target = currentLocalPreferenceTarget(host);
+      assert.deepEqual(active.performance, { level: 'balanced', source: 'prompted', target }, host);
       assert.deepEqual(active.team, { mode: 'subagents', source: 'prompted', approved: true }, host);
-      const snapshot = hostModelSnapshot(host, 'free');
-      assert.deepEqual(active.configuredFor, {
-        plan: snapshot.plan,
-        modelsUpdatedAt: snapshot.updatedAt,
-      }, host);
       assert.deepEqual(Object.keys(prefs.hosts as Record<string, unknown>), [host], host);
       assert.equal(nextLocalPreferenceStep(readEffectiveState(dir), host), null, host);
     } finally {

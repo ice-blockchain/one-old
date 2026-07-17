@@ -13,14 +13,10 @@ import { obj } from '../../shared/obj';
 import { context, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
-import { detectHostPlan } from '../../shared/host-plan';
 import { resolveProjectRoot } from '../../shared/hook-paths';
-import { currentModelsForTier, resolveTierFallback } from '../../shared/current-model-tiers';
 import { exhaustedModelsForRole, markModelExhaustionTerminal, recordExhaustedModel } from './exhausted-models';
 import { classifyModelFailureText, type ModelFailureKind } from './failure-classify';
-import { freshCursorModels, pickCursorSlug } from '../../shared/materialize/cursor-models';
 import { modelMatchesExpected } from '../../shared/model-tiers';
-import { effectiveTierForRole } from '../../shared/performance';
 import { modelUnavailablePromptRequest } from '../../shared/prompt-request';
 import {
   REPLACE_AGENT_MARKER,
@@ -35,6 +31,7 @@ import {
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import { markModelChoicePrompted, readModelChoice } from './model-choice';
 import { persistCorrelatedCursorPostToolFailure } from './cursor-failures';
+import { readRunModelPolicy, resolveRunPolicyFallback } from '../../shared/run-model-policy';
 
 // The id Claude prints in the Agent tool result footer (`agentId: <id>`), ALSO
 // matching the structured-JSON spelling (`"agentId":"<id>"`) since the payload
@@ -135,37 +132,6 @@ export function classifySubagentStop(
   return null;
 }
 
-function originalTierForRole(
-  state: Record<string, unknown> | null,
-  role: string,
-  host: string,
-  plan: string,
-) {
-  const performance = state ? obj(state.performance) : null;
-  const level = performance && typeof performance.level === 'string' ? performance.level : '';
-  if (!level) return null;
-  // quick-fix is an invariant maintenance worker: user team overrides must not
-  // lift it out of the cheapest row (the PreToolUse gate enforces the same pin).
-  if (role === 'quick-fix') return 'cheapest' as const;
-  const team = state ? obj(state.team) : null;
-  const overrides = team ? obj(team.overrides) : null;
-  return effectiveTierForRole(level, role, overrides, { host, plan });
-}
-
-function recommendedModelForTier(
-  tier: NonNullable<ReturnType<typeof originalTierForRole>>,
-  host: string,
-  plan: string,
-  capturedModels: readonly string[] | undefined,
-): string {
-  const preferred = currentModelsForTier(tier, host, plan)[0] || '';
-  if (host !== 'cursor' || !preferred || !capturedModels?.length) return preferred;
-  // Resolve only the preferred family here. Resolving through the whole row can
-  // collapse an unavailable recommendation to Composer and tell the user to
-  // restore the wrong model.
-  return pickCursorSlug([preferred], capturedModels) || preferred;
-}
-
 function composerFloorChoice(
   ctx: Ctx,
   cwd: string,
@@ -215,6 +181,12 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
   const roleResolution = inferTrafficOneSpawnRoleEvidence(toolInput);
   if (roleResolution.kind !== 'evidence') return noop();
   const role = roleResolution.evidence.role;
+
+  // Codex spawn results do not reliably contain the child id (live responses
+  // may return only task_name). Requested tool_input.model is intent, not proof
+  // of the runtime model. SubagentStart/child PreToolUse own the verified claim
+  // and registry write; never let this parent-side event create a reusable row.
+  if (ctx.host === 'codex') return noop();
 
   // Prefer the named response fields; when a host uses a different field name
   // for the spawn result, fall back to scanning the whole payload — the
@@ -271,15 +243,21 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
     const allExhausted = stopKind === 'api-limit' && stopRunId && exhausted
       ? recordExhaustedModel(stateCwd, stopRunId, role, exhausted)
       : (stopRunId ? exhaustedModelsForRole(stateCwd, stopRunId, role) : []);
-    const plan = detectHostPlan(ctx.host);
-    const originalTier = originalTierForRole(stopState, role, ctx.host, plan);
-    const capturedModels: readonly string[] | undefined = undefined;
+    const policy = stopRunId ? readRunModelPolicy(stateCwd, stopRunId) : null;
+    if (stopRunId && !policy) {
+      return context(
+        `traffic-one — ${role} stopped, but immutable model-policy.json is missing for run ${stopRunId}. `
+        + 'Do not select a retry model from mutable global configuration; start a repaired parent run.',
+      );
+    }
+    const originalTier = policy?.roles[role]?.tier || null;
+    const capturedModels = policy?.host === 'cursor' ? policy.cursorAvailableModels : undefined;
     const fallbackCandidate = stopKind === 'api-limit' && originalTier
-      ? resolveTierFallback({
+      ? resolveRunPolicyFallback(policy!, {
         tier: originalTier,
         exhaustedModels: allExhausted,
         capturedModels,
-      }, ctx.host, plan)
+      })
       : null;
     const fallback = fallbackCandidate?.model || '';
     // Composer is the normal first candidate for a cheapest-tier worker. For a
@@ -290,11 +268,12 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
       && originalTier !== 'cheapest'
       && fallbackCandidate
       && /^composer/i.test(fallbackCandidate.family)) {
-      const recommended = recommendedModelForTier(originalTier, ctx.host, plan, capturedModels) || exhausted;
+      const preferred = policy!.tiers[originalTier][0] || '';
+      const recommended = preferred || exhausted;
       return composerFloorChoice(ctx, stateCwd, stopRunId, role, recommended, fallbackCandidate.model);
     }
     if (stopKind === 'api-limit' && stopRunId && originalTier && !fallbackCandidate) {
-      const row = currentModelsForTier(originalTier, ctx.host, plan);
+      const row = policy!.tiers[originalTier];
       const allActuallyLimited = row.length > 0 && row.every((family) => (
         allExhausted.some((model) => modelMatchesExpected(model, family) || modelMatchesExpected(family, model))
       ));

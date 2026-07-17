@@ -27,6 +27,7 @@ import { KNOWN_ADDONS } from '../../config/state';
 import { stateTimestamp, stateVersion } from './io';
 import { hasLocalPreferenceFields, splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
 import { initializeToolchainState } from './toolchain';
+import { preserveOneMcpReportId, withProjectStateLock } from './project-state-lock';
 
 function defaultMobileState(): Rec {
   return { enabled: false, framework: 'none', source: 'none' };
@@ -133,7 +134,12 @@ export function writeState(cwd: string, state: unknown): void {
   }
   const split = splitLocalPreferences(cwd, source);
   source = split.state;
-  writeJson(statePath(cwd), { ...source, version: stateVersion() });
+  const filePath = statePath(cwd);
+  const replacement = { ...source, version: stateVersion() };
+  withProjectStateLock(cwd, () => {
+    const current = readJson<Rec>(filePath, {});
+    writeJson(filePath, preserveOneMcpReportId(current, replacement));
+  });
 }
 
 // Deterministic self-heal for machine-local preference fields that leaked into the

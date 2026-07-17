@@ -9,6 +9,14 @@
 // carries a statusMessage in settings.json only — modeled by the `promptStatus`
 // parameter.
 
+import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME } from '../../config/one-mcp';
+
+function regexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const ONE_MCP_CLAUDE_MATCHER = `^mcp__${regexLiteral(ONE_MCP_SERVER_NAME)}__(${ONE_MCP_MANAGED_TOOLS.map(regexLiteral).join('|')})$`;
+
 // The literal plugin-root shell expansion (NOT a JS template — single-quoted so
 // the ${...} stays verbatim in the emitted command). Exported so the .mcp.json
 // generator launches the bundled MCP server through the SAME chain (one shared
@@ -74,6 +82,20 @@ export function promptSubmitGroup(withStatus: boolean): HookGroup {
 
 export const PRE_TOOL_USE: HookGroup[] = [
   {
+    // Codex SubagentStart is non-blocking. The child's first attempted tool is
+    // therefore the universal enforcement point for the model observed in the
+    // hook payload. Claude shares this manifest and no-ops the host-specific
+    // handler; `.*` is intentional so an uncommon child tool cannot bypass it.
+    matcher: '.*',
+    entries: [{ subcommand: 'check-codex-child-model', statusMessage: 'Verifying Codex child model policy...' }],
+  },
+  {
+    // The public endpoint is hook-owned. Never let either model-facing tool
+    // bypass client-side payload validation or the per-project opt-in gate.
+    matcher: ONE_MCP_CLAUDE_MATCHER,
+    entries: [{ subcommand: 'check-one-mcp-tool', statusMessage: 'Blocking direct traffic-one-mcp tool call...' }],
+  },
+  {
     // Includes the subagent-spawn names (Task|Agent for Claude, spawn_agent for
     // Codex) so the onboarding gate blocks subagent spawns on a new project too —
     // not just the agent-model gate. Without Task|Agent, a Claude `Task` spawn
@@ -138,6 +160,9 @@ export const CURSOR_EVENTS: CursorHookEvent[] = [
   { event: 'afterShellExecution', subcommand: 'after-shell-execution' },
   { event: 'beforeReadFile', subcommand: 'before-read-file' },
   { event: 'afterFileEdit', subcommand: 'after-file-edit' },
+  // Dedicated blocking MCP hook. Cursor currently puts the configured server
+  // key in `command` and the bare tool name in `tool_name`.
+  { event: 'beforeMCPExecution', subcommand: 'before-mcp-execution' },
   // Generic tool hooks (fire for ALL tool types). The cursor adapter derives the
   // tool class from the payload tool_name and excludes classes the fixed events
   // above already own, so no gate double-fires. These close the pre-WRITE deny, the

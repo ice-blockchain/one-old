@@ -14,11 +14,24 @@ import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architec
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
+import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
 import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { openCodeGlobalAgentName } from '../../../shared/materialize/opencode-assets';
+import { ensureRunModelPolicy, readRunModelPolicy } from '../../../shared/run-model-policy';
+import { codexChildModelGate } from '../codex-child-model';
+import { captureCursorModels, freshCursorModels } from '../../../shared/materialize/cursor-models';
+import { currentHostModelTarget } from '../../../shared/current-model-tiers';
+import { writeOneMcpConfigCacheEntry } from '../../../shared/one-mcp-cache';
+import { oneMcpPayloadFingerprint } from '../../../shared/one-mcp';
+import type { OneMcpModelConfigPayloadV2 } from '../../../shared/one-mcp/types';
+import {
+  ONE_MCP_CONFIG_NAME_BY_HOST,
+  ONE_MCP_DECODER_VERSION,
+  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
+  publicEndpoint,
+} from '../../../config/one-mcp';
 
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, agentName, and prose', () => {
   assert.equal(inferTrafficOneSpawnRole({ subagent_type: 'senior-frontend' }), 'senior-frontend');
@@ -205,8 +218,10 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
+  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
   // Pin a paid plan so the plan-aware gate resolves deterministic tiers regardless
   // of the test machine's real ~/.claude.json|~/.codex auth (a non-free plan inherits
   // DEFAULT_AGENT_TIERS → the high=highest behavior these assertions encode).
@@ -249,6 +264,7 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -291,6 +307,55 @@ test('non-spawn tools are ignored', () => {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: 'Bash' }, tool: { class: 'shell' as ToolClass, rawName: 'Bash', command: 'ls' } };
   const ctx = { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
   assert.equal(agentModelGate(ctx).kind, 'noop');
+});
+
+test('a subagent cannot create a missing immutable run model policy', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const parentCtx = spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'claude-opus-4-8-thinking-high',
+    });
+    const ctx = {
+      ...parentCtx,
+      input: {
+        ...parentCtx.input,
+        raw: {
+          ...(parentCtx.input.raw as Record<string, unknown>),
+          agent_type: 'default',
+          source: { subagent: { thread_spawn: { parent_thread_id: 'parent-thread' } } },
+        },
+      },
+    } as Ctx;
+
+    const result = agentModelGate(ctx);
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /child cannot create or rebase/i);
+    assert.equal(readRunModelPolicy(cwd, 'run-test'), null, 'child must not freeze mutable global state');
+  });
+});
+
+test('every recognized host child is blocked before its first tool when the parent policy is missing', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const childCtx = {
+      input: {
+        event: 'PreToolUse', host: 'claude', cwd,
+        raw: {
+          hook_event_name: 'PreToolUse', tool_name: 'Read', session_id: 'parent-session',
+          agent_id: 'claude-child-1', agent_type: 'senior-frontend',
+        },
+        tool: { class: 'file-read', rawName: 'Read', filePath: path.join(cwd, 'README.md') },
+      },
+      host: 'claude', cwd, now: () => 'x',
+    } as unknown as Ctx;
+
+    const blocked = codexChildModelGate(childCtx);
+    assert.equal(blocked.kind, 'deny');
+    if (blocked.kind === 'deny') assert.match(blocked.reason, /immutable model-policy\.json is missing/i);
+    assert.equal(readRunModelPolicy(cwd, 'run-test'), null, 'child gate must not create the policy');
+
+    freezeRunPolicy(cwd, 'claude');
+    assert.equal(codexChildModelGate(childCtx).kind, 'noop');
+  });
 });
 
 test('spawn identity conflict is denied before any role claim is staked', () => {
@@ -773,16 +838,109 @@ test('Cursor: the model deny names the recommended + a usable same-tier fallback
   });
 });
 
-test('Cursor capture precondition: missing cursor-models.json denies ONCE (capture prompt) then proceeds (no-deadlock)', () => {
+test('Cursor capture precondition: the immutable run stays blocked until the picker is captured', () => {
   withMaterialized({ teamApproved: true, cursorModels: null }, (cwd) => {
     // No captured model list yet → the gate asks the orchestrator to enumerate + persist it.
     const first = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor'));
     assert.equal(first.kind, 'deny');
-    if (first.kind === 'deny') assert.ok(/cursor-models\.json|model-capture|enumerate/i.test(first.reason), 'asks to capture the model list');
-    // No-deadlock: a second spawn is NOT re-prompted for capture — it proceeds (here the valid
-    // model passes, carrying the one-time advisory).
+    if (first.kind === 'deny') assert.ok(/model-capture|enumerate|model ids/i.test(first.reason), 'asks to capture the model list');
+    // Retrying without satisfying the prerequisite cannot mint a policy with an
+    // empty model list or silently advance on guessed slugs.
     const second = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor'));
-    assert.notEqual(second.kind, 'deny', 'capture is asked at most once per run');
+    assert.equal(second.kind, 'deny');
+    assert.equal(captureCursorModels(cwd, DEFAULT_CURSOR_MODELS, 'pro'), true);
+    const third = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    assert.notEqual(third.kind, 'deny', 'capture lets the parent create the policy and proceed');
+    const runId = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string;
+    const policy = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'runs', runId, 'model-policy.json'), 'utf8'));
+    assert.deepEqual(policy.cursorAvailableModels, DEFAULT_CURSOR_MODELS);
+  });
+});
+
+test('Cursor spawn and child bind stay on the frozen run after sidecar, plan, and availableModels mutate; next run adopts them', () => {
+  withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-cursor-frozen-target');
+    freezeRunPolicy(cwd, 'cursor', 'run-cursor-frozen-target');
+    const frozen = readRunModelPolicy(cwd, 'run-cursor-frozen-target');
+    assert.ok(frozen);
+    const oldExpected = frozen!.roles['senior-architect']!.preferredModel;
+    const oldExact = frozen!.cursorAvailableModels!.find((model) => model.startsWith(oldExpected))!;
+    assert.ok(oldExact);
+
+    const payload: OneMcpModelConfigPayloadV2 = {
+      payloadSchemaVersion: 2,
+      tiers: {
+        high: ['remote-base-high'], balanced: ['remote-base-balanced'],
+        low: ['remote-base-low'], auto: ['remote-base-balanced'],
+      },
+      plans: {
+        business: {
+          high: ['remote-business-high'], balanced: ['remote-business-balanced'],
+          low: ['remote-business-low'], auto: ['remote-business-balanced'],
+        },
+      },
+    };
+    writeOneMcpConfigCacheEntry('cursor', {
+      endpoint: publicEndpoint(process.env),
+      configName: ONE_MCP_CONFIG_NAME_BY_HOST.cursor,
+      decoderVersion: ONE_MCP_DECODER_VERSION,
+      payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
+      version: 9,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-17T12:00:00.000Z',
+      payload,
+      payloadFingerprint: oneMcpPayloadFingerprint(payload),
+    }, process.env);
+    process.env.TRAFFIC_ONE_USER_PLAN = 'business';
+    const newModels = [
+      'remote-business-high-build', 'remote-business-balanced-build', 'remote-business-low-build',
+    ];
+    assert.equal(captureCursorModels(cwd, newModels, 'business'), true);
+    const nextTarget = currentHostModelTarget('cursor', 'business');
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8')) as {
+      hosts: Record<string, { performance: Record<string, unknown>; team: Record<string, unknown> }>;
+    };
+    prefs.hosts.cursor!.performance = {
+      level: 'balanced', source: 'prompted',
+      target: { plan: 'business', appliedFingerprint: nextTarget.appliedFingerprint, configVersion: 9 },
+    };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+
+    const spawn = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-architect',
+      model: oldExact,
+      prompt: 'Continue the frozen architecture run.',
+    }, 'parent-frozen', 'cursor'));
+    assert.notEqual(spawn.kind, 'deny', 'old run ignores the new sidecar, plan, and picker capture');
+
+    const started = subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'subagent-start',
+      subagent_id: 'tool_frozen_cursor_child',
+      subagent_type: 'senior-architect',
+      subagent_model: oldExact,
+      session_id: 'parent-frozen',
+      started_at: Date.now(),
+    }, 'cursor'));
+    assert.equal(started.kind, 'noop');
+    const observation = listCursorSpawnObservations(cwd, 'run-cursor-frozen-target')[0];
+    assert.equal(observation?.tier, frozen!.roles['senior-architect']!.tier);
+    assert.equal(observation?.expectedModel, oldExpected);
+    assert.deepEqual(readRunModelPolicy(cwd, 'run-cursor-frozen-target')?.cursorAvailableModels, DEFAULT_CURSOR_MODELS);
+
+    setCurrentRunId(cwd, 'run-cursor-next-target');
+    assert.deepEqual(freshCursorModels(cwd, 'business'), newModels);
+    const nextState = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'cursor' });
+    assert.deepEqual((nextState.performance as Record<string, unknown>).target, {
+      plan: 'business', appliedFingerprint: nextTarget.appliedFingerprint, configVersion: 9,
+    });
+    freezeRunPolicy(cwd, 'cursor', 'run-cursor-next-target');
+    const next = readRunModelPolicy(cwd, 'run-cursor-next-target');
+    assert.equal(next?.plan, 'business');
+    assert.equal(next?.configVersion, 9);
+    assert.match(next?.roles['senior-architect']?.preferredModel || '', /^remote-business-/);
+    assert.notEqual(next?.roles['senior-architect']?.preferredModel, oldExpected);
+    assert.deepEqual(next?.cursorAvailableModels, newModels);
   });
 });
 
@@ -1247,16 +1405,17 @@ test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', (
     const denied = agentModelGate(codexSpawnCtx(cwd, {
       agent_type: 'worker',
       message: 'You are acting as Traffic One `senior-tester` for this Codex run.',
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.6-terra',
     }));
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
     // Deny-once: a second spawn (no attempt recorded — e.g. tool unavailable) falls through.
-    assert.equal(agentModelGate(codexSpawnCtx(cwd, {
+    const fallback = agentModelGate(codexSpawnCtx(cwd, {
       agent_type: 'worker',
       message: 'You are acting as Traffic One `senior-tester` for this Codex run.',
-      model: 'gpt-5.4-mini',
-    })).kind, 'noop');
+      model: 'gpt-5.6-terra',
+    }));
+    assert.equal(fallback.kind, 'noop', fallback.kind === 'deny' ? fallback.reason : undefined);
   });
 });
 
@@ -1317,50 +1476,94 @@ function codexSessionMeta(childThread: string, parentThread: string, agentPath: 
   };
 }
 
-test('codex: namespaced spawn omits the unsupported model field and still stakes a senior-frontend claim', () => {
+function codexChildPreToolCtx(
+  cwd: string,
+  childThread: string,
+  parentThread: string,
+  transcript: string,
+  model: string,
+  extra: Record<string, unknown> = {},
+): Ctx {
+  return {
+    input: {
+      event: 'PreToolUse', host: 'codex', cwd,
+      raw: {
+        hook_event_name: 'PreToolUse', tool_name: 'Read', agent_id: childThread,
+        session_id: parentThread, transcript_path: transcript, model, ...extra,
+      },
+      tool: { class: 'file-read', rawName: 'Read', filePath: path.join(cwd, 'README.md') },
+    },
+    host: 'codex', cwd, now: () => 'x',
+  } as unknown as Ctx;
+}
+
+test('codex: namespaced parent spawn validates intent but creates no claim or reusable row', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    const ok = agentModelGate(codexSpawnCtx(cwd, { message: 'You are `senior-frontend` for Traffic One.' }));
+    const missing = agentModelGate(codexSpawnCtx(cwd, {
+      task_name: 'senior_frontend',
+      message: 'You are `senior-frontend` for Traffic One.',
+      fork_turns: 'none',
+    }));
+    assert.equal(missing.kind, 'deny');
+    const ok = agentModelGate(codexSpawnCtx(cwd, {
+      task_name: 'senior_frontend',
+      message: 'You are `senior-frontend` for Traffic One.',
+      fork_turns: 'none',
+      model: 'gpt-5.6-sol',
+    }));
     assert.equal(ok.kind, 'noop');
 
-    // The namespaced spawn staked a pending claim (proves the gate did not bail on the namespace).
+    // Requested parent input is not runtime proof. SubagentStart/child
+    // PreToolUse must observe the actual model before durable child state exists.
     const state = readEffectiveState(cwd) as { currentRunId?: string };
     const pending = path.join(cwd, '.traffic-one', 'runs', String(state.currentRunId), 'pending');
-    assert.equal(fs.readdirSync(pending).filter((f) => f.endsWith('.json')).length, 1);
+    assert.equal(fs.existsSync(pending), false);
+    assert.deepEqual(readRunAgentRegistry(cwd, String(state.currentRunId)), {});
   });
 });
 
-test('codex: quick-fix omits the unsupported model field but keeps the cheapest-tier claim', () => {
+test('codex: quick-fix requires the exact cheapest model without an early parent claim', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    const result = agentModelGate(codexSpawnCtx(cwd, {
+    const missing = agentModelGate(codexSpawnCtx(cwd, {
       message: 'You are acting as Traffic One quick-fix. Apply one bounded maintenance fix.',
+    }));
+    assert.equal(missing.kind, 'deny');
+    const result = agentModelGate(codexSpawnCtx(cwd, {
+      task_name: 'quick_fix',
+      message: 'You are acting as Traffic One quick-fix. Apply one bounded maintenance fix.',
+      fork_turns: 'none',
+      model: 'gpt-5.6-terra',
     }));
     assert.equal(result.kind, 'noop');
     const pending = path.join(cwd, '.traffic-one', 'runs', 'run-test', 'pending');
-    assert.ok(fs.readdirSync(pending).some((name) => name.startsWith('quick-fix-')));
+    assert.equal(fs.existsSync(pending), false);
+    assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {});
   });
 });
 
-test('codex end-to-end: SubagentStart infers role from the child rollout, claims the thread, child write resolves it', () => {
+test('codex end-to-end: observed SubagentStart model verifies against policy before the child claim resolves', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    // Codex fires no PreToolUse for the spawn; the child's rollout is what carries the
-    // role. Write a minimal child transcript whose filename embeds the thread id and
-    // whose spawn prompt names the role.
+    freezeRunPolicy(cwd, 'codex');
     const childThread = '019e7396-6543-7881-a4a9-dfe9d5a17807';
     const childTranscript = path.join(cwd, `rollout-2026-05-29T14-54-56-${childThread}.jsonl`);
-    fs.writeFileSync(childTranscript, `${JSON.stringify({
-      type: 'response_item',
-      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `You are the Traffic One senior-frontend role for ${cwd}. Build the UI.` }] },
-    })}\n`, 'utf8');
+    fs.writeFileSync(childTranscript, `${JSON.stringify(codexSessionMeta(
+      childThread,
+      'orchestrator-parent',
+      '/root/senior_frontend',
+    ))}\n`, 'utf8');
 
     // SubagentStart fires in the parent context (session_id = parent) with the child agent_id + transcript.
     subagentStartBind(subagentStartCtx(cwd, {
-      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: 'orchestrator-parent', transcript_path: childTranscript,
+      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: 'orchestrator-parent',
+      transcript_path: childTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-sol',
     }));
 
     // The child's apply_patch reports the PARENT session_id but its own transcript_path →
     // resolves the claimed role by transcript threadId (no pending-claiming).
     const state = readEffectiveState(cwd);
-    const child = resolveRunAgentContext(cwd, state, { session_id: 'orchestrator-parent', transcript_path: childTranscript }, { claimPending: false });
+    const child = resolveRunAgentContext(cwd, state, {
+      session_id: 'orchestrator-parent', transcript_path: childTranscript, model: 'gpt-5.6-sol',
+    }, { claimPending: false, host: 'codex' });
     assert.ok(child, 'expected the child write to resolve the claimed role via transcript threadId');
     assert.equal(child!.role, 'senior-frontend');
     assert.equal(child!.sessionId, childThread);
@@ -1373,6 +1576,7 @@ test('codex end-to-end: SubagentStart infers role from the child rollout, claims
 
 test('codex unresolved SubagentStart reports canonical recovery and creates no claim for missing or short rollouts', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
     const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
     const cases = [
       { label: 'missing', childThread: '019f69fe-e335-7de0-be43-1ee45e3535c4', contents: null },
@@ -1420,7 +1624,7 @@ test('codex unresolved SubagentStart reports canonical recovery and creates no c
   });
 });
 
-test('codex unresolved start without a current run still persists its bounded diagnostic', () => {
+test('codex unresolved start without a parent run never mints or repairs policy from the child', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
@@ -1435,19 +1639,17 @@ test('codex unresolved start without a current run still persists its bounded di
       agent_id: childThread,
       session_id: 'orchestrator-parent',
       transcript_path: transcript,
+      model: 'gpt-5.6-sol',
     }));
     assert.equal(result.kind, 'context');
     const runId = String(JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId || '');
-    assert.ok(runId);
-    const runDir = path.join(cwd, '.traffic-one', 'runs', runId);
-    assert.equal(fs.existsSync(path.join(runDir, `${childThread}.json`)), false);
-    const capture = fs.readFileSync(path.join(runDir, 'debug', 'claim-capture.jsonl'), 'utf8');
-    assert.match(capture, /subagent-start-role-unresolved/);
+    assert.equal(runId, '', 'only the parent may mint a run and create model-policy.json');
   });
 });
 
-test('codex first child write self-heals once line-zero session_meta appears after an unresolved start', () => {
+test('codex child PreToolUse completes a pending-role observation after line-zero metadata appears', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
     const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
     const childThread = '019f69fe-e335-7de0-be43-1ee45e3535c6';
     const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
@@ -1458,6 +1660,7 @@ test('codex first child write self-heals once line-zero session_meta appears aft
       agent_id: childThread,
       session_id: parentThread,
       transcript_path: transcript,
+      model: 'gpt-5.6-sol',
     }));
     assert.equal(unresolved.kind, 'context');
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`)), false);
@@ -1467,11 +1670,25 @@ test('codex first child write self-heals once line-zero session_meta appears aft
       `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_architect'))}\n`,
       'utf8',
     );
-    const state = readEffectiveState(cwd);
+    const gate = codexChildModelGate({
+      input: {
+        event: 'PreToolUse', host: 'codex', cwd,
+        raw: {
+          hook_event_name: 'PreToolUse', tool_name: 'Read', agent_id: childThread,
+          session_id: parentThread, transcript_path: transcript, model: 'gpt-5.6-sol',
+        },
+        tool: { class: 'file-read', rawName: 'Read', filePath: path.join(cwd, 'README.md') },
+      },
+      host: 'codex', cwd, now: () => 'x',
+    } as unknown as Ctx);
+    assert.equal(gate.kind, 'noop');
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'codex' });
     const firstWrite = resolveRunAgentContext(cwd, state, {
       session_id: parentThread,
       transcript_path: transcript,
-    });
+      agent_id: childThread,
+      model: 'gpt-5.6-sol',
+    }, { host: 'codex' });
 
     assert.ok(firstWrite, 'the first child write binds after the rollout flushes line-zero metadata');
     assert.equal(firstWrite?.role, 'senior-architect');
@@ -1487,8 +1704,169 @@ test('codex first child write self-heals once line-zero session_meta appears aft
   });
 });
 
+test('codex authoritative role correction revalidates a provisional mismatch before creating child state', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e353601';
+    const transcript = path.join(cwd, `rollout-role-correction-${childThread}.jsonl`);
+    fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
+
+    const start = subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: parentThread,
+      transcript_path: transcript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
+    }));
+    assert.equal(start.kind, 'context');
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childThread])?.status, 'mismatch');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`)), false);
+    assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {});
+
+    // The actual child rollout now exposes the authoritative tester role. Terra
+    // is valid for tester in the immutable High policy, so the same model can be
+    // re-evaluated and only then become claimable/reusable.
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_tester'))}\n`,
+      'utf8',
+    );
+    const gate = codexChildModelGate(codexChildPreToolCtx(
+      cwd, childThread, parentThread, transcript, 'gpt-5.6-terra',
+    ));
+    assert.equal(gate.kind, 'noop');
+    const observation = readCodexModelObservation(cwd, 'run-test', [childThread]);
+    assert.equal(observation?.status, 'verified');
+    assert.equal(observation?.role, 'senior-tester');
+    const claim = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`),
+      'utf8',
+    )) as Record<string, unknown>;
+    assert.equal(claim.role, 'senior-tester');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childThread);
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend'], undefined);
+  });
+});
+
+test('a delayed Codex role correction cannot replace a newer verified child for that role', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const delayedChild = '019f69fe-e335-7de0-be43-1ee45e353611';
+    const delayedTranscript = path.join(cwd, `rollout-delayed-${delayedChild}.jsonl`);
+    fs.writeFileSync(delayedTranscript, '{"type":"session_', 'utf8');
+    subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: delayedChild, session_id: parentThread,
+      transcript_path: delayedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
+    }));
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [delayedChild])?.status, 'mismatch');
+
+    const newerChild = '019f69fe-e335-7de0-be43-1ee45e353612';
+    const newerTranscript = path.join(cwd, `rollout-newer-${newerChild}.jsonl`);
+    fs.writeFileSync(
+      newerTranscript,
+      `${JSON.stringify(codexSessionMeta(newerChild, parentThread, '/root/senior_tester'))}\n`,
+      'utf8',
+    );
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(
+      cwd, newerChild, parentThread, newerTranscript, 'gpt-5.6-terra',
+    )).kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, newerChild);
+
+    fs.writeFileSync(
+      delayedTranscript,
+      `${JSON.stringify(codexSessionMeta(delayedChild, parentThread, '/root/senior_tester'))}\n`,
+      'utf8',
+    );
+    const delayed = codexChildModelGate(codexChildPreToolCtx(
+      cwd, delayedChild, parentThread, delayedTranscript, 'gpt-5.6-terra',
+    ));
+    assert.equal(delayed.kind, 'deny');
+    assert.equal(
+      fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${delayedChild}.json`)),
+      false,
+    );
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, newerChild);
+  });
+});
+
+test('codex conflicting model evidence is terminal and cannot be healed by a later role correction', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e353602';
+    const transcript = path.join(cwd, `rollout-terminal-conflict-${childThread}.jsonl`);
+    fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
+
+    subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: parentThread,
+      transcript_path: transcript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
+    }));
+    const conflictGate = codexChildModelGate(codexChildPreToolCtx(
+      cwd, childThread, parentThread, transcript, 'gpt-5.6-sol',
+      { task_name: 'senior_frontend' },
+    ));
+    assert.equal(conflictGate.kind, 'deny');
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childThread])?.status, 'conflict');
+
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_tester'))}\n`,
+      'utf8',
+    );
+    const staleCorrection = codexChildModelGate(codexChildPreToolCtx(
+      cwd, childThread, parentThread, transcript, 'gpt-5.6-terra',
+    ));
+    assert.equal(staleCorrection.kind, 'deny');
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childThread])?.status, 'conflict');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`)), false);
+    assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {});
+  });
+});
+
+test('codex mismatched child does not reserve the role and a correct respawn becomes reusable', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const rejectedChild = '019f69fe-e335-7de0-be43-1ee45e353603';
+    const rejectedTranscript = path.join(cwd, `rollout-rejected-${rejectedChild}.jsonl`);
+    fs.writeFileSync(
+      rejectedTranscript,
+      `${JSON.stringify(codexSessionMeta(rejectedChild, parentThread, '/root/senior_frontend'))}\n`,
+      'utf8',
+    );
+    subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: rejectedChild, session_id: parentThread,
+      transcript_path: rejectedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
+    }));
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [rejectedChild])?.status, 'mismatch');
+    assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {});
+
+    const retry = agentModelGate(codexSpawnCtx(cwd, {
+      task_name: 'senior_frontend', message: 'Retry the bounded frontend task.',
+      fork_turns: 'none', model: 'gpt-5.6-sol',
+    }));
+    assert.equal(retry.kind, 'noop', 'the rejected child does not trip the reuse gate');
+
+    const acceptedChild = '019f69fe-e335-7de0-be43-1ee45e353604';
+    const acceptedTranscript = path.join(cwd, `rollout-accepted-${acceptedChild}.jsonl`);
+    fs.writeFileSync(
+      acceptedTranscript,
+      `${JSON.stringify(codexSessionMeta(acceptedChild, parentThread, '/root/senior_frontend'))}\n`,
+      'utf8',
+    );
+    const accepted = subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: acceptedChild, session_id: parentThread,
+      transcript_path: acceptedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-sol',
+    }));
+    assert.equal(accepted.kind, 'noop');
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [acceptedChild])?.status, 'verified');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend']?.agentId, acceptedChild);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${rejectedChild}.json`)), false);
+  });
+});
+
 test('codex SubagentStart fails closed when line-zero child identity does not match the hook', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
     const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
     const hookChild = '019f69fe-e335-7de0-be43-1ee45e3535c7';
     const metadataChild = '019f69fe-e335-7de0-be43-1ee45e3535c8';
@@ -1517,7 +1895,7 @@ test('codex SubagentStart fails closed when line-zero child identity does not ma
   });
 });
 
-test('codex SubagentStart mints + persists currentRunId when absent (existing-codebase)', () => {
+test('codex SubagentStart fails closed when the parent omitted currentRunId (existing-codebase)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // The exact Codex gap: no PreToolUse fires for spawn_agent, so the persisting
     // ensureCurrentRunId in agentModelGate never runs — setup completed with NO
@@ -1536,12 +1914,14 @@ test('codex SubagentStart mints + persists currentRunId when absent (existing-co
       payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `You are the Traffic One senior-architect role for ${cwd}. Plan the fix.` }] },
     })}\n`, 'utf8');
 
-    subagentStartBind(subagentStartCtx(cwd, {
-      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: 'orchestrator-parent', transcript_path: childTranscript,
+    const result = subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: 'orchestrator-parent',
+      transcript_path: childTranscript, task_name: 'senior_architect', model: 'gpt-5.6-sol',
     }));
 
     const minted = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
-    assert.ok(minted.length > 0, 'SubagentStart must mint + persist currentRunId on Codex');
+    assert.equal(result.kind, 'context');
+    assert.equal(minted, '', 'a child cannot mint or rebase a missing parent run');
   });
 });
 
@@ -1564,6 +1944,16 @@ function setCurrentRunId(cwd: string, runId: string): void {
   state.currentRunId = runId;
   fs.writeFileSync(file, JSON.stringify(state), 'utf8');
   writeArchitectPhaseComplete(cwd, runId, state);
+}
+
+function freezeRunPolicy(cwd: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' | 'windsurf', runId?: string): void {
+  const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: host });
+  const activeRunId = runId || (typeof state.currentRunId === 'string' ? state.currentRunId : '');
+  assert.ok(activeRunId, 'test fixture must have a current run id before freezing policy');
+  assert.ok(
+    ensureRunModelPolicy(cwd, activeRunId, host, state, { ...process.env, TRAFFIC_ONE_HOST: host }),
+    `test fixture could not freeze ${host} run policy`,
+  );
 }
 
 function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'windsurf' | 'opencode' | 'kilo' = 'claude'): Ctx {
@@ -1685,6 +2075,7 @@ test('mid-run API-limit stop anchors fallback on the role original tier, not the
     process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
     try {
       setCurrentRunId(cwd, 'run-api-limit');
+      freezeRunPolicy(cwd, 'cursor', 'run-api-limit');
       observeCursorSpawn(
         cwd,
         'run-api-limit',
@@ -1752,6 +2143,7 @@ test('mid-run API-limit stop requires the existing choice before a highest role 
     cursorModels: ['gpt-5.6-terra-medium', 'composer-2.5-fast'],
   }, (cwd) => {
     setCurrentRunId(cwd, 'run-recorder-floor');
+    freezeRunPolicy(cwd, 'cursor', 'run-recorder-floor');
     observeCursorSpawn(
       cwd,
       'run-recorder-floor',
@@ -1799,6 +2191,7 @@ test('mid-run API-limit on cheapest Composer rotates automatically to the next c
     cursorModels: ['composer-2.5-fast', 'gpt-5.4-mini-fast'],
   }, (cwd) => {
     setCurrentRunId(cwd, 'run-recorder-cheapest');
+    freezeRunPolicy(cwd, 'cursor', 'run-recorder-cheapest');
     observeCursorSpawn(
       cwd,
       'run-recorder-cheapest',
@@ -1829,6 +2222,7 @@ test('mid-run explicit model-unavailable result asks Settings/enable or the next
     cursorModels: ['gpt-5.6-terra-medium', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'],
   }, (cwd) => {
     setCurrentRunId(cwd, 'run-recorder-unavailable');
+    freezeRunPolicy(cwd, 'cursor', 'run-recorder-unavailable');
     observeCursorSpawn(
       cwd,
       'run-recorder-unavailable',
@@ -2239,6 +2633,7 @@ test('successful Cursor Task report cannot condemn a model or retire its live ob
 test('delayed Cursor PostTool result persists against its old observation but CAS cannot retire a newer retry', () => {
   withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
     setCurrentRunId(cwd, 'run-cursor-delayed-post');
+    freezeRunPolicy(cwd, 'cursor', 'run-cursor-delayed-post');
     observeCursorSpawn(
       cwd,
       'run-cursor-delayed-post',
@@ -2310,6 +2705,7 @@ test('explicit model-unavailable PostTool text stays generic outside Cursor', ()
   withMaterialized({ teamApproved: true }, (cwd) => {
     withTeamsEnv(() => {
       setCurrentRunId(cwd, 'run-noncursor-unavailable');
+      freezeRunPolicy(cwd, 'claude', 'run-noncursor-unavailable');
       recordRunAgent(cwd, 'run-noncursor-unavailable', 'senior-backend', {
         agentId: 'noncursor-backend-agent',
         parentSessionId: 'parent-1',
@@ -2362,15 +2758,26 @@ test('reuse (Codex): matching line-zero metadata verifies continuation while a f
       'utf8',
     );
     setCurrentRunId(cwd, runId);
+    freezeRunPolicy(cwd, 'codex', runId);
+    assert.equal(observeCodexChildModel(cwd, runId, {
+      childId: childThread,
+      parentSessionId: parentThread,
+      actualModel: 'gpt-5.6-sol',
+      role: 'senior-architect',
+      source: 'SubagentStart',
+    })?.status, 'verified');
     recordRunAgent(cwd, runId, 'senior-architect', {
       agentId: childThread,
       parentSessionId: parentThread,
       transcriptPath: transcript,
+      model: 'gpt-5.6-sol',
     });
 
     const duplicate = agentModelGate(codexSpawnCtx(cwd, {
       task_name: 'senior_architect',
       message: '[t1-role: senior-architect]\nContinue the bounded architecture task.',
+      model: 'gpt-5.6-sol',
+      fork_turns: 'none',
     }));
     assert.equal(duplicate.kind, 'deny');
     if (duplicate.kind === 'deny') {
@@ -2391,21 +2798,25 @@ test('reuse (Codex): matching line-zero metadata verifies continuation while a f
     const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
     fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
     setCurrentRunId(cwd, runId);
+    freezeRunPolicy(cwd, 'codex', runId);
     recordRunAgent(cwd, runId, 'senior-architect', {
       agentId: childThread,
       parentSessionId: 'parent-thread-1',
       transcriptPath: transcript,
+      model: 'gpt-5.6-sol',
     });
 
     const duplicate = agentModelGate(codexSpawnCtx(cwd, {
       task_name: 'senior_architect',
       message: '[t1-role: senior-architect]\nContinue the bounded architecture task.',
+      model: 'gpt-5.6-sol',
+      fork_turns: 'none',
     }));
     assert.equal(duplicate.kind, 'deny');
     if (duplicate.kind === 'deny') {
       assert.match(duplicate.reason, /fresh Codex `senior-architect` registry row/);
       assert.ok(duplicate.reason.includes(`child \`${childThread}\``));
-      assert.match(duplicate.reason, /line-zero `session_meta` \(codex-session-meta-missing-or-mismatched\)/);
+      assert.match(duplicate.reason, /codex-observed-model-missing/);
       assert.match(duplicate.reason, /Do not route `followup_task`\/`send_message` to this unverified id/);
       assert.match(duplicate.reason, /do not start a duplicate/i);
       assert.match(duplicate.reason, /Retry after the child rollout is flushed/);
@@ -2433,21 +2844,33 @@ test('reuse (Codex): authoritative dead-child conflict rebinds before continuati
       'utf8',
     );
     setCurrentRunId(cwd, runId);
-    const state = readEffectiveState(cwd);
+    freezeRunPolicy(cwd, 'codex', runId);
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'codex' });
     writeArchitectPhaseComplete(cwd, runId, state as Record<string, unknown>);
+    assert.equal(observeCodexChildModel(cwd, runId, {
+      childId: childThread,
+      parentSessionId: parentThread,
+      actualModel: 'gpt-5.6-sol',
+      role: 'senior-frontend',
+      source: 'SubagentStart',
+    })?.status, 'verified');
     assert.ok(claimThreadRole(cwd, state, childThread, 'senior-frontend', {
       parentSessionId: parentThread,
+      model: 'gpt-5.6-sol',
       recordAgent: false,
     }));
     recordRunAgent(cwd, runId, 'senior-frontend', {
       agentId: childThread,
       parentSessionId: parentThread,
       transcriptPath: transcript,
+      model: 'gpt-5.6-sol',
     });
 
     const freshFrontend = agentModelGate(codexSpawnCtx(cwd, {
       task_name: 'senior_frontend',
       message: '[t1-role: senior-frontend]\nImplement the next bounded frontend unit.',
+      model: 'gpt-5.6-sol',
+      fork_turns: 'none',
     }));
     assert.equal(freshFrontend.kind, 'noop', 'the poisoned frontend key is freed instead of continuing the architect');
     const registry = readRunAgentRegistry(cwd, runId);
@@ -2466,6 +2889,7 @@ test('reuse (Codex): a registry row from another parent session cannot block a f
   withMaterialized({ teamApproved: true }, (cwd) => {
     const runId = 'run-codex-parent-mismatch';
     setCurrentRunId(cwd, runId);
+    freezeRunPolicy(cwd, 'codex', runId);
     writeArchitectPhaseComplete(cwd, runId, readEffectiveState(cwd) as Record<string, unknown>);
     recordRunAgent(cwd, runId, 'senior-frontend', {
       agentId: '019f69fe-e335-7de0-be43-1ee45e3535ea',
@@ -2475,20 +2899,49 @@ test('reuse (Codex): a registry row from another parent session cannot block a f
     const fresh = agentModelGate(codexSpawnCtx(cwd, {
       task_name: 'senior_frontend',
       message: '[t1-role: senior-frontend]\nImplement the bounded frontend unit.',
+      model: 'gpt-5.6-sol',
+      fork_turns: 'none',
     }));
     assert.equal(fresh.kind, 'noop');
     assert.equal(readRunAgentRegistry(cwd, runId)['senior-frontend']?.parentSessionId, 'dead-parent-thread');
   });
 });
 
-test('Codex prose does not claim spawn_agent accepts a model parameter', () => {
-  const orchestrator = fs.readFileSync(path.join(process.cwd(), 'src/modules/skills/skills-catalog/senior-eng-orchestrator/SKILL.md'), 'utf8');
-  const syncSkill = fs.readFileSync(path.join(process.cwd(), 'src/modules/skills/skills-catalog/model-tier-sync/SKILL.md'), 'utf8');
-  const gateSkill = fs.readFileSync(path.join(process.cwd(), 'src/modules/agent-model/skill/SKILL.md'), 'utf8');
-  assert.doesNotMatch(orchestrator, /On Claude\/Codex\/Cursor, pass the runtime-resolved `model`/i);
-  assert.doesNotMatch(syncSkill, /Codex `spawn_agent` `model` param accepts/i);
-  assert.doesNotMatch(gateSkill, /then re-spawn passing the (?:per-role )?`model` parameter/i);
-  assert.match(orchestrator, /Codex[^\n]*spawn_agent[^\n]*no `model`/i);
+test('shipped instruction sources require a pinned Codex model and schema-v2 catalog', () => {
+  const instructionPaths = [
+    'src/modules/skills/skills-catalog/senior-eng-orchestrator/SKILL.md',
+    'src/modules/skills/skills-catalog/senior-eng-orchestrator/resources/prompt-templates.md',
+    'src/modules/skills/skills-catalog/model-tier-sync/SKILL.md',
+    'src/modules/agent-model/skill/SKILL.md',
+    'src/modules/rules/rules/common/senior-engineer-team.md',
+    'src/modules/agent-model/subagent-bind.ts',
+    'src/modules/agent-model/codex-child-model.ts',
+    'src/modules/plan-guard/plan-runteam.ts',
+  ];
+  const staleCodexNoModelClaims = [
+    /\bCodex\b[^\n]{0,180}\bpass no `?model`?/i,
+    /\bCodex\b[^\n]{0,180}\bwith no `?model`?/i,
+    /\bCodex\b[^\n]{0,180}\bno `?model`? field/i,
+    /\bCodex\b[^\n]{0,180}\bomit(?: the)? `?model`?/i,
+    /\bCodex\b[^\n]{0,180}\b(?:does not|doesn't|cannot|can't)\b[^\n]{0,80}\b(?:support|accept|expose|receive)\b[^\n]{0,40}\bmodel\b/i,
+    /\bCodex\b[^\n]{0,180}\bexposes no\b[^\n]{0,30}\bmodel\b/i,
+  ];
+
+  for (const relPath of instructionPaths) {
+    const content = fs.readFileSync(path.join(process.cwd(), relPath), 'utf8');
+    assert.doesNotMatch(content, /\bfork_context\b/, `${relPath} uses the obsolete fork_context key`);
+    for (const staleClaim of staleCodexNoModelClaims) {
+      assert.doesNotMatch(content, staleClaim, `${relPath} says Codex cannot receive an explicit model`);
+    }
+  }
+
+  const orchestrator = fs.readFileSync(path.join(process.cwd(), instructionPaths[0]!), 'utf8');
+  const syncSkill = fs.readFileSync(path.join(process.cwd(), instructionPaths[2]!), 'utf8');
+  assert.match(orchestrator, /Codex `spawn_agent`[^\n]*`model`[^\n]*`fork_turns: "none"`/i);
+  assert.match(syncSkill, /"payloadSchemaVersion": 2/);
+  assert.match(syncSkill, /"tiers": \{/);
+  assert.match(syncSkill, /"plans": \{/);
+  assert.match(syncSkill, /sparse overrides[^\n]*complete plan rows/i);
 });
 
 test('reuse (Copilot): records background agent_id and denies same-role respawn', () => {
@@ -2587,6 +3040,7 @@ test('reuse (Windsurf): records returned agent id and denies same-role respawn w
 test('reuse (Kilo): child binding records the live role and blocks a duplicate general task', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     setCurrentRunId(cwd, 'run-kilo-reuse');
+    freezeRunPolicy(cwd, 'kilo', 'run-kilo-reuse');
     const prompt = '[t1-role: senior-frontend]\nRead .kilo/agents/senior-frontend.md, then implement the UI.';
     opencodeSubagentBind({
       input: { event: 'UserPromptSubmit', host: 'kilo', cwd, raw: { session_id: 'kilo-child-fe', prompt }, prompt },
@@ -2647,6 +3101,7 @@ test('reuse (Windsurf): failed custom-profile spawn does not create a live regis
 test('reuse (Copilot): SubagentStart records background display name before fix-cycle respawn', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     setCurrentRunId(cwd, 'run-copilot-subagent-start');
+    freezeRunPolicy(cwd, 'copilot', 'run-copilot-subagent-start');
     subagentStartBind(subagentStartCtx(cwd, {
       sessionId: 'parent-1',
       transcriptPath: '/Users/w3s/.copilot/session-state/session/events.jsonl',
@@ -2709,6 +3164,7 @@ test('reuse (Cursor): duplicate spawn deny names Task resume UUID after PostTool
 test('reuse (Cursor): subagent-start records the spawned subagent_id into the registry (10b re-spawn-pileup fix)', () => {
   withMaterialized({ teamApproved: true, cursorModels: [...DEFAULT_CURSOR_MODELS, 'claude-4.6-sonnet-thinking'] }, (cwd) => {
     setCurrentRunId(cwd, 'run-cursor-1');
+    freezeRunPolicy(cwd, 'cursor', 'run-cursor-1');
     // Cursor's subagent-start carries the spawned id as `subagent_id` (= tool_<uuid>) and
     // the role as `subagent_type` — NOT agent_id/agent_type. The PostToolUse(Task) recorder
     // never sees this id, so without recording it on subagent-start the registry stays empty
@@ -2755,6 +3211,7 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
 test('Cursor: nested SubagentStart anchors every run write at the workspace root', () => {
   withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
     setCurrentRunId(cwd, 'run-cursor-nested-start');
+    freezeRunPolicy(cwd, 'cursor', 'run-cursor-nested-start');
     const nested = path.join(cwd, 'packages', 'web');
     fs.mkdirSync(nested, { recursive: true });
     const result = subagentStartBind({
@@ -2791,6 +3248,35 @@ test('Cursor: nested SubagentStart anchors every run write at the workspace root
   });
 });
 
+test('Cursor child fails closed when its parent policy is missing or corrupt and never repairs it from mutable state', () => {
+  withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-cursor-child-policy');
+    const child = () => subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'subagent-start',
+      subagent_id: 'tool_cursor_policy_child',
+      subagent_type: 'senior-architect',
+      subagent_model: 'claude-fable-5-thinking-high',
+      session_id: 'orchestrator-parent',
+    }, 'cursor'));
+
+    const missing = child();
+    assert.equal(missing.kind, 'deny');
+    if (missing.kind === 'deny') assert.match(missing.reason, /model-policy\.json is missing or corrupt/i);
+    assert.equal(readRunAgentRegistry(cwd, 'run-cursor-child-policy')['senior-architect'], undefined);
+
+    freezeRunPolicy(cwd, 'cursor', 'run-cursor-child-policy');
+    const policyPath = path.join(cwd, '.traffic-one', 'runs', 'run-cursor-child-policy', 'model-policy.json');
+    const tampered = JSON.parse(fs.readFileSync(policyPath, 'utf8')) as Record<string, unknown>;
+    tampered.plan = 'business';
+    fs.writeFileSync(policyPath, JSON.stringify(tampered), 'utf8');
+    const corrupt = child();
+    assert.equal(corrupt.kind, 'deny');
+    if (corrupt.kind === 'deny') assert.match(corrupt.reason, /model-policy\.json is missing or corrupt/i);
+    assert.equal(readRunModelPolicy(cwd, 'run-cursor-child-policy'), null);
+    assert.equal(readRunAgentRegistry(cwd, 'run-cursor-child-policy')['senior-architect'], undefined);
+  });
+});
+
 test('Cursor: SubagentStart stops senior team when model choice is still pending, even with generic subagent_type', () => {
   withMaterialized({
     teamApproved: true,
@@ -2802,6 +3288,7 @@ test('Cursor: SubagentStart stops senior team when model choice is still pending
       (hostPrefs.team as Record<string, unknown>).overrides = { 'senior-architect': 'balanced' };
     }
     fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, JSON.stringify(prefs), 'utf8');
+    freezeRunPolicy(cwd, 'cursor', 'run-cursor-pending-model-choice');
 
     const cursorCtx = {
       input: {

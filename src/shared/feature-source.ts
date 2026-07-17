@@ -6,6 +6,7 @@
 
 import { activeAgentRole, isSubagentSession } from './state';
 import type { RunAgentContext } from './state/run-agent';
+import { parseApplyPatch, patchOperationPaths } from './apply-patch';
 
 // Paths the architecture gate treats as "feature source" (monorepo + flat layouts).
 export const FEATURE_SOURCE_RE =
@@ -154,13 +155,6 @@ export function commandAppearsToWriteExternalTemp(command: unknown): boolean {
 
 export function applyPatchTargetPaths(patchText: unknown): string[] {
   if (typeof patchText !== 'string' || !patchText.trim()) return [];
-  const paths: string[] = [];
-  for (const line of patchText.split(/\r?\n/)) {
-    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)
-      || line.match(/^\*\*\* Move to: (.+)$/);
-    if (match && match[1]) {
-      paths.push(match[1].trim().replace(/\\/g, '/').replace(/^\.\//, ''));
-    }
-  }
-  return paths;
+  const parsed = parseApplyPatch(patchText);
+  return parsed.ok ? patchOperationPaths(parsed.operations) : [];
 }

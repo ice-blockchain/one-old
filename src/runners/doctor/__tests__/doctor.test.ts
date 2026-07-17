@@ -4,6 +4,13 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { HOST_IDS } from '../../../config/model-tiers';
+import {
+  ONE_MCP_CACHE_SCHEMA_VERSION,
+  ONE_MCP_CONFIG_NAME_BY_HOST,
+  ONE_MCP_DECODER_VERSION,
+  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
+} from '../../../config/one-mcp';
 import {
   commandLooksMutating,
   getPayloadText,
@@ -18,6 +25,7 @@ import {
   analyzeCodexSessionFile,
   probeCanonicalAuth,
   probeCodexHooks,
+  probeOneMcp,
   probeProject,
   probeSessionDiagnostics,
   resolveCodexSession,
@@ -169,6 +177,125 @@ test('probeCanonicalAuth reports path, validity, and update time without exposin
   }
 });
 
+test('probeOneMcp reports bounded runtime-usable cache state for all hosts without payloads or remote text', () => {
+  const root = tmp('onemcp');
+  const file = path.join(root, 'one-mcp.json');
+  const env = {
+    TRAFFIC_ONE_MCP_CACHE_PATH: file,
+    TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: 'https://must-not-appear.example/public-mcp',
+  } as NodeJS.ProcessEnv;
+  try {
+    fs.writeFileSync(file, `${JSON.stringify({
+      schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
+      hosts: {
+        codex: {
+          config: {
+            endpoint: 'https://must-not-appear.example/public-mcp',
+            configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
+            decoderVersion: ONE_MCP_DECODER_VERSION,
+            version: 9,
+            createdAt: '2026-07-01T09:00:00.000Z',
+            updatedAt: '2026-07-17T09:00:00.000Z',
+            payload: {
+              payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
+              tiers: {
+                high: ['secret-model-high'],
+                balanced: ['secret-model-balanced'],
+                low: ['secret-model-low'],
+                auto: ['secret-model-balanced'],
+              },
+            },
+          },
+          lastSync: {
+            attemptedAt: '2026-07-17T10:00:00.000Z',
+            outcome: 'invalid-response',
+            source: 'one-mcp',
+            requestedVersion: 9,
+            observedVersion: 10,
+            reason: 'unsupported-payload-schema',
+            remoteError: 'remote stack trace must not appear',
+          },
+        },
+        cursor: {
+          lastSync: {
+            attemptedAt: '2026-07-17T10:01:00.000Z',
+            outcome: 'unavailable',
+            source: 'bundled',
+            requestedVersion: 0,
+            observedVersion: 0,
+            reason: 'transport-failed',
+          },
+        },
+      },
+    }, null, 2)}\n`, 'utf8');
+
+    const probe = probeOneMcp(env);
+    assert.deepEqual(probe.hosts.map((host) => host.host), [...HOST_IDS]);
+    assert.deepEqual(
+      probe.hosts.map((host) => host.configName),
+      HOST_IDS.map((host) => ONE_MCP_CONFIG_NAME_BY_HOST[host]),
+    );
+    const codex = probe.hosts.find((host) => host.host === 'codex');
+    assert.equal(codex?.catalogSource, 'one-mcp');
+    assert.equal(codex?.configVersion, 9);
+    assert.deepEqual(codex?.lastSync, {
+      attemptedAt: '2026-07-17T10:00:00.000Z',
+      outcome: 'invalid-response',
+      source: 'one-mcp',
+      requestedVersion: 9,
+      observedVersion: 10,
+      reason: 'unsupported-payload-schema',
+    });
+    assert.equal(probe.hosts.find((host) => host.host === 'cursor')?.lastSync?.reason, 'transport-failed');
+    const serialized = JSON.stringify(probe);
+    assert.doesNotMatch(serialized, /must-not-appear|secret-model|remote stack trace|"endpoint"|"payload"/i);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('probeOneMcp falls back to bundled when runtime rejects a cache from another endpoint', () => {
+  const root = tmp('onemcp-unusable');
+  const file = path.join(root, 'one-mcp.json');
+  const env = {
+    TRAFFIC_ONE_MCP_CACHE_PATH: file,
+    TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: 'https://current.example/public-mcp',
+  } as NodeJS.ProcessEnv;
+  try {
+    fs.writeFileSync(file, `${JSON.stringify({
+      schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
+      hosts: {
+        codex: {
+          config: {
+            endpoint: 'https://stale.example/public-mcp',
+            configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
+            decoderVersion: ONE_MCP_DECODER_VERSION,
+            version: 11,
+            createdAt: '2026-07-01T09:00:00.000Z',
+            updatedAt: '2026-07-17T09:00:00.000Z',
+            payload: {
+              payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
+              tiers: {
+                high: ['gpt-5.6-sol'],
+                balanced: ['gpt-5.6-terra'],
+                low: ['gpt-5.6-terra'],
+                auto: ['gpt-5.6-terra'],
+              },
+            },
+          },
+        },
+      },
+    }, null, 2)}\n`, 'utf8');
+
+    const codex = probeOneMcp(env).hosts.find((host) => host.host === 'codex');
+    assert.equal(codex?.catalogSource, 'bundled');
+    assert.equal(codex?.configVersion, 0);
+    assert.equal(codex?.configUpdatedAt, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('analyzeCodexSessionFile counts tools and detects injected instructions', () => {
   const dir = tmp('codexsess');
   try {
@@ -248,6 +375,64 @@ test('buildFindings: session-not-found', () => {
 test('buildFindings: codex plugin disabled', () => {
   const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: false } });
   assert.ok(f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_PLUGIN_DISABLED'));
+});
+
+test('buildFindings: One MCP invalid, missing, and temporary outcomes are bounded informational diagnostics', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(),
+    oneMcp: {
+      hosts: [
+        {
+          host: 'codex',
+          configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
+          catalogSource: 'one-mcp',
+          configVersion: 4,
+          configUpdatedAt: '2026-07-17T09:00:00.000Z',
+          lastSync: {
+            attemptedAt: '2026-07-17T10:00:00.000Z',
+            outcome: 'invalid-response',
+            source: 'one-mcp',
+            requestedVersion: 4,
+            observedVersion: 5,
+            reason: 'invalid-full-config',
+          },
+        },
+        {
+          host: 'cursor',
+          configName: ONE_MCP_CONFIG_NAME_BY_HOST.cursor,
+          catalogSource: 'bundled',
+          configVersion: 0,
+          configUpdatedAt: null,
+          lastSync: {
+            attemptedAt: '2026-07-17T10:00:00.000Z',
+            outcome: 'config-not-found',
+            source: 'bundled',
+            requestedVersion: 2,
+            observedVersion: 0,
+          },
+        },
+        {
+          host: 'kilo',
+          configName: ONE_MCP_CONFIG_NAME_BY_HOST.kilo,
+          catalogSource: 'bundled',
+          configVersion: 0,
+          configUpdatedAt: null,
+          lastSync: {
+            attemptedAt: '2026-07-17T10:00:00.000Z',
+            outcome: 'unavailable',
+            source: 'bundled',
+            requestedVersion: 0,
+            observedVersion: 0,
+            reason: 'transport-failed',
+          },
+        },
+      ],
+    },
+  });
+  assert.equal(f.find((finding) => finding.code === 'ONE_MCP_CONFIG_REJECTED')?.severity, 'info');
+  assert.equal(f.find((finding) => finding.code === 'ONE_MCP_CONFIG_NOT_FOUND')?.severity, 'info');
+  assert.equal(f.find((finding) => finding.code === 'ONE_MCP_SYNC_UNAVAILABLE')?.severity, 'info');
+  assert.match(f.find((finding) => finding.code === 'ONE_MCP_SYNC_UNAVAILABLE')?.message || '', /transport-failed/);
 });
 
 test('buildFindings: Codex trusted hashes do not require enabled hook counters', () => {

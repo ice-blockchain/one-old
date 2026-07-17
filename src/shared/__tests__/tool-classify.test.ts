@@ -153,8 +153,12 @@ test('isReadOnlyOrientationToolUse allows orientation, not mutation/spawns', () 
 });
 
 test('isStateFileOnlyPatch detects an apply_patch touching only the state file', () => {
-  assert.equal(isStateFileOnlyPatch('apply_patch', { patch: '*** Update File: .traffic-one/.one.json\n+x' }), true);
-  assert.equal(isStateFileOnlyPatch('apply_patch', { patch: '*** Update File: src/app.ts\n+x' }), false);
+  const patch = (filePath: string) => ({ patch: `*** Begin Patch\n*** Add File: ${filePath}\n+x\n*** End Patch` });
+  assert.equal(isStateFileOnlyPatch('apply_patch', patch('.traffic-one/.one.json')), true);
+  assert.equal(isStateFileOnlyPatch('apply_patch', patch('src/app.ts')), false);
+  assert.equal(isStateFileOnlyPatch('apply_patch', {
+    output: { args: { patch: `*** Begin Patch\n*** Add File: .traffic-one/.one.json\n+x\n*** Add File: src/app.ts\n+y\n*** End Patch` } },
+  }), false);
   assert.equal(isStateFileOnlyPatch('Bash', { command: 'ls' }), false);
 });
 

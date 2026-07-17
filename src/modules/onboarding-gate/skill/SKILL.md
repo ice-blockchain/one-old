@@ -51,11 +51,12 @@ wait command — put it on its own line, not buried in a terminal block:
 
     Open Traffic One setup: {{URL}}
 
-The link opens in the user's browser. If the browser can reach the local setup helper
-running on this machine, setup completes on the dashboard; if a browser blocks that
-(e.g. Safari), the page automatically falls back to a local setup page — either way the
-user finishes in the browser. All setup logic and saves stay on this machine; the
-dashboard is just the UI.
+If the hosted page is unavailable or returns 404, show and open this direct local
+fallback instead; the redirecting loopback root is not a fallback:
+
+    Open local Traffic One setup: {{LOCAL_URL}}
+
+All setup logic and saves stay on this machine; the dashboard is just the UI.
 
 CONTINUE AUTOMATICALLY — do NOT end your turn after showing the link. Immediately run
 this command and keep your turn open; it BLOCKS until the user finishes setup (run it
@@ -85,6 +86,8 @@ files are added to it) and Traffic One stays silent here until they ask for it a
 <!-- T1BLOCK:BEGIN cursor-wait-link-first -->
 Open Traffic One setup: {{URL}}
 
+Direct local fallback: {{LOCAL_URL}}
+
 The setup link was not shown in chat before the wait command, so Traffic One stopped this first wait attempt to surface the clickable URL. Now re-run the wait command and keep the turn open:
 
 {{WAIT_CMD}}
@@ -95,6 +98,7 @@ When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.
 <!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
 Traffic One setup is still pending — building stays blocked until setup finishes.
 Open Traffic One setup in the browser: {{URL}}
+If the hosted page is unavailable or returns 404, open the local wizard directly: {{LOCAL_URL}}
 Keep your turn open by running the wait command again (long timeout, ~9 minutes):
 
 {{WAIT_CMD}}
@@ -111,6 +115,9 @@ Traffic One setup is required before building.
 Before running any tool, show the user this standalone clickable setup link:
 [Open Traffic One setup]({{URL}})
 
+If the hosted page is unavailable or returns 404, use the direct local wizard:
+[Open local Traffic One setup]({{LOCAL_URL}})
+
 Keep the current turn active by running this wait command (timeout ~9 minutes):
 {{WAIT_CMD}}
 
@@ -122,6 +129,8 @@ Traffic One setup is still pending.
 
 Before running any tool, show the user this standalone clickable setup link:
 [Open Traffic One setup]({{URL}})
+
+Direct local fallback: [Open local Traffic One setup]({{LOCAL_URL}})
 
 Keep the current turn active by running this wait command:
 {{WAIT_CMD}}

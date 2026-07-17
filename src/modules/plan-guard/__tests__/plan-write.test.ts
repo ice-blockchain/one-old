@@ -8,6 +8,8 @@ import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
 import { writeModelChoice } from '../../agent-model/model-choice';
 import { claimThreadRole, ensureRunAgentClaim } from '../../../shared/state/run-agent';
+import { observeCodexChildModel, readEffectiveState } from '../../../shared/state';
+import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 
@@ -15,7 +17,9 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   const { team: teamExtra, performance: performanceExtra, ...sharedExtra } = stateExtra;
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
@@ -47,6 +51,7 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
     fn(dir);
   } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -204,6 +209,22 @@ test('Codex 31-file architect scaffold is attributed to architect and steered to
         },
       }),
     ].join('\n') + '\n', 'utf8');
+    const effective = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'codex' });
+    const policy = ensureRunModelPolicy(
+      cwd,
+      'run-1',
+      'codex',
+      effective,
+      { ...process.env, TRAFFIC_ONE_HOST: 'codex' },
+    );
+    assert.ok(policy);
+    assert.equal(observeCodexChildModel(cwd, 'run-1', {
+      childId: threadId,
+      parentSessionId: 'orchestrator-parent',
+      actualModel: 'gpt-5.6-sol',
+      role: 'senior-architect',
+      source: 'SubagentStart',
+    })?.status, 'verified');
 
     const scaffoldFiles = [
       'package.json',
@@ -267,6 +288,119 @@ test('Codex 31-file architect scaffold is attributed to architect and steered to
       'utf8',
     ));
     assert.equal(claim.role, 'senior-architect');
+  });
+});
+
+test('apply_patch reconstructs architect digest content before enforcing PLAN_READY', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    const digestDir = path.join(cwd, '.traffic-one', 'digests', 'run-1');
+    fs.mkdirSync(digestDir, { recursive: true });
+    fs.writeFileSync(path.join(digestDir, 'architect.md'), 'draft\n', 'utf8');
+    const patchText = [
+      '*** Begin Patch',
+      '*** Update File: .traffic-one/digests/run-1/architect.md',
+      '@@',
+      '-draft',
+      '+draft PLAN_READY',
+      '*** End Patch',
+    ].join('\n');
+
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { patchText }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /Architect completion gate|PLAN_READY/);
+  });
+});
+
+test('apply_patch does not treat a non-empty package barrel as architect baseline', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'architect-child', 'senior-architect', { parentSessionId: 'orchestrator' }));
+    const patchText = [
+      '*** Begin Patch',
+      '*** Add File: packages/ui/src/index.ts',
+      "+export * from './Button';",
+      '*** End Patch',
+    ].join('\n');
+
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { patchText }, {
+      session_id: 'architect-child',
+    }, 'codex'));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /Architect scope gate|Run-team enforcement gate/);
+  });
+});
+
+test('apply_patch static checks inspect only added lines, not pre-existing or deleted lines', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const targetDir = path.join(cwd, 'apps', 'web', 'src', 'components');
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, 'Existing.tsx'), [
+      'export default function Existing() { return null; }',
+      'const old: any = 1;',
+      '',
+    ].join('\n'), 'utf8');
+    const cleanupPatch = [
+      '*** Begin Patch',
+      '*** Update File: apps/web/src/components/Existing.tsx',
+      '@@',
+      '-const old: any = 1;',
+      '+const safe: unknown = 1;',
+      '*** End Patch',
+    ].join('\n');
+    const cleanup = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { diff: cleanupPatch }));
+    assert.equal(cleanup.kind, 'noop', cleanup.kind === 'deny' ? cleanup.reason : undefined);
+
+    const violatingPatch = [
+      '*** Begin Patch',
+      '*** Add File: apps/web/src/components/New.tsx',
+      '+export default function New() { return null; }',
+      '*** End Patch',
+    ].join('\n');
+    const violating = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', {
+      output: { args: { patch: violatingPatch } },
+    }));
+    assert.equal(violating.kind, 'deny');
+    if (violating.kind === 'deny') assert.match(violating.reason, /named exports|default export/i);
+  });
+});
+
+test('a pure apply_patch move applies static content checks at the destination', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const source = path.join(cwd, 'legacy', 'Btn.tsx');
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(source, 'export default function Btn() { return null; }\n', 'utf8');
+    const patchText = [
+      '*** Begin Patch',
+      '*** Update File: legacy/Btn.tsx',
+      '*** Move to: packages/ui/src/components/Btn.tsx',
+      '*** End Patch',
+    ].join('\n');
+
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { patchText }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /named exports|default export/i);
+  });
+});
+
+test('apply_patch fails closed when reconstruction cannot validate an update', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const patchText = [
+      '*** Begin Patch',
+      '*** Update File: src/missing.ts',
+      '@@',
+      '-old',
+      '+new',
+      '*** End Patch',
+    ].join('\n');
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { input: patchText }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /invalid apply_patch|missing\.ts|No write was made/i);
   });
 });
 
@@ -394,6 +528,17 @@ test('Cursor pending model choice blocks direct scaffold writes until the user r
       const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
       withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
       fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+
+      // SessionStart freezes the captured picker before any spawn/write flow.
+      // Availability checks must use that immutable policy, not mutable prefs.
+      const effective = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'cursor' });
+      assert.ok(ensureRunModelPolicy(
+        cwd,
+        runId,
+        'cursor',
+        effective,
+        { ...process.env, TRAFFIC_ONE_HOST: 'cursor' },
+      ));
 
       const blocked = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
         file_path: 'README.md',

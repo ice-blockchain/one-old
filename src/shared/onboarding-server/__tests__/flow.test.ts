@@ -8,8 +8,9 @@ import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
 import { recordPluginUseChoice } from '../../state/plugin-use';
 import { writeSimpleAuth } from '../../auth';
 import { hostModelSnapshot } from '../../model-tiers';
-import { writeOneHostSettings } from '../../one-settings';
 import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
+import { currentHostModelTarget } from '../../current-model-tiers';
+import { writeRuntimeModelSnapshot } from '../../__tests__/support/one-mcp-runtime';
 
 const HOST_ENV_KEYS = [
   'TRAFFIC_ONE_HOST',
@@ -24,6 +25,7 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  const prevMcpCache = process.env.TRAFFIC_ONE_MCP_CACHE_PATH;
   const prevHostEnv = new Map<string, string | undefined>();
   for (const key of HOST_ENV_KEYS) {
     prevHostEnv.set(key, process.env[key]);
@@ -33,6 +35,7 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   // codeGraphProvider is machine-wide now — isolate one.json so applyAnswer's
   // writeGlobalCodeGraphProvider never touches the real ~/.traffic-one.
   process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  process.env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
   // This suite exercises post-auth wizard sequencing. The API-key gate itself
   // has dedicated flow/routes tests, so enable canonical auth explicitly here.
   writeSimpleAuth('sk-flow-fixture');
@@ -51,6 +54,8 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
     else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevMcpCache === undefined) delete process.env.TRAFFIC_ONE_MCP_CACHE_PATH;
+    else process.env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
     if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
     else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     for (const [key, value] of prevHostEnv) {
@@ -108,10 +113,9 @@ test('new-project: the full wizard sequence completes onboarding', () => {
     assert.equal(asRec(prefs.openCode).enabled, false);
     assert.equal(asRec(hostPrefs(prefs).performance).level, 'high');
     assert.equal(asRec(hostPrefs(prefs).team).approved, true);
-    assert.deepEqual(hostPrefs(prefs).configuredFor, {
-      plan: 'max',
-      modelsUpdatedAt: hostModelSnapshot('claude', 'max').updatedAt,
-    });
+    assert.equal(asRec(asRec(hostPrefs(prefs).performance).target).plan, 'max');
+    assert.match(String(asRec(asRec(hostPrefs(prefs).performance).target).appliedFingerprint), /^[a-f0-9]{64}$/);
+    assert.equal(asRec(asRec(hostPrefs(prefs).performance).target).configVersion, 0);
     // codeGraphProvider is machine-wide (one.json), not a per-project pref.
     assert.equal(readGlobalCodeGraphProvider(), 'gitnexus');
   });
@@ -165,10 +169,9 @@ test('all hosts: onboarding shows the plan recommendation and persists only the 
       assert.equal(asRec(active.performance).level, c.level, c.host);
       assert.equal(asRec(active.team).mode, c.level === 'low' ? 'main-agent' : 'subagents', c.host);
       if (c.level !== 'low') assert.equal(asRec(active.team).approved, true, c.host);
-      assert.deepEqual(active.configuredFor, {
-        plan: c.plan,
-        modelsUpdatedAt: hostModelSnapshot(c.host, c.plan).updatedAt,
-      }, c.host);
+      assert.equal(asRec(asRec(active.performance).target).plan, c.plan, c.host);
+      assert.match(String(asRec(asRec(active.performance).target).appliedFingerprint), /^[a-f0-9]{64}$/, c.host);
+      assert.equal(asRec(asRec(active.performance).target).configVersion, 0, c.host);
       assert.equal(readGlobalCodeGraphProvider(), 'gitnexus', c.host);
     });
   }
@@ -218,7 +221,7 @@ test('existing project: only the local-preference steps are asked, then done', (
   });
 });
 
-test('existing project: plan/catalog drift reopens only Performance and Team without mutating prefs on read', () => {
+test('existing project: plan/model drift reopens Performance while metadata-only advances do not', () => {
   const committed = {
     mode: 'existing-codebase', stack: 'default', frontend: 'react-vite', backend: 'supabase',
     realtime: 'none', confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
@@ -236,18 +239,42 @@ test('existing project: plan/catalog drift reopens only Performance and Team wit
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
     const planChanged = computeOnboarding(cwd);
     assert.equal(planChanged.step, 'performance');
+    assert.equal(planChanged.meta.repickReason, 'plan-changed');
+    assert.equal(planChanged.meta.previousPlan, 'pro');
+    assert.equal(planChanged.meta.plan, 'free');
+    assert.equal(planChanged.meta.host, 'codex');
     assert.equal(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'), beforePlanChange);
 
-    // Reconfigure for the new plan, then simulate a newer API catalog date.
+    // Reconfigure for the new plan. A date-only catalog advance with identical
+    // applied tiers must not spuriously reopen Performance.
     applyAnswer(cwd, 'performance', 'balanced');
     assert.equal(computeOnboarding(cwd).step, 'team-confirmation');
     applyAnswer(cwd, 'team-confirmation', { action: 'approve' });
-    writeOneHostSettings('codex', {
+    writeRuntimeModelSnapshot('codex', {
       ...hostModelSnapshot('codex', 'free'),
       updatedAt: '2026-07-14',
-    });
+    }, process.env);
+    const beforeMetadataChange = fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8');
+    assert.equal(computeOnboarding(cwd).done, true);
+    assert.equal(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'), beforeMetadataChange);
+
+    // Changing a mapped tier changes the semantic fingerprint and reopens.
+    const bundled = hostModelSnapshot('codex', 'free');
+    writeRuntimeModelSnapshot('codex', {
+      ...bundled,
+      updatedAt: '2026-07-15',
+      tiers: {
+        ...bundled.tiers,
+        highest: ['gpt-new-frontier', ...bundled.tiers.highest],
+      },
+    }, process.env, 2);
     const beforeCatalogChange = fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8');
-    assert.equal(computeOnboarding(cwd).step, 'performance');
+    const modelsChanged = computeOnboarding(cwd);
+    assert.equal(modelsChanged.step, 'performance');
+    assert.equal(modelsChanged.meta.repickReason, 'models-changed');
+    assert.equal(modelsChanged.meta.catalogSource, 'one-mcp');
+    assert.equal(modelsChanged.meta.catalogVersion, 2);
+    assert.equal(modelsChanged.meta.catalogTiers?.find((row) => row.tier === 'highest')?.models[0], 'gpt-new-frontier');
     assert.equal(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'), beforeCatalogChange);
   });
 });
@@ -257,32 +284,43 @@ test('performance and repick update only the active host and preserve Cursor ava
     writeGlobalCodeGraphProvider('gitnexus');
     mergeProjectPrefs(cwd, { openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-12T08:00:00Z' } });
     mergeProjectHostPrefs(cwd, 'cursor', {
-      performance: { level: 'balanced', source: 'prompted' },
+      performance: {
+        level: 'balanced',
+        source: 'prompted',
+        target: {
+          plan: 'pro',
+          appliedFingerprint: currentHostModelTarget('cursor', 'pro').appliedFingerprint,
+          configVersion: currentHostModelTarget('cursor', 'pro').configVersion,
+        },
+      },
       team: { mode: 'subagents', source: 'prompted', approved: true },
-      configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
       availableModels: {
         models: ['claude-opus-4-8-thinking-high', 'composer-2.5-fast'],
-        plan: 'pro',
-        modelsUpdatedAt: '2026-07-12',
         capturedAt: '2026-07-12T08:00:00Z',
+        target: {
+          plan: 'pro',
+          appliedFingerprint: currentHostModelTarget('cursor', 'pro').appliedFingerprint,
+        },
       },
     });
 
     process.env.TRAFFIC_ONE_HOST = 'codex';
     process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
     applyAnswer(cwd, 'performance', 'high');
+    assert.equal(asRec(asRec(hostPrefs(readProjectPrefs(cwd), 'codex').performance).target).plan, 'pro');
     assert.equal(computeOnboarding(cwd).step, 'team-confirmation');
     applyAnswer(cwd, 'team-confirmation', { action: 'repick_performance' });
 
     const prefs = readProjectPrefs(cwd);
     assert.equal(hostPrefs(prefs, 'codex').performance, undefined);
     assert.equal(hostPrefs(prefs, 'codex').team, undefined);
-    assert.equal(hostPrefs(prefs, 'codex').configuredFor, undefined);
     assert.deepEqual(hostPrefs(prefs, 'cursor').availableModels, {
       models: ['claude-opus-4-8-thinking-high', 'composer-2.5-fast'],
-      plan: 'pro',
-      modelsUpdatedAt: '2026-07-12',
       capturedAt: '2026-07-12T08:00:00Z',
+      target: {
+        plan: 'pro',
+        appliedFingerprint: currentHostModelTarget('cursor', 'pro').appliedFingerprint,
+      },
     });
     assert.equal(asRec(hostPrefs(prefs, 'cursor').team).approved, true);
   });
@@ -491,7 +529,7 @@ test('buildTeamLineup: balanced uses sonnet for builders, haiku for tester', () 
 test('buildTeamLineup: host changes the concrete model ids (codex)', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'codex').map((m) => [m.role, m]));
   assert.equal(requireRole(by, 'senior-architect').model, 'gpt-5.6-sol');
-  assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5.4-mini');
+  assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5.6-terra');
 });
 
 test('buildTeamLineup: low (main-agent) has no subagent line-up', () => {
@@ -573,7 +611,7 @@ test('team step model menu follows the detected host (codex → gpt-5.x)', () =>
       applyAnswer(cwd, 'performance', 'high');
       const view = computeOnboarding(cwd);
       assert.equal(view.meta.host, 'codex');
-      assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.4-mini']);
+      assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-terra']);
     } finally {
       delete process.env.CODEX_PLUGIN_ROOT;
     }
@@ -587,13 +625,14 @@ test('computeOnboarding explicit env owns the preference target and model metada
       TRAFFIC_ONE_HOST: 'codex',
       TRAFFIC_ONE_USER_PLAN: 'pro',
       TRAFFIC_ONE_STATE_PATH: path.join(cwd, 'explicit-one.json'),
+      TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'explicit-one-mcp.json'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'explicit-preferences.json'),
       TRAFFIC_ONE_AUTH: '1',
     } as NodeJS.ProcessEnv;
     const updatedAt = '2099-01-01';
     writeSimpleAuth('sk-explicit-flow', env);
     writeGlobalCodeGraphProvider('gitnexus', env);
-    writeOneHostSettings('codex', {
+    writeRuntimeModelSnapshot('codex', {
       plan: 'pro',
       updatedAt,
       tiers: {
@@ -605,10 +644,13 @@ test('computeOnboarding explicit env owns the preference target and model metada
     mergeProjectPrefs(cwd, {
       openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-15T00:00:00Z' },
     }, env);
-    mergeProjectHostPrefs(cwd, 'codex', {
-      performance: { level: 'balanced', source: 'prompted' },
-      configuredFor: { plan: 'pro', modelsUpdatedAt: updatedAt },
-    }, env);
+    assert.equal(applyAnswer(cwd, 'performance', 'balanced', env).ok, true);
+    const performance = asRec(hostPrefs(readProjectPrefs(cwd, env), 'codex').performance);
+    assert.deepEqual(performance.target, {
+      plan: 'pro',
+      appliedFingerprint: currentHostModelTarget('codex', 'pro', env).appliedFingerprint,
+      configVersion: currentHostModelTarget('codex', 'pro', env).configVersion,
+    });
 
     const view = computeOnboarding(cwd, env);
     assert.equal(view.step, 'team-confirmation');
@@ -856,6 +898,12 @@ test('plan-aware performance step: the recommended option follows the plan', () 
     assert.equal(view.step, 'performance');
     assert.equal(view.meta.recommendedLevel, 'low');
     assert.equal(view.meta.recommendedTier, 'cheapest'); // headline plan tier surfaced on the step
+    assert.equal(view.meta.host, 'codex');
+    assert.equal(view.meta.plan, 'free');
+    assert.equal(view.meta.catalogSource, 'bundled');
+    assert.equal(view.meta.catalogVersion, 0);
+    assert.equal(view.meta.catalogTiers?.length, 3);
+    assert.equal(view.meta.repickReason, 'initial');
     assert.equal(view.meta.options?.[0]?.id, 'low'); // recommended floats to the top
     assert.ok(/Recommended/.test(view.meta.options?.[0]?.hint || ''));
   });
@@ -1036,9 +1084,16 @@ test('computeOnboarding: canonical hashed user preferences complete onboarding',
     fs.writeFileSync(hashedPrefs, JSON.stringify({
       hosts: {
         claude: {
-          performance: { level: 'balanced', source: 'prompted' },
+          performance: {
+            level: 'balanced',
+            source: 'prompted',
+            target: {
+              plan: 'max',
+              appliedFingerprint: currentHostModelTarget('claude', 'max').appliedFingerprint,
+              configVersion: currentHostModelTarget('claude', 'max').configVersion,
+            },
+          },
           team: { mode: 'subagents', source: 'prompted', approved: true },
-          configuredFor: { plan: 'max', modelsUpdatedAt: hostModelSnapshot('claude', 'max').updatedAt },
         },
       },
       toolchain: {

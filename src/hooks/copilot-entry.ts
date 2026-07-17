@@ -6,7 +6,9 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { detectCopilotWireSurface, makeCopilotAdapter } from '../adapters/copilot';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { copilotPreToolDeny } from './fail-closed';
+import { copilotPreToolDeny, hasValidHookObjectPayload } from './fail-closed';
+import { asRecord, firstString } from '../adapters/coerce';
+import { isManagedOneMcpAgentTool, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -26,6 +28,19 @@ function subcommandFromArgs(args: readonly string[]): string | undefined {
   return args.find((arg) => typeof arg === 'string' && arg.length > 0 && !arg.startsWith('--'));
 }
 
+function isManagedCopilotMcpInvocation(raw: unknown): boolean {
+  const data = asRecord(raw);
+  const names = [firstString(data.tool_name, data.toolName, data.name)];
+  const calls = data.tool_calls ?? data.toolCalls;
+  if (Array.isArray(calls)) {
+    for (const call of calls) {
+      const rec = asRecord(call);
+      names.push(firstString(rec.name, rec.tool_name, rec.toolName));
+    }
+  }
+  return names.some((name) => isManagedOneMcpAgentTool('copilot', name));
+}
+
 export async function runCopilotHook(
   subcommand: string | undefined,
   stdin: string,
@@ -35,10 +50,17 @@ export async function runCopilotHook(
     const surface = detectCopilotWireSurface(env);
     return { stdout: surface === 'vscode' ? COPILOT_NOOP_VSCODE : COPILOT_NOOP_CLI, exitCode: 0 };
   }
+  const inputValid = hasValidHookObjectPayload(stdin);
   let parsedRaw: unknown = {};
   try { parsedRaw = JSON.parse(stdin); } catch { /* empty stdin */ }
   const surface = detectCopilotWireSurface(env, parsedRaw);
   const noop = surface === 'vscode' ? COPILOT_NOOP_VSCODE : COPILOT_NOOP_CLI;
+  if (subcommand === 'before-tool-use' && !inputValid) {
+    return { stdout: copilotPreToolDeny(surface), exitCode: 0 };
+  }
+  if (subcommand === 'before-tool-use' && isManagedCopilotMcpInvocation(parsedRaw)) {
+    return { stdout: copilotPreToolDeny(surface, ONE_MCP_AGENT_TOOL_DENY_REASON), exitCode: 0 };
+  }
   try {
     const adapter = makeCopilotAdapter(surface);
     const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));

@@ -40,9 +40,10 @@ export const assertion: Assertion = {
     if (ps.performance) {
       const host = ctx.host === 'pure-node' ? detectHost(ctx.env) : ctx.host;
       const expected = currentLocalPreferenceTarget(host, ctx.env);
-      const configuredFor = rec(s.configuredFor);
-      check('configuredFor.plan', expected.plan, str(configuredFor.plan));
-      check('configuredFor.modelsUpdatedAt', expected.modelsUpdatedAt, str(configuredFor.modelsUpdatedAt));
+      const target = rec(rec(s.performance).target);
+      check('performance.target.plan', expected.plan, str(target.plan));
+      check('performance.target.appliedFingerprint', expected.appliedFingerprint, str(target.appliedFingerprint));
+      check('performance.target.configVersion', expected.configVersion, target.configVersion);
     }
 
     if (mismatches.length === 0) {

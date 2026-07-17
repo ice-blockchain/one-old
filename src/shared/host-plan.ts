@@ -442,6 +442,18 @@ function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
   return raw ? canonicalPlan(host, raw) : DEFAULT_HOST_PLAN[host];
 }
 
+// Long-lived processes (notably the onboarding server) need an authoritative
+// answer at submit time. Some host sources do not have a cheap/stable mtime key,
+// so explicitly bypass the memoized session read instead of trusting old UI state.
+export function detectHostPlanFresh(host: unknown, env: NodeJS.ProcessEnv = process.env): UserPlan {
+  const h = canonicalHost(host);
+  try {
+    return computePlan(h, env);
+  } catch {
+    return DEFAULT_HOST_PLAN[h];
+  }
+}
+
 // The host user's current plan. Never throws; falls back to DEFAULT_HOST_PLAN.
 export function detectHostPlan(host: unknown, env: NodeJS.ProcessEnv = process.env): UserPlan {
   const h = canonicalHost(host);
@@ -460,12 +472,7 @@ export function detectHostPlan(host: unknown, env: NodeJS.ProcessEnv = process.e
   ].join('\u0000');
   const hit = cache.get(key);
   if (hit) return hit;
-  let plan: UserPlan;
-  try {
-    plan = computePlan(h, env);
-  } catch {
-    plan = DEFAULT_HOST_PLAN[h];
-  }
+  const plan = detectHostPlanFresh(h, env);
   cache.set(key, plan);
   return plan;
 }

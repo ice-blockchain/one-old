@@ -9,8 +9,10 @@ import type { Ctx, HookInput } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
-import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 import { writeSimpleAuth } from '../../../shared/auth';
+import { currentLocalPreferenceTarget } from '../../../shared/onboarding/local-prefs';
+import { mergeProjectPrefs } from '../../../shared/state/local-prefs';
+import { HOST_IDS } from '../../../config/model-tiers';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
 // ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
@@ -36,10 +38,12 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
+  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   // Canonical auth and codeGraphProvider are machine-wide (one.json) — isolate it.
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -48,6 +52,7 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   try { fn(dir); } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -59,13 +64,17 @@ function localPrefs(extra: Record<string, unknown> = {}): Record<string, unknown
     team = { mode: 'main-agent', source: 'prompted' },
     ...rest
   } = extra;
+  const rawPerformance = performance as Record<string, unknown>;
+  const hosts = Object.fromEntries(HOST_IDS.map((host) => [host, {
+    performance: {
+      ...rawPerformance,
+      target: rawPerformance.target ?? currentLocalPreferenceTarget(host, process.env),
+    },
+    team: { ...(team as Record<string, unknown>) },
+  }]));
   return {
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-    ...hostScopedPerformancePrefs(
-      performance as Record<string, unknown>,
-      team as Record<string, unknown>,
-      'pro',
-    ),
+    hosts,
     toolchain: initializeToolchainState({}),
     ...rest,
   };
@@ -161,6 +170,69 @@ test('runSessionStartAuthed from a workspace package resolves to the ancestor pr
   });
 });
 
+test('nested SessionStart checks the canonical project Performance target, not the hook process cwd', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sstart-root-target-'));
+  const cwd = path.join(dir, 'workspace');
+  const home = path.join(dir, 'home');
+  const app = path.join(cwd, 'apps', 'web');
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+  fs.mkdirSync(app, { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify(newProjectSharedState({
+    materializedStack: 'default|react-vite|supabase|none',
+  })), 'utf8');
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+    private: true,
+    packageManager: 'pnpm@9.0.0',
+    workspaces: ['apps/*'],
+  }), 'utf8');
+
+  const env = process.env;
+  const previous = {
+    home: env.HOME,
+    xdgState: env.XDG_STATE_HOME,
+    prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
+    state: env.TRAFFIC_ONE_STATE_PATH,
+    mcpCache: env.TRAFFIC_ONE_MCP_CACHE_PATH,
+    plan: env.TRAFFIC_ONE_USER_PLAN,
+  };
+  env.HOME = home;
+  delete env.XDG_STATE_HOME;
+  delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_STATE_PATH = path.join(home, 'one.json');
+  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(home, 'one-mcp.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    const target = currentLocalPreferenceTarget('claude', env, cwd);
+    mergeProjectPrefs(cwd, localPrefs({
+      performance: {
+        level: 'high',
+        source: 'prompted',
+        target: {
+          plan: target.plan,
+          appliedFingerprint: target.appliedFingerprint === '0'.repeat(64)
+            ? '1'.repeat(64)
+            : '0'.repeat(64),
+          configVersion: target.configVersion,
+        },
+      },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+    }));
+    writeGlobalCodeGraphProvider('graphify');
+
+    const result = runSessionStartAuthed(ctx(app));
+    assert.equal(result.kind, 'context');
+    assert.match(result.kind === 'context' ? result.systemMessage || '' : '', /setup required/);
+  } finally {
+    if (previous.home === undefined) delete env.HOME; else env.HOME = previous.home;
+    if (previous.xdgState === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = previous.xdgState;
+    if (previous.prefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previous.prefs;
+    if (previous.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = previous.state;
+    if (previous.mcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = previous.mcpCache;
+    if (previous.plan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = previous.plan;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-coding prompt stays dormant', () => {
   withProject(null, (cwd) => {
     writeSimpleAuth('sk-session-start');
@@ -178,21 +250,6 @@ test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-c
     // global disable.
     assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.one.json')), true, 'authed body activates + writes state');
-  });
-});
-
-test('main SessionStart removes only a recognized legacy Cursor capture before deferring', () => {
-  withProject(null, (cwd) => {
-    writeSimpleAuth('sk-session-start');
-    const legacy = path.join(cwd, '.traffic-one', 'cursor-models.json');
-    fs.mkdirSync(path.dirname(legacy), { recursive: true });
-    fs.writeFileSync(legacy, JSON.stringify({ models: ['composer-2.5-fast'] }), 'utf8');
-    assert.equal(runSessionStart(ctxHost(cwd, 'cursor')).kind, 'noop');
-    assert.equal(fs.existsSync(legacy), false);
-
-    fs.writeFileSync(legacy, JSON.stringify({ models: ['custom'], owner: 'user' }), 'utf8');
-    runSessionStart(ctxHost(cwd, 'cursor'));
-    assert.equal(fs.existsSync(legacy), true, 'unknown/user-authored shape is preserved');
   });
 });
 

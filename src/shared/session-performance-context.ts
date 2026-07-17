@@ -8,11 +8,13 @@ import { detectHostPlan } from './host-plan';
 import { canonicalHost } from './model-tiers';
 import { obj } from './obj';
 import { effectiveTierForRole, teamModeForLevel } from './performance';
+import { readRunModelPolicy } from './run-model-policy';
 
 export function sessionPerformanceContext(
   stateInput: unknown,
   hostInput: unknown,
   env: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
 ): string {
   const state = obj(stateInput);
   const performance = obj(state?.performance);
@@ -20,12 +22,14 @@ export function sessionPerformanceContext(
   if (!state || !PERFORMANCE_CONFIG[level]) return '';
 
   const host = canonicalHost(hostInput);
-  const plan = detectHostPlan(host, env);
-  const catalog = currentHostModelSnapshot(host, plan, env);
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  const policy = cwd && runId ? readRunModelPolicy(cwd, runId) : null;
+  const plan = policy?.plan || detectHostPlan(host, env);
+  const catalog = policy ? null : currentHostModelSnapshot(host, plan, env);
   const team = obj(state.team);
   const mode = typeof team?.mode === 'string' ? team.mode : teamModeForLevel(level);
   const lines = [
-    `[local performance] performance: ${level} · team: ${mode} · host: ${host} · plan: ${plan} · catalog: ${catalog.updatedAt}`,
+    `[local performance] performance: ${level} · team: ${mode} · host: ${host} · plan: ${plan} · catalog: ${policy ? `run policy ${policy.policyId}` : catalog!.updatedAt}`,
   ];
 
   if (mode === 'subagents') {
@@ -33,9 +37,10 @@ export function sessionPerformanceContext(
     const planCtx = { host, plan };
     const lineup: string[] = [];
     for (const role of AGENT_ROLES) {
-      const tier = effectiveTierForRole(level, role, overrides, planCtx);
+      const pinned = policy?.roles[role];
+      const tier = pinned?.tier || effectiveTierForRole(level, role, overrides, planCtx);
       if (!tier) continue;
-      const model = currentModelForTier(tier, host, plan, env);
+      const model = pinned?.preferredModel || currentModelForTier(tier, host, plan, env);
       if (model) lineup.push(`${role} → ${tier} → ${model}`);
     }
     if (lineup.length) lines.push(`[local team lineup] ${lineup.join('; ')}`);

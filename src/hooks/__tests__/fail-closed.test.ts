@@ -6,6 +6,7 @@ import {
   copilotPreToolDeny,
   cursorPreToolDeny,
   devinPreToolDeny,
+  hasValidHookObjectPayload,
   isCursorPreToolSubcommand,
   isGatePreToolSubcommand,
   isWindsurfPreToolAction,
@@ -13,6 +14,13 @@ import {
   preToolFailureReason,
   wrapperPreToolDeny,
 } from '../fail-closed';
+
+test('hook payload validation accepts only JSON objects', () => {
+  assert.equal(hasValidHookObjectPayload('{"tool_name":"x"}'), true);
+  assert.equal(hasValidHookObjectPayload('{'), false);
+  assert.equal(hasValidHookObjectPayload('[]'), false);
+  assert.equal(hasValidHookObjectPayload('null'), false);
+});
 
 test('pre-tool fallback classifiers cover every host gate surface but not lifecycle/post hooks', () => {
   for (const subcommand of ['check-onboarding-gate', 'check-model-choice-gate', 'check-agent-model', 'check-plan-write', 'check-library-allowlist', 'pre-graphify-hint']) {

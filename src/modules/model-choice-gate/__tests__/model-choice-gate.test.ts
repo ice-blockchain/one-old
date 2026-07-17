@@ -10,10 +10,12 @@ import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import {
   claimCursorSpawnObservation,
   claimThreadRole,
+  readEffectiveState,
   recordCursorSpawnObservation,
   updateCursorSpawnObservation,
 } from '../../../shared/state';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 
 function withProject(fn: (cwd: string, runId: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model-choice-gate-')));
@@ -21,8 +23,10 @@ function withProject(fn: (cwd: string, runId: string) => void): void {
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
+  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   const runId = '1780000000000';
   try {
@@ -43,11 +47,17 @@ function withProject(fn: (cwd: string, runId: string) => void): void {
       materializedStack: 'default|react-vite|supabase|none',
       currentRunId: runId,
     }), 'utf8');
+    const state = readEffectiveState(dir, { ...env, TRAFFIC_ONE_HOST: 'cursor' });
+    assert.ok(
+      ensureRunModelPolicy(dir, runId, 'cursor', state, { ...env, TRAFFIC_ONE_HOST: 'cursor' }),
+      'the parent fixture must freeze the Cursor policy before run-level choice gates execute',
+    );
     fn(dir, runId);
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -96,32 +106,46 @@ test('modelChoiceGate: recorded fallback clears the gate', () => {
   });
 });
 
-// The api-limit pause shape (tests/cursor/13): NO captured-model gap — pending
-// is armed by the prompted marker after a role's runtime failure. Uses its own
-// harness without a captured-models record so cursorUnavailablePicks is empty.
+// The api-limit pause shape (tests/cursor/13): no captured-model gap — pending
+// is armed by the prompted marker after a role's runtime failure. The parent
+// freezes a policy whose exact preferred slugs are all present, so
+// cursorUnavailablePicks is empty and the pause remains role-scoped.
 function withApiLimitPause(fn: (cwd: string, runId: string, state: Record<string, unknown>) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model-choice-scope-')));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
+  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   const runId = '1780000000000';
   try {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(hostScopedPerformancePrefs(
+    const prefs = hostScopedPerformancePrefs(
       { level: 'high', source: 'prompted' },
       { mode: 'subagents', source: 'prompted', approved: true },
       'pro',
-    )), 'utf8');
-    const state = {
+    );
+    withCursorAvailableModels(
+      prefs,
+      ['claude-fable-5-thinking-high', 'gpt-5.6-terra-medium', 'composer-2.5-fast'],
+      'pro',
+    );
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
+    const projectState = {
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
       onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
       currentRunId: runId,
     };
-    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(projectState), 'utf8');
+    const state = readEffectiveState(dir, { ...env, TRAFFIC_ONE_HOST: 'cursor' });
+    assert.ok(
+      ensureRunModelPolicy(dir, runId, 'cursor', state, { ...env, TRAFFIC_ONE_HOST: 'cursor' }),
+      'the parent fixture must freeze the Cursor policy before an API-limit pause',
+    );
     markModelChoicePrompted(dir, runId);
     // The failed role's observation (backend hit an API usage limit)
     assert.ok(recordCursorSpawnObservation(dir, runId, {
@@ -138,6 +162,7 @@ function withApiLimitPause(fn: (cwd: string, runId: string, state: Record<string
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

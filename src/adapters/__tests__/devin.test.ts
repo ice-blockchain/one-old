@@ -15,6 +15,16 @@ test('Devin adapter maps native exec hooks to Windsurf shell events', () => {
   assert.equal(input.tool?.command, 'npm run build');
 });
 
+test('Devin adapter canonicalizes apply_patch freeform input', () => {
+  const adapter = makeDevinAdapter();
+  const patch = '*** Begin Patch\n*** Add File: x.ts\n+x\n*** End Patch';
+  const input = adapter.parse({
+    stdin: JSON.stringify({ hook_event_name: 'PreToolUse', cwd: '/tmp/project', tool_name: 'apply_patch', tool_input: patch }),
+    argv: [],
+  });
+  assert.equal(input.tool?.patchText, patch);
+});
+
 test('Devin adapter emits native block and context wire shapes', () => {
   const adapter = makeDevinAdapter();
   const prompt = adapter.parse({ stdin: JSON.stringify({ hook_event_name: 'UserPromptSubmit', cwd: '/tmp/project', prompt: 'build' }), argv: [] });

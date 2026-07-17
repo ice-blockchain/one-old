@@ -159,15 +159,20 @@ test('applyPatchTargetPaths extracts Add/Update/Delete/Move targets, normalized'
     '*** Add File: ./apps/web/src/new.ts',
     '+const x = 1;',
     '*** Update File: packages\\ui\\src\\btn.tsx',
-    '*** Delete File: src/old.ts',
+    '@@',
+    '-old',
+    '+new',
+    '*** Update File: src/move-source.ts',
     '*** Move to: src/moved.ts',
+    '*** Delete File: src/old.ts',
     '*** End Patch',
   ].join('\n');
   assert.deepEqual(applyPatchTargetPaths(patch), [
     'apps/web/src/new.ts',
     'packages/ui/src/btn.tsx',
-    'src/old.ts',
+    'src/move-source.ts',
     'src/moved.ts',
+    'src/old.ts',
   ]);
   assert.deepEqual(applyPatchTargetPaths(''), []);
   assert.deepEqual(applyPatchTargetPaths(undefined), []);

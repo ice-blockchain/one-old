@@ -135,10 +135,10 @@ export function onboardingBootstrapReason(
 export function prepareOnboardingServer(
   cwd: string,
   host: HostId,
-  options: { ensure?: EnsureFn } = {},
+  options: { ensure?: EnsureFn; syncSession?: string } = {},
 ): OnboardingBootstrap {
-  const bootstrapCommand = onboardingBootstrapCommand(cwd, host);
-  const waitCommand = onboardingWaitCommand(cwd, host);
+  const bootstrapCommand = onboardingBootstrapCommand(cwd, host, options.syncSession);
+  const waitCommand = onboardingWaitCommand(cwd, host, options.syncSession);
   try {
     const server = (options.ensure || ensureOnboardingServer)(cwd, { host });
     return { kind: 'ready', server, waitCommand };

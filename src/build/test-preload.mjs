@@ -12,8 +12,20 @@ if (process.env.TRAFFIC_ONE_MANAGED_RUNTIME_OFF === undefined) {
   process.env.TRAFFIC_ONE_MANAGED_RUNTIME_OFF = '1';
 }
 
-// SessionStart's public model catalog refresh is intentionally live in a real
-// install. Keep the test suite hermetic; focused client tests inject a transport.
-if (process.env.TRAFFIC_ONE_MODEL_STATUS_OFF === undefined) {
-  process.env.TRAFFIC_ONE_MODEL_STATUS_OFF = '1';
+// SessionStart's public MCP config sync is intentionally live in a real install.
+// Keep the test suite hermetic; focused client tests inject a transport.
+if (process.env.TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC === undefined) {
+  process.env.TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC = '1';
+}
+// Reading a developer's real ~/.traffic-one/one-mcp.json would make model-tier
+// and hook tests depend on whichever remote payload happened to be cached on
+// that machine. Focused cache tests override this path explicitly.
+if (process.env.TRAFFIC_ONE_MCP_CACHE_PATH === undefined) {
+  process.env.TRAFFIC_ONE_MCP_CACHE_PATH = `/tmp/traffic-one-test-${process.pid}-one-mcp.json`;
+}
+
+// Host-registration tests inject isolated config homes directly. General hook
+// tests must never append to the developer's real machine-global Codex config.
+if (process.env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION === undefined) {
+  process.env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION = '1';
 }

@@ -22,6 +22,8 @@ import {
   OPENCODE_HOST_PROJECT_MARKER_REL,
   OPENCODE_HOST_TARGET_VERSION,
 } from '../../config/opencode-host';
+import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME, oneMcpRegistrationEnabled, publicEndpoint } from '../../config/one-mcp';
+import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../../shared/one-mcp-agent-tools';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
@@ -289,7 +291,70 @@ function writeConfig(file: string, config: JsonObject): void {
   fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
 }
 
-function ensureGlobalConfigPlugin(env: NodeJS.ProcessEnv = process.env): ConfigUpdate {
+function jsonObject(value: unknown): JsonObject | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null;
+}
+
+function managedPermissionKey(tool: string): string {
+  return `${ONE_MCP_SERVER_NAME}_${tool}`;
+}
+
+function ensureOneMcpDisabled(
+  config: JsonObject,
+  endpoint: string,
+): { ok: true; changed: boolean } | { ok: false; error: string } {
+  let changed = false;
+  if (config.mcp === undefined) {
+    config.mcp = {};
+    changed = true;
+  }
+  const mcp = jsonObject(config.mcp);
+  if (!mcp) return { ok: false, error: 'OpenCode global config `mcp` must be an object.' };
+  // Same-name entries may be user-owned. Never overwrite them; the wrapper's
+  // exact pre-tool deny remains authoritative even if a user enables one.
+  if (mcp[ONE_MCP_SERVER_NAME] === undefined) {
+    mcp[ONE_MCP_SERVER_NAME] = {
+      type: 'remote',
+      url: endpoint,
+      enabled: false,
+    };
+    changed = true;
+  }
+
+  if (config.permission === undefined) {
+    config.permission = {};
+    changed = true;
+  }
+  const permission = jsonObject(config.permission);
+  if (!permission) return { ok: false, error: 'OpenCode global config `permission` must be an object.' };
+  for (const tool of ONE_MCP_MANAGED_TOOLS) {
+    const key = managedPermissionKey(tool);
+    if (permission[key] === undefined) {
+      permission[key] = 'deny';
+      changed = true;
+    }
+  }
+  return { ok: true, changed };
+}
+
+function oneMcpDisabledStatus(config: JsonObject): string | null {
+  const mcp = jsonObject(config.mcp);
+  const entry = mcp ? jsonObject(mcp[ONE_MCP_SERVER_NAME]) : null;
+  if (!entry) return `OpenCode global config is missing mcp.${ONE_MCP_SERVER_NAME}.`;
+  if (entry.enabled !== false) return `OpenCode mcp.${ONE_MCP_SERVER_NAME} is user-owned or enabled; Traffic One leaves it untouched and relies on the universal tool deny.`;
+  const permission = jsonObject(config.permission);
+  for (const tool of ONE_MCP_MANAGED_TOOLS) {
+    if (permission?.[managedPermissionKey(tool)] !== 'deny') {
+      return `OpenCode global config is missing deny permission for ${managedPermissionKey(tool)}.`;
+    }
+  }
+  return null;
+}
+
+function ensureGlobalConfigPlugin(
+  env: NodeJS.ProcessEnv = process.env,
+  registrationFeatureEnabled?: boolean,
+): ConfigUpdate {
   const file = opencodeGlobalConfigPath(env);
   const spec = opencodeGlobalPluginSpecifier(env);
   let config: JsonObject | null;
@@ -299,13 +364,21 @@ function ensureGlobalConfigPlugin(env: NodeJS.ProcessEnv = process.env): ConfigU
     return { ok: false, path: file, spec, error: `Could not parse OpenCode global config: ${error instanceof Error ? error.message : String(error)}` };
   }
   if (!config) return { ok: false, path: file, spec, error: 'OpenCode global config must be a JSON object.' };
-  if (!('$schema' in config)) config.$schema = 'https://opencode.ai/config.json';
-  if (config.plugin === undefined) config.plugin = [];
+  let changed = false;
+  if (!('$schema' in config)) { config.$schema = 'https://opencode.ai/config.json'; changed = true; }
+  if (config.plugin === undefined) { config.plugin = []; changed = true; }
   if (!Array.isArray(config.plugin)) return { ok: false, path: file, spec, error: 'OpenCode global config `plugin` must be an array.' };
-  if (config.plugin.some((entry) => samePluginEntry(entry, spec, file))) return { ok: true, path: file, spec, changed: false };
-  config.plugin.push(spec);
-  writeConfig(file, config);
-  return { ok: true, path: file, spec, changed: true };
+  if (!config.plugin.some((entry) => samePluginEntry(entry, spec, file))) {
+    config.plugin.push(spec);
+    changed = true;
+  }
+  if (oneMcpRegistrationEnabled(env, registrationFeatureEnabled)) {
+    const oneMcp = ensureOneMcpDisabled(config, publicEndpoint(env));
+    if (!oneMcp.ok) return { ok: false, path: file, spec, error: oneMcp.error };
+    changed = changed || oneMcp.changed;
+  }
+  if (changed) writeConfig(file, config);
+  return { ok: true, path: file, spec, changed };
 }
 
 function removeGlobalConfigPlugin(env: NodeJS.ProcessEnv = process.env): ConfigUpdate {
@@ -328,7 +401,10 @@ function removeGlobalConfigPlugin(env: NodeJS.ProcessEnv = process.env): ConfigU
   return { ok: true, path: file, spec, changed: true };
 }
 
-function globalConfigHasPlugin(env: NodeJS.ProcessEnv = process.env): ConfigUpdate {
+function globalConfigHasPlugin(
+  env: NodeJS.ProcessEnv = process.env,
+  registrationFeatureEnabled?: boolean,
+): ConfigUpdate {
   const file = opencodeGlobalConfigPath(env);
   const spec = opencodeGlobalPluginSpecifier(env);
   let config: JsonObject | null;
@@ -340,6 +416,10 @@ function globalConfigHasPlugin(env: NodeJS.ProcessEnv = process.env): ConfigUpda
   if (!config) return { ok: false, path: file, spec, error: 'OpenCode global config must be a JSON object.' };
   if (!Array.isArray(config.plugin)) return { ok: false, path: file, spec, error: 'OpenCode global config is missing a `plugin` array.' };
   if (!config.plugin.some((entry) => samePluginEntry(entry, spec, file))) return { ok: false, path: file, spec, error: 'Traffic One wrapper is not registered in the OpenCode global `plugin` array.' };
+  if (oneMcpRegistrationEnabled(env, registrationFeatureEnabled)) {
+    const oneMcpError = oneMcpDisabledStatus(config);
+    if (oneMcpError) return { ok: false, path: file, spec, error: oneMcpError };
+  }
   return { ok: true, path: file, spec, changed: false };
 }
 
@@ -362,6 +442,9 @@ const __require = createRequire(import.meta.url);
 const TRAFFIC_ONE_PLUGIN_ROOT = ${jsString(pluginRoot)};
 const TRAFFIC_ONE_RUNTIME = path.join(TRAFFIC_ONE_PLUGIN_ROOT, 'scripts', 'opencode-hook-runtime.cjs');
 const TRAFFIC_ONE_ACTIVATION_REL = ${JSON.stringify(OPENCODE_HOST_PROJECT_MARKER_REL.split('/'))};
+const TRAFFIC_ONE_MANAGED_MCP_TOOLS = new Set(${JSON.stringify(
+  ONE_MCP_MANAGED_TOOLS.map((tool) => `${ONE_MCP_SERVER_NAME}_${tool}`),
+)});
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -372,6 +455,10 @@ function firstString(...values) {
     if (typeof value === 'string' && value.trim()) return value;
   }
   return '';
+}
+
+function isManagedOneMcpTool(rawName) {
+  return TRAFFIC_ONE_MANAGED_MCP_TOOLS.has(firstString(rawName));
 }
 
 function validTrafficOneRoot(dir) {
@@ -622,7 +709,14 @@ function appendPromptContext(output, result) {
 }
 
 async function beforeTool(input, output, pluginCtx) {
-  const result = runTrafficOne('before-tool-use', normalizeToolPayload(${jsString(OPENCODE_HOOK_TOOL_BEFORE)}, input, output, pluginCtx));
+  const payload = normalizeToolPayload(${jsString(OPENCODE_HOOK_TOOL_BEFORE)}, input, output, pluginCtx);
+  // This guard intentionally runs before project-root lookup and before the
+  // child runtime spawn. It therefore survives explicit project opt-out,
+  // missing runtime files, parse failures, and OpenCode's legacy fail-open path.
+  if (isManagedOneMcpTool(payload.tool_name)) {
+    throw new Error(${JSON.stringify(ONE_MCP_AGENT_TOOL_DENY_REASON)});
+  }
+  const result = runTrafficOne('before-tool-use', payload);
   if (result && result.kind === 'deny') {
     throw new Error(firstString(result.reason, result.context) || 'Traffic One denied this OpenCode tool call.');
   }
@@ -662,7 +756,11 @@ export default {
 `;
 }
 
-export function installWrapper(env: NodeJS.ProcessEnv = process.env, argv: readonly string[] = process.argv.slice(2)): RunnerOutput {
+export function installWrapper(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv.slice(2),
+  registrationFeatureEnabled?: boolean,
+): RunnerOutput {
   if (!argv.includes('--yes')) {
     return {
       code: 2,
@@ -682,7 +780,7 @@ export function installWrapper(env: NodeJS.ProcessEnv = process.env, argv: reado
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, wrapperSource(pluginRoot), 'utf8');
-  const config = ensureGlobalConfigPlugin(env);
+  const config = ensureGlobalConfigPlugin(env, registrationFeatureEnabled);
   if (!config.ok) {
     return { code: 1, stdout: '', stderr: `${config.error}\nwrapper: ${file}\nconfig: ${config.path}\n` };
   }
@@ -760,7 +858,11 @@ export function uninstallWrapper(env: NodeJS.ProcessEnv = process.env, argv: rea
   return { code: 0, stdout: `Removed Traffic One OpenCode wrapper at ${file}\nRemoved OpenCode global plugin registration from ${config.path}\n` };
 }
 
-export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, argv: readonly string[] = process.argv.slice(2)): RunnerOutput {
+export function doctorWrapper(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv.slice(2),
+  registrationFeatureEnabled?: boolean,
+): RunnerOutput {
   const file = opencodeGlobalPluginPath(env);
   const owner = readOwner(file);
   if (!fs.existsSync(file)) {
@@ -769,7 +871,7 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, argv: readon
   if (!owner) {
     return { code: 1, stdout: `unowned: ${file}\n` };
   }
-  const config = globalConfigHasPlugin(env);
+  const config = globalConfigHasPlugin(env, registrationFeatureEnabled);
   const currentRoot = runtimePluginRoot(env);
   const current = path.resolve(owner.pluginRoot) === path.resolve(currentRoot);
   const projectArg = explicitCwdArg(argv);

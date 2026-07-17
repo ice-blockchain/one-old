@@ -3,8 +3,16 @@ import assert from 'node:assert/strict';
 import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
-import { codexConfigPath, codexStablePluginRoot, ensureCodexMcpServerRegistered } from '../codex-mcp';
+import {
+  codexConfigPath,
+  codexStablePluginRoot,
+  ensureCodexMcpServerRegistered,
+  ensureCodexOneMcpServerRegistered,
+  removeCodexOneMcpServerRegistration,
+} from '../codex-mcp';
 
 // Simulate the Codex marketplace cache layout for CODEX_PLUGIN_ROOT so detectHost
 // returns 'codex' and the stable-path derivation has something to chew on.
@@ -93,4 +101,131 @@ test('ensureCodexMcpServerRegistered is a no-op off Codex (no config.toml touche
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('ensureCodexOneMcpServerRegistered appends an inert public block without rewriting existing bytes', () => {
+  withCodexHome((home, env) => {
+    const cfgPath = codexConfigPath(env);
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    const prefix = '# user config stays byte-for-byte\nmodel = "gpt-5"\n';
+    fs.writeFileSync(cfgPath, prefix, 'utf8');
+    assert.equal(ensureCodexOneMcpServerRegistered(env), 'registered');
+    const once = fs.readFileSync(cfgPath, 'utf8');
+    assert.ok(once.startsWith(prefix));
+    assert.match(once, /\[mcp_servers\.traffic-one-mcp\]/);
+    assert.match(once, /enabled = false/);
+    assert.match(once, /disabled_tools = \["get_config","report_codebase_metadata"\]/);
+    assert.equal(ensureCodexOneMcpServerRegistered(env), 'already-present');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), once);
+  });
+});
+
+test('ensureCodexOneMcpServerRegistered preserves an existing same-name user table', () => {
+  withCodexHome((home, env) => {
+    const cfgPath = codexConfigPath(env);
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    const userOwned = '[mcp_servers."traffic-one-mcp"]\nurl = "https://user.example/mcp"\nenabled = true\n';
+    fs.writeFileSync(cfgPath, userOwned, 'utf8');
+    assert.equal(ensureCodexOneMcpServerRegistered(env), 'already-present');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), userOwned);
+  });
+});
+
+test('ensureCodexOneMcpServerRegistered preserves inline, dotted, parent-table, and quoted declarations', () => {
+  const declarations = [
+    '[mcp_servers]\ntraffic-one-mcp = { url = "https://user.example/mcp", enabled = true }\n',
+    'mcp_servers.traffic-one-mcp = { url = "https://user.example/mcp", enabled = true }\n',
+    '["mcp_servers"."traffic-one-mcp"]\nurl = "https://user.example/mcp"\n',
+    '["mcp_servers"]\n"traffic-one-mcp" = { url = "https://user.example/mcp" }\n',
+    'mcp_servers = { traffic-one-mcp = { url = "https://user.example/mcp" } }\n',
+  ];
+  for (const userOwned of declarations) {
+    withCodexHome((_home, env) => {
+      const cfgPath = codexConfigPath(env);
+      fs.writeFileSync(cfgPath, userOwned, 'utf8');
+      assert.equal(ensureCodexOneMcpServerRegistered(env), 'already-present', userOwned);
+      assert.equal(fs.readFileSync(cfgPath, 'utf8'), userOwned);
+    });
+  }
+});
+
+test('ensureCodexOneMcpServerRegistered serializes concurrent cold-session appends', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codexmcp-race-'));
+  try {
+    const moduleUrl = pathToFileURL(path.resolve(process.cwd(), 'src', 'shared', 'codex-mcp.ts')).href;
+    const script = `
+      const { ensureCodexOneMcpServerRegistered } = await import(${JSON.stringify(moduleUrl)});
+      process.stdout.write(ensureCodexOneMcpServerRegistered(process.env));
+    `;
+    const run = (): Promise<string> => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+        cwd: process.cwd(),
+        env: { ...process.env, CODEX_HOME: home, TRAFFIC_ONE_HOST: 'codex' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve(stdout);
+        else reject(new Error(`child exited ${code}: ${stderr}`));
+      });
+    });
+    const results = await Promise.all(Array.from({ length: 8 }, () => run()));
+    assert.equal(results.filter((value) => value === 'registered').length, 1);
+    assert.ok(results.every((value) => value === 'registered' || value === 'already-present'));
+    const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+    assert.equal((config.match(/\[mcp_servers\.traffic-one-mcp\]/g) || []).length, 1);
+    assert.deepEqual(fs.readdirSync(home).filter((name) => name.includes('traffic-one-mcp.lock')), []);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('Codex MCP registration recovers an old empty lock left by an interrupted release', () => {
+  withCodexHome((home, env) => {
+    const cfgPath = codexConfigPath(env);
+    const lockDir = `${cfgPath}.traffic-one-mcp.lock`;
+    fs.mkdirSync(lockDir, { recursive: true });
+    const abandonedAt = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockDir, abandonedAt, abandonedAt);
+
+    assert.equal(ensureCodexOneMcpServerRegistered(env), 'registered');
+    assert.equal(fs.existsSync(lockDir), false);
+    assert.deepEqual(
+      fs.readdirSync(home).filter((name) => name.endsWith('.released')),
+      [],
+    );
+  });
+});
+
+test('Codex One MCP removal restores surrounding bytes and honors endpoint overrides', () => {
+  withCodexHome((_home, env) => {
+    env.TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT = 'https://edge.example.test/public-mcp';
+    const cfgPath = codexConfigPath(env);
+    fs.writeFileSync(cfgPath, '# before\nmodel = "gpt-5"\n', 'utf8');
+    assert.equal(ensureCodexOneMcpServerRegistered(env), 'registered');
+    assert.match(fs.readFileSync(cfgPath, 'utf8'), /edge\.example\.test/);
+    assert.equal(removeCodexOneMcpServerRegistration(env), 'removed');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), '# before\nmodel = "gpt-5"\n');
+    assert.equal(removeCodexOneMcpServerRegistration(env), 'absent');
+  });
+});
+
+test('Codex One MCP removal leaves edited and user-owned blocks byte-identical', () => {
+  withCodexHome((_home, env) => {
+    const cfgPath = codexConfigPath(env);
+    assert.equal(ensureCodexOneMcpServerRegistered(env), 'registered');
+    const edited = fs.readFileSync(cfgPath, 'utf8').replace('tool_timeout_sec = 60', 'tool_timeout_sec = 61');
+    fs.writeFileSync(cfgPath, edited, 'utf8');
+    assert.equal(removeCodexOneMcpServerRegistration(env), 'modified');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), edited);
+
+    const userOwned = '[mcp_servers.traffic-one-mcp]\nurl = "https://user.example/mcp"\n';
+    fs.writeFileSync(cfgPath, userOwned, 'utf8');
+    assert.equal(removeCodexOneMcpServerRegistration(env), 'absent');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), userOwned);
+  });
 });

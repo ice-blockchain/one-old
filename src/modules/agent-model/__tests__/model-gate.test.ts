@@ -11,6 +11,8 @@ import { modelGatePromptFresh, readModelChoice, writeModelChoice } from '../mode
 import { runModelGate } from '../../../runners/model-gate';
 import type { Ctx, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
+import { readEffectiveState } from '../../../shared/state';
 
 function withProj(opts: { models: string[] | null; overrides?: Record<string, string> }, fn: (cwd: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-mgate-')));
@@ -18,8 +20,10 @@ function withProj(opts: { models: string[] | null; overrides?: Record<string, st
   const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const pl = env.TRAFFIC_ONE_USER_PLAN;
   const ps = env.TRAFFIC_ONE_STATE_PATH;
+  const pm = env.TRAFFIC_ONE_MCP_CACHE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   const prefs = hostScopedPerformancePrefs(
@@ -37,8 +41,18 @@ function withProj(opts: { models: string[] | null; overrides?: Record<string, st
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
     if (ps === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = ps;
+    if (pm === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = pm;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function freezeCursorPolicy(cwd: string, runId: string): void {
+  const env = { ...process.env, TRAFFIC_ONE_HOST: 'cursor' };
+  const state = readEffectiveState(cwd, env);
+  assert.ok(
+    ensureRunModelPolicy(cwd, runId, 'cursor', state, env),
+    'the parent fixture must freeze the Cursor policy before simulating after-shell',
+  );
 }
 
 function ctxFor(cwd: string, command: string, host: 'cursor' | 'claude' = 'cursor'): Ctx {
@@ -132,6 +146,7 @@ test('modelGate after-shell surfaces exit-2 STOP as a Cursor user-visible messag
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-after-shell';
     fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+    freezeCursorPolicy(cwd, 'run-after-shell');
 
     const r = modelGateAfterShell(afterCtxFor(cwd, modelGateCommand(cwd, 'cursor'), { exit_code: 2 }));
     assert.equal(r.kind, 'context');

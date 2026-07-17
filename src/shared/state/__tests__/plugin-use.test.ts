@@ -7,6 +7,7 @@ import * as path from 'path';
 import {
   clearPluginUseChoice,
   pluginUseDeclined,
+  pluginUseEnabled,
   readPluginUseChoice,
   recordPluginUseChoice,
   removeDeclinedProjectArtifacts,
@@ -30,9 +31,11 @@ test('plugin-use choice: record → read → clear roundtrip, stored OUTSIDE the
     fs.mkdirSync(cwd, { recursive: true });
     assert.equal(readPluginUseChoice(cwd), null);
     assert.equal(pluginUseDeclined(cwd), false);
+    assert.equal(pluginUseEnabled(cwd), false);
 
     recordPluginUseChoice(cwd, false, 'command');
     assert.equal(pluginUseDeclined(cwd), true);
+    assert.equal(pluginUseEnabled(cwd), false);
     assert.equal(readPluginUseChoice(cwd)?.enabled, false);
     assert.equal(readPluginUseChoice(cwd)?.source, 'command');
     // The choice never creates project files.
@@ -40,6 +43,7 @@ test('plugin-use choice: record → read → clear roundtrip, stored OUTSIDE the
 
     recordPluginUseChoice(cwd, true, 'command');
     assert.equal(pluginUseDeclined(cwd), false);
+    assert.equal(pluginUseEnabled(cwd), true);
     assert.equal(readPluginUseChoice(cwd)?.enabled, true);
 
     clearPluginUseChoice(cwd);

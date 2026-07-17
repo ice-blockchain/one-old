@@ -6,7 +6,9 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 
 import {
+  clearProjectHostPrefs,
   effectiveState,
+  mergeMissingProjectPrefs,
   mergeProjectHostPrefs,
   mergeProjectPrefs,
   PROJECT_PREFS_LOCK_TIMEOUT_MS,
@@ -32,6 +34,8 @@ const stamp = (prefs: Record<string, unknown>, tool: string): Record<string, unk
   const tc = prefs.toolchain as Record<string, Record<string, unknown>>;
   return tc[tool] ?? {};
 };
+
+const fingerprint = (digit: string): string => digit.repeat(64);
 
 // normalize embeds the initialized-null toolchain skeleton in shared state, so
 // every writeState(readState(...)) round-trip merges nulls back into prefs. A
@@ -113,9 +117,11 @@ test('readProjectPrefs never reads a project-local preferences file', () => {
     fs.writeFileSync(path.join(cwd, '.traffic-one', 'preferences.json'), JSON.stringify({
       hosts: {
         codex: {
-          performance: { level: 'balanced', source: 'prompted' },
+          performance: {
+            level: 'balanced', source: 'prompted',
+            target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 0 },
+          },
           team: { mode: 'subagents', source: 'prompted', approved: true },
-          configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
         },
       },
     }), 'utf8');
@@ -147,65 +153,109 @@ test('legacy top-level performance/team are discarded instead of silently assign
   });
 });
 
+test('host preference writes preserve additive fields and future host siblings', () => {
+  withPrefs((cwd) => {
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, JSON.stringify({
+      hosts: {
+        codex: {
+          performance: {
+            level: 'balanced',
+            source: 'prompted',
+            target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 3 },
+            futurePerformanceField: { keep: true },
+          },
+          team: { mode: 'subagents', source: 'prompted', approved: true },
+          futureHostField: { keep: true },
+        },
+        'future-host': { futureState: 7 },
+      },
+    }), 'utf8');
+
+    mergeProjectHostPrefs(cwd, 'codex', {
+      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-tester': 'balanced' } },
+    });
+
+    const hosts = readProjectPrefs(cwd).hosts as Record<string, Record<string, unknown>>;
+    const codex = hosts.codex!;
+    assert.deepEqual(codex.futureHostField, { keep: true });
+    assert.deepEqual((codex.performance as Record<string, unknown>).futurePerformanceField, { keep: true });
+    assert.deepEqual(hosts['future-host'], { futureState: 7 });
+  });
+});
+
 test('effectiveState projects only the active host performance snapshot', () => {
   const prefs = {
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-12T00:00:00Z' },
     hosts: {
       codex: {
-        performance: { level: 'high', source: 'prompted' },
+        performance: {
+          level: 'high', source: 'prompted',
+          target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 3 },
+        },
         team: { mode: 'subagents', source: 'prompted', approved: true },
-        configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
       },
       cursor: {
-        performance: { level: 'low', source: 'prompted' },
+        performance: {
+          level: 'low', source: 'prompted',
+          target: { plan: 'free', appliedFingerprint: fingerprint('b'), configVersion: 0 },
+        },
         team: { mode: 'main-agent', source: 'prompted' },
-        configuredFor: { plan: 'free', modelsUpdatedAt: '2026-07-10' },
         availableModels: {
           models: [' composer-2.5-fast ', 'composer-2.5-fast', 'claude-4.6-sonnet'],
-          plan: 'free',
-          modelsUpdatedAt: '2026-07-10',
           capturedAt: '2026-07-12T08:00:00Z',
+          target: { plan: 'free', appliedFingerprint: fingerprint('b') },
         },
       },
     },
   };
 
   const codex = effectiveState({ stack: 'default' }, prefs, 'codex');
-  assert.deepEqual(codex.performance, { level: 'high', source: 'prompted' });
-  assert.deepEqual(codex.configuredFor, { plan: 'pro', modelsUpdatedAt: '2026-07-12' });
+  assert.deepEqual(codex.performance, {
+    level: 'high', source: 'prompted',
+    target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 3 },
+  });
+  assert.equal(codex.configuredFor, undefined);
   assert.equal(codex.availableModels, undefined);
   assert.equal(codex.hosts, undefined);
 
   const cursor = effectiveState({ stack: 'default' }, prefs, 'cursor');
-  assert.deepEqual(cursor.performance, { level: 'low', source: 'prompted' });
+  assert.deepEqual(cursor.performance, {
+    level: 'low', source: 'prompted',
+    target: { plan: 'free', appliedFingerprint: fingerprint('b'), configVersion: 0 },
+  });
   assert.deepEqual(cursor.availableModels, {
     models: ['composer-2.5-fast', 'claude-4.6-sonnet'],
-    plan: 'free',
-    modelsUpdatedAt: '2026-07-10',
     capturedAt: '2026-07-12T08:00:00Z',
+    target: { plan: 'free', appliedFingerprint: fingerprint('b') },
   });
 });
 
 test('host preference merge preserves sibling hosts and Cursor availableModels', () => {
   withPrefs((cwd) => {
     mergeProjectHostPrefs(cwd, 'cursor', {
-      performance: { level: 'balanced', source: 'prompted' },
+      performance: {
+        level: 'balanced', source: 'prompted',
+        target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 3 },
+      },
       team: { mode: 'subagents', source: 'prompted', approved: true },
-      configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
       availableModels: {
         models: ['claude-opus-4-8-thinking-high'],
-        plan: 'pro',
-        modelsUpdatedAt: '2026-07-12',
         capturedAt: '2026-07-12T08:00:00Z',
+        target: { plan: 'pro', appliedFingerprint: fingerprint('a') },
       },
     });
     mergeProjectHostPrefs(cwd, 'codex', {
-      performance: { level: 'low', source: 'prompted' },
+      performance: {
+        level: 'low', source: 'prompted',
+        target: { plan: 'free', appliedFingerprint: fingerprint('b'), configVersion: 0 },
+      },
       team: { mode: 'main-agent', source: 'prompted' },
-      configuredFor: { plan: 'free', modelsUpdatedAt: '2026-07-12' },
     });
     mergeProjectHostPrefs(cwd, 'cursor', {
-      performance: { level: 'high', source: 'prompted' },
+      performance: {
+        level: 'high', source: 'prompted',
+        target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 3 },
+      },
       team: { mode: 'subagents', source: 'prompted' },
     });
 
@@ -214,30 +264,106 @@ test('host preference merge preserves sibling hosts and Cursor availableModels',
     const cursor = hosts.cursor;
     assert.ok(codex);
     assert.ok(cursor);
-    assert.deepEqual(codex.configuredFor, { plan: 'free', modelsUpdatedAt: '2026-07-12' });
-    assert.deepEqual(cursor.configuredFor, { plan: 'pro', modelsUpdatedAt: '2026-07-12' });
+    assert.equal(codex.configuredFor, undefined);
+    assert.equal(cursor.configuredFor, undefined);
     assert.deepEqual(cursor.availableModels, {
       models: ['claude-opus-4-8-thinking-high'],
-      plan: 'pro',
-      modelsUpdatedAt: '2026-07-12',
       capturedAt: '2026-07-12T08:00:00Z',
+      target: { plan: 'pro', appliedFingerprint: fingerprint('a') },
     });
     assert.deepEqual(cursor.team, { mode: 'subagents', source: 'prompted' });
   });
 });
 
+test('pre-release acknowledgement fields are discarded instead of migrated', () => {
+  withPrefs((cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    fs.writeFileSync(prefsPath, JSON.stringify({
+      oneMcp: { schemaVersion: 1, hosts: { codex: { plan: 'pro' } } },
+      hosts: {
+        codex: {
+          performance: {
+            level: 'balanced', source: 'prompted',
+            target: { plan: 'pro', appliedFingerprint: fingerprint('a') },
+          },
+          configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-16' },
+        },
+      },
+    }), 'utf8');
+
+    const prefs = readProjectPrefs(cwd) as Record<string, any>;
+    assert.equal(prefs.oneMcp, undefined);
+    assert.equal(prefs.hosts.codex.configuredFor, undefined);
+    assert.equal(
+      prefs.hosts.codex.performance.target,
+      undefined,
+      'pre-release target without configVersion is intentionally not backfilled',
+    );
+  });
+});
+
+test('Performance selection and semantic target are stamped and cleared atomically', () => {
+  withPrefs((cwd) => {
+    mergeProjectHostPrefs(cwd, 'codex', {
+      performance: {
+        level: 'balanced', source: 'prompted',
+        target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 3 },
+      },
+      team: { mode: 'subagents', source: 'prompted' },
+    });
+
+    let prefs = readProjectPrefs(cwd) as Record<string, any>;
+    assert.equal(prefs.hosts.codex.performance.level, 'balanced');
+    assert.equal(prefs.hosts.codex.performance.target.appliedFingerprint, fingerprint('a'));
+
+    clearProjectHostPrefs(cwd, 'codex', ['performance', 'team']);
+    prefs = readProjectPrefs(cwd) as Record<string, any>;
+    assert.equal(prefs.hosts?.codex, undefined);
+  });
+});
+
+test('locked preference merge fills missing values without overwriting a newer Performance target', () => {
+  withPrefs((cwd) => {
+    mergeProjectHostPrefs(cwd, 'codex', {
+      performance: {
+        level: 'high', source: 'prompted',
+        target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 3 },
+      },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+    });
+    mergeMissingProjectPrefs(cwd, {
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-01T00:00:00.000Z' },
+      hosts: {
+        codex: {
+          performance: {
+            level: 'low', source: 'prompted',
+            target: { plan: 'free', appliedFingerprint: fingerprint('b'), configVersion: 0 },
+          },
+        },
+      },
+    });
+
+    const prefs = readProjectPrefs(cwd) as Record<string, any>;
+    assert.equal(prefs.openCode.enabled, false);
+    assert.equal(prefs.hosts.codex.performance.level, 'high');
+    assert.equal(prefs.hosts.codex.performance.target.appliedFingerprint, fingerprint('a'));
+  });
+});
+
 function runPrefsChild(modulePath: string, cwd: string, prefsPath: string, operation: string): Promise<void> {
   const childSource = [
-    `const { mergeProjectHostPrefs } = require(${JSON.stringify(modulePath)});`,
+    `const { mergeMissingProjectPrefs, mergeProjectHostPrefs } = require(${JSON.stringify(modulePath)});`,
     'const cwd = process.argv[1];',
     'const operation = process.argv[2];',
-    'const cursorPerformance = { performance: { level: "high", source: "prompted" }, team: { mode: "subagents", source: "prompted", approved: true }, configuredFor: { plan: "pro", modelsUpdatedAt: "2026-07-12" } };',
-    'const cursorCapture = { availableModels: { models: ["claude-opus-4-8-thinking-high"], plan: "pro", modelsUpdatedAt: "2026-07-12", capturedAt: "2026-07-12T08:00:00Z" } };',
-    'const codexPerformance = { performance: { level: "balanced", source: "prompted" }, team: { mode: "subagents", source: "prompted", approved: true }, configuredFor: { plan: "pro", modelsUpdatedAt: "2026-07-12" } };',
+    'const target = { plan: "pro", appliedFingerprint: "a".repeat(64), configVersion: 3 };',
+    'const cursorPerformance = { performance: { level: "high", source: "prompted", target }, team: { mode: "subagents", source: "prompted", approved: true } };',
+    'const cursorCapture = { availableModels: { models: ["claude-opus-4-8-thinking-high"], capturedAt: "2026-07-12T08:00:00Z", target } };',
+    'const codexPerformance = { performance: { level: "balanced", source: "prompted", target }, team: { mode: "subagents", source: "prompted", approved: true } };',
     'for (let i = 0; i < 25; i += 1) {',
     '  if (operation === "cursor-performance") mergeProjectHostPrefs(cwd, "cursor", cursorPerformance);',
     '  if (operation === "cursor-capture") mergeProjectHostPrefs(cwd, "cursor", cursorCapture);',
     '  if (operation === "codex-performance") mergeProjectHostPrefs(cwd, "codex", codexPerformance);',
+    '  if (operation === "legacy-merge") mergeMissingProjectPrefs(cwd, { openCode: { enabled: false, source: "prompted", decidedAt: "2026-07-01T00:00:00.000Z" }, hosts: { cursor: cursorPerformance } });',
     '}',
   ].join(' ');
   return new Promise<void>((resolve, reject) => {
@@ -295,6 +421,24 @@ test('concurrent Cursor capture and performance writes preserve both fields', as
   }
 });
 
+test('concurrent fallback merge and host writes preserve both', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-prefs-concurrent-migration-'));
+  const prefsPath = path.join(dir, 'preferences.json');
+  const modulePath = path.resolve(__dirname, '..', 'local-prefs.ts');
+  try {
+    await Promise.all([
+      runPrefsChild(modulePath, dir, prefsPath, 'legacy-merge'),
+      runPrefsChild(modulePath, dir, prefsPath, 'codex-performance'),
+    ]);
+    const prefs = readProjectPrefs(dir, { TRAFFIC_ONE_PROJECT_PREFS_PATH: prefsPath }) as Record<string, any>;
+    assert.equal(prefs.openCode.enabled, false);
+    assert.equal(prefs.hosts.cursor.performance.level, 'high');
+    assert.equal(prefs.hosts.codex.performance.level, 'balanced');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('project preference lock timeout is bounded and never falls back to an unlocked write', () => {
   withPrefs((cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
@@ -331,13 +475,37 @@ test('an abandoned project preference lock is recovered without unlocked writes'
     }), 'utf8');
 
     mergeProjectHostPrefs(cwd, 'codex', {
-      performance: { level: 'low', source: 'prompted' },
+      performance: {
+        level: 'low', source: 'prompted',
+        target: { plan: 'free', appliedFingerprint: fingerprint('b'), configVersion: 0 },
+      },
       team: { mode: 'main-agent', source: 'prompted' },
-      configuredFor: { plan: 'free', modelsUpdatedAt: '2026-07-12' },
     });
     const codex = (readProjectPrefs(cwd).hosts as Record<string, Record<string, unknown>>).codex;
     assert.equal((codex!.performance as Record<string, unknown>).level, 'low');
     assert.equal(fs.existsSync(lockDir), false);
+  });
+});
+
+test('an old empty project preference lock left by an interrupted release is recovered', () => {
+  withPrefs((cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const lockDir = `${prefsPath}.lock`;
+    fs.mkdirSync(lockDir, { recursive: true });
+    const abandonedAt = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockDir, abandonedAt, abandonedAt);
+
+    mergeProjectHostPrefs(cwd, 'codex', {
+      performance: { level: 'low', source: 'prompted' },
+    });
+
+    const codex = (readProjectPrefs(cwd).hosts as Record<string, Record<string, unknown>>).codex;
+    assert.equal((codex!.performance as Record<string, unknown>).level, 'low');
+    assert.equal(fs.existsSync(lockDir), false);
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(prefsPath)).filter((name) => name.endsWith('.released')),
+      [],
+    );
   });
 });
 
@@ -369,14 +537,18 @@ test('the same shared project keeps different users preferences isolated by home
   const userB = { HOME: path.join(root, 'user-b') } as NodeJS.ProcessEnv;
   try {
     mergeProjectHostPrefs(cwd, 'codex', {
-      performance: { level: 'high', source: 'prompted' },
+      performance: {
+        level: 'high', source: 'prompted',
+        target: { plan: 'pro', appliedFingerprint: fingerprint('a'), configVersion: 3 },
+      },
       team: { mode: 'subagents', source: 'prompted', approved: true },
-      configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
     }, userA);
     mergeProjectHostPrefs(cwd, 'codex', {
-      performance: { level: 'low', source: 'prompted' },
+      performance: {
+        level: 'low', source: 'prompted',
+        target: { plan: 'free', appliedFingerprint: fingerprint('b'), configVersion: 0 },
+      },
       team: { mode: 'main-agent', source: 'prompted' },
-      configuredFor: { plan: 'free', modelsUpdatedAt: '2026-07-12' },
     }, userB);
 
     const a = readProjectPrefs(cwd, userA) as { hosts?: { codex?: { performance?: { level?: string } } } };

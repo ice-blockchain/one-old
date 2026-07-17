@@ -8,7 +8,7 @@ import { readOneSettings } from '../../one-settings';
 import { initializeTrafficOneEnv } from '../runtime-env';
 import { defaultProjectPrefsPath, readProjectPrefs } from '../local-prefs';
 
-test('initializeTrafficOneEnv migrates completed legacy Cursor answers before deleting project-local state', () => {
+test('initializeTrafficOneEnv migrates completed project-local Cursor answers before deleting retired storage', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runtime-env-'));
   const cwd = path.join(dir, 'project');
   const home = path.join(dir, 'home');
@@ -26,9 +26,11 @@ test('initializeTrafficOneEnv migrates completed legacy Cursor answers before de
     retiredJunk: { mustNotMigrate: true },
     hosts: {
       cursor: {
-        performance: { level: 'balanced', source: 'prompted' },
+        performance: {
+          level: 'balanced', source: 'prompted',
+          target: { plan: 'pro', appliedFingerprint: 'a'.repeat(64), configVersion: 0 },
+        },
         team: { mode: 'subagents', source: 'prompted', approved: true },
-        configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-13' },
       },
     },
   }), 'utf8');
@@ -45,7 +47,10 @@ test('initializeTrafficOneEnv migrates completed legacy Cursor answers before de
     const prefs = readProjectPrefs(cwd, env);
     const cursor = (prefs.hosts as Record<string, Record<string, unknown>>).cursor;
     assert.ok(cursor);
-    assert.deepEqual(cursor.performance, { level: 'balanced', source: 'prompted' });
+    assert.deepEqual(cursor.performance, {
+      level: 'balanced', source: 'prompted',
+      target: { plan: 'pro', appliedFingerprint: 'a'.repeat(64), configVersion: 0 },
+    });
     assert.deepEqual(cursor.team, { mode: 'subagents', source: 'prompted', approved: true });
     const gitnexus = (prefs.toolchain as Record<string, Record<string, unknown>>).gitnexus;
     assert.ok(gitnexus);

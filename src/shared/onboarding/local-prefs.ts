@@ -7,9 +7,9 @@
 // moved into the local wizard (shared/onboarding-server).
 
 import { obj } from '../obj';
-import { detectHostPlan } from '../host-plan';
-import { canonicalHost, hostModelSnapshot } from '../model-tiers';
-import { readOneHostSettings } from '../one-settings';
+import { detectHostPlanFresh } from '../host-plan';
+import { canonicalHost } from '../model-tiers';
+import { currentHostModelTarget } from '../current-model-tiers';
 import { teamModeForLevel } from '../performance';
 import {
   hasResolvedOpenCodeState,
@@ -23,31 +23,29 @@ export type LocalPreferenceStep = Extract<OnboardingStep, 'open-code' | 'perform
 
 export interface LocalPreferenceTarget {
   plan: string;
-  modelsUpdatedAt: string;
+  appliedFingerprint: string;
+  configVersion: number;
 }
 
 export function currentLocalPreferenceTarget(
   host: unknown,
   env: NodeJS.ProcessEnv = process.env,
+  _cwd: string = process.cwd(),
 ): LocalPreferenceTarget {
   const activeHost = canonicalHost(host);
-  const plan = detectHostPlan(activeHost, env);
-  const storedCatalog = readOneHostSettings(activeHost, env);
+  const plan = detectHostPlanFresh(activeHost, env);
+  const target = currentHostModelTarget(activeHost, plan, env);
   return {
     plan,
-    // The one.json snapshot is the API-refreshed source. A brand-new/offline
-    // install or an offline plan transition falls back to the bundled target-plan
-    // date so configuredFor never combines one plan with another plan's catalog.
-    modelsUpdatedAt: storedCatalog?.plan === plan
-      ? storedCatalog.updatedAt
-      : hostModelSnapshot(activeHost, plan).updatedAt,
+    appliedFingerprint: target.appliedFingerprint,
+    configVersion: target.configVersion,
   };
 }
 
-function configuredForMatches(value: unknown, target: LocalPreferenceTarget): boolean {
-  const configured = obj(value);
-  return configured?.plan === target.plan
-    && configured.modelsUpdatedAt === target.modelsUpdatedAt;
+function performanceTargetMatches(value: unknown, target: LocalPreferenceTarget): boolean {
+  const performanceTarget = obj(obj(value)?.target);
+  return performanceTarget?.plan === target.plan
+    && performanceTarget.appliedFingerprint === target.appliedFingerprint;
 }
 
 export function nextLocalPreferenceStep(
@@ -61,7 +59,7 @@ export function nextLocalPreferenceStep(
   if (activeHost !== 'opencode' && activeHost !== 'kilo' && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
   if (!hasValidPerformanceState(s.performance)) return 'performance';
   const current = target === undefined ? currentLocalPreferenceTarget(activeHost) : target;
-  if (current && !configuredForMatches(s.configuredFor, current)) return 'performance';
+  if (current && !performanceTargetMatches(s.performance, current)) return 'performance';
 
   const performance = obj(s.performance);
   const level = performance && typeof performance.level === 'string' ? performance.level : '';

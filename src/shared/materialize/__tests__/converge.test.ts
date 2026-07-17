@@ -75,12 +75,12 @@ test('materializeProjectFromState: incomplete state reports an "incomplete" outc
 
 test('materializeProjectFromState: moves local-only fields out of shared .one.json', () => {
   withTempProject((dir) => {
+    const performanceTarget = { plan: 'pro', appliedFingerprint: 'a'.repeat(64), configVersion: 0 };
     fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, JSON.stringify({
       hosts: {
         codex: {
-          performance: { level: 'low', source: 'prompted' },
+          performance: { level: 'low', source: 'prompted', target: performanceTarget },
           team: { mode: 'main-agent', source: 'prompted' },
-          configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
         },
       },
     }), 'utf8');
@@ -115,8 +115,9 @@ test('materializeProjectFromState: moves local-only fields out of shared .one.js
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     assert.ok(prefsPath);
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
-    assert.deepEqual(prefs.hosts.codex.performance, { level: 'low', source: 'prompted' });
-    assert.deepEqual(prefs.hosts.codex.configuredFor, { plan: 'pro', modelsUpdatedAt: '2026-07-12' });
+    assert.deepEqual(prefs.hosts.codex.performance, {
+      level: 'low', source: 'prompted', target: performanceTarget,
+    });
     assert.equal('performance' in prefs, false, 'legacy top-level host prefs are not migrated silently');
     assert.equal('codeGraphProvider' in prefs, false);
   });
@@ -134,6 +135,7 @@ test('materializeProjectIfNeeded: already-materialized → fires the reporter, r
 
 test('materializeProjectIfNeeded: a stale materializedVersion refreshes generated context', () => {
   withTempProject((dir) => {
+    const performanceTarget = { plan: 'pro', appliedFingerprint: 'a'.repeat(64), configVersion: 0 };
     writeMaterialized(dir);
     const statePath = path.join(dir, '.traffic-one', '.one.json');
     const stale = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
@@ -152,9 +154,8 @@ test('materializeProjectIfNeeded: a stale materializedVersion refreshes generate
       openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
       hosts: {
         codex: {
-          performance: { level: 'balanced', source: 'prompted' },
+          performance: { level: 'balanced', source: 'prompted', target: performanceTarget },
           team: { mode: 'subagents', source: 'prompted', approved: true },
-          configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
         },
       },
     }), 'utf8');

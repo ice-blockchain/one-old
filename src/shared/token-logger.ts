@@ -52,7 +52,10 @@ export function readPhase(cwd: string, payload: Rec | null = null): Phase {
   }
   try {
     const state = readState(cwd);
-    const agentContext = resolveRunAgentContext(cwd, state, payload || {}, { claimPending: false })
+    const agentContext = resolveRunAgentContext(cwd, state, payload || {}, {
+      claimPending: false,
+      host: process.env.TRAFFIC_ONE_HOST,
+    })
       || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
     const ctxRunId = agentContext && typeof agentContext.runId === 'string' ? agentContext.runId : null;
     const ctxRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;

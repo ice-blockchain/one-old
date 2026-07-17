@@ -46,15 +46,15 @@ of the consolidated user settings file (`$TRAFFIC_ONE_STATE_PATH`,
     "apiKey": "…",
     "updatedAt": "2026-07-15T12:00:00Z"
   },
-  "codeGraphProvider": null,
-  "hosts": {}
+  "codeGraphProvider": null
 }
 ```
 
 The file is mode `0600`; never commit or copy it into a project. The stored key
-is also the Bearer token for the background report. A report response of 401 or
-403 deletes only `one.json.auth`, preserving hosts and code-graph settings, and
-the wizard reopens on the API-key step.
+is used only by the authenticated `/mcp` onboarding validation/connection flow.
+Public model sync and structural reporting use anonymous `/public-mcp` requests
+with no bearer, cookie, or API key; their failures (including 401/403) never
+invalidate `one.json.auth`.
 
 Codex only invokes plugin hooks inside trusted workspaces. If a project is
 created in an untrusted folder, Traffic One cannot fail closed from inside the
@@ -94,6 +94,7 @@ plugin, ordinary work continues without Traffic One features.
 │   ├── hooks/hooks-windsurf.json ← Windsurf Cascade hooks template
 │   ├── plugin.json          ← GitHub Copilot plugin manifest
 │   ├── .mcp.json            ← bundled OpenCode worker declaration
+│   ├── .mcp-copilot.json    ← Copilot MCP declarations; public Traffic One tools disabled
 │   ├── scripts/hook-runtime.cjs
 │   ├── scripts/copilot-hook-runtime.cjs
 │   ├── scripts/opencode-host.cjs
@@ -208,19 +209,74 @@ the active plugin integration alongside agent co-author trailers. Enable them in
 git config core.hooksPath .githooks
 ```
 
-### External model-status API
+### Public One MCP model configuration
 
-The public read-only `GET /model-status?host=<host>&plan=<plan>` endpoint is
-maintained independently from this plugin. `npm run gen` does not produce an API
-deployment artifact. A successful response is the exact host snapshot stored in
-`~/.traffic-one/one.json`: `{ plan, updatedAt, tiers }`, with preferred-first
-model arrays under `highest`, `balanced`, and `cheapest`.
+When the milestone-2 `ONE_MCP_SYNC_ACTIVE` build switch is enabled, parent
+SessionStart in an explicitly opted-in project calls the anonymous
+`traffic-one-mcp` `get_config` tool through the validated hook runtime. The
+model never receives or calls that tool. Milestone 1 keeps the switch false, so
+it performs no public configuration request even for opted-in projects.
+Host-specific operator rows use the
+`traffic_one_<host>_plugin_ai_model_configuration` names centralized in
+`src/config/one-mcp.ts` and publish payload schema v2. Every payload has base
+`high`, `balanced`, `low`, and `auto` rows plus optional complete per-plan row
+sets; an absent plan inherits the base rows.
 
-Whenever a host's model arrays change, update that host's `updatedAt` in
-`src/config/model-tiers.ts`; the external service must be updated separately.
-The endpoint is independent of Traffic One authentication. Remote overrides use
-`TRAFFIC_ONE_MODEL_STATUS_ENDPOINT`, require HTTPS, and permit plain HTTP only
-for loopback contract testing.
+The versioned canonical payload cache lives in `~/.traffic-one/one-mcp.json`
+under `hosts.<host>.config`; the payload fingerprint and active plan's applied
+fingerprint are derived at read time instead of being persisted as duplicate
+model state. The same host entry carries a generation-CAS token and bounded
+`lastSync` diagnostic. `~/.traffic-one/one.json`
+contains only machine authentication and the code-graph provider—it is not a
+model-catalog mirror.
+
+The cache envelope is schema v2. A pre-release schema-v1 `one-mcp.json` is
+intentionally ignored rather than migrated; the first future sync-enabled
+request starts at server version `0` and replaces it atomically. While public
+sync is build-disabled, that old file may remain on disk but never supplies
+runtime models. A transient `transport-failed` result is silent during
+SessionStart and retains the last valid v2 cache, or uses the bundled catalog
+when none exists; `doctor` reports the bounded diagnostic without remote error
+text. An `invalid-full-config` diagnostic means the published row did not pass
+the schema-v2 decoder and likewise falls back safely.
+
+The project preference that acknowledges a Performance choice is
+`hosts.<host>.performance.target = { plan, appliedFingerprint, configVersion }`.
+Only `plan` and `appliedFingerprint` decide whether Performance must be picked
+again; a metadata-only server-version change advances `configVersion` silently.
+Cursor alone
+also stores a short-lived `availableModels` capture for the exact model slugs its
+Task tool exposes; that capability lease is separate from the MCP tier catalog.
+Public transport is anonymous and independent from the API key used by
+onboarding's authenticated `/mcp` mount. Override the production public URL with
+`TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT`; remote URLs require HTTPS and loopback HTTP
+is accepted only by local contract tests. The former reporter variable
+`TRAFFIC_ONE_ONE_MCP_ENDPOINT` remains a temporary lower-priority alias.
+
+`ONE_MCP_SYNC_ACTIVE`, `ONE_MCP_REGISTRATION_ACTIVE`, and `REPORTING_ACTIVE` in
+`src/config/one-mcp.ts` are build-time release switches. Milestone 1 keeps all
+three false; they are enabled only after the production endpoint and operator
+rows pass the release checks. A switch prevents new activity; it does not
+delete a user-owned machine-global entry.
+
+Release gate: the committed direct Supabase public URL is only the configurable
+development/recovery fallback. Before publishing a plugin release, operators
+must set the public endpoint to the custom domain protected by the documented
+path-scoped WAF/rate limit, and must publish seven distinct, host-correct
+`payloadSchemaVersion: 2` rows with incremented versions and timestamps. The
+current identical Cursor-shaped version-1 rows are not releaseable. A build
+that enables any public switch must also set
+`TRAFFIC_ONE_MCP_LIVE_RELEASE_SNAPSHOT` to a fresh schema-v2 release-evidence
+bundle. Generation fails unless it names the compiled endpoint, is at most 15
+minutes old, proves every live row is publicly served and version 2 or newer,
+and matches the `HOST_MODELS`-derived operator manifest exactly. The bounded
+bundle must also record successful full-response JSON and SSE probes plus an
+`upToDate` probe for every config name, a hosted `/onboarding/agent` smoke, and
+live Codex hook observations of exact `gpt-5.6-sol` and `gpt-5.6-terra` models.
+The evidence schema accepts only structural outcomes, versions, fingerprints,
+timestamps, and fixed model/event identifiers—no tokens, session IDs, payload
+errors, or other remote text. This proof is a release input only; it is never
+shipped as runtime state.
 
 ### Hooks enforce at write time
 Hooks run through dependency-free Node.js scripts before files are written or packages installed — violations are blocked
@@ -274,6 +330,17 @@ codex plugin marketplace add /absolute/path/to/traffic-one/dist
 codex plugin add traffic-one@traffic-one-local
 ```
 
+Traffic One appends one inert, disabled public-MCP block to Codex's
+machine-global `config.toml` on the first main session. Codex currently removes
+the plugin bundle on uninstall but does not run plugin cleanup hooks. Before or
+after uninstalling the bundle, remove only Traffic One's exact marked block with:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/one-mcp-host.cjs uninstall --yes
+```
+
+If that block was edited, the command leaves it untouched and exits non-zero.
+
 ### Cursor
 
 ```
@@ -314,6 +381,14 @@ node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs install --yes
 node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs doctor
 ```
 
+The installer also updates the first existing supported OpenCode global config
+(`opencode.jsonc`, `opencode.json`, or `config.json`). When no same-name values
+exist, it adds a machine-global, disabled `mcp.traffic-one-mcp` remote entry and
+exact `deny` permissions for both managed tools. This inert entry is visible to
+OpenCode outside Traffic One projects, but exposes no callable managed tool;
+the global wrapper additionally denies both tools before project lookup. User-
+owned same-name entries and permissions are never overwritten.
+
 No per-project enable step is required. To verify the wrapper for a particular
 workspace:
 
@@ -334,6 +409,12 @@ To remove the wrapper:
 node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs uninstall
 ```
 
+Uninstall removes the Traffic One wrapper and its OpenCode `plugin` array entry.
+It deliberately leaves the disabled MCP entry and deny permissions in place so
+uninstall never deletes potentially user-owned global config. They may be
+removed manually afterward if their exact values are still Traffic One's
+disabled/deny defaults.
+
 ### Kilo
 
 The Kilo host wrapper is a user-level plugin at
@@ -344,6 +425,14 @@ consent:
 node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs install --yes
 node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs doctor
 ```
+
+The installer also updates the first existing supported Kilo global config
+(`kilo.jsonc` or `kilo.json`). If neither exists, it creates `kilo.jsonc`.
+When no same-name values exist,
+it adds a machine-global, disabled `mcp.traffic-one-mcp` remote entry and exact
+`deny` permissions for both managed tools. This inert entry is visible outside
+Traffic One projects, while the global wrapper denies both tools before project
+lookup. User-owned same-name entries and permissions are never overwritten.
 
 No per-project enable step is required. To verify the wrapper for a particular
 workspace:
@@ -363,6 +452,10 @@ To remove the wrapper:
 ```
 node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs uninstall
 ```
+
+Kilo uninstall removes only the owned wrapper. The disabled MCP entry and deny
+permissions remain intentionally, avoiding destructive edits to a shared user
+config; remove them manually only after verifying their exact values.
 
 ### Windsurf / Devin Desktop Cascade
 

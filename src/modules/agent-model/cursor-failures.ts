@@ -13,14 +13,17 @@ import * as path from 'path';
 import { deny, followup, context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { currentModelsForTier, resolveTierFallback } from '../../shared/current-model-tiers';
 import { resolveProjectRoot } from '../../shared/hook-paths';
-import { detectHostPlan } from '../../shared/host-plan';
-import { freshCursorModels, pickCursorSlug } from '../../shared/materialize/cursor-models';
+import { pickCursorSlug } from '../../shared/materialize/cursor-models';
 import { modelMatchesExpected } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
+import {
+  readRunModelPolicy,
+  resolveRunPolicyFallback,
+  type RunModelPolicyV1,
+} from '../../shared/run-model-policy';
 import {
   claimCursorFollowupsBatch,
   claimCursorSpawnObservation,
@@ -224,8 +227,8 @@ function unavailableModelsForRun(cwd: string, runId: string): string[] {
     .map((observation) => observation.requestedModel);
 }
 
-function exactRecommendedModel(cwd: string, observation: CursorSpawnObservation): string {
-  const captured = freshCursorModels(cwd, detectHostPlan('cursor'));
+function exactRecommendedModel(policy: RunModelPolicyV1, observation: CursorSpawnObservation): string {
+  const captured = [...(policy.cursorAvailableModels || [])];
   return pickCursorSlug([observation.expectedModel], captured) || observation.expectedModel;
 }
 
@@ -242,24 +245,33 @@ function apiResolution(
   runId: string,
   observation: CursorSpawnObservation,
 ): FailureResolution {
-  const plan = detectHostPlan('cursor');
-  const captured = freshCursorModels(cwd, plan);
+  const policy = readRunModelPolicy(cwd, runId);
+  if (!policy || policy.host !== 'cursor') {
+    return {
+      kind: 'api-limit',
+      prescribedModel: null,
+      terminal: false,
+      choicePrompted: false,
+      directive: `Traffic One cannot resolve ${observation.role}'s retry because immutable model-policy.json is missing or corrupt for run ${runId}. Start a repaired parent run; do not consult mutable Cursor models.`,
+    };
+  }
+  const captured = [...(policy.cursorAvailableModels || [])];
   const choice = readModelChoice(cwd, runId);
   const exhausted = [
     ...exhaustedModelsForRole(cwd, runId, observation.role),
     observation.requestedModel,
   ];
-  const fallback = resolveTierFallback({
+  const fallback = resolveRunPolicyFallback(policy, {
     tier: observation.tier,
     exhaustedModels: exhausted,
     unavailableModels: unavailableModelsForRun(cwd, runId),
     // Passing even an empty capture is intentional: a guessed family is not an
     // exact Cursor slug, and an absent family belongs to availability recovery.
     capturedModels: captured,
-  }, 'cursor', plan);
+  });
 
   if (choice === 'enable-retry') {
-    const recommended = exactRecommendedModel(cwd, observation);
+    const recommended = exactRecommendedModel(policy, observation);
     return {
       kind: 'api-limit',
       prescribedModel: recommended,
@@ -273,7 +285,7 @@ function apiResolution(
     const composerFloor = /^composer/i.test(fallback.family);
     if (composerFloor && observation.tier !== 'cheapest') {
       if (choice !== 'use-fallback') {
-        const recommended = exactRecommendedModel(cwd, observation);
+        const recommended = exactRecommendedModel(policy, observation);
         return {
           kind: 'api-limit',
           prescribedModel: fallback.model,
@@ -300,7 +312,7 @@ function apiResolution(
     };
   }
 
-  const row = currentModelsForTier(observation.tier, 'cursor', plan);
+  const row = policy.tiers[observation.tier];
   const allActuallyLimited = row.length > 0
     && row.every((family) => exhausted.some((model) => sameFamily(model, family)));
   const composerWasAccepted = observation.tier === 'cheapest' || readModelChoice(cwd, runId) === 'use-fallback';
@@ -321,7 +333,7 @@ function apiResolution(
   const firstUnavailable = row.find((family) => unavailable.some((model) => sameFamily(model, family))
     && !exhausted.some((model) => sameFamily(model, family)));
   if (firstUnavailable) {
-    const recommended = exactRecommendedModel(cwd, observation);
+    const recommended = exactRecommendedModel(policy, observation);
     return {
       kind: 'api-limit',
       prescribedModel: recommended,
@@ -334,7 +346,7 @@ function apiResolution(
   const firstAbsent = row.find((family) => !captured.some((model) => sameFamily(model, family))
     && !exhausted.some((model) => sameFamily(model, family)));
   if (firstAbsent) {
-    const recommended = exactRecommendedModel(cwd, observation);
+    const recommended = exactRecommendedModel(policy, observation);
     return {
       kind: 'api-limit',
       prescribedModel: recommended,
@@ -358,18 +370,27 @@ function modelUnavailableResolution(
   runId: string,
   observation: CursorSpawnObservation,
 ): FailureResolution {
-  const plan = detectHostPlan('cursor');
-  const captured = freshCursorModels(cwd, plan);
-  const fallback = resolveTierFallback({
+  const policy = readRunModelPolicy(cwd, runId);
+  if (!policy || policy.host !== 'cursor') {
+    return {
+      kind: 'model-unavailable',
+      prescribedModel: null,
+      terminal: false,
+      choicePrompted: false,
+      directive: `Traffic One cannot resolve ${observation.role}'s availability retry because immutable model-policy.json is missing or corrupt for run ${runId}. Start a repaired parent run; do not consult mutable Cursor models.`,
+    };
+  }
+  const captured = [...(policy.cursorAvailableModels || [])];
+  const fallback = resolveRunPolicyFallback(policy, {
     tier: observation.tier,
     exhaustedModels: exhaustedModelsForRole(cwd, runId, observation.role),
     unavailableModels: [...unavailableModelsForRun(cwd, runId), observation.requestedModel],
     capturedModels: captured,
-  }, 'cursor', plan);
+  });
   const fallbackLabel = fallback?.model || `the next enabled ${observation.tier}-tier model after re-capture`;
   const choice = readModelChoice(cwd, runId);
   if (choice === 'enable-retry') {
-    const recommended = exactRecommendedModel(cwd, observation);
+    const recommended = exactRecommendedModel(policy, observation);
     return {
       kind: 'model-unavailable',
       prescribedModel: recommended,
@@ -1290,7 +1311,11 @@ export function correlatedCursorFailureGate(
   if (pending.outcome === 'generic') return null; // model is not condemned; generic recovery may retry it
 
   if (choice === 'enable-retry') {
-    const recommended = exactRecommendedModel(cwd, pending);
+    const policy = readRunModelPolicy(cwd, runId);
+    if (!policy || policy.host !== 'cursor') {
+      return deny(`traffic-one — immutable model-policy.json is missing or corrupt for run ${runId}; start a repaired parent run before retrying ${role}.`);
+    }
+    const recommended = exactRecommendedModel(policy, pending);
     return sameExactSlug(passedModel, recommended) ? null : deny(
       `traffic-one — ${role} is waiting for the user's enable/retry choice. Re-send the same role on the recommended model="${recommended}" after completing the selected budget/Settings remedy; do not use a fallback.`,
     );
@@ -1346,8 +1371,9 @@ export function settleCorrelatedCursorRetryOnStart(
   if (pending.outcome === 'generic') {
     return markCursorSpawnObservationRetryHandled(cwd, runId, pending.childTranscriptId);
   }
+  const policy = readRunModelPolicy(cwd, runId);
   const expected = choice === 'enable-retry'
-    ? exactRecommendedModel(cwd, pending)
+    ? (policy?.host === 'cursor' ? exactRecommendedModel(policy, pending) : null)
     : pending.prescribedModel;
   if (!expected || !sameExactSlug(start.startedModel, expected)) return null;
   if (pending.outcome === 'api-limit' && /^composer/i.test(expected)

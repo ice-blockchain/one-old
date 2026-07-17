@@ -102,7 +102,8 @@ test('ensure: reuses a live record without launching', () => {
       },
     });
     assert.equal(r.started, false);
-    assert.equal(r.url, 'http://127.0.0.1:51000/?t=tok');
+    assert.equal(r.redirectUrl, 'http://127.0.0.1:51000/?t=tok');
+    assert.equal(r.localWizardUrl, 'http://127.0.0.1:51000/local?t=tok');
     // the dashboard deep link carries port + token in the fragment
     assert.equal(r.dashboardUrl, 'https://dash.example.test/onboarding/agent#p=51000&t=tok');
     assert.equal(launched, false);
@@ -124,14 +125,15 @@ test('ensure: NO_SPAWN with no seeded record returns the inert placeholder (empt
 
 test('formatWizardBanner: appends the dashboard link on every host when non-empty; plain when empty', () => {
   const url = 'https://traffic.io/onboarding/agent#p=51000&t=tok';
+  const local = 'http://127.0.0.1:51000/local?t=tok';
   for (const host of ['claude', 'cursor', 'windsurf', 'opencode', 'codex']) {
     assert.equal(
-      formatWizardBanner(host, url, 'setup required'),
-      `setup required — open Traffic One setup: ${url}`,
+      formatWizardBanner(host, url, local, 'setup required'),
+      `setup required — open Traffic One setup: ${url} — local fallback: ${local}`,
     );
   }
   // empty dashboardUrl (placeholder / spawn failure) → plain banner, no dangling text
-  assert.equal(formatWizardBanner('claude', '', 'setup required'), 'setup required');
+  assert.equal(formatWizardBanner('claude', '', '', 'setup required'), 'setup required');
 });
 
 test('ensure: relaunches when no record exists', () => {
@@ -201,8 +203,8 @@ test('ensure: no-spawn mode returns a placeholder instead of another host\'s URL
       isAlive: () => true,
     });
     assert.equal(result.port, 0);
-    assert.ok(result.url.includes(':0/'));
-    assert.ok(!result.url.includes('cursor'));
+    assert.ok(result.redirectUrl.includes(':0/'));
+    assert.ok(!result.redirectUrl.includes('cursor'));
   });
 });
 

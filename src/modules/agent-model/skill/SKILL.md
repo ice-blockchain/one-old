@@ -22,11 +22,11 @@ Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:
 <!-- T1BLOCK:END agent-materialization-missing -->
 
 <!-- T1BLOCK:BEGIN performance-main-agent -->
-Performance gate: local Traffic One preferences record performance.level="{{LEVEL}}" (main-agent only), but you are spawning the `{{ROLE}}` subagent. If the user chose Balanced or High, first correct local preferences (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn (pass `model` only when this host's spawn schema exposes it; current Codex `spawn_agent` does not). If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.
+Performance gate: local Traffic One preferences record performance.level="{{LEVEL}}" (main-agent only), but you are spawning the `{{ROLE}}` subagent. If the user chose Balanced or High, first correct local preferences (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn with the runtime-resolved `model` when the host supports it. On Codex, also use the canonical underscore-form `task_name` and `fork_turns: "none"`. If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.
 <!-- T1BLOCK:END performance-main-agent -->
 
 <!-- T1BLOCK:BEGIN team-confirmation -->
-Team gate: spawning subagents needs `team.approved: true`, which the Traffic One setup wizard sets AUTOMATICALLY from the performance choice (performance.level="{{LEVEL}}" ⇒ subagents). Local preferences currently have `team.approved !== true`, which means the wizard's performance/team step was not completed for this project — not that the user must approve a line-up in chat. Do NOT pop a chat "approve the team?" prompt and do NOT hand-edit preferences to set the flag. Re-open the Traffic One setup wizard and finish the performance/team step (it writes `team.approved: true` and shows the role→model line-up), then re-spawn; pass the per-role `model` only on hosts whose spawn schema supports it (Claude/Cursor, not current Codex). If the user wants Low/main-agent mode instead, they re-pick performance in the wizard; never bypass this gate for `team.mode="subagents"`.
+Team gate: spawning subagents needs `team.approved: true`, which the Traffic One setup wizard sets AUTOMATICALLY from the performance choice (performance.level="{{LEVEL}}" ⇒ subagents). Local preferences currently have `team.approved !== true`, which means the wizard's performance/team step was not completed for this project — not that the user must approve a line-up in chat. Do NOT pop a chat "approve the team?" prompt and do NOT hand-edit preferences to set the flag. Re-open the Traffic One setup wizard and finish the performance/team step (it writes `team.approved: true` and shows the role→model line-up), then re-spawn with the per-role `model` on Claude, Cursor, or Codex. On Codex, also use the canonical underscore-form `task_name` and `fork_turns: "none"`. If the user wants Low/main-agent mode instead, they re-pick performance in the wizard; never bypass this gate for `team.mode="subagents"`.
 <!-- T1BLOCK:END team-confirmation -->
 
 <!-- T1BLOCK:BEGIN spawn-role-conflict -->
@@ -35,6 +35,7 @@ Traffic One spawn identity gate: this spawn carries conflicting valid Traffic On
 
 <!-- T1BLOCK:BEGIN performance-model-param -->
 Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in prompt text or a model-agnostic project agent contract has no effect. On Cursor, use the exact role→model value printed by model-gate; without the parameter the subagent inherits the parent model.{{ALTERNATES}} The runtime lineup comes from the active host snapshot in local Traffic One settings.
+For Codex, also use the canonical underscore-form `task_name` and `fork_turns: "none"`; the child hook verifies the actual model exactly against the immutable run policy.
 <!-- T1BLOCK:END performance-model-param -->
 
 <!-- T1BLOCK:BEGIN cursor-exact-model-required -->

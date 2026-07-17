@@ -12,7 +12,12 @@ import {
   markCursorSpawnObservationRetryHandled,
   readRunAgentRegistry,
   updateCursorSpawnObservation,
+  readEffectiveState,
 } from '../../../shared/state';
+import {
+  ensureRunModelPolicy,
+  runModelPolicyPath,
+} from '../../../shared/run-model-policy';
 import {
   hostScopedPerformancePrefs,
   withCursorAvailableModels,
@@ -71,6 +76,13 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
+function freezeCursorPolicy(cwd: string, resetFixturePolicy = false): void {
+  if (resetFixturePolicy) fs.rmSync(runModelPolicyPath(cwd, RUN_ID), { force: true });
+  const env = { ...process.env, TRAFFIC_ONE_HOST: 'cursor', TRAFFIC_ONE_USER_PLAN: 'pro' };
+  const state = readEffectiveState(cwd, env);
+  assert.ok(ensureRunModelPolicy(cwd, RUN_ID, 'cursor', state, env));
+}
+
 function withCursorFixture<T>(fn: (fixture: CursorFixture) => T): T {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-failure-'));
   const cwd = path.join(base, 'project');
@@ -115,6 +127,7 @@ function withCursorFixture<T>(fn: (fixture: CursorFixture) => T): T {
   process.env.TRAFFIC_ONE_STATE_PATH = statePath;
   process.env.TRAFFIC_ONE_HOST = 'cursor';
   process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  freezeCursorPolicy(cwd);
 
   const cleanup = (): void => {
     restoreEnv('TRAFFIC_ONE_CURSOR_PROJECTS_DIR', previous.TRAFFIC_ONE_CURSOR_PROJECTS_DIR);
@@ -152,6 +165,7 @@ function overrideRoleTier(
     : {};
   cursor.team = { ...team, overrides: { ...overrides, [role]: tier } };
   fs.writeFileSync(fixture.prefsPath, `${JSON.stringify(prefs)}\n`, 'utf8');
+  freezeCursorPolicy(fixture.cwd, true);
 }
 
 function setCapturedCursorModels(fixture: CursorFixture, models: readonly string[]): void {
@@ -160,6 +174,7 @@ function setCapturedCursorModels(fixture: CursorFixture, models: readonly string
   };
   withCursorAvailableModels(prefs, [...models], 'pro');
   fs.writeFileSync(fixture.prefsPath, `${JSON.stringify(prefs)}\n`, 'utf8');
+  freezeCursorPolicy(fixture.cwd, true);
 }
 
 function ctxFor(

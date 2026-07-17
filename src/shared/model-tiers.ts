@@ -27,14 +27,6 @@ export interface HostModelSnapshot {
   readonly tiers: ModelTierSnapshot;
 }
 
-export type ModelStatusResponse = HostModelSnapshot;
-
-export interface ParseModelStatusOptions {
-  readonly expectedHost?: unknown;
-  readonly expectedPlan?: unknown;
-  readonly current?: HostModelSnapshot | null;
-}
-
 export function canonicalTier(tier: unknown): TierId | null {
   if (typeof tier !== 'string') return null;
   const value = tier.trim().toLowerCase();
@@ -80,8 +72,8 @@ export function modelMatchesExpected(passed: unknown, expected: unknown): boolea
   return p === e || p.startsWith(`${e}-`);
 }
 
-// Build the serializable catalog saved during onboarding. Every tier is ordered
-// preferred-first. Plan overrides replace a whole row and omitted rows inherit.
+// Build the bundled/runtime applied catalog. Every tier is ordered preferred-first.
+// Plan overrides replace a whole row and omitted rows inherit.
 export function modelTierSnapshot(host: unknown, plan: unknown): ModelTierSnapshot {
   const h = canonicalHost(host);
   const p = plan === undefined || plan === null || plan === ''
@@ -102,10 +94,6 @@ export function hostModelSnapshot(host: unknown, plan: unknown): HostModelSnapsh
     updatedAt: HOST_MODELS[h].updatedAt,
     tiers: modelTierSnapshot(h, p),
   };
-}
-
-export function modelStatusSnapshot(host: unknown, plan: unknown): ModelStatusResponse {
-  return hostModelSnapshot(host, plan);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -160,55 +148,6 @@ export function parseHostModelSnapshot(value: unknown, expectedHost?: unknown): 
   const tiers = parseTierSnapshot(value.tiers);
   if (!plan || !validDateOnly(value.updatedAt) || !tiers) return null;
   return { plan, updatedAt: value.updatedAt, tiers };
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.length && keys.every((key) => expected.includes(key));
-}
-
-function sameTierSnapshot(left: ModelTierSnapshot, right: ModelTierSnapshot): boolean {
-  return TIER_IDS.every((tier) => {
-    const a = left[tier];
-    const b = right[tier];
-    return a.length === b.length && a.every((model, index) => model === b[index]);
-  });
-}
-
-// Strictly parse the unauthenticated /model-status payload. When the server
-// claims the same catalog date as the applicable local or bundled target-plan
-// baseline, the tier lists must also be byte-for-byte equivalent; otherwise the
-// server changed catalog semantics without bumping its version and the client
-// fails open on local data.
-export function parseModelStatusResponse(
-  value: unknown,
-  options: ParseModelStatusOptions = {},
-): ModelStatusResponse | null {
-  if (!isRecord(value) || !hasExactKeys(value, ['plan', 'updatedAt', 'tiers'])) return null;
-  const host = options.expectedHost === undefined ? undefined : strictHost(options.expectedHost);
-  if (options.expectedHost !== undefined && !host) return null;
-  const snapshot = parseHostModelSnapshot(value, host);
-  if (!snapshot) return null;
-
-  if (options.expectedPlan !== undefined) {
-    if (!planIsRecognized(options.expectedPlan)) return null;
-    const expectedPlan = host
-      ? canonicalPlan(host, options.expectedPlan)
-      : strictPlan(options.expectedPlan);
-    if (!expectedPlan || expectedPlan !== snapshot.plan) return null;
-  }
-  // A same-plan local snapshot is the strongest comparison baseline. On first
-  // use or a plan transition there is no such snapshot, so compare against the
-  // bundled host + target-plan catalog instead. This prevents an endpoint from
-  // silently changing tiers while retaining the bundled catalog date.
-  const comparisons = [
-    ...(options.current?.plan === snapshot.plan ? [options.current] : []),
-    ...(host ? [hostModelSnapshot(host, snapshot.plan)] : []),
-  ];
-  if (comparisons.some((comparison) => comparison.updatedAt === snapshot.updatedAt
-    && !sameTierSnapshot(comparison.tiers, snapshot.tiers))) return null;
-
-  return snapshot;
 }
 
 // True when `passed` matches ANY model in the acceptable set (family-aware).

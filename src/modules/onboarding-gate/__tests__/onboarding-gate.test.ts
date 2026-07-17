@@ -392,6 +392,8 @@ test('existing project with complete local prefs: mutating tools proceed normall
   withProject(existingState(), (cwd) => {
     writeLocalPrefs();
     materializeFixture(cwd);
+    const first = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(first.kind, 'context', 'the first parent action publishes the immutable run/policy context without blocking');
     assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' })).kind, 'noop');
   });
 });

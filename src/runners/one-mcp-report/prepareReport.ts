@@ -1,20 +1,19 @@
 // src/runners/one-mcp-report/prepareReport.ts
 // Decide whether to queue + spawn the fire-and-forget one-mcp report, and do so.
-// Skips unless authed locally, the cwd is a real codebase, and no report id is
-// registered yet. The detached child runs the compiled
+// Skips unless the project explicitly opted in, the cwd is a real codebase, and
+// no report id is registered yet. The detached child runs the compiled
 // scripts/one-mcp-report.cjs.
 
 import { spawn } from 'child_process';
 import * as path from 'path';
 
-import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
-import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { pluginUseEnabled } from '../../shared/state/plugin-use';
 import { hasRealCodebase } from './hasRealCodebase';
-import { MCP_REPORT_ENDPOINT, REPORTING_ACTIVE, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
+import { SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
+import { oneMcpReportingEnabled, publicEndpoint } from '../../config/one-mcp';
 import { nowIso, readJson, stateForReport, writeJson } from './lib';
-import { readReportIdState } from './readReportIdState';
 import { createReportId } from './report-id-mint';
 import { backfillDebugPayload, debugPayloadForReport } from './report-payload';
 import { shouldAttempt } from './shouldAttempt';
@@ -27,6 +26,8 @@ export interface PrepareOptions {
   trigger?: string;
   state?: unknown;
   spawn?: boolean;
+  /** Internal test seam; production callers must omit this build-gate override. */
+  featureEnabled?: boolean;
 }
 export interface PrepareResult {
   started: boolean;
@@ -38,29 +39,28 @@ export interface PrepareResult {
 
 export function prepareReport(cwd: string, options: PrepareOptions = {}): PrepareResult {
   const env = options.env ?? process.env;
-  if (!REPORTING_ACTIVE) return { started: false, reason: 'reporting-inactive' };
-  if (env.TRAFFIC_ONE_DISABLE_ONE_MCP === '1') return { started: false, reason: 'disabled' };
+  if (/^(1|true|on|yes)$/i.test(String(env.TRAFFIC_ONE_DISABLE_ONE_MCP || ''))) {
+    return { started: false, reason: 'disabled' };
+  }
+  if (!oneMcpReportingEnabled(env, options.featureEnabled)) {
+    return { started: false, reason: 'reporting-inactive' };
+  }
   const root = path.resolve(cwd);
-  if (pluginUseDeclined(root, env)) return { started: false, reason: 'plugin-use-declined' };
-  // The plugin's own repo/install is never reported on. Check this before auth:
-  // authoring roots must remain inert without requiring a test-only auth bypass.
+  // The plugin's own repo/install is never reported on. Check this before any
+  // project preference lookup so authoring roots remain entirely inert.
   if (isNonProjectRoot(root)) return { started: false, reason: 'plugin-authoring-root' };
-  // Auth-required ONLY when auth is actually enforced (config/auth AUTH_ENABLED /
-  // TRAFFIC_ONE_AUTH). When enforcement is off, treat as authenticated — so the
-  // first-look report fires in dev/test runs without a real token.
-  if (!isLocallyAuthenticated(env) && authEnforced(env)) return { started: false, reason: 'auth-required' };
+  if (!pluginUseEnabled(root, env)) return { started: false, reason: 'plugin-use-not-enabled' };
   if (!hasRealCodebase(root)) return { started: false, reason: 'no-codebase' };
 
-  const existingIdState = readReportIdState(root);
-  if (existingIdState && existingIdState.invalid) return { started: false, reason: 'invalid-report-id' };
-  if (existingIdState) {
-    const debugPayloadSaved = backfillDebugPayload(root, existingIdState.id, options);
-    return { started: false, reason: 'already-registered', reportId: existingIdState.id, ...(debugPayloadSaved ? { debugPayloadSaved: true } : {}) };
-  }
-
+  // The lock-backed mint is also the one-winner spawn decision. Only the
+  // process that durably creates the id receives `created: true`; contenders
+  // observe that id and return without spawning.
   const idState = createReportId(root);
   if (idState.invalid) return { started: false, reason: 'invalid-report-id' };
-  if (!idState.created) return { started: false, reason: 'already-registered', reportId: idState.id };
+  if (!idState.created) {
+    const debugPayloadSaved = backfillDebugPayload(root, idState.id, options);
+    return { started: false, reason: 'already-registered', reportId: idState.id, ...(debugPayloadSaved ? { debugPayloadSaved: true } : {}) };
+  }
   stageReportId(root);
 
   const statusPath = path.join(root, STATUS_FILE);
@@ -76,7 +76,7 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
     const nextStatus = {
       status: 'queued',
       reportId: idState.id,
-      endpoint: options.endpoint || MCP_REPORT_ENDPOINT,
+      endpoint: options.endpoint || publicEndpoint(env),
       queuedAt: nowIso(),
       lastAttemptAt: status && status.lastAttemptAt ? status.lastAttemptAt : null,
       attempts: status && Number.isInteger(status.attempts) ? status.attempts : 0,
@@ -96,7 +96,7 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
     stdio: 'ignore',
     env: {
       ...env,
-      TRAFFIC_ONE_ONE_MCP_ENDPOINT: options.endpoint || env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || MCP_REPORT_ENDPOINT,
+      TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: options.endpoint || publicEndpoint(env),
     },
   });
   child.unref();

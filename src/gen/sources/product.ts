@@ -91,7 +91,7 @@ export function copilotPluginManifest(version: string): Record<string, unknown> 
     skills: ['./skills/'],
     agents: './agents/',
     hooks: './hooks/hooks-copilot.json',
-    mcpServers: './.mcp.json',
+    mcpServers: './.mcp-copilot.json',
     instructions: './AGENTS.md',
   };
 }

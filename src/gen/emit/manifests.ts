@@ -3,6 +3,12 @@
 // updates every manifest in lockstep.
 
 import { OPENCODE_MCP_SERVER_KEY, openCodeMcpServerEntry } from '../../config/opencode-mcp';
+import {
+  DEFAULT_PUBLIC_ENDPOINT,
+  ONE_MCP_REGISTRATION_ACTIVE,
+  ONE_MCP_SERVER_NAME,
+  assertOneMcpPublicReleaseReady,
+} from '../../config/one-mcp';
 import { pluginVersion } from '../../config/plugin-identity';
 import type { GenRun } from '../lib/run';
 import { generatedAgents } from './agents';
@@ -30,14 +36,42 @@ export function emitManifests(run: GenRun): void {
   run.json('.agents/plugins/marketplace.json', agentsMarketplaceManifest());
 }
 
-export function emitMcp(run: GenRun): void {
+export function emitMcp(
+  run: GenRun,
+  publicRegistrationActive = ONE_MCP_REGISTRATION_ACTIVE,
+  publicEndpoint = DEFAULT_PUBLIC_ENDPOINT,
+  liveManifestVerified = false,
+): void {
+  assertOneMcpPublicReleaseReady({
+    sync: false,
+    registration: publicRegistrationActive,
+    reporting: false,
+  }, publicEndpoint, liveManifestVerified);
+  const bundledWorker = openCodeMcpServerEntry(PLUGIN_ROOT_EXPR);
+  // Shared by Claude, Cursor, and Codex. The public server is deliberately
+  // absent because those plugin formats cannot hide its AI-facing tools while
+  // leaving the endpoint available to the hook runtime.
   run.json('.mcp.json', {
     mcpServers: {
       // The bundled OpenCode delegate. Launched via stdio (sh -c, so the shared
       // plugin-root chain expands) — a host-spawned subprocess runs OUTSIDE the
       // per-tool-call sandbox, which is what lets OpenCode reach the network +
       // git that the orchestrator's own (sandboxed) shell cannot.
-      [OPENCODE_MCP_SERVER_KEY]: openCodeMcpServerEntry(PLUGIN_ROOT_EXPR),
+      [OPENCODE_MCP_SERVER_KEY]: bundledWorker,
+    },
+  });
+  // Copilot supports a server-level tool allowlist. Keep the registration for
+  // discoverability/management but expose zero tools to the model.
+  run.json('.mcp-copilot.json', {
+    mcpServers: {
+      [OPENCODE_MCP_SERVER_KEY]: bundledWorker,
+      ...(publicRegistrationActive ? {
+        [ONE_MCP_SERVER_NAME]: {
+          type: 'http',
+          url: publicEndpoint,
+          tools: [],
+        },
+      } : {}),
     },
   });
 }

@@ -4,6 +4,7 @@
 
 import { toolClassForRawName } from '../core/events';
 import type { CanonicalEvent, ToolInput } from '../core/types';
+import { patchTextFromToolInput } from '../shared/apply-patch';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, asString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
@@ -25,13 +26,17 @@ export function makeDevinAdapter(): HostAdapter {
       const data = asRecord(parseJson<Record<string, unknown>>(raw.stdin, {}));
       const event = normalizeEvent(data.hook_event_name ?? data.hookEventName);
       const rawName = asString(data.tool_name ?? data.toolName);
-      const toolInput = asRecord(data.tool_input ?? data.toolInput);
+      const rawToolInput = data.tool_input ?? data.toolInput;
+      const toolInput = asRecord(rawToolInput);
       let tool: ToolInput | undefined;
       if (rawName) {
         const command = asString(toolInput.command ?? toolInput.cmd);
         const workdir = asString(toolInput.workdir ?? toolInput.cwd);
         const filePath = asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
         const content = asString(toolInput.content ?? toolInput.new_content ?? toolInput.newContent);
+        const patchText = /^(?:apply_patch|patch)$/i.test(rawName.split('.').pop() || '')
+          ? patchTextFromToolInput(rawToolInput, data)
+          : '';
         tool = {
           class: toolClassForRawName(rawName),
           rawName,
@@ -39,6 +44,7 @@ export function makeDevinAdapter(): HostAdapter {
           ...(workdir ? { workdir } : {}),
           ...(filePath ? { filePath } : {}),
           ...(content ? { content } : {}),
+          ...(patchText ? { patchText } : {}),
         };
       }
       const prompt = asString(data.prompt);

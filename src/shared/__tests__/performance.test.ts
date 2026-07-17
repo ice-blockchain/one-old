@@ -27,7 +27,7 @@ test('effectiveTierForRole honors config + overrides; null for low', () => {
 
 test('modelForRoleHost resolves per host; modelForRole gives all columns', () => {
   assert.equal(modelForRoleHost('high', 'senior-architect', 'claude'), 'claude-opus-4-8');
-  assert.equal(modelForRoleHost('high', 'senior-tester', 'codex'), 'gpt-5.4-mini'); // cheapest
+  assert.equal(modelForRoleHost('high', 'senior-tester', 'codex'), 'gpt-5.6-terra'); // cheapest
   assert.equal(modelForRoleHost('high', 'senior-tester', 'kilo'), 'kilo/kilo-auto/free');
   assert.equal(modelForRoleHost('high', 'senior-architect', 'windsurf'), 'SWE-1.7 Beta');
   assert.equal(modelForRoleHost('high', 'senior-tester', 'claude', { 'senior-tester': 'highest' }), 'claude-opus-4-8');

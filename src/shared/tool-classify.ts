@@ -8,6 +8,11 @@ import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
 import type { ToolClass, ToolInput } from '../core/types';
+import {
+  parseApplyPatch,
+  patchOperationPaths,
+  patchTextFromToolInput as canonicalPatchTextFromToolInput,
+} from './apply-patch';
 import { onboardingWaitScriptPath } from './onboarding-server/wait-command';
 import { legacyStatePath, statePath } from './state';
 import { resolveTrafficOneEnv } from './state/traffic-one-paths';
@@ -79,7 +84,7 @@ export function canonicalToolName(tool: ToolInput | undefined): string {
   return nameForClass(tool.class) || tool.rawName || '';
 }
 
-// Synthesize a {command,file_path,content} input from the adapter-parsed tool, for
+// Synthesize a {command,file_path,content,patchText} input from the adapter-parsed tool, for
 // hosts (Cursor) that carry these on the parsed tool rather than in raw.tool_input.
 // Returns null when there's nothing to contribute so callers can `|| {}` cleanly.
 export function parsedToolInput(tool: ToolInput | undefined): Rec | null {
@@ -88,6 +93,7 @@ export function parsedToolInput(tool: ToolInput | undefined): Rec | null {
   if (tool.command) ti.command = tool.command;
   if (tool.filePath) ti.file_path = tool.filePath;
   if (tool.content) ti.content = tool.content;
+  if (tool.patchText) ti.patchText = tool.patchText;
   return Object.keys(ti).length > 0 ? ti : null;
 }
 
@@ -128,23 +134,13 @@ export function existingStateFilePath(cwd: string): string {
   return fs.existsSync(nextPath) ? nextPath : legacyStatePath(cwd);
 }
 
-export function patchTextFromToolInput(toolInput: unknown): string {
-  if (typeof toolInput === 'string') return toolInput;
-  if (!toolInput || typeof toolInput !== 'object') return '';
-  const ti = toolInput as Rec;
-  for (const key of ['patch', 'input', 'content', 'text']) {
-    if (typeof ti[key] === 'string') return ti[key] as string;
-  }
-  return '';
+export function patchTextFromToolInput(...sources: readonly unknown[]): string {
+  return canonicalPatchTextFromToolInput(...sources);
 }
 
 export function patchTouchedFiles(patchText: string): string[] {
-  const files: string[] = [];
-  for (const line of String(patchText || '').split(/\r?\n/)) {
-    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/) || line.match(/^\*\*\* Move to: (.+)$/);
-    if (match) files.push((match[1] as string).trim());
-  }
-  return files;
+  const parsed = parseApplyPatch(patchText);
+  return parsed.ok ? patchOperationPaths(parsed.operations) : [];
 }
 
 export function isStateFileOnlyPatch(toolName: unknown, toolInput: unknown): boolean {
@@ -307,6 +303,15 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
     if (arg.startsWith('--seed-prompt=')) {
       if (!use || seen.has('seed-prompt')) return null;
       seen.add('seed-prompt');
+      continue;
+    }
+    // Generated wizard commands may carry the parent hook session so the
+    // public model sync is shared with SessionStart. The generator normalizes
+    // this to the once-marker alphabet and a 96-byte ceiling; enforce that
+    // exact bounded shape here so arbitrary command fragments never pass.
+    if (/^--sync-session=[A-Za-z0-9._-]{1,96}$/.test(arg)) {
+      if (decline || seen.has('sync-session')) return null;
+      seen.add('sync-session');
       continue;
     }
     if (arg === '--quiet-url') {

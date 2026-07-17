@@ -40,7 +40,7 @@ export function modelGateShell(ctx: Ctx): HookResult {
   if (!isModelGateCommand(toolName, toolInput)) return noop();
   if (isModelCaptureCommand(toolName, toolInput)) return noop();
 
-  const state = readEffectiveState(ctx.cwd);
+  const state = readEffectiveState(ctx.cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
   if (!state || (state as Record<string, unknown>).mode !== 'new-project') return noop();
   const picks = cursorUnavailablePicks(ctx.cwd, state as Record<string, unknown>);
   if (!picks.length) return noop(); // every picked model is offered → let the command run (allow)
@@ -70,7 +70,7 @@ export function modelGateAfterShell(ctx: Ctx): HookResult {
   if (isModelCaptureCommand(toolName, toolInput)) return noop();
   if (!shellExitFailed(raw)) return noop();
 
-  const state = readEffectiveState(ctx.cwd);
+  const state = readEffectiveState(ctx.cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
   if (!state || (state as Record<string, unknown>).mode !== 'new-project') return noop();
   const stop = formatModelChoiceRequiredStop(ctx.cwd, state as Record<string, unknown>);
   const visible = cursorPickedModelUnavailableNotice(ctx.cwd, state as Record<string, unknown>) || stop;

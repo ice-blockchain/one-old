@@ -36,6 +36,16 @@ test('windsurf: pre_write_code maps edits and content', () => {
   assert.equal(parsed.tool?.content, 'b');
 });
 
+test('windsurf: pre_write_code canonicalizes an explicit apply_patch payload', () => {
+  const parsed = windsurf.parse(inv('pre_write_code', {
+    tool_name: 'apply_patch',
+    patchText: '*** Begin Patch',
+    cwd: '/repo',
+  }));
+  assert.equal(parsed.tool?.rawName, 'apply_patch');
+  assert.equal(parsed.tool?.patchText, '*** Begin Patch');
+});
+
 test('windsurf: pre_user_prompt maps prompt text', () => {
   const parsed = windsurf.parse(inv('pre_user_prompt', { user_prompt: 'build a dashboard' }, { workspace_root: '/repo' }));
   assert.equal(parsed.event, 'UserPromptSubmit');

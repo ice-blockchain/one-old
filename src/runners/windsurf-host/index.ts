@@ -98,17 +98,32 @@ function writeWindsurfPluginRootStamp(pluginRoot: string, env: NodeJS.ProcessEnv
   }
 }
 
-function ownedHookEntry(entry: unknown): boolean {
+function readWindsurfPluginRootStamp(env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    const value = fs.readFileSync(windsurfPluginRootStamp(env), 'utf8').trim();
+    return value && path.isAbsolute(value) ? path.normalize(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function ownedPluginRoots(pluginRoot: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const stamped = readWindsurfPluginRootStamp(env);
+  return [...new Set([pluginRoot, ...(stamped ? [stamped] : [])])];
+}
+
+function ownedHookEntry(entry: unknown, event: WindsurfHookEvent, pluginRoots: readonly string[]): boolean {
   if (!entry || typeof entry !== 'object') return false;
   const command = (entry as Rec).command;
-  return typeof command === 'string' && command.includes('windsurf-hook-runtime.cjs');
+  return typeof command === 'string'
+    && pluginRoots.some((pluginRoot) => command === windsurfUserHookCommand(pluginRoot, event));
 }
 
 function hookCommand(pluginRoot: string, event: WindsurfHookEvent): string {
   return windsurfUserHookCommand(pluginRoot, event);
 }
 
-function ensureHooks(file: string, pluginRoot: string): boolean {
+function ensureHooks(file: string, pluginRoot: string, pluginRoots: readonly string[]): boolean {
   const config = readJsonObject(file);
   const hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks)
     ? config.hooks as Rec
@@ -118,7 +133,7 @@ function ensureHooks(file: string, pluginRoot: string): boolean {
   for (const event of WINDSURF_HOOK_EVENTS) {
     const current = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [];
     const next = [
-      ...current.filter((entry) => !ownedHookEntry(entry)),
+      ...current.filter((entry) => !ownedHookEntry(entry, event, pluginRoots)),
       { command: hookCommand(pluginRoot, event), show_output: true },
     ];
     if (JSON.stringify(current) !== JSON.stringify(next)) {
@@ -130,7 +145,7 @@ function ensureHooks(file: string, pluginRoot: string): boolean {
   return changed;
 }
 
-function removeHooks(file: string): boolean {
+function removeHooks(file: string, pluginRoots: readonly string[]): boolean {
   if (!fs.existsSync(file)) return false;
   const config = readJsonObject(file);
   const hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks)
@@ -139,7 +154,10 @@ function removeHooks(file: string): boolean {
   let changed = false;
   for (const event of Object.keys(hooks)) {
     const current = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [];
-    const next = current.filter((entry) => !ownedHookEntry(entry));
+    const next = current.filter((entry) => (
+      !WINDSURF_HOOK_EVENTS.includes(event as WindsurfHookEvent)
+      || !ownedHookEntry(entry, event as WindsurfHookEvent, pluginRoots)
+    ));
     if (next.length !== current.length) {
       if (next.length) hooks[event] = next;
       else delete hooks[event];
@@ -150,10 +168,12 @@ function removeHooks(file: string): boolean {
   return changed;
 }
 
-function ownedDevinCommand(entry: unknown): boolean {
+function ownedDevinCommand(entry: unknown, pluginRoots: readonly string[]): boolean {
   if (!entry || typeof entry !== 'object') return false;
   const command = (entry as Rec).command;
-  return typeof command === 'string' && command.includes('devin-hook-runtime.cjs');
+  return typeof command === 'string' && pluginRoots.some((pluginRoot) => (
+    DEVIN_NATIVE_HOOKS.some((spec) => command === devinUserHookCommand(pluginRoot, spec.subcommand))
+  ));
 }
 
 function asHookEntries(group: unknown): unknown[] {
@@ -162,7 +182,7 @@ function asHookEntries(group: unknown): unknown[] {
   return Array.isArray(entries) ? entries : [];
 }
 
-function withoutOwnedDevinHooks(groups: unknown[]): unknown[] {
+function withoutOwnedDevinHooks(groups: unknown[], pluginRoots: readonly string[]): unknown[] {
   const next: unknown[] = [];
   for (const group of groups) {
     if (!group || typeof group !== 'object' || Array.isArray(group)) {
@@ -171,7 +191,7 @@ function withoutOwnedDevinHooks(groups: unknown[]): unknown[] {
     }
     const rec = { ...(group as Rec) };
     const entries = Array.isArray(rec.hooks) ? rec.hooks as unknown[] : [];
-    const kept = entries.filter((entry) => !ownedDevinCommand(entry));
+    const kept = entries.filter((entry) => !ownedDevinCommand(entry, pluginRoots));
     if (kept.length > 0) {
       rec.hooks = kept;
       next.push(rec);
@@ -182,14 +202,17 @@ function withoutOwnedDevinHooks(groups: unknown[]): unknown[] {
   return next;
 }
 
-function ensureDevinHooks(file: string, pluginRoot: string): boolean {
+function ensureDevinHooks(file: string, pluginRoot: string, pluginRoots: readonly string[]): boolean {
   const config = readJsonObject(file);
   const hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks)
     ? config.hooks as Rec
     : {};
   const nextHooks: Rec = { ...hooks };
   for (const event of new Set(DEVIN_NATIVE_HOOKS.map((spec) => spec.event))) {
-    nextHooks[event] = withoutOwnedDevinHooks(Array.isArray(hooks[event]) ? hooks[event] as unknown[] : []);
+    nextHooks[event] = withoutOwnedDevinHooks(
+      Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [],
+      pluginRoots,
+    );
   }
   for (const spec of DEVIN_NATIVE_HOOKS) {
     const groups = nextHooks[spec.event] as unknown[];
@@ -208,7 +231,7 @@ function ensureDevinHooks(file: string, pluginRoot: string): boolean {
   return changed;
 }
 
-function removeDevinHooks(file: string): boolean {
+function removeDevinHooks(file: string, pluginRoots: readonly string[]): boolean {
   if (!fs.existsSync(file)) return false;
   const config = readJsonObject(file);
   const hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks)
@@ -218,7 +241,7 @@ function removeDevinHooks(file: string): boolean {
   let changed = false;
   for (const event of Object.keys(hooks)) {
     const current = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [];
-    const next = withoutOwnedDevinHooks(current);
+    const next = withoutOwnedDevinHooks(current, pluginRoots);
     if (JSON.stringify(current) !== JSON.stringify(next)) {
       changed = true;
       if (next.length > 0) nextHooks[event] = next;
@@ -283,11 +306,12 @@ export function installWrapper(env: NodeJS.ProcessEnv = process.env, args: reado
     return { code: 2, stdout: 'Traffic One Windsurf install mutates user-level Windsurf config. Re-run with --yes to confirm.\n' };
   }
   const pluginRoot = runtimePluginRoot(env);
+  const pluginRoots = ownedPluginRoots(pluginRoot, env);
   const hooksFile = windsurfHooksPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
-  const hooksChanged = ensureHooks(hooksFile, pluginRoot);
-  const devinChanged = ensureDevinHooks(devinFile, pluginRoot);
+  const hooksChanged = ensureHooks(hooksFile, pluginRoot, pluginRoots);
+  const devinChanged = ensureDevinHooks(devinFile, pluginRoot, pluginRoots);
   const globalRules = ensureGlobalRules(rulesFile, pluginRoot);
   writeWindsurfPluginRootStamp(pluginRoot, env);
   return {
@@ -310,8 +334,9 @@ export function uninstallWrapper(env: NodeJS.ProcessEnv = process.env, args: rea
   const hooksFile = windsurfHooksPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
-  const hooksChanged = removeHooks(hooksFile);
-  const devinChanged = removeDevinHooks(devinFile);
+  const pluginRoots = ownedPluginRoots(runtimePluginRoot(env), env);
+  const hooksChanged = removeHooks(hooksFile, pluginRoots);
+  const devinChanged = removeDevinHooks(devinFile, pluginRoots);
   const rulesChanged = removeGlobalRules(rulesFile);
   return {
     code: 0,
@@ -327,13 +352,14 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
   const hooksFile = windsurfHooksPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
+  const pluginRoots = ownedPluginRoots(runtimePluginRoot(env), env);
   const issues: string[] = [];
   try {
     const hooksConfig = readJsonObject(hooksFile);
     const hooks = hooksConfig.hooks && typeof hooksConfig.hooks === 'object' && !Array.isArray(hooksConfig.hooks) ? hooksConfig.hooks as Rec : {};
     for (const event of WINDSURF_HOOK_EVENTS) {
       const entries = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [];
-      if (!entries.some(ownedHookEntry)) issues.push(`missing Cascade hook ${event}`);
+      if (!entries.some((entry) => ownedHookEntry(entry, event, pluginRoots))) issues.push(`missing Cascade hook ${event}`);
     }
   } catch (error) {
     issues.push(`Cascade hooks config unreadable: ${error instanceof Error ? error.message : String(error)}`);
@@ -347,7 +373,8 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
         const entries = asHookEntries(group);
         return entries.some((entry) => {
           const command = entry && typeof entry === 'object' ? (entry as Rec).command : undefined;
-          return typeof command === 'string' && command.includes('devin-hook-runtime.cjs') && command.includes(` ${spec.subcommand} `);
+          return typeof command === 'string'
+            && pluginRoots.some((pluginRoot) => command === devinUserHookCommand(pluginRoot, spec.subcommand));
         });
       });
       if (!present) issues.push(`missing Devin Local hook ${spec.event}/${spec.subcommand}`);

@@ -14,7 +14,10 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { makeCursorAdapter } from '../adapters/cursor';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { cursorPreToolDeny, isCursorPreToolSubcommand } from './fail-closed';
+import { cursorPreToolDeny, hasValidHookObjectPayload, isCursorPreToolSubcommand } from './fail-closed';
+import { asRecord, firstString } from '../adapters/coerce';
+import { parseJson } from '../shared/fsjson';
+import { canonicalOneMcpServerHint, isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -25,12 +28,26 @@ function sessionStartFallback(message: string): string {
   return JSON.stringify({ additional_context: message });
 }
 
+function isManagedCursorMcpInvocation(stdin: string): boolean {
+  const data = asRecord(parseJson<Record<string, unknown>>(stdin, {}));
+  return isManagedOneMcpPair(
+    canonicalOneMcpServerHint(firstString(data.mcp_server_name, data.mcpServerName, data.server_name, data.serverName, data.server, data.command, data.url)),
+    firstString(data.mcp_tool_name, data.mcpToolName, data.tool_name, data.toolName, data.name),
+  );
+}
+
 export async function runCursorHook(
   subcommand: string | undefined,
   stdin: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: CURSOR_NOOP, exitCode: 0 };
+  if (isCursorPreToolSubcommand(subcommand) && !hasValidHookObjectPayload(stdin)) {
+    return { stdout: cursorPreToolDeny(), exitCode: 0 };
+  }
+  if (subcommand === 'before-mcp-execution' && isManagedCursorMcpInvocation(stdin)) {
+    return { stdout: cursorPreToolDeny(ONE_MCP_AGENT_TOOL_DENY_REASON), exitCode: 0 };
+  }
   try {
     const adapter = makeCursorAdapter();
     const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));

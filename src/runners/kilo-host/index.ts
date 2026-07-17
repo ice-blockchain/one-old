@@ -15,7 +15,9 @@ import {
   KILO_HOOK_SYSTEM_TRANSFORM,
   KILO_HOOK_TOOL_AFTER,
   KILO_HOOK_TOOL_BEFORE,
+  KILO_HOST_GLOBAL_CONFIG_DEFAULT_FILE,
   KILO_HOST_GLOBAL_CONFIG_DIR_REL,
+  KILO_HOST_GLOBAL_CONFIG_FILES,
   KILO_HOST_GLOBAL_PLUGIN_FILE,
   KILO_HOST_GLOBAL_PLUGIN_ID,
   KILO_HOST_GLOBAL_PLUGINS_REL,
@@ -23,6 +25,8 @@ import {
   KILO_HOST_PROJECT_MARKER_REL,
   KILO_HOST_TARGET_VERSION,
 } from '../../config/kilo-host';
+import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME, oneMcpRegistrationEnabled, publicEndpoint } from '../../config/one-mcp';
+import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../../shared/one-mcp-agent-tools';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
@@ -40,6 +44,15 @@ export function kiloConfigDir(env: NodeJS.ProcessEnv = process.env): string {
 
 export function kiloGlobalPluginPath(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(kiloConfigDir(env), KILO_HOST_GLOBAL_PLUGINS_REL, KILO_HOST_GLOBAL_PLUGIN_FILE);
+}
+
+export function kiloGlobalConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = kiloConfigDir(env);
+  for (const file of KILO_HOST_GLOBAL_CONFIG_FILES) {
+    const candidate = path.join(dir, file);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(dir, KILO_HOST_GLOBAL_CONFIG_DEFAULT_FILE);
 }
 
 function runtimePluginRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -164,6 +177,153 @@ function jsString(value: string): string {
   return JSON.stringify(value);
 }
 
+type JsonObject = Record<string, unknown>;
+type ConfigUpdate = { ok: true; path: string; changed: boolean } | { ok: false; path: string; error: string };
+
+function stripJsonc(input: string): string {
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i] || '';
+    const next = input[i + 1] || '';
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < input.length && input[i] !== '\n') i += 1;
+      out += '\n';
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < input.length && !(input[i] === '*' && input[i + 1] === '/')) i += 1;
+      i += 1;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function removeTrailingCommas(input: string): string {
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i] || '';
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === ',') {
+      let j = i + 1;
+      while (/\s/.test(input[j] || '')) j += 1;
+      if (input[j] === '}' || input[j] === ']') continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function parseJsoncObject(file: string): JsonObject | null {
+  if (!fs.existsSync(file)) return {};
+  const parsed = JSON.parse(removeTrailingCommas(stripJsonc(fs.readFileSync(file, 'utf8')))) as unknown;
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as JsonObject : null;
+}
+
+function jsonObject(value: unknown): JsonObject | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null;
+}
+
+function managedPermissionKey(tool: string): string {
+  return `${ONE_MCP_SERVER_NAME}_${tool}`;
+}
+
+function writeConfig(file: string, config: JsonObject): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+}
+
+function ensureOneMcpDisabled(env: NodeJS.ProcessEnv = process.env): ConfigUpdate {
+  const file = kiloGlobalConfigPath(env);
+  let config: JsonObject | null;
+  try {
+    config = parseJsoncObject(file);
+  } catch (error) {
+    return { ok: false, path: file, error: `Could not parse Kilo global config: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (!config) return { ok: false, path: file, error: 'Kilo global config must be a JSON object.' };
+  let changed = false;
+  if (!('$schema' in config)) { config.$schema = 'https://app.kilo.ai/config.json'; changed = true; }
+  if (config.mcp === undefined) { config.mcp = {}; changed = true; }
+  const mcp = jsonObject(config.mcp);
+  if (!mcp) return { ok: false, path: file, error: 'Kilo global config `mcp` must be an object.' };
+  if (mcp[ONE_MCP_SERVER_NAME] === undefined) {
+    mcp[ONE_MCP_SERVER_NAME] = {
+      type: 'remote',
+      url: publicEndpoint(env),
+      enabled: false,
+      oauth: false,
+    };
+    changed = true;
+  }
+  if (config.permission === undefined) { config.permission = {}; changed = true; }
+  const permission = jsonObject(config.permission);
+  if (!permission) return { ok: false, path: file, error: 'Kilo global config `permission` must be an object.' };
+  for (const tool of ONE_MCP_MANAGED_TOOLS) {
+    const key = managedPermissionKey(tool);
+    if (permission[key] === undefined) { permission[key] = 'deny'; changed = true; }
+  }
+  if (changed) writeConfig(file, config);
+  return { ok: true, path: file, changed };
+}
+
+function oneMcpDisabledStatus(env: NodeJS.ProcessEnv = process.env): ConfigUpdate {
+  const file = kiloGlobalConfigPath(env);
+  let config: JsonObject | null;
+  try {
+    config = parseJsoncObject(file);
+  } catch (error) {
+    return { ok: false, path: file, error: `Could not parse Kilo global config: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (!config) return { ok: false, path: file, error: 'Kilo global config must be a JSON object.' };
+  const mcp = jsonObject(config.mcp);
+  const entry = mcp ? jsonObject(mcp[ONE_MCP_SERVER_NAME]) : null;
+  if (!entry) return { ok: false, path: file, error: `Kilo global config is missing mcp.${ONE_MCP_SERVER_NAME}.` };
+  if (entry.enabled !== false) {
+    return { ok: false, path: file, error: `Kilo mcp.${ONE_MCP_SERVER_NAME} is user-owned or enabled; Traffic One leaves it untouched and relies on the universal tool deny.` };
+  }
+  const permission = jsonObject(config.permission);
+  for (const tool of ONE_MCP_MANAGED_TOOLS) {
+    if (permission?.[managedPermissionKey(tool)] !== 'deny') {
+      return { ok: false, path: file, error: `Kilo global config is missing deny permission for ${managedPermissionKey(tool)}.` };
+    }
+  }
+  return { ok: true, path: file, changed: false };
+}
+
 export function wrapperSource(pluginRoot: string, installedAt = new Date().toISOString()): string {
   const owner = { ...ownerRecord(pluginRoot), installedAt };
   return `// GENERATED BY traffic-one - Kilo host wrapper.
@@ -182,6 +342,9 @@ const __require = createRequire(import.meta.url);
 const TRAFFIC_ONE_PLUGIN_ROOT = ${jsString(pluginRoot)};
 const TRAFFIC_ONE_RUNTIME = path.join(TRAFFIC_ONE_PLUGIN_ROOT, 'scripts', 'kilo-hook-runtime.cjs');
 const TRAFFIC_ONE_ACTIVATION_REL = ${JSON.stringify(KILO_HOST_PROJECT_MARKER_REL.split('/'))};
+const TRAFFIC_ONE_MANAGED_MCP_TOOLS = new Set(${JSON.stringify(
+  ONE_MCP_MANAGED_TOOLS.map((tool) => `${ONE_MCP_SERVER_NAME}_${tool}`),
+)});
 const TRAFFIC_ONE_SESSION_ROOTS = new Map();
 let TRAFFIC_ONE_NODE = '';
 
@@ -194,6 +357,10 @@ function firstString(...values) {
     if (typeof value === 'string' && value.trim()) return value;
   }
   return '';
+}
+
+function isManagedOneMcpTool(rawName) {
+  return TRAFFIC_ONE_MANAGED_MCP_TOOLS.has(firstString(rawName));
 }
 
 function rememberSessionRoot(sessionID, ...dirs) {
@@ -587,7 +754,11 @@ function appendPromptContext(output, result) {
 }
 
 async function beforeTool(input, output, pluginCtx) {
-  const result = runTrafficOne('before-tool-use', normalizeToolPayload(${jsString(KILO_HOOK_TOOL_BEFORE)}, input, output, pluginCtx));
+  const payload = normalizeToolPayload(${jsString(KILO_HOOK_TOOL_BEFORE)}, input, output, pluginCtx);
+  if (isManagedOneMcpTool(payload.tool_name)) {
+    throw new Error(${JSON.stringify(ONE_MCP_AGENT_TOOL_DENY_REASON)});
+  }
+  const result = runTrafficOne('before-tool-use', payload);
   if (result && result.kind === 'deny') {
     throw new Error(denyMessage(result) || 'Traffic One denied this Kilo tool call.');
   }
@@ -671,7 +842,11 @@ export default {
 `;
 }
 
-export function installWrapper(env: NodeJS.ProcessEnv = process.env, argv: readonly string[] = process.argv.slice(2)): RunnerOutput {
+export function installWrapper(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv.slice(2),
+  registrationFeatureEnabled?: boolean,
+): RunnerOutput {
   if (!argv.includes('--yes')) {
     return {
       code: 2,
@@ -691,7 +866,17 @@ export function installWrapper(env: NodeJS.ProcessEnv = process.env, argv: reado
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, wrapperSource(pluginRoot), 'utf8');
-  return { code: 0, stdout: `Installed Traffic One Kilo wrapper at ${file}\nRestart Kilo to load or refresh global plugins.\n` };
+  const registrationEnabled = oneMcpRegistrationEnabled(env, registrationFeatureEnabled);
+  if (registrationEnabled) {
+    const config = ensureOneMcpDisabled(env);
+    if (!config.ok) {
+      return { code: 1, stdout: '', stderr: `${config.error}\nwrapper: ${file}\nconfig: ${config.path}\n` };
+    }
+  }
+  const registrationLine = registrationEnabled
+    ? `Registered disabled traffic-one-mcp in ${kiloGlobalConfigPath(env)}\n`
+    : 'Public traffic-one-mcp registration is disabled by Traffic One configuration.\n';
+  return { code: 0, stdout: `Installed Traffic One Kilo wrapper at ${file}\n${registrationLine}Restart Kilo to load or refresh global plugins.\n` };
 }
 
 export function enableProject(env: NodeJS.ProcessEnv = process.env, argv: readonly string[] = process.argv.slice(2)): RunnerOutput {
@@ -761,7 +946,11 @@ export function uninstallWrapper(env: NodeJS.ProcessEnv = process.env, argv: rea
   return { code: 0, stdout: `Removed Traffic One Kilo wrapper at ${file}\n` };
 }
 
-export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, argv: readonly string[] = process.argv.slice(2)): RunnerOutput {
+export function doctorWrapper(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv.slice(2),
+  registrationFeatureEnabled?: boolean,
+): RunnerOutput {
   const file = kiloGlobalPluginPath(env);
   const owner = readOwner(file);
   if (!fs.existsSync(file)) {
@@ -772,6 +961,10 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, argv: readon
   }
   const currentRoot = runtimePluginRoot(env);
   const current = path.resolve(owner.pluginRoot) === path.resolve(currentRoot);
+  const registrationEnabled = oneMcpRegistrationEnabled(env, registrationFeatureEnabled);
+  const config = registrationEnabled
+    ? oneMcpDisabledStatus(env)
+    : { ok: true as const, path: kiloGlobalConfigPath(env), changed: false as const };
   const projectArg = explicitCwdArg(argv);
   let projectSection = '';
   let projectOk = true;
@@ -788,8 +981,8 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, argv: readon
     projectSection = `projectActivation: ${status}\nprojectRoot: ${projectRoot}\nprojectMarker: ${marker}\n`;
   }
   return {
-    code: current && projectOk ? 0 : 1,
-    stdout: `${current ? 'ok' : 'owned-by-other-install'}: ${file}\npluginRoot: ${owner.pluginRoot}\ntargetKilo: ${owner.targetKilo || KILO_HOST_TARGET_VERSION}\nloadModel: auto-loaded from Kilo global plugin directory\n${projectSection}`,
+    code: current && projectOk && config.ok ? 0 : 1,
+    stdout: `${current ? 'ok' : 'owned-by-other-install'}: ${file}\npluginRoot: ${owner.pluginRoot}\ntargetKilo: ${owner.targetKilo || KILO_HOST_TARGET_VERSION}\nconfig: ${registrationEnabled ? (config.ok ? 'ok' : `error: ${config.error}`) : 'registration-disabled'} (${config.path})\nloadModel: auto-loaded from Kilo global plugin directory\n${projectSection}`,
   };
 }
 

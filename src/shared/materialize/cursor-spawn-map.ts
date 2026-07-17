@@ -9,11 +9,20 @@ import { currentAcceptableModels } from '../current-model-tiers';
 import { buildTeamLineup } from '../onboarding-server/flow';
 import { modelForRoleHost } from '../performance';
 import { obj } from '../obj';
+import { policyModelsForExpected, readRunModelPolicy, type RunModelPolicyV1 } from '../run-model-policy';
 import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
 type Rec = Record<string, unknown>;
 
-export function resolveCursorTierSlug(cwd: string, tierFamily: string, plan?: string): string {
+export function resolveCursorTierSlug(cwd: string, tierFamily: string, plan?: string, runId?: string): string {
+  const policy = runId ? readRunModelPolicy(cwd, runId) : null;
+  if (runId && (!policy || policy.host !== 'cursor')) return tierFamily;
+  if (policy) {
+    return pickCursorSlug(
+      policyModelsForExpected(policy, tierFamily),
+      policy.cursorAvailableModels || [],
+    ) || tierFamily;
+  }
   const captured = freshCursorModels(cwd, plan ?? detectHostPlan('cursor'));
   if (!captured.length) return tierFamily;
   const activePlan = plan ?? detectHostPlan('cursor');
@@ -27,7 +36,32 @@ export function isBareCursorTierFamily(slug: string, tierFamily: string): boolea
   return s.length > 0 && s === f;
 }
 
+function frozenCursorSpawnModelMap(policy: RunModelPolicyV1): Record<string, string> {
+  if (policy.host !== 'cursor') return {};
+  const captured = [...(policy.cursorAvailableModels || [])];
+  if (!captured.length) return {};
+  const map: Record<string, string> = {};
+  for (const role of AGENT_ROLES) {
+    const rolePolicy = policy.roles[role];
+    if (!rolePolicy) continue;
+    const exact = pickCursorSlug(rolePolicy.acceptableModels, captured);
+    if (exact) map[role] = exact;
+  }
+  return map;
+}
+
 export function buildCursorSpawnModelMap(cwd: string, state: Rec): Record<string, string> {
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (runId) {
+    const policy = readRunModelPolicy(cwd, runId);
+    // A published run never falls back to mutable plan/catalog/preferences. An
+    // absent or corrupt snapshot therefore produces no spawn map (the caller's
+    // parent gate turns that into an explicit fail-closed stop).
+    return policy ? frozenCursorSpawnModelMap(policy) : {};
+  }
+
+  // Before the parent has minted a run, onboarding may show a capture preview.
+  // This is the only path allowed to inspect the current mutable target.
   const team = obj(state.team);
   const performance = obj(state.performance);
   const level = performance && typeof performance.level === 'string' ? performance.level : '';

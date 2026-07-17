@@ -9,13 +9,10 @@ import {
   ONE_SETTINGS_LOCK_TIMEOUT_MS,
   deleteOneSection,
   oneSettingsPath,
-  readOneHostSettings,
   readOneSettings,
   updateOneSettings,
-  writeOneHostSettings,
   writeOneSection,
 } from '../one-settings';
-import { hostModelSnapshot } from '../model-tiers';
 import {
   applyGlobalCodeGraphProvider,
   readGlobalCodeGraphProvider,
@@ -103,54 +100,28 @@ test('readOneSettings on a missing file returns safe defaults', () => {
     assert.equal(s.schemaVersion, 3);
     assert.equal(s.auth, undefined);
     assert.equal(s.codeGraphProvider, null);
-    assert.deepEqual(s.hosts, {});
   });
 });
 
-test('host model snapshots round-trip per host and survive unrelated section writes/deletes', () => {
+test('one.json writers preserve unknown raw sections and remove the retired hosts mirror', () => {
   withStore((file) => {
-    const codex = hostModelSnapshot('codex', 'pro');
-    const cursor = hostModelSnapshot('cursor', 'max');
-    writeOneHostSettings('codex', codex);
-    writeOneHostSettings('cursor', cursor);
-    writeOneSection('auth', { version: 1, authenticated: true, apiKey: 'sk-x', updatedAt: '2026-07-15T00:00:00Z' });
+    fs.writeFileSync(file, `${JSON.stringify({
+      schemaVersion: 3,
+      auth: { version: 1, authenticated: true, apiKey: 'sk-keep', updatedAt: '2026-07-15T00:00:00Z' },
+      codeGraphProvider: 'graphify',
+      futureSection: { writtenBy: 'newer-host', nested: { keep: true } },
+      hosts: { cursor: { obsolete: true } },
+    }, null, 2)}\n`, 'utf8');
+
     writeOneSection('codeGraphProvider', 'gitnexus');
     assert.equal(deleteOneSection('auth'), true);
 
-    assert.deepEqual(readOneHostSettings('codex'), codex);
-    assert.deepEqual(readOneHostSettings('cursor'), cursor);
-    const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.deepEqual(Object.keys(onDisk.hosts).sort(), ['codex', 'cursor']);
-    assert.equal(onDisk.schemaVersion, 3);
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
-  });
-});
-
-test('updateOneSettings merges hosts by host key instead of replacing the catalog', () => {
-  withStore(() => {
-    const codex = hostModelSnapshot('codex', 'pro');
-    const cursor = hostModelSnapshot('cursor', 'pro');
-    updateOneSettings({ hosts: { codex } });
-    updateOneSettings({ hosts: { cursor } });
-    assert.deepEqual(readOneSettings().hosts, { codex, cursor });
-  });
-});
-
-test('readOneSettings drops malformed host snapshots without losing valid hosts', () => {
-  withStore((file) => {
-    const codex = hostModelSnapshot('codex', 'pro');
-    fs.writeFileSync(file, JSON.stringify({
-      schemaVersion: 3,
-      auth: { version: 1, authenticated: true, apiKey: 'sk-keep', updatedAt: '2026-07-15T00:00:00Z' },
-      hosts: {
-        codex,
-        cursor: { ...hostModelSnapshot('cursor', 'pro'), tiers: { highest: ['bad\nmodel'], balanced: ['ok'], cheapest: ['ok'] } },
-        unknown: hostModelSnapshot('codex', 'pro'),
-      },
-    }), 'utf8');
-    const settings = readOneSettings();
-    assert.deepEqual(settings.hosts, { codex });
-    assert.equal(settings.auth?.apiKey, 'sk-keep');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    assert.deepEqual(raw.futureSection, { writtenBy: 'newer-host', nested: { keep: true } });
+    assert.equal('hosts' in raw, false);
+    assert.equal(raw.codeGraphProvider, 'gitnexus');
+    assert.equal('auth' in raw, false);
+    assert.equal(raw.schemaVersion, 3);
   });
 });
 
@@ -165,7 +136,7 @@ test('one.json lock wait is bounded and never steals a live lock', () => {
       'utf8',
     );
     const started = Date.now();
-    assert.throws(() => writeOneHostSettings('codex', hostModelSnapshot('codex', 'pro')), /lock|busy|timed out/i);
+    assert.throws(() => writeOneSection('codeGraphProvider', 'gitnexus'), /lock|busy|timed out/i);
     const elapsed = Date.now() - started;
     assert.ok(elapsed >= ONE_SETTINGS_LOCK_TIMEOUT_MS - 50, `waited for bounded lock window (${elapsed}ms)`);
     assert.ok(elapsed < ONE_SETTINGS_LOCK_TIMEOUT_MS + 1_000, `did not wait indefinitely (${elapsed}ms)`);
@@ -194,7 +165,7 @@ test('stale recovery never reaps a fresh replacement owner', () => {
       'utf8',
     );
 
-    assert.throws(() => writeOneHostSettings('codex', hostModelSnapshot('codex', 'pro')), /lock|timed out/i);
+    assert.throws(() => writeOneSection('codeGraphProvider', 'gitnexus'), /lock|timed out/i);
     assert.equal(fs.existsSync(path.join(lockDir, `owner-${freshToken}.json`)), true);
     assert.equal(fs.existsSync(file), false);
   });
@@ -211,10 +182,27 @@ test('an abandoned single-owner settings lock is recovered safely', () => {
       'utf8',
     );
 
-    const snapshot = hostModelSnapshot('codex', 'pro');
-    writeOneHostSettings('codex', snapshot);
-    assert.deepEqual(readOneHostSettings('codex'), snapshot);
+    writeOneSection('codeGraphProvider', 'gitnexus');
+    assert.equal(readOneSettings().codeGraphProvider, 'gitnexus');
     assert.equal(fs.existsSync(lockDir), false);
+  });
+});
+
+test('an old empty settings lock left by an interrupted release is recovered', () => {
+  withStore((file) => {
+    const lockDir = `${file}.lock`;
+    fs.mkdirSync(lockDir, { recursive: true });
+    const abandonedAt = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockDir, abandonedAt, abandonedAt);
+
+    writeOneSection('codeGraphProvider', 'graphify');
+
+    assert.equal(readOneSettings().codeGraphProvider, 'graphify');
+    assert.equal(fs.existsSync(lockDir), false);
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(file)).filter((name) => name.endsWith('.released')),
+      [],
+    );
   });
 });
 
@@ -229,25 +217,25 @@ test('an old lock held by a live process is never reaped by age alone', () => {
       'utf8',
     );
 
-    assert.throws(() => writeOneHostSettings('codex', hostModelSnapshot('codex', 'pro')), /lock|timed out/i);
+    assert.throws(() => writeOneSection('codeGraphProvider', 'gitnexus'), /lock|timed out/i);
     assert.equal(fs.existsSync(path.join(lockDir, `owner-${token}.json`)), true);
     assert.equal(fs.existsSync(file), false);
   });
 });
 
-test('concurrent host writers preserve both host snapshots', async () => {
+test('concurrent auth and codeGraphProvider writers preserve both sections', async () => {
   await withStoreAsync(async (file) => {
     const modulePath = path.resolve(__dirname, '..', 'one-settings.ts');
-    const modelModulePath = path.resolve(__dirname, '..', 'model-tiers.ts');
     const childSource = [
-      `const { writeOneHostSettings } = require(${JSON.stringify(modulePath)});`,
-      `const { hostModelSnapshot } = require(${JSON.stringify(modelModulePath)});`,
-      'const host = process.argv[1];',
-      'const plan = process.argv[2];',
-      'for (let i = 0; i < 20; i += 1) writeOneHostSettings(host, hostModelSnapshot(host, plan));',
+      `const { writeOneSection } = require(${JSON.stringify(modulePath)});`,
+      'const section = process.argv[1];',
+      "const value = section === 'auth'",
+      "  ? { version: 1, authenticated: true, apiKey: 'sk-concurrent', updatedAt: '2026-07-15T00:00:00Z' }",
+      "  : 'gitnexus';",
+      'for (let i = 0; i < 20; i += 1) writeOneSection(section, value);',
     ].join(' ');
-    const run = (host: string, plan: string) => new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, ['--import', 'tsx', '-e', childSource, host, plan], {
+    const run = (section: 'auth' | 'codeGraphProvider') => new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', '-e', childSource, section], {
         cwd: path.resolve(__dirname, '../../..'),
         env: { ...process.env, TRAFFIC_ONE_STATE_PATH: file },
         stdio: 'pipe',
@@ -258,10 +246,10 @@ test('concurrent host writers preserve both host snapshots', async () => {
       child.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr || `child exited ${code}`)));
     });
 
-    await Promise.all([run('codex', 'pro'), run('cursor', 'max')]);
+    await Promise.all([run('auth'), run('codeGraphProvider')]);
     const settings = readOneSettings({ TRAFFIC_ONE_STATE_PATH: file } as NodeJS.ProcessEnv);
-    assert.deepEqual(settings.hosts.codex, hostModelSnapshot('codex', 'pro'));
-    assert.deepEqual(settings.hosts.cursor, hostModelSnapshot('cursor', 'max'));
+    assert.equal(settings.auth?.apiKey, 'sk-concurrent');
+    assert.equal(settings.codeGraphProvider, 'gitnexus');
   });
 });
 

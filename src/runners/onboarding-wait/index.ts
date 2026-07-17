@@ -35,10 +35,9 @@ import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-c
 import { canonicalHost } from '../../shared/model-tiers';
 import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import { obj } from '../../shared/obj';
-import { emittedWithin, stampEmitMarker } from '../../shared/once';
-import { clearPluginUseChoice, pluginUseDeclined, recordPluginUseChoice } from '../../shared/state/plugin-use';
+import { pluginUseDeclined, recordPluginUseChoice } from '../../shared/state/plugin-use';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
-import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { onboardingSyncSessionId, onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import {
   isOnboardingPermissionError,
@@ -46,11 +45,18 @@ import {
   onboardingStartFailureReason,
 } from '../../shared/onboarding-server/bootstrap';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
-import { agentOnboardingUrl } from '../../config/dashboard';
+import { agentOnboardingUrls } from '../../config/dashboard';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
+import { commitWizardLinksShown, wizardLinksShownWithin } from '../../shared/onboarding-server/wizard-links';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
+import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
+import {
+  syncOneMcpForSession,
+  syncOneMcpOnce,
+  type SessionOneMcpSync,
+} from '../../modules/session/one-mcp-sync';
 
 // 8 min keeps a single run safely under the host's ~10-min shell cap, so the agent
 // gets a clean PENDING signal (rather than a hard kill) when the user is slow.
@@ -155,15 +161,55 @@ export function preSpawnOrchestrationDirective(cwd: string, host: string = detec
   return buildOrchestrationDirective(cwd, host);
 }
 
-export function preSpawnRunIdDirective(cwd: string): string {
+export function preSpawnRunIdDirective(cwd: string, host: string = detectHost()): string {
   try {
-    const state = readEffectiveState(cwd) as Record<string, unknown>;
-    if (!state || state.mode !== 'new-project') return '';
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: host }) as Record<string, unknown>;
+    const team = obj(state?.team);
+    if (!state || team?.mode !== 'subagents') return '';
     const runId = ensureCurrentRunId(cwd, state);
     if (!runId) return '';
+    const existingPolicy = readRunModelPolicy(cwd, runId);
+    if (existingPolicy && existingPolicy.host !== canonicalHost(host)) {
+      return [
+        'TRAFFIC_ONE_MODEL_POLICY_BLOCKED',
+        `Run ${runId} is frozen for ${existingPolicy.host}, not ${canonicalHost(host)}.`,
+        'Start a new parent run for the active host; do not rebase model-policy.json.',
+      ].join('\n');
+    }
+    if (canonicalHost(host) === 'cursor') {
+      const plan = detectHostPlan('cursor');
+      if (!existingPolicy && freshCursorModels(cwd, plan).length === 0) {
+        return [
+          'TRAFFIC_ONE_CURSOR_MODELS_REQUIRED',
+          `Traffic One has not frozen run ${runId}: Cursor's current Task model picker must be captured first.`,
+          'Enumerate the exact model ids offered to subagents, including reasoning suffixes, then run:',
+          modelCaptureCommand(cwd, 'cursor'),
+          'This writes only the project\'s local user preferences. Retry setup completion afterward; the same run id will then receive its immutable model-policy.json.',
+        ].join('\n');
+      }
+    }
+    const policy = existingPolicy || ensureRunModelPolicy(
+      cwd, runId, host, state, { ...process.env, TRAFFIC_ONE_HOST: host },
+    );
+    if (!policy) {
+      return [
+        'TRAFFIC_ONE_MODEL_POLICY_BLOCKED',
+        'Traffic One could not freeze the acknowledged Performance/model catalog for this run.',
+        'Do not spawn a child. Reopen Performance, confirm the active choice, then retry setup completion.',
+      ].join('\n');
+    }
+    if (state.mode !== 'new-project') {
+      return [
+        '[traffic-one] Immutable run model policy is ready before delegation:',
+        `- run: \`${runId}\``,
+        `- policy: \`.traffic-one/runs/${runId}/model-policy.json\` (\`${policy.policyId}\`)`,
+        '- Every spawn, replacement, and retry must use the role model recorded in that file.',
+      ].join('\n');
+    }
     return [
       '[traffic-one] Build run-id — use EXACTLY this value in every spawn prompt (never `date`, ISO, or UTC):',
       `- currentRunId in .traffic-one/.one.json: \`${runId}\``,
+      `- Immutable model policy: \`.traffic-one/runs/${runId}/model-policy.json\` (\`${policy.policyId}\`)`,
       `- Assignments: \`.traffic-one/runs/${runId}/assignments.json\``,
       `- Digests: \`.traffic-one/digests/${runId}/<role>.md\``,
       `- Spawn prompt line: \`Run ID: ${runId}\``,
@@ -217,30 +263,44 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
 export function preSpawnModelDirective(cwd: string, host: string = detectHost()): string {
   if (host !== 'cursor') return '';
   try {
-    const state = readEffectiveState(cwd) as Record<string, unknown>;
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: host }) as Record<string, unknown>;
     if (!state || state.mode !== 'new-project') return '';
+    const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    const policy = runId ? readRunModelPolicy(cwd, runId) : null;
+    if (runId && (!policy || policy.host !== 'cursor')) {
+      return [
+        'TRAFFIC_ONE_MODEL_POLICY_BLOCKED',
+        `Traffic One cannot publish a Cursor spawn map because model-policy.json is missing or corrupt for run ${runId}.`,
+        'Start a repaired parent run; do not rebuild the map from the current plan or availableModels.',
+      ].join('\n');
+    }
     const performance = obj(state.performance);
-    const level = performance && typeof performance.level === 'string' ? performance.level : '';
+    const level = policy?.performanceLevel
+      || (performance && typeof performance.level === 'string' ? performance.level : '');
     if (!level || teamModeForLevel(level) !== 'subagents') return '';
     const team = obj(state.team);
-    const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
-    const planCtx = { host, plan: detectHostPlan(host) };
+    const overrides = policy
+      ? (policy.teamOverrides as Record<string, unknown>)
+      : team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
+    const planCtx = { host, plan: policy?.plan || detectHostPlan(host) };
 
-    const plan = detectHostPlan(host);
-    const captured = freshCursorModels(cwd, plan);
+    const plan = policy?.plan || detectHostPlan(host);
+    const captured = policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, plan);
     const spawnMap = captured.length ? buildCursorSpawnModelMap(cwd, state) : {};
 
     const rows: string[] = [];
     const tierFallback = new Map<string, string>(); // tier family → next-eligible fallback family
     for (const role of AGENT_ROLES) {
-      const fam = modelForRoleHost(level, role, host, overrides, planCtx);
+      const rolePolicy = policy?.roles[role];
+      const fam = rolePolicy?.preferredModel || modelForRoleHost(level, role, host, overrides, planCtx);
       if (!fam) continue;
       const slug = spawnMap[role] || fam;
       const spawnValue = captured.length && !isBareCursorTierFamily(slug, fam)
         ? slug
         : `(after step 2 — exact slug for tier \`${fam}\`; never pass the bare family)`;
       rows.push(`   - ${role} → ${spawnValue}`);
-      if (!tierFallback.has(fam)) tierFallback.set(fam, currentAcceptableModels(fam, host, planCtx.plan).slice(1)[0] || fam);
+      const acceptable = rolePolicy?.acceptableModels || currentAcceptableModels(fam, host, planCtx.plan);
+      if (!tierFallback.has(fam)) tierFallback.set(fam, acceptable.slice(1)[0] || fam);
     }
     if (!rows.length) return '';
     const eligibility = Array.from(tierFallback.entries())
@@ -249,6 +309,17 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
 
     const gateCmd = modelGateCommand(cwd, host);
     const captureCmd = modelCaptureCommand(cwd, host);
+    if (policy) {
+      return [
+        `[traffic-one] Cursor — immutable model policy is ready for run \`${runId}\` (\`${policy.policyId}\`).`,
+        `- Frozen picker snapshot: ${captured.map((model) => `\`${model}\``).join(', ')}.`,
+        '- Do NOT capture models again for this run. A plan, One MCP catalog, or Cursor picker change applies only to a new parent run; this policy is never rebased.',
+        `- Run \`${gateCmd}\` once. It validates availability against the frozen snapshot and prints the authoritative exact spawn map.`,
+        '- Spawn each role with the exact Task `model` below (never a bare family alias):',
+        ...rows,
+        '- If the frozen snapshot requires an enable/fallback decision, `fallback` may continue this run on its frozen exact alternate. `enable` requires a new parent run after enabling and capturing the updated picker.',
+      ].join('\n');
+    }
     return [
       '[traffic-one] Cursor — resolve the subagent models BEFORE spawning the team (do this ONCE, in order; it avoids the spawn being denied and re-tried):',
       '1. Enumerate the exact model ids your `Task` tool offers for subagents, then run the internal capture command below with those ids in place of the placeholders. It writes only local per-user/project preferences; never create `.traffic-one/cursor-models.json`:',
@@ -281,24 +352,20 @@ export function announceWizardUrl(
   try {
     const rec = readServerRecord(cwd, process.env, host);
     if (!rec || !rec.url || rec.url.includes(':0/')) return;
-    // Show the dashboard setup link (matches the link surfaced in chat); fall back to
-    // the local URL (which itself redirects to the dashboard) if no dashboard URL.
-    const link = agentOnboardingUrl(process.env, rec.port, rec.token) || rec.url;
+    const urls = agentOnboardingUrls(process.env, rec.port, rec.token);
+    const link = urls.dashboardUrl || urls.localWizardUrl;
     // Another surface (session-start banner / prompt-submit recipe / gate deny)
     // already showed this exact link moments ago — repeating the full banner
     // renders the URL twice in the same turn (observed on Cursor). Keep a
     // compact wait line so the terminal output still explains the block.
-    if (emittedWithin(cwd, 'wizard-url-shown', WIZARD_URL_TTL_MS)) {
-      write('\nWaiting for Traffic One setup to complete (link shown above; this command keeps the turn open)…\n');
+    if (wizardLinksShownWithin(cwd, rec.token, WIZARD_URL_TTL_MS)) {
+      write('\nWaiting for Traffic One setup to complete (hosted and local links shown above; this command keeps the turn open)…\n');
       return;
     }
-    stampEmitMarker(cwd, 'wizard-url-shown');
-    // A4: the dashboard deep link can 404 (external service) — always name the
-    // local wizard as the fallback so setup never dead-ends on the public URL.
-    const localFallback = link !== rec.url
-      ? `  If that page fails to load (404), use the local wizard instead: ${rec.url}\n`
+    const localFallback = urls.localWizardUrl
+      ? `  If the hosted page is unavailable or returns 404, open the local wizard directly: ${urls.localWizardUrl}\n`
       : '';
-    write(
+    const banner = (
       '\n════════════════════════════════════════════════════════════════\n'
       + '  TRAFFIC ONE SETUP — open this link in your browser to finish setup:\n\n'
       + `  ${link}\n\n`
@@ -306,8 +373,10 @@ export function announceWizardUrl(
       + '  Enter your API key and complete the setup steps.\n'
       + `  Setup link: ${link}\n`
       + '  Waiting for setup to complete (this command keeps the turn open)…\n'
-      + '════════════════════════════════════════════════════════════════\n',
+      + '════════════════════════════════════════════════════════════════\n'
     );
+    write(banner);
+    commitWizardLinksShown(cwd, rec.token, banner, urls.dashboardUrl, urls.localWizardUrl);
   } catch {
     // best-effort — the wait still works without the banner
   }
@@ -383,10 +452,81 @@ export function declineOutput(cwd: string, host: string): string {
 // flow NOTHING was written before this recorded yes — this is the FIRST write
 // that may create the project's .traffic-one folder, exactly at decision time.
 // The seed feeds the wizard's stack derivation and the post-setup triage.
-export function applyUseChoice(cwd: string, argv: readonly string[]): void {
-  recordPluginUseChoice(cwd, true, 'command');
+export function applyUseChoice(
+  cwd: string,
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  recordPluginUseChoice(cwd, true, 'command', env);
   const seedArg = argv.find((a) => a.startsWith('--seed-prompt='));
   if (seedArg) seedOriginalPrompt(cwd, seedArg.slice('--seed-prompt='.length));
+}
+
+function syncSessionFromArgv(argv: readonly string[]): string {
+  const flag = argv.find((arg) => arg.startsWith('--sync-session='));
+  return onboardingSyncSessionId(flag?.slice('--sync-session='.length));
+}
+
+export function syncOneMcpBeforeOnboarding(
+  cwd: string,
+  host: unknown,
+  argv: readonly string[],
+  sync: SessionOneMcpSync = syncOneMcpForSession,
+  env: NodeJS.ProcessEnv = process.env,
+  featureEnabled?: boolean,
+): boolean {
+  return syncOneMcpOnce(cwd, host, syncSessionFromArgv(argv), env, sync, featureEnabled);
+}
+
+// Reconsideration follows an explicit user request to enable Traffic One, so it
+// is exact opt-in—not a return to an undecided state. Persist that consent before
+// any public sync; the normal setup flow starts only after this helper returns.
+export function applyReconsiderChoice(
+  cwd: string,
+  host: unknown,
+  sync: SessionOneMcpSync = syncOneMcpForSession,
+  syncSession?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  featureEnabled?: boolean,
+): void {
+  recordPluginUseChoice(cwd, true, 'reconsider', env);
+  syncOneMcpOnce(cwd, host, onboardingSyncSessionId(syncSession), env, sync, featureEnabled);
+}
+
+interface BeginOnboardingOptions {
+  sync?: SessionOneMcpSync;
+  env?: NodeJS.ProcessEnv;
+  featureEnabled?: boolean;
+  isDone?: (cwd: string) => boolean;
+}
+
+// The single entry to every path that is about to read wizard state or
+// start/reuse its server. Consent mutations happen first; public config sync
+// happens next; only then may computeOnboarding run. A normal waiter and
+// --bootstrap-only therefore cannot render stale bundled tiers merely because
+// SessionStart was skipped or ran in another process.
+export function beginOnboardingAttempt(
+  cwd: string,
+  host: unknown,
+  argv: readonly string[],
+  options: BeginOnboardingOptions = {},
+): boolean {
+  const sync = options.sync || syncOneMcpForSession;
+  const env = options.env || process.env;
+  const syncSession = syncSessionFromArgv(argv);
+  const reconsider = argv.includes('--reconsider');
+
+  if (reconsider) {
+    applyReconsiderChoice(cwd, host, sync, syncSession, env, options.featureEnabled);
+  }
+  if (argv.includes('--use')) {
+    applyUseChoice(cwd, argv, env);
+  }
+  // Reconsider already synchronized immediately after persisting consent. All
+  // other parent paths converge here, including normal wait and bootstrap-only.
+  if (!reconsider) syncOneMcpBeforeOnboarding(cwd, host, argv, sync, env, options.featureEnabled);
+
+  return (options.isDone || onboardingDone)(cwd);
 }
 
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
@@ -400,34 +540,34 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     process.stdout.write(declineOutput(cwd, host));
     process.exit(0);
   }
-  if (argv.includes('--reconsider')) {
-    clearPluginUseChoice(cwd);
+  const reconsider = argv.includes('--reconsider');
+  const alreadyDone = beginOnboardingAttempt(cwd, host, argv);
+  if (reconsider) {
     process.stdout.write(
       'TRAFFIC_ONE_RECONSIDER\n'
-      + `Traffic One can be set up for this project again. Run the setup wait command now:\n${onboardingWaitCommand(cwd, host)}\n`,
+      + 'Traffic One is enabled for this project again. Starting setup now.\n',
     );
-    process.exit(0);
   }
   // "Yes, use Traffic One here" — record the answer, then continue straight into
   // the normal wait behavior below (start wizard, print the link, block). With
   // `--bootstrap-only` it instead exits right after printing the link (the
   // ask-first recipe's fast first half, so the agent can show the link before
   // running the blocking waiter).
-  if (argv.includes('--use')) applyUseChoice(cwd, argv);
+  // Consent + model sync for --use happened in beginOnboardingAttempt before
+  // its first computeOnboarding read.
   // Self-heal a dead wizard link: the server the gate minted can die between then
   // and this wait (host restart, crash), leaving the agent's shown link broken and
   // the poll never completing. Re-ensure it here (idempotent — respawns only a
   // dead/stale record) so announceWizardUrl below always prints a LIVE url. Skipped
   // once setup is done, and best-effort (respects TRAFFIC_ONE_ONBOARDING_NO_SPAWN).
-  const alreadyDone = onboardingDone(cwd);
   let launchError: unknown;
-  let ensuredUrl = '';
+  let ensuredLocalUrl = '';
   let ensuredDashboardUrl = '';
   try {
     if (!alreadyDone) {
       const server = ensureOnboardingServer(cwd, { host });
-      if (server.url && !server.url.includes(':0/')) {
-        ensuredUrl = server.url;
+      if (server.localWizardUrl && !server.localWizardUrl.includes(':0/')) {
+        ensuredLocalUrl = server.localWizardUrl;
         ensuredDashboardUrl = server.dashboardUrl;
       }
     }
@@ -440,7 +580,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
       process.exit(0);
     }
-    if (launchError || !ensuredUrl) {
+    if (launchError || !ensuredLocalUrl) {
       const failure = launchError || Object.assign(new Error('wizard did not publish a live URL'), { code: 'START_FAILED' });
       // This command already ran through the host's approved shell boundary.
       // Re-prescribing itself would loop forever for packaging bugs, malformed
@@ -453,10 +593,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     // every other setup surface shows (observed on OpenCode: printing the raw
     // loopback URL here made the agent repost 127.0.0.1 instead of traffic.io).
     // The loopback wizard stays named as the fallback for a 404ing dashboard (A4).
-    const localFallback = ensuredDashboardUrl && ensuredDashboardUrl !== ensuredUrl
-      ? `If that page fails to load (404), use the local wizard instead: ${ensuredUrl}\n`
+    const localFallback = ensuredLocalUrl
+      ? `If the hosted page is unavailable or returns 404, open the local wizard directly: ${ensuredLocalUrl}\n`
       : '';
-    process.stdout.write(`TRAFFIC_ONE_SETUP_READY\nSetup link: ${ensuredDashboardUrl || ensuredUrl}\n${localFallback}`);
+    process.stdout.write(`TRAFFIC_ONE_SETUP_READY\nSetup link: ${ensuredDashboardUrl || ensuredLocalUrl}\n${localFallback}`);
     process.exit(0);
   }
   // Windsurf opens the wizard before the prompt and runs this waiter inside the
@@ -530,9 +670,11 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       process.stdout.write(`\n[traffic-one] Route the original request per this triage BEFORE implementing:\n${triage}\n`);
     }
     // Front-load the gate-minted run-id so the orchestrator never fabricates an ISO id in spawn prompts.
-    const runIdDirective = preSpawnRunIdDirective(cwd);
+    const runIdDirective = preSpawnRunIdDirective(cwd, host);
     if (runIdDirective) {
       process.stdout.write(`\n${runIdDirective}\n`);
+      if (runIdDirective.startsWith('TRAFFIC_ONE_MODEL_POLICY_BLOCKED')
+        || runIdDirective.startsWith('TRAFFIC_ONE_CURSOR_MODELS_REQUIRED')) process.exit(2);
     }
     const orchestrationDirective = preSpawnOrchestrationDirective(cwd, host);
     if (orchestrationDirective) {

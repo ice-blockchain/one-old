@@ -61,15 +61,15 @@ export function preseed(cwd: string, ps: PreSeed): void {
   // 3) Performance/team are host-scoped local preferences. Generic top-level
   // fields are intentionally discarded by splitLocalPreferences so a stale
   // runner cannot silently assign one host's choice to another host. Seed the
-  // exact active-host shape the real wizard writes, including configuredFor so
+  // exact active-host shape the real wizard writes, including its semantic target so
   // SessionStart does not immediately reopen Performance in an E2E case that is
   // meant to start fully onboarded.
   if (ps.performance) {
     const host = detectHost();
+    const target = currentLocalPreferenceTarget(host);
     mergeProjectHostPrefs(cwd, host, {
-      performance: { level, source: 'prompted' },
+      performance: { level, source: 'prompted', target },
       team,
-      configuredFor: currentLocalPreferenceTarget(host),
     });
   }
 

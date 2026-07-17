@@ -149,6 +149,39 @@ test('cursor: generic preToolUse derives tool class from tool_name (pre-write/se
   assert.equal(task.tool?.rawName, 'Task'); // agentModelGate's Task|Agent regex needs the real name
 });
 
+test('cursor: generic apply_patch preserves nested patch_text on canonical ToolInput', () => {
+  const parsed = cursor.parse(inv('before-tool-use', {
+    tool_name: 'apply_patch',
+    tool_input: { patch_text: '*** Begin Patch' },
+  }));
+  assert.equal(parsed.tool?.class, 'file-write');
+  assert.equal(parsed.tool?.patchText, '*** Begin Patch');
+});
+
+test('cursor: beforeMCPExecution composes the config key and bare tool name exactly', () => {
+  const managed = cursor.parse(inv('before-mcp-execution', {
+    command: 'traffic-one-mcp',
+    tool_name: 'get_config',
+    tool_input: { version: 1 },
+  }));
+  assert.equal(managed.event, 'PreToolUse');
+  assert.equal(managed.tool?.class, 'other');
+  assert.equal(managed.tool?.rawName, 'traffic-one-mcp.get_config');
+
+  const explicit = cursor.parse(inv('before-mcp-execution', {
+    mcp_server_name: 'traffic-one-mcp',
+    command: 'https://example.invalid/mcp',
+    mcp_tool_name: 'report_codebase_metadata',
+  }));
+  assert.equal(explicit.tool?.rawName, 'traffic-one-mcp.report_codebase_metadata');
+
+  const fixedCommand = cursor.parse(inv('before-mcp-execution', {
+    command: 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/public-mcp',
+    tool_name: 'get_config',
+  }));
+  assert.equal(fixedCommand.tool?.rawName, 'traffic-one-mcp.get_config');
+});
+
 test('cursor: generic preToolUse EXCLUDES fixed-event classes → class "other" (no double-fire), tool stays present', () => {
   const sh = cursor.parse(inv('before-tool-use', { tool_name: 'Shell', tool_input: { command: 'ls' } }));
   assert.equal(sh.tool?.class, 'other'); // before-shell-execution owns (PreToolUse, shell)

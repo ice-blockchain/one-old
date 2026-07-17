@@ -24,9 +24,10 @@ user-level `one.json` (`$TRAFFIC_ONE_STATE_PATH`,
 must remain mode `0600` and must never be copied into the project, docs, prompts,
 commits, or generated artifacts.
 
-The stored API key is also sent as the Bearer token for the background report.
-If reporting returns 401 or 403, delete only `one.json.auth`, preserve all other
-settings, and reopen the wizard on the API-key step.
+The stored API key is used only for authenticated onboarding
+validation/connection. Public config sync and structural reporting are
+anonymous: never send the key, a cookie, or another account identifier, and
+never invalidate `one.json.auth` for a public 401/403 response.
 
 Valid canonical auth is the first gate-clear condition in
 `rules/common/setup-gate.md`. Some hosts have rule-level enforcement only.

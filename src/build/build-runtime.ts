@@ -36,6 +36,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'security-check-runner.cjs': './runners/security-check/index.js',
   'token-report.cjs': './runners/token-report/index.js',
   'one-mcp-report.cjs': './runners/one-mcp-report/index.js',
+  'one-mcp-host.cjs': './runners/one-mcp-host/index.js',
   'traffic-one-cleanup.cjs': './runners/traffic-one-cleanup/index.js',
   'gitnexus-runner.cjs': './runners/gitnexus/index.js',
   'graphify-runner.cjs': './runners/graphify/index.js',
@@ -45,7 +46,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'onboarding-server.cjs': './runners/onboarding-server/index.js',
   'onboarding-wait.cjs': './runners/onboarding-wait/index.js',
   'model-gate.cjs': './runners/model-gate/index.js',
-  'model-status.cjs': './runners/model-status/index.js',
+  'one-mcp-sync.cjs': './runners/one-mcp-sync/index.js',
 };
 
 function shimSource(target: string): string {

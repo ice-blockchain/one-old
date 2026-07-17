@@ -53,11 +53,11 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
     },
   },
   codex: {
-    updatedAt: '2026-07-13',
+    updatedAt: '2026-07-17',
     tiers: {
-      highest: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
-      balanced: ['gpt-5.6-terra', 'gpt-5.4', 'gpt-5.5'],
-      cheapest: ['gpt-5.4-mini', 'gpt-5.6-luna', 'gpt-5.4'],
+      highest: ['gpt-5.6-sol'],
+      balanced: ['gpt-5.6-terra'],
+      cheapest: ['gpt-5.6-terra'],
     },
   },
   cursor: {

@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 
-import { detectHostPlan } from '../host-plan';
+import { detectHostPlan, detectHostPlanFresh } from '../host-plan';
 
 const hasSqlite3 = (() => { try { return spawnSync('sqlite3', ['-version']).status === 0; } catch { return false; } })();
 const hasNodeSqlite = (() => { try { require('node:sqlite'); return true; } catch { return false; } })();
@@ -115,6 +115,22 @@ test('detectHostPlan claude: reads ~/.claude.json oauthAccount (rate-limit tier 
   const h3 = tmpHome();
   fs.writeFileSync(path.join(h3, '.claude.json'), JSON.stringify({ oauthAccount: { organizationType: 'claude_enterprise' } }), 'utf8');
   assert.equal(detectHostPlan('claude', env({ HOME: h3 })), 'enterprise');
+});
+
+test('detectHostPlanFresh bypasses a long-lived process cache after the host plan changes', () => {
+  const home = tmpHome();
+  const settingsPath = path.join(home, '.claude.json');
+  fs.writeFileSync(settingsPath, JSON.stringify({
+    oauthAccount: { organizationType: 'claude_pro' },
+  }), 'utf8');
+  const hostEnv = env({ HOME: home });
+  assert.equal(detectHostPlan('claude', hostEnv), 'pro');
+
+  fs.writeFileSync(settingsPath, JSON.stringify({
+    oauthAccount: { organizationType: 'claude_max' },
+  }), 'utf8');
+  assert.equal(detectHostPlan('claude', hostEnv), 'pro', 'memoized session read remains stable');
+  assert.equal(detectHostPlanFresh('claude', hostEnv), 'max', 'fresh target read sees the new plan');
 });
 
 test('detectHostPlan claude: personal Max account — plan only in organizationType/organizationRateLimitTier (null personal tiers)', () => {

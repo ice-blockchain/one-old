@@ -12,6 +12,7 @@ import { detectHostPlan } from '../host-plan';
 import { currentAcceptableModels } from '../current-model-tiers';
 import { obj } from '../obj';
 import { modelForRoleHost } from '../performance';
+import { readRunModelPolicy } from '../run-model-policy';
 import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
 export interface UnavailablePick {
@@ -24,6 +25,27 @@ export interface UnavailablePick {
 // nothing is captured (can't judge), when every pick is offered, or when state is unreadable.
 export function cursorUnavailablePicks(cwd: string, state: Record<string, unknown>): UnavailablePick[] {
   try {
+    const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    if (runId) {
+      const policy = readRunModelPolicy(cwd, runId);
+      // Once a run snapshot exists, availability is evaluated only against its
+      // captured exact slugs and role rows. Missing/corrupt policy is handled by
+      // the parent/child spawn gates and must never fall back to mutable state.
+      if (!policy || policy.host !== 'cursor') return [];
+      const captured = [...(policy.cursorAvailableModels || [])];
+      const out: UnavailablePick[] = [];
+      for (const role of AGENT_ROLES) {
+        const rolePolicy = policy.roles[role];
+        if (!rolePolicy || /^composer/i.test(rolePolicy.preferredModel)) continue;
+        if (pickCursorSlug([rolePolicy.preferredModel], captured)) continue;
+        const alternates = rolePolicy.acceptableModels.slice(1);
+        const fallback = pickCursorSlug(alternates, captured) || alternates[0] || rolePolicy.preferredModel;
+        out.push({ role, expected: rolePolicy.preferredModel, fallback });
+      }
+      return out;
+    }
+
+    // Pre-snapshot parent capture/preview path.
     const performance = obj(state.performance);
     const level = performance && typeof performance.level === 'string' ? performance.level : '';
     if (!level) return [];

@@ -17,11 +17,13 @@
 // Cursor behavior is unchanged.
 
 import { asString } from '../../adapters/coerce';
-import { noop } from '../../core/result';
+import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
 import { captureClaimDebug, claimThreadRole, readEffectiveState, recordRunAgent } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { canonicalHost } from '../../shared/model-tiers';
+import { readRunModelPolicy } from '../../shared/run-model-policy';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 
 export function opencodeSubagentBind(ctx: Ctx): HookResult {
@@ -34,7 +36,7 @@ export function opencodeSubagentBind(ctx: Ctx): HookResult {
   if (!sessionId || !prompt) return noop();
 
   // Only relevant when the team is subagents — main-agent builds have no role claims.
-  const state = readEffectiveState(ctx.cwd);
+  const state = readEffectiveState(ctx.cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
   const team = obj(obj(state)?.team);
   if (!team || team.mode !== 'subagents') return noop();
 
@@ -48,6 +50,19 @@ export function opencodeSubagentBind(ctx: Ctx): HookResult {
 
   const stateObj = obj(state);
   const runId = stateObj && typeof stateObj.currentRunId === 'string' ? stateObj.currentRunId : null;
+  const policy = runId ? readRunModelPolicy(ctx.cwd, runId) : null;
+  if (!runId || !policy || policy.host !== canonicalHost(ctx.host)) {
+    return context(
+      `Traffic One blocked this child prompt: immutable model-policy.json is missing, corrupt, or belongs to another host for run ${runId || '(missing)'}. `
+      + 'No role claim was created. Only the parent may create/freeze the run; stop this child and repair/respawn it from the parent.',
+    );
+  }
+  if (!policy.roles[role]) {
+    return context(
+      `Traffic One blocked this child prompt: role ${role} is absent from immutable policy ${policy.policyId}. `
+      + 'No role claim was created; stop this child and repair/respawn it from the parent.',
+    );
+  }
   captureClaimDebug(ctx.cwd, runId, 'opencode-subagent-prompt', { sessionId, role });
   claimThreadRole(ctx.cwd, state, sessionId, role, { recordAgent: false, evidence });
   if (runId) {

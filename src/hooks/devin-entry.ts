@@ -15,6 +15,7 @@ import { isNonProjectRoot } from '../shared/authoring-root';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
 import { devinPreToolDeny, isGatePreToolSubcommand } from './fail-closed';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
+import { commitWizardLinksShown } from '../shared/onboarding-server/wizard-links';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -34,10 +35,22 @@ function onboardingStopResult(stdin: string, cwd: string): string {
   if (prepared.kind !== 'ready') {
     return JSON.stringify({ decision: 'block', reason: prepared.reason });
   }
-  return JSON.stringify({
+  const payload = JSON.stringify({
     decision: 'block',
-    reason: windsurfSetupReason(prepared.server.url, prepared.waitCommand),
+    reason: windsurfSetupReason(
+      prepared.server.dashboardUrl,
+      prepared.server.localWizardUrl,
+      prepared.waitCommand,
+    ),
   });
+  commitWizardLinksShown(
+    root,
+    prepared.server.token,
+    payload,
+    prepared.server.dashboardUrl,
+    prepared.server.localWizardUrl,
+  );
+  return payload;
 }
 
 export async function runDevinHook(

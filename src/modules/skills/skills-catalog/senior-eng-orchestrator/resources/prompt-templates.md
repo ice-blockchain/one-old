@@ -17,9 +17,22 @@ On Codex, structured task identity is mandatory. Current Desktop rollouts store
 the spawn message encrypted in the child transcript, so the marker cannot be
 role evidence there. Use the exact underscore-form task name (`senior_architect`,
 `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or
-`senior_shipper`); line-zero `session_meta` is the child-side corroboration. Keep
-the matching marker in the message for other hosts, but never rely on its
-position or visibility for Codex identity.
+`senior_shipper`), pass the role's exact runtime-resolved `model`, and set
+`fork_turns: "none"` on every fresh spawn. For example:
+
+```json
+{
+  "task_name": "senior_architect",
+  "message": "[t1-role: senior-<role>]\n...",
+  "fork_turns": "none",
+  "model": "<runtime-model>"
+}
+```
+
+Line-zero `session_meta` is child-side identity corroboration, while the live
+hooks provide the actual model evidence checked against the immutable run
+policy. Keep the matching marker in the message for other hosts, but never rely
+on its position or visibility for Codex identity or model evidence.
 
 ## Per-role model / profile mapping
 

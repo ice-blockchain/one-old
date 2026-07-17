@@ -7,6 +7,19 @@
 // including generated host wrappers (kilo-host), so the prose can't drift.
 export const PRE_TOOL_REMEDIATION = 'Run Traffic One doctor or reinstall/update the plugin, then retry.';
 
+// Host hook payloads are required to be JSON objects. The shared adapters use a
+// permissive parser for lifecycle compatibility, so validate at the entry
+// boundary before a pre-tool dispatch: otherwise malformed/truncated stdin is
+// normalized to `{}` and silently becomes an allow.
+export function hasValidHookObjectPayload(stdin: string): boolean {
+  try {
+    const parsed = JSON.parse(stdin);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
 export function preToolFailureReason(host: string): string {
   return `Traffic One ${host} pre-tool gate failed before it could make a decision, so this tool call is blocked fail-closed. ${PRE_TOOL_REMEDIATION}`;
 }
@@ -17,33 +30,31 @@ export function isGatePreToolSubcommand(subcommand: string | undefined): boolean
 }
 
 export function isCursorPreToolSubcommand(subcommand: string | undefined): boolean {
-  return new Set(['before-shell-execution', 'before-read-file', 'before-tool-use']).has(String(subcommand || ''));
+  return new Set(['before-shell-execution', 'before-read-file', 'before-mcp-execution', 'before-tool-use']).has(String(subcommand || ''));
 }
 
 export function isWindsurfPreToolAction(action: string | undefined): boolean {
   return new Set(['pre_read_code', 'pre_write_code', 'pre_run_command', 'pre_mcp_tool_use']).has(String(action || ''));
 }
 
-export function nestedPreToolDeny(host: string): string {
+export function nestedPreToolDeny(host: string, reason: string = preToolFailureReason(host)): string {
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: preToolFailureReason(host),
+      permissionDecisionReason: reason,
     },
   });
 }
 
-export function cursorPreToolDeny(): string {
-  const reason = preToolFailureReason('Cursor');
+export function cursorPreToolDeny(reason: string = preToolFailureReason('Cursor')): string {
   return JSON.stringify({ permission: 'deny', user_message: reason, agent_message: reason });
 }
 
-export function copilotPreToolDeny(surface: 'cli' | 'vscode'): string {
-  const reason = preToolFailureReason('Copilot');
+export function copilotPreToolDeny(surface: 'cli' | 'vscode', reason: string = preToolFailureReason('Copilot')): string {
   return surface === 'cli'
     ? JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason })
-    : nestedPreToolDeny('Copilot');
+    : nestedPreToolDeny('Copilot', reason);
 }
 
 export function wrapperPreToolDeny(host: string): string {

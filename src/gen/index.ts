@@ -10,16 +10,26 @@
 import * as path from 'path';
 import * as fs from 'fs';
 
+import {
+  DEFAULT_PUBLIC_ENDPOINT,
+  ONE_MCP_LIVE_RELEASE_SNAPSHOT_ENV,
+  ONE_MCP_REGISTRATION_ACTIVE,
+  ONE_MCP_SYNC_ACTIVE,
+  REPORTING_ACTIVE,
+  assertOneMcpPublicReleaseReady,
+} from '../config/one-mcp';
 import { emitAgents } from './emit/agents';
 import { emitCopilotAgents } from './emit/copilot-agents';
 import { emitCursorRules } from './emit/cursor-rules';
 import { emitHooks } from './emit/hooks';
 import { emitManifests, emitMcp } from './emit/manifests';
+import { emitOneMcpOperatorArtifacts } from './emit/one-mcp-operator';
 import { emitRules } from './emit/rules';
 import { emitSkills } from './emit/skills';
 import { emitStaticPluginFiles } from './emit/static';
 import { emitWindsurfRules } from './emit/windsurf-rules';
 import { GenRun } from './lib/run';
+import { assertOneMcpLiveReleaseSnapshotFile } from './sources/one-mcp-operator';
 
 export function sourceRepoRoot(): string {
   // Codegen is authoring tooling, not installed runtime code. Runtime hooks must
@@ -48,13 +58,27 @@ export function distRoot(sourceRoot: string = sourceRepoRoot()): string {
 // Output dirs gen owns end-to-end: files inside them that no emitter produced
 // are stale copies of deleted source content and get swept. skills/ stays out —
 // the session-start surgery populates it at runtime.
-export const MANAGED_OUTPUT_DIRS = ['agents', 'public', 'rules', 'skills-catalog', path.join('.cursor', 'rules'), path.join('.devin', 'rules')] as const;
+export const MANAGED_OUTPUT_DIRS = ['agents', 'operator', 'public', 'rules', 'skills-catalog', path.join('.cursor', 'rules'), path.join('.devin', 'rules')] as const;
 
 export function runGen(opts: { check: boolean; root?: string; sourceRoot?: string }): GenRun {
+  const publicActivation = {
+    sync: ONE_MCP_SYNC_ACTIVE,
+    registration: ONE_MCP_REGISTRATION_ACTIVE,
+    reporting: REPORTING_ACTIVE,
+  };
+  const publicActive = Object.values(publicActivation).some(Boolean);
+  if (publicActive) {
+    assertOneMcpLiveReleaseSnapshotFile(
+      process.env[ONE_MCP_LIVE_RELEASE_SNAPSHOT_ENV] || '',
+      DEFAULT_PUBLIC_ENDPOINT,
+    );
+  }
+  assertOneMcpPublicReleaseReady(publicActivation, DEFAULT_PUBLIC_ENDPOINT, publicActive);
   const sourceRoot = opts.sourceRoot ?? sourceRepoRoot();
   const run = new GenRun({ check: opts.check, root: opts.root ?? distRoot(sourceRoot), sourceRoot });
   emitManifests(run);
-  emitMcp(run);
+  emitMcp(run, ONE_MCP_REGISTRATION_ACTIVE, DEFAULT_PUBLIC_ENDPOINT, publicActive);
+  emitOneMcpOperatorArtifacts(run);
   emitHooks(run);
   emitAgents(run); // before cursor-rules: the cursor mirror derives from emitted agents/
   emitCopilotAgents(run);

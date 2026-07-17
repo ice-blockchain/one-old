@@ -14,6 +14,7 @@ import { selectAdapter } from '../adapters/select';
 import { detectHost } from '../shared/host';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
+import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -37,6 +38,11 @@ export async function runClaudeHook(
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: '', exitCode: 0 };
   const host = detectHost(env, ['--host', subcommand]); // never cursor here
+  // This subcommand is wired only to the exact managed MCP matcher. Deny before
+  // module loading so pluginUse opt-out or a damaged runtime cannot reopen it.
+  if (subcommand === 'check-one-mcp-tool') {
+    return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude', ONE_MCP_AGENT_TOOL_DENY_REASON), exitCode: 0 };
+  }
   try {
     const adapter = selectAdapter(host === 'codex' ? 'codex' : 'claude');
     const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));

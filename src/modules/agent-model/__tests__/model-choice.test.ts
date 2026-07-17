@@ -19,6 +19,8 @@ import {
 } from '../model-choice';
 import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
+import { readEffectiveState } from '../../../shared/state';
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'mc-'));
@@ -102,7 +104,9 @@ test('modelChoiceReplyPending: true when unavailable picks exist and no choice; 
   const env = process.env;
   const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const pl = env.TRAFFIC_ONE_USER_PLAN;
+  const mc = env.TRAFFIC_ONE_MCP_CACHE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, 'prefs.json');
+  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(cwd, 'one-mcp.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -113,16 +117,21 @@ test('modelChoiceReplyPending: true when unavailable picks exist and no choice; 
       );
     withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
-    const state: Record<string, unknown> = {
-      mode: 'new-project', currentRunId: 'run-pending', performance: { level: 'high' },
-      team: { mode: 'subagents', approved: true, overrides: { 'senior-architect': 'balanced' } },
-    };
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', currentRunId: 'run-pending',
+    }), 'utf8');
+    const state = readEffectiveState(cwd, { ...env, TRAFFIC_ONE_HOST: 'cursor' });
+    assert.ok(
+      ensureRunModelPolicy(cwd, 'run-pending', 'cursor', state, { ...env, TRAFFIC_ONE_HOST: 'cursor' }),
+      'the parent fixture must freeze the Cursor policy before checking run-level unavailability',
+    );
     assert.equal(modelChoiceReplyPending(cwd, state), true);
     writeModelChoice(cwd, 'run-pending', 'use-fallback');
     assert.equal(modelChoiceReplyPending(cwd, state), false);
   } finally {
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
+    if (mc === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = mc;
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

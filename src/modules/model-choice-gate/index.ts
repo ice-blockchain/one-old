@@ -51,7 +51,7 @@ export function modelChoiceGate(ctx: Ctx): HookResult {
   const runId = typeof (state as Record<string, unknown>).currentRunId === 'string'
     ? ((state as Record<string, unknown>).currentRunId as string).trim() : '';
   if (runId && cursorUnavailablePicks(root, state as Record<string, unknown>).length === 0) {
-    const agentContext = resolveRunAgentContext(root, state as Record<string, unknown>, raw, { claimPending: false });
+    const agentContext = resolveRunAgentContext(root, state as Record<string, unknown>, raw, { claimPending: false, host: ctx.host });
     const sessionRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;
     if (sessionRole && !rolesAwaitingModelChoice(root, runId).has(sessionRole)) return noop();
   }

@@ -245,6 +245,7 @@ test('routes: /verify-toolchain reports the provider + a boolean graphMissing', 
 
 test('routes: invalid answer → 400; unknown task → 404', async () => {
   await withServer(existing, async (server) => {
+    await call(server.port, 'POST', '/answer', { step: 'open-code', value: 'not_now' });
     const bad = await call(server.port, 'POST', '/answer', { step: 'performance', value: 'turbo' });
     assert.equal(bad.status, 400);
     const missing = await call(server.port, 'GET', '/task/does-not-exist');

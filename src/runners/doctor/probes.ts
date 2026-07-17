@@ -8,8 +8,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
+import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
+import { ONE_MCP_CONFIG_NAME_BY_HOST } from '../../config/one-mcp';
 import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
 import { readSimpleAuth } from '../../shared/auth';
+import { readOneMcpCache, type OneMcpLastSync } from '../../shared/one-mcp-cache';
+import { usableOneMcpConfigCacheEntry } from '../../shared/current-model-tiers';
 import { oneSettingsPath } from '../../shared/one-settings';
 import { stableBinDir } from '../../shared/runner-shims';
 import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
@@ -342,6 +346,58 @@ export function probeCanonicalAuth(env: NodeJS.ProcessEnv = process.env): Canoni
     present: state !== null,
     valid: Boolean(state && state.authenticated === true && state.apiKey.trim()),
     updatedAt: state && state.updatedAt ? state.updatedAt : null,
+  };
+}
+
+export interface OneMcpHostProbe {
+  host: HostModelKey;
+  configName: string;
+  catalogSource: 'one-mcp' | 'bundled';
+  configVersion: number;
+  configUpdatedAt: string | null;
+  lastSync: OneMcpLastSync | null;
+}
+
+export interface OneMcpProbe {
+  hosts: OneMcpHostProbe[];
+}
+
+// Read-only and redacted by construction. The doctor exposes a fixed structural
+// lastSync record for every supported host, never cached payloads, model ids,
+// endpoints, or remote error text. Network probing remains build-disabled.
+export function probeOneMcp(env: NodeJS.ProcessEnv = process.env): OneMcpProbe {
+  let states: ReturnType<typeof readOneMcpCache>['hosts'] = {};
+  try {
+    states = readOneMcpCache(env).hosts;
+  } catch {
+    // An unreadable/future cache is represented as bundled/no diagnostic for all
+    // hosts. Doctor remains report-only and never rewrites it.
+  }
+  return {
+    hosts: HOST_IDS.map((host): OneMcpHostProbe => {
+      const state = states[host];
+      // Keep the doctor's source verdict identical to runtime. A structurally
+      // parseable cache entry can still be unusable for this build (most notably
+      // when it belongs to another endpoint); runtime falls back to bundled and
+      // doctor must report that same source.
+      const config = usableOneMcpConfigCacheEntry(host, state?.config ?? null, env);
+      const lastSync = state?.lastSync ?? null;
+      return {
+        host,
+        configName: ONE_MCP_CONFIG_NAME_BY_HOST[host],
+        catalogSource: config ? 'one-mcp' : 'bundled',
+        configVersion: config?.version ?? 0,
+        configUpdatedAt: config?.updatedAt ?? null,
+        lastSync: lastSync ? {
+          attemptedAt: lastSync.attemptedAt,
+          outcome: lastSync.outcome,
+          source: lastSync.source,
+          requestedVersion: lastSync.requestedVersion,
+          observedVersion: lastSync.observedVersion,
+          ...(lastSync.reason ? { reason: lastSync.reason } : {}),
+        } : null,
+      };
+    }),
   };
 }
 

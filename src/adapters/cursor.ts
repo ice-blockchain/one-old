@@ -11,8 +11,10 @@ import * as path from 'path';
 import type { CanonicalEvent, ToolClass, ToolInput } from '../core/types';
 import { toolClassForRawName } from '../core/events';
 import { parseJson } from '../shared/fsjson';
+import { patchTextFromToolInput } from '../shared/apply-patch';
 import { asRecord, firstString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
+import { canonicalOneMcpServerHint } from '../shared/one-mcp-agent-tools';
 
 // Cursor subcommand (argv) → canonical event (+ fixed tool class for the
 // specific events). Two families:
@@ -34,6 +36,7 @@ const SUB_TO_EVENT: Readonly<Record<string, { event: CanonicalEvent; tool?: Tool
   'after-shell-execution': { event: 'PostToolUse', tool: 'shell' },
   'before-read-file': { event: 'PreToolUse', tool: 'file-read' },
   'after-file-edit': { event: 'PostToolUse', tool: 'file-edit' },
+  'before-mcp-execution': { event: 'PreToolUse' },
   // Generic: no fixed tool — parse() derives the class from tool_name.
   'before-tool-use': { event: 'PreToolUse' },
   'after-tool-use': { event: 'PostToolUse' },
@@ -129,19 +132,37 @@ export function makeCursorAdapter(): HostAdapter {
         input.content, input.new_content, input.newContent, input.text,
         input.new_string, input.newString, input.new_str,
       ) || editsContent;
-      const withFields = (cls: ToolClass, rawName: string): ToolInput => ({
-        class: cls,
-        rawName,
-        ...(command ? { command } : {}),
-        ...(workdir ? { workdir } : {}),
-        ...(filePath ? { filePath } : {}),
-        ...(content ? { content } : {}),
-      });
+      const withFields = (cls: ToolClass, rawName: string): ToolInput => {
+        const patchText = /^(?:apply_patch|patch)$/i.test(rawName.split('.').pop() || '')
+          ? patchTextFromToolInput(input, data)
+          : '';
+        return {
+          class: cls,
+          rawName,
+          ...(command ? { command } : {}),
+          ...(workdir ? { workdir } : {}),
+          ...(filePath ? { filePath } : {}),
+          ...(content ? { content } : {}),
+          ...(patchText ? { patchText } : {}),
+        };
+      };
 
       let tool: ToolInput | undefined;
       if (mapping.tool) {
         // Fixed-class event: class known from the subcommand; rawName = subcommand.
         tool = withFields(mapping.tool, sub);
+      } else if (sub === 'before-mcp-execution') {
+        // Cursor's current beforeMCPExecution payload identifies the MCP config
+        // entry in `command` and carries the bare MCP tool in `tool_name`.
+        // Prefer explicit server fields so this remains correct if Cursor fixes
+        // `command` to carry the transport URL in a later release.
+        const serverName = canonicalOneMcpServerHint(firstString(
+          data.mcp_server_name, data.mcpServerName, data.server_name, data.serverName,
+          data.server, data.command, data.url,
+        ));
+        const toolName = firstString(data.mcp_tool_name, data.mcpToolName, data.tool_name, data.toolName, data.name);
+        const rawName = serverName && toolName ? `${serverName}.${toolName}` : (toolName || sub);
+        tool = withFields('other', rawName);
       } else if (sub === 'before-tool-use' || sub === 'after-tool-use') {
         // Generic event: derive the class from the payload tool_name. Classes a fixed
         // event already owns are dropped to 'other' (inert — matches no tool gate, and

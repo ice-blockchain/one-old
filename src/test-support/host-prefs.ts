@@ -1,9 +1,18 @@
 import {
   HOST_IDS,
-  HOST_MODELS,
   type HostModelKey,
 } from '../config/model-tiers';
-import { canonicalPlan } from '../shared/model-tiers';
+import { hostModelSnapshot } from '../shared/model-tiers';
+import { oneMcpAppliedFingerprint } from '../shared/one-mcp';
+
+function targetFor(host: HostModelKey, plan: unknown): { plan: string; appliedFingerprint: string; configVersion: number } {
+  const snapshot = hostModelSnapshot(host, plan);
+  return {
+    plan: snapshot.plan,
+    appliedFingerprint: oneMcpAppliedFingerprint(snapshot.tiers),
+    configVersion: 0,
+  };
+}
 
 export function hostScopedPerformancePrefs(
   performance: Record<string, unknown>,
@@ -13,12 +22,8 @@ export function hostScopedPerformancePrefs(
 ): { hosts: Record<string, Record<string, unknown>> } {
   return {
     hosts: Object.fromEntries(hosts.map((host) => [host, {
-      performance: { ...performance },
+      performance: { ...performance, target: targetFor(host, plan) },
       team: { ...team },
-      configuredFor: {
-        plan: canonicalPlan(host, plan),
-        modelsUpdatedAt: HOST_MODELS[host].updatedAt,
-      },
     }])),
   };
 }
@@ -27,16 +32,18 @@ export function withCursorAvailableModels<T extends { hosts: Record<string, Reco
   prefs: T,
   models: readonly string[],
   plan: unknown = 'pro',
-  options: { modelsUpdatedAt?: string; capturedAt?: string } = {},
+  options: { capturedAt?: string; appliedFingerprint?: string } = {},
 ): T {
   const cursor = prefs.hosts.cursor ?? {};
   prefs.hosts.cursor = {
     ...cursor,
     availableModels: {
       models: [...models],
-      plan: canonicalPlan('cursor', plan),
-      modelsUpdatedAt: options.modelsUpdatedAt ?? HOST_MODELS.cursor.updatedAt,
       capturedAt: options.capturedAt ?? new Date().toISOString(),
+      target: {
+        ...targetFor('cursor', plan),
+        ...(options.appliedFingerprint ? { appliedFingerprint: options.appliedFingerprint } : {}),
+      },
     },
   };
   return prefs;

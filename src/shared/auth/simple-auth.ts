@@ -5,10 +5,8 @@
 //
 // The key is VALIDATED at intake against the auth endpoint before it is stored
 // (runners/auth/validate-key.ts, wired into the wizard's /answer route) — a
-// rejected/unverifiable key is never written. A 401 or 403 from the one-mcp
-// report call removes this section (secondary safety; see
-// runners/one-mcp-report/runReport.ts), which re-opens the API-key page on the
-// next session.
+// rejected/unverifiable key is never written. Anonymous public MCP config and
+// report calls never carry or invalidate this credential.
 
 import { deleteOneSection, readCanonicalOneSettings, writeOneSection } from '../one-settings';
 import { nowIsoNoMs } from '../text';

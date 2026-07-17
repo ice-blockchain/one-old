@@ -20,9 +20,37 @@ metadata:
 
 Keeps the plugin's plan-aware model-tier config pointed at the newest available
 models for each capability tier on every host. `HOST_MODELS` is the bundled
-source of truth. The public `GET /model-status?host=<host>&plan=<plan>` endpoint
-is maintained independently and returns the exact `{ plan, updatedAt, tiers }`
-snapshot stored in the user's local preferences.
+offline source of truth. The public `traffic-one-mcp.get_config` rows use
+payload schema v2: one complete base `tiers` set plus optional complete
+plan-specific sets under `plans`. The hook resolves the active plan and maps
+remote `high`/`balanced`/`low` to the local
+`highest`/`balanced`/`cheapest` runtime snapshot. Remote `auto` mirrors
+`balanced`; it is validated and fingerprinted as catalog data but never drives
+a subagent tier or the applied fingerprint.
+
+```json
+{
+  "payloadSchemaVersion": 2,
+  "tiers": {
+    "high": ["..."],
+    "balanced": ["..."],
+    "low": ["..."],
+    "auto": ["..."]
+  },
+  "plans": {
+    "<canonical-plan-id>": {
+      "high": ["..."],
+      "balanced": ["..."],
+      "low": ["..."],
+      "auto": ["..."]
+    }
+  }
+}
+```
+
+Every recognized plan override in the remote row is complete even though
+`HOST_MODELS` stores sparse overrides: omitted local tiers are expanded from
+the base and `auto` is generated as a mirror of the resolved `balanced` row.
 
 ## When to trigger
 
@@ -66,10 +94,13 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
      `haiku` still exist. These aliases auto-resolve to the newest version of each
      family, so the claude row usually needs NO change. Only edit it if Anthropic
      renames a tier or introduces a new capability tier worth adopting.
-   - **OpenAI / Codex (codex row)**: find the current top coding model, a strong
-     general model, and a fast/mini model. These use concrete versioned ids
-     (e.g. a `*-codex`, a flagship `gpt-*`, and a `*-mini`/`*-nano`) and DO drift,
-     so this row is the one that most often needs updating.
+   - **OpenAI / Codex (codex row)**: the milestone-1 catalog is intentionally
+     fixed to `highest: ["gpt-5.6-sol"]`, `balanced: ["gpt-5.6-terra"]`, and
+     `cheapest: ["gpt-5.6-terra"]`; generated `auto` mirrors `balanced`. Do not
+     infer a mini/fast tier or replace these ids from general model-lineup
+     research. Change this temporary rollout profile only after an explicit
+     maintainer decision, then regenerate the operator manifest from
+     `HOST_MODELS` so bundled and remote rows cannot diverge.
    - **Cursor (enforced — bare model FAMILIES, matched family-aware)**: the
      `cursor` row in `HOST_MODELS` holds bare model-family anchors, not full
      reasoning-variant slugs and not Anthropic aliases (Cursor rejects
@@ -94,7 +125,10 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
    model-pinned spawn tools, verify the tool accepts the identifier; otherwise
    verify the catalog identifier used by onboarding/session recommendations:
    - Claude Code Task/Agent `model` param accepts `opus` | `sonnet` | `haiku`.
-   - Codex `spawn_agent` currently exposes no `model` field. Keep its tier rows current for onboarding recommendations and session context, but never require or pass those ids at spawn time.
+   - Codex `spawn_agent` accepts an explicit `model`. Resolve the exact role
+     model from the immutable run policy and pass it together with the canonical
+     underscore-form `task_name` and `fork_turns: "none"`; live child hooks
+     verify the observed model exactly.
    - Kilo CLI model ids include the provider prefix (for example
      `kilo/kilo-auto/frontier`); confirm them with `kilo models kilo --refresh`.
    - OpenCode Free and Go model ids must come from the corresponding official
@@ -105,13 +139,17 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
    tier array; omitted tiers inherit the base. Keep `TIER_IDS`, `TIER_ALIASES`,
    and performance-to-tier policy unchanged unless explicitly requested.
 
-5. **Bump every affected host date.** Set `HOST_MODELS[host].updatedAt` to
-   today's `YYYY-MM-DD` whenever any base or plan-specific model array changes.
-   This is mandatory even if the preferred model stayed the same. Changing a
-   resolved tier array without a date bump is an invalid snapshot contract.
-   If the stamp already equals today (rows changed twice in one day), use the
-   NEXT calendar date — `newestSnapshot` lets a persisted local snapshot win
-   date ties, so a same-date change would never reach existing installs.
+5. **Bump every affected host date and regenerate its operator row.** Set
+   `HOST_MODELS[host].updatedAt` to today's `YYYY-MM-DD` whenever any base or
+   plan-specific model array changes. This is mandatory even if the preferred
+   model stayed the same. Changing a resolved tier array without a date bump is
+   an invalid snapshot contract. `npm run gen` emits the schema-v2 operator
+   manifest at `operator/one-mcp-model-configs.json` and the reviewed CAS
+   template at `operator/one-mcp-publish-cas.sql`; do not hand-author a second
+   catalog. The generator expands sparse overrides into complete plan rows,
+   sets `auto = balanced`, and requires the published row's integer `version`
+   and `updated_at` to advance. The client fingerprint catches same-day
+   semantic changes, but it cannot fetch them unless the row version advances.
 
 6. **Run the repository verification chain** (from the authoring repo root):
    ```bash
@@ -123,12 +161,14 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
    validation and preferred-first fallback behavior, then run `npm run build`,
    `npm run golden:update`, `npm run plugin:check`, and `npm run smoke`.
 
-7. **Report the independent API prerequisite and a diff table.** This skill does
-   not generate or publish API data. The external service must be updated
-   separately to return the same host/plan snapshot before release. For every
-   changed host/plan/tier array, show `old → new`, the
-   date bump, and the official source. If you could not confirm a newer model,
-   leave it unchanged and say so explicitly.
+7. **Report the publication prerequisite and a diff table.** Generation creates
+   the operator manifest and CAS SQL but does not publish them. Before public
+   sync is enabled, all seven `plugin_config` rows must match the generated
+   `payloadSchemaVersion: 2` manifest exactly, with host-specific base tiers,
+   complete recognized-plan overrides, a version bump, and fresh `updated_at`.
+   For every changed host/plan/tier array, show `old → new`, the date bump,
+   and the official source. If you could not confirm a newer model, leave it
+   unchanged and say so explicitly.
 
 ## Guardrails
 
@@ -140,5 +180,5 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
   bumping that `HOST_MODELS` entry's `updatedAt`.
 - Never hand-edit generated `dist/scripts/**`; edit source config/tests and
   regenerate.
-- Never imply the external API was updated by plugin generation; it is maintained
-  and deployed independently.
+- Never hand-maintain a second model catalog in the operator artefacts. Generate
+  them from `HOST_MODELS`, then publish the reviewed rows independently.
