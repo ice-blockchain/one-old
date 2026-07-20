@@ -1735,85 +1735,89 @@ test('codex child PreToolUse completes a pending-role observation after line-zer
 
 test('codex authoritative role correction revalidates a provisional mismatch before creating child state', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    freezeRunPolicy(cwd, 'codex');
-    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
-    const childThread = '019f69fe-e335-7de0-be43-1ee45e353601';
-    const transcript = path.join(cwd, `rollout-role-correction-${childThread}.jsonl`);
-    fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
+    withTeamsEnv(() => {
+      freezeRunPolicy(cwd, 'codex');
+      const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+      const childThread = '019f69fe-e335-7de0-be43-1ee45e353601';
+      const transcript = path.join(cwd, `rollout-role-correction-${childThread}.jsonl`);
+      fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
 
-    const start = subagentStartBind(subagentStartCtx(cwd, {
-      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: parentThread,
-      transcript_path: transcript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
-    }));
-    assert.equal(start.kind, 'context');
-    assert.equal(readCodexModelObservation(cwd, 'run-test', [childThread])?.status, 'mismatch');
-    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`)), false);
-    assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {});
+      const start = subagentStartBind(subagentStartCtx(cwd, {
+        hook_event_name: 'SubagentStart', agent_id: childThread, session_id: parentThread,
+        transcript_path: transcript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
+      }));
+      assert.equal(start.kind, 'context');
+      assert.equal(readCodexModelObservation(cwd, 'run-test', [childThread])?.status, 'mismatch');
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`)), false);
+      assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {});
 
-    // The actual child rollout now exposes the authoritative tester role. Terra
-    // is valid for tester in the immutable High policy, so the same model can be
-    // re-evaluated and only then become claimable/reusable.
-    fs.writeFileSync(
-      transcript,
-      `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_tester'))}\n`,
-      'utf8',
-    );
-    const gate = codexChildModelGate(codexChildPreToolCtx(
-      cwd, childThread, parentThread, transcript, 'gpt-5.6-terra',
-    ));
-    assert.equal(gate.kind, 'noop');
-    const observation = readCodexModelObservation(cwd, 'run-test', [childThread]);
-    assert.equal(observation?.status, 'verified');
-    assert.equal(observation?.role, 'senior-tester');
-    const claim = JSON.parse(fs.readFileSync(
-      path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`),
-      'utf8',
-    )) as Record<string, unknown>;
-    assert.equal(claim.role, 'senior-tester');
-    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childThread);
-    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend'], undefined);
+      // The actual child rollout now exposes the authoritative tester role. Terra
+      // is valid for tester in the immutable High policy, so the same model can be
+      // re-evaluated and only then become claimable/reusable.
+      fs.writeFileSync(
+        transcript,
+        `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_tester'))}\n`,
+        'utf8',
+      );
+      const gate = codexChildModelGate(codexChildPreToolCtx(
+        cwd, childThread, parentThread, transcript, 'gpt-5.6-terra',
+      ));
+      assert.equal(gate.kind, 'noop');
+      const observation = readCodexModelObservation(cwd, 'run-test', [childThread]);
+      assert.equal(observation?.status, 'verified');
+      assert.equal(observation?.role, 'senior-tester');
+      const claim = JSON.parse(fs.readFileSync(
+        path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`),
+        'utf8',
+      )) as Record<string, unknown>;
+      assert.equal(claim.role, 'senior-tester');
+      assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childThread);
+      assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend'], undefined);
+    });
   });
 });
 
 test('a delayed Codex role correction cannot replace a newer verified child for that role', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    freezeRunPolicy(cwd, 'codex');
-    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
-    const delayedChild = '019f69fe-e335-7de0-be43-1ee45e353611';
-    const delayedTranscript = path.join(cwd, `rollout-delayed-${delayedChild}.jsonl`);
-    fs.writeFileSync(delayedTranscript, '{"type":"session_', 'utf8');
-    subagentStartBind(subagentStartCtx(cwd, {
-      hook_event_name: 'SubagentStart', agent_id: delayedChild, session_id: parentThread,
-      transcript_path: delayedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
-    }));
-    assert.equal(readCodexModelObservation(cwd, 'run-test', [delayedChild])?.status, 'mismatch');
+    withTeamsEnv(() => {
+      freezeRunPolicy(cwd, 'codex');
+      const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+      const delayedChild = '019f69fe-e335-7de0-be43-1ee45e353611';
+      const delayedTranscript = path.join(cwd, `rollout-delayed-${delayedChild}.jsonl`);
+      fs.writeFileSync(delayedTranscript, '{"type":"session_', 'utf8');
+      subagentStartBind(subagentStartCtx(cwd, {
+        hook_event_name: 'SubagentStart', agent_id: delayedChild, session_id: parentThread,
+        transcript_path: delayedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
+      }));
+      assert.equal(readCodexModelObservation(cwd, 'run-test', [delayedChild])?.status, 'mismatch');
 
-    const newerChild = '019f69fe-e335-7de0-be43-1ee45e353612';
-    const newerTranscript = path.join(cwd, `rollout-newer-${newerChild}.jsonl`);
-    fs.writeFileSync(
-      newerTranscript,
-      `${JSON.stringify(codexSessionMeta(newerChild, parentThread, '/root/senior_tester'))}\n`,
-      'utf8',
-    );
-    assert.equal(codexChildModelGate(codexChildPreToolCtx(
-      cwd, newerChild, parentThread, newerTranscript, 'gpt-5.6-terra',
-    )).kind, 'noop');
-    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, newerChild);
+      const newerChild = '019f69fe-e335-7de0-be43-1ee45e353612';
+      const newerTranscript = path.join(cwd, `rollout-newer-${newerChild}.jsonl`);
+      fs.writeFileSync(
+        newerTranscript,
+        `${JSON.stringify(codexSessionMeta(newerChild, parentThread, '/root/senior_tester'))}\n`,
+        'utf8',
+      );
+      assert.equal(codexChildModelGate(codexChildPreToolCtx(
+        cwd, newerChild, parentThread, newerTranscript, 'gpt-5.6-terra',
+      )).kind, 'noop');
+      assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, newerChild);
 
-    fs.writeFileSync(
-      delayedTranscript,
-      `${JSON.stringify(codexSessionMeta(delayedChild, parentThread, '/root/senior_tester'))}\n`,
-      'utf8',
-    );
-    const delayed = codexChildModelGate(codexChildPreToolCtx(
-      cwd, delayedChild, parentThread, delayedTranscript, 'gpt-5.6-terra',
-    ));
-    assert.equal(delayed.kind, 'deny');
-    assert.equal(
-      fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${delayedChild}.json`)),
-      false,
-    );
-    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, newerChild);
+      fs.writeFileSync(
+        delayedTranscript,
+        `${JSON.stringify(codexSessionMeta(delayedChild, parentThread, '/root/senior_tester'))}\n`,
+        'utf8',
+      );
+      const delayed = codexChildModelGate(codexChildPreToolCtx(
+        cwd, delayedChild, parentThread, delayedTranscript, 'gpt-5.6-terra',
+      ));
+      assert.equal(delayed.kind, 'deny');
+      assert.equal(
+        fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${delayedChild}.json`)),
+        false,
+      );
+      assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, newerChild);
+    });
   });
 });
 
@@ -1853,43 +1857,45 @@ test('codex conflicting model evidence is terminal and cannot be healed by a lat
 
 test('codex mismatched child does not reserve the role and a correct respawn becomes reusable', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    freezeRunPolicy(cwd, 'codex');
-    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
-    const rejectedChild = '019f69fe-e335-7de0-be43-1ee45e353603';
-    const rejectedTranscript = path.join(cwd, `rollout-rejected-${rejectedChild}.jsonl`);
-    fs.writeFileSync(
-      rejectedTranscript,
-      `${JSON.stringify(codexSessionMeta(rejectedChild, parentThread, '/root/senior_frontend'))}\n`,
-      'utf8',
-    );
-    subagentStartBind(subagentStartCtx(cwd, {
-      hook_event_name: 'SubagentStart', agent_id: rejectedChild, session_id: parentThread,
-      transcript_path: rejectedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
-    }));
-    assert.equal(readCodexModelObservation(cwd, 'run-test', [rejectedChild])?.status, 'mismatch');
-    assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {});
+    withTeamsEnv(() => {
+      freezeRunPolicy(cwd, 'codex');
+      const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+      const rejectedChild = '019f69fe-e335-7de0-be43-1ee45e353603';
+      const rejectedTranscript = path.join(cwd, `rollout-rejected-${rejectedChild}.jsonl`);
+      fs.writeFileSync(
+        rejectedTranscript,
+        `${JSON.stringify(codexSessionMeta(rejectedChild, parentThread, '/root/senior_frontend'))}\n`,
+        'utf8',
+      );
+      subagentStartBind(subagentStartCtx(cwd, {
+        hook_event_name: 'SubagentStart', agent_id: rejectedChild, session_id: parentThread,
+        transcript_path: rejectedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-terra',
+      }));
+      assert.equal(readCodexModelObservation(cwd, 'run-test', [rejectedChild])?.status, 'mismatch');
+      assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {});
 
-    const retry = agentModelGate(codexSpawnCtx(cwd, {
-      task_name: 'senior_frontend', message: 'Retry the bounded frontend task.',
-      fork_turns: 'none', model: 'gpt-5.6-sol',
-    }));
-    assert.equal(retry.kind, 'noop', 'the rejected child does not trip the reuse gate');
+      const retry = agentModelGate(codexSpawnCtx(cwd, {
+        task_name: 'senior_frontend', message: 'Retry the bounded frontend task.',
+        fork_turns: 'none', model: 'gpt-5.6-sol',
+      }));
+      assert.equal(retry.kind, 'noop', 'the rejected child does not trip the reuse gate');
 
-    const acceptedChild = '019f69fe-e335-7de0-be43-1ee45e353604';
-    const acceptedTranscript = path.join(cwd, `rollout-accepted-${acceptedChild}.jsonl`);
-    fs.writeFileSync(
-      acceptedTranscript,
-      `${JSON.stringify(codexSessionMeta(acceptedChild, parentThread, '/root/senior_frontend'))}\n`,
-      'utf8',
-    );
-    const accepted = subagentStartBind(subagentStartCtx(cwd, {
-      hook_event_name: 'SubagentStart', agent_id: acceptedChild, session_id: parentThread,
-      transcript_path: acceptedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-sol',
-    }));
-    assert.equal(accepted.kind, 'noop');
-    assert.equal(readCodexModelObservation(cwd, 'run-test', [acceptedChild])?.status, 'verified');
-    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend']?.agentId, acceptedChild);
-    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${rejectedChild}.json`)), false);
+      const acceptedChild = '019f69fe-e335-7de0-be43-1ee45e353604';
+      const acceptedTranscript = path.join(cwd, `rollout-accepted-${acceptedChild}.jsonl`);
+      fs.writeFileSync(
+        acceptedTranscript,
+        `${JSON.stringify(codexSessionMeta(acceptedChild, parentThread, '/root/senior_frontend'))}\n`,
+        'utf8',
+      );
+      const accepted = subagentStartBind(subagentStartCtx(cwd, {
+        hook_event_name: 'SubagentStart', agent_id: acceptedChild, session_id: parentThread,
+        transcript_path: acceptedTranscript, task_name: 'senior_frontend', model: 'gpt-5.6-sol',
+      }));
+      assert.equal(accepted.kind, 'noop');
+      assert.equal(readCodexModelObservation(cwd, 'run-test', [acceptedChild])?.status, 'verified');
+      assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend']?.agentId, acceptedChild);
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${rejectedChild}.json`)), false);
+    });
   });
 });
 
