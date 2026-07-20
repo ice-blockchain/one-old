@@ -13,7 +13,7 @@ import {
   oneMcpPayloadFingerprint,
   oneMcpRemoteTiersForPlan,
 } from '../fingerprint';
-import type { OneMcpModelConfigPayloadV2 } from '../types';
+import type { OneMcpModelConfigPayload } from '../types';
 
 type Rec = Record<string, unknown>;
 
@@ -22,7 +22,6 @@ const UPDATED_AT = '2026-07-16T10:30:00.000Z';
 
 function fullBody(extra: Rec = {}): Rec {
   return {
-    payloadSchemaVersion: 2,
     tiers: {
       high: ['model-high', 'model-high-fallback'],
       balanced: ['model-balanced'],
@@ -91,7 +90,6 @@ test('accepts a canonical full config, ignores additive fields, maps tiers, and 
   if (outcome.kind !== 'full') return;
   assert.deepEqual(outcome.config, {
     payload: {
-      payloadSchemaVersion: 2,
       tiers: {
         high: ['model-high', 'model-high-fallback'],
         balanced: ['model-balanced'],
@@ -143,13 +141,12 @@ test('model-id grammar accepts structural provider slugs but rejects prompt-shap
     '---',
   ]) {
     assert.equal(parseOneMcpModelConfigPayload({
-      payloadSchemaVersion: 2,
       tiers: { high: ['h'], balanced: [model], low: ['l'], auto: ['auto'] },
     }), null, `rejects ${JSON.stringify(model)}`);
   }
 });
 
-test('v2 canonicalizes complete host-plan overrides and ignores unknown plan keys', () => {
+test('versionless payload canonicalizes complete host-plan overrides and ignores unknown plan keys', () => {
   const body = fullBody({
     plans: {
       pro: {
@@ -201,7 +198,7 @@ test('v2 canonicalizes complete host-plan overrides and ignores unknown plan key
 test('Windsurf alone accepts trimmed ASCII display names with internal spaces', () => {
   const body = fullBody({
     tiers: {
-      high: ['SWE-1.7 Beta'], balanced: ['SWE-1.7 Lightning Beta'], low: ['SWE-1.6 Slow'], auto: ['SWE-1.7 Lightning Beta'],
+      high: ['SWE-1.7'], balanced: ['SWE-1.7 Lightning'], low: ['SWE-1.6'], auto: ['SWE-1.7 Lightning'],
     },
   });
   assert.equal(classifyOneMcpGetConfigResponse(success(body), 0, 1, 'windsurf').kind, 'full');
@@ -209,8 +206,7 @@ test('Windsurf alone accepts trimmed ASCII display names with internal spaces', 
     kind: 'invalid-response', reason: 'invalid-full-config', observedVersion: 7,
   });
   assert.equal(parseOneMcpModelConfigPayload({
-    payloadSchemaVersion: 2,
-    tiers: { high: [' SWE-1.7 Beta'], balanced: ['b'], low: ['l'], auto: ['a'] },
+    tiers: { high: [' SWE-1.7'], balanced: ['b'], low: ['l'], auto: ['a'] },
   }, 'windsurf'), null);
 });
 
@@ -255,10 +251,12 @@ test('supports a documented phantom-ahead rollback but rejects an equal-version 
   });
 });
 
-test('rejects unsupported schema versions and malformed known tier fields', async (t) => {
-  assert.deepEqual(classifyOneMcpGetConfigResponse(success(fullBody({ payloadSchemaVersion: 3 })), 0), {
-    kind: 'invalid-response', reason: 'unsupported-payload-schema', observedVersion: 7,
-  });
+test('ignores additive legacy schema fields and rejects malformed known tier fields', async (t) => {
+  const legacyField = classifyOneMcpGetConfigResponse(success(fullBody({ payloadSchemaVersion: 3 })), 0);
+  assert.equal(legacyField.kind, 'full');
+  if (legacyField.kind === 'full') {
+    assert.equal(Object.hasOwn(legacyField.config.payload, 'payloadSchemaVersion'), false);
+  }
 
   const baseTiers = fullBody().tiers as Rec;
   const invalidTiers: Array<[string, Rec]> = [
@@ -271,7 +269,10 @@ test('rejects unsupported schema versions and malformed known tier fields', asyn
     ['bidi model', { ...baseTiers, balanced: [`model\u202eignore`] }],
     ['control model', { ...baseTiers, balanced: ['model\nignore'] }],
     ['sparse row', { ...baseTiers, balanced: Array(1) }],
-    ['too many models', { ...baseTiers, high: Array.from({ length: 33 }, (_, index) => `m-${index}`) }],
+    ['four models exceed the remote tier limit', {
+      ...baseTiers,
+      high: Array.from({ length: 4 }, (_, index) => `m-${index}`),
+    }],
     ['non-array row', { ...baseTiers, auto: 'auto' }],
   ];
   for (const [name, tiers] of invalidTiers) {
@@ -338,38 +339,32 @@ test('rejects dangerous keys, custom prototypes, and excessive additive depth', 
 });
 
 test('fingerprints are stable and auto-only changes do not alter the applied fingerprint', () => {
-  const payload: OneMcpModelConfigPayloadV2 = {
-    payloadSchemaVersion: 2,
+  const payload: OneMcpModelConfigPayload = {
     tiers: {
       high: ['h'], balanced: ['b'], low: ['l'], auto: ['auto-a'],
     },
   };
-  const reorderedObject: OneMcpModelConfigPayloadV2 = {
+  const reorderedObject: OneMcpModelConfigPayload = {
     tiers: { auto: ['auto-a'], low: ['l'], balanced: ['b'], high: ['h'] },
-    payloadSchemaVersion: 2,
   };
   assert.equal(oneMcpPayloadFingerprint(payload), oneMcpPayloadFingerprint(reorderedObject));
 
   const mapped = mapOneMcpTiers(payload.tiers);
-  const autoChanged: OneMcpModelConfigPayloadV2 = {
-    payloadSchemaVersion: 2,
+  const autoChanged: OneMcpModelConfigPayload = {
     tiers: { ...payload.tiers, auto: ['auto-b'] },
   };
   assert.notEqual(oneMcpPayloadFingerprint(payload), oneMcpPayloadFingerprint(autoChanged));
   assert.equal(oneMcpAppliedFingerprint(mapped), oneMcpAppliedFingerprint(mapOneMcpTiers(autoChanged.tiers)));
 
-  const appliedChanged: OneMcpModelConfigPayloadV2 = {
-    payloadSchemaVersion: 2,
+  const appliedChanged: OneMcpModelConfigPayload = {
     tiers: { ...payload.tiers, balanced: ['b-new'] },
   };
   assert.notEqual(oneMcpAppliedFingerprint(mapped), oneMcpAppliedFingerprint(mapOneMcpTiers(appliedChanged.tiers)));
 
-  const ordered: OneMcpModelConfigPayloadV2 = {
-    payloadSchemaVersion: 2,
+  const ordered: OneMcpModelConfigPayload = {
     tiers: { ...payload.tiers, high: ['h', 'h-fallback'] },
   };
-  const reorderedModels: OneMcpModelConfigPayloadV2 = {
-    payloadSchemaVersion: 2,
+  const reorderedModels: OneMcpModelConfigPayload = {
     tiers: { ...payload.tiers, high: ['h-fallback', 'h'] },
   };
   assert.notEqual(
@@ -378,14 +373,14 @@ test('fingerprints are stable and auto-only changes do not alter the applied fin
     'model preference order is part of the applied target',
   );
 
-  const planAware: OneMcpModelConfigPayloadV2 = {
+  const planAware: OneMcpModelConfigPayload = {
     ...payload,
     plans: {
       pro: { high: ['pro-h'], balanced: ['pro-b'], low: ['pro-l'], auto: ['pro-auto-a'] },
       free: { high: ['free-h'], balanced: ['free-b'], low: ['free-l'], auto: ['free-auto'] },
     },
   };
-  const planKeysReordered: OneMcpModelConfigPayloadV2 = {
+  const planKeysReordered: OneMcpModelConfigPayload = {
     ...payload,
     plans: {
       free: { auto: ['free-auto'], low: ['free-l'], balanced: ['free-b'], high: ['free-h'] },
@@ -393,7 +388,7 @@ test('fingerprints are stable and auto-only changes do not alter the applied fin
     },
   };
   assert.equal(oneMcpPayloadFingerprint(planAware), oneMcpPayloadFingerprint(planKeysReordered));
-  const inactivePlanChanged: OneMcpModelConfigPayloadV2 = {
+  const inactivePlanChanged: OneMcpModelConfigPayload = {
     ...planAware,
     plans: {
       ...planAware.plans,
@@ -405,7 +400,7 @@ test('fingerprints are stable and auto-only changes do not alter the applied fin
     oneMcpAppliedFingerprintForPlan(planAware, 'pro'),
     oneMcpAppliedFingerprintForPlan(inactivePlanChanged, 'pro'),
   );
-  const activeAutoChanged: OneMcpModelConfigPayloadV2 = {
+  const activeAutoChanged: OneMcpModelConfigPayload = {
     ...planAware,
     plans: {
       ...planAware.plans,
@@ -421,33 +416,30 @@ test('fingerprints are stable and auto-only changes do not alter the applied fin
 
 test('cached payload revalidation uses the same strict-known/additive-tolerant contract', () => {
   const parsed = parseOneMcpModelConfigPayload({
-    payloadSchemaVersion: 2,
     tiers: {
       high: ['h'], balanced: ['b'], low: ['l'], auto: ['auto'], future: ['ignored'],
     },
     futureRootField: true,
   });
   assert.deepEqual(parsed, {
-    payloadSchemaVersion: 2,
     tiers: { high: ['h'], balanced: ['b'], low: ['l'], auto: ['auto'] },
   });
   assert.equal(parseOneMcpModelConfigPayload({
-    payloadSchemaVersion: 1,
     tiers: { high: ['h'], balanced: ['b'], low: ['l'] },
   }), null);
   assert.equal(parseOneMcpModelConfigPayload(JSON.parse(
-    '{"payloadSchemaVersion":2,"tiers":{"high":["h"],"balanced":["b"],"low":["l"],"auto":["auto"]},"nested":{"prototype":true}}',
+    '{"tiers":{"high":["h"],"balanced":["b"],"low":["l"],"auto":["auto"]},"nested":{"prototype":true}}',
   )), null);
 
   let getterCalled = false;
   const accessorPayload: Rec = {
     tiers: { high: ['h'], balanced: ['b'], low: ['l'], auto: ['auto'] },
   };
-  Object.defineProperty(accessorPayload, 'payloadSchemaVersion', {
+  Object.defineProperty(accessorPayload, 'futureField', {
     enumerable: true,
     get: () => {
       getterCalled = true;
-      return 2;
+      return true;
     },
   });
   assert.equal(parseOneMcpModelConfigPayload(accessorPayload), null);

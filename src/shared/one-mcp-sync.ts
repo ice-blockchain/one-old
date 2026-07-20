@@ -7,7 +7,6 @@
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
   oneMcpSyncEnabled,
   publicEndpoint,
 } from '../config/one-mcp';
@@ -104,7 +103,6 @@ function cacheTarget(
   return {
     snapshot: {
       plan: canonicalPlan,
-      updatedAt: usable.updatedAt.slice(0, 10),
       tiers,
     },
     appliedFingerprint: oneMcpAppliedFingerprint(tiers),
@@ -121,7 +119,6 @@ function fullCacheEntry(
   return {
     endpoint,
     configName,
-    payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
     decoderVersion: ONE_MCP_DECODER_VERSION,
     version: outcome.config.version,
     createdAt: outcome.config.createdAt,

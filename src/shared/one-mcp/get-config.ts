@@ -4,7 +4,6 @@ import {
   ONE_MCP_MAX_CONFIG_VERSION,
   ONE_MCP_MAX_MODELS_PER_TIER,
   ONE_MCP_MAX_PAYLOAD_DEPTH,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
   isSafeOneMcpModelId,
 } from '../../config/one-mcp';
 import {
@@ -25,8 +24,8 @@ import type {
   OneMcpCanonicalFullConfig,
   OneMcpGetConfigOutcome,
   OneMcpInvalidResponseReason,
-  OneMcpModelConfigPayloadV2,
-  OneMcpRemoteTiersV2,
+  OneMcpModelConfigPayload,
+  OneMcpRemoteTiers,
 } from './types';
 
 type Rec = Record<string, unknown>;
@@ -138,7 +137,7 @@ function parseModelRow(value: unknown, host?: HostModelKey): readonly string[] |
   return Object.freeze(models);
 }
 
-function parseRemoteTiers(value: unknown, host?: HostModelKey): OneMcpRemoteTiersV2 | null {
+function parseRemoteTiers(value: unknown, host?: HostModelKey): OneMcpRemoteTiers | null {
   if (!isRecord(value)) return null;
   if (!['high', 'balanced', 'low', 'auto'].every((tier) => hasOwn(value, tier))) return null;
   const high = parseModelRow(value.high, host);
@@ -153,16 +152,13 @@ function parseRemoteTiers(value: unknown, host?: HostModelKey): OneMcpRemoteTier
 function parsePayloadDetailed(
   value: unknown,
   host?: HostModelKey,
-): OneMcpModelConfigPayloadV2 | OneMcpInvalidResponseReason {
+): OneMcpModelConfigPayload | OneMcpInvalidResponseReason {
   if (!isRecord(value)) return 'invalid-full-config';
   if (!safeObjectGraph(value, ONE_MCP_MAX_PAYLOAD_DEPTH)) return 'unsafe-object-graph';
-  if (!hasOwn(value, 'payloadSchemaVersion') || !hasOwn(value, 'tiers')) return 'invalid-full-config';
-  if (value.payloadSchemaVersion !== ONE_MCP_PAYLOAD_SCHEMA_VERSION) {
-    return 'unsupported-payload-schema';
-  }
+  if (!hasOwn(value, 'tiers')) return 'invalid-full-config';
   const tiers = parseRemoteTiers(value.tiers, host);
   if (!tiers) return 'invalid-full-config';
-  const plans: Partial<Record<UserPlan, OneMcpRemoteTiersV2>> = {};
+  const plans: Partial<Record<UserPlan, OneMcpRemoteTiers>> = {};
   if (hasOwn(value, 'plans')) {
     if (!isRecord(value.plans)) return 'invalid-full-config';
     for (const plan of PLAN_IDS) {
@@ -173,19 +169,18 @@ function parsePayloadDetailed(
     }
   }
   return Object.freeze({
-    payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
     tiers,
     ...(Object.keys(plans).length > 0 ? { plans: Object.freeze(plans) } : {}),
   });
 }
 
 // Revalidate a cache entry before it can influence model selection. This uses
-// the same forward-compatible parser as a live response: known v2 fields stay
+// the same forward-compatible parser as a live response: known fields stay
 // strict, additive fields are ignored, and unsafe/deep object graphs fail.
 export function parseOneMcpModelConfigPayload(
   value: unknown,
   host?: HostModelKey,
-): OneMcpModelConfigPayloadV2 | null {
+): OneMcpModelConfigPayload | null {
   const parsed = parsePayloadDetailed(value, host);
   return typeof parsed === 'string' ? null : parsed;
 }

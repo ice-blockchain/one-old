@@ -14,7 +14,7 @@ import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
-import { modelMatchesAny } from '../../shared/model-tiers';
+import { modelMatchesAny, modelMatchesHostModels } from '../../shared/model-tiers';
 import { CURSOR_MODEL_FLOOR } from '../../config/model-tiers';
 import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
 import { exhaustedModelsForRole, isApiUsageLimitText, markModelExhaustionTerminal, modelIsExhausted, recordExhaustedModel } from './exhausted-models';
@@ -84,6 +84,7 @@ import { resolveProjectRoot } from '../../shared/hook-paths';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
 import {
+  cursorRunPolicyMissingTiers,
   ensureRunModelPolicy,
   policyModelsForExpected,
   readRunModelPolicy,
@@ -99,6 +100,14 @@ const block = (
   fallback = '',
 ): string => skillBlock('agent-model', name, vars, fallback);
 const PLAN_BATCH_GATED_ROLES = new Set(['senior-frontend', 'senior-backend']);
+
+export const CURSOR_MODELS_CAPTURE_FALLBACK = `Cursor model-capture gate (required before the first team spawn, run {{RUN_ID}}). The spawn is blocked until Traffic One freezes the exact model ids offered by this Cursor build.
+Missing captured tiers for this run: {{MISSING_TIERS}}.
+Do this once before retrying:
+1. List the model ids your \`Task\` tool offers for spawning subagents (the same list Cursor shows when you pick a subagent model).
+2. Run \`{{CAPTURE_CMD}}\`, replacing the placeholders with those EXACT ids verbatim (e.g. \`claude-fable-5-thinking-high\`, \`gpt-5.6-terra-medium\`, \`composer-2.5-fast\`, or \`gpt-5.4-mini\`). A valid picker id may or may not include a reasoning suffix; never invent one. Include at least one id per tier the team needs — highest + balanced + cheapest. This internal command writes only your local per-user/project Cursor preferences; do not create \`.traffic-one/cursor-models.json\`.
+3. Re-run model-gate, then retry the spawn with the exact role→model value it prints. Project \`.cursor/agents\` contracts remain model-agnostic.
+Do not retry with an uncaptured family guess and do not build the project inline because of this gate.`;
 
 function isPlanBatchGatedRole(role: string): boolean {
   return PLAN_BATCH_GATED_ROLES.has(role);
@@ -119,13 +128,14 @@ function modelSatisfiesTier(
   passedModel: string,
   expected: string,
   policy: RunModelPolicyV1 | null = null,
+  role?: string,
 ): boolean {
   const acceptable = policy
-    ? policyModelsForExpected(policy, expected)
+    ? (role && policy.roles[role]?.acceptableModels) || policyModelsForExpected(policy, expected)
     : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
   return ctx.host === 'codex'
     ? acceptable.includes(passedModel)
-    : modelMatchesAny(passedModel, acceptable);
+    : modelMatchesHostModels(passedModel, acceptable, ctx.host);
 }
 
 function modelParamEnforced(host: string): boolean {
@@ -397,7 +407,7 @@ function replacementJustified(prompt: string, host = ''): boolean {
     .test(prompt);
 }
 
-// On Cursor a tier's `expected` is a bare model FAMILY (e.g. claude-opus-4-8). Map it to the
+// On Cursor a tier's `expected` is a bare model FAMILY (e.g. claude-fable-5). Map it to the
 // CONCRETE build slug the user's runner offers — the first captured model whose family matches
 // the family or a same-tier alternate — so deny/advisory prose names an EXACT slug Cursor
 // accepts. Falls back to the family when nothing is captured (or the build offers nothing in
@@ -407,6 +417,7 @@ function cursorRealSlug(
   cwd: string,
   family: string,
   policy: RunModelPolicyV1 | null = null,
+  role?: string,
 ): string {
   if (ctx.host !== 'cursor' || !family) return family;
   const captured = policy
@@ -414,7 +425,7 @@ function cursorRealSlug(
     : freshCursorModels(cwd, detectHostPlan(ctx.host));
   if (!captured.length) return family;
   const acceptable = policy
-    ? policyModelsForExpected(policy, family)
+    ? (role && policy.roles[role]?.acceptableModels) || policyModelsForExpected(policy, family)
     : currentAcceptableModels(family, ctx.host, detectHostPlan(ctx.host));
   return pickCursorSlug(acceptable, captured) || family;
 }
@@ -424,15 +435,16 @@ function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: string,
     ? `You passed model="${passedModel}". `
     : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ';
   // `expected` + alternates are FAMILY anchors; on Cursor name the concrete build slug for each
-  // (resolved from the captured list) so the orchestrator passes an exact slug Cursor offers,
-  // not a bare family. suppressAlternates: after "enable & retry" we don't advertise fallbacks.
+  // (resolved from the captured list) so the orchestrator passes an exact id Cursor offers,
+  // never an uncaptured family guess. suppressAlternates: after "enable & retry" we don't
+  // advertise fallbacks. A captured exact id may legitimately equal its family anchor.
   const policy = opts.policy || null;
-  const shownExpected = cursorRealSlug(ctx, cwd, expected, policy);
+  const shownExpected = cursorRealSlug(ctx, cwd, expected, policy, role);
   const captured = ctx.host === 'cursor'
     ? (policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, detectHostPlan(ctx.host)))
     : [];
   const acceptable = policy
-    ? policyModelsForExpected(policy, expected)
+    ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
     : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
   const altFamilies = opts.suppressAlternates ? [] : acceptable.slice(1);
   const altModels = altFamilies
@@ -449,10 +461,10 @@ function cursorExactModelDeny(ctx: Ctx, cwd: string, role: string, passedModel: 
   const captured = policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, detectHostPlan(ctx.host));
   if (!captured.length || captured.includes(passedModel)) return null;
   const acceptable = policy
-    ? policyModelsForExpected(policy, expected)
+    ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
     : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
   if (!modelMatchesAny(passedModel, acceptable)) return null;
-  const exact = pickCursorSlug(acceptable, captured) || cursorRealSlug(ctx, cwd, expected, policy);
+  const exact = pickCursorSlug(acceptable, captured) || cursorRealSlug(ctx, cwd, expected, policy, role);
   return deny(block('cursor-exact-model-required', {
     LEVEL: level,
     ROLE: role,
@@ -465,9 +477,15 @@ function cursorExactModelDeny(ctx: Ctx, cwd: string, role: string, passedModel: 
 // The "next eligible" model for a tier: the concrete build slug of the first same-tier
 // alternate FAMILY (resolved from the captured list on Cursor), or the resolved expected
 // when there is no alternate.
-function fallbackModelFor(ctx: Ctx, cwd: string, expected: string, policy: RunModelPolicyV1 | null = null): string {
+function fallbackModelFor(
+  ctx: Ctx,
+  cwd: string,
+  role: string,
+  expected: string,
+  policy: RunModelPolicyV1 | null = null,
+): string {
   const acceptable = policy
-    ? policyModelsForExpected(policy, expected)
+    ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
     : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
   const altFamilies = acceptable.slice(1);
   if (ctx.host === 'cursor') {
@@ -478,7 +496,9 @@ function fallbackModelFor(ctx: Ctx, cwd: string, expected: string, policy: RunMo
     }
   }
   const altFamily = altFamilies[0];
-  return altFamily ? cursorRealSlug(ctx, cwd, altFamily, policy) : cursorRealSlug(ctx, cwd, expected, policy);
+  return altFamily
+    ? cursorRealSlug(ctx, cwd, altFamily, policy, role)
+    : cursorRealSlug(ctx, cwd, expected, policy, role);
 }
 
 // The recommended-model-unavailable choice deny (the budget/disabled CHOICE for the
@@ -522,20 +542,25 @@ function degradedToFloorDeny(ctx: Ctx, cwd: string, runId: string, role: string,
   if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, expected);
   if (choice === 'use-fallback') return null;
   markModelChoicePrompted(cwd, runId);
-  // The RECOMMENDED model named here is the role's TIER family verbatim (e.g. `claude-4.6-sonnet`)
+  // The RECOMMENDED model named here is the role's TIER family verbatim (e.g. `gpt-5.6-terra`)
   // — NOT `cursorRealSlug(expected)`. cursorRealSlug resolves through the captured/available list,
   // which by definition EXCLUDES a disabled model, so it would collapse the recommendation to an
   // available fallback (often the Composer floor) and tell the user to "enable composer" instead
   // of the actually-disabled model they picked. The user must see the exact model to enable in
   // Settings → Models. The FALLBACK is the Composer floor the spawn already degraded to (free,
   // guaranteed available — matches the "no extra cost / available immediately" choice prose).
-  return modelChoiceDeny(ctx, role, level, expected, cursorRealSlug(ctx, cwd, CURSOR_MODEL_FLOOR, policy));
+  const captured = policy
+    ? [...(policy.cursorAvailableModels || [])]
+    : freshCursorModels(cwd, detectHostPlan(ctx.host));
+  const floor = (captured.length ? pickCursorSlug([CURSOR_MODEL_FLOOR], captured) : '')
+    || CURSOR_MODEL_FLOOR;
+  return modelChoiceDeny(ctx, role, level, expected, floor);
 }
 
 // The role's PREFERRED tier model (the exact one the user picked in the wizard, e.g. the
-// balanced `claude-4.6-sonnet`) is NOT in the build's captured/offered model list — it's disabled
+// balanced `gpt-5.6-terra`) is NOT in the build's captured/offered model list — it's disabled
 // in Settings → Models or not on the plan. Materialization therefore fell back to a same-tier
-// ALTERNATE (e.g. `gpt-5.5`), which SATISFIES the tier so the spawn would pass silently. That is
+// ALTERNATE (e.g. `claude-sonnet-5`), which SATISFIES the tier so the spawn would pass silently. That is
 // exactly the "I wasn't asked" gap: degradedToFloorDeny only catches a drop to the Composer FLOOR,
 // not a fallback to a valid alternate. Surface the choice ONCE (enable the recommended model & re-
 // run, or accept the named fallback) so the user is never silently switched off their pick. Shares
@@ -552,7 +577,7 @@ function preferredModelUnavailableDeny(ctx: Ctx, cwd: string, runId: string, rol
   if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, expected);
   if (choice === 'use-fallback') return null;
   markModelChoicePrompted(cwd, runId);
-  return modelChoiceDeny(ctx, role, level, expected, fallbackModelFor(ctx, cwd, expected, policy));
+  return modelChoiceDeny(ctx, role, level, expected, fallbackModelFor(ctx, cwd, role, expected, policy));
 }
 
 // B2 proactive advisory (Cursor, once per run): a pinned model can SILENTLY fall back to
@@ -561,12 +586,22 @@ function preferredModelUnavailableDeny(ctx: Ctx, cwd: string, runId: string, rol
 // HookResult carrying BOTH the detailed agent-facing context AND a user-visible systemMessage
 // (→ user_message on Cursor) so the user actually SEES it — not just additional_context, which
 // Cursor injects into the agent's context but never shows in chat. null when not applicable.
-function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string, overrides: Rec | null, planCtx: PlanCtx, policy: RunModelPolicyV1 | null = null): HookResult | null {
+function maybeModelAdvisory(
+  ctx: Ctx,
+  cwd: string,
+  runId: string,
+  level: string,
+  overrides: Rec | null,
+  modelSelections: Rec | null,
+  planCtx: PlanCtx,
+  policy: RunModelPolicyV1 | null = null,
+): HookResult | null {
   if (ctx.host !== 'cursor' || !runId || modelAdvisoryShown(cwd, runId)) return null;
   const models = new Set<string>();
   for (const r of AGENT_ROLES) {
-    const fam = policy?.roles[r]?.preferredModel || modelForRoleHost(level, r, ctx.host, overrides, planCtx);
-    if (fam) models.add(cursorRealSlug(ctx, cwd, fam, policy));
+    const fam = policy?.roles[r]?.preferredModel
+      || modelForRoleHost(level, r, ctx.host, overrides, planCtx, process.env, modelSelections);
+    if (fam) models.add(cursorRealSlug(ctx, cwd, fam, policy, r));
   }
   if (models.size === 0) return null;
   markModelAdvisoryShown(cwd, runId);
@@ -580,7 +615,7 @@ function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string,
 // derives spawn-agent from tool_name=Task (cursor.ts GENERIC_PRE_ADMIT), the model is
 // passed in tool_input.model, and HOST_MODELS.cursor holds bare FAMILY anchors
 // (claude-fable-5 / gpt-5.6-terra / composer-2.5) — the concrete reasoning-suffixed
-// build slug (e.g. claude-4.6-sonnet-medium-thinking) is account/build-specific, so it
+// build slug (e.g. claude-sonnet-5-thinking-high) is account/build-specific, so it
 // is captured at onboarding (freshCursorModels) and resolved per spawn via
 // pickCursorSlug/cursorRealSlug, while modelSatisfiesTier matches family-aware against
 // the owning tier row (preferred id + same-tier fallbacks). (This replaced an earlier
@@ -676,13 +711,20 @@ export function agentModelGate(ctx: Ctx): HookResult {
     );
   }
   const subagentTeam = configuredSubagentTeam || Boolean(existingRunPolicy);
-  if (configuredSubagentTeam && ctx.host === 'cursor' && !existingRunPolicy
-    && freshCursorModels(cwd, detectHostPlan('cursor')).length === 0) {
+  const cursorMissingTiers = configuredSubagentTeam && ctx.host === 'cursor' && !existingRunPolicy
+    ? cursorRunPolicyMissingTiers(
+      cwd,
+      ctx.host,
+      state,
+      { ...process.env, TRAFFIC_ONE_HOST: ctx.host },
+    )
+    : null;
+  if (cursorMissingTiers?.length) {
     return deny(block('cursor-models-capture', {
       RUN_ID: spawnRunId,
-      PROJECT_ROOT: cwd,
+      MISSING_TIERS: cursorMissingTiers.join(', '),
       CAPTURE_CMD: modelCaptureCommand(cwd, 'cursor'),
-    }));
+    }, CURSOR_MODELS_CAPTURE_FALLBACK));
   }
   const runPolicy = existingRunPolicy
     || (configuredSubagentTeam
@@ -1003,7 +1045,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     const expected = runPolicy?.roles['quick-fix']?.preferredModel
       || currentModelForTier('cheapest', ctx.host, detectHostPlan(ctx.host));
     const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-    if (modelParamEnforced(ctx.host) && expected && !modelSatisfiesTier(ctx, passedModel, expected, runPolicy)) {
+    if (modelParamEnforced(ctx.host) && expected && !modelSatisfiesTier(ctx, passedModel, expected, runPolicy, role)) {
       return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance', { policy: runPolicy });
     }
     const exact = modelParamEnforced(ctx.host) && expected
@@ -1063,6 +1105,9 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const overrides = runPolicy
     ? (runPolicy.teamOverrides as Rec)
     : team && obj(team.overrides) ? (team.overrides as Rec) : null;
+  const modelSelections = runPolicy
+    ? null
+    : team && obj(team.modelSelections) ? (team.modelSelections as Rec) : null;
   const planCtx = { host: ctx.host, plan: runPolicy?.plan || detectHostPlan(ctx.host) };
 
   // Cursor: the build's actual subagent model set — and its reasoning-variant slugs
@@ -1073,7 +1118,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // picker/catalog change affects the next run, never this one.
 
   const expected = runPolicy?.roles[role]?.preferredModel
-    || modelForRoleHost(level, role, ctx.host, overrides, planCtx);
+    || modelForRoleHost(level, role, ctx.host, overrides, planCtx, process.env, modelSelections);
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
   const agentType = spawnAgentType(toolInput, { includeRoleAlias: false });
   if (ctx.host === 'opencode') {
@@ -1094,7 +1139,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     });
     return noop();
   }
-  if (!modelSatisfiesTier(ctx, passedModel, expected, runPolicy)) {
+  if (!modelSatisfiesTier(ctx, passedModel, expected, runPolicy, role)) {
     // No/wrong `model` arg → an orchestrator-actionable "pass model=X" deny (NOT a user-facing
     // budget/disabled choice — that is reserved for degradedToFloorDeny, the real Composer-floor
     // case). This is what unblocks a build that omitted the per-role model.
@@ -1107,7 +1152,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // offered by this build (disabled in Settings → Models / not on plan), in which case the team is
   // about to run on a same-tier FALLBACK. Surface the choice ONCE so the user isn't silently
   // switched off their pick (the "I wasn't asked" gap — degradedToFloorDeny below only catches a
-  // drop to the Composer floor, not a fallback to a valid alternate like gpt-5.5).
+  // drop to the Composer floor, not a fallback to a valid alternate like Sonnet 5).
   const ineligible = preferredModelUnavailableDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level, runPolicy);
   if (ineligible) return ineligible;
 
@@ -1119,7 +1164,16 @@ export function agentModelGate(ctx: Ctx): HookResult {
 
   // First passing Cursor spawn of the run → one-time, USER-VISIBLE advisory naming the team's
   // models + the budget/enable remedy (a pinned model can silently fall to Composer at runtime).
-  const advisory = maybeModelAdvisory(ctx, cwd, spawnRunId, level, overrides, planCtx, runPolicy);
+  const advisory = maybeModelAdvisory(
+    ctx,
+    cwd,
+    spawnRunId,
+    level,
+    overrides,
+    modelSelections,
+    planCtx,
+    runPolicy,
+  );
 
   recordSpawnParentSession(cwd, raw);
   if (ctx.host !== 'codex') {

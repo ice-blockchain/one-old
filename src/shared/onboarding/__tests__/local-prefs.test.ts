@@ -145,7 +145,6 @@ test('currentLocalPreferenceTarget uses a valid One MCP sidecar', () => {
   try {
     const snapshot = hostModelSnapshot('codex', 'pro');
     const payload = {
-      payloadSchemaVersion: 2 as const,
       tiers: {
         high: snapshot.tiers.highest,
         balanced: snapshot.tiers.balanced,
@@ -157,7 +156,6 @@ test('currentLocalPreferenceTarget uses a valid One MCP sidecar', () => {
     writeOneMcpConfigCacheEntry('codex', {
       endpoint: publicEndpoint(env),
       configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
-      payloadSchemaVersion: 2,
       decoderVersion: ONE_MCP_DECODER_VERSION,
       version: 8,
       createdAt: '2026-07-01T00:00:00.000Z',

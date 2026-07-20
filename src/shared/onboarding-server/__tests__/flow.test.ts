@@ -125,6 +125,7 @@ test('all hosts: onboarding shows the plan recommendation and persists only the 
   const cases = [
     { host: 'claude', plan: 'pro', level: 'balanced', tier: 'balanced' },
     { host: 'codex', plan: 'plus', level: 'balanced', tier: 'balanced' },
+    { host: 'codex', plan: 'prolite', level: 'high', tier: 'highest' },
     { host: 'cursor', plan: 'pro', level: 'balanced', tier: 'balanced' },
     { host: 'opencode', plan: 'plus', level: 'balanced', tier: 'balanced' },
     { host: 'copilot', plan: 'pro', level: 'balanced', tier: 'balanced' },
@@ -169,7 +170,11 @@ test('all hosts: onboarding shows the plan recommendation and persists only the 
       assert.equal(asRec(active.performance).level, c.level, c.host);
       assert.equal(asRec(active.team).mode, c.level === 'low' ? 'main-agent' : 'subagents', c.host);
       if (c.level !== 'low') assert.equal(asRec(active.team).approved, true, c.host);
-      assert.equal(asRec(asRec(active.performance).target).plan, c.plan, c.host);
+      assert.equal(
+        asRec(asRec(active.performance).target).plan,
+        c.plan === 'prolite' ? 'pro' : c.plan,
+        c.host,
+      );
       assert.match(String(asRec(asRec(active.performance).target).appliedFingerprint), /^[a-f0-9]{64}$/, c.host);
       assert.equal(asRec(asRec(active.performance).target).configVersion, 0, c.host);
       assert.equal(readGlobalCodeGraphProvider(), 'gitnexus', c.host);
@@ -245,14 +250,13 @@ test('existing project: plan/model drift reopens Performance while metadata-only
     assert.equal(planChanged.meta.host, 'codex');
     assert.equal(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'), beforePlanChange);
 
-    // Reconfigure for the new plan. A date-only catalog advance with identical
+    // Reconfigure for the new plan. Server metadata changes with identical
     // applied tiers must not spuriously reopen Performance.
     applyAnswer(cwd, 'performance', 'balanced');
     assert.equal(computeOnboarding(cwd).step, 'team-confirmation');
     applyAnswer(cwd, 'team-confirmation', { action: 'approve' });
     writeRuntimeModelSnapshot('codex', {
       ...hostModelSnapshot('codex', 'free'),
-      updatedAt: '2026-07-14',
     }, process.env);
     const beforeMetadataChange = fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8');
     assert.equal(computeOnboarding(cwd).done, true);
@@ -262,7 +266,6 @@ test('existing project: plan/model drift reopens Performance while metadata-only
     const bundled = hostModelSnapshot('codex', 'free');
     writeRuntimeModelSnapshot('codex', {
       ...bundled,
-      updatedAt: '2026-07-15',
       tiers: {
         ...bundled.tiers,
         highest: ['gpt-new-frontier', ...bundled.tiers.highest],
@@ -514,7 +517,7 @@ test('buildTeamLineup: high performance maps each role to its tier + claude mode
   const architect = requireRole(by, 'senior-architect');
   const tester = requireRole(by, 'senior-tester');
   const shipper = requireRole(by, 'senior-shipper');
-  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: 'claude-opus-4-8' });
+  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: 'claude-fable-5' });
   assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'cheapest', model: 'claude-haiku-4-5' });
   assert.deepEqual({ tier: shipper.tier, model: shipper.model }, { tier: 'balanced', model: 'claude-sonnet-5' });
   assert.ok(architect.label === 'Architect' && architect.blurb.length > 0);
@@ -541,7 +544,7 @@ test('buildTeamLineup: a per-role tier override is honored', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'claude', { 'senior-tester': 'highest' }).map((m) => [m.role, m]));
   // tester is normally cheapest/haiku; the override promotes it
   const tester = requireRole(by, 'senior-tester');
-  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: 'claude-opus-4-8' });
+  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: 'claude-fable-5' });
 });
 
 test('computeOnboarding: the team-confirmation step carries the resolved line-up', () => {
@@ -554,7 +557,7 @@ test('computeOnboarding: the team-confirmation step carries the resolved line-up
     assert.equal(view.meta.recommendedTier, 'highest'); // pinned plan 'max' → highest headline tier
     assert.ok(Array.isArray(view.meta.team) && view.meta.team?.length === 6);
     const architect = view.meta.team?.find((m) => m.role === 'senior-architect');
-    assert.equal(architect?.model, 'claude-opus-4-8');
+    assert.equal(architect?.model, 'claude-fable-5');
     // host is resolved (defaults to claude outside a host process) so the UI can label it
     assert.equal(view.meta.host, 'claude');
     // the approve/re-pick options are still present
@@ -574,27 +577,36 @@ test('declined project: computeOnboarding is terminally done with the declined f
   });
 });
 
-test('team step carries the host model menu (modelChoices) so each agent is selectable', () => {
+test('team step offers the first two models from every tier without cross-tier deduplication', () => {
   withProject(null, (cwd) => {
     applyAnswer(cwd, 'open-code', 'not_now');
     applyAnswer(cwd, 'performance', 'high');
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
-    // claude (default host) → opus/sonnet/haiku values (aliases track point
-    // releases) plus friendly generation labels for display.
-    assert.deepEqual(view.meta.modelChoices, [
-      { tier: 'highest', model: 'claude-opus-4-8', label: 'Opus 4.8' },
-      { tier: 'balanced', model: 'claude-sonnet-5', label: 'Sonnet 5' },
-      { tier: 'cheapest', model: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+    const choices = view.meta.modelChoices || [];
+    assert.deepEqual(choices.filter((choice) => choice.tier === 'highest').map((choice) => choice.model), [
+      'claude-fable-5', 'claude-opus-4-8',
     ]);
+    assert.deepEqual(choices.filter((choice) => choice.tier === 'balanced').map((choice) => choice.model), [
+      'claude-sonnet-5', 'claude-sonnet-4-6',
+    ]);
+    assert.deepEqual(choices.filter((choice) => choice.tier === 'cheapest').map((choice) => choice.model), [
+      'claude-haiku-4-5', 'claude-sonnet-4-6',
+    ]);
+    assert.equal(
+      choices.filter((choice) => choice.model === 'claude-sonnet-4-6').length,
+      2,
+      'the same model remains a distinct Balanced and Cheapest choice',
+    );
+    assert.equal(choices.find((choice) => choice.model === 'claude-opus-4-8')?.label, 'Opus 4.8');
   });
 });
 
-test('Claude lineup keeps alias values but surfaces concrete generation labels; concrete hosts get none', () => {
+test('Claude lineup surfaces concrete generation labels; concrete hosts get none', () => {
   const lineup = buildTeamLineup('high', 'claude');
   const architect = lineup.find((m) => m.role === 'senior-architect');
-  assert.equal(architect?.model, 'claude-opus-4-8');
-  assert.equal(architect?.modelLabel, 'Opus 4.8');
+  assert.equal(architect?.model, 'claude-fable-5');
+  assert.equal(architect?.modelLabel, 'Fable 5');
   const tester = lineup.find((m) => m.role === 'senior-tester');
   assert.equal(tester?.model, 'claude-haiku-4-5');
   assert.equal(tester?.modelLabel, 'Haiku 4.5');
@@ -603,7 +615,7 @@ test('Claude lineup keeps alias values but surfaces concrete generation labels; 
   assert.equal(copilot.find((m) => m.role === 'senior-architect')?.modelLabel, undefined);
 });
 
-test('team step model menu follows the detected host (codex → gpt-5.x)', () => {
+test('team step model menu follows Codex and exposes both verified v2 models across its tiers', () => {
   withProject(null, (cwd) => {
     process.env.CODEX_PLUGIN_ROOT = '/tmp/codex-root';
     try {
@@ -611,7 +623,15 @@ test('team step model menu follows the detected host (codex → gpt-5.x)', () =>
       applyAnswer(cwd, 'performance', 'high');
       const view = computeOnboarding(cwd);
       assert.equal(view.meta.host, 'codex');
-      assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-terra']);
+      assert.deepEqual(view.meta.modelChoices, [
+        { tier: 'highest', model: 'gpt-5.6-sol' },
+        { tier: 'balanced', model: 'gpt-5.6-terra' },
+        { tier: 'cheapest', model: 'gpt-5.6-terra' },
+      ]);
+      assert.deepEqual(
+        [...new Set(view.meta.modelChoices?.map((choice) => choice.model))],
+        ['gpt-5.6-sol', 'gpt-5.6-terra'],
+      );
     } finally {
       delete process.env.CODEX_PLUGIN_ROOT;
     }
@@ -629,16 +649,14 @@ test('computeOnboarding explicit env owns the preference target and model metada
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'explicit-preferences.json'),
       TRAFFIC_ONE_AUTH: '1',
     } as NodeJS.ProcessEnv;
-    const updatedAt = '2099-01-01';
     writeSimpleAuth('sk-explicit-flow', env);
     writeGlobalCodeGraphProvider('gitnexus', env);
     writeRuntimeModelSnapshot('codex', {
       plan: 'pro',
-      updatedAt,
       tiers: {
-        highest: ['explicit-highest'],
-        balanced: ['explicit-balanced'],
-        cheapest: ['explicit-cheapest'],
+        highest: ['explicit-highest', 'explicit-highest-fallback'],
+        balanced: ['explicit-balanced', 'explicit-balanced-fallback'],
+        cheapest: ['explicit-cheapest', 'explicit-cheapest-fallback'],
       },
     }, env);
     mergeProjectPrefs(cwd, {
@@ -657,14 +675,17 @@ test('computeOnboarding explicit env owns the preference target and model metada
     assert.equal(view.meta.host, 'codex');
     assert.deepEqual(view.meta.modelChoices?.map((choice) => choice.model), [
       'explicit-highest',
+      'explicit-highest-fallback',
       'explicit-balanced',
+      'explicit-balanced-fallback',
       'explicit-cheapest',
+      'explicit-cheapest-fallback',
     ]);
     assert.equal(view.meta.team?.find((member) => member.role === 'senior-architect')?.model, 'explicit-balanced');
   });
 });
 
-test('Windsurf Free recommends Low and maps a manually selected team to SWE-1.6 Slow', () => {
+test('Windsurf Free recommends Low, offers both quota-free models, and maps its default team to SWE-1.6', () => {
   withProject(null, (cwd) => {
     process.env.TRAFFIC_ONE_HOST = 'windsurf';
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
@@ -681,11 +702,18 @@ test('Windsurf Free recommends Low and maps a manually selected team to SWE-1.6 
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.equal(view.meta.host, 'windsurf');
-    assert.deepEqual(view.meta.modelChoices, [{ tier: 'cheapest', model: 'SWE-1.6 Slow' }]);
+    assert.deepEqual(view.meta.modelChoices, [
+      { tier: 'highest', model: 'SWE-1.7' },
+      { tier: 'highest', model: 'SWE-1.6' },
+      { tier: 'balanced', model: 'SWE-1.7' },
+      { tier: 'balanced', model: 'SWE-1.6' },
+      { tier: 'cheapest', model: 'SWE-1.6' },
+      { tier: 'cheapest', model: 'SWE-1.7' },
+    ]);
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
     assert.equal(requireRole(by, 'senior-architect').tier, 'cheapest');
-    assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.6 Slow');
-    assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6 Slow');
+    assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.6');
+    assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6');
     assert.ok(!(view.meta.modelChoices || []).some((c) => /opus|sonnet|haiku/i.test(c.model)));
   });
 });
@@ -717,7 +745,7 @@ test('Windsurf Cascade offers only Low/main-agent and rejects subagent answers',
   });
 });
 
-test('Windsurf Pro exposes all three verified selector models for a Balanced team', () => {
+test('Windsurf Pro exposes the first two selector models for each tier', () => {
   withProject(null, (cwd) => {
     process.env.TRAFFIC_ONE_HOST = 'windsurf';
     process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
@@ -726,14 +754,13 @@ test('Windsurf Pro exposes all three verified selector models for a Balanced tea
 
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
-    assert.deepEqual(view.meta.modelChoices, [
-      { tier: 'highest', model: 'SWE-1.7 Beta' },
-      { tier: 'balanced', model: 'SWE-1.7 Lightning Beta' },
-      { tier: 'cheapest', model: 'SWE-1.6 Slow' },
-    ]);
+    assert.deepEqual(
+      view.meta.modelChoices?.filter((choice) => choice.tier === 'balanced').map((choice) => choice.model),
+      ['SWE-1.7', 'SWE-1.6 Fast'],
+    );
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
-    assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.7 Lightning Beta');
-    assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6 Slow');
+    assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.7');
+    assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6');
   });
 });
 
@@ -752,11 +779,10 @@ test('Kilo Balanced/High line-up uses native Kilo Auto tiers with a free tester 
     applyAnswer(cwd, 'performance', 'balanced');
     const balanced = computeOnboarding(cwd);
     assert.equal(balanced.step, 'team-confirmation');
-    assert.deepEqual(balanced.meta.modelChoices, [
-      { tier: 'highest', model: 'kilo/kilo-auto/frontier' },
-      { tier: 'balanced', model: 'kilo/kilo-auto/balanced' },
-      { tier: 'cheapest', model: 'kilo/kilo-auto/free' },
-    ]);
+    assert.deepEqual(
+      balanced.meta.modelChoices?.filter((choice) => choice.tier === 'balanced').map((choice) => choice.model),
+      ['kilo/kilo-auto/balanced', 'kilo/kilo-auto/efficient'],
+    );
     const balancedBy = Object.fromEntries((balanced.meta.team || []).map((m) => [m.role, m]));
     assert.equal(requireRole(balancedBy, 'senior-architect').model, 'kilo/kilo-auto/balanced');
     assert.equal(requireRole(balancedBy, 'senior-frontend').model, 'kilo/kilo-auto/balanced');
@@ -792,13 +818,16 @@ test('Copilot Pro onboarding recommends Balanced and lists distinct paid subagen
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.equal(view.meta.host, 'copilot');
-    assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['claude-opus-4.8', 'claude-sonnet-5', 'claude-haiku-4.5']);
+    assert.deepEqual(
+      view.meta.modelChoices?.filter((choice) => choice.tier === 'balanced').map((choice) => choice.model),
+      ['gpt-5.6-terra', 'claude-sonnet-5'],
+    );
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
     assert.equal(requireRole(by, 'senior-frontend').tier, 'balanced');
-    assert.equal(requireRole(by, 'senior-frontend').model, 'claude-sonnet-5');
-    assert.equal(requireRole(by, 'senior-backend').model, 'claude-sonnet-5');
+    assert.equal(requireRole(by, 'senior-frontend').model, 'gpt-5.6-terra');
+    assert.equal(requireRole(by, 'senior-backend').model, 'gpt-5.6-terra');
     assert.equal(requireRole(by, 'senior-tester').tier, 'cheapest');
-    assert.equal(requireRole(by, 'senior-tester').model, 'claude-haiku-4.5');
+    assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5-mini');
     assert.ok(new Set((view.meta.team || []).map((m) => m.model)).size > 1, 'Balanced Copilot team must not collapse to one mini model');
   });
 });
@@ -812,9 +841,160 @@ test('team approve with per-agent model overrides persists them under team.overr
     const team = asRec(hostPrefs(readProjectPrefs(cwd)).team);
     assert.equal(team.approved, true);
     assert.deepEqual(asRec(team.overrides), { 'senior-tester': 'highest' });
-    // …and that stored override drives the resolved line-up (tester jumps to opus).
+    // …and that stored override drives the resolved line-up (tester jumps to Fable).
     const lineup = buildTeamLineup('high', 'claude', asRec(team.overrides));
-    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, 'claude-opus-4-8');
+    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, 'claude-fable-5');
+  });
+});
+
+test('team approve persists exact same-tier model selections for every visible role', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    const view = computeOnboarding(cwd);
+    const modelSelections = Object.fromEntries(
+      (view.meta.team || []).map((member) => [member.role, member.model]),
+    );
+    modelSelections['senior-architect'] = 'claude-opus-4-8';
+    modelSelections['senior-tester'] = 'claude-sonnet-4-6';
+
+    assert.deepEqual(
+      applyAnswer(cwd, 'team-confirmation', { action: 'approve', modelSelections }),
+      { ok: true },
+    );
+    const team = asRec(hostPrefs(readProjectPrefs(cwd)).team);
+    assert.deepEqual(asRec(team.modelSelections), modelSelections);
+  });
+});
+
+test('team approve persists a cross-tier override together with the exact selected model', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    const view = computeOnboarding(cwd);
+    const modelSelections = Object.fromEntries(
+      (view.meta.team || []).map((member) => [member.role, member.model]),
+    );
+    modelSelections['senior-architect'] = 'claude-sonnet-5';
+
+    assert.deepEqual(
+      applyAnswer(cwd, 'team-confirmation', {
+        action: 'approve',
+        overrides: { 'senior-architect': 'balanced' },
+        modelSelections,
+      }),
+      { ok: true },
+    );
+    const team = asRec(hostPrefs(readProjectPrefs(cwd), 'claude').team);
+    assert.deepEqual(asRec(team.overrides), { 'senior-architect': 'balanced' });
+    assert.equal(asRec(team.modelSelections)['senior-architect'], 'claude-sonnet-5');
+  });
+});
+
+test('plan-aware overrides preserve a Codex Free tier change even when the exact model is shared', () => {
+  withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'codex';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    const view = computeOnboarding(cwd);
+    const modelSelections = Object.fromEntries(
+      (view.meta.team || []).map((member) => [member.role, member.model]),
+    );
+    modelSelections['senior-architect'] = 'gpt-5.6-sol';
+    // Terra belongs to both rows. The explicit tier pair must survive even
+    // though the exact model id alone cannot distinguish this selection.
+    modelSelections['senior-tester'] = 'gpt-5.6-terra';
+
+    assert.deepEqual(
+      applyAnswer(cwd, 'team-confirmation', {
+        action: 'approve',
+        overrides: {
+          'senior-architect': 'highest',
+          'senior-tester': 'balanced',
+        },
+        modelSelections,
+      }),
+      { ok: true },
+    );
+    const team = asRec(hostPrefs(readProjectPrefs(cwd), 'codex').team);
+    assert.deepEqual(asRec(team.overrides), {
+      'senior-architect': 'highest',
+      'senior-tester': 'balanced',
+    });
+
+    const reloaded = buildTeamLineup(
+      'high',
+      'codex',
+      asRec(team.overrides),
+      { host: 'codex', plan: 'free' },
+      process.env,
+      asRec(team.modelSelections),
+    );
+    const architect = reloaded.find((member) => member.role === 'senior-architect');
+    const tester = reloaded.find((member) => member.role === 'senior-tester');
+    assert.deepEqual({ tier: architect?.tier, model: architect?.model }, {
+      tier: 'highest', model: 'gpt-5.6-sol',
+    });
+    assert.deepEqual({ tier: tester?.tier, model: tester?.model }, {
+      tier: 'balanced', model: 'gpt-5.6-terra',
+    });
+  });
+});
+
+test('team step reload preserves a valid exact model selection in its original tier', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    const first = computeOnboarding(cwd);
+    const modelSelections = Object.fromEntries(
+      (first.meta.team || []).map((member) => [member.role, member.model]),
+    );
+    modelSelections['senior-architect'] = 'claude-opus-4-8';
+    mergeProjectHostPrefs(cwd, 'claude', {
+      team: { mode: 'subagents', source: 'prompted', modelSelections },
+    });
+
+    const reloaded = computeOnboarding(cwd);
+    assert.equal(reloaded.step, 'team-confirmation');
+    assert.equal(
+      reloaded.meta.team?.find((member) => member.role === 'senior-architect')?.model,
+      'claude-opus-4-8',
+    );
+    assert.equal(
+      reloaded.meta.team?.find((member) => member.role === 'senior-tester')?.model,
+      'claude-haiku-4-5',
+    );
+  });
+});
+
+test('team approve rejects cross-tier or incomplete exact model selections', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    const view = computeOnboarding(cwd);
+    const modelSelections = Object.fromEntries(
+      (view.meta.team || []).map((member) => [member.role, member.model]),
+    );
+
+    const crossTier = { ...modelSelections, 'senior-architect': 'claude-sonnet-5' };
+    assert.deepEqual(
+      applyAnswer(cwd, 'team-confirmation', { action: 'approve', modelSelections: crossTier }),
+      { ok: false, error: 'Architect model is not available in the highest tier' },
+    );
+
+    const hiddenThird = { ...modelSelections, 'senior-architect': 'opus' };
+    assert.deepEqual(
+      applyAnswer(cwd, 'team-confirmation', { action: 'approve', modelSelections: hiddenThird }),
+      { ok: false, error: 'Architect model is not available in the highest tier' },
+    );
+
+    const { 'senior-tester': _missing, ...incomplete } = modelSelections;
+    assert.deepEqual(
+      applyAnswer(cwd, 'team-confirmation', { action: 'approve', modelSelections: incomplete }),
+      { ok: false, error: 'team model selections must cover the visible team exactly' },
+    );
+    assert.notEqual(asRec(hostPrefs(readProjectPrefs(cwd)).team).approved, true);
   });
 });
 

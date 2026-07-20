@@ -8,7 +8,6 @@ import * as path from 'path';
 import {
   ONE_MCP_CACHE_SCHEMA_VERSION,
   ONE_MCP_DECODER_VERSION,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
 } from '../../config/one-mcp';
 import type { HostModelKey } from '../../config/model-tiers';
 import { oneMcpPayloadFingerprint } from '../one-mcp';
@@ -53,7 +52,6 @@ async function withCacheAsync(
 
 function cacheEntry(host: HostModelKey, version: number): OneMcpConfigCacheEntry {
   const payload = {
-    payloadSchemaVersion: 2 as const,
     tiers: {
       high: [`${host}-high-v${version}`],
       balanced: [`${host}-balanced-v${version}`],
@@ -64,7 +62,6 @@ function cacheEntry(host: HostModelKey, version: number): OneMcpConfigCacheEntry
   return {
     endpoint: 'https://example.test/public-mcp',
     configName: `traffic_one_${host}_plugin_ai_model_configuration`,
-    payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
     decoderVersion: ONE_MCP_DECODER_VERSION,
     version,
     createdAt: '2026-07-01T00:00:00.000Z',
@@ -92,7 +89,7 @@ test('One MCP cache writes securely and round-trips independently from one.json'
   });
 });
 
-test('One MCP cache stores canonical v2 plan overrides without derived fingerprints', () => {
+test('One MCP cache stores canonical plan overrides without derived fingerprints', () => {
   withCache((file, env) => {
     const base = cacheEntry('codex', 1);
     const payload = {
@@ -160,10 +157,10 @@ test('warning keys are claimed once under the same cache lock', () => {
     writeOneMcpConfigCacheEntry('codex', cacheEntry('codex', 1), env);
     assert.equal(claimOneMcpWarningKey('codex', 'codex|invalid-full-config|0|1', env), true);
     assert.equal(claimOneMcpWarningKey('codex', 'codex|invalid-full-config|0|1', env), false);
-    assert.equal(claimOneMcpWarningKey('codex', 'codex|unsupported-payload-schema|1|1', env), true);
+    assert.equal(claimOneMcpWarningKey('codex', 'codex|unsafe-object-graph|1|1', env), true);
     assert.equal(
       readOneMcpCache(env).hosts.codex?.lastWarningKey,
-      'codex|unsupported-payload-schema|1|1',
+      'codex|unsafe-object-graph|1|1',
     );
     assert.throws(() => claimOneMcpWarningKey('codex', 'bad\nkey', env), /warning key/i);
   });
@@ -190,6 +187,30 @@ test('One MCP cache preserves unknown envelope fields and sibling host entries',
     assert.equal(raw.hosts.cursor.config.version, 2);
     assert.equal('payloadFingerprint' in raw.hosts.cursor.config, false);
     assert.equal('appliedFingerprint' in raw.hosts.cursor.config, false);
+  });
+});
+
+test('a cache write scrubs the retired payload schema marker without retaining duplicate state', () => {
+  withCache((file, env) => {
+    const entry = cacheEntry('codex', 1);
+    fs.writeFileSync(file, `${JSON.stringify({
+      schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
+      hosts: {
+        codex: {
+          syncGeneration: 'abcdef0123456789',
+          config: {
+            ...entry,
+            payloadSchemaVersion: 2,
+            payload: { ...entry.payload, payloadSchemaVersion: 2 },
+          },
+        },
+      },
+    }, null, 2)}\n`, 'utf8');
+
+    writeOneMcpConfigCacheEntry('codex', cacheEntry('codex', 2), env);
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8')).hosts.codex.config;
+    assert.equal(Object.hasOwn(stored, 'payloadSchemaVersion'), false);
+    assert.equal(Object.hasOwn(stored.payload, 'payloadSchemaVersion'), false);
   });
 });
 
@@ -243,7 +264,6 @@ test('pre-release v1 cache is ignored and replaced without migration', () => {
             version: 99,
             updatedAt: '2026-07-16T00:00:00.000Z',
             payload: {
-              payloadSchemaVersion: 1,
               tiers: { high: ['old-h'], balanced: ['old-b'], low: ['old-l'], auto: ['old-a'] },
             },
           },
@@ -260,13 +280,10 @@ test('pre-release v1 cache is ignored and replaced without migration', () => {
   });
 });
 
-test('future decoder and payload cache entries are unreadable but never overwritten', () => {
+test('future decoder cache entries are unreadable and never overwritten', () => {
   withCache((file, env) => {
     const base = cacheEntry('codex', 1);
-    const futureEntries = [
-      { ...base, decoderVersion: 3 },
-      { ...base, payload: { ...base.payload, payloadSchemaVersion: 3 } },
-    ];
+    const futureEntries = [{ ...base, decoderVersion: 3 }];
     for (const futureEntry of futureEntries) {
       const future = `${JSON.stringify({
         schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
@@ -334,8 +351,8 @@ test('concurrent One MCP cache writers preserve different host entries', async (
       'const file = process.argv[2];',
       'const version = Number(process.argv[3]);',
       `const { oneMcpPayloadFingerprint } = require(${JSON.stringify(path.resolve(__dirname, '..', 'one-mcp', 'index.ts'))});`,
-      'const payload = { payloadSchemaVersion: 2, tiers: { high: [`${host}-high`], balanced: [`${host}-balanced`], low: [`${host}-low`], auto: [`${host}-auto`] } };',
-      'const entry = { endpoint: "https://example.test/public-mcp", configName: `traffic_one_${host}_plugin_ai_model_configuration`, payloadSchemaVersion: 2, decoderVersion: 2, version, createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-17T00:00:00.000Z", payload, payloadFingerprint: oneMcpPayloadFingerprint(payload) };',
+      'const payload = { tiers: { high: [`${host}-high`], balanced: [`${host}-balanced`], low: [`${host}-low`], auto: [`${host}-auto`] } };',
+      'const entry = { endpoint: "https://example.test/public-mcp", configName: `traffic_one_${host}_plugin_ai_model_configuration`, decoderVersion: 2, version, createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-17T00:00:00.000Z", payload, payloadFingerprint: oneMcpPayloadFingerprint(payload) };',
       'for (let i = 0; i < 20; i += 1) writeOneMcpConfigCacheEntry(host, entry, { TRAFFIC_ONE_MCP_CACHE_PATH: file });',
     ].join(' ');
     const run = (host: HostModelKey, version: number) => new Promise<void>((resolve, reject) => {

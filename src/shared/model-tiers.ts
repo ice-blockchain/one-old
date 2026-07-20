@@ -18,12 +18,12 @@ import {
   type TierId,
   type UserPlan,
 } from '../config/model-tiers';
+import { ONE_MCP_MAX_MODELS_PER_TIER } from '../config/one-mcp';
 
 export type ModelTierSnapshot = Readonly<Record<TierId, readonly string[]>>;
 
 export interface HostModelSnapshot {
   readonly plan: UserPlan;
-  readonly updatedAt: string;
   readonly tiers: ModelTierSnapshot;
 }
 
@@ -62,7 +62,7 @@ export function resolveModel(tier: unknown, host: unknown, plan?: unknown): stri
 // that model OR a same-family VARIANT of it (the expected id followed by a `-suffix`).
 // Cursor rows are family anchors whose concrete Task-tool slug is resolved from the captured
 // model list when available, so this prefix match covers reasoning/build suffixes. A different
-// family/tier (e.g. `gpt-5.5-medium` vs a highest opus family) never matches, so tier
+// family/tier (e.g. `gpt-5.6-terra-medium` vs a highest Fable family) never matches, so tier
 // enforcement holds. Claude/Codex pass bare ids, so this is exact-equality there in practice.
 // An empty/absent model never matches (deny → inherit guard).
 export function modelMatchesExpected(passed: unknown, expected: unknown): boolean {
@@ -91,7 +91,6 @@ export function hostModelSnapshot(host: unknown, plan: unknown): HostModelSnapsh
   const p = canonicalPlan(h, plan);
   return {
     plan: p,
-    updatedAt: HOST_MODELS[h].updatedAt,
     tiers: modelTierSnapshot(h, p),
   };
 }
@@ -112,12 +111,6 @@ function strictPlan(value: unknown, host?: HostModelKey): UserPlan | null {
   return host && !HOST_PLAN_IDS[host].has(plan) ? null : plan;
 }
 
-function validDateOnly(value: unknown): value is string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
-}
-
 function validModelId(value: unknown): value is string {
   return typeof value === 'string'
     && value.length > 0
@@ -133,7 +126,10 @@ function parseTierSnapshot(value: unknown): ModelTierSnapshot | null {
   const parsed = {} as Record<TierId, readonly string[]>;
   for (const tier of TIER_IDS) {
     const models = value[tier];
-    if (!Array.isArray(models) || models.length === 0 || models.length > 32 || !models.every(validModelId)) return null;
+    if (!Array.isArray(models)
+      || models.length === 0
+      || models.length > ONE_MCP_MAX_MODELS_PER_TIER
+      || !models.every(validModelId)) return null;
     if (new Set(models).size !== models.length) return null;
     parsed[tier] = [...models];
   }
@@ -146,13 +142,38 @@ export function parseHostModelSnapshot(value: unknown, expectedHost?: unknown): 
   if (expectedHost !== undefined && !host) return null;
   const plan = strictPlan(value.plan, host || undefined);
   const tiers = parseTierSnapshot(value.tiers);
-  if (!plan || !validDateOnly(value.updatedAt) || !tiers) return null;
-  return { plan, updatedAt: value.updatedAt, tiers };
+  if (!plan || !tiers) return null;
+  return { plan, tiers };
 }
 
 // True when `passed` matches ANY model in the acceptable set (family-aware).
 export function modelMatchesAny(passed: unknown, acceptable: readonly string[]): boolean {
   return acceptable.some((e) => modelMatchesExpected(passed, e));
+}
+
+// Apply only aliases owned by the active host. Claude Code exposes `fable` and
+// `best` as native selectors for its strongest available Claude model. They may
+// satisfy a row that explicitly contains a Fable/Opus model, without occupying
+// another bounded catalog slot. Keeping this mapping host-aware is important:
+// Cursor accepts concrete model ids/families and rejects these Claude aliases.
+export function modelMatchesHostModels(
+  passed: unknown,
+  acceptable: readonly string[],
+  host: unknown,
+): boolean {
+  const passedId = typeof passed === 'string' ? passed.trim() : '';
+  const strongestClaudeAlias = passedId === 'fable' || passedId === 'best';
+  if (strongestClaudeAlias && host !== 'claude') return false;
+  if (modelMatchesAny(passed, acceptable)) return true;
+  if (host !== 'claude' || !strongestClaudeAlias) return false;
+  return acceptable.some((model) => {
+    const candidate = model.trim();
+    return candidate === 'fable'
+      || candidate === 'opus'
+      || candidate === 'best'
+      || candidate.startsWith('claude-fable-')
+      || candidate.startsWith('claude-opus-');
+  });
 }
 
 // Optional `plan` applies each host's sparse plan overrides.

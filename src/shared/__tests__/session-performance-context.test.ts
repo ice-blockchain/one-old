@@ -18,7 +18,6 @@ test('SessionStart injects active host performance and role models from the One 
   try {
     writeRuntimeModelSnapshot('codex', {
       ...hostModelSnapshot('codex', 'pro'),
-      updatedAt: '2026-07-13',
       tiers: {
         highest: ['local-high'],
         balanced: ['local-balanced'],
@@ -30,7 +29,7 @@ test('SessionStart injects active host performance and role models from the One 
       team: { mode: 'subagents', approved: true },
     }, 'codex', env);
     assert.match(text, /performance: balanced/);
-    assert.match(text, /host: codex · plan: pro · catalog: 2026-07-13/);
+    assert.match(text, /host: codex · plan: pro · catalog: one-mcp v1/);
     assert.match(text, /senior-architect → balanced → local-balanced/);
     assert.match(text, /senior-tester → cheapest → local-cheap/);
   } finally {

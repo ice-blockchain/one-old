@@ -7,14 +7,13 @@ import test from 'node:test';
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
   publicEndpoint,
 } from '../../config/one-mcp';
 import { hostModelSnapshot } from '../model-tiers';
 import {
   bundledOneMcpPayload,
   oneMcpPayloadFingerprint,
-  type OneMcpModelConfigPayloadV2,
+  type OneMcpModelConfigPayload,
 } from '../one-mcp';
 import { writeOneMcpConfigCacheEntry } from '../one-mcp-cache';
 import {
@@ -36,7 +35,6 @@ test('runtime model resolution uses the authoritative One MCP sidecar preferred 
   try {
     const snapshot = {
       ...hostModelSnapshot('codex', 'pro'),
-      updatedAt: '2026-07-13',
       tiers: {
         highest: ['remote-high', 'remote-high-fallback'],
         balanced: ['remote-balanced', 'remote-balanced-fallback'],
@@ -63,8 +61,7 @@ test('runtime derives the applied projection and fingerprint for the active plan
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-current-models-'));
   const env = { TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json') } as NodeJS.ProcessEnv;
   try {
-    const payload: OneMcpModelConfigPayloadV2 = {
-      payloadSchemaVersion: 2,
+    const payload: OneMcpModelConfigPayload = {
       tiers: {
         high: ['base-high'], balanced: ['base-balanced'], low: ['base-low'], auto: ['base-balanced'],
       },
@@ -78,7 +75,6 @@ test('runtime derives the applied projection and fingerprint for the active plan
       endpoint: publicEndpoint(env),
       configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
       decoderVersion: ONE_MCP_DECODER_VERSION,
-      payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
       version: 4,
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-17T00:00:00.000Z',
@@ -133,7 +129,7 @@ test('runtime ignores retired one.json host tiers and uses bundled data without 
       currentHostModelTarget('cursor', 'pro', env).payloadFingerprint,
       oneMcpPayloadFingerprint(bundledOneMcpPayload('cursor')),
     );
-    assert.deepEqual(currentAcceptableModels('composer-2.5', 'cursor', 'pro', env), ['composer-2.5', 'gpt-5.4-mini', 'gemini-3.5-flash', 'claude-4.5-haiku']);
+    assert.deepEqual(currentAcceptableModels('composer-2.5', 'cursor', 'pro', env), ['composer-2.5', 'gpt-5.4-mini', 'gpt-5.6-luna']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -157,8 +153,8 @@ test('bundled target fingerprints the complete host payload while applied drift 
 test('fallback resolution is anchored to the role tier and returns an exact captured slug', () => {
   const captured = [
     'gpt-5.6-terra-medium',
-    'claude-opus-4-8-thinking-high',
-    'gpt-5.5-medium',
+    'gpt-5.6-sol-medium',
+    'claude-sonnet-5-thinking-high',
     'composer-2.5-fast',
   ];
   const highest = resolveTierFallback({
@@ -167,8 +163,8 @@ test('fallback resolution is anchored to the role tier and returns an exact capt
     capturedModels: captured,
   }, 'cursor', 'pro');
   assert.deepEqual(highest, {
-    family: 'claude-opus-4-8',
-    model: 'claude-opus-4-8-thinking-high',
+    family: 'gpt-5.6-sol',
+    model: 'gpt-5.6-sol-medium',
   }, 'a failed balanced-family model cannot move a highest role into the balanced row');
 
   const balanced = resolveTierFallback({
@@ -177,7 +173,7 @@ test('fallback resolution is anchored to the role tier and returns an exact capt
     unavailableModels: ['claude-sonnet-5'],
     capturedModels: captured,
   }, 'cursor', 'pro');
-  assert.deepEqual(balanced, { family: 'gpt-5.5', model: 'gpt-5.5-medium' });
+  assert.deepEqual(balanced, { family: 'composer-2.5', model: 'composer-2.5-fast' });
 });
 
 test('fallback resolution skips uncaptured models and reports exhaustion without changing tiers', () => {
@@ -197,22 +193,20 @@ test('fallback resolution skips uncaptured models and reports exhaustion without
 test('fallback resolution rejects a bare captured prefix and returns only a gate-compatible exact slug', () => {
   const exhaustedModels = [
     'gpt-5.6-terra-medium',
-    'claude-sonnet-5-thinking',
-    'gpt-5.5-medium',
   ];
 
   assert.equal(resolveTierFallback({
     tier: 'balanced',
     exhaustedModels,
-    capturedModels: ['claude-4.6'],
+    capturedModels: ['claude-sonnet'],
   }, 'cursor', 'pro'), null, 'a shorter captured prefix is not a runnable variant of the tier family');
 
   assert.deepEqual(resolveTierFallback({
     tier: 'balanced',
     exhaustedModels,
-    capturedModels: ['claude-4.6', 'claude-4.6-sonnet-thinking-high'],
+    capturedModels: ['claude-sonnet', 'claude-sonnet-5-thinking-high'],
   }, 'cursor', 'pro'), {
-    family: 'claude-4.6-sonnet',
-    model: 'claude-4.6-sonnet-thinking-high',
+    family: 'claude-sonnet-5',
+    model: 'claude-sonnet-5-thinking-high',
   });
 });

@@ -29,7 +29,7 @@ import { detectMode } from '../../shared/detection';
 import { detectHost } from '../../shared/host';
 import { detectHostPlan } from '../../shared/host-plan';
 import { materializeProjectIfNeeded, writeOpenCodeHostAssets } from '../../shared/materialize';
-import { buildCursorSpawnModelMap, isBareCursorTierFamily } from '../../shared/materialize/cursor-spawn-map';
+import { buildCursorSpawnModelMap } from '../../shared/materialize/cursor-spawn-map';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-command';
 import { canonicalHost } from '../../shared/model-tiers';
@@ -182,7 +182,7 @@ export function preSpawnRunIdDirective(cwd: string, host: string = detectHost())
         return [
           'TRAFFIC_ONE_CURSOR_MODELS_REQUIRED',
           `Traffic One has not frozen run ${runId}: Cursor's current Task model picker must be captured first.`,
-          'Enumerate the exact model ids offered to subagents, including reasoning suffixes, then run:',
+          'Enumerate the exact model ids offered to subagents verbatim (an id may or may not include a reasoning suffix), then run:',
           modelCaptureCommand(cwd, 'cursor'),
           'This writes only the project\'s local user preferences. Retry setup completion afterward; the same run id will then receive its immutable model-policy.json.',
         ].join('\n');
@@ -282,6 +282,9 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
     const overrides = policy
       ? (policy.teamOverrides as Record<string, unknown>)
       : team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
+    const modelSelections = policy
+      ? null
+      : team && obj(team.modelSelections) ? (team.modelSelections as Record<string, unknown>) : null;
     const planCtx = { host, plan: policy?.plan || detectHostPlan(host) };
 
     const plan = policy?.plan || detectHostPlan(host);
@@ -292,12 +295,14 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
     const tierFallback = new Map<string, string>(); // tier family → next-eligible fallback family
     for (const role of AGENT_ROLES) {
       const rolePolicy = policy?.roles[role];
-      const fam = rolePolicy?.preferredModel || modelForRoleHost(level, role, host, overrides, planCtx);
+      const fam = rolePolicy?.preferredModel
+        || modelForRoleHost(level, role, host, overrides, planCtx, process.env, modelSelections);
       if (!fam) continue;
-      const slug = spawnMap[role] || fam;
-      const spawnValue = captured.length && !isBareCursorTierFamily(slug, fam)
-        ? slug
-        : `(after step 2 — exact slug for tier \`${fam}\`; never pass the bare family)`;
+      const hasExactCaptured = captured.length > 0
+        && Object.prototype.hasOwnProperty.call(spawnMap, role);
+      const spawnValue = hasExactCaptured
+        ? spawnMap[role]
+        : `(after step 2 — exact captured picker id for tier \`${fam}\`; never guess an uncaptured id)`;
       rows.push(`   - ${role} → ${spawnValue}`);
       const acceptable = rolePolicy?.acceptableModels || currentAcceptableModels(fam, host, planCtx.plan);
       if (!tierFallback.has(fam)) tierFallback.set(fam, acceptable.slice(1)[0] || fam);
@@ -315,7 +320,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
         `- Frozen picker snapshot: ${captured.map((model) => `\`${model}\``).join(', ')}.`,
         '- Do NOT capture models again for this run. A plan, One MCP catalog, or Cursor picker change applies only to a new parent run; this policy is never rebased.',
         `- Run \`${gateCmd}\` once. It validates availability against the frozen snapshot and prints the authoritative exact spawn map.`,
-        '- Spawn each role with the exact Task `model` below (never a bare family alias):',
+        '- Spawn each role with the exact captured Task `model` below (never an uncaptured family guess):',
         ...rows,
         '- If the frozen snapshot requires an enable/fallback decision, `fallback` may continue this run on its frozen exact alternate. `enable` requires a new parent run after enabling and capturing the updated picker.',
       ].join('\n');
@@ -329,7 +334,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
       '   If a picked model is NOT offered, STOP — show the user the unavailable-model table in chat and wait for them to reply **fallback** or **enable** before spawning. The model-gate command and spawn gate both fail closed until that reply is recorded. Re-run after they enable a model.',
       '3. Spawn using the **spawn map** printed by step 2. Project `.cursor/agents` files are model-agnostic; pass each EXACT slug from the map in the Task `model` parameter (preview; step 2 is authoritative):',
       ...rows,
-      '   Never pass bare tier family aliases (e.g. `claude-opus-4-8` without a reasoning suffix) — Cursor rejects them and the spawn gate denies the first attempt.',
+      '   Use only ids present verbatim in the captured picker list. An exact id may equal its family anchor (for example `gpt-5.4-mini`); never invent a suffix or pass an uncaptured family guess.',
       '   Spawn the team only after steps 1–2. Passing the correct `model` per role on the FIRST spawn is what avoids the model-tier deny + retry.',
     ].join('\n');
   } catch {

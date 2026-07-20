@@ -1,6 +1,6 @@
 // Deterministic operator publication artifacts for the anonymous One MCP
 // model catalog. HOST_MODELS remains the only editable catalog: this module
-// expands its sparse plan overrides into the complete schema-v2 wire shape and
+// expands its sparse plan overrides into the complete versionless wire shape and
 // renders the reviewed rows into a fail-closed SQL CAS template.
 
 import * as fs from 'node:fs';
@@ -12,27 +12,22 @@ import {
 } from '../../config/model-tiers';
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
-  ONE_MCP_OPERATOR_MANIFEST_SCHEMA_VERSION,
   ONE_MCP_LIVE_RELEASE_SNAPSHOT_MAX_AGE_MS,
   ONE_MCP_LIVE_RELEASE_SNAPSHOT_SCHEMA_VERSION,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
 } from '../../config/one-mcp';
 import { bundledOneMcpPayload } from '../../shared/one-mcp/bundled-catalog';
 import { oneMcpPayloadFingerprint } from '../../shared/one-mcp/fingerprint';
 import { parseOneMcpModelConfigPayload } from '../../shared/one-mcp/get-config';
-import type { OneMcpModelConfigPayloadV2 } from '../../shared/one-mcp/types';
+import type { OneMcpModelConfigPayload } from '../../shared/one-mcp/types';
 
 export interface OneMcpOperatorRow {
   readonly host: HostModelKey;
   readonly configName: string;
-  readonly catalogUpdatedAt: string;
   readonly payloadFingerprint: string;
-  readonly payload: OneMcpModelConfigPayloadV2;
+  readonly payload: OneMcpModelConfigPayload;
 }
 
-export interface OneMcpOperatorManifestV1 {
-  readonly schemaVersion: 1;
-  readonly payloadSchemaVersion: 2;
+export interface OneMcpOperatorManifest {
   readonly generatedFrom: 'src/config/model-tiers.ts#HOST_MODELS';
   readonly versionPolicy: 'compare-and-swap-increment';
   readonly rows: readonly OneMcpOperatorRow[];
@@ -45,7 +40,7 @@ export interface OneMcpLiveReleaseRowV2 {
   readonly updatedAt: string;
   readonly servedPublicly: true;
   readonly payloadFingerprint: string;
-  readonly payload: OneMcpModelConfigPayloadV2;
+  readonly payload: OneMcpModelConfigPayload;
 }
 
 export interface OneMcpLiveProbeResultV2 {
@@ -146,7 +141,7 @@ function assertLiveProbeResult(
 function assertLiveReleaseEvidence(
   value: unknown,
   rowsByHost: ReadonlyMap<HostModelKey, OneMcpLiveReleaseRowV2>,
-  manifest: OneMcpOperatorManifestV1,
+  manifest: OneMcpOperatorManifest,
   nowMs: number,
 ): void {
   const evidence = record(value);
@@ -235,7 +230,7 @@ function canonicalExactJson(value: unknown): unknown {
 export function assertOneMcpLiveReleaseSnapshot(
   value: unknown,
   endpoint: string,
-  manifest: OneMcpOperatorManifestV1 = oneMcpOperatorManifest(),
+  manifest: OneMcpOperatorManifest = oneMcpOperatorManifest(),
   nowMs: number = Date.now(),
 ): asserts value is OneMcpLiveReleaseSnapshotV2 {
   const raw = record(value);
@@ -275,9 +270,11 @@ export function assertOneMcpLiveReleaseSnapshot(
     if (!Number.isInteger(row.version) || (row.version as number) < 2) {
       releaseSnapshotError(`${host} version was not incremented`);
     }
-    if (!validTimestamp(row.updatedAt)
-      || Date.parse(row.updatedAt) < Date.parse(`${expected.catalogUpdatedAt}T00:00:00.000Z`)) {
-      releaseSnapshotError(`${host} updatedAt predates the bundled catalog`);
+    if (!validTimestamp(row.updatedAt)) releaseSnapshotError(`${host} updatedAt is invalid`);
+    const updatedAt = Date.parse(row.updatedAt);
+    if (updatedAt > capturedAt + 5 * 60 * 1000
+      || capturedAt - updatedAt > ONE_MCP_LIVE_RELEASE_SNAPSHOT_MAX_AGE_MS) {
+      releaseSnapshotError(`${host} updatedAt is stale or from the future`);
     }
     if (row.servedPublicly !== true) releaseSnapshotError(`${host} is not served_publicly`);
     const payload = parseOneMcpModelConfigPayload(row.payload, host);
@@ -303,7 +300,7 @@ export function assertOneMcpLiveReleaseSnapshot(
 export function assertOneMcpLiveReleaseSnapshotFile(
   filePath: string,
   endpoint: string,
-  manifest: OneMcpOperatorManifestV1 = oneMcpOperatorManifest(),
+  manifest: OneMcpOperatorManifest = oneMcpOperatorManifest(),
   nowMs: number = Date.now(),
 ): void {
   if (!filePath) releaseSnapshotError('path is missing');
@@ -316,30 +313,18 @@ export function assertOneMcpLiveReleaseSnapshotFile(
   assertOneMcpLiveReleaseSnapshot(parsed, endpoint, manifest, nowMs);
 }
 
-function validDateOnly(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
-}
-
-export function oneMcpOperatorManifest(): OneMcpOperatorManifestV1 {
+export function oneMcpOperatorManifest(): OneMcpOperatorManifest {
   const rows = HOST_IDS.map((host): OneMcpOperatorRow => {
     const config = HOST_MODELS[host];
-    if (!validDateOnly(config.updatedAt)) {
-      throw new Error(`One MCP operator catalog has invalid ${host}.updatedAt: ${config.updatedAt}`);
-    }
     const payload = bundledOneMcpPayload(host, config);
     return Object.freeze({
       host,
       configName: ONE_MCP_CONFIG_NAME_BY_HOST[host],
-      catalogUpdatedAt: config.updatedAt,
       payloadFingerprint: oneMcpPayloadFingerprint(payload),
       payload,
     });
   });
   return Object.freeze({
-    schemaVersion: ONE_MCP_OPERATOR_MANIFEST_SCHEMA_VERSION,
-    payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
     generatedFrom: 'src/config/model-tiers.ts#HOST_MODELS',
     versionPolicy: 'compare-and-swap-increment',
     rows: Object.freeze(rows),
@@ -351,13 +336,12 @@ function sqlLiteral(value: string): string {
 }
 
 export function oneMcpOperatorCasSql(
-  manifest: OneMcpOperatorManifestV1 = oneMcpOperatorManifest(),
+  manifest: OneMcpOperatorManifest = oneMcpOperatorManifest(),
 ): string {
   const values = manifest.rows.map((row) => [
     '  (',
     sqlLiteral(row.host), ', ',
     sqlLiteral(row.configName), ', ',
-    `${sqlLiteral(row.catalogUpdatedAt)}::date, `,
     // Intentionally non-runnable. An operator must replace every NULL with the
     // version observed immediately before applying the reviewed transaction.
     'null::integer, ',
@@ -378,14 +362,13 @@ export function oneMcpOperatorCasSql(
     'create temporary table traffic_one_one_mcp_desired (',
     '  host text primary key,',
     '  config_name text unique not null,',
-    '  catalog_updated_at date not null,',
     '  expected_version integer,',
     '  payload_fingerprint text not null,',
     '  payload jsonb not null',
     ') on commit drop;',
     '',
     'insert into traffic_one_one_mcp_desired (',
-    '  host, config_name, catalog_updated_at, expected_version, payload_fingerprint, payload',
+    '  host, config_name, expected_version, payload_fingerprint, payload',
     ') values',
     `${values};`,
     '',
@@ -470,7 +453,6 @@ export function oneMcpOperatorCasSql(
     '  pc.config_name,',
     '  pc.version,',
     '  pc.updated_at,',
-    '  d.catalog_updated_at,',
     '  d.payload_fingerprint',
     'from traffic_one_one_mcp_desired d',
     'join public.plugin_config pc on pc.config_name = d.config_name',

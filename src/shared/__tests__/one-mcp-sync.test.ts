@@ -11,7 +11,7 @@ import {
   oneMcpAppliedFingerprintForPlan,
   oneMcpPayloadFingerprint,
   type OneMcpFullConfigOutcome,
-  type OneMcpModelConfigPayloadV2,
+  type OneMcpModelConfigPayload,
 } from '../one-mcp';
 import {
   readOneMcpConfigCacheEntry,
@@ -53,9 +53,8 @@ function fixture(): Fixture {
   };
 }
 
-function payload(tag: string, auto = `auto-${tag}`): OneMcpModelConfigPayloadV2 {
+function payload(tag: string, auto = `auto-${tag}`): OneMcpModelConfigPayload {
   return {
-    payloadSchemaVersion: 2,
     tiers: {
       high: [`high-${tag}`, `high-fallback-${tag}`],
       balanced: [`balanced-${tag}`],
@@ -96,7 +95,6 @@ function entry(fx: Fixture, version: number, tag: string, auto?: string): OneMcp
   return {
     endpoint: fx.env.TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT!,
     configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
-    payloadSchemaVersion: 2,
     decoderVersion: 2,
     version,
     createdAt: outcome.config.createdAt,
@@ -398,7 +396,7 @@ test('invalid remote payload diagnostics retain a valid observed row version', a
       env: fx.env,
       getConfig: async () => ({
         kind: 'invalid-response',
-        reason: 'unsupported-payload-schema',
+        reason: 'invalid-full-config',
         observedVersion: 7,
       }),
     });
@@ -411,7 +409,7 @@ test('invalid remote payload diagnostics retain a valid observed row version', a
     }, {
       requestedVersion: 5,
       observedVersion: 7,
-      reason: 'unsupported-payload-schema',
+      reason: 'invalid-full-config',
     });
   } finally {
     fs.rmSync(fx.dir, { recursive: true, force: true });
@@ -463,6 +461,55 @@ test('up-to-date records lastSync while keeping cache and preferences unchanged'
     assert.equal(fs.readFileSync(fx.env.TRAFFIC_ONE_PROJECT_PREFS_PATH!, 'utf8'), preferencesBefore);
     assert.deepEqual(readOneMcpCache(fx.env).hosts.codex?.lastSync, {
       attemptedAt: '2026-07-17T12:00:00.000Z',
+      outcome: 'up-to-date',
+      source: 'one-mcp',
+      requestedVersion: 5,
+      observedVersion: 5,
+    });
+  } finally {
+    fs.rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test('a successful sync clears a stale transport failure reason', async () => {
+  const fx = fixture();
+  try {
+    recordPluginUseChoice(fx.cwd, true, 'command', fx.env);
+
+    await sync(fx, {
+      env: fx.env,
+      now: () => '2026-07-17T11:58:00Z',
+      getConfig: async () => { throw new Error('offline'); },
+    });
+    assert.equal(readOneMcpCache(fx.env).hosts.codex?.lastSync?.reason, 'transport-failed');
+
+    await sync(fx, {
+      env: fx.env,
+      now: () => '2026-07-17T11:59:00Z',
+      getConfig: async () => full(5, 'recovered'),
+    });
+    assert.deepEqual(readOneMcpCache(fx.env).hosts.codex?.lastSync, {
+      attemptedAt: '2026-07-17T11:59:00.000Z',
+      outcome: 'full',
+      source: 'one-mcp',
+      requestedVersion: 0,
+      observedVersion: 5,
+    });
+
+    await sync(fx, {
+      env: fx.env,
+      now: () => '2026-07-17T12:00:00Z',
+      getConfig: async () => { throw new Error('offline again'); },
+    });
+    assert.equal(readOneMcpCache(fx.env).hosts.codex?.lastSync?.reason, 'transport-failed');
+
+    await sync(fx, {
+      env: fx.env,
+      now: () => '2026-07-17T12:01:00Z',
+      getConfig: async (_endpoint, _name, version) => ({ kind: 'up-to-date', version }),
+    });
+    assert.deepEqual(readOneMcpCache(fx.env).hosts.codex?.lastSync, {
+      attemptedAt: '2026-07-17T12:01:00.000Z',
       outcome: 'up-to-date',
       source: 'one-mcp',
       requestedVersion: 5,

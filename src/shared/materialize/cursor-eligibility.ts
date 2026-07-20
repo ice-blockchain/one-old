@@ -17,8 +17,8 @@ import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
 export interface UnavailablePick {
   role: string;     // senior-<role>
-  expected: string; // the tier-family model the user PICKED (e.g. claude-4.6-sonnet)
-  fallback: string; // the same-tier alternate the build DOES offer (e.g. gpt-5.5-medium)
+  expected: string; // the tier-family model the user PICKED (e.g. gpt-5.6-terra)
+  fallback: string; // the same-tier alternate the build DOES offer (e.g. claude-sonnet-5-thinking-high)
 }
 
 // Roles whose picked NON-composer tier model is absent from the fresh captured list. Empty when
@@ -51,13 +51,24 @@ export function cursorUnavailablePicks(cwd: string, state: Record<string, unknow
     if (!level) return [];
     const team = obj(state.team);
     const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
+    const modelSelections = team && obj(team.modelSelections)
+      ? (team.modelSelections as Record<string, unknown>)
+      : null;
     const plan = detectHostPlan('cursor');
     const planCtx = { host: 'cursor', plan };
     const captured = freshCursorModels(cwd, plan);
     if (!captured.length) return [];
     const out: UnavailablePick[] = [];
     for (const role of AGENT_ROLES) {
-      const expected = modelForRoleHost(level, role, 'cursor', overrides, planCtx);
+      const expected = modelForRoleHost(
+        level,
+        role,
+        'cursor',
+        overrides,
+        planCtx,
+        process.env,
+        modelSelections,
+      );
       if (!expected || /^composer/i.test(expected)) continue;   // cheapest tier wants Composer — nothing to enable
       if (pickCursorSlug([expected], captured)) continue;        // the picked model IS offered → fine
       const alts = currentAcceptableModels(expected, 'cursor', plan).slice(1);

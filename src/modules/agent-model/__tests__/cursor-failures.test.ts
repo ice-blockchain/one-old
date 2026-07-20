@@ -46,12 +46,9 @@ const PARENT_ID = '9c5e9932-478d-4f21-b31e-c7f64f46156b';
 const CURSOR_MODELS = [
   REQUESTED_MODEL,
   'claude-sonnet-5-thinking-high',
-  'gpt-5.5-medium',
-  'claude-4.6-sonnet-thinking',
   'composer-2.5-fast',
   'gpt-5.4-mini',
-  'gemini-3.5-flash',
-  'claude-4.5-haiku',
+  'gpt-5.6-luna',
 ];
 
 interface CursorFixture {
@@ -594,8 +591,8 @@ test('concurrent explicit model-unavailable failures never prescribe either fail
 
     assert.equal(byRole['senior-architect']?.outcome, 'model-unavailable');
     assert.equal(byRole['senior-backend']?.outcome, 'model-unavailable');
-    assert.equal(byRole['senior-architect']?.prescribedModel, 'gpt-5.5-medium');
-    assert.equal(byRole['senior-backend']?.prescribedModel, 'gpt-5.5-medium');
+    assert.equal(byRole['senior-architect']?.prescribedModel, 'composer-2.5-fast');
+    assert.equal(byRole['senior-backend']?.prescribedModel, 'composer-2.5-fast');
     assert.notEqual(byRole['senior-architect']?.prescribedModel, sonnet);
     assert.notEqual(byRole['senior-backend']?.prescribedModel, REQUESTED_MODEL);
   });
@@ -972,7 +969,7 @@ test('the latest finalized row permanently shadows older failures after it is ha
       fixture.cwd,
       'senior-backend',
       'tool_new_finalized',
-      'gpt-5.5-medium',
+      'composer-2.5-fast',
     );
     writeRoleTerminalError(
       fixture,
@@ -1022,7 +1019,7 @@ test('a newer successful terminal row shadows an old failure even after a late o
       fixture.cwd,
       'senior-backend',
       'tool_new_success',
-      'gpt-5.5-medium',
+      'claude-sonnet-5-thinking-high',
     );
     writeJsonl(path.join(fixture.subagentsDir, 'child-new-success.jsonl'), [
       { role: 'user', message: { content: '[t1-role: senior-backend] Execute the assigned role.' } },
@@ -1071,7 +1068,7 @@ test('unterminated retries mask finalized failures for 270s, or 90s with durable
       fixture.cwd,
       'senior-backend',
       'tool_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      'gpt-5.5-medium',
+      'composer-2.5-fast',
     );
 
     ageRunAgent(fixture.cwd, RUN_ID, 'senior-backend', 2 * 60 * 1000);
@@ -1165,7 +1162,7 @@ test('a compatible role transcript upgrades an unterminated start to a durable r
       fixture.cwd,
       'senior-backend',
       'tool_ffffffff-ffff-4fff-8fff-ffffffffffff',
-      'gpt-5.5-medium',
+      'claude-sonnet-5-thinking-high',
     );
     const childId = '123e4567-e89b-42d3-a456-426614174000';
     writeJsonl(path.join(fixture.subagentsDir, `${childId}.jsonl`), [
@@ -1467,13 +1464,11 @@ test('parent transcript cancellation uses the latest terminal turn only', () => 
 test('balanced API rotation pauses exactly once before Composer until the user selects fallback', () => {
   withCursorFixture((fixture) => {
     recordExhaustedModel(fixture.cwd, RUN_ID, 'senior-backend', REQUESTED_MODEL);
-    recordExhaustedModel(fixture.cwd, RUN_ID, 'senior-backend', 'claude-sonnet-5-thinking-high');
-    recordExhaustedModel(fixture.cwd, RUN_ID, 'senior-backend', 'gpt-5.5-medium');
     startSubagent(
       fixture.cwd,
       'senior-backend',
       'tool_before_composer_floor',
-      'claude-4.6-sonnet-thinking',
+      'claude-sonnet-5-thinking-high',
     );
     writeTerminalError(fixture, 'child-before-composer-floor');
 
@@ -1576,9 +1571,8 @@ test('cheapest tier rotates automatically past Composer and keeps its all-limite
     overrideRoleTier(fixture, 'senior-backend', 'cheapest');
     const attempts = [
       ['composer-2.5-fast', 'gpt-5.4-mini'],
-      ['gpt-5.4-mini', 'gemini-3.5-flash'],
-      ['gemini-3.5-flash', 'claude-4.5-haiku'],
-      ['claude-4.5-haiku', null],
+      ['gpt-5.4-mini', 'gpt-5.6-luna'],
+      ['gpt-5.6-luna', null],
     ] as const;
 
     for (const [index, [attempted, next]] of attempts.entries()) {

@@ -3,8 +3,8 @@ name: model-tier-sync
 description: >
   Keep the Traffic One plan-aware model catalog current as providers launch new
   models. Updates each host's preferred-first model arrays, plan overrides, and
-  catalog date in the plugin authoring repo so
-  the performance system (highest/balanced/cheapest tiers → per-host model ids)
+  generated operator payload in the plugin authoring repo so the performance
+  system (highest/balanced/cheapest tiers → per-host model ids)
   stays current on every supported host. TRIGGER when the
   user says "update the models", "sync model tiers", "refresh model list", "use the
   latest models", "a new model launched", "update model-tiers", "are we on the
@@ -21,7 +21,7 @@ metadata:
 Keeps the plugin's plan-aware model-tier config pointed at the newest available
 models for each capability tier on every host. `HOST_MODELS` is the bundled
 offline source of truth. The public `traffic-one-mcp.get_config` rows use
-payload schema v2: one complete base `tiers` set plus optional complete
+one versionless payload contract: a complete base `tiers` set plus optional complete
 plan-specific sets under `plans`. The hook resolves the active plan and maps
 remote `high`/`balanced`/`low` to the local
 `highest`/`balanced`/`cheapest` runtime snapshot. Remote `auto` mirrors
@@ -30,7 +30,6 @@ a subagent tier or the applied fingerprint.
 
 ```json
 {
-  "payloadSchemaVersion": 2,
   "tiers": {
     "high": ["..."],
     "balanced": ["..."],
@@ -83,23 +82,26 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
 ## Procedure
 
 1. **Read the complete bundled catalog.** In `src/config/model-tiers.ts`, inspect
-   every `HOST_MODELS` host entry: its `updatedAt`, base `tiers`, plan overrides,
+   every `HOST_MODELS` host entry: its base `tiers`, plan overrides,
    and `HOST_PLAN_IDS`. Each tier array is preferred-first; the first model is the
    default and the remaining models are accepted fallbacks.
 
 2. **Research the current model lineup — official sources only.** Use WebSearch /
    WebFetch against the providers' own docs. Do NOT guess or use a model name you
    cannot confirm from an official page.
-   - **Anthropic (claude row)**: confirm the family aliases `opus`, `sonnet`,
-     `haiku` still exist. These aliases auto-resolve to the newest version of each
-     family, so the claude row usually needs NO change. Only edit it if Anthropic
-     renames a tier or introduces a new capability tier worth adopting.
-   - **OpenAI / Codex (codex row)**: the milestone-1 catalog is intentionally
-     fixed to `highest: ["gpt-5.6-sol"]`, `balanced: ["gpt-5.6-terra"]`, and
-     `cheapest: ["gpt-5.6-terra"]`; generated `auto` mirrors `balanced`. Do not
-     infer a mini/fast tier or replace these ids from general model-lineup
-     research. Change this temporary rollout profile only after an explicit
-     maintainer decision, then regenerate the operator manifest from
+   - **Anthropic (claude row)**: verify both the concrete pinned generations and
+     the native aliases `best`, `fable`, `opus`, `sonnet`, `haiku`. `fable` and
+     `best` are host-scoped selectors accepted by the runtime gate for a
+     Highest row containing Fable/Opus; they do not consume bounded catalog
+     slots and must never be accepted on Cursor or another host. Adopt a newly released
+     concrete generation when it belongs in the preferred/fallback order, while
+     retaining a confirmed alias as a host-native fallback where useful.
+   - **OpenAI / Codex (codex row)**: use only model ids accepted by the current
+     `spawn_agent` surface. The bounded rollout catalog keeps Sol as the sole
+     Highest model and Terra as the sole Balanced/Cheapest model; do not cross
+     tiers merely to meet a fallback count. Generated `auto` mirrors `balanced`.
+     Do not infer an API-only mini/fast/Luna tier unless the Codex host actually
+     exposes it. Regenerate the operator manifest from
      `HOST_MODELS` so bundled and remote rows cannot diverge.
    - **Cursor (enforced — bare model FAMILIES, matched family-aware)**: the
      `cursor` row in `HOST_MODELS` holds bare model-family anchors, not full
@@ -113,7 +115,8 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
      preferred-first Cursor tier arrays hold the same-tier FALLBACK FAMILIES
      and must mirror the current Task-tool catalog; `composer-2.5` remains the
      universal floor. The CONCRETE
-     build slug (with its suffix) is NOT hardcoded — it is captured into the
+     picker id (which may equal the family anchor or may include a suffix) is
+     NOT hardcoded — it is captured into the
      user's local per-project/per-host preferences from the in-Cursor Task-tool
      list. So when SYNCING you only change a FAMILY here when a generation
      bumps (opus-4-8 → opus-5); you do NOT chase reasoning suffixes. Keep capability/cost order
@@ -136,20 +139,20 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
 
 4. **Edit the smallest relevant `HOST_MODELS` arrays.** Change the base tier or
    plan override that owns the verified behavior. An override replaces the full
-   tier array; omitted tiers inherit the base. Keep `TIER_IDS`, `TIER_ALIASES`,
-   and performance-to-tier policy unchanged unless explicitly requested.
+   tier array; omitted tiers inherit the base. Every effective row contains at
+   most three identifiers and normally at least two verified choices; keep one
+   only when the host/plan truly exposes one usable model. Keep `TIER_IDS`,
+   `TIER_ALIASES`, and performance-to-tier policy unchanged unless explicitly
+   requested.
 
-5. **Bump every affected host date and regenerate its operator row.** Set
-   `HOST_MODELS[host].updatedAt` to today's `YYYY-MM-DD` whenever any base or
-   plan-specific model array changes. This is mandatory even if the preferred
-   model stayed the same. Changing a resolved tier array without a date bump is
-   an invalid snapshot contract. `npm run gen` emits the schema-v2 operator
-   manifest at `operator/one-mcp-model-configs.json` and the reviewed CAS
-   template at `operator/one-mcp-publish-cas.sql`; do not hand-author a second
-   catalog. The generator expands sparse overrides into complete plan rows,
-   sets `auto = balanced`, and requires the published row's integer `version`
-   and `updated_at` to advance. The client fingerprint catches same-day
-   semantic changes, but it cannot fetch them unless the row version advances.
+5. **Regenerate and publish with a version advance.** `npm run gen` emits the
+   deterministic operator manifest at `operator/one-mcp-model-configs.json` and the
+   reviewed CAS template at `operator/one-mcp-publish-cas.sql`; do not hand-author
+   a second catalog. The generator expands sparse overrides into complete plan rows
+   and sets `auto = balanced`. Publication must increment the remote row's
+   integer `version`; SQL sets the server-owned `updated_at` automatically. The
+   semantic fingerprint detects payload drift after fetch, but clients cannot
+   discover a changed row until its server version advances.
 
 6. **Run the repository verification chain** (from the authoring repo root):
    ```bash
@@ -164,11 +167,11 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
 7. **Report the publication prerequisite and a diff table.** Generation creates
    the operator manifest and CAS SQL but does not publish them. Before public
    sync is enabled, all seven `plugin_config` rows must match the generated
-   `payloadSchemaVersion: 2` manifest exactly, with host-specific base tiers,
+   versionless payload manifest exactly, with host-specific base tiers,
    complete recognized-plan overrides, a version bump, and fresh `updated_at`.
-   For every changed host/plan/tier array, show `old → new`, the date bump,
-   and the official source. If you could not confirm a newer model, leave it
-   unchanged and say so explicitly.
+   For every changed host/plan/tier array, show `old → new` and the official
+   source. If you could not confirm a newer model, leave it unchanged and say
+   so explicitly.
 
 ## Guardrails
 
@@ -176,8 +179,8 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
   flag it as unverified in the report.
 - Never downgrade a tier's capability or break the highest ≥ balanced ≥ cheapest
   ordering.
-- Never change a preferred model, plan override, or fallback set/order without
-  bumping that `HOST_MODELS` entry's `updatedAt`.
+- Never publish a preferred model, plan override, or fallback set/order change
+  without incrementing the corresponding remote config row version.
 - Never hand-edit generated `dist/scripts/**`; edit source config/tests and
   regenerate.
 - Never hand-maintain a second model catalog in the operator artefacts. Generate

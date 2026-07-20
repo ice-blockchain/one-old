@@ -18,8 +18,8 @@ test('host flow matrix: plan, team recommendation, and model routing stay isolat
   const cases: MatrixCase[] = [
     { host: 'opencode', plan: 'free', level: 'low', fallback: OPENCODE_FREE_MODELS[2] ?? 'opencode/nemotron-3-ultra-free' },
     { host: 'opencode', plan: 'plus', level: 'balanced', fallback: 'opencode-go/deepseek-v4-flash', architect: 'opencode-go/glm-5.2' },
-    { host: 'windsurf', plan: 'free', level: 'low', fallback: 'SWE-1.6 Slow' },
-    { host: 'windsurf', plan: 'pro', level: 'balanced', fallback: 'SWE-1.6 Slow', architect: 'SWE-1.7 Lightning Beta' },
+    { host: 'windsurf', plan: 'free', level: 'low', fallback: 'SWE-1.6' },
+    { host: 'windsurf', plan: 'pro', level: 'balanced', fallback: 'SWE-1.6', architect: 'SWE-1.7' },
     { host: 'kilo', plan: 'free', level: 'low', fallback: 'kilo/kilo-auto/free' },
     { host: 'claude', plan: 'pro', level: 'balanced', fallback: 'claude-haiku-4-5', architect: 'claude-sonnet-5' },
     { host: 'codex', plan: 'plus', level: 'balanced', fallback: 'gpt-5.6-terra', architect: 'gpt-5.6-terra' },
@@ -37,13 +37,12 @@ test('host flow matrix: plan, team recommendation, and model routing stay isolat
     assert.equal(lineup.find((member) => member.role === 'senior-architect')?.model, c.architect, `${c.host}/${c.plan} architect model`);
   }
 
-  assert.deepEqual(modelTierSnapshot('opencode', 'plus').cheapest.slice(0, 4), [
+  assert.deepEqual(modelTierSnapshot('opencode', 'plus').cheapest, [
     'opencode-go/deepseek-v4-flash',
     'opencode-go/mimo-v2.5',
-    'opencode-go/minimax-m3',
-    'opencode-go/qwen3.7-plus',
+    'opencode/mimo-v2.5-free',
   ]);
   assert.deepEqual(modelTierSnapshot('kilo', 'free').highest, [
-    'kilo/kilo-auto/frontier', 'kilo/kilo-auto/balanced', 'kilo/kilo-auto/efficient', 'kilo/kilo-auto/free',
+    'kilo/kilo-auto/frontier', 'kilo/kilo-auto/balanced', 'kilo/kilo-auto/efficient',
   ]);
 });

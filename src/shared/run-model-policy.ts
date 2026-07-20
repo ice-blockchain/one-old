@@ -7,7 +7,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { AGENT_ROLES } from '../config/performance';
-import { ONE_MCP_MAX_CONFIG_VERSION } from '../config/one-mcp';
+import {
+  isSafeOneMcpModelId,
+  ONE_MCP_MAX_AVAILABLE_MODELS,
+  ONE_MCP_MAX_CONFIG_VERSION,
+  ONE_MCP_MAX_MODELS_PER_TIER,
+} from '../config/one-mcp';
 import type { HostModelKey, TierId, UserPlan } from '../config/model-tiers';
 import { RUNS_REL_DIR, VALID_AGENT_ROLES } from '../config/state';
 import { isNonProjectRoot } from './authoring-root';
@@ -16,7 +21,7 @@ import { detectHostPlan } from './host-plan';
 import { freshCursorModels } from './materialize/cursor-models';
 import { canonicalHost, canonicalPlan, modelMatchesExpected, type ModelTierSnapshot } from './model-tiers';
 import { obj, type Rec } from './obj';
-import { effectiveTierForRole } from './performance';
+import { roleModelSelection } from './performance';
 
 export const RUN_MODEL_POLICY_SCHEMA_VERSION = 1;
 const POLICY_FILE = 'model-policy.json';
@@ -128,7 +133,10 @@ function parseTierRows(value: unknown): ModelTierSnapshot | null {
   const out = {} as Record<TierId, readonly string[]>;
   for (const tier of ['highest', 'balanced', 'cheapest'] as const) {
     const row = raw[tier];
-    if (!Array.isArray(row) || row.length === 0 || row.length > 32 || !row.every(validModel)) return null;
+    if (!Array.isArray(row)
+      || row.length === 0
+      || row.length > ONE_MCP_MAX_MODELS_PER_TIER
+      || !row.every(validModel)) return null;
     if (new Set(row).size !== row.length) return null;
     out[tier] = [...row];
   }
@@ -176,7 +184,8 @@ function parsePolicy(value: unknown, expectedRunId?: string): RunModelPolicyV1 |
       || new Set(acceptable).size !== acceptable.length
       || acceptable[0] !== item.preferredModel
       || acceptable.length !== tiers[tier].length
-      || acceptable.some((model, index) => model !== tiers[tier][index])) return null;
+      || acceptable.some((model) => !tiers[tier].includes(model))
+      || tiers[tier].some((model) => !acceptable.includes(model))) return null;
     roles[role] = { tier, preferredModel: item.preferredModel, acceptableModels: [...acceptable] };
   }
   for (const role of [...AGENT_ROLES, 'quick-fix']) {
@@ -188,10 +197,16 @@ function parsePolicy(value: unknown, expectedRunId?: string): RunModelPolicyV1 |
     if (tier === 'highest' || tier === 'balanced' || tier === 'cheapest') teamOverrides[role] = tier;
   }
   const cursorAvailableModels = raw.cursorAvailableModels;
-  if (cursorAvailableModels !== undefined
-    && (!Array.isArray(cursorAvailableModels)
-      || !cursorAvailableModels.every(validModel)
-      || new Set(cursorAvailableModels).size !== cursorAvailableModels.length)) return null;
+  if (host === 'cursor') {
+    if (!Array.isArray(cursorAvailableModels)
+      || cursorAvailableModels.length === 0
+      || cursorAvailableModels.length > ONE_MCP_MAX_AVAILABLE_MODELS
+      || !cursorAvailableModels.every((model) => isSafeOneMcpModelId(model, 'cursor'))
+      || new Set(cursorAvailableModels).size !== cursorAvailableModels.length
+      || missingCursorPolicyTiers(roles, cursorAvailableModels).length > 0) return null;
+  } else if (cursorAvailableModels !== undefined) {
+    return null;
+  }
   const canonical = {
     schemaVersion: 1 as const,
     runId: raw.runId,
@@ -205,7 +220,7 @@ function parsePolicy(value: unknown, expectedRunId?: string): RunModelPolicyV1 |
     teamOverrides,
     tiers,
     roles,
-    ...(cursorAvailableModels ? { cursorAvailableModels: [...cursorAvailableModels] } : {}),
+    ...(host === 'cursor' ? { cursorAvailableModels: [...(cursorAvailableModels as string[])] } : {}),
   };
   if (sha256(JSON.stringify(canonical)) !== raw.policyId) return null;
   return { ...canonical, policyId: raw.policyId, capturedAt: raw.capturedAt };
@@ -270,13 +285,25 @@ function normalizedOverrides(value: unknown): Record<string, TierId> {
   return out;
 }
 
-export function buildRunModelPolicy(
+export function missingCursorPolicyTiers(
+  roles: Readonly<Record<string, RunRoleModelPolicy>>,
+  capturedModels: readonly string[],
+): TierId[] {
+  const missing = new Set<TierId>();
+  for (const role of Object.values(roles)) {
+    if (!capturedModels.some((model) => role.acceptableModels.some((family) => modelMatchesExpected(model, family)))) {
+      missing.add(role.tier);
+    }
+  }
+  return (['highest', 'balanced', 'cheapest'] as const).filter((tier) => missing.has(tier));
+}
+
+function resolvedRunPolicyInputs(
   cwd: string,
-  runId: string,
   hostInput: unknown,
   stateInput: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): RunModelPolicyV1 | null {
+  env: NodeJS.ProcessEnv,
+) {
   const state = obj(stateInput);
   const performance = obj(state?.performance);
   const team = obj(state?.team);
@@ -293,23 +320,63 @@ export function buildRunModelPolicy(
     || (acknowledged.configVersion as number) < 0
     || (acknowledged.configVersion as number) > ONE_MCP_MAX_CONFIG_VERSION) return null;
   const overrides = normalizedOverrides(team.overrides);
+  const modelSelections = obj(team.modelSelections);
   const roles: Record<string, RunRoleModelPolicy> = {};
   for (const role of [...AGENT_ROLES, 'quick-fix'] as const) {
-    const tier = role === 'quick-fix'
-      ? 'cheapest'
-      : effectiveTierForRole(level, role, overrides, { host, plan });
-    if (!tier) continue;
-    const acceptableModels = [...target.snapshot.tiers[tier]];
-    if (!acceptableModels.length) return null;
-    roles[role] = { tier, preferredModel: acceptableModels[0]!, acceptableModels };
+    if (role === 'quick-fix') {
+      const acceptableModels = [...target.snapshot.tiers.cheapest];
+      if (!acceptableModels.length) return null;
+      roles[role] = { tier: 'cheapest', preferredModel: acceptableModels[0]!, acceptableModels };
+      continue;
+    }
+    const selection = roleModelSelection(
+      level,
+      role,
+      host,
+      overrides,
+      modelSelections,
+      { host, plan },
+      env,
+    );
+    if (!selection) return null;
+    roles[role] = {
+      tier: selection.tier,
+      preferredModel: selection.preferredModel,
+      acceptableModels: [...selection.acceptableModels],
+    };
   }
-  const cursorAvailableModels = host === 'cursor' ? freshCursorModels(cwd, plan, undefined, undefined, env) : [];
+  const cursorAvailableModels = host === 'cursor'
+    ? freshCursorModels(cwd, plan, undefined, undefined, env)
+    : [];
+  return { host, plan, target, level, overrides, roles, cursorAvailableModels };
+}
+
+export function cursorRunPolicyMissingTiers(
+  cwd: string,
+  hostInput: unknown,
+  stateInput: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): TierId[] | null {
+  const inputs = resolvedRunPolicyInputs(cwd, hostInput, stateInput, env);
+  if (!inputs || inputs.host !== 'cursor') return null;
+  return missingCursorPolicyTiers(inputs.roles, inputs.cursorAvailableModels);
+}
+
+export function buildRunModelPolicy(
+  cwd: string,
+  runId: string,
+  hostInput: unknown,
+  stateInput: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): RunModelPolicyV1 | null {
+  const inputs = resolvedRunPolicyInputs(cwd, hostInput, stateInput, env);
+  if (!inputs) return null;
+  const { host, plan, target, level, overrides, roles, cursorAvailableModels } = inputs;
   // Cursor's concrete Task slugs are runner-owned capability state. A policy
-  // without that capture could be written create-once and then remain unable to
-  // select an exact runnable model for the entire run. Leave the snapshot absent
-  // until the parent captures the picker; the next parent attempt can then mint
-  // the immutable policy with those exact slugs.
-  if (host === 'cursor' && cursorAvailableModels.length === 0) return null;
+  // must cover every role row before create-once publication. A non-empty but
+  // partial capture would otherwise strand unmatched roles for the entire run,
+  // because a later picker refresh intentionally cannot rebase this snapshot.
+  if (host === 'cursor' && missingCursorPolicyTiers(roles, cursorAvailableModels).length > 0) return null;
   const payloadFingerprint = typeof (target as unknown as Rec).payloadFingerprint === 'string'
     ? String((target as unknown as Rec).payloadFingerprint)
     : target.appliedFingerprint;

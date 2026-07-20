@@ -3,15 +3,15 @@ import { createHash } from 'crypto';
 import { PLAN_IDS, type UserPlan } from '../../config/model-tiers';
 import type {
   OneMcpAppliedTiers,
-  OneMcpModelConfigPayloadV2,
-  OneMcpRemoteTiersV2,
+  OneMcpModelConfigPayload,
+  OneMcpRemoteTiers,
 } from './types';
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-export function mapOneMcpTiers(tiers: OneMcpRemoteTiersV2): OneMcpAppliedTiers {
+export function mapOneMcpTiers(tiers: OneMcpRemoteTiers): OneMcpAppliedTiers {
   return Object.freeze({
     highest: Object.freeze([...tiers.high]),
     balanced: Object.freeze([...tiers.balanced]),
@@ -20,16 +20,16 @@ export function mapOneMcpTiers(tiers: OneMcpRemoteTiersV2): OneMcpAppliedTiers {
 }
 
 export function oneMcpRemoteTiersForPlan(
-  payload: OneMcpModelConfigPayloadV2,
+  payload: OneMcpModelConfigPayload,
   plan: UserPlan,
-): OneMcpRemoteTiersV2 {
+): OneMcpRemoteTiers {
   return payload.plans?.[plan] ?? payload.tiers;
 }
 
 // Fingerprint the entire validated operator payload. `auto` deliberately lives
 // here so a cache can observe every semantic API change even though Traffic One
 // does not bind that tier to Performance or subagents.
-export function oneMcpPayloadFingerprint(payload: OneMcpModelConfigPayloadV2): string {
+export function oneMcpPayloadFingerprint(payload: OneMcpModelConfigPayload): string {
   const plans: Partial<Record<UserPlan, {
     high: readonly string[];
     balanced: readonly string[];
@@ -47,7 +47,6 @@ export function oneMcpPayloadFingerprint(payload: OneMcpModelConfigPayloadV2): s
     };
   }
   return sha256(JSON.stringify({
-    payloadSchemaVersion: payload.payloadSchemaVersion,
     tiers: {
       high: [...payload.tiers.high],
       balanced: [...payload.tiers.balanced],
@@ -70,7 +69,7 @@ export function oneMcpAppliedFingerprint(tiers: OneMcpAppliedTiers): string {
 }
 
 export function oneMcpAppliedFingerprintForPlan(
-  payload: OneMcpModelConfigPayloadV2,
+  payload: OneMcpModelConfigPayload,
   plan: UserPlan,
 ): string {
   return oneMcpAppliedFingerprint(mapOneMcpTiers(oneMcpRemoteTiersForPlan(payload, plan)));

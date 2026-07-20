@@ -16,6 +16,7 @@ import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { readJson } from '../fsjson';
 import { detectHost } from '../host';
 import { canonicalHost, canonicalPlan, planIsRecognized } from '../model-tiers';
+import { agentTierForPlan } from '../performance-config';
 import { readOneSettings, writeOneSection } from '../one-settings';
 import { sha256 } from '../text';
 import {
@@ -35,6 +36,7 @@ import {
   PERFORMANCE_SOURCE_IDS,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
+  VALID_AGENT_ROLES,
 } from '../../config/state';
 import { stateTimestamp } from './io';
 import { initializeLocalToolchainState } from './toolchain';
@@ -144,20 +146,58 @@ function normalizePerformance(host: HostModelKey, value: unknown): Rec | null {
   return normalized;
 }
 
-function normalizeTeam(value: unknown, performance: unknown): Rec | null {
+function normalizeTeamModelSelections(host: HostModelKey, value: unknown): Rec | null {
+  const raw = obj(value);
+  if (!raw) return null;
+  const selections: Rec = {};
+  for (const [role, model] of Object.entries(raw)) {
+    if (!VALID_AGENT_ROLES.has(role) || !isSafeOneMcpModelId(model, host)) continue;
+    selections[role] = model;
+  }
+  return Object.keys(selections).length > 0 ? selections : null;
+}
+
+// Local preferences have the canonical host + plan target, so redundant
+// overrides must be compared with the plan-aware role tier rather than the
+// static Performance table. Otherwise, for example, Codex Free + High defaults
+// Architect to Balanced but an explicit Highest choice is incorrectly dropped
+// merely because Highest is the generic High default.
+function normalizePlanAwareTeamOverrides(
+  host: HostModelKey,
+  value: unknown,
+  performance: unknown,
+): Rec | null {
+  const candidates = canonicalTeamOverrides(value, null);
+  if (!candidates) return null;
+  const perf = obj(performance);
+  const level = typeof perf?.level === 'string' ? perf.level : '';
+  const target = obj(perf?.target);
+  const plan = typeof target?.plan === 'string' ? target.plan : '';
+  if (!level || !plan) return canonicalTeamOverrides(value, level);
+
+  const overrides: Rec = {};
+  for (const [role, tier] of Object.entries(candidates)) {
+    const baseline = agentTierForPlan(host, plan, level, role);
+    if (!baseline || baseline !== tier) overrides[role] = tier;
+  }
+  return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function normalizeTeam(host: HostModelKey, value: unknown, performance: unknown): Rec | null {
   const fromString = typeof value === 'string' ? teamStateFromString(value) : null;
   const team = fromString || obj(value);
   if (!team) return null;
-  const perf = obj(performance);
-  const performanceLevel = perf ? perf.level : null;
   const normalized: Rec = {
     ...team,
     mode: canonicalTeamMode(team.mode),
     source: canonicalTeamSource((team.source as string) || 'prompted'),
   };
-  const normalizedOverrides = canonicalTeamOverrides(team.overrides, performanceLevel);
+  const normalizedOverrides = normalizePlanAwareTeamOverrides(host, team.overrides, performance);
   if (normalizedOverrides) normalized.overrides = normalizedOverrides;
   else delete normalized.overrides;
+  const modelSelections = normalizeTeamModelSelections(host, team.modelSelections);
+  if (normalized.mode === 'subagents' && modelSelections) normalized.modelSelections = modelSelections;
+  else delete normalized.modelSelections;
   if (team.approved === true) normalized.approved = true;
   else delete normalized.approved;
   if (normalized.mode !== 'subagents') delete normalized.modeChangeApproval;
@@ -201,7 +241,7 @@ function normalizeHostPrefs(host: HostModelKey, value: unknown): Rec | null {
   const performance = normalizePerformance(host, raw.performance);
   if (performance) out.performance = performance;
   else delete out.performance;
-  const team = normalizeTeam(raw.team, performance);
+  const team = normalizeTeam(host, raw.team, performance);
   if (team) out.team = team;
   else delete out.team;
   const availableModels = normalizeAvailableModels(host, raw.availableModels);

@@ -120,11 +120,9 @@ test('capture freshness follows plan/fingerprint/TTL and ignores catalog metadat
       'same-day semantic changes invalidate the capture even when the date is unchanged');
     assert.equal(captureCursorModels(f.cwd, ['composer-2.5-fast'], 'pro', capturedAt, f.env), true);
 
-    const nextCatalogDate = new Date(Date.parse(`${current.updatedAt}T00:00:00Z`) + 24 * 60 * 60 * 1000)
-      .toISOString().slice(0, 10);
-    writeRuntimeModelSnapshot('cursor', { ...sameDayChanged, updatedAt: nextCatalogDate }, f.env, 3);
+    writeRuntimeModelSnapshot('cursor', sameDayChanged, f.env, 3);
     assert.equal(cursorModelsFresh(f.cwd, 'pro', now, CURSOR_MODELS_TTL_MS, f.env), true,
-      'date-only metadata advances do not force a recapture');
+      'server version/timestamp metadata advances do not force a recapture');
   } finally {
     f.cleanup();
   }

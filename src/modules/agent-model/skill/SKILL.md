@@ -39,7 +39,7 @@ For Codex, also use the canonical underscore-form `task_name` and `fork_turns: "
 <!-- T1BLOCK:END performance-model-param -->
 
 <!-- T1BLOCK:BEGIN cursor-exact-model-required -->
-Cursor model gate (level={{LEVEL}}): spawning `{{ROLE}}` passed `model: "{{PASSED}}"`, which matches the right Traffic One tier family but is not an exact Cursor Task model id from the fresh captured list. Cursor can create a visible "New subagent / Couldn't start" card when Task receives a family alias, so do NOT attempt the spawn with this value. Re-issue the same Task spawn with `model: "{{EXPECTED}}"` (or another exact captured id from the same tier). Captured ids for this build: {{CAPTURED}}.
+Cursor model gate (level={{LEVEL}}): spawning `{{ROLE}}` passed `model: "{{PASSED}}"`, which matches the right Traffic One tier family but is not an exact Cursor Task model id from the fresh captured list. Cursor can create a visible "New subagent / Couldn't start" card when Task receives an uncaptured model guess, so do NOT attempt the spawn with this value. Re-issue the same Task spawn with `model: "{{EXPECTED}}"` (or another exact captured id from the same tier). An exact captured id may equal its family anchor; membership in the captured list is authoritative. Captured ids for this build: {{CAPTURED}}.
 <!-- T1BLOCK:END cursor-exact-model-required -->
 
 <!-- T1BLOCK:BEGIN opencode-named-agent-required -->
@@ -63,13 +63,13 @@ Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycl
 <!-- T1BLOCK:END absolute-traffic-one-path -->
 
 <!-- T1BLOCK:BEGIN cursor-models-capture -->
-Cursor model-capture gate (asked once per run, run {{RUN_ID}}). Capture is OPTIONAL and you are NOT blocked.
-**To proceed RIGHT NOW: RE-ISSUE THE SAME `Task` spawn, unchanged.** Traffic One then falls back to family-aware matching and the spawn goes through — pass any model whose family fits the tier (an `claude-opus-4-8…` slug for highest, a `claude-4.6-sonnet…`/`gpt-5.5…` slug for balanced, a `composer-2.5…` slug for cheapest).
-To pin the EXACT slugs your build offers FIRST (recommended — it avoids a silent downgrade where a balanced/highest role drops to the Composer floor), do this once before re-issuing:
+Cursor model-capture gate (required before the first team spawn, run {{RUN_ID}}). The spawn is blocked until Traffic One freezes the exact model ids offered by this Cursor build.
+Missing captured tiers for this run: {{MISSING_TIERS}}.
+Do this once before retrying:
 1. List the model ids your `Task` tool offers for spawning subagents (the same list Cursor shows when you pick a subagent model).
-2. Run `{{CAPTURE_CMD}}`, replacing the placeholders with those EXACT ids and their reasoning suffixes (e.g. `claude-opus-4-8-thinking-max-fast`, `gpt-5.5-extra-high`, `composer-2.5-fast`). Include at least one id per tier the team needs — highest + balanced + cheapest. This internal command writes only your local per-user/project Cursor preferences; do not create `.traffic-one/cursor-models.json`.
-3. Re-issue the spawn and pass the exact role→model values printed by model-gate. Project `.cursor/agents` contracts remain model-agnostic.
-Either way the very next spawn proceeds — NEVER build the project inline because of this gate.
+2. Run `{{CAPTURE_CMD}}`, replacing the placeholders with those EXACT ids verbatim (e.g. `claude-fable-5-thinking-high`, `gpt-5.6-terra-medium`, `composer-2.5-fast`, or `gpt-5.4-mini`). A valid picker id may or may not include a reasoning suffix; never invent one. Include at least one id per tier the team needs — highest + balanced + cheapest. This internal command writes only your local per-user/project Cursor preferences; do not create `.traffic-one/cursor-models.json`.
+3. Re-run model-gate, then retry the spawn with the exact role→model value it prints. Project `.cursor/agents` contracts remain model-agnostic.
+Do not retry with an uncaptured family guess and do not build the project inline because of this gate.
 <!-- T1BLOCK:END cursor-models-capture -->
 
 <!-- T1BLOCK:BEGIN model-unavailable-choice -->

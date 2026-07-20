@@ -1,16 +1,15 @@
 import type { UserPlan } from '../../config/model-tiers';
 
-export interface OneMcpRemoteTiersV2 {
+export interface OneMcpRemoteTiers {
   readonly high: readonly string[];
   readonly balanced: readonly string[];
   readonly low: readonly string[];
   readonly auto: readonly string[];
 }
 
-export interface OneMcpModelConfigPayloadV2 {
-  readonly payloadSchemaVersion: 2;
-  readonly tiers: OneMcpRemoteTiersV2;
-  readonly plans?: Readonly<Partial<Record<UserPlan, OneMcpRemoteTiersV2>>>;
+export interface OneMcpModelConfigPayload {
+  readonly tiers: OneMcpRemoteTiers;
+  readonly plans?: Readonly<Partial<Record<UserPlan, OneMcpRemoteTiers>>>;
 }
 
 export interface OneMcpAppliedTiers {
@@ -20,7 +19,7 @@ export interface OneMcpAppliedTiers {
 }
 
 export interface OneMcpCanonicalFullConfig {
-  readonly payload: OneMcpModelConfigPayloadV2;
+  readonly payload: OneMcpModelConfigPayload;
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -32,8 +31,7 @@ export type OneMcpInvalidResponseReason =
   | 'unexpected-json-rpc-error'
   | 'invalid-tool-result'
   | 'invalid-up-to-date-sentinel'
-  | 'invalid-full-config'
-  | 'unsupported-payload-schema';
+  | 'invalid-full-config';
 
 export interface OneMcpFullConfigOutcome {
   readonly kind: 'full';

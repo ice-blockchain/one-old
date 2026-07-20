@@ -10,6 +10,8 @@ import {
   HOST_MODELS,
   HOST_PLAN_IDS,
   PLAN_IDS,
+  SINGLE_MODEL_ROW_ALLOWED_PLANS,
+  allowsSingleModelTierRow,
   type HostModelsConfig,
 } from '../../config/model-tiers';
 import {
@@ -38,7 +40,6 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 test('operator payload expands a sparse plan override and always mirrors balanced into auto', () => {
   const fixture: HostModelsConfig = {
-    updatedAt: '2026-07-17',
     tiers: {
       highest: ['base-high'],
       balanced: ['base-balanced', 'base-balanced-fallback'],
@@ -50,7 +51,6 @@ test('operator payload expands a sparse plan override and always mirrors balance
   };
 
   assert.deepEqual(bundledOneMcpPayload('codex', fixture), {
-    payloadSchemaVersion: 2,
     tiers: {
       high: ['base-high'],
       balanced: ['base-balanced', 'base-balanced-fallback'],
@@ -70,7 +70,6 @@ test('operator payload expands a sparse plan override and always mirrors balance
 
 test('operator payload fails generation for rows the shipped decoder cannot consume', () => {
   const base: HostModelsConfig = {
-    updatedAt: '2026-07-17',
     tiers: {
       highest: ['high'],
       balanced: ['balanced'],
@@ -90,20 +89,78 @@ test('operator payload fails generation for rows the shipped decoder cannot cons
     plans: { pro: { balanced: ['not-a-supported-opencode-plan'] } },
   }), /unsupported opencode plan override: pro/);
 
-  const tooMany = Array.from({ length: 33 }, (_, index) => `model-${index}`) as unknown as readonly [string, ...string[]];
+  const tooMany = Array.from({ length: 4 }, (_, index) => `model-${index}`) as unknown as readonly [string, ...string[]];
   assert.throws(() => bundledOneMcpPayload('codex', {
     ...base,
     tiers: { ...base.tiers, highest: tooMany },
-  }), /decoder allows 32/);
+  }), /decoder allows 3/);
 });
 
-test('operator manifest is a valid deterministic schema-v2 projection of every host and plan', () => {
+test('operator generation requires two models except for explicit single-choice host plans', () => {
+  const twoModels: HostModelsConfig = {
+    tiers: {
+      highest: ['high', 'high-fallback'],
+      balanced: ['balanced', 'balanced-fallback'],
+      cheapest: ['low', 'low-fallback'],
+    },
+  };
+
+  assert.deepEqual(SINGLE_MODEL_ROW_ALLOWED_PLANS, {
+    codex: 'all',
+    cursor: ['free'],
+    copilot: ['free'],
+  });
+  assert.equal(allowsSingleModelTierRow('codex'), true);
+  assert.equal(allowsSingleModelTierRow('cursor', 'free'), true);
+  assert.equal(allowsSingleModelTierRow('copilot', 'free'), true);
+  assert.equal(allowsSingleModelTierRow('cursor', 'pro'), false);
+  assert.equal(allowsSingleModelTierRow('claude'), false);
+
+  assert.throws(() => bundledOneMcpPayload('claude', {
+    ...twoModels,
+    tiers: { ...twoModels.tiers, highest: ['only-high'] },
+  }), /claude\.highest has one model; at least 2 are required/);
+  assert.throws(() => bundledOneMcpPayload('cursor', {
+    ...twoModels,
+    plans: { pro: { cheapest: ['only-low'] } },
+  }), /cursor\.pro\.cheapest has one model; at least 2 are required/);
+
+  assert.doesNotThrow(() => bundledOneMcpPayload('codex', {
+    tiers: {
+      highest: ['only-high'],
+      balanced: ['only-balanced'],
+      cheapest: ['only-low'],
+    },
+  }));
+  assert.doesNotThrow(() => bundledOneMcpPayload('cursor', {
+    ...twoModels,
+    plans: {
+      free: {
+        highest: ['only-high'],
+        balanced: ['only-balanced'],
+        cheapest: ['only-low'],
+      },
+    },
+  }));
+  assert.doesNotThrow(() => bundledOneMcpPayload('copilot', {
+    ...twoModels,
+    plans: {
+      free: {
+        highest: ['auto'],
+        balanced: ['auto'],
+        cheapest: ['auto'],
+      },
+    },
+  }));
+});
+
+test('operator manifest is a valid deterministic versionless projection of every host and plan', () => {
   const first = oneMcpOperatorManifest();
   const second = oneMcpOperatorManifest();
   assert.deepEqual(first, second);
   assert.equal(JSON.stringify(first), JSON.stringify(second));
-  assert.equal(first.schemaVersion, 1);
-  assert.equal(first.payloadSchemaVersion, 2);
+  assert.equal(Object.hasOwn(first, 'payloadSchemaVersion'), false);
+  assert.equal(Object.hasOwn(first, 'schemaVersion'), false);
   assert.equal(first.generatedFrom, 'src/config/model-tiers.ts#HOST_MODELS');
   assert.equal(first.versionPolicy, 'compare-and-swap-increment');
   assert.deepEqual(first.rows.map((row) => row.host), HOST_IDS);
@@ -111,8 +168,8 @@ test('operator manifest is a valid deterministic schema-v2 projection of every h
 
   for (const row of first.rows) {
     const { host, payload } = row;
+    assert.equal(Object.hasOwn(payload, 'payloadSchemaVersion'), false);
     assert.equal(row.configName, ONE_MCP_CONFIG_NAME_BY_HOST[host]);
-    assert.equal(row.catalogUpdatedAt, HOST_MODELS[host].updatedAt);
     assert.equal(row.payloadFingerprint, oneMcpPayloadFingerprint(payload));
     assert.ok(
       Buffer.byteLength(JSON.stringify(payload), 'utf8') <= ONE_MCP_MAX_PUBLISHED_PAYLOAD_BYTES,
@@ -223,11 +280,29 @@ test('Milestone-2 release snapshot must be fresh and match all seven live rows e
     () => assertOneMcpLiveReleaseSnapshot(additive, endpoint, manifest, now),
     /payload differs from HOST_MODELS/,
   );
+  const legacyVersionFlag = structuredClone(snapshot);
+  (legacyVersionFlag.rows[0]!.payload as unknown as Record<string, unknown>).payloadSchemaVersion = 2;
+  assert.throws(
+    () => assertOneMcpLiveReleaseSnapshot(legacyVersionFlag, endpoint, manifest, now),
+    /payload differs from HOST_MODELS/,
+  );
   const unincremented = structuredClone(snapshot);
   unincremented.rows[0]!.version = 1;
   assert.throws(
     () => assertOneMcpLiveReleaseSnapshot(unincremented, endpoint, manifest, now),
     /version was not incremented/,
+  );
+  const staleRow = structuredClone(snapshot);
+  staleRow.rows[0]!.updatedAt = '2026-07-17T11:40:00.000Z';
+  assert.throws(
+    () => assertOneMcpLiveReleaseSnapshot(staleRow, endpoint, manifest, now),
+    /claude updatedAt is stale or from the future/,
+  );
+  const futureRow = structuredClone(snapshot);
+  futureRow.rows[0]!.updatedAt = '2026-07-17T12:06:00.000Z';
+  assert.throws(
+    () => assertOneMcpLiveReleaseSnapshot(futureRow, endpoint, manifest, now),
+    /claude updatedAt is stale or from the future/,
   );
 
   const missingEvidence = { ...snapshot } as Record<string, unknown>;
@@ -279,6 +354,7 @@ test('operator CAS SQL is fail-closed, versioned, and carries exactly the genera
   assert.match(sql, /get diagnostics changed_count = row_count/);
   assert.match(sql, /CAS update was partial; transaction rolled back/);
   assert.doesNotMatch(sql, /set\s+served_publicly\s*=/i);
+  assert.doesNotMatch(sql, /payloadSchemaVersion/);
 
   for (const row of manifest.rows) {
     assert.match(sql, new RegExp(row.configName));

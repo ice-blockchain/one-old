@@ -15,14 +15,13 @@ import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
   ONE_MCP_MAX_CONFIG_VERSION,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
 } from '../config/one-mcp';
 import { HOST_IDS, type HostModelKey } from '../config/model-tiers';
 import {
   oneMcpPayloadFingerprint,
 } from './one-mcp/fingerprint';
 import { parseOneMcpModelConfigPayload } from './one-mcp/get-config';
-import type { OneMcpModelConfigPayloadV2, OneMcpRemoteTiersV2 } from './one-mcp/types';
+import type { OneMcpModelConfigPayload, OneMcpRemoteTiers } from './one-mcp/types';
 import { globalTrafficOneDir } from './state/traffic-one-paths';
 
 type Rec = Record<string, unknown>;
@@ -34,9 +33,7 @@ export interface OneMcpConfigCacheEntry {
   version: number;
   createdAt: string;
   updatedAt: string;
-  payload: OneMcpModelConfigPayloadV2;
-  /** Derived from payload; never stored in one-mcp.json. */
-  payloadSchemaVersion: number;
+  payload: OneMcpModelConfigPayload;
   /** Derived from payload; never stored in one-mcp.json. */
   payloadFingerprint: string;
 }
@@ -57,8 +54,7 @@ export type OneMcpLastSyncReason =
   | 'unexpected-json-rpc-error'
   | 'invalid-tool-result'
   | 'invalid-up-to-date-sentinel'
-  | 'invalid-full-config'
-  | 'unsupported-payload-schema';
+  | 'invalid-full-config';
 
 export interface OneMcpLastSync {
   attemptedAt: string;
@@ -128,7 +124,6 @@ const LAST_SYNC_REASONS = new Set<OneMcpLastSyncReason>([
   'invalid-tool-result',
   'invalid-up-to-date-sentinel',
   'invalid-full-config',
-  'unsupported-payload-schema',
 ]);
 
 function record(value: unknown): Rec | null {
@@ -185,7 +180,6 @@ export function parseOneMcpConfigCacheEntry(
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     payload,
-    payloadSchemaVersion: payload.payloadSchemaVersion,
     payloadFingerprint,
   };
 }
@@ -488,7 +482,7 @@ function generation(): string {
   return `${process.pid.toString(16)}${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 }
 
-function storedRemoteTiers(tiers: OneMcpRemoteTiersV2): Rec {
+function storedRemoteTiers(tiers: OneMcpRemoteTiers): Rec {
   return {
     high: [...tiers.high],
     balanced: [...tiers.balanced],
@@ -510,7 +504,6 @@ function storedConfig(entry: OneMcpConfigCacheEntry): Rec {
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
     payload: {
-      payloadSchemaVersion: entry.payload.payloadSchemaVersion,
       tiers: storedRemoteTiers(entry.payload.tiers),
       ...(Object.keys(plans).length > 0 ? { plans } : {}),
     },
@@ -521,11 +514,8 @@ function isFutureHostEntry(value: unknown): boolean {
   const rawHost = record(value);
   const raw = record(rawHost?.config);
   if (!raw) return false;
-  const payload = record(raw.payload);
-  return (Number.isInteger(raw.decoderVersion)
-      && (raw.decoderVersion as number) > ONE_MCP_DECODER_VERSION)
-    || (Number.isInteger(payload?.payloadSchemaVersion)
-      && (payload?.payloadSchemaVersion as number) > ONE_MCP_PAYLOAD_SCHEMA_VERSION);
+  return Number.isInteger(raw.decoderVersion)
+    && (raw.decoderVersion as number) > ONE_MCP_DECODER_VERSION;
 }
 
 function assertWritableHostEntry(source: RawCacheRead, host: HostModelKey): void {
@@ -579,8 +569,9 @@ function rawCacheWithHostMutation(
   }
 
   if (mutation.lastSync !== undefined) {
-    const previousLastSync = record(nextHost.lastSync);
-    nextHost.lastSync = { ...(previousLastSync || {}), ...mutation.lastSync };
+    // lastSync describes exactly one completed request. Replacing it prevents
+    // optional failure fields from leaking into a later successful outcome.
+    nextHost.lastSync = { ...mutation.lastSync };
   }
 
   if (mutation.lastWarningKey !== undefined) {

@@ -9,9 +9,9 @@ import type { HostModelKey } from './model-tiers';
 
 export const DEFAULT_ENDPOINT =
   'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/mcp';
-// Temporary direct-Supabase fallback for development and recovery. Production
-// releases must point TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT at the operator-provided
-// custom domain protected by the path-scoped WAF/rate limit.
+// Direct public endpoint used by read-only, opt-in get_config sync. Before
+// registration or reporting is enabled, replace this compiled default with the
+// operator-provided custom domain protected by the path-scoped WAF/rate limit.
 export const DEFAULT_PUBLIC_ENDPOINT =
   'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/public-mcp';
 
@@ -30,7 +30,6 @@ export const ONE_MCP_CONFIG_NAME_BY_HOST: Readonly<Record<HostModelKey, string>>
   windsurf: 'traffic_one_windsurf_plugin_ai_model_configuration',
 };
 
-export const ONE_MCP_PAYLOAD_SCHEMA_VERSION = 2;
 export const ONE_MCP_DECODER_VERSION = 2;
 // The cache envelope is the durable decoder boundary. Coupling these versions
 // ensures an older plugin treats cache data emitted by a newer decoder as
@@ -53,7 +52,10 @@ export const ONE_MCP_MAX_CONFIG_VERSION = 2_147_483_647;
 // publication, so an oversized HOST_MODELS edit fails during generation.
 export const ONE_MCP_MAX_PUBLISHED_PAYLOAD_BYTES = 32 * 1024;
 export const ONE_MCP_MAX_PAYLOAD_DEPTH = 32;
-export const ONE_MCP_MAX_MODELS_PER_TIER = 32;
+// Keep both the bundled catalog and every accepted remote row deliberately
+// small. Ordered fallbacks beyond the first three are not actionable for the
+// runtime and would make a published config diverge from the reviewed policy.
+export const ONE_MCP_MAX_MODELS_PER_TIER = 3;
 export const ONE_MCP_MAX_AVAILABLE_MODELS = 256;
 export const ONE_MCP_MAX_MODEL_ID_LENGTH = 256;
 // Remote model identifiers are rendered in hook-owned agent context. Keep the
@@ -119,20 +121,19 @@ export const ONE_MCP_CODEX_REGISTRATION_LOCK_STALE_MS = 30_000;
 export const ONE_MCP_CODEX_STARTUP_TIMEOUT_SEC = 30;
 export const ONE_MCP_CODEX_TOOL_TIMEOUT_SEC = 60;
 
-export const ONE_MCP_OPERATOR_MANIFEST_SCHEMA_VERSION = 1;
 export const ONE_MCP_OPERATOR_MANIFEST_FILE = 'operator/one-mcp-model-configs.json';
 export const ONE_MCP_OPERATOR_CAS_SQL_FILE = 'operator/one-mcp-publish-cas.sql';
-// Milestone-2 builds must consume a fresh bounded evidence bundle derived from
-// the live public.plugin_config rows, public transport probes, hosted onboarding
-// smoke, and Codex hook observations. The generator validates it against the
-// canonical HOST_MODELS manifest before any public feature may be emitted.
+// Registration/reporting releases must consume a fresh bounded evidence bundle
+// derived from the live public.plugin_config rows, public transport probes,
+// hosted onboarding smoke, and Codex hook observations. Read-only, hook-owned
+// model sync is activated independently and remains project opt-in gated.
 export const ONE_MCP_LIVE_RELEASE_SNAPSHOT_ENV = 'TRAFFIC_ONE_MCP_LIVE_RELEASE_SNAPSHOT';
 export const ONE_MCP_LIVE_RELEASE_SNAPSHOT_SCHEMA_VERSION = 2;
 export const ONE_MCP_LIVE_RELEASE_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
 
 // Public features are independently kill-switchable. They still require the
 // durable per-project pluginUse.enabled === true choice at runtime.
-export const ONE_MCP_SYNC_ACTIVE = false;
+export const ONE_MCP_SYNC_ACTIVE = true;
 export const ONE_MCP_REGISTRATION_ACTIVE = false;
 export const REPORTING_ACTIVE = false;
 export const SAVE_MCP_REPORT = false;
@@ -191,9 +192,10 @@ export function isDirectSupabaseOneMcpEndpoint(endpoint: string): boolean {
   }
 }
 
-// Release-time fail-closed gate. Environment overrides remain useful for local
-// development, but cannot make an unsafe compiled default releasable: installed
-// clients do not inherit the maintainer's shell environment.
+// Release-time fail-closed gate for registration/reporting. Environment
+// overrides remain useful for local development, but cannot make an unsafe
+// compiled default releasable: installed clients do not inherit the
+// maintainer's shell environment.
 export function assertOneMcpPublicReleaseReady(
   activation: OneMcpPublicFeatureActivation = {
     sync: ONE_MCP_SYNC_ACTIVE,
@@ -204,7 +206,10 @@ export function assertOneMcpPublicReleaseReady(
   liveManifestVerified = false,
 ): void {
   const enabled = Object.entries(activation)
-    .filter(([, active]) => active)
+    // Anonymous get_config is a read-only client pull and is intentionally
+    // available through the direct recovery endpoint. Machine-global MCP
+    // registration and reporting still require the protected release surface.
+    .filter(([feature, active]) => feature !== 'sync' && active)
     .map(([feature]) => feature);
   if (enabled.length === 0) return;
   let parsed: URL;

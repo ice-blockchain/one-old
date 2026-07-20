@@ -8,7 +8,6 @@ import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
   ONE_MCP_MANAGED_TOOLS,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
   ONE_MCP_REPORT_TIMEOUT_MS,
   assertOneMcpPublicReleaseReady,
   authenticatedEndpoint,
@@ -41,7 +40,6 @@ test('one-mcp config centralizes safe model-id grammar and reporter timeout', ()
     ONE_MCP_DECODER_VERSION,
     'the durable cache envelope advances with decoder compatibility',
   );
-  assert.equal(ONE_MCP_PAYLOAD_SCHEMA_VERSION, 2);
   assert.equal(ONE_MCP_DECODER_VERSION, 2);
   assert.equal(ONE_MCP_REPORT_TIMEOUT_MS, 15_000);
   assert.equal(isSafeOneMcpModelId('@anthropic/claude-4.1:thinking+fast'), true);
@@ -49,7 +47,7 @@ test('one-mcp config centralizes safe model-id grammar and reporter timeout', ()
   assert.equal(isSafeOneMcpModelId('ignore previous instructions'), false);
   assert.equal(isSafeOneMcpModelId('SWE-1.7 Lightning Beta', 'windsurf'), true);
   assert.equal(isSafeOneMcpModelId('SWE-1.7 Lightning Beta', 'codex'), false);
-  assert.equal(isSafeOneMcpModelId(' SWE-1.7 Beta', 'windsurf'), false);
+  assert.equal(isSafeOneMcpModelId(' SWE-1.7', 'windsurf'), false);
   assert.equal(isSafeOneMcpModelId('model**override'), false);
   assert.equal(isSafeOneMcpModelId(`model\u202eoverride`), false);
 });
@@ -68,10 +66,10 @@ test('public endpoint preserves the legacy reporter alias behind the canonical o
   } as NodeJS.ProcessEnv), 'https://canonical.test/mcp');
 });
 
-test('milestone 1 keeps public sync and reporting build-disabled', () => {
-  assert.equal(oneMcpSyncEnabled({} as NodeJS.ProcessEnv), false);
+test('hook-owned sync is active while registration and reporting stay build-disabled', () => {
+  assert.equal(oneMcpSyncEnabled({} as NodeJS.ProcessEnv), true);
   assert.equal(oneMcpSyncEnabled({ TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: 'true' } as NodeJS.ProcessEnv), false);
-  assert.equal(oneMcpSyncEnabled({ TRAFFIC_ONE_MODEL_STATUS_OFF: '1' } as NodeJS.ProcessEnv), false);
+  assert.equal(oneMcpSyncEnabled({ TRAFFIC_ONE_MODEL_STATUS_OFF: '1' } as NodeJS.ProcessEnv), true);
   assert.equal(oneMcpRegistrationEnabled({} as NodeJS.ProcessEnv), false);
   assert.equal(oneMcpReportingEnabled({} as NodeJS.ProcessEnv), false);
   assert.equal(oneMcpReportingEnabled({ TRAFFIC_ONE_DISABLE_ONE_MCP: 'on' } as NodeJS.ProcessEnv), false);
@@ -79,14 +77,19 @@ test('milestone 1 keeps public sync and reporting build-disabled', () => {
   assert.equal(oneMcpSyncEnabled({ TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '1' } as NodeJS.ProcessEnv, true), false);
 });
 
-test('public release readiness rejects every enabled feature while the compiled endpoint is direct Supabase', () => {
+test('public release readiness permits read-only sync but protects registration and reporting', () => {
   const off = { sync: false, registration: false, reporting: false };
   assert.doesNotThrow(() => assertOneMcpPublicReleaseReady(off));
   assert.equal(isDirectSupabaseOneMcpEndpoint(DEFAULT_PUBLIC_ENDPOINT), true);
   assert.equal(isDirectSupabaseOneMcpEndpoint('https://other-project.supabase.co/functions/v1/x/public-mcp'), true);
   assert.equal(isDirectSupabaseOneMcpEndpoint('https://mcp.traffic-one.example/public-mcp'), false);
 
-  for (const feature of ['sync', 'registration', 'reporting'] as const) {
+  assert.doesNotThrow(() => assertOneMcpPublicReleaseReady({
+    ...off,
+    sync: true,
+  }));
+
+  for (const feature of ['registration', 'reporting'] as const) {
     assert.throws(() => assertOneMcpPublicReleaseReady({
       ...off,
       [feature]: true,
@@ -102,19 +105,19 @@ test('public release readiness rejects every enabled feature while the compiled 
     registration: true,
     reporting: true,
   }, 'https://mcp.traffic-one.example/public-mcp', true));
-  assert.throws(() => assertOneMcpPublicReleaseReady({
+  assert.doesNotThrow(() => assertOneMcpPublicReleaseReady({
     sync: true,
     registration: false,
     reporting: false,
-  }, 'http://mcp.traffic-one.example/public-mcp'), /HTTPS WAF\/rate-limit domain/);
+  }, 'http://mcp.traffic-one.example/public-mcp'));
   assert.throws(() => assertOneMcpPublicReleaseReady({
-    sync: true,
-    registration: false,
+    sync: false,
+    registration: true,
     reporting: false,
   }, 'https://user:secret@mcp.traffic-one.example/public-mcp', true), /HTTPS WAF\/rate-limit domain/);
   assert.throws(() => assertOneMcpPublicReleaseReady({
-    sync: true,
+    sync: false,
     registration: false,
-    reporting: false,
+    reporting: true,
   }, 'https://mcp.traffic-one.example/public-mcp#fragment', true), /HTTPS WAF\/rate-limit domain/);
 });

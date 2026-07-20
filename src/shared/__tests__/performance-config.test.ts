@@ -17,6 +17,8 @@ test('recommendLevelForPlan maps each plan directly to its configured level', ()
   assert.equal(recommendLevelForPlan('claude', 'team'), 'balanced');
   assert.equal(recommendLevelForPlan('claude', 'enterprise'), 'balanced');
   assert.equal(recommendLevelForPlan('codex', 'plus'), 'balanced');
+  assert.equal(recommendLevelForPlan('codex', 'pro'), 'high');
+  assert.equal(recommendLevelForPlan('codex', 'prolite'), 'high');
   assert.equal(recommendLevelForPlan('cursor', 'free'), 'low');
   assert.equal(recommendLevelForPlan('opencode', 'free'), 'low');
   assert.equal(recommendLevelForPlan('kilo', 'free'), 'low');
@@ -89,7 +91,8 @@ test('agentTierForPlan: a sparse PLAN_AGENT_TIERS deviation overrides the defaul
   assert.equal(agentTierForPlan('codex', 'free', 'high', 'senior-tester'), 'cheapest');
   // Copilot product labels must not route Pro accounts through the free override.
   assert.equal(agentTierForPlan('copilot', 'Copilot Pro', 'balanced', 'senior-architect'), 'balanced');
-  // Windsurf Free only exposes the SWE model, so even a manual High team stays cheapest.
+  // Windsurf Free stays cost-conservative even while two quota-free SWE models
+  // are available during the SWE-1.7 preview.
   assert.equal(agentTierForPlan('windsurf', 'free', 'high', 'senior-architect'), 'cheapest');
   assert.equal(agentTierForPlan('windsurf', 'free', 'high', 'senior-shipper'), 'cheapest');
   // Kilo's "free" is an undetected-account fallback, not proof that only one

@@ -26,7 +26,7 @@ import { ASK_USE_PLUGIN_FIRST, STEP_COPY, TEAM_ROLES, type StepCopy, type Wizard
 import { readPluginUseChoice } from '../state/plugin-use';
 import { TIER_IDS } from '../../config/model-tiers';
 import { recommendTierForPlan } from '../model-tiers';
-import { currentHostModelTarget, currentModelForTier, currentModelsForTier } from '../current-model-tiers';
+import { currentHostModelTarget, currentModelsForTier } from '../current-model-tiers';
 import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
@@ -94,14 +94,13 @@ export interface StepMeta extends StepCopy {
   plan?: string;
   catalogSource?: 'one-mcp' | 'bundled';
   catalogVersion?: number;
-  catalogUpdatedAt?: string;
   catalogTiers?: PerformanceCatalogTier[];
   repickReason?: PerformanceRepickReason;
   previousPlan?: string;
-  // The model choices offered per agent on the team step: the detected host's
-  // capability tiers (highest/balanced/cheapest) resolved to concrete model ids
-  // (opus/sonnet/haiku, gpt-5.x, …). The wizard renders one <select> per role
-  // from this list; the chosen tier is sent back as a team.overrides entry.
+  // Exact model ids offered on the team step, grouped by capability tier. Each
+  // tier contributes at most its first two models. Selectors show the cross-tier
+  // union; the selected tier is persisted in team.overrides and the exact model
+  // id in team.modelSelections.
   modelChoices?: { tier: string; model: string; label?: string }[];
   // True when the user declined Traffic One for this project — the wizard shows
   // the "Traffic One disabled" view instead of "Setup complete".
@@ -147,6 +146,7 @@ export function buildTeamLineup(
   overrides?: Rec | null,
   planCtx?: PlanCtx | null,
   env: NodeJS.ProcessEnv = process.env,
+  modelSelections?: Rec | null,
 ): TeamMember[] {
   const cfg = PERFORMANCE_CONFIG[level];
   if (!cfg || cfg.teamMode !== 'subagents') return [];
@@ -154,7 +154,18 @@ export function buildTeamLineup(
   for (const r of TEAM_ROLES) {
     const tier = effectiveTierForRole(level, r.role, overrides || null, planCtx || null);
     if (!tier) continue;
-    const model = modelForRoleHost(level, r.role, host, overrides || null, planCtx || null, env) || tier;
+    const resolvedModel = modelForRoleHost(
+      level,
+      r.role,
+      host,
+      overrides || null,
+      planCtx || null,
+      env,
+      modelSelections || null,
+    );
+    if (!resolvedModel && modelSelections
+      && Object.prototype.hasOwnProperty.call(modelSelections, r.role)) return [];
+    const model = resolvedModel || tier;
     const modelLabel = modelDisplayLabel(model, tier, host, planCtx?.plan, env);
     out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model, ...(modelLabel ? { modelLabel } : {}) });
   }
@@ -438,23 +449,22 @@ function enrichTeamMeta(
     return;
   }
   const planCtx: PlanCtx = { host, plan: target.plan };
-  meta.team = buildTeamLineup(level, host, overrides, planCtx, env);
+  const savedModelSelections = team && obj(team.modelSelections)
+    ? (team.modelSelections as Rec)
+    : null;
+  meta.team = buildTeamLineup(level, host, overrides, planCtx, env, savedModelSelections);
   meta.performanceLevel = level;
   meta.recommendedTier = recommendTierForPlan(host, planCtx.plan);
   meta.host = host;
-  // The per-agent model menu: each tier resolved to the detected host's model id,
-  // so the wizard can offer real model names (and the user's pick maps straight
-  // back to a tier override the spawn gate already understands). Windsurf Free
-  // exposes only its single verified selector model, so do not show three
-  // indistinguishable choices for that host/plan.
-  const choiceTiers = host === 'windsurf' && planCtx.plan === 'free'
-    ? ['cheapest'] as const
-    : TIER_IDS;
-  meta.modelChoices = choiceTiers.map((tier) => {
-    const model = currentModelForTier(tier, host, planCtx.plan, env) || tier;
-    const label = modelDisplayLabel(model, tier, host, planCtx.plan, env);
-    return { tier, model, ...(label ? { label } : {}) };
-  });
+  // Restore the cross-tier picker while keeping it bounded: each row contributes
+  // its first two models, in preferred order. Do not dedupe across tiers because
+  // the same exact model can intentionally represent two different tier choices.
+  meta.modelChoices = TIER_IDS.flatMap((tier) => (
+    currentModelsForTier(tier, host, planCtx.plan, env).slice(0, 2).map((model) => {
+      const label = modelDisplayLabel(model, tier, host, planCtx.plan, env);
+      return { tier, model, ...(label ? { label } : {}) };
+    })
+  ));
 }
 
 // Pre-select the wizard's plan recommendation: move it first and tag its hint
@@ -483,7 +493,6 @@ function enrichPerformanceMeta(
   const catalog = currentHostModelTarget(host, plan, env);
   meta.catalogSource = catalog.source;
   meta.catalogVersion = catalog.configVersion;
-  meta.catalogUpdatedAt = catalog.snapshot.updatedAt;
   meta.catalogTiers = TIER_IDS.map((tier) => ({
     tier,
     models: [...catalog.snapshot.tiers[tier]],
@@ -646,7 +655,8 @@ function applyAnswerStep(
       return { ok: true };
     }
     case 'team-confirmation': {
-      if (detectHost(env) === 'windsurf' && windsurfBackend(env) === 'cascade') {
+      const host = detectHost(env);
+      if (host === 'windsurf' && windsurfBackend(env) === 'cascade') {
         return { ok: false, error: 'Cascade does not expose a subagent runner' };
       }
       const v = obj(value);
@@ -656,16 +666,58 @@ function applyAnswerStep(
       // team and never re-asks (see senior-engineer-team rules). "Re-pick
       // performance" clears performance + team to choose again.
       if (action === 'approve' || action === 'continue' || action === 'customise') {
-        const overrides = v && obj(v.overrides);
-        mergeProjectHostPrefs(cwd, detectHost(env), {
-          team: { mode: 'subagents', source: 'prompted', approved: true, ...(overrides ? { overrides } : {}) },
+        const state = readEffectiveState(cwd, env);
+        const performance = obj(state.performance);
+        const level = typeof performance?.level === 'string' ? performance.level : '';
+        const existingTeam = obj(state.team);
+        const submittedOverrides = v && obj(v.overrides);
+        const overrides = submittedOverrides || obj(existingTeam?.overrides);
+        let modelSelections: Rec | null = null;
+        if (v && Object.prototype.hasOwnProperty.call(v, 'modelSelections')) {
+          const requested = obj(v.modelSelections);
+          if (!requested) return { ok: false, error: 'invalid team model selections' };
+
+          const target = currentLocalPreferenceTarget(host, env, cwd);
+          const planCtx: PlanCtx = { host, plan: target.plan };
+          const lineup = buildTeamLineup(level, host, overrides, planCtx, env);
+          const expectedRoles = new Set(lineup.map((member) => member.role));
+          const requestedRoles = Object.keys(requested);
+          if (requestedRoles.length !== expectedRoles.size
+            || requestedRoles.some((role) => !expectedRoles.has(role))) {
+            return { ok: false, error: 'team model selections must cover the visible team exactly' };
+          }
+
+          modelSelections = {};
+          for (const member of lineup) {
+            const selected = requested[member.role];
+            // The picker intentionally exposes only the first two entries in a
+            // row. Remaining entries stay runtime fallbacks, not manual choices.
+            const allowed = currentModelsForTier(member.tier, host, planCtx.plan, env).slice(0, 2);
+            if (typeof selected !== 'string' || !allowed.includes(selected)) {
+              return {
+                ok: false,
+                error: `${member.label || member.role} model is not available in the ${member.tier} tier`,
+              };
+            }
+            modelSelections[member.role] = selected;
+          }
+        }
+
+        mergeProjectHostPrefs(cwd, host, {
+          team: {
+            mode: 'subagents',
+            source: 'prompted',
+            approved: true,
+            ...(overrides ? { overrides } : {}),
+            ...(modelSelections ? { modelSelections } : {}),
+          },
         }, env);
         return { ok: true };
       }
       if (action === 'repick_performance' || action === 'repick') {
         clearProjectHostPrefs(
           cwd,
-          detectHost(env),
+          host,
           ['performance', 'team'],
           env,
         );

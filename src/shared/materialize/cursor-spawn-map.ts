@@ -6,8 +6,7 @@
 import { AGENT_ROLES } from '../../config/performance';
 import { detectHostPlan } from '../host-plan';
 import { currentAcceptableModels } from '../current-model-tiers';
-import { buildTeamLineup } from '../onboarding-server/flow';
-import { modelForRoleHost } from '../performance';
+import { roleModelSelection } from '../performance';
 import { obj } from '../obj';
 import { policyModelsForExpected, readRunModelPolicy, type RunModelPolicyV1 } from '../run-model-policy';
 import { freshCursorModels, pickCursorSlug } from './cursor-models';
@@ -27,13 +26,6 @@ export function resolveCursorTierSlug(cwd: string, tierFamily: string, plan?: st
   if (!captured.length) return tierFamily;
   const activePlan = plan ?? detectHostPlan('cursor');
   return pickCursorSlug(currentAcceptableModels(tierFamily, 'cursor', activePlan), captured) || tierFamily;
-}
-
-/** True when `slug` is a bare tier family anchor, not a build-specific Task id. */
-export function isBareCursorTierFamily(slug: string, tierFamily: string): boolean {
-  const s = slug.trim();
-  const f = tierFamily.trim();
-  return s.length > 0 && s === f;
 }
 
 function frozenCursorSpawnModelMap(policy: RunModelPolicyV1): Record<string, string> {
@@ -68,23 +60,30 @@ export function buildCursorSpawnModelMap(cwd: string, state: Rec): Record<string
   if (!level || team?.mode !== 'subagents') return {};
 
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
+  const modelSelections = team && obj(team.modelSelections) ? (team.modelSelections as Rec) : null;
   const planCtx = { host: 'cursor' as const, plan: detectHostPlan('cursor') };
-  let lineup;
-  try {
-    lineup = buildTeamLineup(level, 'cursor', overrides, planCtx);
-  } catch {
-    return {};
-  }
-  if (!lineup?.length) return {};
 
   const captured = freshCursorModels(cwd, planCtx.plan);
   const map: Record<string, string> = {};
   for (const role of AGENT_ROLES) {
-    const entry = lineup.find((m) => m.role === role);
-    if (!entry?.model) continue;
-    map[role] = captured.length
-      ? (pickCursorSlug(currentAcceptableModels(entry.model, 'cursor', planCtx.plan), captured) || entry.model)
-      : entry.model;
+    const selection = roleModelSelection(
+      level,
+      role,
+      'cursor',
+      overrides,
+      modelSelections,
+      planCtx,
+    );
+    if (!selection) return {};
+    if (!captured.length) {
+      map[role] = selection.preferredModel;
+      continue;
+    }
+    const exact = pickCursorSlug(selection.acceptableModels, captured);
+    // A captured exact id may legitimately equal its family anchor (for
+    // example `gpt-5.4-mini`). Membership in the captured picker snapshot is
+    // the invariant; never publish an uncaptured family fallback as exact.
+    if (exact) map[role] = exact;
   }
   return map;
 }
@@ -99,7 +98,7 @@ export function formatCursorSpawnMapBlock(map: Record<string, string>): string {
   const lines = formatCursorSpawnMapLines(map);
   if (!lines.length) return '';
   return [
-    'traffic-one model-gate: spawn map — pass these EXACT Task `model` params (never tier family aliases):',
+    'traffic-one model-gate: spawn map — pass these EXACT captured Task `model` params (never an uncaptured family guess):',
     ...lines,
   ].join('\n');
 }

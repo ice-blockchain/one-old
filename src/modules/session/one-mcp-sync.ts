@@ -101,12 +101,11 @@ function warningReason(sync: SessionWarningDiagnostic): string {
 
 function warningSummary(sync: SessionWarningDiagnostic): string {
   if (sync.outcome === 'config-not-found') return 'the published configuration is missing';
-  if (sync.reason === 'unsupported-payload-schema') return 'the published payload schema is not supported';
   return `the published configuration was rejected (${sync.reason || 'invalid-response'})`;
 }
 
 // Read the bounded diagnostic written by the worker and atomically claim its
-// presentation key. Only invalid/schema/config-missing outcomes are surfaced at
+// presentation key. Only invalid/config-missing outcomes are surfaced at
 // SessionStart; transient transport failures stay silent here and remain visible
 // through doctor. The message is built solely from client-owned enums/constants,
 // never from remote payload or error text.

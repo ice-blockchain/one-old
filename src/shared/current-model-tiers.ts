@@ -7,7 +7,6 @@ import type { HostModelKey, TierId } from '../config/model-tiers';
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
   publicEndpoint,
 } from '../config/one-mcp';
 import {
@@ -46,7 +45,6 @@ export function usableOneMcpConfigCacheEntry(
   if (!entry
     || entry.endpoint !== publicEndpoint(env)
     || entry.configName !== ONE_MCP_CONFIG_NAME_BY_HOST[host]
-    || entry.payloadSchemaVersion !== ONE_MCP_PAYLOAD_SCHEMA_VERSION
     || entry.decoderVersion !== ONE_MCP_DECODER_VERSION) return null;
   const payload = parseOneMcpModelConfigPayload(entry.payload, host);
   if (!payload) return null;
@@ -71,7 +69,6 @@ export function currentHostModelTarget(
       const tiers = mapOneMcpTiers(oneMcpRemoteTiersForPlan(payload, plan));
       const snapshot: HostModelSnapshot = {
         plan,
-        updatedAt: cached.updatedAt.slice(0, 10),
         tiers,
       };
       return {
@@ -177,7 +174,7 @@ export function resolveTierFallback(
     if (captured !== undefined) {
       // Captured runner slugs must satisfy the same one-way contract as the
       // spawn gate: an exact family id or a concrete `family-*` variant. A
-      // shorter prefix (for example `claude-4.6` for `claude-4.6-sonnet`) is
+      // shorter prefix (for example `claude-sonnet` for `claude-sonnet-5`) is
       // not runnable proof for this tier entry and must never be prescribed.
       const slug = captured.find((model) => modelMatchesExpected(model, family));
       if (!slug) continue;

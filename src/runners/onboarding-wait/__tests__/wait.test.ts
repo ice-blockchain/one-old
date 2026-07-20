@@ -591,8 +591,8 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
     const d = preSpawnModelDirective(dir, 'cursor');
     assert.ok(d.includes('cursor-models.json'), 'step 1 front-loads the model capture');
     assert.ok(d.includes('senior-architect') && d.includes('senior-frontend'), 'per-role map present');
-    assert.ok(d.includes('claude-opus-4-8'), 'tier family appears as eligibility reference');
-    assert.ok(d.includes('never pass the bare family') || d.includes('after step 2'), 'does not advertise bare family as spawn param');
+    assert.ok(d.includes('claude-fable-5'), 'tier family appears as eligibility reference');
+    assert.ok(d.includes('never guess an uncaptured id') || d.includes('after step 2'), 'does not advertise an uncaptured guess as a spawn param');
     assert.ok(d.includes('spawn map'), 'step 3 points at model-gate spawn map output');
     // Step 2 mandates running the model-gate command, which is what pops the USER prompt
     // (permission:"ask") when a picked model is unavailable — instead of the agent deciding.
@@ -619,7 +619,7 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
   }
 });
 
-test('preSpawnModelDirective: with capture, lists exact build slugs not bare families', async () => {
+test('preSpawnModelDirective: with capture, lists exact picker ids including family anchors', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -637,7 +637,11 @@ test('preSpawnModelDirective: with capture, lists exact build slugs not bare fam
       { mode: 'subagents', source: 'prompted', approved: true },
       'pro',
     );
-    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'], 'pro');
+    withCursorAvailableModels(
+      prefs,
+      ['claude-fable-5-thinking-high', 'gpt-5.6-terra', 'gpt-5.4-mini'],
+      'pro',
+    );
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
@@ -646,8 +650,10 @@ test('preSpawnModelDirective: with capture, lists exact build slugs not bare fam
     }), 'utf8');
 
     const d = preSpawnModelDirective(dir, 'cursor');
-    assert.ok(d.includes('senior-architect → claude-opus-4-8-thinking-medium'), 'exact slug in preview');
-    assert.ok(!d.includes('senior-architect → claude-opus-4-8\n'), 'bare family not listed as spawn value');
+    assert.ok(d.includes('senior-architect → claude-fable-5-thinking-high'), 'exact slug in preview');
+    assert.ok(d.includes('senior-shipper → gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
+    assert.ok(d.includes('senior-tester → gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
+    assert.ok(!d.includes('senior-tester → (after step 2'), 'captured family-anchor id is not replaced by a placeholder');
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;

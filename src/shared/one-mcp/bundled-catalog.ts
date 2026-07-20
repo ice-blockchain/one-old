@@ -1,5 +1,5 @@
 // Canonical projection from the bundled HOST_MODELS catalog to the public One
-// MCP schema-v2 wire payload. Runtime bundled fallback, drift fingerprints, and
+// MCP plan-aware wire payload. Runtime bundled fallback, drift fingerprints, and
 // operator generation all consume this function so their semantics cannot
 // diverge through parallel mapping logic.
 
@@ -7,6 +7,7 @@ import {
   HOST_MODELS,
   HOST_PLAN_IDS,
   PLAN_IDS,
+  allowsSingleModelTierRow,
   type HostModelKey,
   type HostModelsConfig,
   type ModelRow,
@@ -16,17 +17,26 @@ import {
 import {
   ONE_MCP_MAX_MODELS_PER_TIER,
   ONE_MCP_MAX_PUBLISHED_PAYLOAD_BYTES,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
   isSafeOneMcpModelId,
 } from '../../config/one-mcp';
-import type { OneMcpModelConfigPayloadV2, OneMcpRemoteTiersV2 } from './types';
+import type { OneMcpModelConfigPayload, OneMcpRemoteTiers } from './types';
 
 function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function canonicalRow(host: HostModelKey, row: ModelRow, label: string): readonly string[] {
+function canonicalRow(
+  host: HostModelKey,
+  row: ModelRow,
+  label: string,
+  plan?: UserPlan,
+): readonly string[] {
   if (row.length === 0) throw new Error(`One MCP bundled row ${label} is empty`);
+  if (row.length < 2 && !allowsSingleModelTierRow(host, plan)) {
+    throw new Error(
+      `One MCP bundled row ${label} has one model; at least 2 are required unless explicitly allowlisted`,
+    );
+  }
   if (row.length > ONE_MCP_MAX_MODELS_PER_TIER) {
     throw new Error(
       `One MCP bundled row ${label} has ${row.length} models; the decoder allows ${ONE_MCP_MAX_MODELS_PER_TIER}`,
@@ -46,12 +56,13 @@ function remoteTiers(
   host: HostModelKey,
   config: HostModelsConfig,
   plan?: UserPlan,
-): OneMcpRemoteTiersV2 {
+): OneMcpRemoteTiers {
   const override = plan ? config.plans?.[plan] : undefined;
   const row = (tier: TierId): readonly string[] => canonicalRow(
     host,
     override?.[tier] ?? config.tiers[tier],
     `${host}${plan ? `.${plan}` : ''}.${tier}`,
+    plan,
   );
   const high = row('highest');
   const balanced = row('balanced');
@@ -71,8 +82,8 @@ function remoteTiers(
 export function bundledOneMcpPayload(
   host: HostModelKey,
   config: HostModelsConfig = HOST_MODELS[host],
-): OneMcpModelConfigPayloadV2 {
-  const plans: Partial<Record<UserPlan, OneMcpRemoteTiersV2>> = {};
+): OneMcpModelConfigPayload {
+  const plans: Partial<Record<UserPlan, OneMcpRemoteTiers>> = {};
   for (const rawPlan of Object.keys(config.plans ?? {})) {
     if (!(PLAN_IDS as readonly string[]).includes(rawPlan)) {
       throw new Error(`One MCP bundled catalog has unknown ${host} plan override: ${rawPlan}`);
@@ -85,8 +96,7 @@ export function bundledOneMcpPayload(
     if (!config.plans || !hasOwn(config.plans, plan)) continue;
     plans[plan] = remoteTiers(host, config, plan);
   }
-  const payload: OneMcpModelConfigPayloadV2 = Object.freeze({
-    payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
+  const payload: OneMcpModelConfigPayload = Object.freeze({
     tiers: remoteTiers(host, config),
     ...(Object.keys(plans).length > 0 ? { plans: Object.freeze(plans) } : {}),
   });

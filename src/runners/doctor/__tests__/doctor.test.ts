@@ -9,7 +9,6 @@ import {
   ONE_MCP_CACHE_SCHEMA_VERSION,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  ONE_MCP_PAYLOAD_SCHEMA_VERSION,
 } from '../../../config/one-mcp';
 import {
   commandLooksMutating,
@@ -197,7 +196,6 @@ test('probeOneMcp reports bounded runtime-usable cache state for all hosts witho
             createdAt: '2026-07-01T09:00:00.000Z',
             updatedAt: '2026-07-17T09:00:00.000Z',
             payload: {
-              payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
               tiers: {
                 high: ['secret-model-high'],
                 balanced: ['secret-model-balanced'],
@@ -212,7 +210,7 @@ test('probeOneMcp reports bounded runtime-usable cache state for all hosts witho
             source: 'one-mcp',
             requestedVersion: 9,
             observedVersion: 10,
-            reason: 'unsupported-payload-schema',
+            reason: 'invalid-full-config',
             remoteError: 'remote stack trace must not appear',
           },
         },
@@ -244,7 +242,7 @@ test('probeOneMcp reports bounded runtime-usable cache state for all hosts witho
       source: 'one-mcp',
       requestedVersion: 9,
       observedVersion: 10,
-      reason: 'unsupported-payload-schema',
+      reason: 'invalid-full-config',
     });
     assert.equal(probe.hosts.find((host) => host.host === 'cursor')?.lastSync?.reason, 'transport-failed');
     const serialized = JSON.stringify(probe);
@@ -274,7 +272,6 @@ test('probeOneMcp falls back to bundled when runtime rejects a cache from anothe
             createdAt: '2026-07-01T09:00:00.000Z',
             updatedAt: '2026-07-17T09:00:00.000Z',
             payload: {
-              payloadSchemaVersion: ONE_MCP_PAYLOAD_SCHEMA_VERSION,
               tiers: {
                 high: ['gpt-5.6-sol'],
                 balanced: ['gpt-5.6-terra'],

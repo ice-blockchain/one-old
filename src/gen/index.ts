@@ -66,18 +66,18 @@ export function runGen(opts: { check: boolean; root?: string; sourceRoot?: strin
     registration: ONE_MCP_REGISTRATION_ACTIVE,
     reporting: REPORTING_ACTIVE,
   };
-  const publicActive = Object.values(publicActivation).some(Boolean);
-  if (publicActive) {
+  const releaseGatedActive = publicActivation.registration || publicActivation.reporting;
+  if (releaseGatedActive) {
     assertOneMcpLiveReleaseSnapshotFile(
       process.env[ONE_MCP_LIVE_RELEASE_SNAPSHOT_ENV] || '',
       DEFAULT_PUBLIC_ENDPOINT,
     );
   }
-  assertOneMcpPublicReleaseReady(publicActivation, DEFAULT_PUBLIC_ENDPOINT, publicActive);
+  assertOneMcpPublicReleaseReady(publicActivation, DEFAULT_PUBLIC_ENDPOINT, releaseGatedActive);
   const sourceRoot = opts.sourceRoot ?? sourceRepoRoot();
   const run = new GenRun({ check: opts.check, root: opts.root ?? distRoot(sourceRoot), sourceRoot });
   emitManifests(run);
-  emitMcp(run, ONE_MCP_REGISTRATION_ACTIVE, DEFAULT_PUBLIC_ENDPOINT, publicActive);
+  emitMcp(run, ONE_MCP_REGISTRATION_ACTIVE, DEFAULT_PUBLIC_ENDPOINT, releaseGatedActive);
   emitOneMcpOperatorArtifacts(run);
   emitHooks(run);
   emitAgents(run); // before cursor-rules: the cursor mirror derives from emitted agents/

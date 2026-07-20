@@ -105,13 +105,13 @@ test('modelGateShell always allows the internal capture command to refresh stale
 
 test('modelGateShell: a PICKED model not offered → askUser (permission:ask) naming the model + fallback', () => {
   // architect overridden to balanced (GPT-5.6 Terra), which the captured list LACKS.
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
       assert.equal((r as { askUser?: boolean }).askUser, true, 'is a user APPROVE/REJECT prompt, not a hard deny');
       assert.ok(r.reason.includes('gpt-5.6-terra'), 'names the unavailable picked model');
-      assert.ok(/gpt-5\.5/.test(r.reason), 'names the fallback it would use');
+      assert.ok(r.reason.includes('claude-sonnet-5'), 'names the fallback it would use');
       assert.ok(/approve/i.test(r.reason) && /reject/i.test(r.reason), 'offers approve/reject');
       assert.ok(/fallback.*enable/i.test(r.reason), 'directs chat consent before spawn');
       assert.ok((r as { agentMessage?: string }).agentMessage, 'carries per-branch agent instructions');
@@ -120,7 +120,7 @@ test('modelGateShell: a PICKED model not offered → askUser (permission:ask) na
 });
 
 test('modelGate runner fails closed until explicit chat consent (use-fallback)', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-model-gate';
@@ -141,7 +141,7 @@ test('modelGate runner fails closed until explicit chat consent (use-fallback)',
 });
 
 test('modelGate after-shell surfaces exit-2 STOP as a Cursor user-visible message', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-after-shell';
@@ -174,7 +174,7 @@ test('modelGate runner fails closed when Cursor model capture is missing', () =>
 });
 
 test('modelGateShell: recognizes the real Cursor before-shell-execution shape', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.equal((r as { askUser?: boolean }).askUser, true);
@@ -200,7 +200,7 @@ test('modelGate runner prints the local spawn map while project agent contracts 
 });
 
 test('modelGateShell: non-cursor host and non-model-gate commands → noop', () => {
-  withProj({ models: ['gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     assert.equal(modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor'), 'claude')).kind, 'noop', 'claude → inert');
     assert.equal(modelGateShell(ctxFor(cwd, 'ls -la')).kind, 'noop', 'unrelated command → inert');
   });

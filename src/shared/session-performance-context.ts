@@ -3,7 +3,7 @@
 // plan/model agnostic so different users and hosts can share the same checkout.
 
 import { AGENT_ROLES, PERFORMANCE_CONFIG } from '../config/performance';
-import { currentHostModelSnapshot, currentModelForTier } from './current-model-tiers';
+import { currentHostModelTarget, currentModelForTier } from './current-model-tiers';
 import { detectHostPlan } from './host-plan';
 import { canonicalHost } from './model-tiers';
 import { obj } from './obj';
@@ -25,11 +25,16 @@ export function sessionPerformanceContext(
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   const policy = cwd && runId ? readRunModelPolicy(cwd, runId) : null;
   const plan = policy?.plan || detectHostPlan(host, env);
-  const catalog = policy ? null : currentHostModelSnapshot(host, plan, env);
+  const catalog = policy ? null : currentHostModelTarget(host, plan, env);
   const team = obj(state.team);
   const mode = typeof team?.mode === 'string' ? team.mode : teamModeForLevel(level);
+  const catalogLabel = policy
+    ? `run policy ${policy.policyId}`
+    : catalog!.source === 'one-mcp'
+      ? `one-mcp v${catalog!.configVersion}`
+      : 'bundled';
   const lines = [
-    `[local performance] performance: ${level} · team: ${mode} · host: ${host} · plan: ${plan} · catalog: ${policy ? `run policy ${policy.policyId}` : catalog!.updatedAt}`,
+    `[local performance] performance: ${level} · team: ${mode} · host: ${host} · plan: ${plan} · catalog: ${catalogLabel}`,
   ];
 
   if (mode === 'subagents') {

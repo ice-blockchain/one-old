@@ -211,14 +211,15 @@ git config core.hooksPath .githooks
 
 ### Public One MCP model configuration
 
-When the milestone-2 `ONE_MCP_SYNC_ACTIVE` build switch is enabled, parent
-SessionStart in an explicitly opted-in project calls the anonymous
+`ONE_MCP_SYNC_ACTIVE` is enabled. Parent SessionStart in an explicitly opted-in
+project calls the anonymous
 `traffic-one-mcp` `get_config` tool through the validated hook runtime. The
-model never receives or calls that tool. Milestone 1 keeps the switch false, so
-it performs no public configuration request even for opted-in projects.
+model never receives or calls that tool. Registration and structural reporting
+remain separately build-disabled.
 Host-specific operator rows use the
 `traffic_one_<host>_plugin_ai_model_configuration` names centralized in
-`src/config/one-mcp.ts` and publish payload schema v2. Every payload has base
+`src/config/one-mcp.ts` and publish a versionless payload contract. Every
+payload has base
 `high`, `balanced`, `low`, and `auto` rows plus optional complete per-plan row
 sets; an absent plan inherits the base rows.
 
@@ -231,14 +232,14 @@ contains only machine authentication and the code-graph provider—it is not a
 model-catalog mirror.
 
 The cache envelope is schema v2. A pre-release schema-v1 `one-mcp.json` is
-intentionally ignored rather than migrated; the first future sync-enabled
-request starts at server version `0` and replaces it atomically. While public
-sync is build-disabled, that old file may remain on disk but never supplies
-runtime models. A transient `transport-failed` result is silent during
+intentionally ignored rather than migrated; the first sync request starts at
+server version `0` and replaces it atomically. Until an opted-in parent session
+runs that request, the old file may remain on disk but never supplies runtime
+models. A transient `transport-failed` result is silent during
 SessionStart and retains the last valid v2 cache, or uses the bundled catalog
 when none exists; `doctor` reports the bounded diagnostic without remote error
 text. An `invalid-full-config` diagnostic means the published row did not pass
-the schema-v2 decoder and likewise falls back safely.
+the validated payload contract and likewise falls back safely.
 
 The project preference that acknowledges a Performance choice is
 `hosts.<host>.performance.target = { plan, appliedFingerprint, configVersion }`.
@@ -254,18 +255,16 @@ is accepted only by local contract tests. The former reporter variable
 `TRAFFIC_ONE_ONE_MCP_ENDPOINT` remains a temporary lower-priority alias.
 
 `ONE_MCP_SYNC_ACTIVE`, `ONE_MCP_REGISTRATION_ACTIVE`, and `REPORTING_ACTIVE` in
-`src/config/one-mcp.ts` are build-time release switches. Milestone 1 keeps all
-three false; they are enabled only after the production endpoint and operator
-rows pass the release checks. A switch prevents new activity; it does not
-delete a user-owned machine-global entry.
+`src/config/one-mcp.ts` are independent build-time switches. Read-only,
+hook-owned sync is enabled; registration and reporting remain false. A switch
+prevents new activity; it does not delete a user-owned machine-global entry.
 
-Release gate: the committed direct Supabase public URL is only the configurable
-development/recovery fallback. Before publishing a plugin release, operators
-must set the public endpoint to the custom domain protected by the documented
-path-scoped WAF/rate limit, and must publish seven distinct, host-correct
-`payloadSchemaVersion: 2` rows with incremented versions and timestamps. The
-current identical Cursor-shaped version-1 rows are not releaseable. A build
-that enables any public switch must also set
+Release gate: read-only sync currently uses the configurable direct Supabase
+recovery endpoint. The seven public rows are distinct, host-correct,
+versionless, and version 2 or newer. Before enabling machine-global MCP
+registration or structural reporting, operators must move the compiled public
+endpoint to the custom domain protected by the documented path-scoped WAF/rate
+limit. A build that enables registration or reporting must also set
 `TRAFFIC_ONE_MCP_LIVE_RELEASE_SNAPSHOT` to a fresh schema-v2 release-evidence
 bundle. Generation fails unless it names the compiled endpoint, is at most 15
 minutes old, proves every live row is publicly served and version 2 or newer,
