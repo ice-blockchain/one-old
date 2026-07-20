@@ -16,6 +16,7 @@ import {
 } from '../../../shared/state';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
+import { modelGateCommand } from '../../../shared/model-gate-command';
 
 function withProject(fn: (cwd: string, runId: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model-choice-gate-')));
@@ -103,6 +104,26 @@ test('modelChoiceGate: recorded fallback clears the gate', () => {
     writeModelChoice(cwd, runId, 'use-fallback');
     const write = modelChoiceGate(ctx(cwd, 'Write', 'file-write', { file_path: 'README.md', content: '# x\n' }));
     assert.equal(write.kind, 'noop');
+  });
+});
+
+test('modelChoiceGate: only the exact active-project model runner bypasses a pending choice', () => {
+  withProject((cwd) => {
+    const exact = modelChoiceGate(ctx(cwd, 'Bash', 'shell', {
+      command: modelGateCommand(cwd, 'cursor'),
+    }));
+    assert.equal(exact.kind, 'noop');
+
+    const falseCommands = [
+      modelGateCommand(path.join(path.dirname(cwd), 'sibling'), 'cursor'),
+      modelGateCommand(cwd, 'claude'),
+      modelGateCommand(cwd, 'cursor').replace(/model-gate\.cjs/, 'evil-model-gate.cjs'),
+      `${modelGateCommand(cwd, 'cursor')} && echo bypass`,
+    ];
+    for (const [index, command] of falseCommands.entries()) {
+      const result = modelChoiceGate(ctx(cwd, 'Bash', 'shell', { command }, `strict-${index}`));
+      assert.equal(result.kind, 'deny', `pending choice must block false model command: ${command}`);
+    }
   });
 });
 

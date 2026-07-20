@@ -40,7 +40,7 @@ export function modelChoiceGate(ctx: Ctx): HookResult {
   const state = readEffectiveState(root);
   if (!state || !modelChoiceReplyPending(root, state as Record<string, unknown>)) return noop();
 
-  if (isModelGateCommand(toolName, toolInput) || isOnboardingWaitCommand(toolName, toolInput)) return noop();
+  if (isModelGateCommand(toolName, toolInput, root) || isOnboardingWaitCommand(toolName, toolInput)) return noop();
 
   // Scope the pause (A2): an api-limit failure is caused by specific role(s) —
   // a healthy in-flight subagent whose claimed role has no pending failure of

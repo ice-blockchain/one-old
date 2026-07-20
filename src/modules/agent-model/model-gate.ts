@@ -13,6 +13,7 @@ import { askUser } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
 import { cursorPickedModelUnavailableNotice, cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { readEffectiveState } from '../../shared/state';
 import { canonicalToolName, isModelCaptureCommand, isModelGateCommand, parsedToolInput } from '../../shared/tool-classify';
 
@@ -37,12 +38,13 @@ export function modelGateShell(ctx: Ctx): HookResult {
   // Normalize via the canonical ToolInput class before feeding the shell allow-list.
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
-  if (!isModelGateCommand(toolName, toolInput)) return noop();
-  if (isModelCaptureCommand(toolName, toolInput)) return noop();
+  const root = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  if (!isModelGateCommand(toolName, toolInput, root)) return noop();
+  if (isModelCaptureCommand(toolName, toolInput, root)) return noop();
 
-  const state = readEffectiveState(ctx.cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
+  const state = readEffectiveState(root, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
   if (!state || (state as Record<string, unknown>).mode !== 'new-project') return noop();
-  const picks = cursorUnavailablePicks(ctx.cwd, state as Record<string, unknown>);
+  const picks = cursorUnavailablePicks(root, state as Record<string, unknown>);
   if (!picks.length) return noop(); // every picked model is offered → let the command run (allow)
 
   const rows = picks.map((p) => `  • ${p.role}: ${p.expected} → would run on ${p.fallback}`);
@@ -66,14 +68,15 @@ export function modelGateAfterShell(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
-  if (!isModelGateCommand(toolName, toolInput)) return noop();
-  if (isModelCaptureCommand(toolName, toolInput)) return noop();
+  const root = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  if (!isModelGateCommand(toolName, toolInput, root)) return noop();
+  if (isModelCaptureCommand(toolName, toolInput, root)) return noop();
   if (!shellExitFailed(raw)) return noop();
 
-  const state = readEffectiveState(ctx.cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
+  const state = readEffectiveState(root, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
   if (!state || (state as Record<string, unknown>).mode !== 'new-project') return noop();
-  const stop = formatModelChoiceRequiredStop(ctx.cwd, state as Record<string, unknown>);
-  const visible = cursorPickedModelUnavailableNotice(ctx.cwd, state as Record<string, unknown>) || stop;
+  const stop = formatModelChoiceRequiredStop(root, state as Record<string, unknown>);
+  const visible = cursorPickedModelUnavailableNotice(root, state as Record<string, unknown>) || stop;
   if (!stop && !visible) return noop();
   return context(stop || visible, { systemMessage: visible || stop });
 }

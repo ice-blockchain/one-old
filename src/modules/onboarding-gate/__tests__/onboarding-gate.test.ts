@@ -14,6 +14,10 @@ import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 import { writeSimpleAuth } from '../../../shared/auth';
+import { captureCursorModels } from '../../../shared/materialize/cursor-models';
+import { modelGateCommand } from '../../../shared/model-gate-command';
+import { runModelPolicyPath } from '../../../shared/run-model-policy';
+import { doctorCommand } from '../../../shared/doctor-command';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
 // ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
@@ -279,6 +283,20 @@ test('every host fails closed terminally when the canonical user-state root is m
         assert.doesNotMatch(result.reason, /\.traffic-one\/preferences\.json|\.traffic-one\/machine\.json/, `${host}: no project-local fallback`);
         assert.doesNotMatch(result.reason, /127\.0\.0\.1:0/, `${host}: no placeholder URL`);
       }
+      const rawName = host === 'codex' ? 'exec_command' : (host === 'cursor' ? 'before-shell-execution' : 'Bash');
+      assert.equal(
+        onboardingGate(ctxHost(host, cwd, rawName, 'shell', { command: doctorCommand() })).kind,
+        'noop',
+        `${host}: the exact read-only doctor must not be trapped by the failing launcher gate`,
+      );
+      const fakeDoctor = onboardingGate(ctxHost(host, cwd, rawName, 'shell', {
+        command: doctorCommand().replace(/doctor\.cjs/, 'doctor-copy.cjs'),
+      }));
+      if (host === 'windsurf') {
+        assert.equal(fakeDoctor.kind, 'noop', 'Windsurf retains its existing terminal-failure read-only orientation carve-out');
+      } else {
+        assert.equal(fakeDoctor.kind, 'deny', `${host}: a near-collision doctor script remains blocked`);
+      }
     }
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'preferences.json')), false);
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'machine.json')), false);
@@ -457,6 +475,156 @@ const completeNewProject = (): Record<string, unknown> => ({
   projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
   confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
   materializedStack: 'default|react-vite|supabase|none',
+});
+
+const cursorCaptureCommand = (cwd: string): string => [
+  modelGateCommand(cwd, 'cursor'),
+  "'--capture-models'",
+  "'claude-fable-5-thinking-high'",
+  "'gpt-5.6-terra-medium'",
+  "'composer-2.5-fast'",
+].join(' ');
+
+test('Cursor: missing model capture admits only the exact active-project recovery command', () => {
+  withProject(completeNewProject(), (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    const ordinary = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: 'pwd' },
+      'cursor-parent',
+      '/x/transcript.jsonl',
+    ));
+    assert.equal(ordinary.kind, 'deny');
+    if (ordinary.kind === 'deny') assert.match(ordinary.reason, /Cursor models required/);
+
+    const exact = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: cursorCaptureCommand(cwd) },
+      'cursor-parent',
+      '/x/transcript.jsonl',
+    ));
+    assert.equal(exact.kind, 'noop', 'the prescribed capture must reach the runner instead of self-deadlocking');
+
+    const falseCommands = [
+      cursorCaptureCommand(path.join(path.dirname(cwd), 'sibling')),
+      cursorCaptureCommand(cwd).replace("'--host=cursor'", "'--host=claude'"),
+      cursorCaptureCommand(cwd).replace(/model-gate\.cjs/, 'evil-model-gate.cjs'),
+      `${cursorCaptureCommand(cwd)} && touch /tmp/t1-capture-bypass`,
+      `${cursorCaptureCommand(cwd)} > /tmp/t1-capture-output`,
+    ];
+    for (const command of falseCommands) {
+      const result = onboardingGate(ctxCursor(
+        cwd,
+        'before-shell-execution',
+        'shell',
+        { command },
+        'cursor-parent',
+        '/x/transcript.jsonl',
+      ));
+      assert.equal(result.kind, 'deny', `must not exempt: ${command}`);
+    }
+  });
+});
+
+test('Cursor: a fresh but partial capture can be replaced before policy publication', () => {
+  withProject(completeNewProject(), (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    assert.equal(captureCursorModels(cwd, ['claude-fable-5-thinking-high'], 'pro'), true);
+
+    const ordinary = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: 'pwd' },
+      'cursor-parent-partial',
+      '/x/transcript.jsonl',
+    ));
+    assert.equal(ordinary.kind, 'deny');
+    if (ordinary.kind === 'deny') {
+      assert.match(ordinary.reason, /Cursor models required/);
+      assert.match(ordinary.reason, /highest|balanced/);
+    }
+
+    assert.equal(onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: cursorCaptureCommand(cwd) },
+      'cursor-parent-partial',
+      '/x/transcript.jsonl',
+    )).kind, 'noop');
+  });
+});
+
+test('Cursor: capture cannot repair or replace a corrupt create-once run policy', () => {
+  withProject(completeNewProject(), (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    const first = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: 'pwd' },
+      'cursor-parent-corrupt',
+      '/x/transcript.jsonl',
+    ));
+    assert.equal(first.kind, 'deny');
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')) as Record<string, unknown>;
+    const runId = String(state.currentRunId || '');
+    assert.ok(runId);
+    const policyPath = runModelPolicyPath(cwd, runId);
+    fs.mkdirSync(path.dirname(policyPath), { recursive: true });
+    fs.writeFileSync(policyPath, '{}\n', 'utf8');
+
+    const capture = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: cursorCaptureCommand(cwd) },
+      'cursor-parent-corrupt',
+      '/x/transcript.jsonl',
+    ));
+    assert.equal(capture.kind, 'deny');
+    if (capture.kind === 'deny') assert.match(capture.reason, /model policy unavailable/);
+  });
+});
+
+test('non-Cursor hosts freeze policy without Cursor availableModels', () => {
+  const hosts: HostId[] = ['claude', 'codex', 'opencode', 'copilot', 'windsurf', 'kilo'];
+  for (const host of hosts) {
+    withProject(completeNewProject(), (cwd) => {
+      writeLocalPrefs();
+      materializeFixture(cwd, 'default');
+      const rawName = host === 'codex' ? 'exec_command' : 'Bash';
+      const result = onboardingGate(ctxHost(host, cwd, rawName, 'shell', { command: 'pwd' }));
+      assert.notEqual(result.kind, 'deny', `${host} must not depend on Cursor-only model capture`);
+    });
+  }
+});
+
+test('the Cursor capture recovery is never exempted on another host', () => {
+  const hosts: HostId[] = ['claude', 'codex', 'opencode', 'copilot', 'windsurf', 'kilo'];
+  for (const host of hosts) {
+    withProject({ ...completeNewProject(), currentRunId: `run-${host}` }, (cwd) => {
+      writeLocalPrefs();
+      materializeFixture(cwd, 'default');
+      const policyPath = runModelPolicyPath(cwd, `run-${host}`);
+      fs.mkdirSync(path.dirname(policyPath), { recursive: true });
+      fs.writeFileSync(policyPath, '{}\n', 'utf8');
+      const rawName = host === 'codex' ? 'exec_command' : 'Bash';
+      const result = onboardingGate(ctxHost(host, cwd, rawName, 'shell', {
+        command: cursorCaptureCommand(cwd),
+      }));
+      assert.equal(result.kind, 'deny', `${host} must not admit a Cursor-only recovery command`);
+      if (result.kind === 'deny') assert.match(result.reason, /model policy unavailable/);
+    });
+  }
 });
 
 test('a fully materialized, complete new project lets tool use through (run-id announce once, then noop)', () => {

@@ -91,10 +91,46 @@ function captureStdout(fn: () => number): { code: number; out: string } {
 }
 
 test('isModelGateCommand recognizes the model-gate command (and rejects others)', () => {
-  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand('/proj', 'cursor') }), true);
-  assert.equal(isModelGateCommand('Bash', { command: 'node /p/onboarding-wait.cjs /cwd' }), false);
-  assert.equal(isModelGateCommand('Bash', { command: 'node /p/model-gate.cjs /cwd && rm -rf /' }), false); // chaining rejected
-  assert.equal(isModelCaptureCommand('Bash', { command: modelCaptureCommand('/proj', 'cursor') }), true);
+  const root = '/proj';
+  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand(root, 'cursor') }, root), true);
+  assert.equal(isModelCaptureCommand('Bash', { command: modelCaptureCommand(root, 'cursor') }, root), true);
+  assert.equal(isModelGateCommand('Bash', { command: 'node /p/onboarding-wait.cjs /cwd' }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: 'node /p/model-gate.cjs /proj --host=cursor' }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: 'echo node /p/model-gate.cjs /proj --host=cursor' }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: `${modelGateCommand(root, 'cursor')} && rm -rf /` }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand('/sibling', 'cursor') }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand(root, 'claude') }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: `node '/p/model-gate.cjs' '/proj' '--host=cursor' '--unknown'` }, root), false);
+  assert.equal(isModelCaptureCommand('Bash', { command: `${modelGateCommand(root, 'cursor')} '--capture-models'` }, root), false);
+  assert.equal(isModelCaptureCommand('Bash', {
+    command: `${modelGateCommand(root, 'cursor')} '--capture-models' 'valid-model' '--unknown'`,
+  }, root), false);
+  assert.equal(isModelCaptureCommand('Bash', {
+    command: `${modelGateCommand(root, 'cursor')} '--capture-models' 'duplicate' 'duplicate'`,
+  }, root), false);
+  assert.equal(isModelCaptureCommand('Bash', {
+    command: `${modelGateCommand(root, 'cursor')} '--capture-models' 'invalid model prose'`,
+  }, root), false);
+  const tooManyModels = Array.from({ length: 257 }, (_, index) => `'model-${index}'`).join(' ');
+  assert.equal(isModelCaptureCommand('Bash', {
+    command: `${modelGateCommand(root, 'cursor')} '--capture-models' ${tooManyModels}`,
+  }, root), false);
+});
+
+test('model-gate generation and strict parsing preserve shell-punctuation project paths', () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model path-')));
+  const root = path.join(base, "project ($draft); it's literal");
+  fs.mkdirSync(root);
+  try {
+    const gate = modelGateCommand(root, 'cursor');
+    const capture = modelCaptureCommand(root, 'cursor');
+    assert.equal(isModelGateCommand('Bash', { command: gate }, root), true);
+    assert.equal(isModelCaptureCommand('Bash', { command: capture }, root), true);
+    assert.match(gate, /'\\''/, 'an apostrophe is emitted with an inert single-quote splice');
+    assert.ok(gate.includes('$draft'), 'the literal dollar text is preserved inside inert quotes');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test('modelGateShell always allows the internal capture command to refresh stale availability', () => {

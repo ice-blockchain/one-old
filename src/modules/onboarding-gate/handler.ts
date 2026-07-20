@@ -10,6 +10,8 @@
 // uses (computeOnboarding), covering both new-project onboarding and an existing
 // project missing this user's local preferences.
 
+import * as fs from 'fs';
+
 import { asString } from '../../adapters/coerce';
 import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
@@ -30,13 +32,11 @@ import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-li
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
-import { canonicalToolName, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
+import { canonicalToolName, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, isTrafficOneDoctorCommand, parsedToolInput } from '../../shared/tool-classify';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { onboardingDeclineCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
-import { ensureRunModelPolicy } from '../../shared/run-model-policy';
-import { detectHostPlan } from '../../shared/host-plan';
-import { freshCursorModels } from '../../shared/materialize/cursor-models';
+import { cursorRunPolicyMissingTiers, ensureRunModelPolicy, runModelPolicyPath } from '../../shared/run-model-policy';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -159,6 +159,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
     const declineCmd = onboardingDeclineCommand(root, ctx.host);
     const prepared = prepareOnboardingServer(root, ctx.host);
     if (prepared.kind !== 'ready') {
+      if (prepared.kind === 'start-failed' && isTrafficOneDoctorCommand(toolName, toolInput)) return noop();
       // Windsurf renders a denied read as a failed tool card. Its prompt hook
       // already carries this bootstrap recipe, so preserve harmless orientation
       // and repeat the actionable block on the first mutation. Other hosts need
@@ -248,10 +249,27 @@ export function onboardingGate(ctx: Ctx): HookResult {
       { ...process.env, TRAFFIC_ONE_HOST: ctx.host },
     );
     if (!policy) {
-      if (ctx.host === 'cursor'
-        && freshCursorModels(root, detectHostPlan('cursor')).length === 0) {
+      const missingCursorTiers = ctx.host === 'cursor'
+        ? cursorRunPolicyMissingTiers(
+          root,
+          ctx.host,
+          effectiveState,
+          { ...process.env, TRAFFIC_ONE_HOST: ctx.host },
+        )
+        : null;
+      // This exact hook-owned capture command is the only action that can make
+      // an unpublished Cursor policy buildable. Admit it without weakening the
+      // gate for sibling projects, fake runners, other hosts, or a corrupt
+      // create-once policy that capture cannot repair.
+      const captureCanRepair = Boolean(
+        missingCursorTiers?.length
+        && !fs.existsSync(runModelPolicyPath(root, buildRunId)),
+      );
+      if (captureCanRepair && isModelCaptureCommand(toolName, toolInput, root)) return noop();
+      if (captureCanRepair) {
         return deny(
-          `traffic-one — Cursor models required: before run ${buildRunId} can be frozen, enumerate the exact model ids offered by the Task picker and run `
+          `traffic-one — Cursor models required: before run ${buildRunId} can be frozen, capture exact picker ids covering `
+          + `${missingCursorTiers?.join(', ')} and run `
           + `\`${modelCaptureCommand(root, 'cursor')}\`. Retry this parent tool afterward. No child may start without the immutable snapshot.`,
         );
       }
@@ -259,6 +277,12 @@ export function onboardingGate(ctx: Ctx): HookResult {
         'traffic-one — model policy unavailable: the parent could not freeze the acknowledged host/plan model catalog '
         + `for run ${buildRunId}. Reopen Performance if prompted, then retry this parent tool. Do not spawn a child `
         + 'and do not let a child create or replace model-policy.json.',
+      );
+    }
+    if (policy.host !== ctx.host) {
+      return deny(
+        `traffic-one — model policy unavailable: run ${buildRunId} is already frozen for ${policy.host}, not ${ctx.host}. `
+        + 'Start a new parent run for this host; do not rebase or replace model-policy.json.',
       );
     }
   }

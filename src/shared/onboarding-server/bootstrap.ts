@@ -10,6 +10,7 @@ import { makeSkillBlock } from '../skill-block';
 import { pluginRoot } from '../paths';
 import { ensureOnboardingServer, type EnsureResult } from './ensure';
 import { onboardingBootstrapCommand, onboardingWaitCommand, onboardingWaitScriptPath } from './wait-command';
+import { doctorCommand } from '../doctor-command';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 
@@ -61,10 +62,11 @@ export function isOnboardingPermissionError(error: unknown): boolean {
 export function onboardingStartFailureReason(error: unknown, host?: HostId): string {
   const code = errorCode(error);
   const detail = errorMessage(error);
+  const doctor = doctorCommand();
   if (host === 'opencode' || host === 'kilo' || host === 'windsurf') {
-    return `Traffic One setup launcher failed (${code}: ${detail}). Setup is paused because this is a plugin/runtime failure rather than a sandbox permission request. Stop and report this error. Run Traffic One doctor or reinstall/update the Traffic One plugin, then retry setup.`;
+    return `Traffic One setup launcher failed (${code}: ${detail}). Setup is paused because this is a plugin/runtime failure rather than a sandbox permission request. Stop and report this error. Run the read-only Traffic One doctor: ${doctor}. Reinstall/update the Traffic One plugin if needed, then retry setup.`;
   }
-  return `Traffic One setup launcher failed (${code}: ${detail}). This is a plugin/runtime failure, not a sandbox approval request. Do NOT rerun \`--bootstrap-only\` and do not create private state inside the project. Stop and report this error, then run Traffic One doctor or reinstall/update the Traffic One plugin before retrying.`;
+  return `Traffic One setup launcher failed (${code}: ${detail}). This is a plugin/runtime failure, not a sandbox approval request. Do NOT rerun \`--bootstrap-only\` and do not create private state inside the project. Stop and report this error, then run the read-only Traffic One doctor: ${doctor}. Reinstall/update the Traffic One plugin if needed before retrying.`;
 }
 
 function permissionStep(host: HostId): string {

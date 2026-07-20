@@ -12,6 +12,7 @@ import type { HostId } from '../../core/types';
 import { qualifiesAsSeedPrompt, truncateSeedPrompt } from '../onboarding/seed-prompt';
 import { trafficOneEnvShellPrefix } from '../state/traffic-one-paths';
 import { pluginRoot } from '../paths';
+import { shellQuote } from '../shell-quote';
 
 // Keep the value inert and bounded both in generated commands and in the
 // project-local once-marker filename. This mirrors once.ts's safe-key alphabet
@@ -28,15 +29,6 @@ export function onboardingSyncSessionId(value: unknown): string {
 
 export function onboardingWaitScriptPath(): string {
   return path.join(pluginRoot(), 'scripts', 'onboarding-wait.cjs');
-}
-
-// POSIX/PowerShell-compatible literal quoting. JSON double quotes are not shell
-// quoting: `$`, backticks, and command substitution still expand inside them.
-// Single-quote every generated argument so project names such as `app ($draft)`
-// remain one inert argv value. The classifier understands the standard '\''
-// splice used for a literal apostrophe.
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function onboardingRunnerCommand(

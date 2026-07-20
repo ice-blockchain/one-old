@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { isSafeOneMcpModelId, ONE_MCP_MAX_AVAILABLE_MODELS } from '../config/one-mcp';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
 import type { ToolClass, ToolInput } from '../core/types';
 import {
@@ -14,6 +15,8 @@ import {
   patchTextFromToolInput as canonicalPatchTextFromToolInput,
 } from './apply-patch';
 import { onboardingWaitScriptPath } from './onboarding-server/wait-command';
+import { modelGateScriptPath } from './model-gate-command';
+import { doctorScriptPath } from './doctor-command';
 import { legacyStatePath, statePath } from './state';
 import { resolveTrafficOneEnv } from './state/traffic-one-paths';
 
@@ -350,20 +353,70 @@ export function isOnboardingBootstrapCommand(toolName: unknown, toolInput: unkno
   return onboardingRunnerInvocation(toolName, toolInput)?.bootstrap === true;
 }
 
-// The pre-spawn model-gate command (node …/model-gate.cjs <cwd>) the Cursor orchestrator runs
-// after capturing models, before spawning. Same clean-node-invocation allow-list shape as the
-// wait command — recognized so the beforeShellExecution model-gate handler can intercept it.
-export function isModelGateCommand(toolName: unknown, toolInput: unknown): boolean {
+// A launcher/runtime failure explicitly prescribes the bundled read-only
+// doctor. Admit only that exact installed runner with no arbitrary argv, so the
+// recovery command cannot be trapped by the same onboarding gate it diagnoses.
+export function isTrafficOneDoctorCommand(toolName: unknown, toolInput: unknown): boolean {
   if (!isShellToolName(toolName)) return false;
-  const command = commandFromToolInput(toolInput).trim();
-  if (!command || command.includes('\n')) return false;
-  if (/[;&|`$<>(){}]/.test(command)) return false;
-  return /(^|\s)node(\s|$)/.test(command) && command.includes('model-gate.cjs');
+  const words = cleanShellWords(commandFromToolInput(toolInput).trim());
+  return Boolean(words && words.length === 2 && words[0] === 'node' && words[1] === doctorScriptPath());
 }
 
-export function isModelCaptureCommand(toolName: unknown, toolInput: unknown): boolean {
-  if (!isModelGateCommand(toolName, toolInput)) return false;
-  return /(?:^|\s)--capture-models(?:\s|$)/.test(commandFromToolInput(toolInput));
+interface ModelGateInvocation {
+  readonly kind: 'gate' | 'capture';
+}
+
+function comparablePath(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+// The model gate is itself a recovery/enforcement command, so recognizing a
+// filename substring is unsafe: it can exempt a different script or project
+// from an earlier deny. Accept only the exact installed runner and exact argv
+// grammar for the active Cursor project.
+function modelGateInvocation(
+  toolName: unknown,
+  toolInput: unknown,
+  expectedProjectRoot: string,
+): ModelGateInvocation | null {
+  if (!isShellToolName(toolName) || !path.isAbsolute(expectedProjectRoot)) return null;
+  const words = cleanShellWords(commandFromToolInput(toolInput).trim());
+  if (!words || words.length < 4) return null;
+  const [runtime, script, projectRoot, host, ...args] = words;
+  if (runtime !== 'node'
+    || script !== modelGateScriptPath()
+    || !projectRoot
+    || !path.isAbsolute(projectRoot)
+    || comparablePath(projectRoot) !== comparablePath(expectedProjectRoot)
+    || host !== '--host=cursor') return null;
+  if (args.length === 0) return { kind: 'gate' };
+  if (args[0] !== '--capture-models') return null;
+  const models = args.slice(1);
+  if (models.length === 0
+    || models.length > ONE_MCP_MAX_AVAILABLE_MODELS
+    || new Set(models).size !== models.length
+    || models.some((model) => model.startsWith('--') || !isSafeOneMcpModelId(model, 'cursor'))) return null;
+  return { kind: 'capture' };
+}
+
+export function isModelGateCommand(
+  toolName: unknown,
+  toolInput: unknown,
+  expectedProjectRoot: string,
+): boolean {
+  return modelGateInvocation(toolName, toolInput, expectedProjectRoot) !== null;
+}
+
+export function isModelCaptureCommand(
+  toolName: unknown,
+  toolInput: unknown,
+  expectedProjectRoot: string,
+): boolean {
+  return modelGateInvocation(toolName, toolInput, expectedProjectRoot)?.kind === 'capture';
 }
 
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {
