@@ -420,12 +420,16 @@ test('concurrent parents publish one valid create-once policy', async () => {
       `const policy = ensureRunModelPolicy(${JSON.stringify(cwd)}, 'concurrent', 'codex', state, process.env);`,
       `process.stdout.write(policy?.policyId || '');`,
     ].join('\n');
+    // Node <23 cannot resolve a tsx-transpiled .ts module's named exports from an
+    // `--eval --input-type=module` entry (native type-strip only lands in Node 23).
+    // A real .mts entry transpiles via `--import tsx` exactly like every test module.
+    const scriptFile = path.join(cwd, 'run-policy-child.mts');
+    fs.writeFileSync(scriptFile, script, 'utf8');
     const runParent = (): Promise<string> => new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [
         '--import', './src/build/test-preload.mjs',
         '--import', 'tsx',
-        '--input-type=module',
-        '--eval', script,
+        scriptFile,
       ], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';

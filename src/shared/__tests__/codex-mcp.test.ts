@@ -157,8 +157,13 @@ test('ensureCodexOneMcpServerRegistered serializes concurrent cold-session appen
       const { ensureCodexOneMcpServerRegistered } = await import(${JSON.stringify(moduleUrl)});
       process.stdout.write(ensureCodexOneMcpServerRegistered(process.env));
     `;
+    // Node <23 cannot expose a tsx-transpiled .ts module's exports from an
+    // `--eval --input-type=module` entry (native type-strip only lands in Node 23).
+    // A real .mts entry transpiles via `--import tsx` exactly like every test module.
+    const scriptFile = path.join(home, 'codex-mcp-child.mts');
+    fs.writeFileSync(scriptFile, script, 'utf8');
     const run = (): Promise<string> => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+      const child = spawn(process.execPath, ['--import', 'tsx', scriptFile], {
         cwd: process.cwd(),
         env: { ...process.env, CODEX_HOME: home, TRAFFIC_ONE_HOST: 'codex' },
         stdio: ['ignore', 'pipe', 'pipe'],

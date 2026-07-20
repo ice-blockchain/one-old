@@ -426,7 +426,12 @@ test('preSpawnRunIdDirective: new-project → mints currentRunId and prints exac
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-runid-')));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  // Pin the plan so buildRunModelPolicy resolves deterministic tiers on CI, where
+  // no real ~/.claude|~/.codex auth exists to detect a paid plan (without this the
+  // policy fails to freeze and the directive falls back to MODEL_POLICY_BLOCKED).
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
       ...hostScopedPerformancePrefs(
@@ -467,6 +472,8 @@ test('preSpawnRunIdDirective: new-project → mints currentRunId and prints exac
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN;
+    else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
