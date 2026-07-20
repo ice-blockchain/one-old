@@ -41,6 +41,8 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   // (25) + install allowlist (30) after auth (0) — the scaffold/deploy gates run
   // before the install allowlist, matching the legacy "deploy gate runs first" ordering.
   assert.deepEqual(idsFor('check-library-allowlist'), ['plan-guard.deploy', 'plan-guard.library', 'plan-guard.scaffold', 'session.auth', 'session.workspace-boundary']);
+  assert.deepEqual(idsFor('check-one-mcp-tool'), ['one-mcp-tool-gate.agent-call']);
+  assert.deepEqual(idsFor('check-codex-child-model'), ['agent-model.codex-child-observed-model']);
   // Hints + post-build handlers route to exactly one handler (no cross-fire —
   // critical so the two PostToolUse entries don't double-emit context).
   assert.deepEqual(idsFor('pre-graphify-hint'), ['graphify.hint']);

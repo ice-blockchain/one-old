@@ -11,6 +11,7 @@ import type {
   CanonicalAuthProbe,
   NodeProbe,
   NvmProbe,
+  OneMcpProbe,
   OpenCodeMcpProbe,
   ProjectProbe,
   SessionDiagnosticsResult,
@@ -33,11 +34,12 @@ export interface BuildFindingsInput {
   project: ProjectProbe;
   codexHooks?: CodexHooksProbe | null;
   auth?: CanonicalAuthProbe | null;
+  oneMcp?: OneMcpProbe | null;
   openCodeMcp?: OpenCodeMcpProbe | null;
   sessionDiagnostics?: SessionDiagnosticsResult;
 }
 
-export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, openCodeMcp = null, sessionDiagnostics = null }: BuildFindingsInput): Finding[] {
+export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, oneMcp = null, openCodeMcp = null, sessionDiagnostics = null }: BuildFindingsInput): Finding[] {
   const findings: Finding[] = [];
   const rawState = project.state && typeof project.state === 'object' ? project.state : null;
   const state = normalizedProjectState(project as unknown as Rec);
@@ -63,6 +65,36 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
           severity: 'fix-needed',
           code: 'TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED',
           message: `Codex session ${sessionDiagnostics.id} did not receive Traffic One root instructions at session start. Skill metadata may still be visible, but plugin instructions were not active.`,
+        });
+      }
+    }
+  }
+
+  if (oneMcp) {
+    for (const host of oneMcp.hosts) {
+      const sync = host.lastSync;
+      if (!sync) continue;
+      const versions = `requested version ${sync.requestedVersion}, observed version ${sync.observedVersion}`;
+      const source = host.catalogSource === 'one-mcp'
+        ? 'The current runtime source is the last valid cached One MCP catalog.'
+        : 'The current runtime source is the bundled catalog.';
+      if (sync.outcome === 'invalid-response') {
+        findings.push({
+          severity: 'info',
+          code: 'ONE_MCP_CONFIG_REJECTED',
+          message: `One MCP rejected ${host.host} configuration ${host.configName} (${sync.reason || 'invalid-response'}; ${versions}). ${source}`,
+        });
+      } else if (sync.outcome === 'config-not-found') {
+        findings.push({
+          severity: 'info',
+          code: 'ONE_MCP_CONFIG_NOT_FOUND',
+          message: `One MCP configuration ${host.configName} for ${host.host} was not published (${versions}). ${source}`,
+        });
+      } else if (sync.outcome === 'temporary-error' || sync.outcome === 'unavailable') {
+        findings.push({
+          severity: 'info',
+          code: 'ONE_MCP_SYNC_UNAVAILABLE',
+          message: `One MCP sync for ${host.host} was temporarily unavailable (${sync.reason || sync.outcome}; ${versions}). ${source}`,
         });
       }
     }

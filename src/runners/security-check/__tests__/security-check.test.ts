@@ -23,6 +23,7 @@ import {
   scanSecrets,
   scanSupabaseSql,
   shouldIgnoreFingerprint,
+  stampState,
   timestampSlug,
   toPosix,
   trafficStateHasOnlyStampFields,
@@ -178,6 +179,36 @@ test('runSecurityCheck writes reports + a hex fingerprint (non-strict passes)', 
     assert.ok('gitleaks' in report.tools && 'trufflehog' in report.tools);
     assert.ok(fs.existsSync(path.join(dir, paths.relativeJsonPath)));
     assert.ok(fs.existsSync(path.join(dir, paths.relativeMarkdownPath)));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('security-check state stamping preserves the immutable One MCP report id', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sec-one-uid-'));
+  try {
+    const reportId = '019f6f33-2b60-7dda-a232-eee6dfebb860';
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'existing-codebase',
+      'one-uid': reportId,
+    }), 'utf8');
+    const report: Report = {
+      generatedAt: '2026-07-17T12:00:00Z',
+      status: 'passed',
+      strict: false,
+      cwd: dir,
+      fingerprint: { fingerprint: 'a'.repeat(64), head: 'no-git', fileCount: 1 },
+      tools: {},
+      externalReports: {},
+      issues: [],
+    };
+
+    stampState(dir, report, '.traffic-one/reports/security.json');
+
+    const state = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(state['one-uid'], reportId);
+    assert.equal(state.lastSecurityCheckFingerprint, 'a'.repeat(64));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

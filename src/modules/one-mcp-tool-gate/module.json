@@ -1,0 +1,11 @@
+{
+  "id": "one-mcp-tool-gate",
+  "kind": "runtime",
+  "entry": "index",
+  "subscriptions": [
+    { "event": "PreToolUse", "subcommand": "check-one-mcp-tool", "tools": ["other"] }
+  ],
+  "gates": [
+    { "id": "agent-call", "event": "PreToolUse", "priority": -100, "tools": ["other"] }
+  ]
+}

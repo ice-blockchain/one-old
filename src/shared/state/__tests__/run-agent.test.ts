@@ -47,7 +47,10 @@ import {
   type CursorSpawnObservation,
 } from '../run-agent';
 import { resetAuthoringRootCache } from '../../authoring-root';
+import { currentHostModelTarget } from '../../current-model-tiers';
+import { ensureRunModelPolicy } from '../../run-model-policy';
 import { stackFingerprint } from '../materialization';
+import { observeCodexChildModel } from '../codex-model-observation';
 
 function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
   const d = path.join(dir, '.traffic-one', 'digests', runId);
@@ -492,6 +495,41 @@ const CODEX_V2_CHILD_THREAD = '019f69fe-e335-7de0-be43-1ee45e3535c4';
 const CODEX_V2_PARENT_THREAD = '019f69fb-334a-7351-8e94-66c97c3fa908';
 const CODEX_V2_MODEL = 'gpt-5.6-sol';
 
+function freezeCodexPolicyAndObservation(
+  dir: string,
+  state: Record<string, unknown>,
+  runId: string,
+  role: string,
+  childId: string = CODEX_V2_CHILD_THREAD,
+  parentSessionId: string = CODEX_V2_PARENT_THREAD,
+  model: string = CODEX_V2_MODEL,
+): void {
+  const env = { ...process.env, TRAFFIC_ONE_HOST: 'codex', TRAFFIC_ONE_USER_PLAN: 'pro' };
+  const target = currentHostModelTarget('codex', 'pro', env);
+  const policyState = {
+    ...state,
+    currentRunId: runId,
+    performance: {
+      level: 'high',
+      source: 'prompted',
+      target: {
+        plan: 'pro',
+        appliedFingerprint: target.appliedFingerprint,
+        configVersion: target.configVersion,
+      },
+    },
+    team: { mode: 'subagents', approved: true, source: 'prompted' },
+  };
+  assert.ok(ensureRunModelPolicy(dir, runId, 'codex', policyState, env));
+  assert.equal(observeCodexChildModel(dir, runId, {
+    childId,
+    parentSessionId,
+    actualModel: model,
+    role,
+    source: 'SubagentStart',
+  })?.status, 'verified');
+}
+
 function writeCodexV2FixtureTranscript(dir: string): string {
   const file = path.join(dir, `rollout-2026-07-16T11-15-39-${CODEX_V2_CHILD_THREAD}.jsonl`);
   fs.writeFileSync(file, fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8'), 'utf8');
@@ -524,6 +562,7 @@ function writeLegacyCodexClaimAndRegistry(
   role: string,
   additionalAgents: Record<string, unknown> = {},
 ): { runDir: string; claimFile: string; registryFile: string } {
+  freezeCodexPolicyAndObservation(dir, state, runId, role);
   const runDirectory = path.join(dir, '.traffic-one', 'runs', runId);
   const claimFile = path.join(runDirectory, `${CODEX_V2_CHILD_THREAD}.json`);
   const registryFile = path.join(runDirectory, 'agents.json');
@@ -1375,7 +1414,7 @@ test('a roleless child cannot consume either of two same-parent same-model pendi
   });
 });
 
-test('a roleless child may consume one uniquely correlated parent-and-model pending bucket', () => {
+test('a roleless Codex child never consumes even a uniquely correlated pending bucket', () => {
   withPrefs((dir) => {
     const runId = 'run-codex-roleless-unique';
     const state = { ...materializedState(), currentRunId: runId };
@@ -1407,10 +1446,14 @@ test('a roleless child may consume one uniquely correlated parent-and-model pend
       transcript_path: rolelessTranscript,
       model: CODEX_V2_MODEL,
     }, { claimPending: true });
-    assert.equal(resolved?.role, 'senior-frontend');
-    assert.equal(resolved?.sessionId, childId);
+    assert.equal(resolved, null);
     const pending = fs.readdirSync(path.join(dir, '.traffic-one', 'runs', runId, 'pending'));
-    assert.equal(pending.length, 1, 'the differently-modeled backend pending row remains untouched');
+    assert.equal(pending.length, 2, 'roleless evidence cannot consume either pending row');
+    assert.equal(
+      fs.existsSync(path.join(dir, '.traffic-one', 'runs', runId, `${childId}.json`)),
+      false,
+      'a verified role/model observation is required before creating a reusable claim',
+    );
   });
 });
 
@@ -1499,6 +1542,7 @@ test('bounded Codex legacy-registry validation verifies a matching line-zero tra
 
       const matchRun = 'run-codex-legacy-match';
       const matchState = { ...materializedState(), currentRunId: matchRun };
+      freezeCodexPolicyAndObservation(dir, matchState, matchRun, 'senior-architect');
       recordRunAgent(dir, matchRun, 'senior-architect', {
         agentId: CODEX_V2_CHILD_THREAD,
         parentSessionId: null,
@@ -1666,6 +1710,13 @@ test('bounded Codex legacy-registry validation classifies conflicting structured
         [conflictMeta],
       );
       const conflictState = { ...materializedState(), currentRunId: conflictRun };
+      freezeCodexPolicyAndObservation(
+        dir,
+        conflictState,
+        conflictRun,
+        'senior-frontend',
+        conflictId,
+      );
       recordRunAgent(dir, conflictRun, 'senior-frontend', {
         agentId: conflictId,
         parentSessionId: CODEX_V2_PARENT_THREAD,
@@ -1686,6 +1737,13 @@ test('bounded Codex legacy-registry validation keeps a fresh missing transcript 
       const unverifiedRun = 'run-codex-legacy-unverified';
       const missingId = '019f69fe-e335-7de0-be43-1ee45e3535e6';
       const unverifiedState = { ...materializedState(), currentRunId: unverifiedRun };
+      freezeCodexPolicyAndObservation(
+        dir,
+        unverifiedState,
+        unverifiedRun,
+        'senior-backend',
+        missingId,
+      );
       recordRunAgent(dir, unverifiedRun, 'senior-backend', {
         agentId: missingId,
         parentSessionId: CODEX_V2_PARENT_THREAD,
@@ -1711,14 +1769,24 @@ test('bounded Codex legacy-registry validation retires a stale missing transcrip
       const staleRun = 'run-codex-legacy-stale';
       const staleRunDir = path.join(dir, '.traffic-one', 'runs', staleRun);
       const staleId = '019f69fe-e335-7de0-be43-1ee45e3535f7';
+      const staleModel = 'gpt-5.6-terra';
       fs.mkdirSync(staleRunDir, { recursive: true });
+      freezeCodexPolicyAndObservation(
+        dir,
+        { ...materializedState(), currentRunId: staleRun },
+        staleRun,
+        'senior-tester',
+        staleId,
+        CODEX_V2_PARENT_THREAD,
+        staleModel,
+      );
       fs.writeFileSync(path.join(staleRunDir, 'agents.json'), JSON.stringify({
         version: 1,
         agents: {
           'senior-tester': legacyRegistryEntry(
             staleId,
             CODEX_V2_PARENT_THREAD,
-            CODEX_V2_MODEL,
+            staleModel,
             new Date(Date.now() - 31 * 60 * 1000).toISOString(),
           ),
         },

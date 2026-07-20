@@ -4,7 +4,8 @@
 
 import * as net from 'net';
 
-import { AUTH_ENABLED, DEFAULT_ENDPOINT } from '../../config/auth';
+import { AUTH_ENABLED } from '../../config/auth';
+import { authenticatedEndpoint } from '../../config/one-mcp';
 import { oneSettingsPath } from '../one-settings';
 import { isLocallyAuthenticated } from './simple-auth';
 
@@ -36,7 +37,7 @@ export function authEndpointUrl(endpoint: string): URL {
 }
 
 export function endpointFromEnv(env: NodeJS.ProcessEnv = process.env): string {
-  return env.TRAFFIC_ONE_MCP_KEY_ENDPOINT || DEFAULT_ENDPOINT;
+  return authenticatedEndpoint(env);
 }
 
 // Production auth is enabled by default. The process override remains useful

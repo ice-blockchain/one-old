@@ -55,6 +55,36 @@ test('prepareOnboardingServer: every host turns EPERM/EACCES into an exact actio
   }
 });
 
+test('prepareOnboardingServer: sync-session reaches ready and permission-fallback commands', () => {
+  const syncSession = 'parent-session-42';
+  const ready = prepareOnboardingServer(CWD, 'cursor', {
+    syncSession,
+    ensure: () => ({
+      redirectUrl: 'http://127.0.0.1:55174/?t=tok',
+      localWizardUrl: 'http://127.0.0.1:55174/local?t=tok',
+      dashboardUrl: 'https://traffic.io/onboarding/agent#p=55174&t=tok',
+      port: 55174,
+      token: 'tok',
+      started: true,
+    }),
+  });
+  assert.equal(ready.kind, 'ready');
+  if (ready.kind === 'ready') {
+    assert.ok(ready.waitCommand.includes(`'--sync-session=${syncSession}'`));
+  }
+
+  const fallback = prepareOnboardingServer(CWD, 'codex', {
+    syncSession,
+    ensure: () => { throw errno('EACCES'); },
+  });
+  assert.equal(fallback.kind, 'bootstrap-required');
+  if (fallback.kind === 'bootstrap-required') {
+    assert.ok(fallback.bootstrapCommand.includes(`'--sync-session=${syncSession}'`));
+    assert.ok(fallback.waitCommand.includes(`'--sync-session=${syncSession}'`));
+    assert.ok(fallback.reason.includes(`'--sync-session=${syncSession}'`));
+  }
+});
+
 test('prepareOnboardingServer: recovery never redirects private state into the project', () => {
   for (const host of HOST_IDS) {
     const result = prepareOnboardingServer(CWD, host, {

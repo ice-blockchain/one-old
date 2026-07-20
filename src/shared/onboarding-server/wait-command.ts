@@ -12,18 +12,23 @@ import type { HostId } from '../../core/types';
 import { qualifiesAsSeedPrompt, truncateSeedPrompt } from '../onboarding/seed-prompt';
 import { trafficOneEnvShellPrefix } from '../state/traffic-one-paths';
 import { pluginRoot } from '../paths';
+import { shellQuote } from '../shell-quote';
+
+// Keep the value inert and bounded both in generated commands and in the
+// project-local once-marker filename. This mirrors once.ts's safe-key alphabet
+// and ceiling, so a SessionStart marker and its waiter command resolve to the
+// exact same identity even when a host supplies punctuation.
+const MAX_SYNC_SESSION_ID_LENGTH = 96;
+
+export function onboardingSyncSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !value) return '';
+  return value
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .slice(0, MAX_SYNC_SESSION_ID_LENGTH);
+}
 
 export function onboardingWaitScriptPath(): string {
   return path.join(pluginRoot(), 'scripts', 'onboarding-wait.cjs');
-}
-
-// POSIX/PowerShell-compatible literal quoting. JSON double quotes are not shell
-// quoting: `$`, backticks, and command substitution still expand inside them.
-// Single-quote every generated argument so project names such as `app ($draft)`
-// remain one inert argv value. The classifier understands the standard '\''
-// splice used for a literal apostrophe.
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function onboardingRunnerCommand(
@@ -51,11 +56,16 @@ function seedPromptFlags(seedPrompt?: string): string[] {
   return [`--seed-prompt=${text}`];
 }
 
+function syncSessionFlags(syncSession?: string): string[] {
+  const identity = onboardingSyncSessionId(syncSession);
+  return identity ? [`--sync-session=${identity}`] : [];
+}
+
 // Starts the wizard under an approval-capable shell process, prints its live URL,
 // and exits immediately. `--bootstrap-only` deliberately precedes the project
 // path so Codex can persist a narrow prefix approval that works for future projects.
-export function onboardingBootstrapCommand(cwd: string, host?: HostId): string {
-  return onboardingRunnerCommand(cwd, host, ['--bootstrap-only']);
+export function onboardingBootstrapCommand(cwd: string, host?: HostId, syncSession?: string): string {
+  return onboardingRunnerCommand(cwd, host, ['--bootstrap-only'], syncSessionFlags(syncSession));
 }
 
 // `host` stamps an explicit `--host=<id>` arg so the spawned runner subprocess detects the
@@ -63,8 +73,8 @@ export function onboardingBootstrapCommand(cwd: string, host?: HostId): string {
 // the hook process), so without this the runner would mis-detect as `claude` and skip the
 // Cursor-only pre-spawn model directive. Shell-quoted so the gate's clean-node-invocation
 // allow-list (isOnboardingWaitCommand) still recognizes it.
-export function onboardingWaitCommand(cwd: string, host?: HostId): string {
-  return onboardingRunnerCommand(cwd, host, []);
+export function onboardingWaitCommand(cwd: string, host?: HostId, syncSession?: string): string {
+  return onboardingRunnerCommand(cwd, host, [], syncSessionFlags(syncSession));
 }
 
 // Records the durable per-project "don't use Traffic One" choice (stored in the
@@ -79,8 +89,8 @@ export function onboardingDeclineCommand(cwd: string, host?: HostId): string {
 // setup completes — one command for the whole yes path. The prescribed recipe
 // (usePluginQuestion) is now the bootstrap-first two-step, but this single-command
 // form stays valid: sessions that saw the old prose re-run it verbatim.
-export function onboardingUseCommand(cwd: string, host?: HostId, seedPrompt?: string): string {
-  return onboardingRunnerCommand(cwd, host, ['--use'], seedPromptFlags(seedPrompt));
+export function onboardingUseCommand(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string): string {
+  return onboardingRunnerCommand(cwd, host, ['--use'], [...seedPromptFlags(seedPrompt), ...syncSessionFlags(syncSession)]);
 }
 
 // The fast first half of the yes path: records "yes, use Traffic One here",
@@ -90,8 +100,8 @@ export function onboardingUseCommand(cwd: string, host?: HostId, seedPrompt?: st
 // (Claude desktop), the single blocking --use command buried the link for its
 // whole 8-minute timeout and read as a hang (observed 2026-07-14). Prints
 // TRAFFIC_ONE_SETUP_COMPLETE instead when setup is already done.
-export function onboardingUseBootstrapCommand(cwd: string, host?: HostId, seedPrompt?: string): string {
-  return onboardingRunnerCommand(cwd, host, ['--use', '--bootstrap-only'], seedPromptFlags(seedPrompt));
+export function onboardingUseBootstrapCommand(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string): string {
+  return onboardingRunnerCommand(cwd, host, ['--use', '--bootstrap-only'], [...seedPromptFlags(seedPrompt), ...syncSessionFlags(syncSession)]);
 }
 
 // The ask-first HOST-CHAT question (ASK_USE_PLUGIN_FIRST / TRAFFIC_ONE_ASK_USE_PLUGIN):
@@ -100,24 +110,24 @@ export function onboardingUseBootstrapCommand(cwd: string, host?: HostId, seedPr
 // URL is shown, and NOTHING is written (project or per-user) until the user
 // answers. `seedPrompt` (the request that triggered the question) rides the yes
 // command so the runner can seed `originalPrompt` AFTER recording the yes.
-export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: string): string {
+export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string): string {
   return [
     'traffic-one — before anything else, ask the user IN CHAT and STOP for their reply:',
     '',
     '"Do you want to use the Traffic One plugin for this development?"',
     '',
     '- If the user answers YES, do these steps IN ORDER:',
-    `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt)}`,
+    `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt, syncSession)}`,
     '  2. Show that setup link to the user in chat; if a browser tool is available, ALSO open the link there so they can complete setup. (Skip this step if step 1 printed TRAFFIC_ONE_SETUP_COMPLETE.)',
-    `  3. Run this command to wait for setup to finish — IN THE BACKGROUND when the shell tool supports it (a foreground run hides its output while it blocks and looks hung). Do read-only orientation meanwhile; when it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request:\n${onboardingWaitCommand(cwd, host)}`,
+    `  3. Run this command to wait for setup to finish — IN THE BACKGROUND when the shell tool supports it (a foreground run hides its output while it blocks and looks hung). Do read-only orientation meanwhile; when it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request:\n${onboardingWaitCommand(cwd, host, syncSession)}`,
     `- If the user answers NO, run this command — the choice is saved outside the project (no files are added to it) and Traffic One stays silent here until the user explicitly asks for it again:\n${onboardingDeclineCommand(cwd, host)}`,
     '',
     'Do not scaffold, edit files, or start building until the user has answered.',
   ].join('\n');
 }
 
-// Clears a recorded decline so onboarding (and, in ask-first mode, the
-// use-plugin question) can run again when the user asks for Traffic One.
-export function onboardingReconsiderCommand(cwd: string, host?: HostId): string {
-  return onboardingRunnerCommand(cwd, host, ['--reconsider']);
+// Records exact opt-in after the user explicitly asks to re-enable Traffic One,
+// synchronizes current model config, then starts the normal setup flow.
+export function onboardingReconsiderCommand(cwd: string, host?: HostId, syncSession?: string): string {
+  return onboardingRunnerCommand(cwd, host, ['--reconsider'], syncSessionFlags(syncSession));
 }

@@ -73,6 +73,50 @@ test('denies relative escapes from the active workspace', () => {
   });
 });
 
+test('denies an atomic multi-file apply_patch when its second target is outside the workspace', () => {
+  withSiblingWorkspaces((_root, ws6b, ws5b) => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: src/inside.ts',
+      '+inside',
+      `*** Add File: ${path.join(ws5b, 'src', 'outside.ts')}`,
+      '+outside',
+      '*** End Patch',
+    ].join('\n');
+    const result = workspaceBoundaryGuard(ctxFor(ws6b, ws6b, 'apply_patch', {
+      output: { args: { patch } },
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.ok(result.reason.includes(ws5b));
+  });
+});
+
+test('apply_patch resolves the project boundary when a host omits workspaceRoot', () => {
+  withSiblingWorkspaces((_root, ws6b, ws5b) => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: src/inside.ts',
+      '+inside',
+      `*** Add File: ${path.join(ws5b, 'src', 'outside.ts')}`,
+      '+outside',
+      '*** End Patch',
+    ].join('\n');
+    const result = workspaceBoundaryGuard(ctxFor(ws6b, undefined, 'apply_patch', { patch }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.ok(result.reason.includes(ws5b));
+  });
+});
+
+test('fails closed when a non-empty apply_patch payload cannot be parsed', () => {
+  withSiblingWorkspaces((_root, ws6b) => {
+    const result = workspaceBoundaryGuard(ctxFor(ws6b, ws6b, 'apply_patch', {
+      patch: '*** Begin Patch\ninvalid\n*** End Patch',
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /cannot be validated|invalid/i);
+  });
+});
+
 test('denies search paths outside the active workspace but allows implicit workspace search', () => {
   withSiblingWorkspaces((_root, ws6b, ws5b) => {
     assert.equal(workspaceBoundaryGuard(ctxFor(ws6b, ws6b, 'Grep', { pattern: 'name' })).kind, 'noop');

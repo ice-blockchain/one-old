@@ -11,7 +11,9 @@ import { asString } from '../../adapters/coerce';
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj, type Rec } from '../../shared/obj';
-import { normalizedToolName, parsedToolInput, patchTextFromToolInput, patchTouchedFiles } from '../../shared/tool-classify';
+import { parseApplyPatch, patchOperationPaths, patchTextFromToolInput } from '../../shared/apply-patch';
+import { resolveProjectRoot } from '../../shared/hook-paths';
+import { normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 
 const DENY_PREFIX = 'traffic-one — workspace boundary blocked';
 
@@ -102,13 +104,19 @@ function denyOutsideWorkspace(target: string, workspaceRoot: string): HookResult
 }
 
 export function workspaceBoundaryGuard(ctx: Ctx): HookResult {
-  const workspaceRoot = ctx.input.workspaceRoot ? realpathClosest(ctx.input.workspaceRoot) : '';
-  if (!workspaceRoot) return noop();
-
   const raw = obj(ctx.input.raw) || {};
   const rawToolInput = obj(raw.tool_input) || obj(raw.toolInput) || obj(raw.input);
   const parsedInput = parsedToolInput(ctx.input.tool);
   const rawName = normalizedToolName(ctx.input.tool?.rawName || raw.tool_name || raw.toolName);
+  const isApplyPatch = /^apply_patch$/i.test(rawName);
+  // Some hosts omit workspaceRoot. Reads keep their established behavior, but
+  // apply_patch is a write boundary and must still be scoped to the resolved
+  // active project so an absolute second target cannot escape to a sibling.
+  const workspaceRoot = ctx.input.workspaceRoot
+    ? realpathClosest(ctx.input.workspaceRoot)
+    : (isApplyPatch ? realpathClosest(resolveProjectRoot(ctx.cwd)) : '');
+  if (!workspaceRoot) return noop();
+
   const includeGlobPattern = /^Glob$/i.test(rawName);
 
   const candidates: string[] = [];
@@ -117,7 +125,14 @@ export function workspaceBoundaryGuard(ctx: Ctx): HookResult {
   addCandidatesFromRecord(candidates, raw, { includeCwd: false, includeGlobPattern });
   addCandidatesFromRecord(candidates, rawToolInput, { includeCwd: true, includeGlobPattern });
   addCandidatesFromRecord(candidates, parsedInput, { includeCwd: true, includeGlobPattern });
-  candidates.push(...patchTouchedFiles(patchTextFromToolInput(rawToolInput || raw)));
+  if (isApplyPatch) {
+    const patchText = patchTextFromToolInput(ctx.input.tool?.patchText, raw.tool_input, raw.toolInput, raw.input, raw, parsedInput);
+    const parsedPatch = parseApplyPatch(patchText);
+    if (!parsedPatch.ok) {
+      return deny(`${DENY_PREFIX}: apply_patch payload cannot be validated (${parsedPatch.error}). No write was made.`);
+    }
+    candidates.push(...patchOperationPaths(parsedPatch.operations));
+  }
 
   const base = ctx.input.tool?.workdir
     ? (path.isAbsolute(ctx.input.tool.workdir) ? ctx.input.tool.workdir : path.resolve(ctx.cwd, ctx.input.tool.workdir))

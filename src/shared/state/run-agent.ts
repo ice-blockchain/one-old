@@ -22,6 +22,12 @@ import { TIER_IDS, type TierId } from '../../config/model-tiers';
 import { stateTimestamp } from './io';
 import { activeAgentRole, getSpawnIndex, isSubagentSession, stackFingerprint } from './materialization';
 import { writeState } from './normalize';
+import {
+  type CodexModelObservation,
+  correctCodexChildObservationRole,
+  readCodexModelObservation,
+} from './codex-model-observation';
+import { readRunModelPolicy } from '../run-model-policy';
 
 export function runIdNow(): string {
   return Date.now().toString();
@@ -1806,7 +1812,7 @@ export function resolveRunAgentContext(
   cwd: string,
   state: unknown,
   rawInput: unknown,
-  options: { claimPending?: boolean; allowSoleAnonymousPending?: boolean } = {},
+  options: { claimPending?: boolean; allowSoleAnonymousPending?: boolean; host?: string } = {},
 ): RunAgentContext | null {
   const identity = hookSessionIdentity(rawInput);
   if (identity.declaredRoleConflict) return null;
@@ -1834,6 +1840,26 @@ export function resolveRunAgentContext(
     && hookCodexMeta.role.evidence.role !== identity.declaredRole) return null;
   const shouldClaimPending = options.claimPending !== false;
   const runIds = runIdsForLookup(cwd, state);
+  const requiresCodexObservation = options.host === 'codex' || Boolean(hookCodexMeta?.parentThreadId);
+  const codexChildIds = uniqueStrings([
+    identity.agentId,
+    identity.threadId,
+    hookCodexMeta?.threadId,
+    ...(identity.isSubagent ? [identity.sessionId] : []),
+  ].filter((value): value is string => Boolean(value)));
+  const verifiedCodexObservation = (runId: string, role?: string | null): CodexModelObservation | null => {
+    if (!requiresCodexObservation) return null;
+    const observed = readCodexModelObservation(cwd, runId, codexChildIds);
+    if (!observed
+      || observed.status !== 'verified'
+      || !observed.actualModel
+      || (role && observed.role !== role)
+      || (identity.model && observed.actualModel !== identity.model)
+      || (hookCodexMeta?.threadId && observed.childId.toLowerCase() !== hookCodexMeta.threadId.toLowerCase())
+      || (hookCodexMeta?.parentThreadId && observed.parentSessionId
+        && observed.parentSessionId !== hookCodexMeta.parentThreadId)) return null;
+    return observed;
+  };
 
   // Exact claim match. agentId (Claude agent-teams) is the most specific key, then
   // threadId (from transcript_path, the reliable Codex key — a subagent's tool-call
@@ -1850,6 +1876,23 @@ export function resolveRunAgentContext(
         ? replay.claim
         : readClaimFile(runAgentFile(cwd, runId, key));
       if (claim && claimAllowsState(state, claim)) {
+        let observed = requiresCodexObservation
+          ? verifiedCodexObservation(runId, typeof claim.role === 'string' ? claim.role : null)
+          : null;
+        if (requiresCodexObservation && !observed) {
+          const authoritativeRole = hookCodexMeta?.role.kind === 'evidence'
+            ? hookCodexMeta.role.evidence.role
+            : null;
+          if (!authoritativeRole) return null;
+          const existing = readCodexModelObservation(cwd, runId, codexChildIds);
+          // A provisional SubagentStart role may have classified the immutable
+          // model as a mismatch. Line-zero Codex session metadata is the one
+          // correction-grade signal allowed to re-evaluate that same model.
+          // Conflict remains terminal in correctCodexChildObservationRole.
+          if (!existing || existing.status === 'conflict') return null;
+          observed = correctCodexChildObservationRole(cwd, runId, existing.childId, authoritativeRole);
+          if (!observed || observed.status !== 'verified' || observed.actualModel !== existing.actualModel) return null;
+        }
         // Legacy Codex claims can carry the wrong role while remaining fresh. When
         // this exact hook supplies the child rollout, inspect ONLY line zero
         // (session_meta). Prompt/tool content is never consulted for correction.
@@ -1863,7 +1906,7 @@ export function resolveRunAgentContext(
               return authoritativeRebindThreadRole(cwd, state, runId, key, claim, meta.role.evidence, {
                 transcriptPath: identity.transcriptPath,
                 parentSessionId: meta.parentThreadId || identity.sessionId,
-                model: identity.model,
+                model: observed?.actualModel || identity.model,
               });
             }
             const annotated = annotateClaimRoleSource(cwd, runId, key, claim, meta.role.evidence);
@@ -1881,9 +1924,12 @@ export function resolveRunAgentContext(
   // with the declared role — no inference needed. This is what unblocks team
   // workers' feature-source writes (see project_agent_teams_claim_deadlock).
   if (shouldClaimPending && identity.agentId && identity.declaredRole) {
+    const runId = runIds[0] || '';
+    const observed = requiresCodexObservation ? verifiedCodexObservation(runId, identity.declaredRole) : null;
+    if (requiresCodexObservation && !observed) return null;
     const ctx = claimThreadRole(cwd, state, identity.agentId, identity.declaredRole, {
       parentSessionId: identity.sessionId,
-      model: identity.model,
+      model: observed?.actualModel || identity.model,
       evidence: { role: identity.declaredRole, source: 'host-declared-role', authority: 'authoritative' },
     });
     if (ctx) return ctx;
@@ -1898,9 +1944,12 @@ export function resolveRunAgentContext(
       ? identity.sessionId
       : identity.parentSessionId;
     if (declaredThreadId) {
+      const runId = runIds[0] || '';
+      const observed = requiresCodexObservation ? verifiedCodexObservation(runId, identity.declaredRole) : null;
+      if (requiresCodexObservation && !observed) return null;
       const ctx = claimThreadRole(cwd, state, declaredThreadId, identity.declaredRole, {
         parentSessionId: declaredParentId || effectiveParentSessionId,
-        model: identity.model,
+        model: observed?.actualModel || identity.model,
         transcriptPath: identity.transcriptPath,
         evidence: { role: identity.declaredRole, source: 'host-declared-role', authority: 'authoritative' },
       });
@@ -1925,10 +1974,13 @@ export function resolveRunAgentContext(
     ? identity.threadId
     : (cursorTranscriptPath && identity.sessionId ? identity.sessionId : null);
   if (shouldClaimPending && inferredThreadId && inferredRole) {
+    const runId = runIds[0] || '';
+    const observed = requiresCodexObservation ? verifiedCodexObservation(runId, inferredRole) : null;
+    if (requiresCodexObservation && !observed) return null;
     const parentSessionId = effectiveParentSessionId || cursorTranscript?.parentSessionId || null;
     const ctx = claimThreadRole(cwd, state, inferredThreadId, inferredRole, {
       parentSessionId,
-      model: identity.model,
+      model: observed?.actualModel || identity.model,
       transcriptPath: inferenceTranscriptPath,
       evidence: inferredEvidence || undefined,
     });
@@ -1936,6 +1988,7 @@ export function resolveRunAgentContext(
   }
 
   if (shouldClaimPending && effectiveIsSubagent && inferredResolution.kind !== 'conflict') {
+    if (requiresCodexObservation) return null;
     for (const runId of runIds) {
       // When the thread's transcript reveals its role, never claim a different
       // role's pending file: parallel fix-cycle workers spawn near-simultaneously
@@ -2021,6 +2074,8 @@ export function claimThreadRole(
     model?: string | null;
     transcriptPath?: string | null;
     evidence?: RoleEvidence;
+    /** Verified child binds must never replace another live thread for this role. */
+    refuseOccupiedRole?: boolean;
   } = {},
 ): RunAgentContext | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
@@ -2062,6 +2117,9 @@ export function claimThreadRole(
       claim = next;
       return;
     }
+
+    if (options.refuseOccupiedRole
+      && activeClaimForOtherThread(cwd, source, runId, role, id)) return;
 
     const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId, model);
     const spawnIndex = pending && typeof pending.claim.spawnIndex === 'number'
@@ -3878,14 +3936,75 @@ export function validateCodexLiveRunAgent(
   const currentParentSessionId = hookIdentity.parentSessionId || hookIdentity.sessionId;
 
   const childId = idsForRunAgent(entry).find((id) => UUID_RE.test(id)) || entry.agentId;
+  const policy = readRunModelPolicy(cwd, runId);
+  let observation = readCodexModelObservation(cwd, runId, idsForRunAgent(entry));
+  if (!policy || !observation) {
+    return {
+      status: 'unverified',
+      entry,
+      reason: !policy ? 'codex-run-model-policy-missing' : 'codex-observed-model-missing',
+    };
+  }
+  if (observation.policyId !== policy.policyId) {
+    return { status: 'conflict', entry, reason: 'codex-observed-model-policy-mismatch' };
+  }
   const invalidIdentity = !meta
     || !meta.threadId
     || meta.threadId.toLowerCase() !== childId.toLowerCase()
     || Boolean(meta.parentThreadId && entry.parentSessionId && meta.parentThreadId !== entry.parentSessionId)
     || Boolean(meta.parentThreadId && currentParentSessionId && meta.parentThreadId !== currentParentSessionId);
 
+  // A mismatch caused only by a provisional role is recoverable once the same
+  // child exposes correction-grade line-zero metadata. Re-evaluate the already
+  // observed model; never substitute the requested parent model. A conflict is
+  // terminal and invalid/mismatched identity is never allowed to correct state.
+  if (observation.status !== 'conflict'
+    && !invalidIdentity
+    && meta!.role.kind === 'evidence'
+    && observation.role !== meta!.role.evidence.role) {
+    observation = correctCodexChildObservationRole(
+      cwd,
+      runId,
+      childId,
+      meta!.role.evidence.role,
+    );
+    if (!observation) {
+      return { status: 'conflict', entry, reason: 'codex-authoritative-role-model-mismatch' };
+    }
+  }
+  if (observation.status === 'mismatch' || observation.status === 'conflict') {
+    return { status: 'conflict', entry, reason: `codex-observed-model-${observation.status}` };
+  }
+  if (observation.status !== 'verified' || !observation.actualModel) {
+    return { status: 'unverified', entry, reason: 'codex-observed-model-not-verified' };
+  }
+  if (!entry.model || entry.model !== observation.actualModel) {
+    return { status: 'conflict', entry, reason: 'codex-registry-observed-model-mismatch' };
+  }
+  if (observation.parentSessionId && entry.parentSessionId
+    && observation.parentSessionId !== entry.parentSessionId) {
+    return { status: 'conflict', entry, reason: 'codex-observed-parent-registry-mismatch' };
+  }
+  if (observation.parentSessionId && currentParentSessionId
+    && observation.parentSessionId !== currentParentSessionId) {
+    return { status: 'conflict', entry, reason: 'codex-observed-parent-hook-mismatch' };
+  }
+
   if (!invalidIdentity && meta!.role.kind === 'evidence') {
     const evidence = meta!.role.evidence;
+    if (observation.role !== evidence.role) {
+      observation = correctCodexChildObservationRole(cwd, runId, childId, evidence.role);
+      if (!observation || observation.status !== 'verified' || observation.actualModel !== entry.model) {
+        retireCodexRegistryEntryIfMatches(
+          cwd,
+          runId,
+          requestedRole,
+          entry,
+          'codex-authoritative-role-model-mismatch',
+        );
+        return { status: 'conflict', entry, reason: 'codex-authoritative-role-model-mismatch' };
+      }
+    }
     if (evidence.role === requestedRole) {
       const replay = replayAuthoritativeRebindJournal(cwd, state, runId, childId);
       if (replay.status === 'blocked') {
@@ -3895,7 +4014,7 @@ export function validateCodexLiveRunAgent(
       if (claimed && claimed.claim.role !== requestedRole) {
         const rebound = authoritativeRebindThreadRole(cwd, state, runId, childId, claimed.claim, evidence, {
           parentSessionId: meta!.parentThreadId || currentParentSessionId || entry.parentSessionId,
-          model: entry.model,
+          model: observation.actualModel,
           transcriptPath,
           expectedRegistryRole: requestedRole,
           expectedRegistryIds: idsForRunAgent(entry),
@@ -3932,7 +4051,7 @@ export function validateCodexLiveRunAgent(
     };
     const rebound = authoritativeRebindThreadRole(cwd, state, runId, childId, baseClaim, evidence, {
       parentSessionId: meta!.parentThreadId || currentParentSessionId || entry.parentSessionId,
-      model: entry.model,
+      model: observation.actualModel,
       transcriptPath,
       expectedRegistryRole: requestedRole,
       expectedRegistryIds: idsForRunAgent(entry),

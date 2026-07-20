@@ -10,6 +10,7 @@ import {
   doctorWrapper,
   enableProject,
   installWrapper,
+  kiloGlobalConfigPath,
   kiloGlobalPluginPath,
   kiloProjectMarkerPath,
   readOwner,
@@ -47,12 +48,21 @@ test('install requires explicit consent and writes an owned global Kilo wrapper'
     assert.equal(denied.code, 2);
     assert.equal(fs.existsSync(file), false);
 
-    const installed = installWrapper(env, ['install', '--yes']);
+    const installed = installWrapper(env, ['install', '--yes'], true);
     assert.equal(installed.code, 0);
     assert.equal(fs.existsSync(file), true);
     const owner = readOwner(file);
     assert.equal(owner?.owner, 'traffic-one');
     assert.equal(owner?.pluginRoot, env.TRAFFIC_ONE_PLUGIN_ROOT);
+    const config = JSON.parse(fs.readFileSync(kiloGlobalConfigPath(env), 'utf8')) as {
+      mcp?: Record<string, { enabled?: boolean; type?: string; oauth?: boolean }>;
+      permission?: Record<string, string>;
+    };
+    assert.equal(config.mcp?.['traffic-one-mcp']?.enabled, false);
+    assert.equal(config.mcp?.['traffic-one-mcp']?.type, 'remote');
+    assert.equal(config.mcp?.['traffic-one-mcp']?.oauth, false);
+    assert.equal(config.permission?.['traffic-one-mcp_get_config'], 'deny');
+    assert.equal(config.permission?.['traffic-one-mcp_report_codebase_metadata'], 'deny');
     const body = fs.readFileSync(file, 'utf8');
     assert.ok(body.includes('tool.execute.before'));
     assert.ok(body.includes('tool.execute.after'));
@@ -66,11 +76,57 @@ test('install requires explicit consent and writes an owned global Kilo wrapper'
     assert.ok(body.includes('id: "traffic-one"'));
     assert.ok(body.includes('server: TrafficOne'));
     assert.match(installed.stdout, /Restart Kilo/);
+    assert.match(installed.stdout, /Registered disabled traffic-one-mcp/);
 
-    const doctor = doctorWrapper(env);
+    const doctor = doctorWrapper(env, ['doctor'], true);
     assert.equal(doctor.code, 0);
     assert.match(doctor.stdout, /^ok:/);
     assert.match(doctor.stdout, /auto-loaded from Kilo global plugin directory/);
+  });
+});
+
+test('central registration switch installs the Kilo wrapper without creating public MCP config', () => {
+  withHome((env) => {
+    env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION = 'true';
+    const configPath = kiloGlobalConfigPath(env);
+    const installed = installWrapper(env, ['install', '--yes']);
+    assert.equal(installed.code, 0);
+    assert.equal(fs.existsSync(kiloGlobalPluginPath(env)), true);
+    assert.equal(fs.existsSync(configPath), false);
+    assert.match(installed.stdout, /registration is disabled/);
+    const doctor = doctorWrapper(env);
+    assert.equal(doctor.code, 0);
+    assert.match(doctor.stdout, /config: registration-disabled/);
+  });
+});
+
+test('Kilo registration reuses an existing supported config file', () => {
+  withHome((env) => {
+    const dir = path.dirname(kiloGlobalConfigPath(env));
+    const existing = path.join(dir, 'kilo.json');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(existing, '{"model":"user/model"}\n', 'utf8');
+    assert.equal(installWrapper(env, ['install', '--yes'], true).code, 0);
+    assert.equal(kiloGlobalConfigPath(env), existing);
+    assert.equal(fs.existsSync(path.join(dir, 'kilo.jsonc')), false);
+    const config = JSON.parse(fs.readFileSync(existing, 'utf8')) as Record<string, unknown>;
+    assert.equal(config.model, 'user/model');
+  });
+});
+
+test('Kilo registration ignores config.json and creates the supported default', () => {
+  withHome((env) => {
+    const supportedDefault = kiloGlobalConfigPath(env);
+    const dir = path.dirname(supportedDefault);
+    const unsupported = path.join(dir, 'config.json');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(unsupported, '{"model":"must-remain-untouched"}\n', 'utf8');
+
+    assert.equal(path.basename(supportedDefault), 'kilo.jsonc');
+    assert.equal(installWrapper(env, ['install', '--yes'], true).code, 0);
+    assert.equal(kiloGlobalConfigPath(env), supportedDefault);
+    assert.equal(fs.existsSync(supportedDefault), true);
+    assert.equal(fs.readFileSync(unsupported, 'utf8'), '{"model":"must-remain-untouched"}\n');
   });
 });
 
@@ -443,4 +499,33 @@ test('wrapper source uses host-stamped Kilo runtime hooks', () => {
   assert.match(source, /TRAFFIC_ONE_SESSION_ROOTS/);
   assert.match(source, /TRAFFIC_ONE_HOST: 'kilo'/);
   assert.match(source, /resolveTrafficOneEnv\(projectRoot, 'kilo'/);
+  assert.match(source, /TRAFFIC_ONE_MANAGED_MCP_TOOLS/);
+});
+
+test('Kilo wrapper denies managed MCP tools even with no project root or runtime', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-managed-mcp-'));
+  const previousHome = process.env.HOME;
+  try {
+    const home = path.join(base, 'home');
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(base, 'package.json'), '{"type":"module"}\n', 'utf8');
+    const wrapperFile = path.join(base, 'traffic-one.js');
+    fs.writeFileSync(wrapperFile, wrapperSource(path.join(base, 'missing-plugin'), '2026-01-01T00:00:00Z'), 'utf8');
+    process.env.HOME = home;
+    const mod = await import(pathToFileURL(wrapperFile).href);
+    const hooks = await mod.default.server({ directory: home });
+    await assert.rejects(
+      () => hooks['tool.execute.before']({ tool: 'traffic-one-mcp_get_config' }, {}),
+      /Direct AI-agent calls/,
+    );
+    await assert.rejects(
+      () => hooks['tool.execute.before']({ tool: 'traffic-one-mcp_report_codebase_metadata' }, {}),
+      /Direct AI-agent calls/,
+    );
+    await assert.doesNotReject(() => hooks['tool.execute.before']({ tool: 'traffic-one-mcp-copy_get_config' }, {}));
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });

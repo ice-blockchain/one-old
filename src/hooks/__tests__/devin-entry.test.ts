@@ -57,6 +57,7 @@ test('Devin UserPromptSubmit injects a visible setup URL before planning', async
     const wire = JSON.parse(out.stdout) as { hookSpecificOutput?: { hookEventName?: string; additionalContext?: string } };
     assert.equal(wire.hookSpecificOutput?.hookEventName, 'UserPromptSubmit');
     assert.match(wire.hookSpecificOutput?.additionalContext ?? '', /https:\/\/traffic\.io\/onboarding\/agent#p=56859&t=native/);
+    assert.match(wire.hookSpecificOutput?.additionalContext ?? '', /http:\/\/127\.0\.0\.1:56859\/local\?t=native/);
     assert.match(wire.hookSpecificOutput?.additionalContext ?? '', /\[Open Traffic One setup\]\(https:\/\/traffic\.io\/onboarding\/agent#p=56859&t=native\)/);
     assert.match(wire.hookSpecificOutput?.additionalContext ?? '', /onboarding-wait\.cjs/);
   });
@@ -73,6 +74,7 @@ test('Devin PreToolUse blocks scaffolding immediately and allows the ordinary wa
     const blocked = JSON.parse(scaffold.stdout) as { decision?: string; reason?: string };
     assert.equal(blocked.decision, 'block');
     assert.match(blocked.reason ?? '', /https:\/\/traffic\.io\/onboarding\/agent#p=56859&t=native/);
+    assert.match(blocked.reason ?? '', /http:\/\/127\.0\.0\.1:56859\/local\?t=native/);
 
     const wait = await runDevinHook('check-onboarding-gate', JSON.stringify({
       hook_event_name: 'PreToolUse',
@@ -93,6 +95,7 @@ test('Devin Stop gives an incomplete setup one wait-command retry without loopin
     const blocked = JSON.parse(first.stdout) as { decision?: string; reason?: string };
     assert.equal(blocked.decision, 'block');
     assert.match(blocked.reason ?? '', /onboarding-wait\.cjs/);
+    assert.match(blocked.reason ?? '', /http:\/\/127\.0\.0\.1:56859\/local\?t=native/);
 
     const retry = await runDevinHook('onboarding-stop', JSON.stringify({
       hook_event_name: 'Stop', cwd, stop_hook_active: true,

@@ -10,9 +10,11 @@ import { markModelGatePrompted, readModelChoice } from '../../modules/agent-mode
 import { cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { captureCursorModels, hasFreshCursorModels } from '../../shared/materialize/cursor-models';
 import { buildCursorSpawnModelMap, formatCursorSpawnMapBlock, syncCursorSpawnAgentFiles } from '../../shared/materialize/cursor-spawn-map';
+import { AGENT_ROLES } from '../../config/performance';
 import { detectHostPlan } from '../../shared/host-plan';
 import { obj } from '../../shared/obj';
 import { ensureCurrentRunId, readEffectiveState } from '../../shared/state';
+import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
 
 function cursorModelCaptureStop(): string {
   return (
@@ -31,12 +33,14 @@ function modelGateFailedStop(): string {
   );
 }
 
-function writeSpawnReady(cwd: string, state: Record<string, unknown>, headline: string): void {
-  syncCursorSpawnAgentFiles(cwd, state);
+function writeSpawnReady(cwd: string, state: Record<string, unknown>, headline: string): boolean {
   const map = buildCursorSpawnModelMap(cwd, state);
+  if (AGENT_ROLES.some((role) => !map[role])) return false;
+  syncCursorSpawnAgentFiles(cwd, state);
   process.stdout.write(`${headline}\n`);
   const block = formatCursorSpawnMapBlock(map);
   if (block) process.stdout.write(`${block}\n`);
+  return true;
 }
 
 export function runModelGate(argv: readonly string[] = process.argv.slice(2)): number {
@@ -61,22 +65,39 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
       return 0;
     }
 
-    const state = readEffectiveState(cwd) as Record<string, unknown> | null;
+    // This runner is Cursor-only even when the parent process was launched from
+    // another installed host. Resolve Cursor's host-scoped Performance target;
+    // otherwise immutable policy creation can compare a Codex/Claude target to
+    // the Cursor catalog and fail closed for the wrong reason.
+    const cursorEnv = { ...process.env, TRAFFIC_ONE_HOST: 'cursor' };
+    const state = readEffectiveState(cwd, cursorEnv) as Record<string, unknown> | null;
     if (!state) {
       process.stdout.write(`${modelGateFailedStop()}\n`);
       return 2;
     }
 
     const team = obj(state.team);
-    if (state.mode === 'new-project' && team && team.mode === 'subagents' && !hasFreshCursorModels(cwd, detectHostPlan('cursor'))) {
-      process.stdout.write(`${cursorModelCaptureStop()}\n`);
-      return 2;
+    if (team?.mode === 'subagents') {
+      const runId = ensureCurrentRunId(cwd, state);
+      const existingPolicy = runId ? readRunModelPolicy(cwd, runId) : null;
+      if (!existingPolicy && state.mode === 'new-project' && !hasFreshCursorModels(cwd, detectHostPlan('cursor'))) {
+        process.stdout.write(`${cursorModelCaptureStop()}\n`);
+        return 2;
+      }
+      const policy = existingPolicy || (runId
+        ? ensureRunModelPolicy(cwd, runId, 'cursor', state, cursorEnv)
+        : null);
+      if (!policy || policy.host !== 'cursor') {
+        process.stdout.write(`${modelGateFailedStop()}\n`);
+        return 2;
+      }
     }
 
     const picks = state ? cursorUnavailablePicks(cwd, state) : [];
     if (!picks.length) {
-      writeSpawnReady(cwd, state, 'traffic-one model-gate: all picked models are available — spawn the team now.');
-      return 0;
+      return writeSpawnReady(cwd, state, 'traffic-one model-gate: all picked models are available — spawn the team now.')
+        ? 0
+        : 2;
     }
 
     const runId = state ? ensureCurrentRunId(cwd, state) : '';
@@ -84,12 +105,11 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
 
     if (choice === 'use-fallback') {
       const list = picks.map((p) => `${p.role} → ${p.fallback}`).join(', ');
-      writeSpawnReady(
+      return writeSpawnReady(
         cwd,
         state,
         `traffic-one model-gate: fallback confirmed — ${list}. Spawn the team now (use the spawn map below).`,
-      );
-      return 0;
+      ) ? 0 : 2;
     }
 
     if (choice === 'enable-retry') {

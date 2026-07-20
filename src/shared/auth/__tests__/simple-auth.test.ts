@@ -4,7 +4,6 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { hostModelSnapshot } from '../../model-tiers';
 import { readOneSettings, writeOneSection } from '../../one-settings';
 import { clearAuthentication, isLocallyAuthenticated, readSimpleAuth, writeSimpleAuth } from '../simple-auth';
 
@@ -36,9 +35,12 @@ test('missing one.json auth section is unauthenticated', () => {
 
 test('writeSimpleAuth stores one.json.auth securely and preserves unrelated sections', () => {
   withStore((env, dir) => {
-    const codex = hostModelSnapshot('codex', 'pro');
-    writeOneSection('codeGraphProvider', 'graphify', env);
-    writeOneSection('hosts', { codex }, env);
+    const file = path.join(dir, 'one.json');
+    fs.writeFileSync(file, `${JSON.stringify({
+      schemaVersion: 3,
+      codeGraphProvider: 'graphify',
+      futureSection: { keep: true },
+    }, null, 2)}\n`, 'utf8');
     writeSimpleAuth('sk-validated', env);
 
     const auth = readSimpleAuth(env);
@@ -51,8 +53,9 @@ test('writeSimpleAuth stores one.json.auth securely and preserves unrelated sect
     assert.equal(settings.schemaVersion, 3);
     assert.equal(settings.auth?.apiKey, 'sk-validated');
     assert.equal(settings.codeGraphProvider, 'graphify');
-    assert.deepEqual(settings.hosts.codex, codex);
-    assert.equal(fs.statSync(path.join(dir, 'one.json')).mode & 0o777, 0o600);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    assert.deepEqual(raw.futureSection, { keep: true });
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   });
 });
 
@@ -65,9 +68,7 @@ test('writeSimpleAuth rejects a blank key without creating state', () => {
 
 test('clearAuthentication deletes only one.json.auth', () => {
   withStore((env) => {
-    const codex = hostModelSnapshot('codex', 'pro');
     writeOneSection('codeGraphProvider', 'gitnexus', env);
-    writeOneSection('hosts', { codex }, env);
     writeSimpleAuth('sk-validated', env);
 
     assert.equal(clearAuthentication(env), true);
@@ -77,7 +78,6 @@ test('clearAuthentication deletes only one.json.auth', () => {
     assert.equal(isLocallyAuthenticated(env), false);
     assert.equal(settings.auth, undefined);
     assert.equal(settings.codeGraphProvider, 'gitnexus');
-    assert.deepEqual(settings.hosts.codex, codex);
   });
 });
 
@@ -88,7 +88,6 @@ test('a future one.json schema fails closed without being downgraded or rewritte
       schemaVersion: 4,
       auth: validAuth('sk-future'),
       futureSection: { keep: true },
-      hosts: {},
     }, null, 2)}\n`;
     fs.writeFileSync(file, original, 'utf8');
 
@@ -105,7 +104,6 @@ test('a malformed schemaVersion fails closed without authenticating or rewriting
       schemaVersion: '4',
       auth: validAuth('sk-must-not-load'),
       futureSection: { keep: true },
-      hosts: {},
     }, null, 2)}\n`;
     fs.writeFileSync(file, original, 'utf8');
 
@@ -122,7 +120,7 @@ test('auth with extra or untrimmed fields is rejected as non-canonical', () => {
       { ...validAuth('sk-extra'), unexpectedField: true },
       validAuth(' sk-untrimmed '),
     ]) {
-      fs.writeFileSync(file, `${JSON.stringify({ schemaVersion: 3, auth, hosts: {} }, null, 2)}\n`, 'utf8');
+      fs.writeFileSync(file, `${JSON.stringify({ schemaVersion: 3, auth }, null, 2)}\n`, 'utf8');
       assert.equal(readSimpleAuth(env), null);
       assert.equal(isLocallyAuthenticated(env), false);
     }
@@ -134,7 +132,6 @@ test('an existing envelope without schemaVersion fails closed without being rewr
     const file = path.join(dir, 'one.json');
     const original = `${JSON.stringify({
       auth: validAuth('sk-schema-missing'),
-      hosts: {},
     }, null, 2)}\n`;
     fs.writeFileSync(file, original, 'utf8');
 
@@ -150,7 +147,6 @@ test('an obsolete one.json schema fails closed without being upgraded', () => {
     const original = `${JSON.stringify({
       schemaVersion: 2,
       auth: validAuth('sk-obsolete'),
-      hosts: {},
     }, null, 2)}\n`;
     fs.writeFileSync(file, original, 'utf8');
 

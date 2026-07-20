@@ -89,7 +89,7 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
   codex: {
     free: 'low',
     plus: 'balanced',
-    pro: 'balanced',
+    pro: 'high',
     business: 'high',
     enterprise: 'high',
     team: 'high',

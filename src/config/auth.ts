@@ -6,10 +6,8 @@
 // prompt-submit / materialize / pre-tool gates stop blocking and prompting — the
 // plugin runs without authenticating. The gate is a pure local boolean read of
 // the wizard-validated API key (shared/auth/simple-auth
-// isLocallyAuthenticated); optional remote features (e.g. the one-mcp report)
-// gate on that same boolean via authSatisfied.
+// isLocallyAuthenticated). Anonymous public MCP sync/reporting has its own
+// exact per-project pluginUse.enabled gate and never reads this credential.
 // This is the committed default; TRAFFIC_ONE_AUTH explicitly overrides it per
 // process (1/true/on → enforce, 0/false/off → bypass).
 export const AUTH_ENABLED = true;
-
-export const DEFAULT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/mcp';

@@ -41,9 +41,13 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     assert.ok(windsurfHooks.hooks.pre_user_prompt[0].command.includes('windsurf-hook-runtime.cjs'));
     assert.ok(windsurfHooks.hooks.pre_user_prompt[0].command.includes('TRAFFIC_ONE_HOST=windsurf'));
     assert.ok(windsurfHooks.hooks.post_mcp_tool_use[0].command.includes('post_mcp_tool_use'));
+    const claudeHooks = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+    const managedClaudeGate = claudeHooks.hooks.PreToolUse.find((group: { matcher?: string }) => group.matcher?.includes('traffic-one-mcp'));
+    assert.equal(managedClaudeGate.matcher, '^mcp__traffic-one-mcp__(get_config|report_codebase_metadata)$');
+    assert.ok(managedClaudeGate.hooks[0].command.endsWith('check-one-mcp-tool'));
     const cursorHooks = JSON.parse(fs.readFileSync(path.join(dir, 'hooks', 'hooks-cursor.json'), 'utf8'));
     assert.equal(CURSOR_PLUGIN_ROOT_TOKEN, '${CURSOR_PLUGIN_ROOT}');
-    assert.equal(CURSOR_EVENTS.length, 11);
+    assert.equal(CURSOR_EVENTS.length, 12);
     assert.deepEqual(Object.keys(cursorHooks.hooks), CURSOR_EVENTS.map(({ event }) => event));
     for (const { event, subcommand } of CURSOR_EVENTS) {
       const entries = cursorHooks.hooks[event];
@@ -76,6 +80,9 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
       command: 'node "${CURSOR_PLUGIN_ROOT}/scripts/cursor-hook-runtime.cjs" cursor-subagent-stop',
       loop_limit: 8,
     }]);
+    assert.deepEqual(cursorHooks.hooks.beforeMCPExecution, [{
+      command: 'node "${CURSOR_PLUGIN_ROOT}/scripts/cursor-hook-runtime.cjs" before-mcp-execution',
+    }]);
     const expectedVersion = JSON.parse(
       fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'),
     ).version;
@@ -91,6 +98,11 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     assert.equal(codexPlugin.version, expectedVersion, 'Codex plugin version must follow package.json');
     assert.equal(cursorPlugin.version, expectedVersion, 'Cursor plugin version must follow package.json');
     assert.equal(copilotPlugin.version, expectedVersion, 'Copilot plugin version must follow package.json');
+    assert.equal(copilotPlugin.mcpServers, './.mcp-copilot.json');
+    const sharedMcp = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
+    const copilotMcp = JSON.parse(fs.readFileSync(path.join(dir, '.mcp-copilot.json'), 'utf8'));
+    assert.equal(sharedMcp.mcpServers['traffic-one-mcp'], undefined, 'Claude/Cursor/Codex must not expose the public server');
+    assert.equal(copilotMcp.mcpServers['traffic-one-mcp'], undefined, 'milestone A keeps public registration build-disabled');
     const frontendAgent = fs.readFileSync(path.join(dir, 'agents', 'senior-frontend.agent.md'), 'utf8');
     assert.match(frontendAgent, /^tools: \["view", "search", "bash", "edit"\]$/m);
     assert.doesNotMatch(frontendAgent, /^tools: Read,/m);
@@ -136,9 +148,37 @@ test('generated orchestrator contract preserves every canonical Codex task name 
       'senior_shipper',
     ]) assert.match(content, new RegExp(`\\b${taskName}\\b`));
     assert.match(content, /spawn `message` is encrypted at rest/i);
-    assert.match(content, /only usable Codex identity evidence/i);
+    assert.match(content, /usable transcript identity evidence/i);
+    assert.match(content, /actual model is observed by the live child hooks/i);
     assert.match(content, /incident already used `task_name: "senior_architect"`/i);
     assert.match(content, /codifies existing orchestrator behavior/i);
+    assert.match(content, /Codex `spawn_agent`[^\n]*`model`[^\n]*`fork_turns: "none"`/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated instructions contain no obsolete Codex no-model or fork_context guidance', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-codex-model-contract-'));
+  const staleCodexNoModelClaims = [
+    /\bCodex\b[^\n]{0,180}\bpass no `?model`?/i,
+    /\bCodex\b[^\n]{0,180}\bwith no `?model`?/i,
+    /\bCodex\b[^\n]{0,180}\bno `?model`? field/i,
+    /\bCodex\b[^\n]{0,180}\bomit(?: the)? `?model`?/i,
+    /\bCodex\b[^\n]{0,180}\b(?:does not|doesn't|cannot|can't)\b[^\n]{0,80}\b(?:support|accept|expose|receive)\b[^\n]{0,40}\bmodel\b/i,
+    /\bCodex\b[^\n]{0,180}\bexposes no\b[^\n]{0,30}\bmodel\b/i,
+  ];
+  try {
+    const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const docs = write.written.filter((relPath) => /\.(?:md|mdc)$/i.test(relPath));
+    assert.ok(docs.length > 0, 'expected generated instructions to scan');
+    for (const relPath of docs) {
+      const content = fs.readFileSync(path.join(dir, relPath), 'utf8');
+      assert.doesNotMatch(content, /\bfork_context\b/, `${relPath} uses the obsolete fork_context key`);
+      for (const staleClaim of staleCodexNoModelClaims) {
+        assert.doesNotMatch(content, staleClaim, `${relPath} says Codex cannot receive an explicit model`);
+      }
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -248,13 +288,53 @@ test('emitManifests produces all host manifests including Copilot plugin.json', 
     const write = new GenRun({ check: false, root: dir, sourceRoot: REPO_ROOT });
     emitManifests(write);
     emitMcp(write);
-    assert.equal(write.written.length, 7);
+    assert.equal(write.written.length, 8);
+    assert.ok(write.written.includes('.mcp.json'));
+    assert.ok(write.written.includes('.mcp-copilot.json'));
 
     const check = new GenRun({ check: true, root: dir, sourceRoot: REPO_ROOT });
     emitManifests(check);
     emitMcp(check);
     assert.deepEqual(check.drift, []);
     assert.equal(check.written.length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('emitMcp omits the Copilot public server when the build-time registration switch is off', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-mcp-disabled-'));
+  try {
+    const write = new GenRun({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    emitMcp(write, false);
+    const copilot = JSON.parse(fs.readFileSync(path.join(dir, '.mcp-copilot.json'), 'utf8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    assert.equal(copilot.mcpServers['traffic-one-mcp'], undefined);
+    assert.ok(copilot.mcpServers['opencode-worker']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('emitMcp refuses direct Supabase activation and accepts the reviewed custom release endpoint', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-mcp-enabled-'));
+  try {
+    const write = new GenRun({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    assert.throws(() => emitMcp(write, true), /public release blocked for registration/);
+    assert.throws(
+      () => emitMcp(write, true, 'https://mcp.traffic-one.example/public-mcp'),
+      /seven live rows/,
+    );
+    emitMcp(write, true, 'https://mcp.traffic-one.example/public-mcp', true);
+    const copilot = JSON.parse(fs.readFileSync(path.join(dir, '.mcp-copilot.json'), 'utf8')) as {
+      mcpServers: Record<string, { type?: string; tools?: unknown[] }>;
+    };
+    assert.deepEqual(copilot.mcpServers['traffic-one-mcp'], {
+      type: 'http',
+      url: 'https://mcp.traffic-one.example/public-mcp',
+      tools: [],
+    });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

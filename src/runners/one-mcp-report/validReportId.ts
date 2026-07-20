@@ -1,6 +1,8 @@
 // src/runners/one-mcp-report/validReportId.ts
-// Ported 1:1 from one-mcp-report/validReportId.cjs.
+// Compatibility wrapper around the centralized One MCP report-id grammar.
+
+import { isValidOneMcpReportId } from '../../config/one-mcp';
 
 export function validReportId(value: unknown): boolean {
-  return /^[A-Za-z0-9._:-]{1,128}$/.test(String(value || '').trim());
+  return isValidOneMcpReportId(typeof value === 'string' ? value.trim() : value);
 }

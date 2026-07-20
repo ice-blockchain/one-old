@@ -37,6 +37,9 @@ export interface RunTeamArgs {
   rawData: unknown;          // raw hook input, for run-claim session identity
   content?: string;
   writeTargetPaths?: string[];
+  // apply_patch can carry different reconstructed contents per target. This
+  // map prevents a multi-file patch from being treated as one empty barrel.
+  targetContents?: Readonly<Record<string, string | undefined>>;
   featureTargetPaths: string[];
   writingFeatureSource: boolean;
   writingFeatureSourceViaCommand: boolean;
@@ -58,22 +61,34 @@ function isEmptyBarrelContent(content: string): boolean {
   return stripped === '' || stripped === 'export {}' || stripped === 'export {};';
 }
 
-function isArchitectScaffoldBarrelWrite(role: string | null, targets: string[], content: string | undefined): boolean {
+function isArchitectScaffoldBarrelWrite(
+  role: string | null,
+  targets: string[],
+  content: string | undefined,
+  targetContents?: Readonly<Record<string, string | undefined>>,
+): boolean {
   return role === 'senior-architect'
     && targets.length > 0
     && targets.every(isArchitectEmptyPackageBarrelTarget)
-    && isEmptyBarrelContent(content || '');
+    && targets.every((target) => isEmptyBarrelContent(targetContents ? (targetContents[target] || '') : (content || '')));
 }
 
 function isArchitectTailwindGlobalsTarget(filePath: string): boolean {
   return filePath === CANONICAL_TAILWIND_GLOBALS_PATH || filePath === 'packages/tailwind-config/globals.css';
 }
 
-function isArchitectScaffoldBaselineWrite(role: string | null, targets: string[], content: string | undefined): boolean {
-  if (isArchitectScaffoldBarrelWrite(role, targets, content)) return true;
+function isArchitectScaffoldBaselineWrite(
+  role: string | null,
+  targets: string[],
+  content: string | undefined,
+  targetContents?: Readonly<Record<string, string | undefined>>,
+): boolean {
+  if (isArchitectScaffoldBarrelWrite(role, targets, content, targetContents)) return true;
   return role === 'senior-architect'
     && targets.length > 0
-    && targets.every(isArchitectTailwindGlobalsTarget);
+    && targets.every((target) => isArchitectTailwindGlobalsTarget(target)
+      || (isArchitectEmptyPackageBarrelTarget(target)
+        && isEmptyBarrelContent(targetContents ? (targetContents[target] || '') : (content || ''))));
 }
 
 function isArchitectScaffoldReservation(role: string | null | undefined, target: string): boolean {
@@ -168,6 +183,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const agentContext = resolveRunAgentContext(projectRoot, state, rawData, {
     claimPending: true,
     allowSoleAnonymousPending: nativeAnonymousDevinWrite,
+    host: args.host,
   })
     || (!hasRunAgentState(projectRoot, state) ? legacyRunAgentContext(state) : null)
     // Last resort for a Cursor worker whose write carries no role/parent/transcript linkage:
@@ -208,15 +224,15 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     // checks below still run, so a real feature run stays coordinated.)
     if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) return null;
     const recovery = unresolvedChild
-      ? 'This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Do not retry the edit and do not self-assert a role in assistant prose. The PARENT/orchestrator must stop or replace this child and retry the same role. On Codex, use the exact `task_name` contract: `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry it. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.'
-      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract: `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.';
+      ? 'This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Do not retry the edit and do not self-assert a role in assistant prose. The PARENT/orchestrator must stop or replace this child and retry the same role. On Codex, use the exact `task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry identity while live hooks verify the actual model. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.'
+      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.';
     return deny(block('run-team-not-subagent',
       `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. ${recovery} Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role, RECOVERY: recovery }));
   }
 
   const scaffoldTargets = featureTargetPaths.length > 0 ? featureTargetPaths : writeTargetPaths;
-  if (isArchitectScaffoldBaselineWrite(acRole, scaffoldTargets, content)) return null;
+  if (isArchitectScaffoldBaselineWrite(acRole, scaffoldTargets, content, args.targetContents)) return null;
 
   // Preferred path: explicit per-run assignment manifest authored by the architect.
   // Ownership is by assigned SCOPE, not by guessed path-kind — stack-agnostic.

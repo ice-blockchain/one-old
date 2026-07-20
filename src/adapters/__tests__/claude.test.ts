@@ -11,6 +11,17 @@ import type { Handler } from '../../core/types';
 
 const claude = makeClaudeAdapter('claude');
 
+const PATCH = '*** Begin Patch\n*** Add File: src/x.ts\n+x\n*** End Patch';
+
+test('claude/codex: canonicalizes freeform apply_patch input separately from content', () => {
+  const parsed = makeClaudeAdapter('codex').parse({
+    stdin: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: PATCH }),
+    argv: [],
+  });
+  assert.equal(parsed.tool?.patchText, PATCH);
+  assert.equal(parsed.tool?.content, undefined);
+});
+
 test('claude: PreToolUse Bash deny → nested permissionDecision JSON', async () => {
   const handlers: Handler[] = [
     {

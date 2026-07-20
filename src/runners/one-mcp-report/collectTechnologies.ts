@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { ONE_MCP_REPORTED_TECHNOLOGY_IDS } from '../../config/one-mcp';
 import { addTechForDependency, dependencyNames } from './lib';
 
 type Rec = Record<string, unknown>;
@@ -16,8 +17,8 @@ export function collectTechnologies(cwd: string, state: unknown, fileExtensions:
   for (const values of Object.values(stateTech)) {
     if (!Array.isArray(values)) continue;
     for (const value of values) {
-      const normalized = String(value || '').trim().toLowerCase();
-      if (normalized) techs.add(normalized);
+      const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+      if (ONE_MCP_REPORTED_TECHNOLOGY_IDS.has(normalized)) techs.add(normalized);
     }
   }
 
@@ -31,5 +32,8 @@ export function collectTechnologies(cwd: string, state: unknown, fileExtensions:
   if (fileExtensions.swift) techs.add('swift');
   if (fileExtensions.dart) techs.add('dart');
   if (fs.existsSync(path.join(cwd, 'pnpm-workspace.yaml'))) techs.add('pnpm');
-  return [...techs].filter(Boolean).sort().slice(0, 50);
+  return [...techs]
+    .filter((technology) => ONE_MCP_REPORTED_TECHNOLOGY_IDS.has(technology))
+    .sort()
+    .slice(0, 50);
 }

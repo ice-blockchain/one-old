@@ -9,12 +9,11 @@ import * as fs from 'fs';
 import type { HostId } from '../../core/types';
 import { readJson } from '../fsjson';
 import { readOneSettings, updateOneSettings, type OneSettingsPatch } from '../one-settings';
-import { obj, type Rec } from '../obj';
+import type { Rec } from '../obj';
 import {
   LOCAL_PREF_KEYS,
+  mergeMissingProjectPrefs,
   normalizeProjectPrefs,
-  readProjectPrefs,
-  writeProjectPrefs,
 } from './local-prefs';
 import {
   applyTrafficOneEnv,
@@ -23,18 +22,6 @@ import {
   removeLegacyProjectLocalTrafficOneRuntime,
   resolveTrafficOneEnv,
 } from './traffic-one-paths';
-
-function mergeMissingCanonicalValues(canonical: unknown, legacy: unknown): unknown {
-  if (canonical === undefined || canonical === null) return legacy;
-  const canonicalObj = obj(canonical);
-  const legacyObj = obj(legacy);
-  if (!canonicalObj || !legacyObj) return canonical;
-  const merged: Rec = { ...legacyObj, ...canonicalObj };
-  for (const key of Object.keys(legacyObj)) {
-    merged[key] = mergeMissingCanonicalValues(canonicalObj[key], legacyObj[key]);
-  }
-  return merged;
-}
 
 // The project-local bridge is intentionally an allowlist. Older runtimes could
 // leave arbitrary top-level fields in preferences.json, and normal preference
@@ -57,9 +44,7 @@ function migrateLegacyProjectPrefs(cwd: string, env: NodeJS.ProcessEnv): void {
   const legacyPath = projectLocalPrefsPath(cwd);
   if (!fs.existsSync(legacyPath)) return;
   const legacy = migratableProjectPrefs(readJson(legacyPath, {}));
-  const canonical = readProjectPrefs(cwd, env);
-  const merged = mergeMissingCanonicalValues(canonical, legacy);
-  writeProjectPrefs(cwd, merged, env);
+  mergeMissingProjectPrefs(cwd, legacy, env);
 }
 
 function migrateLegacyMachineSettings(cwd: string, env: NodeJS.ProcessEnv): void {
@@ -72,10 +57,6 @@ function migrateLegacyMachineSettings(cwd: string, env: NodeJS.ProcessEnv): void
   if (!canonical.codeGraphProvider && legacy.codeGraphProvider) {
     patch.codeGraphProvider = legacy.codeGraphProvider;
   }
-  const missingHosts = Object.fromEntries(
-    Object.entries(legacy.hosts).filter(([host]) => canonical.hosts[host as keyof typeof canonical.hosts] == null),
-  );
-  if (Object.keys(missingHosts).length > 0) patch.hosts = missingHosts;
   if (Object.keys(patch).length > 0) updateOneSettings(patch, env);
 }
 

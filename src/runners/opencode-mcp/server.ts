@@ -34,7 +34,7 @@ const TOOLS = [
         runId: { type: 'string', description: 'The current run id (currentRunId) — scopes the attempt marker, digest, and the background run.' },
         allowedFiles: { type: 'string', description: 'Required comma/newline-separated repo-relative allowlist for this bounded unit, e.g. apps/web/src/features/courses/**. Any diff outside this scope is rejected.' },
         projectRoot: { type: 'string', description: 'Absolute path to the project root (the directory containing .traffic-one). Must match the gate cwd. Defaults to the server cwd.' },
-        model: { type: 'string', description: 'Optional model pin (e.g. a paid `opencode/gpt-5.1-codex`, which requires `opencode auth login`). Omit to let OpenCode use its default free model.' },
+        model: { type: 'string', description: 'Optional model pin (e.g. a paid `opencode/gpt-5.5`, which requires `opencode auth login`). Omit to let OpenCode use its default free model.' },
       },
       required: ['role', 'task', 'runId', 'allowedFiles'],
     },

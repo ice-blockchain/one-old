@@ -16,6 +16,7 @@ import {
   OPENCODE_TOOL_WRITE,
 } from '../config/opencode-host';
 import type { CanonicalEvent, ToolClass, ToolInput } from '../core/types';
+import { patchTextFromToolInput } from '../shared/apply-patch';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
@@ -157,6 +158,9 @@ function makeTool(data: Record<string, unknown>): ToolInput | undefined {
     input.new_string, input.newString, input.new_str, input.patch, input.diff,
     tool.content,
   ) || editsContent(data.edits, input.edits);
+  const patchText = /^(?:apply_patch|patch)$/i.test(rawName.split('.').pop() || '')
+    ? patchTextFromToolInput(input, data, tool)
+    : '';
 
   return {
     class: toolClassForOpenCode(rawName, input),
@@ -165,6 +169,7 @@ function makeTool(data: Record<string, unknown>): ToolInput | undefined {
     ...(workdir ? { workdir } : {}),
     ...(filePath ? { filePath } : {}),
     ...(content ? { content } : {}),
+    ...(patchText ? { patchText } : {}),
   };
 }
 

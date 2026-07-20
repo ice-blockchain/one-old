@@ -17,7 +17,8 @@ import { GENERATED_MARKER } from '../../shared/materialize/generated';
 import { obj, type Rec } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { isMutatingPreToolUse, parsedToolInput, patchTextFromToolInput, patchTouchedFiles } from '../../shared/tool-classify';
+import { parseApplyPatch, patchOperationPaths, patchTextFromToolInput } from '../../shared/apply-patch';
+import { isMutatingPreToolUse, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 
@@ -59,7 +60,15 @@ export function authoringWriteGuard(ctx: Ctx): HookResult {
   const candidates: string[] = [];
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
   if (filePath) candidates.push(filePath);
-  candidates.push(...patchTouchedFiles(patchTextFromToolInput(toolInput)));
+  const isApplyPatch = /^apply_patch$/i.test(normalizedToolName(ctx.input.tool?.rawName || toolName));
+  if (isApplyPatch) {
+    const patchText = patchTextFromToolInput(ctx.input.tool?.patchText, raw.tool_input, raw.toolInput, raw.input, raw, toolInput);
+    const parsedPatch = parseApplyPatch(patchText);
+    if (!parsedPatch.ok) {
+      return deny(`traffic-one — invalid apply_patch payload: ${parsedPatch.error}. No write was made.`);
+    }
+    candidates.push(...patchOperationPaths(parsedPatch.operations));
+  }
   let command = ctx.input.tool?.command || asString(toolInput.command ?? toolInput.cmd);
   if (!/^(Bash|Shell|Terminal|exec_command)$/i.test(String(toolName || ''))) command = '';
   if (command && command.includes('.traffic-one')) {

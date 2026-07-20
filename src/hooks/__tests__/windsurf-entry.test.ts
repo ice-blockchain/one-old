@@ -64,6 +64,7 @@ test('windsurf entry: setup-required pre_user_prompt does not block native Devin
     assert.equal(out.exitCode, 0);
     assert.match(out.stdout, /setup required/i);
     assert.match(out.stdout, /onboarding\/agent#p=56858&t=t/i);
+    assert.match(out.stdout, /127\.0\.0\.1:56858\/local\?t=t/i);
     assert.equal(out.stderr, '');
   });
 });

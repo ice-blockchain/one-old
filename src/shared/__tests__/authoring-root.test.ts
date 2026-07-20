@@ -138,7 +138,7 @@ test('prepareReport refuses an authoring root before minting anything', async ()
   const { prepareReport } = await import('../../runners/one-mcp-report/prepareReport');
   withTmp((dir) => {
     makeSourceRepo(dir);
-    const result = prepareReport(dir, { spawn: false });
+    const result = prepareReport(dir, { spawn: false, featureEnabled: true });
     assert.equal(result.started, false);
     assert.equal(result.reason, 'plugin-authoring-root');
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false);

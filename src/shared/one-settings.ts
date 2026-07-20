@@ -1,32 +1,23 @@
 // src/shared/one-settings.ts
 // The single owner of ~/.traffic-one/one.json — the consolidated GLOBAL, per-user
-// settings file holding the validated wizard API-key record (`auth`), the
-// machine-wide code-graph provider, and per-host model catalogs as top-level
-// sections.
+// settings file holding the validated wizard API-key record (`auth`) and the
+// machine-wide code-graph provider.
 //
 // Why consolidate: the code-graph provider becomes a machine-level setting so a
 // provider already chosen/installed locally is reused across projects (onboarding
 // stops re-prompting). Keeping auth alongside it means one secure (0o600)
 // settings file for all Traffic One machine state.
 //
-// Concurrency: `auth` is written by the wizard while host snapshots can be
-// written by overlapping host hooks. Every mutation takes a bounded
+// Concurrency: auth and code-graph writes can overlap. Every mutation takes a bounded
 // cross-process lock, RE-READS the file while holding it, patches only the
-// touched section/host, and writes atomically (temp + rename).
-// This preserves Claude/Codex/Cursor snapshots even when their SessionStart hooks
-// overlap, without allowing a dead process to block settings forever.
+// touched section, and writes atomically (temp + rename).
 
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { HOST_IDS, type HostModelKey } from '../config/model-tiers';
 import { ONE_SETTINGS_VERSION } from '../config/one-settings';
 import { readJson } from './fsjson';
-import { parseHostModelSnapshot, type HostModelSnapshot } from './model-tiers';
-
-export type OneHostSettings = HostModelSnapshot;
-export type OneHostSettingsMap = Partial<Record<HostModelKey, OneHostSettings>>;
 
 export interface OneApiKeyAuth {
   version: 1;
@@ -39,20 +30,16 @@ export interface OneSettings {
   schemaVersion: number;
   auth?: OneApiKeyAuth;
   codeGraphProvider?: string | null;
-  hosts: OneHostSettingsMap;
 }
 
 export interface OneSectionValueMap {
   auth: OneApiKeyAuth;
   codeGraphProvider: string | null;
-  hosts: OneHostSettingsMap;
 }
 
 export type OneSection = keyof OneSectionValueMap;
 
-export type OneSettingsPatch = Omit<Partial<OneSettings>, 'hosts'> & {
-  hosts?: Partial<Record<HostModelKey, OneHostSettings | null>>;
-};
+export type OneSettingsPatch = Pick<Partial<OneSettings>, 'auth' | 'codeGraphProvider'>;
 
 export const ONE_SETTINGS_LOCK_TIMEOUT_MS = 500;
 const ONE_SETTINGS_LOCK_RETRY_MS = 10;
@@ -107,24 +94,14 @@ function parseOneSettings(raw: Record<string, unknown> | null): OneSettings {
     return {
       schemaVersion: ONE_SETTINGS_VERSION,
       codeGraphProvider: null,
-      hosts: {},
     };
   }
   const auth = apiKeyAuthRecord(raw.auth);
-  const hosts: OneHostSettingsMap = {};
-  const rawHosts = raw.hosts;
-  if (rawHosts && typeof rawHosts === 'object' && !Array.isArray(rawHosts)) {
-    for (const host of HOST_IDS) {
-      const parsed = parseHostModelSnapshot((rawHosts as Record<string, unknown>)[host], host);
-      if (parsed) hosts[host] = parsed;
-    }
-  }
   const settings: OneSettings = {
     schemaVersion: typeof raw.schemaVersion === 'number'
       ? raw.schemaVersion
       : ONE_SETTINGS_VERSION,
     codeGraphProvider: typeof raw.codeGraphProvider === 'string' ? raw.codeGraphProvider : null,
-    hosts,
   };
   if (auth) settings.auth = auth;
   return settings;
@@ -133,13 +110,6 @@ function parseOneSettings(raw: Record<string, unknown> | null): OneSettings {
 export function readOneSettings(env: NodeJS.ProcessEnv = process.env): OneSettings {
   const raw = readJson<Record<string, unknown> | null>(oneSettingsPath(env), null);
   return parseOneSettings(raw);
-}
-
-export function readOneHostSettings(
-  host: HostModelKey,
-  env: NodeJS.ProcessEnv = process.env,
-): OneHostSettings | null {
-  return readOneSettings(env).hosts[host] ?? null;
 }
 
 interface RawSettingsRead {
@@ -180,7 +150,7 @@ function readRawSettings(filePath: string): RawSettingsRead {
   }
 }
 
-function writeWholeFile(filePath: string, settings: OneSettings): void {
+function writeWholeFile(filePath: string, settings: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -264,6 +234,18 @@ function reapObservedLock(lockPath: string, owner: SettingsLockOwner): boolean {
   }
 }
 
+function reapAbandonedEmptyLock(lockPath: string, now: number): boolean {
+  try {
+    if (fs.readdirSync(lockPath).length !== 0) return false;
+    if (now - fs.statSync(lockPath).mtimeMs <= ONE_SETTINGS_LOCK_STALE_MS) return false;
+    fs.rmdirSync(lockPath);
+    return true;
+  } catch {
+    // A legacy publisher or another recovery contender won the race.
+    return false;
+  }
+}
+
 function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -314,6 +296,7 @@ function acquireSettingsLock(filePath: string): SettingsLock {
           && !processAlive(owner.pid) && reapObservedLock(lockPath, owner)) {
           continue;
         }
+        if (!owner && reapAbandonedEmptyLock(lockPath, now)) continue;
         if (now >= deadline) throw new Error(`traffic-one settings lock timed out after ${ONE_SETTINGS_LOCK_TIMEOUT_MS}ms`);
         sleepSync(Math.min(ONE_SETTINGS_LOCK_RETRY_MS, deadline - now));
       }
@@ -326,14 +309,18 @@ function acquireSettingsLock(filePath: string): SettingsLock {
 }
 
 function releaseSettingsLock(lock: SettingsLock): void {
+  const releasedPath = `${lock.dirPath}.${lock.token}.released`;
   try {
     const raw = JSON.parse(fs.readFileSync(lock.ownerPath, 'utf8')) as Record<string, unknown>;
     if (raw.token !== lock.token) return;
-    fs.unlinkSync(lock.ownerPath);
-    fs.rmdirSync(lock.dirPath);
+    // Release ownership by atomically moving the whole, verified directory off
+    // the canonical path. A cleanup failure cannot wedge future settings writes.
+    fs.renameSync(lock.dirPath, releasedPath);
   } catch {
     // Already removed/replaced. Never unlink a lock we cannot prove we own.
+    return;
   }
+  try { fs.rmSync(releasedPath, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
 function withSettingsLock<T>(filePath: string, body: () => T): T {
@@ -368,30 +355,29 @@ export function readCanonicalOneSettings(
   return { ok: true, settings: parseOneSettings(source.raw) };
 }
 
-function mergeSettings(current: OneSettings, patch: OneSettingsPatch): OneSettings {
-  const hosts: OneHostSettingsMap = { ...current.hosts };
-  if (patch.hosts !== undefined) {
-    for (const [rawHost, value] of Object.entries(patch.hosts)) {
-      if (!(HOST_IDS as readonly string[]).includes(rawHost)) {
-        throw new TypeError(`invalid Traffic One settings host: ${rawHost}`);
-      }
-      const host = rawHost as HostModelKey;
-      if (value === null) {
-        delete hosts[host];
-        continue;
-      }
-      const parsed = parseHostModelSnapshot(value, host);
-      if (!parsed) throw new TypeError(`invalid Traffic One model snapshot for ${host}`);
-      hosts[host] = parsed;
-    }
+// Apply a typed patch to the RAW envelope instead of serializing the typed read
+// model. The typed model intentionally exposes only fields this runtime
+// understands; using it as the write substrate would erase additive fields
+// written by a newer runtime.
+//
+// Known fields supplied by the patch are still canonicalized. Unknown
+// top-level fields survive byte-for-byte semantically. The retired pre-release
+// `hosts` model mirror is the sole exception and is deleted on the first write;
+// model catalogs now live only in one-mcp.json.
+function mergeRawSettings(
+  raw: Record<string, unknown> | null,
+  patch: OneSettingsPatch,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = raw ? { ...raw } : {};
+  next.schemaVersion = ONE_SETTINGS_VERSION;
+  if (!Object.prototype.hasOwnProperty.call(next, 'codeGraphProvider')) next.codeGraphProvider = null;
+  delete next.hosts;
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'auth')) next.auth = patch.auth;
+  if (Object.prototype.hasOwnProperty.call(patch, 'codeGraphProvider')) {
+    next.codeGraphProvider = patch.codeGraphProvider;
   }
-  const { hosts: _ignoredHosts, ...topLevelPatch } = patch;
-  return {
-    ...current,
-    ...topLevelPatch,
-    schemaVersion: ONE_SETTINGS_VERSION,
-    hosts,
-  };
+  return next;
 }
 
 // Atomically apply a partial patch (read-merge-write + temp/rename). This is the
@@ -406,8 +392,7 @@ export function updateOneSettings(patch: OneSettingsPatch, env: NodeJS.ProcessEn
     if (!source.valid) throw new Error('Traffic One settings are malformed');
     const schemaError = rawSchemaError(source.raw);
     if (schemaError) throw new Error(schemaError);
-    const current = parseOneSettings(source.raw);
-    writeWholeFile(filePath, mergeSettings(current, patch));
+    writeWholeFile(filePath, mergeRawSettings(source.raw, patch));
   });
   return filePath;
 }
@@ -418,16 +403,6 @@ export function writeOneSection<K extends OneSection>(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   return updateOneSettings({ [section]: value } as OneSettingsPatch, env);
-}
-
-export function writeOneHostSettings(
-  host: HostModelKey,
-  value: OneHostSettings,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const parsed = parseHostModelSnapshot(value, host);
-  if (!parsed) throw new TypeError(`invalid Traffic One model snapshot for ${host}`);
-  return updateOneSettings({ hosts: { [host]: parsed } }, env);
 }
 
 // Remove ONE section (used by auth invalidation/clear). No-op if the file is absent.
@@ -441,10 +416,11 @@ export function deleteOneSection(section: OneSection, env: NodeJS.ProcessEnv = p
       if (!source.valid) throw new Error('Traffic One settings are malformed');
       const schemaError = rawSchemaError(source.raw);
       if (schemaError) throw new Error(schemaError);
-      const current = parseOneSettings(source.raw);
-      if (section === 'hosts') current.hosts = {};
-      else delete current[section];
-      writeWholeFile(filePath, { ...current, schemaVersion: ONE_SETTINGS_VERSION });
+      const current: Record<string, unknown> = source.raw ? { ...source.raw } : {};
+      delete current[section];
+      current.schemaVersion = ONE_SETTINGS_VERSION;
+      delete current.hosts;
+      writeWholeFile(filePath, current);
     });
     return true;
   } catch {

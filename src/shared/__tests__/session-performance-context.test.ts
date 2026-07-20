@@ -6,18 +6,18 @@ import test from 'node:test';
 
 import { hostModelSnapshot } from '../model-tiers';
 import { sessionPerformanceContext } from '../session-performance-context';
-import { writeOneHostSettings } from '../one-settings';
+import { writeRuntimeModelSnapshot } from './support/one-mcp-runtime';
 
-test('SessionStart injects active host performance and role models from one.json', () => {
+test('SessionStart injects active host performance and role models from the One MCP sidecar', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-session-performance-'));
   const env = {
     TRAFFIC_ONE_STATE_PATH: path.join(dir, 'one.json'),
+    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json'),
     TRAFFIC_ONE_USER_PLAN: 'pro',
   } as NodeJS.ProcessEnv;
   try {
-    writeOneHostSettings('codex', {
+    writeRuntimeModelSnapshot('codex', {
       ...hostModelSnapshot('codex', 'pro'),
-      updatedAt: '2026-07-13',
       tiers: {
         highest: ['local-high'],
         balanced: ['local-balanced'],
@@ -29,7 +29,7 @@ test('SessionStart injects active host performance and role models from one.json
       team: { mode: 'subagents', approved: true },
     }, 'codex', env);
     assert.match(text, /performance: balanced/);
-    assert.match(text, /host: codex · plan: pro · catalog: 2026-07-13/);
+    assert.match(text, /host: codex · plan: pro · catalog: one-mcp v1/);
     assert.match(text, /senior-architect → balanced → local-balanced/);
     assert.match(text, /senior-tester → cheapest → local-cheap/);
   } finally {

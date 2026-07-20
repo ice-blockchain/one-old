@@ -7,10 +7,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
+import {
+  ONE_MCP_MAX_AVAILABLE_MODELS,
+  ONE_MCP_MAX_CONFIG_VERSION,
+  isSafeOneMcpModelId,
+} from '../../config/one-mcp';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { readJson } from '../fsjson';
 import { detectHost } from '../host';
 import { canonicalHost, canonicalPlan, planIsRecognized } from '../model-tiers';
+import { agentTierForPlan } from '../performance-config';
 import { readOneSettings, writeOneSection } from '../one-settings';
 import { sha256 } from '../text';
 import {
@@ -30,6 +36,7 @@ import {
   PERFORMANCE_SOURCE_IDS,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
+  VALID_AGENT_ROLES,
 } from '../../config/state';
 import { stateTimestamp } from './io';
 import { initializeLocalToolchainState } from './toolchain';
@@ -49,13 +56,24 @@ const PROJECT_PREF_KEYS = new Set([
 // Runtime projects these fields from prefs.hosts[activeHost] onto effective
 // state. Their old top-level form is recognized only so it can be stripped; it
 // is never assigned to a host implicitly.
-const HOST_PREF_KEYS = new Set(['performance', 'team', 'configuredFor', 'availableModels']);
+const HOST_PREF_KEYS = new Set(['performance', 'team', 'availableModels']);
+const RETIRED_LOCAL_PREF_KEYS = new Set(['configuredFor', 'oneMcp']);
 
 export const LOCAL_PREF_KEYS = new Set([
   ...PROJECT_PREF_KEYS,
   ...HOST_PREF_KEYS,
+  ...RETIRED_LOCAL_PREF_KEYS,
   'hosts',
 ]);
+
+export interface PerformanceTarget {
+  plan: string;
+  appliedFingerprint: string;
+  configVersion: number;
+}
+
+const ONE_MCP_FINGERPRINT_RE = /^[a-f0-9]{64}$/;
+const AVAILABLE_MODELS_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 function knownHost(value: string): value is HostModelKey {
   return (HOST_IDS as readonly string[]).includes(value);
@@ -67,13 +85,43 @@ function canonicalHostKey(value: unknown): HostModelKey | null {
   return knownHost(normalized) ? normalized : null;
 }
 
-function validDateStamp(value: unknown): value is string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = Date.parse(`${value}T00:00:00Z`);
-  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+function normalizePerformanceTarget(host: HostModelKey, value: unknown): PerformanceTarget | null {
+  const target = obj(value);
+  if (!target
+    || !planIsRecognized(target.plan)
+    || typeof target.appliedFingerprint !== 'string'
+    || !ONE_MCP_FINGERPRINT_RE.test(target.appliedFingerprint)
+    || !Number.isInteger(target.configVersion)
+    || (target.configVersion as number) < 0
+    || (target.configVersion as number) > ONE_MCP_MAX_CONFIG_VERSION) return null;
+  return {
+    plan: canonicalPlan(host, target.plan),
+    appliedFingerprint: target.appliedFingerprint,
+    configVersion: target.configVersion as number,
+  };
 }
 
-function normalizePerformance(value: unknown): Rec | null {
+interface CursorAvailableModelsTarget {
+  plan: string;
+  appliedFingerprint: string;
+}
+
+// Cursor picker availability is invalidated only by the semantic catalog
+// identity. A metadata-only One MCP version bump must neither invalidate the
+// captured runner slugs nor force a fresh picker enumeration.
+function normalizeCursorAvailableModelsTarget(value: unknown): CursorAvailableModelsTarget | null {
+  const target = obj(value);
+  if (!target
+    || !planIsRecognized(target.plan)
+    || typeof target.appliedFingerprint !== 'string'
+    || !ONE_MCP_FINGERPRINT_RE.test(target.appliedFingerprint)) return null;
+  return {
+    plan: canonicalPlan('cursor', target.plan),
+    appliedFingerprint: target.appliedFingerprint,
+  };
+}
+
+function normalizePerformance(host: HostModelKey, value: unknown): Rec | null {
   if (typeof value === 'string') {
     const level = canonicalPerformanceLevel(value);
     return typeof level === 'string' && PERFORMANCE_LEVEL_IDS.has(level)
@@ -87,27 +135,69 @@ function normalizePerformance(value: unknown): Rec | null {
   const rawSource = typeof perf.source === 'string'
     ? perf.source.trim().toLowerCase().replace(/[_\s]+/g, '-')
     : 'prompted';
-  return {
+  const normalized: Rec = {
     ...perf,
     level,
     source: PERFORMANCE_SOURCE_IDS.has(rawSource) ? rawSource : 'prompted',
   };
+  const target = normalizePerformanceTarget(host, perf.target);
+  if (target) normalized.target = target;
+  else delete normalized.target;
+  return normalized;
 }
 
-function normalizeTeam(value: unknown, performance: unknown): Rec | null {
+function normalizeTeamModelSelections(host: HostModelKey, value: unknown): Rec | null {
+  const raw = obj(value);
+  if (!raw) return null;
+  const selections: Rec = {};
+  for (const [role, model] of Object.entries(raw)) {
+    if (!VALID_AGENT_ROLES.has(role) || !isSafeOneMcpModelId(model, host)) continue;
+    selections[role] = model;
+  }
+  return Object.keys(selections).length > 0 ? selections : null;
+}
+
+// Local preferences have the canonical host + plan target, so redundant
+// overrides must be compared with the plan-aware role tier rather than the
+// static Performance table. Otherwise, for example, Codex Free + High defaults
+// Architect to Balanced but an explicit Highest choice is incorrectly dropped
+// merely because Highest is the generic High default.
+function normalizePlanAwareTeamOverrides(
+  host: HostModelKey,
+  value: unknown,
+  performance: unknown,
+): Rec | null {
+  const candidates = canonicalTeamOverrides(value, null);
+  if (!candidates) return null;
+  const perf = obj(performance);
+  const level = typeof perf?.level === 'string' ? perf.level : '';
+  const target = obj(perf?.target);
+  const plan = typeof target?.plan === 'string' ? target.plan : '';
+  if (!level || !plan) return canonicalTeamOverrides(value, level);
+
+  const overrides: Rec = {};
+  for (const [role, tier] of Object.entries(candidates)) {
+    const baseline = agentTierForPlan(host, plan, level, role);
+    if (!baseline || baseline !== tier) overrides[role] = tier;
+  }
+  return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function normalizeTeam(host: HostModelKey, value: unknown, performance: unknown): Rec | null {
   const fromString = typeof value === 'string' ? teamStateFromString(value) : null;
   const team = fromString || obj(value);
   if (!team) return null;
-  const perf = obj(performance);
-  const performanceLevel = perf ? perf.level : null;
   const normalized: Rec = {
     ...team,
     mode: canonicalTeamMode(team.mode),
     source: canonicalTeamSource((team.source as string) || 'prompted'),
   };
-  const normalizedOverrides = canonicalTeamOverrides(team.overrides, performanceLevel);
+  const normalizedOverrides = normalizePlanAwareTeamOverrides(host, team.overrides, performance);
   if (normalizedOverrides) normalized.overrides = normalizedOverrides;
   else delete normalized.overrides;
+  const modelSelections = normalizeTeamModelSelections(host, team.modelSelections);
+  if (normalized.mode === 'subagents' && modelSelections) normalized.modelSelections = modelSelections;
+  else delete normalized.modelSelections;
   if (team.approved === true) normalized.approved = true;
   else delete normalized.approved;
   if (normalized.mode !== 'subagents') delete normalized.modeChangeApproval;
@@ -116,51 +206,47 @@ function normalizeTeam(value: unknown, performance: unknown): Rec | null {
     : null;
 }
 
-function normalizeConfiguredFor(host: HostModelKey, value: unknown): Rec | null {
-  const configured = obj(value);
-  if (!configured || !planIsRecognized(configured.plan) || !validDateStamp(configured.modelsUpdatedAt)) return null;
-  return {
-    plan: canonicalPlan(host, configured.plan),
-    modelsUpdatedAt: configured.modelsUpdatedAt,
-  };
-}
-
 function validModelId(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.trim().length > 0
-    && value.trim().length <= 256
-    && !/[\u0000-\u001f\u007f]/.test(value);
+  return isSafeOneMcpModelId(value);
 }
 
 function normalizeAvailableModels(host: HostModelKey, value: unknown): Rec | null {
   if (host !== 'cursor') return null;
   const capture = obj(value);
-  if (!capture || !Array.isArray(capture.models) || !planIsRecognized(capture.plan)
-    || !validDateStamp(capture.modelsUpdatedAt)
-    || typeof capture.capturedAt !== 'string'
-    || !Number.isFinite(Date.parse(capture.capturedAt))) return null;
+  if (!capture
+    || !Array.isArray(capture.models)
+    || capture.models.length > ONE_MCP_MAX_AVAILABLE_MODELS
+    || typeof capture.capturedAt !== 'string') return null;
+  const capturedAt = Date.parse(capture.capturedAt);
+  if (!Number.isFinite(capturedAt)
+    || capturedAt > Date.now() + AVAILABLE_MODELS_MAX_FUTURE_SKEW_MS) return null;
+  const target = normalizeCursorAvailableModelsTarget(capture.target);
+  if (!target) return null;
   const models = [...new Set(capture.models.filter(validModelId).map((model) => model.trim()))];
   if (models.length === 0) return null;
   return {
+    ...capture,
     models,
-    plan: canonicalPlan('cursor', capture.plan),
-    modelsUpdatedAt: capture.modelsUpdatedAt,
     capturedAt: capture.capturedAt.trim(),
+    target,
   };
 }
 
 function normalizeHostPrefs(host: HostModelKey, value: unknown): Rec | null {
   const raw = obj(value);
   if (!raw) return null;
-  const out: Rec = {};
-  const performance = normalizePerformance(raw.performance);
+  const out: Rec = { ...raw };
+  delete out.configuredFor;
+  delete out.oneMcp;
+  const performance = normalizePerformance(host, raw.performance);
   if (performance) out.performance = performance;
-  const team = normalizeTeam(raw.team, performance);
+  else delete out.performance;
+  const team = normalizeTeam(host, raw.team, performance);
   if (team) out.team = team;
-  const configuredFor = normalizeConfiguredFor(host, raw.configuredFor);
-  if (configuredFor) out.configuredFor = configuredFor;
+  else delete out.team;
   const availableModels = normalizeAvailableModels(host, raw.availableModels);
   if (availableModels) out.availableModels = availableModels;
+  else delete out.availableModels;
   return Object.keys(out).length > 0 ? out : null;
 }
 
@@ -243,6 +329,18 @@ function reapObservedProjectPrefsLock(lockPath: string, owner: ProjectPrefsLockO
   }
 }
 
+function reapAbandonedEmptyProjectPrefsLock(lockPath: string, now: number): boolean {
+  try {
+    if (fs.readdirSync(lockPath).length !== 0) return false;
+    if (now - fs.statSync(lockPath).mtimeMs <= PROJECT_PREFS_LOCK_STALE_MS) return false;
+    fs.rmdirSync(lockPath);
+    return true;
+  } catch {
+    // A legacy publisher or another recovery contender won the race.
+    return false;
+  }
+}
+
 function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -290,6 +388,7 @@ function acquireProjectPrefsLock(filePath: string): ProjectPrefsLock {
         const owner = observedProjectPrefsLockOwner(lockPath);
         if (owner && now - owner.createdAt > PROJECT_PREFS_LOCK_STALE_MS
           && !processAlive(owner.pid) && reapObservedProjectPrefsLock(lockPath, owner)) continue;
+        if (!owner && reapAbandonedEmptyProjectPrefsLock(lockPath, now)) continue;
         if (now >= deadline) {
           throw new Error(`traffic-one project preferences lock timed out after ${PROJECT_PREFS_LOCK_TIMEOUT_MS}ms`);
         }
@@ -304,14 +403,18 @@ function acquireProjectPrefsLock(filePath: string): ProjectPrefsLock {
 }
 
 function releaseProjectPrefsLock(lock: ProjectPrefsLock): void {
+  const releasedPath = `${lock.dirPath}.${lock.token}.released`;
   try {
     const raw = JSON.parse(fs.readFileSync(lock.ownerPath, 'utf8')) as Record<string, unknown>;
     if (raw.token !== lock.token) return;
-    fs.unlinkSync(lock.ownerPath);
-    fs.rmdirSync(lock.dirPath);
+    // Atomically vacate the canonical lock path before best-effort cleanup, so
+    // an interrupted release cannot leave an empty directory that wedges prefs.
+    fs.renameSync(lock.dirPath, releasedPath);
   } catch {
     // Already removed or replaced. Never remove a lock we cannot prove we own.
+    return;
   }
+  try { fs.rmSync(releasedPath, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
 function withProjectPrefsLock<T>(filePath: string, body: () => T): T {
@@ -347,19 +450,28 @@ export function normalizeProjectPrefs(prefs: unknown): Rec {
   if (Object.prototype.hasOwnProperty.call(out, 'codeGraphProvider')) {
     delete out.codeGraphProvider;
   }
+  // Pre-release One MCP acknowledgement shapes are intentionally not migrated.
+  // The canonical acknowledgement now lives in hosts.<host>.performance.target.
+  for (const key of RETIRED_LOCAL_PREF_KEYS) delete out[key];
 
   // Legacy generic performance/team belong to no specific host. Dropping them
   // intentionally makes the first access on every host reopen Performance.
   for (const key of HOST_PREF_KEYS) delete out[key];
 
   const rawHosts = obj(base.hosts);
-  const hosts: Rec = {};
+  const hosts: Rec = rawHosts ? { ...rawHosts } : {};
   if (rawHosts) {
     for (const [rawHost, value] of Object.entries(rawHosts)) {
       const host = canonicalHostKey(rawHost);
-      if (!host) continue;
+      if (!host) {
+        if (rawHost === '__proto__' || rawHost === 'constructor' || rawHost === 'prototype') {
+          delete hosts[rawHost];
+        }
+        continue;
+      }
       const normalized = normalizeHostPrefs(host, value);
       if (normalized) hosts[host] = normalized;
+      else delete hosts[host];
     }
   }
   if (Object.keys(hosts).length > 0) out.hosts = hosts;
@@ -419,6 +531,32 @@ function updateProjectPrefs(
   return next;
 }
 
+function mergeMissingValues(canonical: unknown, fallback: unknown): unknown {
+  if (canonical === undefined || canonical === null) return fallback;
+  const canonicalObj = obj(canonical);
+  const fallbackObj = obj(fallback);
+  if (!canonicalObj || !fallbackObj) return canonical;
+  const merged: Rec = { ...fallbackObj, ...canonicalObj };
+  for (const key of Object.keys(fallbackObj)) {
+    merged[key] = mergeMissingValues(canonicalObj[key], fallbackObj[key]);
+  }
+  return merged;
+}
+
+// The project-local migration must merge only after acquiring the same lock used
+// by ordinary preference writers. Reading before the lock and then calling
+// writeProjectPrefs could overwrite a concurrently committed answer.
+export function mergeMissingProjectPrefs(
+  cwd: string,
+  fallback: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): Rec {
+  const normalizedFallback = normalizeProjectPrefs(fallback);
+  return updateProjectPrefs(cwd, env, (current) => (
+    normalizeProjectPrefs(mergeMissingValues(current, normalizedFallback))
+  ));
+}
+
 function mergePlainObject(current: unknown, patch: unknown): unknown {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return patch;
   if (!current || typeof current !== 'object' || Array.isArray(current)) return { ...(patch as Rec) };
@@ -440,9 +578,6 @@ function mergeHostPrefsEntry(current: unknown, patch: unknown): Rec {
     next.team = t && !Object.prototype.hasOwnProperty.call(t, 'mode')
       ? mergePlainObject(currentHost.team, patchHost.team)
       : patchHost.team;
-  }
-  if (Object.prototype.hasOwnProperty.call(patchHost, 'configuredFor')) {
-    next.configuredFor = mergePlainObject(currentHost.configuredFor, patchHost.configuredFor);
   }
   if (Object.prototype.hasOwnProperty.call(patchHost, 'availableModels')) {
     const capture = obj(patchHost.availableModels);
@@ -535,6 +670,72 @@ export function mergeProjectHostPrefs(
   }, activeHost));
 }
 
+// Advance only non-semantic acknowledgement metadata. The plan and applied
+// fingerprint are the drift keys; when both still match, a remote config
+// version change is acknowledged silently under the same per-project lock.
+// Missing/pre-release targets are deliberately not backfilled: they reopen the
+// Performance step once and become canonical when the user submits it.
+export function advanceProjectHostPerformanceTargetMetadata(
+  cwd: string,
+  host: unknown,
+  targetInput: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const activeHost = canonicalHost(host);
+  const target = normalizePerformanceTarget(activeHost, targetInput);
+  if (!target) return false;
+  const prefsPath = projectPrefsPath(cwd, env);
+  let changed = false;
+  withProjectPrefsLock(prefsPath, () => {
+    const current = readProjectPrefs(cwd, env);
+    const hosts = obj(current.hosts);
+    const hostPrefs = obj(hosts?.[activeHost]);
+    const performance = obj(hostPrefs?.performance);
+    const acknowledged = normalizePerformanceTarget(activeHost, performance?.target);
+    if (!hosts || !hostPrefs || !performance || !acknowledged
+      || acknowledged.plan !== target.plan
+      || acknowledged.appliedFingerprint !== target.appliedFingerprint
+      || acknowledged.configVersion === target.configVersion) return;
+    const next = normalizeProjectPrefs({
+      ...current,
+      hosts: {
+        ...hosts,
+        [activeHost]: {
+          ...hostPrefs,
+          performance: {
+            ...performance,
+            target,
+          },
+        },
+      },
+    });
+    writeProjectPrefsFile(prefsPath, next);
+    changed = true;
+  });
+  return changed;
+}
+
+function clearedProjectHostPrefs(
+  prefs: Rec,
+  activeHost: HostModelKey,
+  keys: readonly string[],
+): Rec {
+  const hosts = obj(prefs.hosts) || {};
+  const current = obj(hosts[activeHost]);
+  if (!current) return prefs;
+  const nextHost: Rec = { ...current };
+  for (const key of keys) {
+    if (HOST_PREF_KEYS.has(key)) delete nextHost[key];
+  }
+  const nextHosts: Rec = { ...hosts };
+  if (Object.keys(nextHost).length > 0) nextHosts[activeHost] = nextHost;
+  else delete nextHosts[activeHost];
+  const next: Rec = { ...prefs };
+  if (Object.keys(nextHosts).length > 0) next.hosts = nextHosts;
+  else delete next.hosts;
+  return next;
+}
+
 export function clearProjectHostPrefs(
   cwd: string,
   host: unknown,
@@ -542,22 +743,9 @@ export function clearProjectHostPrefs(
   env: NodeJS.ProcessEnv = process.env,
 ): Rec {
   const activeHost = canonicalHost(host);
-  return updateProjectPrefs(cwd, env, (prefs) => {
-    const hosts = obj(prefs.hosts) || {};
-    const current = obj(hosts[activeHost]);
-    if (!current) return prefs;
-    const nextHost: Rec = { ...current };
-    for (const key of keys) {
-      if (HOST_PREF_KEYS.has(key)) delete nextHost[key];
-    }
-    const nextHosts: Rec = { ...hosts };
-    if (Object.keys(nextHost).length > 0) nextHosts[activeHost] = nextHost;
-    else delete nextHosts[activeHost];
-    const next: Rec = { ...prefs };
-    if (Object.keys(nextHosts).length > 0) next.hosts = nextHosts;
-    else delete next.hosts;
-    return next;
-  });
+  return updateProjectPrefs(cwd, env, (prefs) => (
+    clearedProjectHostPrefs(prefs, activeHost, keys)
+  ));
 }
 
 export function hasLocalPreferenceFields(value: unknown): boolean {
@@ -670,6 +858,7 @@ export function effectiveState(projectState: unknown, prefs: unknown, host: unkn
     else delete state[key];
   }
   for (const key of HOST_PREF_KEYS) delete state[key];
+  for (const key of RETIRED_LOCAL_PREF_KEYS) delete state[key];
   delete state.hosts;
   const activeHost = canonicalHost(host);
   const hostPrefs = obj(obj(local.hosts)?.[activeHost]);

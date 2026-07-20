@@ -46,6 +46,14 @@ test('opencode: parses documented tool hook payload shape', () => {
   }));
   assert.equal(patched.tool?.rawName, 'apply_patch');
   assert.equal(patched.tool?.class, 'file-edit');
+  assert.equal(patched.tool?.patchText, '*** Begin Patch');
+});
+
+test('opencode: canonicalizes camel/snake/diff apply_patch variants', () => {
+  for (const [key, value] of Object.entries({ patchText: 'p1', patch_text: 'p2', diff: 'p3' })) {
+    const parsed = opencode.parse(inv('before-tool-use', { tool_name: 'apply_patch', tool_input: { [key]: value } }));
+    assert.equal(parsed.tool?.patchText, value);
+  }
 });
 
 test('opencode: restores a Kilo-style macOS path missing its leading slash', () => {

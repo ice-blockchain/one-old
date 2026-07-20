@@ -48,6 +48,12 @@ export function pluginUseDeclined(cwd: string, env: NodeJS.ProcessEnv = process.
   return readPluginUseChoice(cwd, env)?.enabled === false;
 }
 
+// Public Traffic One MCP work is strict opt-in. A missing choice is not consent
+// and must never be treated as equivalent to "not declined".
+export function pluginUseEnabled(cwd: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return readPluginUseChoice(cwd, env)?.enabled === true;
+}
+
 // A decline must leave the project untouched: remove the runtime junk the
 // pre-decline hooks may already have created (once-markers, runs/). Only when
 // the project was never genuinely onboarded — a mode-bearing .one.json means

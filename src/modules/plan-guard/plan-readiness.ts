@@ -298,8 +298,8 @@ export function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boole
   }
 }
 
-function assignmentWriterRole(projectRoot: string, state: Rec, rawData: unknown): string | null {
-  const ctx = rawData ? resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true }) : null;
+function assignmentWriterRole(projectRoot: string, state: Rec, rawData: unknown, host?: string): string | null {
+  const ctx = rawData ? resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true, host }) : null;
   return (ctx && typeof ctx.role === 'string' ? ctx.role : null) || activeAgentRole(state);
 }
 
@@ -429,7 +429,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         roleErrors.join('; '),
         { ERRORS: roleErrors.join('; ') }));
     }
-    const writerRole = assignmentWriterRole(projectRoot, state, rawData);
+    const writerRole = assignmentWriterRole(projectRoot, state, rawData, host);
     if (writerRole && writerRole !== 'senior-architect' && architectPlanReadyOnDisk(projectRoot, state)) {
       violations.push(block('assignments-owner-gate',
         `Assignments gate: \`.traffic-one/runs/<runId>/assignments.json\` is architect/orchestrator-owned and must not be changed by \`${writerRole}\` after \`PLAN_READY\`. Surface the needed scope change in the role digest instead.`,
@@ -463,7 +463,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   const planMissing = !fs.existsSync(path.join(projectRoot, '.traffic-one', 'plan.md'));
   const writingPlan = PLAN_FILE_RE.test(filePath);
   const writingDoc = ADR_OR_DOC_RE.test(filePath);
-  const writerRole = assignmentWriterRole(projectRoot, state, rawData);
+  const writerRole = assignmentWriterRole(projectRoot, state, rawData, host);
 
   if (isNewProject && planMissing && writingFeatureSource && !writingPlan && !writingDoc
     // The architect's own baseline scaffold (empty barrels, Tailwind globals) is

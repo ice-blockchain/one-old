@@ -6,9 +6,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { isSafeOneMcpModelId, ONE_MCP_MAX_AVAILABLE_MODELS } from '../config/one-mcp';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
 import type { ToolClass, ToolInput } from '../core/types';
+import {
+  parseApplyPatch,
+  patchOperationPaths,
+  patchTextFromToolInput as canonicalPatchTextFromToolInput,
+} from './apply-patch';
 import { onboardingWaitScriptPath } from './onboarding-server/wait-command';
+import { modelGateScriptPath } from './model-gate-command';
+import { doctorScriptPath } from './doctor-command';
 import { legacyStatePath, statePath } from './state';
 import { resolveTrafficOneEnv } from './state/traffic-one-paths';
 
@@ -79,7 +87,7 @@ export function canonicalToolName(tool: ToolInput | undefined): string {
   return nameForClass(tool.class) || tool.rawName || '';
 }
 
-// Synthesize a {command,file_path,content} input from the adapter-parsed tool, for
+// Synthesize a {command,file_path,content,patchText} input from the adapter-parsed tool, for
 // hosts (Cursor) that carry these on the parsed tool rather than in raw.tool_input.
 // Returns null when there's nothing to contribute so callers can `|| {}` cleanly.
 export function parsedToolInput(tool: ToolInput | undefined): Rec | null {
@@ -88,6 +96,7 @@ export function parsedToolInput(tool: ToolInput | undefined): Rec | null {
   if (tool.command) ti.command = tool.command;
   if (tool.filePath) ti.file_path = tool.filePath;
   if (tool.content) ti.content = tool.content;
+  if (tool.patchText) ti.patchText = tool.patchText;
   return Object.keys(ti).length > 0 ? ti : null;
 }
 
@@ -128,23 +137,13 @@ export function existingStateFilePath(cwd: string): string {
   return fs.existsSync(nextPath) ? nextPath : legacyStatePath(cwd);
 }
 
-export function patchTextFromToolInput(toolInput: unknown): string {
-  if (typeof toolInput === 'string') return toolInput;
-  if (!toolInput || typeof toolInput !== 'object') return '';
-  const ti = toolInput as Rec;
-  for (const key of ['patch', 'input', 'content', 'text']) {
-    if (typeof ti[key] === 'string') return ti[key] as string;
-  }
-  return '';
+export function patchTextFromToolInput(...sources: readonly unknown[]): string {
+  return canonicalPatchTextFromToolInput(...sources);
 }
 
 export function patchTouchedFiles(patchText: string): string[] {
-  const files: string[] = [];
-  for (const line of String(patchText || '').split(/\r?\n/)) {
-    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/) || line.match(/^\*\*\* Move to: (.+)$/);
-    if (match) files.push((match[1] as string).trim());
-  }
-  return files;
+  const parsed = parseApplyPatch(patchText);
+  return parsed.ok ? patchOperationPaths(parsed.operations) : [];
 }
 
 export function isStateFileOnlyPatch(toolName: unknown, toolInput: unknown): boolean {
@@ -309,6 +308,15 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       seen.add('seed-prompt');
       continue;
     }
+    // Generated wizard commands may carry the parent hook session so the
+    // public model sync is shared with SessionStart. The generator normalizes
+    // this to the once-marker alphabet and a 96-byte ceiling; enforce that
+    // exact bounded shape here so arbitrary command fragments never pass.
+    if (/^--sync-session=[A-Za-z0-9._-]{1,96}$/.test(arg)) {
+      if (decline || seen.has('sync-session')) return null;
+      seen.add('sync-session');
+      continue;
+    }
     if (arg === '--quiet-url') {
       if (bootstrap || decline || reconsider || seen.has(arg)) return null;
       seen.add(arg);
@@ -345,20 +353,70 @@ export function isOnboardingBootstrapCommand(toolName: unknown, toolInput: unkno
   return onboardingRunnerInvocation(toolName, toolInput)?.bootstrap === true;
 }
 
-// The pre-spawn model-gate command (node …/model-gate.cjs <cwd>) the Cursor orchestrator runs
-// after capturing models, before spawning. Same clean-node-invocation allow-list shape as the
-// wait command — recognized so the beforeShellExecution model-gate handler can intercept it.
-export function isModelGateCommand(toolName: unknown, toolInput: unknown): boolean {
+// A launcher/runtime failure explicitly prescribes the bundled read-only
+// doctor. Admit only that exact installed runner with no arbitrary argv, so the
+// recovery command cannot be trapped by the same onboarding gate it diagnoses.
+export function isTrafficOneDoctorCommand(toolName: unknown, toolInput: unknown): boolean {
   if (!isShellToolName(toolName)) return false;
-  const command = commandFromToolInput(toolInput).trim();
-  if (!command || command.includes('\n')) return false;
-  if (/[;&|`$<>(){}]/.test(command)) return false;
-  return /(^|\s)node(\s|$)/.test(command) && command.includes('model-gate.cjs');
+  const words = cleanShellWords(commandFromToolInput(toolInput).trim());
+  return Boolean(words && words.length === 2 && words[0] === 'node' && words[1] === doctorScriptPath());
 }
 
-export function isModelCaptureCommand(toolName: unknown, toolInput: unknown): boolean {
-  if (!isModelGateCommand(toolName, toolInput)) return false;
-  return /(?:^|\s)--capture-models(?:\s|$)/.test(commandFromToolInput(toolInput));
+interface ModelGateInvocation {
+  readonly kind: 'gate' | 'capture';
+}
+
+function comparablePath(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+// The model gate is itself a recovery/enforcement command, so recognizing a
+// filename substring is unsafe: it can exempt a different script or project
+// from an earlier deny. Accept only the exact installed runner and exact argv
+// grammar for the active Cursor project.
+function modelGateInvocation(
+  toolName: unknown,
+  toolInput: unknown,
+  expectedProjectRoot: string,
+): ModelGateInvocation | null {
+  if (!isShellToolName(toolName) || !path.isAbsolute(expectedProjectRoot)) return null;
+  const words = cleanShellWords(commandFromToolInput(toolInput).trim());
+  if (!words || words.length < 4) return null;
+  const [runtime, script, projectRoot, host, ...args] = words;
+  if (runtime !== 'node'
+    || script !== modelGateScriptPath()
+    || !projectRoot
+    || !path.isAbsolute(projectRoot)
+    || comparablePath(projectRoot) !== comparablePath(expectedProjectRoot)
+    || host !== '--host=cursor') return null;
+  if (args.length === 0) return { kind: 'gate' };
+  if (args[0] !== '--capture-models') return null;
+  const models = args.slice(1);
+  if (models.length === 0
+    || models.length > ONE_MCP_MAX_AVAILABLE_MODELS
+    || new Set(models).size !== models.length
+    || models.some((model) => model.startsWith('--') || !isSafeOneMcpModelId(model, 'cursor'))) return null;
+  return { kind: 'capture' };
+}
+
+export function isModelGateCommand(
+  toolName: unknown,
+  toolInput: unknown,
+  expectedProjectRoot: string,
+): boolean {
+  return modelGateInvocation(toolName, toolInput, expectedProjectRoot) !== null;
+}
+
+export function isModelCaptureCommand(
+  toolName: unknown,
+  toolInput: unknown,
+  expectedProjectRoot: string,
+): boolean {
+  return modelGateInvocation(toolName, toolInput, expectedProjectRoot)?.kind === 'capture';
 }
 
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {

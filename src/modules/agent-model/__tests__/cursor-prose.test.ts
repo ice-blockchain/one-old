@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { applyVars, extractBlock } from '../../../shared/skill-block';
+import { CURSOR_MODELS_CAPTURE_FALLBACK } from '../handler';
 import { CURSOR_FAILURE_BLOCK_FALLBACKS } from '../cursor-failures';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -73,6 +74,15 @@ test('every Cursor failure T1BLOCK is byte-identical to its raw TypeScript fallb
     assert.equal(rendered, applyVars(body!, vars), `${name} renders differently through the fallback`);
     assert.doesNotMatch(rendered, /{{[A-Z_]+}}/, `${name} fixture must cover every template variable`);
   }
+});
+
+test('Cursor model capture instructions are required and byte-identical to the fail-closed fallback', () => {
+  const gateSkill = read('src/modules/agent-model/skill/SKILL.md');
+  const body = extractBlock(gateSkill, 'cursor-models-capture');
+  assert.notEqual(body, null);
+  assert.equal(CURSOR_MODELS_CAPTURE_FALLBACK, body);
+  assert.match(body!, /required before the first team spawn/i);
+  assert.doesNotMatch(body!, /optional|re-issue the same.*unchanged/i);
 });
 
 test('Cursor synthetic completion is idempotent in both parent-facing delivered sources', () => {

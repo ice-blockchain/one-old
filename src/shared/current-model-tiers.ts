@@ -1,8 +1,14 @@
-// Runtime view of the active host's model catalog. SessionStart keeps one.json
-// fresh; gates and dynamic directives consume this local snapshot so project
-// artifacts never need to persist a plan or concrete model id.
+// Runtime view of the active host's model catalog. The versioned One MCP
+// sidecar is the sole remote authority. Gates and dynamic directives fall back
+// directly to the bundled catalog when the sidecar is missing or unusable;
+// one.json never participates in model selection.
 
-import type { TierId } from '../config/model-tiers';
+import type { HostModelKey, TierId } from '../config/model-tiers';
+import {
+  ONE_MCP_CONFIG_NAME_BY_HOST,
+  ONE_MCP_DECODER_VERSION,
+  publicEndpoint,
+} from '../config/one-mcp';
 import {
   canonicalHost,
   canonicalPlan,
@@ -11,22 +17,89 @@ import {
   modelMatchesExpected,
   type HostModelSnapshot,
 } from './model-tiers';
-import { readOneHostSettings } from './one-settings';
+import { readOneMcpConfigCacheEntry, type OneMcpConfigCacheEntry } from './one-mcp-cache';
+import {
+  bundledOneMcpPayload,
+  mapOneMcpTiers,
+  oneMcpAppliedFingerprint,
+  oneMcpPayloadFingerprint,
+  oneMcpRemoteTiersForPlan,
+  parseOneMcpModelConfigPayload,
+} from './one-mcp';
+
+export type CurrentHostModelSource = 'one-mcp' | 'bundled';
+
+export interface CurrentHostModelTarget {
+  readonly snapshot: HostModelSnapshot;
+  readonly payloadFingerprint: string;
+  readonly appliedFingerprint: string;
+  readonly configVersion: number;
+  readonly source: CurrentHostModelSource;
+}
+
+export function usableOneMcpConfigCacheEntry(
+  host: HostModelKey,
+  entry: OneMcpConfigCacheEntry | null,
+  env: NodeJS.ProcessEnv = process.env,
+): OneMcpConfigCacheEntry | null {
+  if (!entry
+    || entry.endpoint !== publicEndpoint(env)
+    || entry.configName !== ONE_MCP_CONFIG_NAME_BY_HOST[host]
+    || entry.decoderVersion !== ONE_MCP_DECODER_VERSION) return null;
+  const payload = parseOneMcpModelConfigPayload(entry.payload, host);
+  if (!payload) return null;
+  return oneMcpPayloadFingerprint(payload) === entry.payloadFingerprint ? entry : null;
+}
+
+export function currentHostModelTarget(
+  hostInput: unknown,
+  planInput: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): CurrentHostModelTarget {
+  const host = canonicalHost(hostInput);
+  const plan = canonicalPlan(host, planInput);
+  try {
+    const cached = usableOneMcpConfigCacheEntry(
+      host,
+      readOneMcpConfigCacheEntry(host, env),
+      env,
+    );
+    if (cached) {
+      const payload = parseOneMcpModelConfigPayload(cached.payload, host)!;
+      const tiers = mapOneMcpTiers(oneMcpRemoteTiersForPlan(payload, plan));
+      const snapshot: HostModelSnapshot = {
+        plan,
+        tiers,
+      };
+      return {
+        snapshot,
+        payloadFingerprint: cached.payloadFingerprint,
+        appliedFingerprint: oneMcpAppliedFingerprint(tiers),
+        configVersion: cached.version,
+        source: 'one-mcp',
+      };
+    }
+  } catch {
+    // A busy/corrupt sidecar must not disable the bundled safe catalog. Never
+    // promote the compatibility one.json mirror back into runtime authority.
+  }
+  const bundled = hostModelSnapshot(host, plan);
+  const bundledPayload = bundledOneMcpPayload(host);
+  return {
+    snapshot: bundled,
+    payloadFingerprint: oneMcpPayloadFingerprint(bundledPayload),
+    appliedFingerprint: oneMcpAppliedFingerprint(bundled.tiers),
+    configVersion: 0,
+    source: 'bundled',
+  };
+}
 
 export function currentHostModelSnapshot(
   hostInput: unknown,
   planInput: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): HostModelSnapshot {
-  const host = canonicalHost(hostInput);
-  const plan = canonicalPlan(host, planInput);
-  try {
-    const local = readOneHostSettings(host, env);
-    if (local && local.plan === plan) return local;
-  } catch {
-    // A busy/corrupt settings file must not disable the bundled safe catalog.
-  }
-  return hostModelSnapshot(host, plan);
+  return currentHostModelTarget(hostInput, planInput, env).snapshot;
 }
 
 export function currentModelsForTier(
@@ -101,7 +174,7 @@ export function resolveTierFallback(
     if (captured !== undefined) {
       // Captured runner slugs must satisfy the same one-way contract as the
       // spawn gate: an exact family id or a concrete `family-*` variant. A
-      // shorter prefix (for example `claude-4.6` for `claude-4.6-sonnet`) is
+      // shorter prefix (for example `claude-sonnet` for `claude-sonnet-5`) is
       // not runnable proof for this tier entry and must never be prescribed.
       const slug = captured.find((model) => modelMatchesExpected(model, family));
       if (!slug) continue;

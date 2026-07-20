@@ -11,8 +11,8 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
   // gates reference the remaining runner CLIs.
   for (const name of [
     'hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'opencode-hook-runtime.cjs', 'kilo-hook-runtime.cjs', 'windsurf-hook-runtime.cjs', 'devin-hook-runtime.cjs',
-    'opencode-host.cjs', 'kilo-host.cjs', 'windsurf-host.cjs', 'model-status.cjs', 'doctor.cjs',
-    'security-check-runner.cjs', 'token-report.cjs', 'one-mcp-report.cjs', 'traffic-one-cleanup.cjs',
+    'opencode-host.cjs', 'kilo-host.cjs', 'windsurf-host.cjs', 'one-mcp-sync.cjs', 'doctor.cjs',
+    'security-check-runner.cjs', 'token-report.cjs', 'one-mcp-report.cjs', 'one-mcp-host.cjs', 'traffic-one-cleanup.cjs',
     'gitnexus-runner.cjs', 'graphify-runner.cjs',
   ]) {
     assert.ok(name in SHIMS, `missing shim for ${name}`);
@@ -26,7 +26,7 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
   assert.equal(SHIMS['windsurf-hook-runtime.cjs'], './hooks/windsurf-entry.js');
   assert.equal(SHIMS['devin-hook-runtime.cjs'], './hooks/devin-entry.js');
   assert.equal(SHIMS['windsurf-host.cjs'], './runners/windsurf-host/index.js');
-  assert.equal(SHIMS['model-status.cjs'], './runners/model-status/index.js');
+  assert.equal(SHIMS['one-mcp-sync.cjs'], './runners/one-mcp-sync/index.js');
 });
 
 test('writeShims emits a require+main forwarder for each legacy path', () => {

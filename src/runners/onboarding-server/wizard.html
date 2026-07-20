@@ -118,6 +118,23 @@
     .team-foot { padding: 9px 14px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--line); background: var(--bg-2); }
     .cursor-models-note { margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--line); color: var(--ink-2); }
 
+    /* ── Performance catalog / repick context ───────── */
+    .catalog { margin: 2px 0 16px; border: 1px solid var(--line); border-radius: 12px;
+      overflow: hidden; background: var(--card); box-shadow: var(--shadow-soft); }
+    .catalog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+      padding: 11px 14px; border-bottom: 1px solid var(--line); background: var(--bg-2); }
+    .catalog-head .t { font-weight: 600; font-size: 13px; color: var(--ink); }
+    .catalog-head .meta { color: var(--muted); font-size: 11.5px; text-align: right; }
+    .repick-note { padding: 10px 14px; color: var(--ink-2); background: var(--accent-soft);
+      border-bottom: 1px solid #d7defb; font-size: 12.5px; }
+    .catalog-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 10px;
+      align-items: start; padding: 10px 14px; border-top: 1px solid var(--line); }
+    .catalog-row:first-of-type { border-top: 0; }
+    .catalog-tier { color: var(--muted); font-size: 11.5px; font-weight: 650; text-transform: capitalize; }
+    .catalog-models { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+    .catalog-model { max-width: 100%; overflow-wrap: anywhere; color: var(--ink-2); background: var(--chip-bg);
+      border: 1px solid var(--chip-border); border-radius: 999px; padding: 2px 8px; font: 11px/1.45 var(--mono); }
+
     /* ── Project-context form ───────────────────────── */
     .ctx { margin: 0 0 16px; border: 1px solid #d7defb; border-radius: var(--radius-sm);
       background: var(--accent-soft); overflow: hidden; }
@@ -222,8 +239,9 @@
     ];
     const view = document.getElementById("view");
     const actions = document.getElementById("actions");
-    // Per-role model picks on the team step: role → chosen tier, plus the tier
-    // shown by default, so "Start the build" sends only the roles the user changed.
+    // Per-role exact model picks on the team step. Each selector is restricted
+    // to the member's resolved tier; "Start the build" persists the complete
+    // role → model map so a non-preferred row entry is not lost at runtime.
     let teamSelections = {};
     let teamDefaults = {};
     let completionStarted = false;
@@ -366,8 +384,9 @@
       if (!team.length) return null;
       teamSelections = {};
       teamDefaults = {};
-      // The detected host's model menu (highest/balanced/cheapest → real model ids).
-      // Fall back to the member's own model when the server didn't supply a list.
+      // The server supplies the first two exact model ids in each capability
+      // tier. Every member may choose across tiers, so option identity must keep
+      // both tier and model (the same model can occur in multiple rows).
       const choices = (v.meta.modelChoices || []).slice();
       const box = el("div", { className: "team" });
       const lvl = v.meta.performanceLevel ? cap(v.meta.performanceLevel) + " performance · " : "";
@@ -378,7 +397,6 @@
         el("span", { className: "lvl" }, [hostNote + lvl + team.length + " agents" + tierNote]),
       ]));
       team.forEach((m) => {
-        teamSelections[m.role] = m.tier;
         teamDefaults[m.role] = m.tier;
         const ic = el("div", { className: "ic" }, [(m.label || "?").charAt(0)]);
         const who = el("div", { className: "who" }, [
@@ -389,21 +407,28 @@
         const sel = el("select", {});
         sel.setAttribute("aria-label", (m.label || m.role) + " model");
         const list = choices.length ? choices : [{ tier: m.tier, model: m.model || m.tier, label: m.modelLabel }];
-        list.forEach((c) => {
+        let selectedIndex = list.findIndex((c) => c.tier === m.tier && c.model === m.model);
+        if (selectedIndex < 0) selectedIndex = list.findIndex((c) => c.tier === m.tier);
+        if (selectedIndex < 0) selectedIndex = 0;
+        const initial = list[selectedIndex];
+        teamSelections[m.role] = { tier: initial.tier, model: initial.model };
+        list.forEach((c, index) => {
           // Prefer the server's friendly label ("Opus 4.8") — alias values like
           // "opus" stay the underlying selection but read ambiguously.
-          const opt = el("option", { value: c.tier }, [c.label || c.model || c.tier]);
-          if (c.tier === m.tier) opt.selected = true;
+          const modelLabel = c.label || c.model || c.tier;
+          const opt = el("option", { value: String(index) }, [c.tier + " · " + modelLabel]);
+          if (index === selectedIndex) opt.selected = true;
           sel.appendChild(opt);
         });
         sel.addEventListener("change", () => {
-          teamSelections[m.role] = sel.value;
-          dot.className = "tier-dot tier-" + sel.value;
+          const selected = list[Number(sel.value)] || list[0];
+          teamSelections[m.role] = { tier: selected.tier, model: selected.model };
+          dot.className = "tier-dot tier-" + selected.tier;
         });
         box.appendChild(el("div", { className: "member" }, [ic, who, el("div", { className: "model" }, [dot, sel])]));
       });
       const foot = [
-        "Pick a model per agent. Tester and Shipper default to lighter models to save tokens. Choose “Re-pick performance” to change the line-up size.",
+        "Pick a model per agent from the first two choices in each tier. Tester and Shipper default to lighter tiers to save tokens. Choose “Re-pick performance” to change the line-up size.",
       ];
       if (v.meta.host === "cursor") {
         foot.push(el("div", { className: "cursor-models-note" }, [
@@ -414,22 +439,73 @@
       return box;
     }
 
+    function performanceRepickText(v) {
+      const host = v.meta.host ? cap(v.meta.host) : "This host";
+      const plan = v.meta.plan ? cap(v.meta.plan) : "current";
+      switch (v.meta.repickReason) {
+        case "plan-changed":
+          return "Your " + host + " plan changed"
+            + (v.meta.previousPlan ? " from " + cap(v.meta.previousPlan) : "")
+            + " to " + plan + ". Review Performance for the new plan.";
+        case "models-changed":
+          return "The models used by " + host + " changed. Review Performance before the next build.";
+        case "configuration-required":
+          return "Confirm Performance for the current " + host + " model catalog.";
+        case "team-settings-changed":
+          return "The saved team no longer matches this Performance choice. Pick Performance again to rebuild the line-up.";
+        default:
+          return "";
+      }
+    }
+
+    function renderPerformanceCatalog(v) {
+      if (v.step !== "performance") return null;
+      const tiers = v.meta.catalogTiers || [];
+      const host = v.meta.host ? cap(v.meta.host) : "Current host";
+      const plan = v.meta.plan ? cap(v.meta.plan) : "Unknown plan";
+      const version = Number.isInteger(v.meta.catalogVersion) && v.meta.catalogVersion > 0
+        ? " · v" + v.meta.catalogVersion
+        : "";
+      const source = v.meta.catalogSource === "one-mcp" ? "Traffic One MCP" + version : "Bundled fallback";
+      const box = el("div", { className: "catalog" });
+      box.appendChild(el("div", { className: "catalog-head" }, [
+        el("span", { className: "t" }, [host + " · " + plan + " plan"]),
+        el("span", { className: "meta" }, [source]),
+      ]));
+      const reason = performanceRepickText(v);
+      if (reason) box.appendChild(el("div", { className: "repick-note" }, [reason]));
+      tiers.forEach((row) => {
+        const models = el("div", { className: "catalog-models" });
+        (row.models || []).forEach((model) => models.appendChild(el("span", { className: "catalog-model" }, [model])));
+        box.appendChild(el("div", { className: "catalog-row" }, [
+          el("div", { className: "catalog-tier" }, [cap(row.tier)]),
+          models,
+        ]));
+      });
+      return box;
+    }
+
     // Map a clicked option to the value posted to /answer. Most steps send the bare
-    // option id; the team step sends { action, overrides } so the per-agent model
-    // picks ride along — overrides carry only the roles the user changed.
+    // option id; the team step sends both the selected tier overrides and the
+    // complete exact model map so duplicate model ids across tiers stay distinct.
     function teamAnswerValue(v, id) {
       if (v.step !== "team-confirmation") return id;
       if (id !== "approve") return { action: id };
       const overrides = {};
+      const modelSelections = {};
       Object.keys(teamSelections).forEach((role) => {
-        if (teamSelections[role] && teamSelections[role] !== teamDefaults[role]) overrides[role] = teamSelections[role];
+        const selected = teamSelections[role];
+        modelSelections[role] = selected.model;
+        if (selected.tier !== teamDefaults[role]) overrides[role] = selected.tier;
       });
-      return { action: "approve", overrides };
+      return { action: "approve", overrides, modelSelections };
     }
 
     function renderSingleSelect(v) {
       view.innerHTML = "";
       view.appendChild(stepHead(v));
+      const catalog = renderPerformanceCatalog(v);
+      if (catalog) view.appendChild(catalog);
       const team = renderTeam(v);
       if (team) view.appendChild(team);
       const opts = el("div", { className: "opts" });

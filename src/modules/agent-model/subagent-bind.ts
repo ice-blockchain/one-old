@@ -9,17 +9,15 @@ import { obj } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { resolveProjectRoot } from '../../shared/hook-paths';
-import { detectHostPlan } from '../../shared/host-plan';
-import { cursorModelsFresh } from '../../shared/materialize/cursor-models';
-import { effectiveTierForRole, modelForRoleHost } from '../../shared/performance';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
+import { readRunModelPolicy } from '../../shared/run-model-policy';
 import {
   captureClaimDebug,
   claimThreadRole,
-  ensureCurrentRunId,
   hookSessionIdentity,
   inferRoleEvidenceFromTranscript,
   readCodexSessionMetaIdentity,
+  observeCodexChildModel,
   readEffectiveState,
   recordCursorSpawnObservation,
   recordRunAgent,
@@ -31,6 +29,7 @@ import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { modelChoiceReplyPending } from './model-choice';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import { settleCorrelatedCursorRetryOnStart } from './cursor-failures';
+import { canonicalHost } from '../../shared/model-tiers';
 
 function evidenceTier(evidence: RoleEvidence): number {
   if (evidence.source.startsWith('codex-session-meta-') || evidence.source.startsWith('host-')) return 1;
@@ -91,13 +90,27 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   const team = obj(obj(state)?.team);
   const stateObj = obj(state);
   const runId = stateObj && typeof stateObj.currentRunId === 'string' ? stateObj.currentRunId : null;
+  const runPolicy = runId ? readRunModelPolicy(cwd, runId) : null;
 
   // DIAGNOSTIC (best-effort): record the raw SubagentStart payload in subagents
   // mode — captured BEFORE the field guards so we learn whether agent-teams even
   // fires SubagentStart and what identity it carries (see
   // project_agent_teams_claim_deadlock). Does NOT affect the binding below.
-  if (team && team.mode === 'subagents') captureClaimDebug(cwd, runId, 'subagent-start', raw);
-  if (!team || team.mode !== 'subagents') return noop();
+  if (team?.mode === 'subagents' || runPolicy) captureClaimDebug(cwd, runId, 'subagent-start', raw);
+  if (team?.mode !== 'subagents' && !runPolicy) return noop();
+  if (!runId || !runPolicy || runPolicy.host !== canonicalHost(ctx.host)) {
+    if (ctx.host === 'cursor') {
+      return deny(
+        `traffic-one — Cursor child blocked: immutable model-policy.json is missing or corrupt for run ${runId || '(missing)'}. `
+        + 'The child must not read the current plan, One MCP cache, or project availableModels to repair it. '
+        + 'Stop this child and start a repaired parent run before respawning.',
+      );
+    }
+    return context(
+      `Traffic One blocked child activation: immutable model-policy.json is missing, corrupt, or belongs to another host for run ${runId || '(missing)'}. `
+      + 'This child must not call tools. Only the parent may create the run and freeze the active host policy; stop this child and repair/respawn it from the parent.',
+    );
+  }
 
   // SubagentStart fires in the spawner's context, so session_id is the parent id.
   const identity = hookSessionIdentity(raw);
@@ -135,6 +148,19 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     : combineRoleEvidence(inputResolution, transcriptResolution);
   const evidence = resolvedEvidence.kind === 'evidence' ? resolvedEvidence.evidence : null;
   const role = evidence?.role || '';
+  const codexChildId = ctx.host === 'codex' ? (identity.agentId || transcriptThread || '') : '';
+  const codexActualModel = ctx.host === 'codex'
+    ? asString(raw.model ?? payload.model).trim()
+    : '';
+  let codexObservation = ctx.host === 'codex' && runId && codexChildId
+    ? observeCodexChildModel(cwd, runId, {
+      childId: codexChildId,
+      parentSessionId: parentSession,
+      actualModel: codexActualModel || null,
+      role: role || null,
+      source: 'SubagentStart',
+    })
+    : null;
   if (!role) {
     // Do not silently let an unbound Traffic One child proceed toward its first
     // write. Keep this diagnostic deliberately structural/bounded: the general
@@ -143,7 +169,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     // Returning context is non-blocking (SubagentStart is not a PreToolUse
     // permission event) and, critically, happens before run-id minting or any
     // claim/registry mutation below.
-    const diagnosticRunId = runId || ensureCurrentRunId(cwd, state);
+    const diagnosticRunId = runId;
     captureClaimDebug(cwd, diagnosticRunId, 'subagent-start-role-unresolved', {
       host: ctx.host,
       agentId: identity.agentId,
@@ -163,21 +189,57 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       + 'Do not write files from this child until the parent/orchestrator repairs the spawn. '
       + 'Parent/orchestrator: stop or replace this child and retry the same role. On Codex use the exact canonical '
       + '`task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, '
-      + '`senior_tester`, or `senior_shipper`). Current Codex encrypts the spawn message in the child rollout, '
+      + '`senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and '
+      + '`fork_turns: "none"`. Current Codex encrypts the spawn message in the child rollout, '
       + 'so task name and line-zero `session_meta`—not prompt prose—carry identity. On hosts with readable task '
       + 'records, retain the unclaimable documentation placeholder `[t1-role: senior-<role>]` and substitute the '
       + 'actual role in the task message; marker position is not an identity requirement. Do not self-assert a role in assistant prose.',
     );
   }
 
-  // PERSISTING RUN-ID MINT: Codex fires no PreToolUse for spawns, so the
-  // ensureCurrentRunId self-heal inside agentModelGate never runs there —
-  // SubagentStart is that host's spawn signal. Without this, an existing-codebase
-  // Codex build finishes setup with NO currentRunId in project state, and the
-  // run-team write gate denies the architect's first coordination write
-  // (run-team-not-subagent) against a run id that was never persisted.
-  // Idempotent everywhere else (returns the existing id unchanged).
-  const boundRunId = runId || ensureCurrentRunId(cwd, state);
+  if (!runPolicy.roles[role]) {
+    if (ctx.host === 'cursor') {
+      return deny(
+        `traffic-one — Cursor child blocked: role ${role} is absent from immutable policy ${runPolicy.policyId}. `
+        + 'Stop this child and repair the parent run; do not infer a tier from current preferences.',
+      );
+    }
+    return context(
+      `Traffic One blocked child activation: role ${role} is absent from immutable policy ${runPolicy.policyId}. `
+      + 'This child must not call tools; stop it and repair/respawn it from the parent.',
+    );
+  }
+
+  if (ctx.host === 'codex') {
+    if (!runId || !codexChildId) {
+      return context(
+        'Traffic One could not verify this Codex child because the parent did not create a run/model policy before spawning. '
+        + 'Do not use tools in this child. Parent: stop it, reopen Performance if prompted, and respawn only after '
+        + 'the current run id and model-policy.json are announced.',
+      );
+    }
+    codexObservation = observeCodexChildModel(cwd, runId, {
+      childId: codexChildId,
+      parentSessionId: parentSession,
+      actualModel: codexActualModel || null,
+      role,
+      source: 'SubagentStart',
+    });
+    if (!codexObservation || codexObservation.status !== 'verified') {
+      return context(
+        `Traffic One blocked Codex child activation for ${role}: observed model verification is `
+        + `${codexObservation?.status || 'unavailable'} (${codexObservation?.reason || 'model policy missing'}). `
+        + 'This SubagentStart event is non-blocking, so the child must not call tools; its first PreToolUse is denied. '
+        + 'Parent: interrupt/replace this child and respawn with the canonical task_name, the exact model printed '
+        + 'by the run model policy, and `fork_turns: "none"`.',
+      );
+    }
+  }
+
+  // Parent SessionStart owns both run-id minting and policy publication. A child
+  // only consumes the already-frozen run and can never repair it from mutable
+  // plan/catalog state.
+  const boundRunId = runId;
 
   // REUSE REGISTRY (Cursor): Cursor surfaces the spawned subagent id on subagent-start
   // as `subagent_id` (= tool_<uuid>) — the PostToolUse(Task) recorder never sees it, so
@@ -189,15 +251,9 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // recorder, which sees their agent_id in the tool result).
   const cursorSubagentId = asString(raw.subagent_id);
   if (ctx.host === 'cursor' && cursorSubagentId && boundRunId) {
-    const level = typeof stateObj?.performance === 'object'
-      && stateObj.performance !== null
-      && typeof (stateObj.performance as Record<string, unknown>).level === 'string'
-      ? String((stateObj.performance as Record<string, unknown>).level)
-      : '';
-    const overrides = team && obj(team.overrides) ? team.overrides as Record<string, unknown> : null;
-    const planCtx = { host: 'cursor', plan: detectHostPlan('cursor') };
-    const tier = effectiveTierForRole(level, role, overrides, planCtx);
-    const expectedModel = modelForRoleHost(level, role, 'cursor', overrides, planCtx);
+    const rolePolicy = runPolicy?.host === 'cursor' ? runPolicy.roles[role] : null;
+    const tier = rolePolicy?.tier || null;
+    const expectedModel = rolePolicy?.preferredModel || null;
     const requestedModel = asString(raw.subagent_model ?? raw.subagentModel ?? raw.model);
     const rawStartedAt = raw.started_at ?? raw.startedAt ?? raw.timestamp ?? raw.created_at ?? raw.createdAt;
     const parsedStartedAt = typeof rawStartedAt === 'number' && Number.isFinite(rawStartedAt)
@@ -231,12 +287,9 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   }
 
   if (ctx.host === 'cursor' && stateObj) {
-    const captureMissing = stateObj.mode === 'new-project' && !cursorModelsFresh(cwd, detectHostPlan('cursor'));
     const choicePending = modelChoiceReplyPending(cwd, stateObj);
-    if (captureMissing || choicePending) {
-      const reason = captureMissing
-        ? 'traffic-one — STOP: Cursor model capture is required before starting the senior team. Run the internal model-gate `--capture-models` command with the exact offered ids, then rerun model-gate. This subagent must stop now and must not write files.'
-        : 'traffic-one — STOP: model choice required before starting the senior team. Reply `fallback` to use the listed fallback model(s), or `enable` to enable the picked model(s) and retry. Do not spawn subagents, scaffold directly, or edit project files until the user replies. This subagent must stop now and must not write files.';
+    if (choicePending) {
+      const reason = 'traffic-one — STOP: model choice required before starting the senior team. Reply `fallback` to use the listed fallback model(s), or `enable` to enable the picked model(s) and retry. Do not spawn subagents, scaffold directly, or edit project files until the user replies. This subagent must stop now and must not write files.';
       return deny(`${reason}\nBlocked role: ${role}.`, {
         agentMessage: `${reason} Blocked role: ${role}.`,
       });
@@ -285,8 +338,10 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   if (threadId && transcriptPath && threadId !== identity.sessionId) {
     claimThreadRole(cwd, state, threadId, role, {
       parentSessionId: identity.sessionId,
+      model: ctx.host === 'codex' ? codexObservation?.actualModel : null,
       transcriptPath,
       evidence: evidence || undefined,
+      ...(ctx.host === 'codex' ? { refuseOccupiedRole: true } : {}),
     });
   }
   return noop();

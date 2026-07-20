@@ -41,15 +41,23 @@ test('install requires explicit consent and writes an owned global wrapper', () 
     assert.equal(fs.existsSync(file), false);
     assert.equal(fs.existsSync(configFile), false);
 
-    const installed = installWrapper(env, ['install', '--yes']);
+    const installed = installWrapper(env, ['install', '--yes'], true);
     assert.equal(installed.code, 0);
     assert.equal(fs.existsSync(file), true);
     assert.equal(fs.existsSync(configFile), true);
     const owner = readOwner(file);
     assert.equal(owner?.owner, 'traffic-one');
     assert.equal(owner?.pluginRoot, env.TRAFFIC_ONE_PLUGIN_ROOT);
-    const config = JSON.parse(fs.readFileSync(configFile, 'utf8')) as { plugin?: string[] };
+    const config = JSON.parse(fs.readFileSync(configFile, 'utf8')) as {
+      plugin?: string[];
+      mcp?: Record<string, { enabled?: boolean; type?: string; url?: string }>;
+      permission?: Record<string, string>;
+    };
     assert.deepEqual(config.plugin, [pathToFileURL(file).href]);
+    assert.equal(config.mcp?.['traffic-one-mcp']?.enabled, false);
+    assert.equal(config.mcp?.['traffic-one-mcp']?.type, 'remote');
+    assert.equal(config.permission?.['traffic-one-mcp_get_config'], 'deny');
+    assert.equal(config.permission?.['traffic-one-mcp_report_codebase_metadata'], 'deny');
     const body = fs.readFileSync(file, 'utf8');
     assert.ok(body.includes('tool.execute.before'));
     assert.ok(body.includes('tool.execute.after'));
@@ -64,11 +72,28 @@ test('install requires explicit consent and writes an owned global wrapper', () 
     assert.match(installed.stdout, /Restart OpenCode/);
     assert.match(installed.stdout, /Registered OpenCode global plugin/);
 
-    const doctor = doctorWrapper(env);
+    const doctor = doctorWrapper(env, ['doctor'], true);
     assert.equal(doctor.code, 0);
     assert.match(doctor.stdout, /^ok:/);
     assert.match(doctor.stdout, /config: ok/);
     assert.match(doctor.stdout, /registered in OpenCode global plugin array/);
+  });
+});
+
+test('central registration switch keeps the OpenCode wrapper but omits public MCP config', () => {
+  withHome((env) => {
+    env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION = '1';
+    const installed = installWrapper(env, ['install', '--yes']);
+    assert.equal(installed.code, 0);
+    const config = JSON.parse(fs.readFileSync(opencodeGlobalConfigPath(env), 'utf8')) as {
+      plugin?: string[];
+      mcp?: unknown;
+      permission?: unknown;
+    };
+    assert.equal(config.plugin?.length, 1);
+    assert.equal(config.mcp, undefined);
+    assert.equal(config.permission, undefined);
+    assert.equal(doctorWrapper(env).code, 0);
   });
 });
 
@@ -254,4 +279,34 @@ test('wrapper source uses host-stamped runtime hooks and throws only on before-t
   assert.match(source, /trafficOneHookEnv/);
   assert.match(source, /resolveTrafficOneEnv/);
   assert.match(source, /traffic-one-paths\.js/);
+  assert.match(source, /TRAFFIC_ONE_MANAGED_MCP_TOOLS/);
+});
+
+test('wrapper denies managed MCP tools before project lookup or runtime spawn', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-opencode-managed-mcp-'));
+  const previousHome = process.env.HOME;
+  try {
+    const home = path.join(base, 'home');
+    const pluginRoot = path.join(base, 'missing-plugin-runtime');
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(base, 'package.json'), '{"type":"module"}\n', 'utf8');
+    const wrapperFile = path.join(base, 'traffic-one.js');
+    fs.writeFileSync(wrapperFile, wrapperSource(pluginRoot, '2026-01-01T00:00:00Z'), 'utf8');
+    process.env.HOME = home;
+    const mod = await import(pathToFileURL(wrapperFile).href);
+    const hooks = await mod.default.server({ directory: home });
+    await assert.rejects(
+      () => hooks['tool.execute.before']({ tool: 'traffic-one-mcp_get_config' }, {}),
+      /Direct AI-agent calls/,
+    );
+    await assert.rejects(
+      () => hooks['tool.execute.before']({ tool: 'traffic-one-mcp_report_codebase_metadata' }, {}),
+      /Direct AI-agent calls/,
+    );
+    await assert.doesNotReject(() => hooks['tool.execute.before']({ tool: 'traffic-one-mcp-copy_get_config' }, {}));
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });

@@ -11,6 +11,8 @@ import { modelGatePromptFresh, readModelChoice, writeModelChoice } from '../mode
 import { runModelGate } from '../../../runners/model-gate';
 import type { Ctx, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
+import { readEffectiveState } from '../../../shared/state';
 
 function withProj(opts: { models: string[] | null; overrides?: Record<string, string> }, fn: (cwd: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-mgate-')));
@@ -18,8 +20,10 @@ function withProj(opts: { models: string[] | null; overrides?: Record<string, st
   const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const pl = env.TRAFFIC_ONE_USER_PLAN;
   const ps = env.TRAFFIC_ONE_STATE_PATH;
+  const pm = env.TRAFFIC_ONE_MCP_CACHE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   const prefs = hostScopedPerformancePrefs(
@@ -37,8 +41,18 @@ function withProj(opts: { models: string[] | null; overrides?: Record<string, st
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
     if (ps === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = ps;
+    if (pm === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = pm;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function freezeCursorPolicy(cwd: string, runId: string): void {
+  const env = { ...process.env, TRAFFIC_ONE_HOST: 'cursor' };
+  const state = readEffectiveState(cwd, env);
+  assert.ok(
+    ensureRunModelPolicy(cwd, runId, 'cursor', state, env),
+    'the parent fixture must freeze the Cursor policy before simulating after-shell',
+  );
 }
 
 function ctxFor(cwd: string, command: string, host: 'cursor' | 'claude' = 'cursor'): Ctx {
@@ -77,10 +91,46 @@ function captureStdout(fn: () => number): { code: number; out: string } {
 }
 
 test('isModelGateCommand recognizes the model-gate command (and rejects others)', () => {
-  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand('/proj', 'cursor') }), true);
-  assert.equal(isModelGateCommand('Bash', { command: 'node /p/onboarding-wait.cjs /cwd' }), false);
-  assert.equal(isModelGateCommand('Bash', { command: 'node /p/model-gate.cjs /cwd && rm -rf /' }), false); // chaining rejected
-  assert.equal(isModelCaptureCommand('Bash', { command: modelCaptureCommand('/proj', 'cursor') }), true);
+  const root = '/proj';
+  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand(root, 'cursor') }, root), true);
+  assert.equal(isModelCaptureCommand('Bash', { command: modelCaptureCommand(root, 'cursor') }, root), true);
+  assert.equal(isModelGateCommand('Bash', { command: 'node /p/onboarding-wait.cjs /cwd' }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: 'node /p/model-gate.cjs /proj --host=cursor' }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: 'echo node /p/model-gate.cjs /proj --host=cursor' }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: `${modelGateCommand(root, 'cursor')} && rm -rf /` }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand('/sibling', 'cursor') }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand(root, 'claude') }, root), false);
+  assert.equal(isModelGateCommand('Bash', { command: `node '/p/model-gate.cjs' '/proj' '--host=cursor' '--unknown'` }, root), false);
+  assert.equal(isModelCaptureCommand('Bash', { command: `${modelGateCommand(root, 'cursor')} '--capture-models'` }, root), false);
+  assert.equal(isModelCaptureCommand('Bash', {
+    command: `${modelGateCommand(root, 'cursor')} '--capture-models' 'valid-model' '--unknown'`,
+  }, root), false);
+  assert.equal(isModelCaptureCommand('Bash', {
+    command: `${modelGateCommand(root, 'cursor')} '--capture-models' 'duplicate' 'duplicate'`,
+  }, root), false);
+  assert.equal(isModelCaptureCommand('Bash', {
+    command: `${modelGateCommand(root, 'cursor')} '--capture-models' 'invalid model prose'`,
+  }, root), false);
+  const tooManyModels = Array.from({ length: 257 }, (_, index) => `'model-${index}'`).join(' ');
+  assert.equal(isModelCaptureCommand('Bash', {
+    command: `${modelGateCommand(root, 'cursor')} '--capture-models' ${tooManyModels}`,
+  }, root), false);
+});
+
+test('model-gate generation and strict parsing preserve shell-punctuation project paths', () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model path-')));
+  const root = path.join(base, "project ($draft); it's literal");
+  fs.mkdirSync(root);
+  try {
+    const gate = modelGateCommand(root, 'cursor');
+    const capture = modelCaptureCommand(root, 'cursor');
+    assert.equal(isModelGateCommand('Bash', { command: gate }, root), true);
+    assert.equal(isModelCaptureCommand('Bash', { command: capture }, root), true);
+    assert.match(gate, /'\\''/, 'an apostrophe is emitted with an inert single-quote splice');
+    assert.ok(gate.includes('$draft'), 'the literal dollar text is preserved inside inert quotes');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test('modelGateShell always allows the internal capture command to refresh stale availability', () => {
@@ -91,13 +141,13 @@ test('modelGateShell always allows the internal capture command to refresh stale
 
 test('modelGateShell: a PICKED model not offered → askUser (permission:ask) naming the model + fallback', () => {
   // architect overridden to balanced (GPT-5.6 Terra), which the captured list LACKS.
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
       assert.equal((r as { askUser?: boolean }).askUser, true, 'is a user APPROVE/REJECT prompt, not a hard deny');
       assert.ok(r.reason.includes('gpt-5.6-terra'), 'names the unavailable picked model');
-      assert.ok(/gpt-5\.5/.test(r.reason), 'names the fallback it would use');
+      assert.ok(r.reason.includes('claude-sonnet-5'), 'names the fallback it would use');
       assert.ok(/approve/i.test(r.reason) && /reject/i.test(r.reason), 'offers approve/reject');
       assert.ok(/fallback.*enable/i.test(r.reason), 'directs chat consent before spawn');
       assert.ok((r as { agentMessage?: string }).agentMessage, 'carries per-branch agent instructions');
@@ -106,7 +156,7 @@ test('modelGateShell: a PICKED model not offered → askUser (permission:ask) na
 });
 
 test('modelGate runner fails closed until explicit chat consent (use-fallback)', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-model-gate';
@@ -127,11 +177,12 @@ test('modelGate runner fails closed until explicit chat consent (use-fallback)',
 });
 
 test('modelGate after-shell surfaces exit-2 STOP as a Cursor user-visible message', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-after-shell';
     fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+    freezeCursorPolicy(cwd, 'run-after-shell');
 
     const r = modelGateAfterShell(afterCtxFor(cwd, modelGateCommand(cwd, 'cursor'), { exit_code: 2 }));
     assert.equal(r.kind, 'context');
@@ -159,7 +210,7 @@ test('modelGate runner fails closed when Cursor model capture is missing', () =>
 });
 
 test('modelGateShell: recognizes the real Cursor before-shell-execution shape', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.equal((r as { askUser?: boolean }).askUser, true);
@@ -185,7 +236,7 @@ test('modelGate runner prints the local spawn map while project agent contracts 
 });
 
 test('modelGateShell: non-cursor host and non-model-gate commands → noop', () => {
-  withProj({ models: ['gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     assert.equal(modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor'), 'claude')).kind, 'noop', 'claude → inert');
     assert.equal(modelGateShell(ctxFor(cwd, 'ls -la')).kind, 'noop', 'unrelated command → inert');
   });

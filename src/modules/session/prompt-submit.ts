@@ -30,7 +30,8 @@ import { makeSkillBlock } from '../../shared/skill-block';
 import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { obj } from '../../shared/obj';
-import { firstEmitThisSession, stampEmitMarker } from '../../shared/once';
+import { firstEmitThisSession } from '../../shared/once';
+import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-links';
 import { maintenanceTriageDirective } from './triage-directive';
 import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
 import { recordPendingModelChoiceReply } from '../agent-model/choice-reply';
@@ -44,10 +45,11 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
 
-function opencodeSetupDirective(url: string, waitCommand: string, hostLabel = 'OpenCode'): string {
+function opencodeSetupDirective(url: string, localUrl: string, waitCommand: string, hostLabel = 'OpenCode'): string {
   return [
     'Traffic One project setup is required before building.',
     `Setup link: ${url}`,
+    `Direct local fallback: ${localUrl}`,
     `Wait command: ${waitCommand}`,
     'Show the setup link, then immediately run the wait command in the current turn; do not wait for another user message first.',
     `If the wait command prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart ${hostLabel}, then type "continue" or "resume" after restart.`,
@@ -189,20 +191,24 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     }
     const { server, waitCommand } = prepared;
     if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-      const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, 'traffic-one [setup required]');
-      return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.dashboardUrl, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
+      const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, server.localWizardUrl, 'traffic-one [setup required]');
+      const result = context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.dashboardUrl, server.localWizardUrl, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
         systemMessage,
       });
+      commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl);
+      return result;
     }
     if (ctx.host === 'windsurf') {
       const first = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId);
-      const vars = { URL: server.dashboardUrl, WAIT_CMD: waitCommand };
+      const vars = { URL: server.dashboardUrl, LOCAL_URL: server.localWizardUrl, WAIT_CMD: waitCommand };
       const directive = first
-        ? block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, waitCommand))
-        : block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(server.dashboardUrl, waitCommand));
-      return context(directive, {
-        systemMessage: formatWizardBanner(ctx.host, server.dashboardUrl, 'traffic-one [setup required]'),
+        ? block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, server.localWizardUrl, waitCommand))
+        : block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(server.dashboardUrl, server.localWizardUrl, waitCommand));
+      const result = context(directive, {
+        systemMessage: formatWizardBanner(ctx.host, server.dashboardUrl, server.localWizardUrl, 'traffic-one [setup required]'),
       });
+      commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl);
+      return result;
     }
     // Full walkthrough once per session (shared marker with the PreToolUse gate);
     // repeat prompts get the short URL + wait-command essentials.
@@ -215,11 +221,17 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // (systemMessage → user_message on Cursor), so the user always gets a working link
     // on the first prompt regardless of the agent. Host-gated: Claude opens the wizard
     // in its preview pane and Codex via its own recipe, so they keep the plain banner.
-    stampEmitMarker(cwd, 'wizard-url-shown');
-    const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, 'traffic-one [setup required]');
-    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.dashboardUrl, WAIT_CMD: waitCommand, DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host) })}`, {
+    const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, server.localWizardUrl, 'traffic-one [setup required]');
+    const result = context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, {
+      URL: server.dashboardUrl,
+      LOCAL_URL: server.localWizardUrl,
+      WAIT_CMD: waitCommand,
+      DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host),
+    })}`, {
       systemMessage,
     });
+    commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl);
+    return result;
   }
 
   // ── A settled new-project build flips to maintenance at the prompt boundary ──

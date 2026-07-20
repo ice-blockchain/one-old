@@ -7,6 +7,7 @@ import * as path from 'path';
 import type { CanonicalEvent, ToolClass, ToolInput } from '../core/types';
 import { toolClassForRawName } from '../core/events';
 import { parseJson } from '../shared/fsjson';
+import { patchTextFromToolInput } from '../shared/apply-patch';
 import { asRecord, asString, firstString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
 
@@ -154,6 +155,7 @@ function withFields(
   workdir?: string,
   filePath?: string,
   content?: string,
+  patchText?: string,
 ): ToolInput {
   return {
     class: cls,
@@ -162,6 +164,7 @@ function withFields(
     ...(workdir ? { workdir } : {}),
     ...(filePath ? { filePath } : {}),
     ...(content ? { content } : {}),
+    ...(patchText ? { patchText } : {}),
   };
 }
 
@@ -201,15 +204,18 @@ export function makeCopilotAdapter(surface?: CopilotWireSurface): HostAdapter {
       const content = firstString(
         data.content, data.new_content, input.content, input.new_content, effectiveToolArgs.content, effectiveToolArgs.new_content,
       );
+      const patchText = /^(?:apply_patch|patch)$/i.test((rawName.split('.').pop() || ''))
+        ? patchTextFromToolInput(effectiveToolArgs, input, data, selectedCall?.args)
+        : '';
 
       let tool: ToolInput | undefined;
       if (mapping.tool) {
-        tool = withFields(mapping.tool, rawName || sub, command, workdir, filePath, content);
+        tool = withFields(mapping.tool, rawName || sub, command, workdir, filePath, content, patchText);
       } else if (preOrPost) {
         const cls = rawName ? toolClassForRawName(rawName) : 'other';
-        tool = withFields(admit.has(cls) ? cls : 'other', rawName || sub, command, workdir, filePath, content);
+        tool = withFields(admit.has(cls) ? cls : 'other', rawName || sub, command, workdir, filePath, content, patchText);
       } else if (rawName) {
-        tool = withFields(toolClassForRawName(rawName), rawName, command, workdir, filePath, content);
+        tool = withFields(toolClassForRawName(rawName), rawName, command, workdir, filePath, content, patchText);
       }
 
       const prompt = firstString(

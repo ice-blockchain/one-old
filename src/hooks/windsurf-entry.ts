@@ -12,8 +12,9 @@ import { pluginUseDeclined } from '../shared/state/plugin-use';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from '../adapters/coerce';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
-import { isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
+import { hasValidHookObjectPayload, isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
+import { isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
 
 export interface HookOutput { stdout: string; stderr: string; exitCode: number; }
 
@@ -40,6 +41,15 @@ function readStdin(): Promise<string> {
 function actionName(stdin: string, subcommand: string | undefined): string {
   const data = asRecord(parseJson<Record<string, unknown>>(stdin, {}));
   return firstString(data.agent_action_name, data.action, data.event, subcommand);
+}
+
+function isManagedWindsurfMcpInvocation(stdin: string): boolean {
+  const data = asRecord(parseJson<Record<string, unknown>>(stdin, {}));
+  const info = asRecord(data.tool_info ?? data.toolInfo ?? data.input);
+  return isManagedOneMcpPair(
+    firstString(info.mcp_server_name, info.mcpServerName),
+    firstString(info.mcp_tool_name, info.mcpToolName),
+  );
 }
 
 function cwdFrom(stdin: string): string {
@@ -88,11 +98,20 @@ export async function runWindsurfHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   stampWindsurfBackend('cascade', env);
+  const action = actionName(stdin, subcommand);
+  // Managed MCP denial must precede duplicate suppression: Devin Local's
+  // synthetic Cascade event is the only MCP-specific pre-tool surface when the
+  // native generic matcher does not select the server-qualified tool name.
+  if (action === 'pre_mcp_tool_use' && isManagedWindsurfMcpInvocation(stdin)) {
+    return { stdout: '', stderr: ONE_MCP_AGENT_TOOL_DENY_REASON, exitCode: 2 };
+  }
   if (isSyntheticDevinCascadeDuplicate(stdin)) {
     return { stdout: '', stderr: '', exitCode: 0 };
   }
-  const action = actionName(stdin, subcommand);
   if (!action) return { stdout: '', stderr: '', exitCode: 0 };
+  if (isWindsurfPreToolAction(action) && !hasValidHookObjectPayload(stdin)) {
+    return { stdout: '', stderr: preToolFailureReason('Windsurf'), exitCode: 2 };
+  }
   try {
     const cwd = cwdFrom(stdin);
     initializeTrafficOneEnv(cwd, 'windsurf', env);

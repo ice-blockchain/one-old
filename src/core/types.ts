@@ -36,6 +36,10 @@ export interface ToolInput {
   readonly workdir?: string;
   readonly filePath?: string;
   readonly content?: string;
+  // Canonical freeform apply_patch payload. Kept separate from `content` so
+  // gates can parse per-file operations instead of treating the whole diff as
+  // one file's proposed contents.
+  readonly patchText?: string;
 }
 
 // The canonical, host-agnostic hook input. `raw` carries the original host

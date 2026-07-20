@@ -135,6 +135,23 @@ test('wizard: completion page has no OpenCode restart button or Ctrl+C instructi
   assert.ok(!html.includes('terminal where opencode is running'));
   assert.ok(!html.includes('Ctrl+C'));
   assert.ok(!html.includes('Press Ctrl+C and relaunch opencode to apply changes.'));
+  assert.ok(html.includes('renderPerformanceCatalog'), 'Performance must render host/catalog context');
+  assert.ok(html.includes('repickReason'), 'Performance must explain why it reopened');
+  assert.ok(html.includes('catalogTiers'), 'Performance must show the current mapped model tiers');
+  assert.ok(
+    html.includes('c.tier === m.tier && c.model === m.model'),
+    'Team selector defaults must identify the exact tier/model pair',
+  );
+  assert.ok(
+    html.includes('c.tier + " · " + modelLabel'),
+    'Team selector labels must expose the tier alongside the exact model',
+  );
+  assert.ok(
+    html.includes('return { action: "approve", overrides, modelSelections }'),
+    'Team confirmation must submit tier overrides and the complete exact model map',
+  );
+  assert.ok(!html.includes('performanceTargetToken'));
+  assert.ok(!html.includes('targetToken'));
 });
 
 test('server: standalone:false does not write a registry record', async () => {

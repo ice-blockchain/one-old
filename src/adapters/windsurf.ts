@@ -7,6 +7,7 @@
 import * as path from 'path';
 
 import type { CanonicalEvent, ToolClass, ToolInput } from '../core/types';
+import { patchTextFromToolInput } from '../shared/apply-patch';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
@@ -85,10 +86,14 @@ function toolFor(action: string, info: Record<string, unknown>): ToolInput | und
   ) || editsContent(info.edits);
   const mcpTool = firstString(info.mcp_tool_name, info.mcpToolName);
   const mcpServer = firstString(info.mcp_server_name, info.mcpServerName);
+  const explicitToolName = firstString(info.tool_name, info.toolName, info.name);
   const rawName = action === 'pre_mcp_tool_use' || action === 'post_mcp_tool_use'
     ? [mcpServer, mcpTool].filter(Boolean).join('.') || action
-    : action;
+    : (explicitToolName || action);
   const bareName = bareToolName(rawName);
+  const patchText = /^(?:apply_patch|patch)$/i.test(bareName)
+    ? patchTextFromToolInput(info)
+    : '';
   const cls = /^run_subagent$/i.test(bareName) || /^spawn_subagent$/i.test(bareName)
     ? 'spawn-agent'
     : action === 'pre_write_code' || action === 'post_write_code'
@@ -102,6 +107,7 @@ function toolFor(action: string, info: Record<string, unknown>): ToolInput | und
     ...(firstString(info.cwd, info.working_directory, info.workingDirectory) ? { workdir: firstString(info.cwd, info.working_directory, info.workingDirectory) } : {}),
     ...(filePath ? { filePath } : {}),
     ...(content ? { content } : {}),
+    ...(patchText ? { patchText } : {}),
   };
 }
 

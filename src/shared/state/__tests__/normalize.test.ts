@@ -61,10 +61,10 @@ test('currentRunId is normalized to the digit string gates expect', () => {
 
 test('writeState keeps local prefs out of .one.json; readEffectiveState merges them back', () => {
   withPrefs((dir) => {
+    const performanceTarget = { plan: 'pro', appliedFingerprint: 'a'.repeat(64), configVersion: 0 };
     mergeProjectHostPrefs(dir, 'codex', {
-      performance: { level: 'high', source: 'prompted' },
+      performance: { level: 'high', source: 'prompted', target: performanceTarget },
       team: { mode: 'subagents', source: 'prompted', approved: true },
-      configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
     });
     writeState(dir, {
       stack: 'default', mode: 'new-project',
@@ -79,7 +79,9 @@ test('writeState keeps local prefs out of .one.json; readEffectiveState merges t
 
     // performance (a per-project pref) merges back from preferences.json …
     const effBefore = readEffectiveState(dir);
-    assert.deepEqual(effBefore.performance, { level: 'high', source: 'prompted' });
+    assert.deepEqual(effBefore.performance, {
+      level: 'high', source: 'prompted', target: performanceTarget,
+    });
     // … codeGraphProvider is machine-wide now (one.json), so writeState drops it; it
     // only appears in the effective state once set globally.
     assert.equal('codeGraphProvider' in effBefore, false);
@@ -115,11 +117,11 @@ test('per-user prefs are isolated; codeGraphProvider is shared machine-wide', ()
   process.env.TRAFFIC_ONE_HOST = 'codex';
   process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
+    const performanceTarget = { plan: 'pro', appliedFingerprint: 'a'.repeat(64), configVersion: 0 };
     process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = userAPrefs;
     mergeProjectHostPrefs(dir, 'codex', {
-      performance: { level: 'high', source: 'prompted' },
+      performance: { level: 'high', source: 'prompted', target: performanceTarget },
       team: { mode: 'subagents', source: 'prompted', approved: true },
-      configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
     });
     writeState(dir, {
       stack: 'default',
@@ -154,7 +156,9 @@ test('per-user prefs are isolated; codeGraphProvider is shared machine-wide', ()
 
     const userAState = readEffectiveState(dir);
     assert.equal(userAState.codeGraphProvider, 'gitnexus');
-    assert.deepEqual(userAState.performance, { level: 'high', source: 'prompted' });
+    assert.deepEqual(userAState.performance, {
+      level: 'high', source: 'prompted', target: performanceTarget,
+    });
     assert.equal((userAState.team as Record<string, unknown>).approved, true);
 
     process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = userBPrefs;

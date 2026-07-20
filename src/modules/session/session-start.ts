@@ -11,10 +11,9 @@ import { obj, type Rec } from '../../shared/obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { context, noop } from '../../core/result';
+import { context, mergeResults, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { stampEmitMarker } from '../../shared/once';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
@@ -23,20 +22,23 @@ import { autoDetectedAnnouncement } from '../../shared/directives';
 import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
-import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
+import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
-import { onboardingDeclineCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
+import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { windsurfSetupReason } from '../../shared/onboarding-server/windsurf-setup';
+import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-links';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
+  ensureCurrentRunId,
   hasRunAgentState,
+  hookSessionIdentity,
   isSubagentThread,
   legacyRunAgentContext,
   legacyStatePath,
@@ -58,9 +60,20 @@ import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { sweepTrafficOneRetention } from '../../shared/retention';
-import { refreshModelStatusForSession } from './model-status-refresh';
-import { cleanupLegacyCursorModels } from '../../shared/materialize/cursor-models';
+import {
+  oneMcpSessionWarning,
+  syncOneMcpForSession,
+  syncOneMcpOnce,
+  type SessionOneMcpSync,
+} from './one-mcp-sync';
+import { ensureCodexOneMcpServerRegistered } from '../../shared/codex-mcp';
+import { oneMcpRegistrationEnabled } from '../../config/one-mcp';
 import { sessionPerformanceContext } from '../../shared/session-performance-context';
+import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
+import { detectHostPlan } from '../../shared/host-plan';
+import { canonicalHost } from '../../shared/model-tiers';
+import { freshCursorModels } from '../../shared/materialize/cursor-models';
+import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { removeStrayProjectArtifactsFromGlobalDir } from '../../shared/state/traffic-one-paths';
 
@@ -76,7 +89,7 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
   if (usePluginQuestionPending(cwd)) return banner;
   const prepared = prepareOnboardingServer(cwd, ctx.host);
   return prepared.kind === 'ready'
-    ? formatWizardBanner(ctx.host, prepared.server.dashboardUrl, banner)
+    ? formatWizardBanner(ctx.host, prepared.server.dashboardUrl, prepared.server.localWizardUrl, banner)
     : banner;
 }
 
@@ -96,31 +109,38 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
   // Ask-first: relay the host-chat question — no wizard server, no URL, and no
   // state writes anywhere until the user says whether this project uses Traffic
   // One at all. The triggering prompt rides the yes command as the seed.
-  if (usePluginQuestionPending(cwd)) return usePluginQuestion(cwd, ctx.host, ctxPromptText(ctx));
-  const prepared = prepareOnboardingServer(cwd, ctx.host);
+  const syncSession = onboardingSyncSessionId(hookSessionIdentity(ctx.input.raw).sessionId);
+  if (usePluginQuestionPending(cwd)) return usePluginQuestion(cwd, ctx.host, ctxPromptText(ctx), syncSession);
+  const prepared = prepareOnboardingServer(cwd, ctx.host, { syncSession });
   if (prepared.kind !== 'ready') return prepared.reason;
   const { server, waitCommand } = prepared;
   if (!server.dashboardUrl) return block('setup-pending');
-  // Stamp the shared URL marker so the wait runner's terminal banner doesn't
-  // print the same link a second time in the same turn (observed on Cursor).
-  stampEmitMarker(cwd, 'wizard-url-shown');
+  let directive: string;
   // OpenCode/Kilo: keep this factual and compact so their prompt-injection
   // filters do not reject a multi-host walkthrough. The live URL and executable
   // waiter are still present on the first prompt.
   if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-    return [
+    directive = [
       'Traffic One project setup is required before building.',
       `Setup link: ${server.dashboardUrl}`,
+      `Direct local fallback: ${server.localWizardUrl}`,
       `Wait command: ${waitCommand}`,
       'Show the setup link, then immediately run the wait command and keep this turn active until setup completes.',
       `If the user does not want Traffic One for this project, run instead: ${onboardingDeclineCommand(cwd, ctx.host)}`,
     ].join('\n\n');
+  } else if (ctx.host === 'windsurf') {
+    const vars = { URL: server.dashboardUrl, LOCAL_URL: server.localWizardUrl, WAIT_CMD: waitCommand };
+    directive = block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, server.localWizardUrl, waitCommand));
+  } else {
+    directive = block('server-deny-reason', {
+      URL: server.dashboardUrl,
+      LOCAL_URL: server.localWizardUrl,
+      WAIT_CMD: waitCommand,
+      DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host),
+    });
   }
-  if (ctx.host === 'windsurf') {
-    const vars = { URL: server.dashboardUrl, WAIT_CMD: waitCommand };
-    return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, waitCommand));
-  }
-  return block('server-deny-reason', { URL: server.dashboardUrl, WAIT_CMD: waitCommand, DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host) });
+  commitWizardLinksShown(cwd, server.token, directive, server.dashboardUrl, server.localWizardUrl);
+  return directive;
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
 
@@ -170,6 +190,17 @@ export function runSubagentSessionStart(ctx: Ctx): HookResult {
   const root = pluginRoot();
   const raw = ctx.input.raw;
   const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
+  const team = obj(state.team);
+  if (team?.mode === 'subagents') {
+    const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    const policy = runId ? readRunModelPolicy(cwd, runId) : null;
+    if (!runId || !policy || policy.host !== canonicalHost(ctx.host)) {
+      return context(
+        `TRAFFIC_ONE_MODEL_POLICY_BLOCKED_CHILD\nImmutable model-policy.json is missing, corrupt, or belongs to another host for run ${runId || '(missing)'}. `
+        + 'Do not use tools or reconstruct it from current preferences/One MCP. Stop this child; the parent must repair the run and respawn it.',
+      );
+    }
+  }
 
   cleanActiveSkills();
   try {
@@ -178,7 +209,7 @@ export function runSubagentSessionStart(ctx: Ctx): HookResult {
     // best-effort; the parent already materialized the bundle
   }
 
-  const agentContext = resolveRunAgentContext(cwd, state, raw, { claimPending: true })
+  const agentContext = resolveRunAgentContext(cwd, state, raw, { claimPending: true, host: ctx.host })
     || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
   if (agentContext && hasMaterializedProjectAssets(cwd, state)) {
     return subagentRoleContext(ctx, state, agentContext, root);
@@ -205,6 +236,13 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = sessionProjectRoot(ctx);
   initializeTrafficOneEnv(cwd, ctx.host);
+  // Codex registration is machine-global but deliberately inert: the managed
+  // server is appended disabled with both tools disabled. Do this independently
+  // of per-project pluginUse so installs are deterministic; never rewrite an
+  // existing same-name table owned by the user.
+  if (ctx.host === 'codex' && oneMcpRegistrationEnabled(process.env)) {
+    ensureCodexOneMcpServerRegistered({ ...process.env, TRAFFIC_ONE_HOST: 'codex' });
+  }
   // The user chose not to use Traffic One for this project — stay silent.
   // (UserPromptSubmit offers re-enabling when the user explicitly names it.)
   if (pluginUseDeclined(cwd)) return noop();
@@ -217,11 +255,10 @@ function runSessionStartInner(ctx: Ctx): HookResult {
     return runSubagentSessionStart(ctx);
   }
 
-  cleanupLegacyCursorModels(cwd);
-
-  // Public, auth-independent catalog reconciliation. The child runner is
-  // bounded to 2s and fail-open; only the active host snapshot can change.
-  refreshModelStatusForSession(cwd, ctx.host);
+  const oneMcpWarning = syncOneMcpAtSessionStart(cwd, ctx.host, ctx.input.raw);
+  const withOneMcpWarning = (result: HookResult): HookResult => oneMcpWarning
+    ? mergeResults([context(oneMcpWarning), result])
+    : result;
 
   // Auth gate: a pure local boolean read — no per-session remote check. When auth
   // is enforced but the API key isn't entered yet, point at the wizard (the
@@ -229,9 +266,9 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   // because computeOnboarding returns the 'api-key' step while unauthenticated —
   // covering both a fresh project and an already-onboarded one a 401 invalidated.
   if (authEnforced() && !isLocallyAuthenticated()) {
-    return context(setupPendingDirective(ctx, cwd), {
+    return withOneMcpWarning(context(setupPendingDirective(ctx, cwd), {
       systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [authentication required]'),
-    });
+    }));
   }
 
   // Defer brand-new-project activation to the first prompt. SessionStart fires
@@ -244,9 +281,26 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   // authed body then). An existing codebase still auto-detects below, because its
   // mode is existing-codebase, not new-project.
   const pristine = !fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd));
-  if (pristine && detectMode(cwd) === 'new-project') return noop();
+  if (pristine && detectMode(cwd) === 'new-project') return withOneMcpWarning(noop());
 
-  return runSessionStartAuthed(ctx);
+  return withOneMcpWarning(runSessionStartAuthed(ctx));
+}
+
+// OpenCode/Kilo can invoke their SessionStart-compatible system transform more
+// than once per chat. Consent and the runtime switch are checked BEFORE writing
+// the per-session marker; payloads without a stable session id deliberately run
+// every time because duplicates are safe and guessing an identity is not.
+export function syncOneMcpAtSessionStart(
+  cwd: string,
+  host: unknown,
+  raw: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+  sync: SessionOneMcpSync = syncOneMcpForSession,
+  featureEnabled?: boolean,
+): string | null {
+  const sessionId = onboardingSyncSessionId(hookSessionIdentity(raw).sessionId);
+  if (!syncOneMcpOnce(cwd, host, sessionId, env, sync, featureEnabled)) return null;
+  return oneMcpSessionWarning(host, env);
 }
 
 // The post-auth SessionStart body: skill sweep + digest retention + session
@@ -278,7 +332,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
 
   // ── Subagent fast path (legacy run-agent contexts; detected subagents are
   // already intercepted before auth in runSessionStartInner) ──
-  const agentContext = resolveRunAgentContext(cwd, state, raw, { claimPending: true })
+  const agentContext = resolveRunAgentContext(cwd, state, raw, { claimPending: true, host: ctx.host })
     || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
   if (agentContext && hasMaterializedProjectAssets(cwd, state)) {
     return subagentRoleContext(ctx, state, agentContext, root);
@@ -306,11 +360,18 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const onboardingReady = onboardingComplete
     && typeof stackId === 'string' && STACK_IDS.has(stackId)
     && (mode !== 'new-project' || !isNewProjectOnboardingIncomplete(state, ctx.host));
+  // Preference acknowledgements are keyed by the canonical project root. Never
+  // let a nested package or the hook process cwd select another project's hash.
+  const localPreferenceTarget = currentLocalPreferenceTarget(
+    ctx.host,
+    { ...process.env, TRAFFIC_ONE_HOST: ctx.host },
+    cwd,
+  );
 
   // ── Flow 1 — already onboarded → pack the rule bundle ──
   if (onboardingReady) {
     const activeStackId = String(stackId);
-    if (nextLocalPreferenceStep(state, ctx.host)) {
+    if (nextLocalPreferenceStep(state, ctx.host, localPreferenceTarget)) {
       return context(`[ACTIVE STACK: ${activeStackId}]\n\n${setupPendingDirective(ctx, cwd)}`, {
         systemMessage: setupPendingBanner(ctx, cwd, `traffic-one [${activeStackId}] setup required`),
       });
@@ -332,8 +393,39 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
       : packBundle(root, modeMandatory, spec.optional).body;
     ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the code graph if an existing project is missing it
 
+    // Freeze the model catalog before any parent-side spawn map is emitted. The
+    // run snapshot is create-once; a later machine-global One MCP update affects
+    // the next run, never children already pinned to this one.
+    const team = obj(state.team);
+    if (team?.mode === 'subagents') {
+      const runId = ensureCurrentRunId(cwd, state);
+      const policy = ensureRunModelPolicy(
+        cwd,
+        runId,
+        ctx.host,
+        state,
+        { ...process.env, TRAFFIC_ONE_HOST: ctx.host },
+      );
+      if (!policy) {
+        if (ctx.host === 'cursor'
+          && freshCursorModels(cwd, detectHostPlan('cursor')).length === 0) {
+          return context(
+            `TRAFFIC_ONE_CURSOR_MODELS_REQUIRED\nBefore run ${runId} can be frozen, enumerate the exact model ids in Cursor's Task picker and run:\n`
+            + `${modelCaptureCommand(cwd, 'cursor')}\n`
+            + 'Then retry the parent action. Traffic One will create model-policy.json only after those exact runnable slugs are available.',
+            { systemMessage: 'traffic-one: capture Cursor subagent models before starting the immutable run' },
+          );
+        }
+        return context(
+          `TRAFFIC_ONE_MODEL_POLICY_BLOCKED\nThe acknowledged Performance target could not be frozen for run ${runId}. `
+          + 'Do not spawn a child. Reopen Performance and retry this parent session after the active host/plan target is acknowledged.',
+          { systemMessage: 'traffic-one: subagent spawning paused until the immutable run model policy can be created' },
+        );
+      }
+    }
+
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
-    header += sessionPerformanceContext(state, ctx.host);
+    header += sessionPerformanceContext(state, ctx.host, process.env, cwd);
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
@@ -396,7 +488,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
 
     const banner = autoDetectedAnnouncement(detected as never);
     let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
-    header += sessionPerformanceContext(state, ctx.host);
+    header += sessionPerformanceContext(state, ctx.host, process.env, cwd);
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
@@ -404,7 +496,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
-    if (nextLocalPreferenceStep(state, ctx.host)) {
+    if (nextLocalPreferenceStep(state, ctx.host, localPreferenceTarget)) {
       return context(`${banner}\n\n${setupPendingDirective(ctx, cwd)}`, {
         systemMessage: setupPendingBanner(ctx, cwd, `traffic-one [${state.stack || mode}] setup required`),
       });

@@ -7,6 +7,11 @@ import { type Rec, type Report } from './constants';
 import { relativePath, timestampSlug } from './helpers';
 import { legacyStatePath, statePath } from '../../shared/state';
 import { pluginVersion } from '../../config/plugin-identity';
+import { writeJson } from '../../shared/fsjson';
+import {
+  preserveOneMcpReportId,
+  withProjectStateLock,
+} from '../../shared/state/project-state-lock';
 
 export interface ReportPaths { jsonPath: string; markdownPath: string; relativeJsonPath: string; relativeMarkdownPath: string; }
 
@@ -54,24 +59,25 @@ export function renderMarkdownReport(report: Report): string {
 }
 
 export function stampState(cwd: string, report: Report, relativeReportPath: string): void {
-  const nextStatePath = statePath(cwd);
-  const oldStatePath = legacyStatePath(cwd);
-  let state: Rec = {};
-  try {
-    const readableStatePath = fs.existsSync(nextStatePath) ? nextStatePath : oldStatePath;
-    state = JSON.parse(fs.readFileSync(readableStatePath, 'utf8')) as Rec;
-  } catch {
-    state = {};
-  }
-  state.lastSecurityCheckAt = report.generatedAt;
-  state.lastSecurityCheckStatus = 'passed';
-  state.lastSecurityCheckFingerprint = report.fingerprint.fingerprint;
-  state.lastSecurityCheckReport = relativeReportPath;
-  delete state.pluginVersion;
-  const version = pluginVersion();
-  if (version) {
-    state.version = version;
-  }
-  fs.mkdirSync(path.dirname(nextStatePath), { recursive: true });
-  fs.writeFileSync(nextStatePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  withProjectStateLock(cwd, () => {
+    const nextStatePath = statePath(cwd);
+    const oldStatePath = legacyStatePath(cwd);
+    let state: Rec = {};
+    try {
+      const readableStatePath = fs.existsSync(nextStatePath) ? nextStatePath : oldStatePath;
+      const parsed = JSON.parse(fs.readFileSync(readableStatePath, 'utf8')) as unknown;
+      state = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Rec : {};
+    } catch {
+      state = {};
+    }
+    const current = { ...state };
+    state.lastSecurityCheckAt = report.generatedAt;
+    state.lastSecurityCheckStatus = 'passed';
+    state.lastSecurityCheckFingerprint = report.fingerprint.fingerprint;
+    state.lastSecurityCheckReport = relativeReportPath;
+    delete state.pluginVersion;
+    const version = pluginVersion();
+    if (version) state.version = version;
+    writeJson(nextStatePath, preserveOneMcpReportId(current, state));
+  });
 }

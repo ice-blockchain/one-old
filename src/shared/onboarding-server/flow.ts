@@ -21,13 +21,12 @@ import {
   projectContextOriginalPrompt,
 } from '../onboarding/project-context';
 import { detectHost } from '../host';
-import { detectHostPlan } from '../host-plan';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
 import { ASK_USE_PLUGIN_FIRST, STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
 import { readPluginUseChoice } from '../state/plugin-use';
 import { TIER_IDS } from '../../config/model-tiers';
 import { recommendTierForPlan } from '../model-tiers';
-import { currentModelForTier, currentModelsForTier } from '../current-model-tiers';
+import { currentHostModelTarget, currentModelsForTier } from '../current-model-tiers';
 import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
@@ -39,6 +38,7 @@ import {
   mergeProjectHostPrefs,
   mergeProjectPrefs,
   projectPrefsPath,
+  hasValidPerformanceState,
   readEffectiveState,
   readGlobalCodeGraphProvider,
   readProjectPrefs,
@@ -68,6 +68,18 @@ export interface TeamMember {
   modelLabel?: string;
 }
 
+export type PerformanceRepickReason =
+  | 'initial'
+  | 'configuration-required'
+  | 'plan-changed'
+  | 'models-changed'
+  | 'team-settings-changed';
+
+export interface PerformanceCatalogTier {
+  tier: string;
+  models: string[];
+}
+
 // The static step copy (kind/title/question/options/fields) is owned by
 // config/onboarding.ts (STEP_COPY); StepMeta layers on the fields flow.ts
 // resolves at display time.
@@ -79,10 +91,16 @@ export interface StepMeta extends StepCopy {
   recommendedLevel?: string;
   recommendedTier?: string;
   host?: string;
-  // The model choices offered per agent on the team step: the detected host's
-  // capability tiers (highest/balanced/cheapest) resolved to concrete model ids
-  // (opus/sonnet/haiku, gpt-5.x, …). The wizard renders one <select> per role
-  // from this list; the chosen tier is sent back as a team.overrides entry.
+  plan?: string;
+  catalogSource?: 'one-mcp' | 'bundled';
+  catalogVersion?: number;
+  catalogTiers?: PerformanceCatalogTier[];
+  repickReason?: PerformanceRepickReason;
+  previousPlan?: string;
+  // Exact model ids offered on the team step, grouped by capability tier. Each
+  // tier contributes at most its first two models. Selectors show the cross-tier
+  // union; the selected tier is persisted in team.overrides and the exact model
+  // id in team.modelSelections.
   modelChoices?: { tier: string; model: string; label?: string }[];
   // True when the user declined Traffic One for this project — the wizard shows
   // the "Traffic One disabled" view instead of "Setup complete".
@@ -128,6 +146,7 @@ export function buildTeamLineup(
   overrides?: Rec | null,
   planCtx?: PlanCtx | null,
   env: NodeJS.ProcessEnv = process.env,
+  modelSelections?: Rec | null,
 ): TeamMember[] {
   const cfg = PERFORMANCE_CONFIG[level];
   if (!cfg || cfg.teamMode !== 'subagents') return [];
@@ -135,7 +154,18 @@ export function buildTeamLineup(
   for (const r of TEAM_ROLES) {
     const tier = effectiveTierForRole(level, r.role, overrides || null, planCtx || null);
     if (!tier) continue;
-    const model = modelForRoleHost(level, r.role, host, overrides || null, planCtx || null, env) || tier;
+    const resolvedModel = modelForRoleHost(
+      level,
+      r.role,
+      host,
+      overrides || null,
+      planCtx || null,
+      env,
+      modelSelections || null,
+    );
+    if (!resolvedModel && modelSelections
+      && Object.prototype.hasOwnProperty.call(modelSelections, r.role)) return [];
+    const model = resolvedModel || tier;
     const modelLabel = modelDisplayLabel(model, tier, host, planCtx?.plan, env);
     out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model, ...(modelLabel ? { modelLabel } : {}) });
   }
@@ -290,9 +320,10 @@ function enrichStepMeta(
   step: WizardStep,
   state: Rec,
   env: NodeJS.ProcessEnv,
+  target: LocalPreferenceTarget,
 ): StepMeta {
-  if (step === 'team-confirmation') enrichTeamMeta(meta, state, env);
-  if (step === 'performance') enrichPerformanceMeta(meta, env);
+  if (step === 'team-confirmation') enrichTeamMeta(meta, state, env, target);
+  if (step === 'performance') enrichPerformanceMeta(meta, state, env, target);
   return meta;
 }
 
@@ -361,7 +392,7 @@ export function computeOnboarding(
 
   let step: WizardStep;
   let done: boolean;
-  const localPreferenceTarget = currentLocalPreferenceTarget(host, env);
+  const localPreferenceTarget = currentLocalPreferenceTarget(host, env, cwd);
 
   if (mode === 'new-project') {
     if (isNewProjectOnboardingIncomplete(state, host)) {
@@ -382,7 +413,7 @@ export function computeOnboarding(
     done = false;
     step = stepWhenDurablePrefsMissing(cwd, state, mode, host, localPreferenceTarget);
   }
-  const meta = enrichStepMeta(metaForStep(step, originalPrompt), step, state, env);
+  const meta = enrichStepMeta(metaForStep(step, originalPrompt), step, state, env, localPreferenceTarget);
 
   return {
     mode,
@@ -398,7 +429,12 @@ export function computeOnboarding(
 
 // Attach the resolved subagent line-up (role → tier → host model) so the wizard's
 // team step can SHOW who will build, instead of asking for a blind approval.
-function enrichTeamMeta(meta: StepMeta, state: Rec, env: NodeJS.ProcessEnv): void {
+function enrichTeamMeta(
+  meta: StepMeta,
+  state: Rec,
+  env: NodeJS.ProcessEnv,
+  target: LocalPreferenceTarget,
+): void {
   const performance = obj(state.performance);
   const level = performance && typeof performance.level === 'string' ? performance.level : '';
   const team = obj(state.team);
@@ -412,31 +448,35 @@ function enrichTeamMeta(meta: StepMeta, state: Rec, env: NodeJS.ProcessEnv): voi
     meta.host = host;
     return;
   }
-  const planCtx: PlanCtx = { host, plan: detectHostPlan(host, env) };
-  meta.team = buildTeamLineup(level, host, overrides, planCtx, env);
+  const planCtx: PlanCtx = { host, plan: target.plan };
+  const savedModelSelections = team && obj(team.modelSelections)
+    ? (team.modelSelections as Rec)
+    : null;
+  meta.team = buildTeamLineup(level, host, overrides, planCtx, env, savedModelSelections);
   meta.performanceLevel = level;
   meta.recommendedTier = recommendTierForPlan(host, planCtx.plan);
   meta.host = host;
-  // The per-agent model menu: each tier resolved to the detected host's model id,
-  // so the wizard can offer real model names (and the user's pick maps straight
-  // back to a tier override the spawn gate already understands). Windsurf Free
-  // exposes only its single verified selector model, so do not show three
-  // indistinguishable choices for that host/plan.
-  const choiceTiers = host === 'windsurf' && planCtx.plan === 'free'
-    ? ['cheapest'] as const
-    : TIER_IDS;
-  meta.modelChoices = choiceTiers.map((tier) => {
-    const model = currentModelForTier(tier, host, planCtx.plan, env) || tier;
-    const label = modelDisplayLabel(model, tier, host, planCtx.plan, env);
-    return { tier, model, ...(label ? { label } : {}) };
-  });
+  // Restore the cross-tier picker while keeping it bounded: each row contributes
+  // its first two models, in preferred order. Do not dedupe across tiers because
+  // the same exact model can intentionally represent two different tier choices.
+  meta.modelChoices = TIER_IDS.flatMap((tier) => (
+    currentModelsForTier(tier, host, planCtx.plan, env).slice(0, 2).map((model) => {
+      const label = modelDisplayLabel(model, tier, host, planCtx.plan, env);
+      return { tier, model, ...(label ? { label } : {}) };
+    })
+  ));
 }
 
 // Pre-select the wizard's plan recommendation: move it first and tag its hint
 // "Recommended". Clones option objects so STEP_META is never mutated.
-function enrichPerformanceMeta(meta: StepMeta, env: NodeJS.ProcessEnv): void {
+function enrichPerformanceMeta(
+  meta: StepMeta,
+  state: Rec,
+  env: NodeJS.ProcessEnv,
+  target: LocalPreferenceTarget,
+): void {
   const host = detectHost(env);
-  const plan = detectHostPlan(host, env);
+  const plan = target.plan;
   const cascade = host === 'windsurf' && windsurfBackend(env) === 'cascade';
   const recommended = cascade ? 'low' : recommendLevelForPlan(host, plan);
   const options = (meta.options || []).filter((o) => !cascade || o.id === 'low').map((o) => ({ ...o }));
@@ -448,6 +488,32 @@ function enrichPerformanceMeta(meta: StepMeta, env: NodeJS.ProcessEnv): void {
   meta.recommendedLevel = recommended;
   meta.recommendedTier = recommendTierForPlan(host, plan);
   meta.host = host;
+  meta.plan = plan;
+
+  const catalog = currentHostModelTarget(host, plan, env);
+  meta.catalogSource = catalog.source;
+  meta.catalogVersion = catalog.configVersion;
+  meta.catalogTiers = TIER_IDS.map((tier) => ({
+    tier,
+    models: [...catalog.snapshot.tiers[tier]],
+  }));
+
+  const performance = obj(state.performance);
+  const previousTarget = obj(performance?.target);
+  if (!hasValidPerformanceState(performance)) {
+    meta.repickReason = 'initial';
+  } else if (!previousTarget) {
+    meta.repickReason = 'configuration-required';
+  } else if (previousTarget.plan !== plan) {
+    meta.repickReason = 'plan-changed';
+    if (typeof previousTarget.plan === 'string' && previousTarget.plan.trim()) {
+      meta.previousPlan = previousTarget.plan;
+    }
+  } else if (previousTarget.appliedFingerprint !== target.appliedFingerprint) {
+    meta.repickReason = 'models-changed';
+  } else {
+    meta.repickReason = 'team-settings-changed';
+  }
 }
 
 // ── Answer application ──────────────────────────────────────────────────────────
@@ -507,17 +573,23 @@ function toolchainInstallPending(state: Rec, host: string): boolean {
 // existing ones. Idempotent — the runner stamps present bins and exits fast when
 // everything is already installed, and a fresh-machine flow that already ran the
 // task from code-graph is stamped by the time finalize lands here.
-function attachPendingInstallTask(cwd: string, step: string, outcome: AnswerOutcome): AnswerOutcome {
+function attachPendingInstallTask(
+  cwd: string,
+  step: string,
+  outcome: AnswerOutcome,
+  env: NodeJS.ProcessEnv,
+): AnswerOutcome {
   if (!outcome.ok || outcome.task) return outcome;
-  const state = readEffectiveState(cwd);
-  const host = detectHost();
+  const state = readEffectiveState(cwd, env);
+  const host = detectHost(env);
   // Terminal = 'finalize' (new project; it just committed the stack) or, for an
   // already-onboarded project (stack present), the answer that resolved the last
   // local preference. Mid-wizard answers in a NEW project have no stack yet and
   // must never fire the install — it would block the wizard's next question on a
   // potentially minutes-long managed install.
   const hasStack = typeof state.stack === 'string' && state.stack.trim() !== '';
-  const terminal = step === 'finalize' || (hasStack && nextLocalPreferenceStep(state, host) == null);
+  const target = currentLocalPreferenceTarget(host, env, cwd);
+  const terminal = step === 'finalize' || (hasStack && nextLocalPreferenceStep(state, host, target) == null);
   if (!terminal || !toolchainInstallPending(state, host)) return outcome;
   return { ...outcome, task: { kind: 'onboarding-toolchain' } };
 }
@@ -526,19 +598,26 @@ export function applyAnswer(
   cwd: string,
   step: string,
   value: unknown,
+  env: NodeJS.ProcessEnv = process.env,
 ): AnswerOutcome {
-  return attachPendingInstallTask(cwd, step, applyAnswerStep(cwd, step, value));
+  return attachPendingInstallTask(
+    cwd,
+    step,
+    applyAnswerStep(cwd, step, value, env),
+    env,
+  );
 }
 
 function applyAnswerStep(
   cwd: string,
   step: string,
   value: unknown,
+  env: NodeJS.ProcessEnv,
 ): AnswerOutcome {
   switch (step) {
     case 'open-code': {
       const enabled = value === true || value === 'enable' || value === 'enabled';
-      mergeProjectPrefs(cwd, { openCode: { enabled, source: 'prompted', decidedAt: stateTimestamp() } });
+      mergeProjectPrefs(cwd, { openCode: { enabled, source: 'prompted', decidedAt: stateTimestamp() } }, env);
       // Record the consent as a DURABLE AUTHORIZATION in committed project state
       // (.traffic-one/.one.json), not just per-user prefs. Hosts with an
       // action-level safety reviewer (Codex) reject the opencode_delegate tool
@@ -556,19 +635,28 @@ function applyAnswerStep(
       if (level !== 'high' && level !== 'balanced' && level !== 'low') {
         return { ok: false, error: 'invalid performance level' };
       }
-      const host = detectHost();
-      if (host === 'windsurf' && windsurfBackend() === 'cascade' && level !== 'low') {
+      const host = detectHost(env);
+      if (host === 'windsurf' && windsurfBackend(env) === 'cascade' && level !== 'low') {
         return { ok: false, error: 'Cascade supports main-agent mode only' };
       }
+      const target = currentLocalPreferenceTarget(host, env, cwd);
       mergeProjectHostPrefs(cwd, host, {
-        performance: { level, source: 'prompted' },
+        performance: {
+          level,
+          source: 'prompted',
+          target: {
+            plan: target.plan,
+            appliedFingerprint: target.appliedFingerprint,
+            configVersion: target.configVersion,
+          },
+        },
         team: { mode: teamModeForLevel(level), source: 'prompted' },
-        configuredFor: currentLocalPreferenceTarget(host),
-      });
+      }, env);
       return { ok: true };
     }
     case 'team-confirmation': {
-      if (detectHost() === 'windsurf' && windsurfBackend() === 'cascade') {
+      const host = detectHost(env);
+      if (host === 'windsurf' && windsurfBackend(env) === 'cascade') {
         return { ok: false, error: 'Cascade does not expose a subagent runner' };
       }
       const v = obj(value);
@@ -578,14 +666,61 @@ function applyAnswerStep(
       // team and never re-asks (see senior-engineer-team rules). "Re-pick
       // performance" clears performance + team to choose again.
       if (action === 'approve' || action === 'continue' || action === 'customise') {
-        const overrides = v && obj(v.overrides);
-        mergeProjectHostPrefs(cwd, detectHost(), {
-          team: { mode: 'subagents', source: 'prompted', approved: true, ...(overrides ? { overrides } : {}) },
-        });
+        const state = readEffectiveState(cwd, env);
+        const performance = obj(state.performance);
+        const level = typeof performance?.level === 'string' ? performance.level : '';
+        const existingTeam = obj(state.team);
+        const submittedOverrides = v && obj(v.overrides);
+        const overrides = submittedOverrides || obj(existingTeam?.overrides);
+        let modelSelections: Rec | null = null;
+        if (v && Object.prototype.hasOwnProperty.call(v, 'modelSelections')) {
+          const requested = obj(v.modelSelections);
+          if (!requested) return { ok: false, error: 'invalid team model selections' };
+
+          const target = currentLocalPreferenceTarget(host, env, cwd);
+          const planCtx: PlanCtx = { host, plan: target.plan };
+          const lineup = buildTeamLineup(level, host, overrides, planCtx, env);
+          const expectedRoles = new Set(lineup.map((member) => member.role));
+          const requestedRoles = Object.keys(requested);
+          if (requestedRoles.length !== expectedRoles.size
+            || requestedRoles.some((role) => !expectedRoles.has(role))) {
+            return { ok: false, error: 'team model selections must cover the visible team exactly' };
+          }
+
+          modelSelections = {};
+          for (const member of lineup) {
+            const selected = requested[member.role];
+            // The picker intentionally exposes only the first two entries in a
+            // row. Remaining entries stay runtime fallbacks, not manual choices.
+            const allowed = currentModelsForTier(member.tier, host, planCtx.plan, env).slice(0, 2);
+            if (typeof selected !== 'string' || !allowed.includes(selected)) {
+              return {
+                ok: false,
+                error: `${member.label || member.role} model is not available in the ${member.tier} tier`,
+              };
+            }
+            modelSelections[member.role] = selected;
+          }
+        }
+
+        mergeProjectHostPrefs(cwd, host, {
+          team: {
+            mode: 'subagents',
+            source: 'prompted',
+            approved: true,
+            ...(overrides ? { overrides } : {}),
+            ...(modelSelections ? { modelSelections } : {}),
+          },
+        }, env);
         return { ok: true };
       }
       if (action === 'repick_performance' || action === 'repick') {
-        clearProjectHostPrefs(cwd, detectHost(), ['performance', 'team', 'configuredFor']);
+        clearProjectHostPrefs(
+          cwd,
+          host,
+          ['performance', 'team'],
+          env,
+        );
         return { ok: true };
       }
       return { ok: false, error: 'invalid team-confirmation action' };
@@ -596,7 +731,7 @@ function applyAnswerStep(
       // The provider is machine-wide (one.json), not a per-project pref — once set
       // it is reused across projects. OpenCode was decided at the first step, so the
       // consolidated install task can read the final choices from the effective state.
-      writeGlobalCodeGraphProvider(provider);
+      writeGlobalCodeGraphProvider(provider, env);
       return { ok: true, task: { kind: 'onboarding-toolchain' } };
     }
     case 'project-context': {

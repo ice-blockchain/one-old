@@ -6,6 +6,8 @@ export const KILO_HOST_PACKAGE = 'kilo';
 export const KILO_HOST_TARGET_VERSION = 'current';
 
 export const KILO_HOST_GLOBAL_CONFIG_DIR_REL = '.config/kilo';
+export const KILO_HOST_GLOBAL_CONFIG_FILES = ['kilo.jsonc', 'kilo.json'] as const;
+export const KILO_HOST_GLOBAL_CONFIG_DEFAULT_FILE = KILO_HOST_GLOBAL_CONFIG_FILES[0];
 export const KILO_HOST_GLOBAL_PLUGINS_REL = 'plugin';
 export const KILO_HOST_GLOBAL_PLUGIN_FILE = 'traffic-one.js';
 export const KILO_HOST_GLOBAL_PLUGIN_ID = 'traffic-one';

@@ -12,30 +12,63 @@ import { detectHostPlan } from '../host-plan';
 import { currentAcceptableModels } from '../current-model-tiers';
 import { obj } from '../obj';
 import { modelForRoleHost } from '../performance';
+import { readRunModelPolicy } from '../run-model-policy';
 import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
 export interface UnavailablePick {
   role: string;     // senior-<role>
-  expected: string; // the tier-family model the user PICKED (e.g. claude-4.6-sonnet)
-  fallback: string; // the same-tier alternate the build DOES offer (e.g. gpt-5.5-medium)
+  expected: string; // the tier-family model the user PICKED (e.g. gpt-5.6-terra)
+  fallback: string; // the same-tier alternate the build DOES offer (e.g. claude-sonnet-5-thinking-high)
 }
 
 // Roles whose picked NON-composer tier model is absent from the fresh captured list. Empty when
 // nothing is captured (can't judge), when every pick is offered, or when state is unreadable.
 export function cursorUnavailablePicks(cwd: string, state: Record<string, unknown>): UnavailablePick[] {
   try {
+    const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    if (runId) {
+      const policy = readRunModelPolicy(cwd, runId);
+      // Once a run snapshot exists, availability is evaluated only against its
+      // captured exact slugs and role rows. Missing/corrupt policy is handled by
+      // the parent/child spawn gates and must never fall back to mutable state.
+      if (!policy || policy.host !== 'cursor') return [];
+      const captured = [...(policy.cursorAvailableModels || [])];
+      const out: UnavailablePick[] = [];
+      for (const role of AGENT_ROLES) {
+        const rolePolicy = policy.roles[role];
+        if (!rolePolicy || /^composer/i.test(rolePolicy.preferredModel)) continue;
+        if (pickCursorSlug([rolePolicy.preferredModel], captured)) continue;
+        const alternates = rolePolicy.acceptableModels.slice(1);
+        const fallback = pickCursorSlug(alternates, captured) || alternates[0] || rolePolicy.preferredModel;
+        out.push({ role, expected: rolePolicy.preferredModel, fallback });
+      }
+      return out;
+    }
+
+    // Pre-snapshot parent capture/preview path.
     const performance = obj(state.performance);
     const level = performance && typeof performance.level === 'string' ? performance.level : '';
     if (!level) return [];
     const team = obj(state.team);
     const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
+    const modelSelections = team && obj(team.modelSelections)
+      ? (team.modelSelections as Record<string, unknown>)
+      : null;
     const plan = detectHostPlan('cursor');
     const planCtx = { host: 'cursor', plan };
     const captured = freshCursorModels(cwd, plan);
     if (!captured.length) return [];
     const out: UnavailablePick[] = [];
     for (const role of AGENT_ROLES) {
-      const expected = modelForRoleHost(level, role, 'cursor', overrides, planCtx);
+      const expected = modelForRoleHost(
+        level,
+        role,
+        'cursor',
+        overrides,
+        planCtx,
+        process.env,
+        modelSelections,
+      );
       if (!expected || /^composer/i.test(expected)) continue;   // cheapest tier wants Composer — nothing to enable
       if (pickCursorSlug([expected], captured)) continue;        // the picked model IS offered → fine
       const alts = currentAcceptableModels(expected, 'cursor', plan).slice(1);

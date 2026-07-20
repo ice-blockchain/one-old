@@ -35,6 +35,14 @@ test('kilo: parses documented tool hook payload shape', () => {
   assert.equal(parsed.tool?.rawName, 'bash');
   assert.equal(parsed.tool?.class, 'shell');
   assert.equal(parsed.tool?.command, 'npm test');
+
+  const patched = kilo.parse(inv('before-tool-use', {
+    event: 'tool.execute.before',
+    cwd: '/repo',
+    tool: 'apply_patch',
+    output: { args: { patch: '*** Begin Patch' } },
+  }));
+  assert.equal(patched.tool?.patchText, '*** Begin Patch');
 });
 
 test('kilo: maps chat.message and system transform hook events', () => {

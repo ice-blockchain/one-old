@@ -28,3 +28,35 @@ export function agentOnboardingUrl(
   if (!port || port <= 0 || !token) return '';
   return `${dashboardUrlFromEnv(env)}/onboarding/agent#p=${port}&t=${token}`;
 }
+
+export interface AgentOnboardingUrls {
+  /** Hosted dashboard entry shown to the user first. */
+  dashboardUrl: string;
+  /** Direct loopback wizard. This must never point at the redirecting root. */
+  localWizardUrl: string;
+  /** Loopback root which redirects to the hosted dashboard. */
+  redirectUrl: string;
+}
+
+// Keep the three onboarding URLs coupled. In particular, callers must not use
+// `redirectUrl` as a local recovery link: the root redirects straight back to
+// the hosted dashboard and therefore loops when that route is unavailable.
+export function agentOnboardingUrls(
+  env: NodeJS.ProcessEnv,
+  port: number,
+  token: string,
+): AgentOnboardingUrls {
+  if (!port || port <= 0 || !token) {
+    return {
+      dashboardUrl: '',
+      localWizardUrl: '',
+      redirectUrl: 'http://127.0.0.1:0/?t=pending',
+    };
+  }
+  const encoded = encodeURIComponent(token);
+  return {
+    dashboardUrl: agentOnboardingUrl(env, port, token),
+    localWizardUrl: `http://127.0.0.1:${port}/local?t=${encoded}`,
+    redirectUrl: `http://127.0.0.1:${port}/?t=${encoded}`,
+  };
+}

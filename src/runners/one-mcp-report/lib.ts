@@ -10,10 +10,22 @@ import * as fs from 'fs';
 import * as https from 'https';
 import * as path from 'path';
 
+import {
+  ONE_MCP_REPORTED_FILE_EXTENSIONS,
+  ONE_MCP_REPORT_TIMEOUT_MS,
+} from '../../config/one-mcp';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
-import { readSimpleAuth } from '../../shared/auth';
 import { stripLocalPreferenceFields } from '../../shared/state/local-prefs';
+import {
+  preserveOneMcpReportId,
+  withProjectStateLock,
+} from '../../shared/state/project-state-lock';
+import {
+  postOneMcpJsonRpc,
+  type OneMcpJsonRpcRequest,
+  type OneMcpRequestFactory,
+} from '../../shared/one-mcp';
 import { buildMcpPayload } from './buildMcpPayload';
 
 type Rec = Record<string, unknown>;
@@ -38,8 +50,34 @@ export function readJson(filePath: string, fallback: unknown = null): unknown {
 }
 
 export function writeJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  let mode = 0o600;
+  try { mode = fs.statSync(filePath).mode & 0o777; } catch { /* new file */ }
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(tmpPath, 'wx', mode);
+    fs.writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmpPath, filePath);
+    // The file is durable before rename; persist the directory entry when the
+    // platform supports directory fsync as well.
+    let dirFd: number | null = null;
+    try {
+      dirFd = fs.openSync(dir, 'r');
+      fs.fsyncSync(dirFd);
+    } catch {
+      // Some filesystems reject directory fsync. Atomic rename still applies.
+    } finally {
+      if (dirFd !== null) try { fs.closeSync(dirFd); } catch { /* best-effort */ }
+    }
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch { /* best-effort */ }
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* best-effort */ }
+  }
 }
 
 export function statePath(cwd: string): string {
@@ -62,7 +100,12 @@ export function writeProjectState(cwd: string, state: unknown): void {
   // absolute binPath / performance / …) into the COMMITTED .one.json — the Codex
   // onboarding-complete leak, where this write lands while the effective state is still merged.
   // Those fields live in the per-user preferences.json; strip them from project state on write.
-  writeJson(statePath(cwd), stripLocalPreferenceFields(state && typeof state === 'object' ? state : {}));
+  const filePath = statePath(cwd);
+  const replacement = stripLocalPreferenceFields(state && typeof state === 'object' ? state : {});
+  withProjectStateLock(cwd, () => {
+    const current = readJson(filePath, {});
+    writeJson(filePath, preserveOneMcpReportId(current, replacement));
+  });
 }
 
 export function shouldSkipFile(relPath: string, fileName: string): boolean {
@@ -100,7 +143,7 @@ export function extensionFor(filePath: string): string | null {
   const base = path.basename(filePath);
   if (base === 'Dockerfile') return 'dockerfile';
   const ext = path.extname(base).replace(/^\./, '').toLowerCase();
-  return ext && ext.length <= 64 ? ext : null;
+  return ext && ONE_MCP_REPORTED_FILE_EXTENSIONS.has(ext) ? ext : null;
 }
 
 export function countLines(text: string | null): number {
@@ -181,57 +224,23 @@ export function stateForReport(root: string, options: { state?: unknown } = {}):
 
 // Fire-and-forget MCP tools/call POST. Resolves the response body on 2xx and
 // rejects on a non-2xx response, MCP error, or timeout.
-export function mcpRequest(
+export async function mcpRequest(
   endpoint: string,
   payload: unknown,
-  timeoutMs = 15000,
-  env: NodeJS.ProcessEnv = process.env,
-  requestImpl: typeof https.request = https.request,
+  timeoutMs = ONE_MCP_REPORT_TIMEOUT_MS,
+  _env: NodeJS.ProcessEnv = process.env,
+  requestImpl?: typeof https.request,
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(endpoint);
-    const body = JSON.stringify(buildMcpPayload(payload));
-    // Carry the wizard-validated API key as a Bearer token so the server can validate
-    // it: a rejected/invalid key returns 401, which runReport turns into a local
-    // auth reset (re-opening the wizard's api-key page next session). The report
-    // endpoint is HTTPS and the key is never added to the payload or logs.
-    const apiKey = readSimpleAuth(env)?.apiKey || '';
-    const headers: Record<string, string | number> = {
-      accept: 'application/json, text/event-stream',
-      'content-type': 'application/json',
-      'content-length': Buffer.byteLength(body),
-    };
-    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-    const req = requestImpl({
-      method: 'POST',
-      hostname: url.hostname,
-      path: `${url.pathname}${url.search}`,
-      port: url.port || 443,
-      headers,
-      timeout: timeoutMs,
-    }, (res) => {
-      let responseBody = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => { responseBody += chunk; });
-      res.on('end', () => {
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          // Surface the numeric status so runReport can detect a rejected key
-          // and remove canonical auth. Keep the
-          // `HTTP <n>` message intact — the status-file records it verbatim.
-          const err = new Error(`HTTP ${res.statusCode || 'unknown'}`) as Error & { statusCode?: number };
-          if (res.statusCode) err.statusCode = res.statusCode;
-          reject(err);
-          return;
-        }
-        if (/"error"\s*:/.test(responseBody)) {
-          reject(new Error('MCP error response'));
-          return;
-        }
-        resolve(responseBody);
-      });
-    });
-    req.on('timeout', () => { req.destroy(new Error('request timeout')); });
-    req.on('error', reject);
-    req.end(body);
+  const request: OneMcpJsonRpcRequest = buildMcpPayload(payload);
+  const response = await postOneMcpJsonRpc(endpoint, request, {
+    timeoutMs,
+    ...(requestImpl ? { requestFactory: requestImpl as OneMcpRequestFactory } : {}),
   });
+  const result = response.result && typeof response.result === 'object'
+    ? response.result as Rec
+    : null;
+  if (response.error !== undefined || result?.isError === true) {
+    throw new Error('MCP error response');
+  }
+  return JSON.stringify(response);
 }

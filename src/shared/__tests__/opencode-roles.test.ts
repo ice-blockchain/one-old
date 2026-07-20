@@ -225,7 +225,7 @@ test('shouldRunRoleOnOpenCode applies on paid hosts and is inert on OpenCode-com
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'kilo'), false);
   }
   // a pinned model does not change eligibility — only enabled + role-in-set do
-  assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, model: 'opencode/gpt-5.1-codex' } }, 'codex'), true);
+  assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, model: 'opencode/gpt-5.5' } }, 'codex'), true);
 });
 
 test('opencode role attempt marker: write then detect (per run + role)', () => {

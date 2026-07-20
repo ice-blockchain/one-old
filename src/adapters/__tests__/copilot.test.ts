@@ -43,6 +43,14 @@ test('copilot CLI: spawn toolArgs are visible to raw-input gates', () => {
   assert.equal(toolInput.model, 'claude-opus-4-8');
 });
 
+test('copilot CLI: apply_patch toolArgs are canonicalized', () => {
+  const { adapter, raw } = inv('before-tool-use', {
+    tool_name: 'apply_patch',
+    tool_args: JSON.stringify({ patch_text: '*** Begin Patch' }),
+  }, 'cli');
+  assert.equal(adapter.parse(raw).tool?.patchText, '*** Begin Patch');
+});
+
 test('copilot VS Code: preToolUse toolCalls task is visible to spawn gates', () => {
   const { adapter, raw } = inv('before-tool-use', {
     sessionId: 'parent-session',

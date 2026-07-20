@@ -1,7 +1,6 @@
 // src/config/model-tiers.ts
 // Host-agnostic capability tiers + per-host model map + subscription plans.
-// THE config knobs: to adopt newer models edit only HOST_MODELS (including that
-// host's updatedAt); to change
+// THE config knobs: to adopt newer models edit only HOST_MODELS; to change
 // plan→tier policy edit PLAN_TIER_RECOMMENDATIONS; to change what an undetectable
 // plan falls back to, edit DEFAULT_HOST_PLAN. The functions that interpret this
 // data live in shared/model-tiers.ts; plan detection lives in shared/host-plan.ts.
@@ -25,9 +24,26 @@ export type UserPlan = (typeof PLAN_IDS)[number];
 export type ModelRow = readonly [string, ...string[]];
 
 export interface HostModelsConfig {
-  readonly updatedAt: string;
   readonly tiers: Readonly<Record<TierId, ModelRow>>;
   readonly plans?: Readonly<Partial<Record<UserPlan, Readonly<Partial<Record<TierId, ModelRow>>>>>>;
+}
+
+// Every published high/balanced/low row should carry at least two usable
+// choices unless the host really exposes only one. Keep those exceptions
+// explicit so a future accidental singleton fails generation instead of
+// silently weakening fallback coverage.
+export const SINGLE_MODEL_ROW_ALLOWED_PLANS: Readonly<Partial<
+Record<HostModelKey, 'all' | readonly UserPlan[]>
+>> = Object.freeze({
+  codex: 'all',
+  cursor: Object.freeze(['free'] as const),
+  copilot: Object.freeze(['free'] as const),
+});
+
+export function allowsSingleModelTierRow(host: HostModelKey, plan?: UserPlan): boolean {
+  const allowed = SINGLE_MODEL_ROW_ALLOWED_PLANS[host];
+  return allowed === 'all'
+    || (Array.isArray(allowed) && plan !== undefined && allowed.includes(plan));
 }
 
 // Cursor's universal free floor: the first-party Composer model every Cursor
@@ -40,32 +56,35 @@ export const CURSOR_MODEL_FLOOR = 'composer-2.5';
 // inherit the host's base. With no plan argument, resolvers use the base rows.
 export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
   claude: {
-    updatedAt: '2026-07-14',
     // Concrete generations are pinned preferred-first; the bare alias at each
     // row's tail keeps Claude Code's native `model: "opus"/"sonnet"/"haiku"`
     // spawns accepted by the gate (aliases track point releases host-side).
-    // Fable 5 is org/promo-gated with no availability capture on this host —
-    // if a spawn fails at the API, degrade to the next accepted id in the row.
+    // Fable 5 is Claude Code's strongest option when the server reports it for
+    // the organization (it is unavailable under ZDR). Opus 4.8 therefore stays
+    // the first concrete fallback, followed by Claude Code's native family
+    // alias; the gate also recognizes host-scoped `fable`/`best` selectors.
     tiers: {
-      highest: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'opus'],
-      balanced: ['claude-sonnet-5', 'claude-sonnet-4-6', 'claude-opus-4-7', 'sonnet'],
+      highest: ['claude-fable-5', 'claude-opus-4-8', 'opus'],
+      balanced: ['claude-sonnet-5', 'claude-sonnet-4-6', 'sonnet'],
       cheapest: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'haiku'],
     },
   },
   codex: {
-    updatedAt: '2026-07-13',
+    // Codex collaboration currently exposes these two executable model ids.
+    // Sol is the sole verified Highest model and Terra the sole verified
+    // Balanced/Cheapest model; do not blur exact tier enforcement by crossing
+    // them as fallbacks merely to inflate the row length.
     tiers: {
-      highest: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
-      balanced: ['gpt-5.6-terra', 'gpt-5.4', 'gpt-5.5'],
-      cheapest: ['gpt-5.4-mini', 'gpt-5.6-luna', 'gpt-5.4'],
+      highest: ['gpt-5.6-sol'],
+      balanced: ['gpt-5.6-terra'],
+      cheapest: ['gpt-5.6-terra'],
     },
   },
   cursor: {
-    updatedAt: '2026-07-14',
     tiers: {
-      highest: ['claude-fable-5', 'gpt-5.6-sol', 'claude-opus-4-8', 'gpt-5.5', CURSOR_MODEL_FLOOR],
-      balanced: ['gpt-5.6-terra', 'claude-sonnet-5', 'gpt-5.5', 'claude-4.6-sonnet', CURSOR_MODEL_FLOOR],
-      cheapest: [CURSOR_MODEL_FLOOR, 'gpt-5.4-mini', 'gemini-3.5-flash', 'claude-4.5-haiku'],
+      highest: ['claude-fable-5', 'gpt-5.6-sol', CURSOR_MODEL_FLOOR],
+      balanced: ['gpt-5.6-terra', 'claude-sonnet-5', CURSOR_MODEL_FLOOR],
+      cheapest: [CURSOR_MODEL_FLOOR, 'gpt-5.4-mini', 'gpt-5.6-luna'],
     },
     plans: {
       // Free stays pinned to the Composer floor for every tier — without the
@@ -75,81 +94,76 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
     },
   },
   opencode: {
-    updatedAt: '2026-07-14',
     // These three base preferred models are also the zero-auth delegation
     // fallback chain, in highest → balanced → cheapest order. Paid rows end in
     // the same sequence so every concrete model id remains editable here.
-    // The set mirrors the LIVE zero-auth gateway catalog (`opencode models` on
-    // the managed CLI, checked 2026-07-14): the -free ids are the rotating
-    // limited-time promo set; hy3-free and the stealth big-pickle anchor the
-    // tails as extra fallbacks. gpt-5-nano (the former "permanently free"
-    // anchor) has left the catalog and was dropped.
+    // The three bounded rows collectively retain the complete live zero-auth
+    // catalog. OPENCODE_FREE_MODELS derives the cross-role fallback chain from
+    // their union, while each individual role tier stays capped at three.
     tiers: {
-      highest: ['opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/hy3-free', 'opencode/big-pickle'],
-      balanced: ['opencode/north-mini-code-free', 'opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/nemotron-3-ultra-free', 'opencode/hy3-free', 'opencode/big-pickle'],
-      cheapest: ['opencode/mimo-v2.5-free', 'opencode/deepseek-v4-flash-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/hy3-free', 'opencode/big-pickle'],
+      highest: ['opencode/deepseek-v4-flash-free', 'opencode/nemotron-3-ultra-free', 'opencode/hy3-free'],
+      balanced: ['opencode/north-mini-code-free', 'opencode/big-pickle', 'opencode/deepseek-v4-flash-free'],
+      cheapest: ['opencode/mimo-v2.5-free', 'opencode/deepseek-v4-flash-free', 'opencode/north-mini-code-free'],
     },
     plans: {
       plus: {
-        highest: ['opencode-go/qwen3.7-max', 'opencode-go/minimax-m3', 'opencode-go/kimi-k2.7-code', 'opencode-go/deepseek-v4-pro', 'opencode/deepseek-v4-flash-free'],
-        balanced: ['opencode-go/glm-5.2', 'opencode-go/qwen3.7-plus', 'opencode-go/minimax-m2.7', 'opencode-go/glm-5.1', 'opencode/north-mini-code-free'],
-        cheapest: ['opencode-go/deepseek-v4-flash', 'opencode-go/mimo-v2.5', 'opencode-go/minimax-m3', 'opencode-go/qwen3.7-plus', 'opencode/mimo-v2.5-free'],
+        highest: ['opencode-go/qwen3.7-max', 'opencode-go/minimax-m3', 'opencode/deepseek-v4-flash-free'],
+        balanced: ['opencode-go/glm-5.2', 'opencode-go/qwen3.7-plus', 'opencode/north-mini-code-free'],
+        cheapest: ['opencode-go/deepseek-v4-flash', 'opencode-go/mimo-v2.5', 'opencode/mimo-v2.5-free'],
       },
     },
   },
   copilot: {
-    updatedAt: '2026-07-14',
-    // Capability-first: highest prefers Opus 4.8 (27x premium multiplier) —
-    // plan recommendations steer cost-sensitive plans to balanced/cheapest.
-    // Cheapest holds only 0.33x-multiplier models (gemini-3-flash, NOT the
-    // 14x gemini-3.5-flash).
+    // Base rows target Pro+/Max/Business/Enterprise. Copilot Pro lacks the
+    // three base Highest models, so it carries one plan-specific replacement.
+    // Free exposes model selection only through `auto`.
     tiers: {
-      highest: ['claude-opus-4.8', 'claude-sonnet-5', 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex'],
-      balanced: ['claude-sonnet-5', 'gpt-5.4', 'claude-sonnet-4.6', 'gpt-5.3-codex', 'gemini-3.1-pro-preview'],
-      cheapest: ['claude-haiku-4.5', 'gpt-5-mini', 'gemini-3-flash', 'raptor-mini', 'mai-code-1-flash'],
+      highest: ['gpt-5.6-sol', 'claude-opus-4.8', 'gpt-5.5'],
+      balanced: ['gpt-5.6-terra', 'claude-sonnet-5', 'gpt-5.3-codex'],
+      cheapest: ['gpt-5-mini', 'gpt-5.4-mini', 'claude-haiku-4.5'],
     },
     plans: {
       free: { highest: ['auto'], balanced: ['auto'], cheapest: ['auto'] },
+      pro: { highest: ['gpt-5.4', 'gpt-5.3-codex', 'claude-sonnet-5'] },
     },
   },
   windsurf: {
-    updatedAt: '2026-07-14',
-    // SWE-1.7 runs at 0 credits per docs.devin.ai, so the free/base rows can
-    // prefer it. Display strings are matched verbatim against the Cascade
-    // picker — verify on a real Windsurf Free install before shipping changes.
+    // SWE-1.7 and SWE-1.6 are currently available without quota usage. The
+    // docs do not confirm Lightning for Free and explicitly reserve 1.6 Fast
+    // for paying users, so neither is offered in the Free/base rows. When the
+    // SWE-1.7 preview ends, update this fallback and publish a new remote row.
     tiers: {
-      highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
-      balanced: ['SWE-1.7 Beta', 'SWE-1.6 Slow'],
-      cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Beta'],
+      highest: ['SWE-1.7', 'SWE-1.6'],
+      balanced: ['SWE-1.7', 'SWE-1.6'],
+      cheapest: ['SWE-1.6', 'SWE-1.7'],
     },
     plans: {
       pro: {
-        highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
-        balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'],
-        cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'],
+        highest: ['SWE-1.7', 'SWE-1.7 Lightning', 'SWE-1.6 Fast'],
+        balanced: ['SWE-1.7', 'SWE-1.6 Fast', 'SWE-1.6'],
+        cheapest: ['SWE-1.6', 'SWE-1.6 Fast', 'SWE-1.7'],
       },
       max: {
-        highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
-        balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'],
-        cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'],
+        highest: ['SWE-1.7', 'SWE-1.7 Lightning', 'SWE-1.6 Fast'],
+        balanced: ['SWE-1.7', 'SWE-1.6 Fast', 'SWE-1.6'],
+        cheapest: ['SWE-1.6', 'SWE-1.6 Fast', 'SWE-1.7'],
       },
       team: {
-        highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
-        balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'],
-        cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'],
+        highest: ['SWE-1.7', 'SWE-1.7 Lightning', 'SWE-1.6 Fast'],
+        balanced: ['SWE-1.7', 'SWE-1.6 Fast', 'SWE-1.6'],
+        cheapest: ['SWE-1.6', 'SWE-1.6 Fast', 'SWE-1.7'],
       },
       enterprise: {
-        highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
-        balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'],
-        cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'],
+        highest: ['SWE-1.7', 'SWE-1.7 Lightning', 'SWE-1.6 Fast'],
+        balanced: ['SWE-1.7', 'SWE-1.6 Fast', 'SWE-1.6'],
+        cheapest: ['SWE-1.6', 'SWE-1.6 Fast', 'SWE-1.7'],
       },
     },
   },
   kilo: {
-    updatedAt: '2026-07-13',
     tiers: {
-      highest: ['kilo/kilo-auto/frontier', 'kilo/kilo-auto/balanced', 'kilo/kilo-auto/efficient', 'kilo/kilo-auto/free'],
-      balanced: ['kilo/kilo-auto/balanced', 'kilo/kilo-auto/efficient', 'kilo/kilo-auto/frontier', 'kilo/kilo-auto/free'],
+      highest: ['kilo/kilo-auto/frontier', 'kilo/kilo-auto/balanced', 'kilo/kilo-auto/efficient'],
+      balanced: ['kilo/kilo-auto/balanced', 'kilo/kilo-auto/efficient', 'kilo/kilo-auto/frontier'],
       cheapest: ['kilo/kilo-auto/free', 'kilo/kilo-auto/efficient', 'kilo/kilo-auto/balanced'],
     },
   },
@@ -236,7 +250,7 @@ export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Re
     free: 'cheapest', pro: 'balanced', max: 'highest', team: 'balanced', enterprise: 'balanced',
   },
   codex: {
-    free: 'cheapest', plus: 'balanced', pro: 'balanced', business: 'highest', enterprise: 'highest', team: 'highest',
+    free: 'cheapest', plus: 'balanced', pro: 'highest', business: 'highest', enterprise: 'highest', team: 'highest',
   },
   cursor: {
     free: 'cheapest', pro: 'balanced', plus: 'highest', max: 'highest', business: 'highest', team: 'highest', enterprise: 'highest',

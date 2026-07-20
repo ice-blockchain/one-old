@@ -7,9 +7,13 @@ import * as path from 'path';
 
 import { buildMcpPayload } from './buildMcpPayload';
 import { collectMetadata } from './collectMetadata';
-import { authEnforced, clearAuthentication, isLocallyAuthenticated } from '../../shared/auth';
-import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { MCP_REPORT_ENDPOINT, REPORTING_ACTIVE, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
+import { pluginUseEnabled } from '../../shared/state/plugin-use';
+import { SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
+import {
+  ONE_MCP_REPORT_TIMEOUT_MS,
+  oneMcpReportingEnabled,
+  publicEndpoint,
+} from '../../config/one-mcp';
 import { mcpRequest, nowIso, readJson, stateForReport, writeJson } from './lib';
 import { readReportIdState } from './readReportIdState';
 
@@ -20,15 +24,18 @@ export interface RunOptions {
   state?: unknown;
   requireQueued?: boolean;
   transport?: (endpoint: string, payload: unknown) => Promise<unknown>;
+  /** Internal test seam; production callers must omit this build-gate override. */
+  featureEnabled?: boolean;
 }
 
 export async function runReport(cwd: string, options: RunOptions = {}): Promise<{ ok: boolean; reportId?: string; skipped?: string; error?: unknown }> {
   const env = options.env ?? process.env;
-  if (!REPORTING_ACTIVE) return { ok: false, skipped: 'reporting-inactive' };
+  if (!oneMcpReportingEnabled(env, options.featureEnabled)) {
+    return { ok: false, skipped: 'reporting-inactive' };
+  }
   const root = path.resolve(cwd);
-  if (pluginUseDeclined(root, env)) return { ok: false, skipped: 'plugin-use-declined' };
-  if (authEnforced(env) && !isLocallyAuthenticated(env)) return { ok: false, skipped: 'auth-required' };
-  const endpoint = options.endpoint || env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || MCP_REPORT_ENDPOINT;
+  if (!pluginUseEnabled(root, env)) return { ok: false, skipped: 'plugin-use-not-enabled' };
+  const endpoint = options.endpoint || publicEndpoint(env);
   const idState = readReportIdState(root);
   if (!idState) return { ok: false, skipped: 'missing-report-id' };
   if (idState.invalid) return { ok: false, skipped: 'invalid-report-id' };
@@ -53,33 +60,19 @@ export async function runReport(cwd: string, options: RunOptions = {}): Promise<
 
   try {
     const transport = options.transport
-      || ((target: string, body: unknown) => mcpRequest(target, body, 15000, env));
+      || ((target: string, body: unknown) => mcpRequest(target, body, ONE_MCP_REPORT_TIMEOUT_MS, env));
     await transport(endpoint, payload);
     if (SAVE_MCP_REPORT) writeJson(statusPath, { status: 'ok', reportId: idState.id, endpoint, queuedAt, reportedAt: nowIso(), attempts, trigger, mcpPayload });
     return { ok: true, reportId: idState.id };
   } catch (error) {
-    // A 401/403 means the entered key was rejected. Remove only one.json.auth so
-    // the next session re-opens the API-key wizard while unrelated settings stay.
-    const statusCode = (error as { statusCode?: number } | null)?.statusCode;
-    let reportedError = error;
-    if (statusCode === 401 || statusCode === 403) {
-      if (!clearAuthentication(env)) {
-        const invalidationError = new Error(
-          `${error instanceof Error ? error.message : String(error)}; failed to invalidate canonical Traffic One auth`,
-          { cause: error },
-        ) as Error & { statusCode?: number };
-        invalidationError.statusCode = statusCode;
-        reportedError = invalidationError;
-      }
-    }
     if (SAVE_MCP_REPORT) {
       writeJson(statusPath, {
         status: 'failed', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload,
-        error: reportedError && (reportedError as Error).message
-          ? (reportedError as Error).message
-          : String(reportedError || 'unknown error'),
+        error: error && (error as Error).message
+          ? (error as Error).message
+          : String(error || 'unknown error'),
       });
     }
-    return { ok: false, error: reportedError };
+    return { ok: false, error };
   }
 }

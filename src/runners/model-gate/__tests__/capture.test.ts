@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 
 import { runModelGate } from '../index';
-import { freshCursorModels, LEGACY_CURSOR_MODELS_REL } from '../../../shared/materialize/cursor-models';
+import { freshCursorModels } from '../../../shared/materialize/cursor-models';
 
 test('model-gate --capture-models stores exact ids in local preferences', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-model-capture-command-'));
@@ -31,7 +31,6 @@ test('model-gate --capture-models stores exact ids in local preferences', () => 
       'gpt-5.5-extra-high',
       'composer-2.5-fast',
     ]);
-    assert.equal(fs.existsSync(path.join(cwd, LEGACY_CURSOR_MODELS_REL)), false);
   } finally {
     if (previous.prefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previous.prefs;

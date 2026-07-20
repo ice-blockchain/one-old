@@ -7,8 +7,16 @@ import { opencodeSubagentBind } from './opencode-subagent-bind';
 import { recordSpawnedAgent } from './record-agent';
 import { subagentStartBind } from './subagent-bind';
 import { cursorFailureReconcileHook } from './cursor-failures';
+import { codexChildModelGate } from './codex-child-model';
 
 export const handlers: Handler[] = [
+  {
+    id: 'agent-model.codex-child-observed-model',
+    event: 'PreToolUse',
+    subcommands: ['check-codex-child-model'],
+    priority: -90,
+    run: (ctx) => codexChildModelGate(ctx),
+  },
   {
     id: 'agent-model.spawn',
     event: 'PreToolUse',

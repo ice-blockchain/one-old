@@ -18,21 +18,13 @@ import {
   type TierId,
   type UserPlan,
 } from '../config/model-tiers';
+import { ONE_MCP_MAX_MODELS_PER_TIER } from '../config/one-mcp';
 
 export type ModelTierSnapshot = Readonly<Record<TierId, readonly string[]>>;
 
 export interface HostModelSnapshot {
   readonly plan: UserPlan;
-  readonly updatedAt: string;
   readonly tiers: ModelTierSnapshot;
-}
-
-export type ModelStatusResponse = HostModelSnapshot;
-
-export interface ParseModelStatusOptions {
-  readonly expectedHost?: unknown;
-  readonly expectedPlan?: unknown;
-  readonly current?: HostModelSnapshot | null;
 }
 
 export function canonicalTier(tier: unknown): TierId | null {
@@ -70,7 +62,7 @@ export function resolveModel(tier: unknown, host: unknown, plan?: unknown): stri
 // that model OR a same-family VARIANT of it (the expected id followed by a `-suffix`).
 // Cursor rows are family anchors whose concrete Task-tool slug is resolved from the captured
 // model list when available, so this prefix match covers reasoning/build suffixes. A different
-// family/tier (e.g. `gpt-5.5-medium` vs a highest opus family) never matches, so tier
+// family/tier (e.g. `gpt-5.6-terra-medium` vs a highest Fable family) never matches, so tier
 // enforcement holds. Claude/Codex pass bare ids, so this is exact-equality there in practice.
 // An empty/absent model never matches (deny → inherit guard).
 export function modelMatchesExpected(passed: unknown, expected: unknown): boolean {
@@ -80,8 +72,8 @@ export function modelMatchesExpected(passed: unknown, expected: unknown): boolea
   return p === e || p.startsWith(`${e}-`);
 }
 
-// Build the serializable catalog saved during onboarding. Every tier is ordered
-// preferred-first. Plan overrides replace a whole row and omitted rows inherit.
+// Build the bundled/runtime applied catalog. Every tier is ordered preferred-first.
+// Plan overrides replace a whole row and omitted rows inherit.
 export function modelTierSnapshot(host: unknown, plan: unknown): ModelTierSnapshot {
   const h = canonicalHost(host);
   const p = plan === undefined || plan === null || plan === ''
@@ -99,13 +91,8 @@ export function hostModelSnapshot(host: unknown, plan: unknown): HostModelSnapsh
   const p = canonicalPlan(h, plan);
   return {
     plan: p,
-    updatedAt: HOST_MODELS[h].updatedAt,
     tiers: modelTierSnapshot(h, p),
   };
-}
-
-export function modelStatusSnapshot(host: unknown, plan: unknown): ModelStatusResponse {
-  return hostModelSnapshot(host, plan);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -124,12 +111,6 @@ function strictPlan(value: unknown, host?: HostModelKey): UserPlan | null {
   return host && !HOST_PLAN_IDS[host].has(plan) ? null : plan;
 }
 
-function validDateOnly(value: unknown): value is string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
-}
-
 function validModelId(value: unknown): value is string {
   return typeof value === 'string'
     && value.length > 0
@@ -145,7 +126,10 @@ function parseTierSnapshot(value: unknown): ModelTierSnapshot | null {
   const parsed = {} as Record<TierId, readonly string[]>;
   for (const tier of TIER_IDS) {
     const models = value[tier];
-    if (!Array.isArray(models) || models.length === 0 || models.length > 32 || !models.every(validModelId)) return null;
+    if (!Array.isArray(models)
+      || models.length === 0
+      || models.length > ONE_MCP_MAX_MODELS_PER_TIER
+      || !models.every(validModelId)) return null;
     if (new Set(models).size !== models.length) return null;
     parsed[tier] = [...models];
   }
@@ -158,62 +142,38 @@ export function parseHostModelSnapshot(value: unknown, expectedHost?: unknown): 
   if (expectedHost !== undefined && !host) return null;
   const plan = strictPlan(value.plan, host || undefined);
   const tiers = parseTierSnapshot(value.tiers);
-  if (!plan || !validDateOnly(value.updatedAt) || !tiers) return null;
-  return { plan, updatedAt: value.updatedAt, tiers };
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.length && keys.every((key) => expected.includes(key));
-}
-
-function sameTierSnapshot(left: ModelTierSnapshot, right: ModelTierSnapshot): boolean {
-  return TIER_IDS.every((tier) => {
-    const a = left[tier];
-    const b = right[tier];
-    return a.length === b.length && a.every((model, index) => model === b[index]);
-  });
-}
-
-// Strictly parse the unauthenticated /model-status payload. When the server
-// claims the same catalog date as the applicable local or bundled target-plan
-// baseline, the tier lists must also be byte-for-byte equivalent; otherwise the
-// server changed catalog semantics without bumping its version and the client
-// fails open on local data.
-export function parseModelStatusResponse(
-  value: unknown,
-  options: ParseModelStatusOptions = {},
-): ModelStatusResponse | null {
-  if (!isRecord(value) || !hasExactKeys(value, ['plan', 'updatedAt', 'tiers'])) return null;
-  const host = options.expectedHost === undefined ? undefined : strictHost(options.expectedHost);
-  if (options.expectedHost !== undefined && !host) return null;
-  const snapshot = parseHostModelSnapshot(value, host);
-  if (!snapshot) return null;
-
-  if (options.expectedPlan !== undefined) {
-    if (!planIsRecognized(options.expectedPlan)) return null;
-    const expectedPlan = host
-      ? canonicalPlan(host, options.expectedPlan)
-      : strictPlan(options.expectedPlan);
-    if (!expectedPlan || expectedPlan !== snapshot.plan) return null;
-  }
-  // A same-plan local snapshot is the strongest comparison baseline. On first
-  // use or a plan transition there is no such snapshot, so compare against the
-  // bundled host + target-plan catalog instead. This prevents an endpoint from
-  // silently changing tiers while retaining the bundled catalog date.
-  const comparisons = [
-    ...(options.current?.plan === snapshot.plan ? [options.current] : []),
-    ...(host ? [hostModelSnapshot(host, snapshot.plan)] : []),
-  ];
-  if (comparisons.some((comparison) => comparison.updatedAt === snapshot.updatedAt
-    && !sameTierSnapshot(comparison.tiers, snapshot.tiers))) return null;
-
-  return snapshot;
+  if (!plan || !tiers) return null;
+  return { plan, tiers };
 }
 
 // True when `passed` matches ANY model in the acceptable set (family-aware).
 export function modelMatchesAny(passed: unknown, acceptable: readonly string[]): boolean {
   return acceptable.some((e) => modelMatchesExpected(passed, e));
+}
+
+// Apply only aliases owned by the active host. Claude Code exposes `fable` and
+// `best` as native selectors for its strongest available Claude model. They may
+// satisfy a row that explicitly contains a Fable/Opus model, without occupying
+// another bounded catalog slot. Keeping this mapping host-aware is important:
+// Cursor accepts concrete model ids/families and rejects these Claude aliases.
+export function modelMatchesHostModels(
+  passed: unknown,
+  acceptable: readonly string[],
+  host: unknown,
+): boolean {
+  const passedId = typeof passed === 'string' ? passed.trim() : '';
+  const strongestClaudeAlias = passedId === 'fable' || passedId === 'best';
+  if (strongestClaudeAlias && host !== 'claude') return false;
+  if (modelMatchesAny(passed, acceptable)) return true;
+  if (host !== 'claude' || !strongestClaudeAlias) return false;
+  return acceptable.some((model) => {
+    const candidate = model.trim();
+    return candidate === 'fable'
+      || candidate === 'opus'
+      || candidate === 'best'
+      || candidate.startsWith('claude-fable-')
+      || candidate.startsWith('claude-opus-');
+  });
 }
 
 // Optional `plan` applies each host's sparse plan overrides.

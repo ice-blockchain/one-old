@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
-import { agentOnboardingUrl } from '../../config/dashboard';
+import { agentOnboardingUrls } from '../../config/dashboard';
 import type { HostId } from '../../core/types';
 import { detectHost } from '../host';
 import { pluginRoot } from '../paths';
@@ -25,13 +25,13 @@ import { clearLegacyOnboardingRuntime, clearServerRecord, readServerRecord, serv
 const LOCK_STALE_MS = 15000;
 
 export interface EnsureResult {
-  // Loopback wizard URL — still used by .claude/launch.json, the /local fallback,
-  // and TRAFFIC_ONE_OPEN_BROWSER.
-  url: string;
-  // The traffic.io agent-onboarding deep link (port + token in the fragment). This
-  // is what the gate/banners surface to the user now. Empty for the placeholder
-  // (port 0 / no token) so callers guard on a non-empty string.
+  // Hosted dashboard entry surfaced first.
   dashboardUrl: string;
+  // Direct loopback wizard used when the hosted route is unavailable.
+  localWizardUrl: string;
+  // Loopback root retained for auto-open/registry behavior. It redirects to the
+  // dashboard and therefore must never be presented as the local fallback.
+  redirectUrl: string;
   port: number;
   token: string;
   started: boolean;
@@ -55,9 +55,14 @@ export interface EnsureOptions {
 // it. The placeholder (port 0 → empty dashboardUrl) is never surfaced. `url` here is
 // the dashboard URL (agentOnboardingUrl). Single source for both the SessionStart and
 // UserPromptSubmit setup-pending paths.
-export function formatWizardBanner(_host: string, url: string, banner: string): string {
-  return url
-    ? `${banner} — open Traffic One setup: ${url}`
+export function formatWizardBanner(
+  _host: string,
+  dashboardUrl: string,
+  localWizardUrl: string,
+  banner: string,
+): string {
+  return dashboardUrl
+    ? `${banner} — open Traffic One setup: ${dashboardUrl} — local fallback: ${localWizardUrl}`
     : banner;
 }
 
@@ -152,7 +157,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   // The inert placeholder (authoring root, NO_SPAWN with no seeded record): no
   // server, no dashboard link.
   const placeholder = (): EnsureResult =>
-    ({ url: 'http://127.0.0.1:0/?t=pending', dashboardUrl: '', port: 0, token: '', started: false });
+    ({ ...agentOnboardingUrls(env, 0, ''), port: 0, token: '', started: false });
 
   // The plugin's own repo/install never onboards: no server spawn, no
   // .claude/launch.json, no registry record — hand back the inert placeholder.
@@ -165,11 +170,11 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   // on the detached child's own async self-registration having landed yet. No-op
   // for port 0 (the NO_SPAWN placeholder skips this entirely). Also stamps the
   // dashboard deep link (fragment-carried port+token) that the gate surfaces.
-  const finalize = (result: Omit<EnsureResult, 'dashboardUrl'>): EnsureResult => {
+  const finalize = (result: { port: number; token: string; started: boolean }): EnsureResult => {
     // `.claude/launch.json` is Claude Code's single preview entry. A parallel
     // Cursor/Codex wizard must never replace Claude's recorded preview port.
     if (host === 'claude' && result.port > 0) writeLaunchConfig(cwd, result.port);
-    return { ...result, dashboardUrl: agentOnboardingUrl(env, result.port, result.token) };
+    return { ...result, ...agentOnboardingUrls(env, result.port, result.token) };
   };
 
   clearLegacyOnboardingRuntime(cwd, env);
@@ -178,7 +183,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   const reuseIfLive = (): EnsureResult | null => {
     const rec = readServerRecord(cwd, env, host);
     return rec && isAlive(rec.pid)
-      ? finalize({ url: rec.url, port: rec.port, token: rec.token, started: false })
+      ? finalize({ port: rec.port, token: rec.token, started: false })
       : null;
   };
 
@@ -190,13 +195,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   // detached server. Reuse a pre-seeded record if present, else hand back a
   // placeholder URL so the gate can still render its deny prose deterministically.
   if (env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN === '1') {
-    if (existing) return {
-      url: existing.url,
-      dashboardUrl: agentOnboardingUrl(env, existing.port, existing.token),
-      port: existing.port,
-      token: existing.token,
-      started: false,
-    };
+    if (existing) return finalize({ port: existing.port, token: existing.token, started: false });
     return placeholder();
   }
 
@@ -228,7 +227,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
       // We never won the lock and the holder didn't publish within the window. Do
       // NOT double-launch: surface the in-flight record if it has landed, else fail.
       const rec = readServerRecord(cwd, env, host);
-      if (rec) return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
+      if (rec) return finalize({ port: rec.port, token: rec.token, started: true });
       throw new Error('traffic-one onboarding server did not become ready (another launcher holds the lock)');
     }
     const stale = readServerRecord(cwd, env, host);
@@ -238,10 +237,10 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
     for (;;) {
       const rec = readServerRecord(cwd, env, host);
       if (rec && (childPid <= 0 || rec.pid === childPid)) {
-        return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
+        return finalize({ port: rec.port, token: rec.token, started: true });
       }
       if (Date.now() >= deadline) {
-        if (rec) return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
+        if (rec) return finalize({ port: rec.port, token: rec.token, started: true });
         throw new Error('traffic-one onboarding server did not become ready');
       }
       sleepSync(50);

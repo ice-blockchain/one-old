@@ -151,10 +151,13 @@ function writeOpenCodeGlobalAgentFiles(cwd: string, state: Rec): number {
   if (mode !== 'subagents' || !level) return cleanupGlobalProjectAgents(cwd, new Set());
 
   const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
+  const modelSelections = team && team.modelSelections && typeof team.modelSelections === 'object'
+    ? (team.modelSelections as Rec)
+    : null;
   let lineup;
   try {
     const planCtx = { host: 'opencode', plan: detectHostPlan('opencode') };
-    lineup = buildTeamLineup(level, 'opencode', overrides, planCtx);
+    lineup = buildTeamLineup(level, 'opencode', overrides, planCtx, process.env, modelSelections);
   } catch {
     return cleanupGlobalProjectAgents(cwd, new Set());
   }

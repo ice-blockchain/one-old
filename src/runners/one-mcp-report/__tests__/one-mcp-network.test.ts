@@ -7,15 +7,20 @@ import * as https from 'https';
 import { EventEmitter } from 'events';
 import type { ClientRequest, IncomingMessage } from 'http';
 
-import { prepareReport } from '../prepareReport';
-import { runReport } from '../runReport';
+import { prepareReport as prepareReportImpl, type PrepareOptions } from '../prepareReport';
+import { runReport as runReportImpl, type RunOptions } from '../runReport';
 import { isLocallyAuthenticated, readSimpleAuth, writeSimpleAuth } from '../../../shared/auth';
 import { readOneSettings, writeOneSection } from '../../../shared/one-settings';
 import { SAVE_MCP_REPORT } from '../../../config/reporting';
-import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { clearPluginUseChoice, recordPluginUseChoice } from '../../../shared/state/plugin-use';
 import { mcpRequest } from '../lib';
 
 const STATUS_REL = path.join('.traffic-one', 'one-mcp-report.json');
+
+const prepareReport = (cwd: string, options: PrepareOptions = {}) =>
+  prepareReportImpl(cwd, { featureEnabled: true, ...options });
+const runReport = (cwd: string, options: RunOptions = {}) =>
+  runReportImpl(cwd, { featureEnabled: true, ...options });
 
 // On-disk status tracking is gated by SAVE_MCP_REPORT (fire-and-forget mode turns
 // it off). The behavioral guarantees (POST happened, started/spawned, one-uid
@@ -28,11 +33,16 @@ function statusStatus(cwd: string): string {
 function withProject(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-net-'));
   const previous = process.env.TRAFFIC_ONE_AUTH;
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   process.env.TRAFFIC_ONE_AUTH = 'off';
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'preferences.json');
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  recordPluginUseChoice(dir, true, 'test');
   try { fn(dir); } finally {
     if (previous === undefined) delete process.env.TRAFFIC_ONE_AUTH;
     else process.env.TRAFFIC_ONE_AUTH = previous;
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -40,11 +50,16 @@ function withProject(fn: (cwd: string) => void): void {
 async function withProjectAsync(fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-net-'));
   const previous = process.env.TRAFFIC_ONE_AUTH;
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   process.env.TRAFFIC_ONE_AUTH = 'off';
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'preferences.json');
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  recordPluginUseChoice(dir, true, 'test');
   try { await fn(dir); } finally {
     if (previous === undefined) delete process.env.TRAFFIC_ONE_AUTH;
     else process.env.TRAFFIC_ONE_AUTH = previous;
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -73,7 +88,7 @@ function withFreshAuth(fn: (dir: string) => void): void {
   });
 }
 
-test('mcpRequest sends canonical one.json.auth as the Bearer credential', async () => {
+test('mcpRequest is anonymous even when canonical one.json.auth exists', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-bearer-'));
   const env = {
     ...process.env,
@@ -88,12 +103,13 @@ test('mcpRequest sends canonical one.json.auth as the Bearer credential', async 
     captured = options;
     const response = Object.assign(new EventEmitter(), {
       statusCode: 200,
+      headers: { 'content-type': 'application/json' },
       setEncoding: () => response,
     }) as unknown as IncomingMessage;
     const request = Object.assign(new EventEmitter(), {
       end: () => {
         callback(response);
-        response.emit('data', '{"result":{}}');
+        response.emit('data', '{"jsonrpc":"2.0","id":1,"result":{}}');
         response.emit('end');
       },
       destroy: () => request,
@@ -105,7 +121,8 @@ test('mcpRequest sends canonical one.json.auth as the Bearer credential', async 
     writeSimpleAuth('sk-canonical-bearer', env);
     await mcpRequest('https://example.test/mcp', { report_id: 'rep-bearer' }, 100, env, requestImpl);
     const headers = captured.headers as Record<string, string | number>;
-    assert.equal(headers.authorization, 'Bearer sk-canonical-bearer');
+    assert.equal(headers.authorization, undefined);
+    assert.equal(typeof headers['content-length'], 'number');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -135,7 +152,7 @@ test('runReport records a failed status when the transport rejects', async () =>
   });
 });
 
-test('runReport: 401 and 403 always delete only canonical auth and reopen the wizard', async () => {
+test('runReport: public 401 and 403 never invalidate canonical onboarding auth', async () => {
   await withProjectAsync(async (cwd) => {
     const env = process.env;
     const saved = { state: env.TRAFFIC_ONE_STATE_PATH, flag: env.TRAFFIC_ONE_AUTH };
@@ -152,6 +169,7 @@ test('runReport: 401 and 403 always delete only canonical auth and reopen the wi
     try {
       writeSimpleAuth('sk-process-store', env);
       writeOneSection('codeGraphProvider', 'graphify', customEnv);
+      recordPluginUseChoice(cwd, true, 'test', customEnv);
       fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
       for (const authFlag of ['1', 'off']) {
         customEnv.TRAFFIC_ONE_AUTH = authFlag;
@@ -168,9 +186,9 @@ test('runReport: 401 and 403 always delete only canonical auth and reopen the wi
           };
           const result = await runReport(cwd, { transport, env: customEnv });
           assert.equal(result.ok, false);
-          assert.equal(isLocallyAuthenticated(customEnv), false, `${statusCode} invalidates auth with TRAFFIC_ONE_AUTH=${authFlag}`);
+          assert.equal(isLocallyAuthenticated(customEnv), true, `${statusCode} preserves auth with TRAFFIC_ONE_AUTH=${authFlag}`);
           const settings = readOneSettings(customEnv);
-          assert.equal(settings.auth, undefined);
+          assert.equal(settings.auth?.apiKey, `sk-rejected-${authFlag}-${statusCode}`);
           assert.equal(settings.codeGraphProvider, 'graphify');
           assert.equal(readSimpleAuth(env)?.apiKey, 'sk-process-store', 'process.env store remains untouched');
         }
@@ -182,7 +200,7 @@ test('runReport: 401 and 403 always delete only canonical auth and reopen the wi
   });
 });
 
-test('runReport fails closed before transport when canonical auth is missing', async () => {
+test('runReport remains anonymous and does not require canonical auth', async () => {
   await withProjectAsync(async (cwd) => {
     const env = {
       ...process.env,
@@ -190,6 +208,7 @@ test('runReport fails closed before transport when canonical auth is missing', a
       TRAFFIC_ONE_STATE_PATH: path.join(cwd, 'one.json'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
     } as NodeJS.ProcessEnv;
+    recordPluginUseChoice(cwd, true, 'test', env);
     fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'rep-no-auth' }), 'utf8');
     fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId: 'rep-no-auth' }), 'utf8');
     let called = false;
@@ -202,8 +221,8 @@ test('runReport fails closed before transport when canonical auth is missing', a
       },
     });
 
-    assert.equal(result.skipped, 'auth-required');
-    assert.equal(called, false);
+    assert.equal(result.ok, true);
+    assert.equal(called, true);
   });
 });
 
@@ -237,12 +256,14 @@ test('prepareReport skips when disabled / unauthenticated / no codebase, and que
   });
 });
 
-test('prepareReport and runReport stand down when pluginUse is declined', async () => {
+test('prepareReport and runReport require pluginUse.enabled exactly true', async () => {
   let pending: Promise<void> | null = null;
   withFreshAuth((cwd) => {
-    recordPluginUseChoice(cwd, false, 'test');
+    clearPluginUseChoice(cwd);
     fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
-    assert.equal(prepareReport(cwd, { spawn: false }).reason, 'plugin-use-declined');
+    assert.equal(prepareReport(cwd, { spawn: false }).reason, 'plugin-use-not-enabled');
+    recordPluginUseChoice(cwd, false, 'test');
+    assert.equal(prepareReport(cwd, { spawn: false }).reason, 'plugin-use-not-enabled');
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false);
 
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -250,14 +271,14 @@ test('prepareReport and runReport stand down when pluginUse is declined', async 
     fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId: 'rep-declined' }), 'utf8');
     let called = false;
     pending = runReport(cwd, { transport: async () => { called = true; return 'ok'; } }).then((result) => {
-      assert.equal(result.skipped, 'plugin-use-declined');
+      assert.equal(result.skipped, 'plugin-use-not-enabled');
       assert.equal(called, false);
     });
   });
   await pending;
 });
 
-test('prepareReport returns auth-required without an auth state WHEN auth is enforced', () => {
+test('prepareReport does not require auth when public reporting is opted in', () => {
   withProject((cwd) => {
     const env = process.env;
     const prev = env.TRAFFIC_ONE_STATE_PATH;
@@ -266,7 +287,8 @@ test('prepareReport returns auth-required without an auth state WHEN auth is enf
     env.TRAFFIC_ONE_AUTH = 'on'; // enforce → a real token is required
     try {
       fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
-      assert.equal(prepareReport(cwd, { spawn: false }).reason, 'auth-required');
+      const result = prepareReport(cwd, { spawn: false });
+      assert.equal(result.started, true);
     } finally {
       if (prev === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prev;
       if (prevEnforce === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevEnforce;
@@ -274,7 +296,7 @@ test('prepareReport returns auth-required without an auth state WHEN auth is enf
   });
 });
 
-test('prepareReport honors an explicit auth-enforcement opt-out for dev/tests', () => {
+test('prepareReport is independent of an auth-enforcement opt-out', () => {
   withProject((cwd) => {
     const env = process.env;
     const prev = env.TRAFFIC_ONE_STATE_PATH;
@@ -284,7 +306,6 @@ test('prepareReport honors an explicit auth-enforcement opt-out for dev/tests', 
     try {
       fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
       const r = prepareReport(cwd, { spawn: false });
-      assert.notEqual(r.reason, 'auth-required'); // bypassed → proceeds to mint
       assert.equal(r.started, true);
     } finally {
       if (prev === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prev;

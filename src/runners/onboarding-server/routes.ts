@@ -120,7 +120,7 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
       writeSimpleAuth(key, ctx.env);
       outcome = { ok: true };
     } else {
-      outcome = applyAnswer(ctx.cwd, step, body.value);
+      outcome = applyAnswer(ctx.cwd, step, body.value, ctx.env);
     }
     if (!outcome.ok) {
       sendJson(res, 400, { ok: false, error: outcome.error || 'invalid answer' });
