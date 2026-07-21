@@ -36,7 +36,10 @@ export const ONE_MCP_DECODER_VERSION = 2;
 // future state instead of rewriting it through an older schema.
 export const ONE_MCP_CACHE_SCHEMA_VERSION = ONE_MCP_DECODER_VERSION;
 export const ONE_MCP_CACHE_FILE = 'one-mcp.json';
-export const ONE_MCP_TIMEOUT_MS = 2_000;
+// The public edge function can take several seconds to answer after a cold
+// start. Keep get_config bounded, but leave enough headroom for the observed
+// cold path so a healthy config does not spuriously fall back to bundled data.
+export const ONE_MCP_TIMEOUT_MS = 10_000;
 export const ONE_MCP_REPORT_TIMEOUT_MS = 15_000;
 // A missing/corrupt cache can receive an up-to-date sentinel and must retry
 // once with version 0. Keep the synchronous SessionStart bridge alive for both

@@ -4,7 +4,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 
-import { ONE_MCP_CACHE_SCHEMA_VERSION, ONE_MCP_CONFIG_NAME_BY_HOST } from '../../../config/one-mcp';
+import {
+  ONE_MCP_CACHE_SCHEMA_VERSION,
+  ONE_MCP_CONFIG_NAME_BY_HOST,
+  ONE_MCP_SESSION_SYNC_TIMEOUT_MS,
+} from '../../../config/one-mcp';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 import { syncOneMcpAtSessionStart } from '../session-start';
 import { oneMcpSessionWarning, syncOneMcpForSession } from '../one-mcp-sync';
@@ -24,7 +28,7 @@ test('SessionStart MCP sync invokes only the active host runner with a bounded w
     syncOneMcpForSession(dir, 'cursor', env, spawn, runner, true);
     assert.equal(observed[0]?.command, process.execPath);
     assert.deepEqual(observed[0]?.args, [runner, 'cursor', dir]);
-    assert.ok((observed[0]?.timeout ?? 0) >= 5_000 && (observed[0]?.timeout ?? 0) < 6_000);
+    assert.equal(observed[0]?.timeout, ONE_MCP_SESSION_SYNC_TIMEOUT_MS);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

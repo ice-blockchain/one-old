@@ -9,6 +9,8 @@ import {
   ONE_MCP_DECODER_VERSION,
   ONE_MCP_MANAGED_TOOLS,
   ONE_MCP_REPORT_TIMEOUT_MS,
+  ONE_MCP_SESSION_SYNC_TIMEOUT_MS,
+  ONE_MCP_TIMEOUT_MS,
   assertOneMcpPublicReleaseReady,
   authenticatedEndpoint,
   isSafeOneMcpModelId,
@@ -41,6 +43,8 @@ test('one-mcp config centralizes safe model-id grammar and reporter timeout', ()
     'the durable cache envelope advances with decoder compatibility',
   );
   assert.equal(ONE_MCP_DECODER_VERSION, 2);
+  assert.equal(ONE_MCP_TIMEOUT_MS, 10_000);
+  assert.equal(ONE_MCP_SESSION_SYNC_TIMEOUT_MS, 21_000);
   assert.equal(ONE_MCP_REPORT_TIMEOUT_MS, 15_000);
   assert.equal(isSafeOneMcpModelId('@anthropic/claude-4.1:thinking+fast'), true);
   assert.equal(isSafeOneMcpModelId('openai/gpt_5.5-2026.07'), true);
