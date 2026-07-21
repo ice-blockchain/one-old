@@ -8,6 +8,7 @@
 import { asString } from '../../adapters/coerce';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
@@ -639,6 +640,9 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
   const roleResolution = inferTrafficOneSpawnRoleEvidence(toolInput);
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  // The plugin's own repo / a generated tree is never an end-user project: no run
+  // ids, no model policy, no spawn gating. Mirrors the write-guard stand-down.
+  if (isNonProjectRoot(cwd)) return noop();
   const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
   if (!state || typeof state !== 'object') return noop();
   if (roleResolution.kind === 'conflict') {

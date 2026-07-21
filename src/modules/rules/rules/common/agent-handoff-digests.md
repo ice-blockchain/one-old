@@ -16,9 +16,10 @@ re-grepping the repo.
 
 `.traffic-one/digests/<run-id>/<role>.md`
 
-- `<run-id>` — orchestrator's session timestamp, format `YYYY-MM-DDTHH-MM-SSZ`.
-  The orchestrator generates it once in Phase 0 and passes it to every
-  subagent in their synthetic prompt.
+- `<run-id>` — the exact `currentRunId` persisted by Traffic One (new runs use
+  an epoch-millisecond digit string). The orchestrator reads it once in Phase 0
+  and passes that exact value to every subagent; roles never synthesize or
+  reformat a run id.
 - `<role>` — one of `architect`, `frontend`, `backend`, `reviewer`, `tester`,
   `shipper`. One file per role, overwritten on re-spawn within the same run
   (e.g. when reviewer requests changes and the implementer runs again).
@@ -28,7 +29,7 @@ re-grepping the repo.
 ```markdown
 # <role> digest — run <run-id>
 
-verdict: PLAN_READY | APPROVED | CHANGES_REQUESTED | TESTS_GREEN | TESTS_FAILING | SHIPPED
+verdict: PLAN_READY | APPROVED | CHANGES_REQUESTED | TESTS_GREEN | TESTS_FAILING | SHIPPED | FAILED
 finished_at: <ISO-8601 UTC>
 
 ## Touched

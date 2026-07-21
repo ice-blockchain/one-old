@@ -276,6 +276,41 @@ test('Flow 1: an onboarded existing project with local prefs gets the packed rul
   });
 });
 
+test('maintenance SessionStart does not mint a run before a runtime-only prompt is classified', () => {
+  withProject(existingState(), (cwd) => {
+    writeLocalPrefs({ team: { mode: 'subagents', source: 'prompted', approved: true } });
+    assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(state.currentRunId, undefined);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs')), false);
+  });
+});
+
+test('SessionStart policy freeze does not resume or upgrade a completed legacy maintenance run', () => {
+  withProject(newProjectSharedState({
+    currentRunId: 'legacy-maintenance',
+    phase: 'maintenance',
+    materializedStack: 'default|react-vite|supabase|none',
+  }), (cwd) => {
+    writeLocalPrefs({ team: { mode: 'subagents', source: 'prompted', approved: true } });
+    const ledgerPath = path.join(cwd, '.traffic-one', 'runs', 'legacy-maintenance', 'run.json');
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
+    fs.writeFileSync(ledgerPath, JSON.stringify({
+      version: 1,
+      runId: 'legacy-maintenance',
+      status: 'completed',
+      outcome: 'verified',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      finishedAt: '2026-01-01T01:00:00.000Z',
+    }));
+
+    assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(ledger.status, 'completed');
+    assert.equal(ledger.qaContractVersion, undefined);
+  });
+});
+
 test('runSessionStartAuthed prunes stale pending run claims during startup hygiene', () => {
   withProject(existingState({ currentRunId: 'run-prune' }), (cwd) => {
     writeLocalPrefs();

@@ -41,7 +41,7 @@ function setup(opts: { reviewer?: string; tester?: string; shipper?: boolean; as
     fs.mkdirSync(dd, { recursive: true });
     if (opts.reviewer) fs.writeFileSync(path.join(dd, 'reviewer.md'), `# reviewer\nverdict: ${opts.reviewer}\n`);
     if (opts.tester) fs.writeFileSync(path.join(dd, 'tester.md'), `# tester\nverdict: ${opts.tester}\n`);
-    if (opts.shipper) fs.writeFileSync(path.join(dd, 'shipper.md'), '# shipper\nurl: https://app.example\n');
+    if (opts.shipper) fs.writeFileSync(path.join(dd, 'shipper.md'), '# shipper\nverdict: SHIPPED\nurl: https://app.example\n');
     if (opts.tester === 'TESTS_GREEN') {
       const memoryDir = '.traffic' + '-one';
       const qaDir = path.join(dir, memoryDir, 'reports', 'qa', 'OLD');
@@ -130,6 +130,27 @@ test('rotates currentRunId once the current run terminally settled (APPROVED + T
   }
 });
 
+test('rotation releases the settled run\'s claims (terminal sweep)', () => {
+  const { dir, state } = setup({ assignments: true, reviewer: 'APPROVED', tester: 'TESTS_GREEN' });
+  // A build-time claim: created BEFORE the completion watermark (so it does not
+  // suppress triage) but still fresh on disk — the 3c end-state shape.
+  const claimFile = path.join(dir, '.traffic-one', 'runs', 'OLD', 'child9.json');
+  fs.writeFileSync(claimFile, JSON.stringify({
+    version: 1, runId: 'OLD', claimId: 'senior-frontend-1-z', role: 'senior-frontend',
+    status: 'claimed', sessionId: 'child9',
+    createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+  }));
+  try {
+    maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
+    assert.notEqual(state.currentRunId, 'OLD');
+    const released = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    assert.equal(released.status, 'released');
+    assert.equal(released.releasedReason, 'run-rotated');
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test('rotates when there is no orchestrated run (no assignments) — common maintenance edit', () => {
   const { dir, state } = setup({});
   try {
@@ -141,22 +162,64 @@ test('rotates when there is no orchestrated run (no assignments) — common main
   }
 });
 
-test('Kilo prompt boundary rotates past stale claimed work and routes a new page without an architect', () => {
+test('Kilo prompt boundary bypasses stale claim suppression but preserves a nonterminal run id', () => {
   // Kilo does not emit a role-completion/resume event. Its completed task claims
-  // therefore remain fresh after the initial build, but a new chat.message proves
-  // the parent is at a new user-prompt boundary and must not re-use the old run.
+  // therefore remain fresh after the initial build. A new chat.message may bypass
+  // that stale claim, but a nonterminal verdict still requires the same run id.
   const completedAt = new Date(Date.now() - 60_000).toISOString();
   const { dir, state } = setup({ assignments: true, reviewer: 'CHANGES_REQUESTED', completedAt });
   try {
     writeFreshClaim(dir);
     const directive = maintenanceTriageDirective(dir, state, 'create a new page named news', { session_id: 'kilo-parent' }, 'kilo');
-    assert.notEqual(state.currentRunId, 'OLD', 'Kilo receives a fresh maintenance run instead of reusing the stuck build run');
-    assert.deepEqual(state.spawnIndex, {}, 'fresh run clears stale role indexes');
+    assert.equal(state.currentRunId, 'OLD', 'unresolved verification retains the same run even at a Kilo boundary');
+    assert.deepEqual(state.spawnIndex, { 'senior-frontend': 1, 'senior-backend': 1 }, 'existing role indexes remain resumable');
     assert.match(directive, /MAINTENANCE PHASE/);
     assert.match(directive, /Keyword hint: small/);
     assert.match(directive, /Do NOT spawn `senior-architect`/);
   } finally {
     cleanup(dir);
+  }
+});
+
+test('runtime-control prompts bypass maintenance workers and do not rotate the run', () => {
+  for (const prompt of [
+    'start the dev server',
+    'stop the preview server',
+    'restart the local server',
+    'restart the Vite dev server',
+    'check port 5173',
+    'check process 123456',
+    'what process is listening on port 3000',
+    'show me the local server logs',
+    'show the logs for the Vite dev server',
+  ]) {
+    const { dir, state } = setup({});
+    try {
+      const directive = maintenanceTriageDirective(dir, state, prompt, { session_id: 'parent' }, 'claude');
+      assert.equal(directive, '', `parent should handle runtime command: ${prompt}`);
+      assert.equal(state.currentRunId, 'OLD', 'runtime commands do not mint maintenance runs');
+      assert.deepEqual(state.spawnIndex, { 'senior-frontend': 1, 'senior-backend': 1 });
+    } finally {
+      cleanup(dir);
+    }
+  }
+});
+
+test('server implementation near-misses still use normal maintenance routing', () => {
+  for (const prompt of [
+    'fix the server startup error',
+    'change the server config',
+    'add an endpoint',
+    'restart the Vite dev server and change its config',
+  ]) {
+    const { dir, state } = setup({});
+    try {
+      const directive = maintenanceTriageDirective(dir, state, prompt, { session_id: 'parent' }, 'claude');
+      assert.match(directive, /MAINTENANCE PHASE/, `implementation prompt should route: ${prompt}`);
+      assert.notEqual(state.currentRunId, 'OLD', 'normal maintenance work gets its own run');
+    } finally {
+      cleanup(dir);
+    }
   }
 });
 

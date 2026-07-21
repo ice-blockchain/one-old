@@ -82,7 +82,7 @@ work already started, pause at the next safe point, resolve it, then continue.
 
 ## OpenCode delegation (token-saver — driven by the architect's plan queue)
 
-When the current host is NOT OpenCode or Kilo, `openCode.enabled` is true in the effective Traffic One state, AND the OpenCode CLI is installed (`scripts/opencode-runner.cjs` present), bounded/low-risk units are delegated to OpenCode INSTEAD of paid subagents — **deterministically, from the plan**, NOT by per-unit improvisation. In a subagents run, work is split by LAYER (one frontend + one backend subagent), so there is no per-unit spawn to redirect; delegation therefore happens in a dedicated batch BEFORE the implementers spawn. The OpenCode and Kilo hosts never self-delegate: they omit the plan queue and run implementer work directly on the current host.
+When the current host is NOT OpenCode or Kilo and `openCode.enabled` is true in the effective Traffic One state (the managed toolchain stamp `toolchain.opencode.installedVersion` is written by the session-start auto-install; the runner resolves its own managed binary and no-ops gracefully when it is truly absent — never probe PATH for an `opencode` CLI), bounded/low-risk units are delegated to OpenCode INSTEAD of paid subagents — **deterministically, from the plan**, NOT by per-unit improvisation. In a subagents run, work is split by LAYER (one frontend + one backend subagent), so there is no per-unit spawn to redirect; delegation therefore happens in a dedicated batch BEFORE the implementers spawn. The OpenCode and Kilo hosts never self-delegate: they omit the plan queue and run implementer work directly on the current host.
 
 How it works:
 
@@ -367,6 +367,18 @@ Mechanics on hosts with agent continuation: Claude uses `SendMessage` when `CLAU
 7. **Keep role threads open after MVP/maintenance** unless the user explicitly archives them, the agent is dead/replaced, or host active-agent caps require cleanup. A finished first MVP is often the start of the next feature, and the live role context is valuable.
 8. **No continuation available** (flag unset, non-teams host): the gate stays inert; fall back to the legacy re-spawn protocol below. On OpenCode the gate is not inert: it records the child session id and denies bare duplicate spawns, so use the explicit replacement marker for completed-task follow-ups.
 
+If the prescribed retry/replacement paths are exhausted and orchestration or a
+role agent has failed unrecoverably, persist `failed/agent-failed` before the
+final blocked-style summary:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status failed --outcome agent-failed
+```
+
+Do not use `agent-failed` for reviewer/tester cycle caps or environment/browser,
+sandbox, usage-limit, or timeout blockers; those have the distinct blocked
+outcomes below.
+
 ### Fix-cycle follow-up (CHANGES_REQUESTED loop)
 
 When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
@@ -480,31 +492,66 @@ Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester*
 
 If reviewer returns `CHANGES_REQUESTED` → Phase 3a (loop, max 2 cycles).
 If tester returns `TESTS_FAILING` → Phase 3b (loop, max 2 cycles).
-If both green → proceed.
+If both tokens are green, validate the evidence before proceeding: the reviewer
+digest must be `APPROVED`, the tester digest must be `TESTS_GREEN`, and a run
+with a frontend implementer digest must have a valid
+`.traffic-one/reports/qa/<runId>/report.json` whose `QaReportV1.status` is
+`passed`. A backend-only exemption is legal only when this run has no frontend
+implementer digest. Textual green tokens, screenshots by themselves, arbitrary
+JSON, and Lighthouse reports do not satisfy functional QA.
 
 ### Phase 3a — Reviewer fix loop (capped at 2 cycles)
 
 Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way and require an updated `reviewer.md` digest. Repeat until `APPROVED` or the 2-cycle cap.
 
-After 2 cycles, escalate to the user with both diffs and the latest review.
+After 2 unsuccessful cycles, record the cap before escalating to the user with
+both diffs and the latest review:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome review-cycle-cap
+```
 
 ### Phase 3b — Tester fix loop (capped at 2 cycles)
 
-Send the failing-test list to the relevant implementer (continuation-first, as above). After their reply, send the re-test to the live `senior-tester` and require an updated `tester.md` digest. Repeat until `TESTS_GREEN` or the 2-cycle cap. Structured blocked outcomes (`blocked:sandbox`, `blocked:usage-limit`) are not green; surface them like failing verification with the command/error and next repair step.
+First distinguish an implementation/test failure from an environment blocker.
+Send actual failing tests or failed QA matrix entries to the relevant
+implementer (continuation-first, as above). After their reply, send the re-test
+to the live `senior-tester` and require an updated `tester.md` digest and QA
+report. Repeat until the evidence-valid `TESTS_GREEN` combination above or the
+2-cycle cap.
 
-After 2 cycles, escalate to the user.
+`blocked:browser-unavailable`, `blocked:sandbox`, `blocked:usage-limit`, and
+`blocked:timeout` are `TESTS_FAILING`, never green. They do not consume a fix
+cycle because no implementation changed. Only the Codex
+`blocked:browser-unavailable` case may use the parent-browser bridge in Phase
+3c, and only when every non-browser check passed. Skip the implementation fix
+loop and go directly to that bridge. Sandbox, usage-limit, and timeout blockers
+remain user-visible blocked outcomes; do not send them to an implementer as if
+code caused them. For any environment blocker that will remain unresolved at
+the end of this turn, persist it before showing the blocked summary:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome environment-blocked
+```
+
+After 2 unsuccessful implementation/test fix cycles, record the cap and then
+escalate to the user:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome test-cycle-cap
+```
 
 ### Phase 3c — Parent integration pass (visual builds)
 
-After reviewer `APPROVED` and tests are green, run the root verification
-commands yourself (install/lint/typecheck/test/build). Re-use fresh evidence:
-a Lighthouse report under `.traffic-one/reports/lighthouse/` or a QA sweep
-under `.traffic-one/reports/qa/<runId>/` that is NEWER than the last code
-change answers the gate by READING it — do not re-run audits the team just
-ran. Then — for any build
-with a UI — verify the RUNNING app visually before declaring completion: start
-the dev server and check the key routes at desktop AND a mobile width
-(overflow, console errors, primary actions reachable). Per host:
+After reviewer `APPROVED` and tests are mechanically green, run the root
+verification commands yourself (install/lint/typecheck/test/build). Re-use a
+fresh, parser-valid `QaReportV1` from this run by reading it. Lighthouse remains
+performance evidence only and never answers the functional QA gate.
+
+For any build with a UI, verify the running app before declaring completion.
+The tester normally owns the complete route matrix at widths 390, 768, and
+1440, including console errors, document and element overflow, primary-action
+reachability, and required screenshots. Per host:
 - **Claude Code**: `preview_start` (in-app preview) or the claude-in-chrome
   browser MCP; `preview_stop` when done.
 - **Codex**: the in-app-browser recipe in the `browser-qa` skill
@@ -513,29 +560,75 @@ the dev server and check the key routes at desktop AND a mobile width
   complete).
 - **Cursor**: the built-in Simple Browser, or the browser automation MCP.
 **The mechanical half of this pass belongs to `senior-tester`, not to you.**
-The tester role owns the visual regression sweep (key routes render, console
-errors, horizontal overflow at desktop + ~390px, screenshots saved under
-`.traffic-one/reports/qa/<runId>/`) — it runs on the cheapest tier, it is a
-delegateRole (the scripted sweep can ride OpenCode for free), and as a live
-agent it re-runs the sweep after fix cycles via one continuation message. If
-its Phase-3 pass ran before the final fixes, send the live tester a "re-run the
-visual sweep" continuation now instead of doing the sweep yourself. Reserve
-YOUR (parent) context for the judgment half only: read the tester's QA report
-and view the 2–3 screenshots that need actual visual assessment — never stream
-every screenshot into the orchestrator context. A one-element CSS finding goes
-back through the fix-cycle continuation, not a fresh spawn. Your own in-app
-browser spot-check (per host above) is optional polish on top, not the
-mechanism of record. Leave the dev server running for the user.
+It runs on the cheapest tier, is a delegateRole (the scripted sweep can ride
+OpenCode for free), and as a live agent re-runs the sweep after fix cycles via
+one continuation message. If its Phase-3 pass ran before final fixes, continue
+that same tester with “re-run the visual sweep” instead of doing the sweep
+yourself. Reserve your parent context for reading the report and inspecting the
+few screenshots that need subjective assessment.
+
+**Codex parent-browser bridge (only for `blocked:browser-unavailable`):**
+
+1. Confirm every non-browser check passed, the tester returned `TESTS_FAILING`,
+   and its sole blocker is a structurally valid `QaReportV1` whose parsed
+   `status` is `blocked:browser-unavailable` and whose `blocker.code` is
+   `browser-unavailable`. The report remains nonpassing evidence even when the
+   unavailable browser made required screenshots impossible. Do not bridge any
+   other blocked status or a run that also has test failures.
+2. In the parent Codex task, use the in-app browser to run the same required
+   route×390/768/1440 matrix. Write the canonical
+   `.traffic-one/reports/qa/<runId>/report.json` with producer
+   `parent-browser`, plus the required mobile and desktop screenshots inside
+   that same run QA directory.
+3. Continue the **same** `senior-tester` agent. Ask it to validate the canonical
+   report, screenshot paths, run id, freshness, and full matrix, then update
+   `tester.md` and re-emit its verdict. Do not spawn a new tester.
+
+The bridge is verification work, not an implementation fix, so it consumes no
+reviewer/tester fix cycle. If the parent matrix finds a real UI failure, route
+that finding through the normal continuation-based fix loop. If the parent
+cannot complete the bridge, keep the run blocked and record
+`environment-blocked` with the Phase 3b command. Leave the dev server running
+for the user when appropriate.
 
 ### Phase 4 — Ship (only on explicit intent)
 
 Spawn `senior-shipper` ONLY if the user prompt matches `/\b(ship|deploy|release|publish|to prod|to production|to staging|app store|play store)\b/i`.
 
-Synthetic prompt — use the **Phase 4 — Shipper** template from `resources/prompt-templates.md`. The template tells the shipper to read `.traffic-one/digests/<run-id>/{reviewer,tester}.md` first (verifying APPROVED + TESTS_GREEN), then plan § Risks/Cut-list. Shipper runs `predeploy-security-check` with `--strict --stamp`, handles the `lastSecurityCheck*` and `lastShipperApprovalAt` stamps, performs the Traffic One deploy (web via Traffic One's own `/deploy`; mobile via EAS App Store / Play Store) — Traffic One does NOT deploy to third-party web hosts — then writes `shipper.md` digest.
+Synthetic prompt — use the **Phase 4 — Shipper** template from `resources/prompt-templates.md`. The template tells the shipper to read `.traffic-one/digests/<run-id>/{reviewer,tester}.md` first and validate the full terminal combination: `APPROVED`, `TESTS_GREEN`, and strict QA passed (or genuinely backend-only). Shipper runs `predeploy-security-check` with `--strict --stamp`, handles the `lastSecurityCheck*` and `lastShipperApprovalAt` stamps, performs the Traffic One deploy (web via Traffic One's own `/deploy`; mobile via EAS App Store / Play Store) — Traffic One does NOT deploy to third-party web hosts — then writes `shipper.md` digest. Phase 5 records the shipped terminal outcome only after that successful digest exists.
+
+If the run is blocked or otherwise nonterminal, do not spawn the shipper, do
+not stamp shipper approval, and do not advertise shipping as available.
 
 If no deploy intent in the user message → end with a "next step: say 'ship it' and Traffic One ships it" line, do NOT spawn shipper.
 
 ### Phase 5 — Cleanup + sanity check + codebase-graph bootstrap (orchestrator only, no subagent)
+
+Enter Phase 5 only after strict terminal settlement: reviewer approved, tester
+green, and strict QA passed (or genuinely backend-only), or the shipper
+completed. A blocked or otherwise nonterminal run stays in `building` with its
+current run id and role-agent registry intact. Do not run the maintenance stamp
+or rotate/clean away that run.
+
+Before the maintenance stamp, settle the terminal run idempotently. If the
+shipper actually completed the deploy and wrote its successful digest, use:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status completed --outcome shipped
+```
+
+Never issue `completed/shipped` from deploy intent or a textual claim alone.
+For an unshipped run, independently validate the strict reviewer + tester + QA
+or backend-only combination, then use:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status completed --outcome verified
+```
+
+Do not use `completed/verified` merely because the digest text contains green
+tokens; the reviewer, tester, backend-only rule, and canonical QA parser gate
+above must all pass first. Do not replace a shipped outcome with `verified`.
+Both completed transitions are evidence-gated.
 
 **Sanity check first.** Before rotating, verify the expected digests landed
 for this run. Each phase that ran must have produced its digest; a missing
@@ -575,8 +668,8 @@ the hinted token yourself with a one-line edit to the digest file (digests are
 run bookkeeping under `.traffic-one/`, not feature source — the write gate
 allows it). Do NOT spawn an agent just to rewrite a verdict line.
 
-**Then stamp the maintenance phase.** A completed orchestrator run means the
-project's main build is done — flip `lifecycle.phase` to `maintenance` so the
+**Then stamp the maintenance phase.** A strictly terminal orchestrator run means
+the project's main build is done — flip `lifecycle.phase` to `maintenance` so the
 NEXT prompt is routed through post-build triage (trivial → `quick-fix`, complex →
 a single-feature orchestrator run) instead of re-running the full team from
 scratch. Idempotent: a project already in maintenance is left untouched.
@@ -642,10 +735,34 @@ Projects may override retention counts with `.traffic-one/retention.json`.
 - Maintain the host's todo/plan list across the phases. Each phase is one item; subagent runs are sub-items.
 - Keep the canonical plan in `.traffic-one/plan.md`. Do NOT duplicate it into the todo/plan list.
 - Log each subagent's verdict (`PLAN_READY`, `APPROVED` / `CHANGES_REQUESTED`, `TESTS_GREEN` / `TESTS_FAILING`, Traffic One deploy result) in a single summary at the end.
+- The run intentionally ends with the working tree uncommitted (only a never-committed scaffold gets the automatic initial commit): do NOT `git add`/`git commit` the build output at close-out. State in the final summary that the changes are uncommitted and ready for the user's own review/commit.
+
+### Unresolved-run directive
+
+When verification is interrupted, blocked, capped, or otherwise nonterminal,
+continue the existing run instead of starting a greenfield or maintenance flow.
+Treat this as the routing directive:
+
+```text
+Traffic One unresolved run <currentRunId>: preserve currentRunId, the run
+ledger, assignments, digests, QA artifacts, fix-cycle counters, and the
+existing role-agent registry. Continue the relevant live role agent first.
+Do not mint or rotate a run id, invoke a fresh architect flow, or replace a
+role agent unless the normal continuation recovery contract requires it.
+```
+
+A user-authorized extra verification cycle resumes the same blocked run; it is
+not a new build. Preserve the blocked transition in ledger history and record
+the authorized resume before continuing. Run this only after the user has
+explicitly authorized the extra cycle:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status active --reason user-authorized-extra-cycle
+```
 
 ## Handoff back to user
 
-After Phase 3 (or Phase 4 if shipped), reply with:
+After a strictly terminal Phase 3 (or Phase 4 if shipped), reply with:
 
 ```
 Senior Engineering Orchestrator — summary
@@ -664,6 +781,29 @@ Next steps:
 - <bullet>
 ```
 
+For a blocked or capped run, do not use the success template above. Do not say
+the build is complete, offer “ship it”, or imply that passing mechanical checks
+make the run green. Use this dedicated summary and state one concrete decision:
+
+```text
+Senior Engineering Orchestrator — verification blocked
+
+Implementation status:
+- <what was implemented and what, if anything, remains>
+
+Passing mechanical checks:
+- <exact test/typecheck/build checks that passed; “none” when applicable>
+
+Unresolved reviewer/tester findings:
+- <numbered current findings, cycle-cap reason, or “none beyond the QA blocker”>
+
+QA status:
+- <exact QaReportV1 status, affected routes/widths, safe blocker summary, and report path>
+
+User decision required:
+- <one exact action or choice needed to continue this same run>
+```
+
 ## Hard rules
 
 - The architect runs first on any new project (`mode === "new-project"`) or whenever `.traffic-one/plan.md` is missing.
@@ -673,6 +813,11 @@ Next steps:
 - ONE agent per role per run: after a role's first spawn, its later tasks are host-specific continuations of that agent (the spawn gate denies duplicates). Never spawn `senior-frontend` twice for parts/fixes — same agent, next message.
 - Shipper only on explicit deploy intent in the user's most recent message.
 - Cycle cap = 2 for both reviewer and tester loops; after that, escalate.
+- `TESTS_GREEN` is valid only with passing tests plus strict QA passed or a
+  genuinely backend-only current run. Every structured QA blocker is
+  `TESTS_FAILING`.
+- A blocked/nonterminal run preserves its current run id and role agents. It
+  never enters Phase 5, maintenance, shipping, or a greenfield flow.
 - The plan-gate hook (`check-plan-write`) will deny feature writes if `.traffic-one/plan.md` is missing — even if you skipped Phase 1, the implementers will fail fast. Do not try to bypass.
 - The deploy-gate hook (`runCheckLibraryAllowlist`) will deny `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, etc. without both a fresh `lastShipperApprovalAt` stamp and a fresh passing `lastSecurityCheck*` stamp whose fingerprint matches the current worktree. Only `senior-shipper` writes the shipper stamp; `predeploy-security-check` writes the security stamp.
 - When subagents are available and permitted (Balanced or High), you do NOT write feature source files. You do NOT run deploy commands. You only spawn subagents and summarise. If subagents are unavailable, blocked, or the user chose Low, execute the same phases manually with the role roadmap checklist and clearly say so.

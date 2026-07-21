@@ -131,6 +131,11 @@ Minimal, deterministic pipeline. Outputs declared per task so remote cache hits 
 }
 ```
 
+Emit `lint`/`lint:fix` only alongside `packages/eslint-config` + a root
+`eslint.config.js` re-export and the eslint devDependencies (script/config
+parity — see `quality-tooling`); same for `format*` and Prettier. A script whose
+tool is not configured fails the pipeline for every later agent.
+
 Filter for a single workspace with `pnpm --filter @app/web dev` or `turbo run dev --filter=@app/web`.
 
 ## TypeScript Project References
@@ -233,4 +238,6 @@ Remote cache (Turborepo Remote Cache or self-hosted) is opt-in: set `TURBO_TOKEN
 - [ ] No circular package dependencies (`madge --circular`).
 - [ ] No deep relative imports across workspaces (`grep -rE "from ['\"]\.\.\/\.\.\/packages\/"`).
 - [ ] Shared `eslint-config`, `tsconfig`, and `tailwind-config` packages exist and are consumed by every app.
+- [ ] Every package exposes a `test` script wired into `turbo run test` (an explicit no-op is allowed, absence is not).
+- [ ] No script names a tool whose config/deps are missing (script/config parity — see `quality-tooling`).
 - [ ] CI uses `--frozen-lockfile` and caches `.turbo/`.

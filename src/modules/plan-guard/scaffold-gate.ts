@@ -23,6 +23,7 @@ import * as path from 'path';
 
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { canonicalHost } from '../../shared/model-tiers';
@@ -60,6 +61,8 @@ export function scaffoldGate(ctx: Ctx): HookResult {
   // Windsurf/Devin only — never touch other hosts.
   if (canonicalHost(ctx.host) !== 'windsurf') return noop();
   if (pluginUseDeclined(ctx.cwd)) return noop();
+  // Never police scaffolding inside the plugin authoring repo.
+  if (isNonProjectRoot(ctx.cwd)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!SCAFFOLD_RE.test(command)) return noop();

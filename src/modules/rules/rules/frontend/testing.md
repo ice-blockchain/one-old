@@ -20,9 +20,13 @@ Three test layers, each with a distinct job. Framework-specific testing helpers
 
 | Layer | Tool | Scope |
 |-------|------|-------|
-| Unit | jest (or vitest if forced) | pure functions, reducers, selectors, codecs |
-| Integration | jest + UI-framework testing lib + msw | components rendered with a real state container + mocked network |
+| Unit | vitest (web); jest on React Native/Expo | pure functions, reducers, selectors, codecs |
+| Integration | vitest + UI-framework testing lib + msw (jest on native) | components rendered with a real state container + mocked network |
 | E2E | @playwright/test | full app in a real browser, real navigations, mocked back-end at the network edge |
+
+Web stacks (react-vite, Next.js) standardize on Vitest. The jest specifics in
+`frontend/react/testing.md` apply to Jest-based projects only (native, or an
+existing codebase already on Jest).
 
 ## What to test
 

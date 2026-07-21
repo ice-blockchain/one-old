@@ -7,12 +7,16 @@
 
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { INSTALL_RE, allowsNextjs, forbiddenForStack } from './forbidden';
 
 export function libraryAllowlistGate(ctx: Ctx): HookResult {
   if (pluginUseDeclined(ctx.cwd)) return noop();
+  // The plugin authoring repo has a null-stack state that would fall into the
+  // web forbidden table — never police installs there.
+  if (isNonProjectRoot(ctx.cwd)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!INSTALL_RE.test(command)) return noop();

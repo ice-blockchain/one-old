@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { libraryAllowlistGate } from '../handler';
+import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 function withProject(stateObj: Record<string, unknown>, fn: (cwd: string) => void): void {
@@ -53,6 +54,43 @@ test('native stack: denies react-router-dom (Expo Router instead)', () => {
     const r = libraryAllowlistGate(ctxFor(cwd, 'pnpm add react-router-dom'));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(r.reason.includes('Expo Router'));
+  });
+});
+
+test('forbidden-library gate stands down inside the plugin authoring repo', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoring-lib-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    fs.mkdirSync(path.join(dir, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'gen', 'index.ts'), 'export {};\n', 'utf8');
+    resetAuthoringRootCache();
+    // mobx is denied in every end-user stack table; the authoring repo is exempt.
+    assert.equal(libraryAllowlistGate(ctxFor(dir, 'pnpm add mobx')).kind, 'noop');
+    assert.equal(libraryAllowlistGate(ctxFor(dir, 'pnpm add vitest')).kind, 'noop');
+  } finally {
+    resetAuthoringRootCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('react/vite stack: allows vitest installs (Vitest is the web runner)', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, (cwd) => {
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D @vitest/coverage-v8')).kind, 'noop');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add vitest')).kind, 'noop');
+  });
+});
+
+test('nextjs frontend: still allows vitest', () => {
+  withProject({ stack: 'default', frontend: 'nextjs' }, (cwd) => {
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D @vitest/ui')).kind, 'noop');
+  });
+});
+
+test('native stack: denies vitest (Jest is the native runner)', () => {
+  withProject({ stack: 'custom-frontend', frontend: 'none', mobile: { framework: 'react-native-expo' } }, (cwd) => {
+    const r = libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D @vitest/coverage-v8'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.ok(r.reason.includes('Jest'));
   });
 });
 

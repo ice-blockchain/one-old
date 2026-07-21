@@ -34,13 +34,17 @@ import {
   refreshCursorRunAgentFromTranscriptCache,
   recordCursorSpawnObservation,
   recordRunAgent,
+  releaseRunClaims,
   resolveRunAgentContext,
   runHasOrchestratedArtifacts,
   runIdNow,
   runReachedTerminalVerdict,
   runSettledForRotation,
+  runVerificationState,
+  settleTerminalRunLedger,
   suppressCursorFollowupsBatch,
   transcriptThreadId,
+  transitionRunStatus,
   tryFallbackClaim,
   updateCursorSpawnObservation,
   validateCodexLiveRunAgent,
@@ -63,6 +67,40 @@ function writeMaintenanceMarker(dir: string, runId: string, outcome: string): vo
   const d = path.join(dir, memoryDir, 'runs', runId);
   fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, 'maintenance.json'), JSON.stringify({ version: 1, outcome }), 'utf8');
+}
+
+function writePassingQaReport(
+  dir: string,
+  runId: string,
+  options: { producer?: 'senior-tester' | 'parent-browser'; generatedAt?: string } = {},
+): string {
+  const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', runId);
+  fs.mkdirSync(qaDir, { recursive: true });
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  fs.writeFileSync(path.join(qaDir, 'mobile.png'), png);
+  fs.writeFileSync(path.join(qaDir, 'desktop.png'), png);
+  const viewport = (width: 390 | 768 | 1440, screenshotPath?: string) => ({
+    width,
+    status: 'passed',
+    consoleErrorCount: 0,
+    documentOverflow: false,
+    elementOverflow: false,
+    primaryAction: { status: 'reachable' },
+    ...(screenshotPath ? { screenshotPath } : {}),
+  });
+  const reportFile = path.join(qaDir, 'report.json');
+  fs.writeFileSync(reportFile, JSON.stringify({
+    schemaVersion: 1,
+    runId,
+    generatedAt: options.generatedAt ?? new Date().toISOString(),
+    producer: options.producer ?? 'senior-tester',
+    status: 'passed',
+    routes: [{
+      route: '/',
+      viewports: [viewport(390, 'mobile.png'), viewport(768), viewport(1440, 'desktop.png')],
+    }],
+  }));
+  return reportFile;
 }
 
 test('QA-evidence gate is per-run: backend-only run is terminal; frontend run still needs QA but can rotate', () => {
@@ -95,6 +133,263 @@ test('QA-evidence gate is per-run: backend-only run is terminal; frontend run st
   }
 });
 
+test('strict QA-contract frontend runs reject screenshots and Lighthouse alone, then accept the canonical passing matrix', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-strict-integration-'));
+  try {
+    const runId = 'strict-ui';
+    ensureRunLedger(dir, runId, { status: 'active' });
+    writeDigest(dir, runId, 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', runId);
+    fs.mkdirSync(qaDir, { recursive: true });
+    fs.writeFileSync(path.join(qaDir, 'screenshot.png'), 'image');
+    assert.equal(runReachedTerminalVerdict(dir, runId), false, 'screenshot-only is not strict QA');
+    const lighthouseDir = path.join(dir, '.traffic-one', 'reports', 'lighthouse');
+    fs.mkdirSync(lighthouseDir, { recursive: true });
+    fs.writeFileSync(path.join(lighthouseDir, 'report.json'), '{}');
+    assert.equal(runReachedTerminalVerdict(dir, runId), false, 'Lighthouse is performance evidence only');
+    assert.equal(runSettledForRotation(dir, runId), false, 'strict runs do not rotate on textual green tokens');
+
+    writePassingQaReport(dir, runId);
+    writeDigest(dir, runId, 'tester.md', 'APPROVED');
+    assert.equal(runReachedTerminalVerdict(dir, runId), false, 'contract-v1 tester must emit TESTS_GREEN');
+    writeDigest(dir, runId, 'reviewer.md', 'UNKNOWN\nnot APPROVED yet');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, runId), false, 'reviewer prose cannot impersonate its verdict field');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'UNKNOWN\nTESTS_GREEN would require browser evidence');
+    assert.equal(runReachedTerminalVerdict(dir, runId), false, 'tester prose cannot impersonate its verdict field');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, runId), true);
+    assert.equal(runSettledForRotation(dir, runId), true);
+    const settled = settleTerminalRunLedger(dir, runId);
+    assert.equal(settled?.status, 'completed');
+    assert.equal(settled?.outcome, 'verified');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resuming a legacy run advances the strict QA freshness watermark', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-resume-watermark-'));
+  try {
+    const runId = 'legacy-resumed-ui';
+    const oldCreatedAt = new Date(Date.now() - 120_000).toISOString();
+    const preResumeReportAt = new Date(Date.now() - 60_000).toISOString();
+    const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify({
+      version: 1,
+      runId,
+      status: 'active',
+      createdAt: oldCreatedAt,
+      statusUpdatedAt: oldCreatedAt,
+    }));
+    writeDigest(dir, runId, 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    writePassingQaReport(dir, runId, { generatedAt: preResumeReportAt });
+
+    const resumed = transitionRunStatus(dir, runId, { status: 'active' });
+    assert.equal(resumed?.qaContractVersion, 1);
+    assert.equal(typeof resumed?.qaContractActivatedAt, 'string');
+    assert.ok(Date.parse(resumed!.qaContractActivatedAt as string) > Date.parse(preResumeReportAt));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'evidence from before strict-contract activation cannot settle a resumed run');
+
+    writePassingQaReport(dir, runId, {
+      generatedAt: new Date(Date.parse(resumed!.qaContractActivatedAt as string) + 1).toISOString(),
+    });
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, runId), true,
+      'fresh evidence produced for the resumed attempt is accepted');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a parent-browser replacement needs a later tester digest re-attestation', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-parent-reattest-'));
+  try {
+    const runId = 'parent-browser-ui';
+    const ledger = ensureRunLedger(dir, runId, { status: 'active' });
+    assert.equal(typeof ledger?.qaContractActivatedAt, 'string');
+    writeDigest(dir, runId, 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+
+    const activatedAtMs = Date.parse(ledger!.qaContractActivatedAt as string);
+    const reportGeneratedAtMs = activatedAtMs + 10;
+    const reportMtimeMs = activatedAtMs + 20;
+    const reportFile = writePassingQaReport(dir, runId, {
+      producer: 'parent-browser',
+      generatedAt: new Date(reportGeneratedAtMs).toISOString(),
+    });
+    fs.utimesSync(reportFile, new Date(reportMtimeMs), new Date(reportMtimeMs));
+    const testerFile = path.join(dir, '.traffic-one', 'digests', runId, 'tester.md');
+    fs.utimesSync(testerFile, new Date(activatedAtMs + 15), new Date(activatedAtMs + 15));
+
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a green digest written before the parent report does not attest that report');
+
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    fs.utimesSync(testerFile, new Date(reportMtimeMs + 10), new Date(reportMtimeMs + 10));
+    assert.equal(runReachedTerminalVerdict(dir, runId), true,
+      'the continued tester can re-emit its green digest after validating the replacement');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('strict QA and tester attestation must be newer than the latest frontend digest', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-fix-cycle-freshness-'));
+  try {
+    const runId = 'same-run-fix';
+    const ledger = ensureRunLedger(dir, runId, { status: 'active' });
+    const activatedAtMs = Date.parse(ledger!.qaContractActivatedAt as string);
+    writeDigest(dir, runId, 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    const frontendFile = path.join(dir, '.traffic-one', 'digests', runId, 'frontend.md');
+    const testerFile = path.join(dir, '.traffic-one', 'digests', runId, 'tester.md');
+    fs.utimesSync(frontendFile, new Date(activatedAtMs + 5), new Date(activatedAtMs + 5));
+
+    let reportFile = writePassingQaReport(dir, runId, {
+      generatedAt: new Date(activatedAtMs + 20).toISOString(),
+    });
+    fs.utimesSync(reportFile, new Date(activatedAtMs + 20), new Date(activatedAtMs + 20));
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    fs.utimesSync(testerFile, new Date(activatedAtMs + 30), new Date(activatedAtMs + 30));
+    assert.equal(runReachedTerminalVerdict(dir, runId), true);
+
+    writeDigest(dir, runId, 'frontend.md', 'BUILD_COMPLETE\nfix cycle 2');
+    fs.utimesSync(frontendFile, new Date(activatedAtMs + 40), new Date(activatedAtMs + 40));
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    fs.utimesSync(testerFile, new Date(activatedAtMs + 50), new Date(activatedAtMs + 50));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a re-attested old matrix cannot verify implementation changed after QA');
+
+    reportFile = writePassingQaReport(dir, runId, {
+      generatedAt: new Date(activatedAtMs + 60).toISOString(),
+    });
+    fs.utimesSync(reportFile, new Date(activatedAtMs + 60), new Date(activatedAtMs + 60));
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    fs.utimesSync(testerFile, new Date(activatedAtMs + 70), new Date(activatedAtMs + 70));
+    assert.equal(runReachedTerminalVerdict(dir, runId), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('backend-only strict runs need no QA report; frontend prose N/A never bypasses evidence', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-backend-only-'));
+  try {
+    ensureRunLedger(dir, 'backend-only', { status: 'active' });
+    writeDigest(dir, 'backend-only', 'backend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'backend-only', 'reviewer.md', 'APPROVED');
+    writeDigest(dir, 'backend-only', 'tester.md', 'TESTS_GREEN\nnotes: backend-only, no frontend digest');
+    assert.equal(runReachedTerminalVerdict(dir, 'backend-only'), true);
+
+    const blockedDir = path.join(dir, '.traffic-one', 'reports', 'qa', 'backend-only');
+    fs.mkdirSync(blockedDir, { recursive: true });
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    fs.writeFileSync(path.join(blockedDir, 'mobile.png'), png);
+    fs.writeFileSync(path.join(blockedDir, 'desktop.png'), png);
+    const blockedViewport = (width: 390 | 768 | 1440, screenshotPath?: string) => ({
+      width,
+      status: 'blocked:sandbox',
+      consoleErrorCount: 0,
+      documentOverflow: false,
+      elementOverflow: false,
+      primaryAction: { status: 'not-applicable', reason: 'Browser unavailable.' },
+      ...(screenshotPath ? { screenshotPath } : {}),
+    });
+    fs.writeFileSync(path.join(blockedDir, 'report.json'), JSON.stringify({
+      schemaVersion: 1,
+      runId: 'backend-only',
+      generatedAt: new Date().toISOString(),
+      producer: 'senior-tester',
+      status: 'blocked:sandbox',
+      blocker: { code: 'sandbox', summary: 'Browser process denied.' },
+      routes: [{
+        route: '/',
+        viewports: [
+          blockedViewport(390, 'mobile.png'),
+          blockedViewport(768),
+          blockedViewport(1440, 'desktop.png'),
+        ],
+      }],
+    }));
+    assert.equal(runReachedTerminalVerdict(dir, 'backend-only'), false,
+      'an explicit blocker overrides the backend-only exemption');
+
+    writeDigest(dir, 'legacy-ui', 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'legacy-ui', 'reviewer.md', 'APPROVED');
+    writeDigest(dir, 'legacy-ui', 'tester.md', 'TESTS_GREEN — visual QA not applicable because no browser surface');
+    assert.equal(runReachedTerminalVerdict(dir, 'legacy-ui'), false, 'frontend digest removes the prose N/A escape');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy QA artifacts remain compatible unless the tester or report explicitly records a blocker', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-legacy-'));
+  try {
+    const runId = 'legacy-artifacts';
+    writeDigest(dir, runId, 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', runId);
+    fs.mkdirSync(qaDir, { recursive: true });
+    fs.writeFileSync(path.join(qaDir, 'legacy.png'), 'legacy');
+    assert.equal(runReachedTerminalVerdict(dir, runId), true);
+
+    fs.writeFileSync(path.join(qaDir, 'report.json'), JSON.stringify({
+      status: 'blocked:sandbox',
+      blocker: { code: 'sandbox', summary: 'Browser process denied.' },
+    }));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false, 'explicit blockers override legacy artifact presence');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runVerificationState distinguishes interrupted implementation from every partial verifier outcome', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-verification-state-'));
+  try {
+    assert.equal(runVerificationState(dir, 'empty'), 'empty');
+    writeDigest(dir, 'implementation', 'backend.md', 'BUILD_COMPLETE');
+    assert.equal(runVerificationState(dir, 'implementation'), 'not-started');
+    writeDigest(dir, 'partial', 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'partial', 'reviewer.md', 'APPROVED');
+    assert.equal(runVerificationState(dir, 'partial'), 'nonterminal');
+    writeDigest(dir, 'failing', 'backend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'failing', 'reviewer.md', 'APPROVED');
+    writeDigest(dir, 'failing', 'tester.md', 'TESTS_FAILING');
+    assert.equal(runVerificationState(dir, 'failing'), 'nonterminal');
+    writeDigest(dir, 'verified', 'backend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'verified', 'reviewer.md', 'APPROVED');
+    writeDigest(dir, 'verified', 'tester.md', 'TESTS_GREEN');
+    assert.equal(runVerificationState(dir, 'verified'), 'terminal');
+
+    assert.ok(transitionRunStatus(dir, 'blocked-ledger', { status: 'active' }));
+    writeDigest(dir, 'blocked-ledger', 'backend.md', 'BUILD_COMPLETE');
+    assert.ok(transitionRunStatus(dir, 'blocked-ledger', {
+      status: 'blocked',
+      outcome: 'review-cycle-cap',
+    }));
+    assert.equal(runVerificationState(dir, 'blocked-ledger'), 'nonterminal',
+      'blocked ledger overrides implementer-only fallback');
+
+    assert.ok(transitionRunStatus(dir, 'failed-ledger', { status: 'active' }));
+    assert.ok(transitionRunStatus(dir, 'failed-ledger', { status: 'failed', outcome: 'agent-failed' }));
+    assert.equal(runVerificationState(dir, 'failed-ledger'), 'nonterminal',
+      'agent failure remains unresolved even without verifier digests');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('runReachedTerminalVerdict requires terminal verdict tokens, not mere digest existence', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-verdict-'));
   try {
@@ -120,8 +415,10 @@ test('runReachedTerminalVerdict requires terminal verdict tokens, not mere diges
     writeDigest(dir, 'r1', 'tester.md', 'APPROVED');
     assert.equal(runReachedTerminalVerdict(dir, 'r1'), true);
     // A shipper digest (written only post-deploy) is terminal on its own.
-    writeDigest(dir, 'r2', 'shipper.md', 'deployed https://app.example');
+    writeDigest(dir, 'r2', 'shipper.md', 'SHIPPED');
     assert.equal(runReachedTerminalVerdict(dir, 'r2'), true);
+    writeDigest(dir, 'r3', 'shipper.md', 'FAILED');
+    assert.equal(runReachedTerminalVerdict(dir, 'r3'), false, 'a failed shipper digest is not terminal success');
     // anyRunReachedTerminalVerdict scans every run dir.
     assert.equal(anyRunReachedTerminalVerdict(dir), true);
     assert.equal(anyRunReachedTerminalVerdict(path.join(dir, 'nope')), false);
@@ -138,6 +435,12 @@ test('runReachedTerminalVerdict treats terminal maintenance markers as settled r
     assert.equal(runReachedTerminalVerdict(dir, 'quick-1'), true);
     writeMaintenanceMarker(dir, 'quick-2', 'running');
     assert.equal(runReachedTerminalVerdict(dir, 'quick-2'), false);
+    ensureRunLedger(dir, 'strict-maintenance', { status: 'active' });
+    writeMaintenanceMarker(dir, 'strict-maintenance', 'blocked');
+    assert.equal(runReachedTerminalVerdict(dir, 'strict-maintenance'), true,
+      'generic maintenance compatibility still reads the marker');
+    assert.equal(runSettledForRotation(dir, 'strict-maintenance'), false,
+      'v1 rotation cannot use a blocked maintenance marker as strict build verification');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -253,7 +556,123 @@ test('ensureCurrentRunId writes a minimal planned run ledger', () => {
     assert.equal(ledger.status, 'planned');
     assert.equal(ledger.kind, 'spawn-gate');
     assert.equal(ledger.runId, runId);
+    assert.equal(ledger.qaContractVersion, 1);
+    assert.equal(ledger.statusUpdatedAt, ledger.createdAt);
+    assert.deepEqual(ledger.transitionHistory.map((entry: Record<string, unknown>) => [entry.from, entry.to]), [[null, 'planned']]);
     assert.equal(runHasOrchestratedArtifacts(dir, runId), false);
+  });
+});
+
+test('ensureCurrentRunId is read-only for existing legacy and blocked runs', () => {
+  withPrefs((dir) => {
+    const legacyState = { ...materializedState(), currentRunId: 'legacy-current' };
+    assert.equal(ensureCurrentRunId(dir, legacyState), 'legacy-current');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'legacy-current', 'run.json')), false);
+
+    assert.ok(transitionRunStatus(dir, 'blocked-current', { status: 'active' }));
+    assert.ok(transitionRunStatus(dir, 'blocked-current', {
+      status: 'blocked',
+      outcome: 'environment-blocked',
+    }));
+    assert.equal(ensureCurrentRunId(dir, { ...materializedState(), currentRunId: 'blocked-current' }), 'blocked-current');
+    const blockedLedger = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', 'blocked-current', 'run.json'),
+      'utf8',
+    ));
+    assert.equal(blockedLedger.status, 'blocked');
+    assert.equal(blockedLedger.outcome, 'environment-blocked');
+  });
+});
+
+test('run ledger transitions are validated, terminal writes are idempotent, and blocked resumes require authorization', () => {
+  withPrefs((dir) => {
+    const runId = 'run-transitions';
+    assert.ok(transitionRunStatus(dir, runId, { status: 'active', kind: 'orchestration' }));
+    assert.ok(transitionRunStatus(dir, runId, { status: 'blocked', outcome: 'test-cycle-cap' }));
+    assert.equal(transitionRunStatus(dir, runId, { status: 'blocked', outcome: 'environment-blocked' }), null,
+      'a terminal blocker outcome cannot be rewritten');
+    assert.equal(transitionRunStatus(dir, runId, { status: 'active' }), null, 'blocked runs cannot silently resume');
+    assert.ok(transitionRunStatus(dir, runId, {
+      status: 'active',
+      reason: 'user-authorized-extra-cycle',
+    }));
+    assert.equal(transitionRunStatus(dir, runId, { status: 'completed', outcome: 'verified' }), null,
+      'the central transition helper cannot forge verified completion without evidence');
+    writeDigest(dir, runId, 'backend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    const completed = transitionRunStatus(dir, runId, { status: 'completed', outcome: 'verified' });
+    assert.ok(completed);
+    const replay = transitionRunStatus(dir, runId, { status: 'completed', outcome: 'verified' });
+    assert.ok(replay);
+    assert.equal(replay!.finishedAt, completed!.finishedAt);
+    assert.equal((replay!.transitionHistory as unknown[]).length, (completed!.transitionHistory as unknown[]).length);
+    assert.equal(transitionRunStatus(dir, runId, { status: 'completed', outcome: 'shipped' }), null,
+      'the central transition helper cannot forge shipped completion without a positive shipper verdict');
+    writeDigest(dir, runId, 'shipper.md', 'SHIPPED');
+    const shipped = transitionRunStatus(dir, runId, { status: 'completed', outcome: 'shipped' });
+    assert.ok(shipped, 'verified may advance to shipped without reopening the run');
+    assert.equal(shipped!.finishedAt, completed!.finishedAt);
+    assert.equal(transitionRunStatus(dir, runId, { status: 'completed', outcome: 'verified' }), null,
+      'shipped cannot be downgraded to verified');
+    assert.equal(transitionRunStatus(dir, runId, { status: 'failed', outcome: 'agent-failed' }), null,
+      'completed is terminal');
+    assert.deepEqual(
+      (shipped!.transitionHistory as Array<Record<string, unknown>>).map((entry) => entry.to),
+      ['active', 'blocked', 'active', 'completed', 'completed'],
+    );
+  });
+});
+
+test('resuming a legacy ledger upgrades it to the strict QA contract and preserves blocked history', () => {
+  withPrefs((dir) => {
+    const runId = 'legacy-resume';
+    const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify({
+      version: 1,
+      runId,
+      status: 'blocked',
+      outcome: 'review-cycle-cap',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      statusUpdatedAt: '2026-01-01T01:00:00.000Z',
+      transitionHistory: [{ from: 'active', to: 'blocked', at: '2026-01-01T01:00:00.000Z' }],
+    }));
+
+    const resumed = transitionRunStatus(dir, runId, {
+      status: 'active',
+      reason: 'user-authorized-extra-cycle',
+    });
+    assert.ok(resumed);
+    assert.equal(resumed!.qaContractVersion, 1);
+    assert.equal(resumed!.finishedAt, undefined);
+    assert.equal(resumed!.outcome, undefined);
+    assert.deepEqual(
+      (resumed!.transitionHistory as Array<Record<string, unknown>>).map((entry) => entry.to),
+      ['blocked', 'active'],
+    );
+  });
+});
+
+test('run ledger transition history is capped without dropping the latest blocked resume pair', () => {
+  withPrefs((dir) => {
+    const runId = 'bounded-history';
+    assert.ok(transitionRunStatus(dir, runId, { status: 'active' }));
+    for (let index = 0; index < 20; index += 1) {
+      assert.ok(transitionRunStatus(dir, runId, { status: 'blocked', outcome: 'test-cycle-cap' }));
+      assert.ok(transitionRunStatus(dir, runId, {
+        status: 'active',
+        reason: 'user-authorized-extra-cycle',
+      }));
+    }
+    const ledger = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'run.json'),
+      'utf8',
+    )) as Record<string, unknown>;
+    const history = ledger.transitionHistory as Array<Record<string, unknown>>;
+    assert.equal(history.length, 32);
+    assert.deepEqual(history.slice(-2).map((entry) => entry.to), ['blocked', 'active']);
+    assert.equal(history.at(-1)?.reason, 'user-authorized-extra-cycle');
   });
 });
 
@@ -370,6 +789,25 @@ test('ensureRunAgentClaim rejects unknown roles', () => {
   });
 });
 
+test('blocked runs cannot create worker claims until the user-authorized resume transition', () => {
+  withPrefs((dir) => {
+    const runId = 'blocked-claim';
+    const state = { ...materializedState(), currentRunId: runId };
+    assert.ok(transitionRunStatus(dir, runId, { status: 'active' }));
+    assert.ok(transitionRunStatus(dir, runId, { status: 'blocked', outcome: 'test-cycle-cap' }));
+    assert.equal(ensureRunAgentClaim(dir, state, 'senior-tester', {}, { toolName: 'Task' }), null);
+    const pending = path.join(dir, '.traffic-one', 'runs', runId, 'pending');
+    assert.equal(fs.existsSync(pending), false);
+
+    assert.ok(transitionRunStatus(dir, runId, {
+      status: 'active',
+      reason: 'user-authorized-extra-cycle',
+    }));
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-tester', {}, { toolName: 'Task' }));
+    assert.equal(fs.readdirSync(pending).filter((name) => name.endsWith('.json')).length, 1);
+  });
+});
+
 test('native Devin foreground child resolves the sole anonymous pending role', () => {
   withPrefs((dir) => {
     const state = materializedState();
@@ -381,6 +819,45 @@ test('native Devin foreground child resolves the sole anonymous pending role', (
     const resolved = resolveRunAgentContext(dir, current, raw, { claimPending: true, allowSoleAnonymousPending: true });
     assert.equal(resolved?.role, 'senior-architect');
     assert.equal(resolved?.source, 'sole-foreground-pending');
+  });
+});
+
+test('releaseRunClaims releases claimed files, deletes pending, and hasActiveRunClaims ignores released claims', () => {
+  withPrefs((dir) => {
+    const runId = 'run-release';
+    const runDirPath = path.join(dir, '.traffic-one', 'runs', runId);
+    fs.mkdirSync(path.join(runDirPath, 'pending'), { recursive: true });
+    fs.writeFileSync(path.join(runDirPath, 'abc123.json'), JSON.stringify({
+      version: 1, runId, claimId: 'senior-frontend-1-x', role: 'senior-frontend',
+      status: 'claimed', createdAt: new Date().toISOString(), sessionId: 'abc123',
+    }), 'utf8');
+    fs.writeFileSync(path.join(runDirPath, 'pending', 'p1.json'), JSON.stringify({
+      version: 1, runId, claimId: 'senior-backend-1-y', role: 'senior-backend',
+      status: 'pending', createdAt: new Date().toISOString(),
+    }), 'utf8');
+    // Role-bearing sidecar without a claimId (maintenance.json shape) must stay untouched.
+    fs.writeFileSync(path.join(runDirPath, 'maintenance.json'), JSON.stringify({
+      version: 1, kind: 'opencode-delegation', role: 'senior-tester', outcome: 'failed',
+    }), 'utf8');
+
+    const state = { ...materializedState(), currentRunId: runId };
+    assert.equal(hasActiveRunClaims(dir, state), true);
+    assert.equal(releaseRunClaims(dir, runId, 'test-sweep'), 2);
+    assert.equal(hasActiveRunClaims(dir, state), false);
+    assert.equal(releaseRunClaims(dir, runId, 'again'), 0, 'idempotent on released claims');
+
+    const claimed = JSON.parse(fs.readFileSync(path.join(runDirPath, 'abc123.json'), 'utf8'));
+    assert.equal(claimed.status, 'released');
+    assert.equal(claimed.releasedReason, 'test-sweep');
+    assert.ok(claimed.releasedAt);
+    assert.equal(fs.existsSync(path.join(runDirPath, 'pending', 'p1.json')), false);
+    const sidecar = JSON.parse(fs.readFileSync(path.join(runDirPath, 'maintenance.json'), 'utf8'));
+    assert.equal(sidecar.status, undefined, 'sidecar files are not mutated');
+
+    // Released claims still count toward spawn indexing — indexes are never reused.
+    const next = ensureRunAgentClaim(dir, state, 'senior-frontend', {}, { toolName: 'Task' });
+    assert.ok(next);
+    assert.equal(next!.spawnIndex, 2);
   });
 });
 

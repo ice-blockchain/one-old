@@ -11,7 +11,7 @@ import { runUserPromptSubmit } from '../prompt-submit';
 import type { Ctx, Handler, HookInput, HookResult, ToolClass } from '../../../core/types';
 import { markOpenCodeGateDenied, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
-import { writeGlobalCodeGraphProvider } from '../../../shared/state';
+import { transitionRunStatus, writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { markModelChoicePrompted, readModelChoice } from '../../agent-model/model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../../agent-model/exhausted-models';
@@ -575,6 +575,37 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
   });
 });
 
+test('maintenance runtime-control prompts stay with the parent and do not mint a worker run', () => {
+  for (const prompt of [
+    'start the dev server',
+    'stop the preview server',
+    'restart the local server',
+    'check if port 5173 is in use',
+    'show me the local server logs',
+  ]) {
+    withAuthedProject(existingSharedState({
+      materializedStack: 'minimal|none|other|none',
+      currentRunId: 'existing-run',
+      spawnIndex: { 'quick-fix': 1 },
+    }), (cwd) => {
+      writeLocalPrefs({
+        openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+        toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+      });
+      writeMaterialized(cwd, 'minimal');
+      const r = runUserPromptSubmit(ctx(cwd, prompt));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.ok(!r.context.includes('MAINTENANCE PHASE'), 'no worker-routing rubric');
+        assert.ok(!r.context.includes('opencode_delegate'), 'no OpenCode routing for parent runtime work');
+      }
+      const persisted = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+      assert.equal(persisted.currentRunId, 'existing-run', 'runtime control preserves currentRunId');
+      assert.deepEqual(persisted.spawnIndex, { 'quick-fix': 1 }, 'runtime control preserves role state');
+    });
+  }
+});
+
 test('maintenance triage: full rubric once per session, then a one-line reminder with fresh hint', () => {
   withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
     writeLocalPrefs();
@@ -715,6 +746,134 @@ test('building new project → NO triage directive', () => {
   });
 });
 
+test('a nonterminal current run emits continuation routing and preserves its role state', () => {
+  withAuthedProject(completeSharedState({
+    currentRunId: 'verify-run',
+    spawnIndex: { 'senior-reviewer': 1, 'senior-tester': 1 },
+  }), (cwd) => {
+    writeLocalPrefs({
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+    });
+    writeMaterialized(cwd, 'default');
+    const dd = path.join(cwd, '.traffic-one', 'digests', 'verify-run');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, 'frontend.md'), '# frontend\nTouched: src/App.tsx\n', 'utf8');
+    fs.writeFileSync(path.join(dd, 'reviewer.md'), '# reviewer\nverdict: APPROVED\n', 'utf8');
+    fs.writeFileSync(path.join(dd, 'tester.md'), '# tester\nverdict: TESTS_FAILING\n', 'utf8');
+    const rd = path.join(cwd, '.traffic-one', 'runs', 'verify-run');
+    fs.mkdirSync(rd, { recursive: true });
+    fs.writeFileSync(path.join(rd, 'tester-session.json'), JSON.stringify({
+      version: 1,
+      runId: 'verify-run',
+      role: 'senior-tester',
+      status: 'claimed',
+      sessionId: 'tester-session',
+      createdAt: new Date().toISOString(),
+    }), 'utf8');
+
+    const r = runUserPromptSubmit(ctx(cwd, 'continue and finish the export feature'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.match(r.context, /UNRESOLVED TRAFFIC ONE RUN/);
+      assert.ok(r.context.includes('verify-run'), 'directive names the run to continue');
+      assert.ok(r.context.includes('existing role-agent continuations'), 'same agents are resumed');
+      assert.ok(!r.context.includes('opencode_delegate'), 'unresolved work does not start an OpenCode quick-fix');
+      assert.match(r.systemMessage || '', /unresolved run/);
+      assert.ok(!(r.systemMessage || '').includes('maintenance'), 'unresolved work is not mislabeled maintenance');
+    }
+    const persisted = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(persisted.currentRunId, 'verify-run');
+    assert.deepEqual(persisted.spawnIndex, { 'senior-reviewer': 1, 'senior-tester': 1 });
+    assert.ok(!persisted.lifecycle, 'nonterminal verification remains building');
+    assert.equal(fs.existsSync(path.join(rd, 'tester-session.json')), true, 'existing role claim remains intact');
+    const ledger = JSON.parse(fs.readFileSync(path.join(rd, 'run.json'), 'utf8'));
+    assert.equal(ledger.status, 'active');
+    assert.equal(ledger.qaContractVersion, 1, 'resuming a legacy unresolved run activates strict QA');
+  });
+});
+
+test('runtime control during an unresolved run remains parent-only and leaves the run untouched', () => {
+  withAuthedProject(completeSharedState({
+    currentRunId: 'verify-run',
+    spawnIndex: { 'senior-tester': 1 },
+  }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    const dd = path.join(cwd, '.traffic-one', 'digests', 'verify-run');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, 'frontend.md'), '# frontend\nTouched: src/App.tsx\n', 'utf8');
+    fs.writeFileSync(path.join(dd, 'tester.md'), '# tester\nverdict: TESTS_FAILING\n', 'utf8');
+
+    const r = runUserPromptSubmit(ctx(cwd, 'restart the dev server'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(!r.context.includes('UNRESOLVED TRAFFIC ONE RUN'), 'runtime operation gets no worker continuation directive');
+      assert.ok(!r.context.includes('MAINTENANCE PHASE'), 'runtime operation gets no maintenance worker directive');
+    }
+    const persisted = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(persisted.currentRunId, 'verify-run');
+    assert.deepEqual(persisted.spawnIndex, { 'senior-tester': 1 });
+    assert.ok(!persisted.lifecycle, 'unresolved run remains building');
+  });
+});
+
+test('an explicit one-word resume upgrades a legacy unresolved run to strict QA', () => {
+  withAuthedProject(completeSharedState({ currentRunId: 'legacy-resume' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    const dd = path.join(cwd, '.traffic-one', 'digests', 'legacy-resume');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, 'frontend.md'), '# frontend\nTouched: src/App.tsx\n', 'utf8');
+    fs.writeFileSync(path.join(dd, 'reviewer.md'), '# reviewer\nverdict: CHANGES_REQUESTED\n', 'utf8');
+
+    const result = runUserPromptSubmit(ctx(cwd, 'continue'));
+    assert.equal(result.kind, 'context');
+    if (result.kind === 'context') assert.match(result.context, /UNRESOLVED TRAFFIC ONE RUN/);
+    const replay = runUserPromptSubmit(ctx(cwd, 'continue'));
+    assert.equal(replay.kind, 'context', 'replaying the prompt remains on the unresolved run');
+    const ledger = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'legacy-resume', 'run.json'),
+      'utf8',
+    ));
+    assert.equal(ledger.status, 'active');
+    assert.equal(ledger.qaContractVersion, 1);
+  });
+});
+
+test('an explicit continue authorizes exactly one blocked-run resume transition', () => {
+  withAuthedProject(completeSharedState({ currentRunId: 'blocked-resume' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    assert.ok(transitionRunStatus(cwd, 'blocked-resume', { status: 'active', kind: 'orchestration' }));
+    assert.ok(transitionRunStatus(cwd, 'blocked-resume', {
+      status: 'blocked',
+      outcome: 'test-cycle-cap',
+    }));
+
+    const result = runUserPromptSubmit(ctx(cwd, 'continue'));
+    assert.equal(result.kind, 'context');
+    if (result.kind === 'context') assert.match(result.context, /UNRESOLVED TRAFFIC ONE RUN/);
+
+    const ledger = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'blocked-resume', 'run.json'),
+      'utf8',
+    ));
+    assert.equal(ledger.status, 'active');
+    assert.equal(ledger.outcome, undefined);
+    assert.equal(ledger.qaContractVersion, 1);
+    assert.deepEqual(
+      ledger.transitionHistory.map((entry: Record<string, unknown>) => [entry.to, entry.reason]),
+      [
+        ['active', undefined],
+        ['blocked', undefined],
+        ['active', 'user-authorized-extra-cycle'],
+      ],
+      'the blocked transition is preserved and repeated prompts do not duplicate the authorized resume',
+    );
+  });
+});
+
 test('new project flipped to maintenance → triage directive appears', () => {
   withAuthedProject(completeSharedState({ lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-02-01T00:00:00Z' } }), (cwd) => {
     writeLocalPrefs();
@@ -761,6 +920,55 @@ test('settled new-project build stuck in "building" flips to maintenance at the 
     const persisted = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
     assert.equal(persisted.lifecycle?.phase, 'maintenance');
     assert.equal(persisted.lifecycle?.source, 'prompt-boundary');
+  });
+});
+
+test('a runtime command may settle a terminal build but does not replace its run or route a worker', () => {
+  withAuthedProject(completeSharedState({ currentRunId: 'build-run' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    const srcDir = path.join(cwd, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    for (let i = 0; i < 20; i += 1) fs.writeFileSync(path.join(srcDir, `f${i}.ts`), 'export const x = 1;\n', 'utf8');
+    const dd = path.join(cwd, '.traffic-one', 'digests', 'build-run');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, 'reviewer.md'), '# reviewer\nverdict: APPROVED\n', 'utf8');
+    fs.writeFileSync(path.join(dd, 'tester.md'), '# tester\nverdict: TESTS_GREEN\n', 'utf8');
+
+    const r = runUserPromptSubmit(ctx(cwd, 'restart the dev server'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(!r.context.includes('MAINTENANCE PHASE'), 'parent runtime work bypasses triage');
+    const persisted = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(persisted.lifecycle?.phase, 'maintenance', 'the genuinely terminal prior build still settles');
+    assert.equal(persisted.currentRunId, 'build-run', 'no new maintenance run is created');
+  });
+});
+
+test('settling a ledger-less legacy run preserves legacy QA long enough to rotate the next maintenance request', () => {
+  withAuthedProject(completeSharedState({
+    currentRunId: 'legacy-build-run',
+    spawnIndex: { 'senior-frontend': 1 },
+  }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    const srcDir = path.join(cwd, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    for (let i = 0; i < 20; i += 1) fs.writeFileSync(path.join(srcDir, `f${i}.ts`), 'export const x = 1;\n', 'utf8');
+    const dd = path.join(cwd, '.traffic-one', 'digests', 'legacy-build-run');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, 'frontend.md'), '# frontend\nTouched: src/App.tsx\n', 'utf8');
+    fs.writeFileSync(path.join(dd, 'reviewer.md'), '# reviewer\nverdict: APPROVED\n', 'utf8');
+    fs.writeFileSync(path.join(dd, 'tester.md'), '# tester\nverdict: TESTS_GREEN\n', 'utf8');
+    const qaDir = path.join(cwd, '.traffic-one', 'reports', 'qa', 'legacy-build-run');
+    fs.mkdirSync(qaDir, { recursive: true });
+    fs.writeFileSync(path.join(qaDir, 'report.json'), JSON.stringify({ ok: true }), 'utf8');
+
+    const r = runUserPromptSubmit(ctx(cwd, 'add a new page for release notes'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.match(r.context, /MAINTENANCE PHASE/);
+    const persisted = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(persisted.lifecycle?.phase, 'maintenance');
+    assert.notEqual(persisted.currentRunId, 'legacy-build-run', 'fresh maintenance work rotates beyond the compatible legacy run');
   });
 });
 

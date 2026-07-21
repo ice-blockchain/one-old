@@ -10,7 +10,7 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { detectMode, isLikelyCodingPrompt, promptHasStackSignal } from '../../shared/detection';
+import { detectMode, isLikelyCodingPrompt, isRuntimeControlPrompt, promptHasStackSignal } from '../../shared/detection';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
@@ -32,7 +32,7 @@ import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-links';
-import { maintenanceTriageDirective } from './triage-directive';
+import { maintenanceTriageDirective, unresolvedRunDirective } from './triage-directive';
 import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
 import { recordPendingModelChoiceReply } from '../agent-model/choice-reply';
 import { runSessionStartAuthed } from './session-start';
@@ -249,9 +249,15 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
 
   // ── Post-build maintenance triage (appended to whatever context we return) ──
-  const openCodeReadiness = ensureOpenCodeDelegationReady(cwd, normalizedState);
-  const planBatchReminder = buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
-  const triage = maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
+  // Runtime-only local server/process commands are parent work. Do not even emit
+  // OpenCode setup/batch routing around them; maintenanceTriageDirective also skips
+  // run creation and worker instructions for this same narrow classification.
+  const runtimeControl = isRuntimeControlPrompt(promptText);
+  const unresolved = runtimeControl ? '' : unresolvedRunDirective(cwd, normalizedState, promptText, raw);
+  const parentOwned = runtimeControl || Boolean(unresolved);
+  const openCodeReadiness = parentOwned ? '' : ensureOpenCodeDelegationReady(cwd, normalizedState);
+  const planBatchReminder = parentOwned ? '' : buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
+  const triage = unresolved || maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
 
   const prefixOpenCode = [openCodeReadiness, planBatchReminder].filter(Boolean).join('\n');
 
@@ -264,7 +270,11 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
 
   if (triage) {
-    return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]\n\n${triage}`, { systemMessage: `traffic-one [${stack}] maintenance` });
+    return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]\n\n${triage}`, {
+      systemMessage: unresolved
+        ? `traffic-one [${stack}] unresolved run`
+        : `traffic-one [${stack}] maintenance`,
+    });
   }
   return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
 }

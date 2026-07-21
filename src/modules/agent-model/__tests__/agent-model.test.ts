@@ -10,6 +10,7 @@ import { subagentStartBind } from '../subagent-bind';
 import { opencodeSubagentBind } from '../opencode-subagent-bind';
 import { inferTrafficOneSpawnRole, inferTrafficOneSpawnRoleEvidence } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
+import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
@@ -268,6 +269,26 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('the spawn gate stands down inside the plugin authoring repo', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoring-spawn-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    fs.mkdirSync(path.join(dir, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'gen', 'index.ts'), 'export {};\n', 'utf8');
+    resetAuthoringRootCache();
+    // A role-marked spawn whose prompt carries a literal un-substituted run-id
+    // placeholder — in an end-user project the run-id gate denies this shape.
+    const r = agentModelGate(spawnCtx(dir, {
+      subagent_type: 'Explore',
+      prompt: '[t1-role: senior-frontend] inspect .traffic-one/runs/<runId>/ and report',
+    }));
+    assert.equal(r.kind, 'noop');
+  } finally {
+    resetAuthoringRootCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' = 'claude', workspaceRoot?: string): Ctx {
   const input: HookInput = {

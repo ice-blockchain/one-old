@@ -39,6 +39,7 @@ import {
   ensureCurrentRunId,
   hasRunAgentState,
   hookSessionIdentity,
+  isMaintenancePhase,
   isSubagentThread,
   legacyRunAgentContext,
   legacyStatePath,
@@ -397,7 +398,12 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     // run snapshot is create-once; a later machine-global One MCP update affects
     // the next run, never children already pinned to this one.
     const team = obj(state.team);
-    if (team?.mode === 'subagents') {
+    const existingRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    // SessionStart runs before the prompt is known. Do not pre-mint a maintenance
+    // run here: runtime-only prompts must remain parent-only and create no run.
+    // Worker-routing/model gates freeze policy when an implementation prompt
+    // actually starts work. Existing runs still get their immutable policy read.
+    if (team?.mode === 'subagents' && (!isMaintenancePhase(state, mode) || existingRunId)) {
       const runId = ensureCurrentRunId(cwd, state);
       const policy = ensureRunModelPolicy(
         cwd,

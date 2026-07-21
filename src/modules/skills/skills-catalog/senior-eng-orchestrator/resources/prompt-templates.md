@@ -356,6 +356,42 @@ Add or update tests for the changed surface. Run them. Verdict format:
     1. <test name> — <file:line> — <error excerpt>.
     2. …
 
+`TESTS_GREEN` is legal only when the mechanical tests pass AND either:
+  - this run has a frontend implementer digest and its canonical
+    .traffic-one/reports/qa/<run-id>/report.json is a fresh, parser-valid
+    QaReportV1 with overall status `passed`; or
+  - this run has no frontend implementer digest and is genuinely backend-only.
+Frontend runs never use a prose "not applicable" escape. Screenshots alone,
+arbitrary JSON, and Lighthouse reports are not functional QA evidence.
+
+For a frontend run, prove fresh build metadata, start the app/preview, and run
+every key route at widths 390, 768, and 1440. Record console-error count,
+document overflow, element overflow, primary-action reachability (or explicit
+N/A), and a passing/failing status for every viewport. Mobile and desktop
+entries require existing screenshot paths inside this run's QA directory.
+Write the canonical QaReportV1 to the exact report.json path above with
+`schemaVersion: 1`, the exact run id, canonical ISO-UTC `generatedAt`, producer
+`senior-tester`, and `routes: [{ route, viewports }]`. Every route contains each
+width exactly once. Each viewport has `width`, an allowed `status`, nonnegative
+integer `consoleErrorCount`, boolean `documentOverflow`, boolean
+`elementOverflow`, `primaryAction: { status, reason? }` (`reachable`,
+`unreachable`, or reasoned `not-applicable`), and `screenshotPath` where
+required. A strict pass has every viewport passed with zero errors, no
+overflow, and a reachable or reasoned-N/A primary action.
+
+If the browser/tool is genuinely unavailable after all other checks complete,
+write `blocked:browser-unavailable`; sandbox policy, usage limits, and bounded
+timeouts use `blocked:sandbox`, `blocked:usage-limit`, and `blocked:timeout`
+respectively. Include the bounded blocker code and safe error summary required
+by `blocker: { code, summary }` in QaReportV1. Every blocked status requires
+`TESTS_FAILING`; never convert it to green. The parent may bridge only
+`blocked:browser-unavailable`, and only when every non-browser check passed. If
+the unavailable browser makes screenshots impossible, keep the full matrix and
+do not invent paths; screenshot validation remains fail-closed while the parsed
+status/blocker identifies the bridge candidate. If continued after that bridge,
+validate the parent-browser report, screenshot paths, run id, freshness, and
+full matrix, then update tester.md and re-emit your verdict.
+
 For generated websites or changed web routes, include metadata regression
 coverage for every created or changed public route's title, description,
 canonical URL, OG image, JSON-LD, sitemap inclusion, and private/admin noindex.
@@ -369,6 +405,39 @@ Write your digest to:
 
 Token budget: ~8k.
 ```
+
+## Run-ledger settlement (orchestrator only)
+
+The parent orchestrator, not a verifier role, records the current run through
+the shipped idempotent helper. Use the installed plugin-root expansion exactly;
+never hand-edit `run.json`.
+
+```bash
+# Reviewer cap after the second unsuccessful cycle.
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome review-cycle-cap
+
+# Tester cap after the second unsuccessful implementation/test fix cycle.
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome test-cycle-cap
+
+# Browser/sandbox/usage-limit/timeout blocker that remains unresolved.
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome environment-blocked
+
+# Unrecoverable orchestration/role-agent failure only.
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status failed --outcome agent-failed
+
+# Same-run resume only after explicit user authorization.
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status active --reason user-authorized-extra-cycle
+
+# Strictly verified terminal run; reviewer + tester + QA/backend-only gate passed.
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status completed --outcome verified
+
+# Successful shipper digest after the deploy actually completed.
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status completed --outcome shipped
+```
+
+The completed commands are evidence-gated. Never infer them from green text,
+deploy intent, or delegated-only output. Blocked/failed settlement preserves
+the run and its role agents for the unresolved-run flow.
 
 ## Phase 4 — Shipper (only on explicit deploy intent)
 
@@ -384,6 +453,13 @@ Read in priority order:
   3. .traffic-one/deployments.jsonl, .traffic-one/stack.md,
      and .traffic-one/known-issues.md if present.
   4. .env.example to surface missing env vars.
+
+Before any stamp or deploy, also require strict functional QA: when this run
+has a frontend implementer digest,
+.traffic-one/reports/qa/<run-id>/report.json must be a fresh, parser-valid
+QaReportV1 with status `passed`. Only a run with no frontend implementer digest
+is backend-only. If QA is missing, failed, or blocked, STOP; do not stamp,
+deploy, or advertise shipping.
 
 Run `predeploy-security-check --strict --stamp`, then run the `verification-loop`
 Production-Readiness Score. If the score has hard blockers or is below 80/100
@@ -405,13 +481,22 @@ summary to .traffic-one/agent-log.md. Never log secrets.
 Write your digest to:
   .traffic-one/digests/<run-id>/shipper.md
 
+Set its literal verdict to `SHIPPED` only after the deploy and post-deploy
+checks complete successfully; otherwise set `FAILED`. End the reply with the
+same literal token. A created/nonempty shipper digest is not proof of success.
+
 Token budget: ~5k.
 ```
 
 ## Cleanup (Phase 5 — orchestrator does this, not a subagent)
 
-After Phase 4 (or after Phase 3 if no shipper), keep the last 3 run folders
-under `.traffic-one/digests/`. Remove older ones. Implementation:
+Run cleanup only after strict terminal settlement: reviewer approved, tester
+green, and strict QA passed (or genuinely backend-only), or shipper completed.
+For blocked/nonterminal verification, preserve the current run id, digests, QA
+artifacts, fix-cycle state, and role agents; do not stamp maintenance or run
+this cleanup. After a terminal Phase 4 (or terminal Phase 3 if no shipper), keep
+the last 3 run folders under `.traffic-one/digests/`. Remove older ones.
+Implementation:
 
 ```bash
 ls -t .traffic-one/digests | tail -n +4 | xargs -I{} rm -rf .traffic-one/digests/{}

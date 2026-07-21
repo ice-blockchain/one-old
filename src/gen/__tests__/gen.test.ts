@@ -158,6 +158,97 @@ test('generated orchestrator contract preserves every canonical Codex task name 
   }
 });
 
+test('generated tester and orchestrator contracts fail closed on incomplete or blocked QA', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-strict-qa-contract-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const tester = fs.readFileSync(path.join(dir, 'agents', 'senior-tester.md'), 'utf8');
+    const shipper = fs.readFileSync(path.join(dir, 'agents', 'senior-shipper.md'), 'utf8');
+    const orchestrator = fs.readFileSync(
+      path.join(dir, 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'),
+      'utf8',
+    );
+    const testerPrompt = fs.readFileSync(
+      path.join(dir, 'skills-catalog', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+      'utf8',
+    );
+    const digestContract = fs.readFileSync(
+      path.join(dir, 'rules', 'common', 'agent-handoff-digests.md'),
+      'utf8',
+    );
+
+    for (const [name, content] of [
+      ['senior tester', tester],
+      ['tester spawn template', testerPrompt],
+    ] as const) {
+      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report\.json/i, `${name} names the canonical report`);
+      assert.match(content, /schemaVersion(?::|`)\s*1/i, `${name} requires QaReportV1`);
+      assert.match(content, /390[^\n]*768[^\n]*1440|390[\s\S]{0,300}768[\s\S]{0,300}1440/, `${name} requires the full viewport matrix`);
+      assert.match(content, /blocked:browser-unavailable/, `${name} distinguishes browser unavailability`);
+      assert.match(content, /blocked:sandbox/, `${name} preserves sandbox blockers`);
+      assert.match(content, /blocked:usage-limit/, `${name} preserves usage blockers`);
+      assert.match(content, /blocked:timeout/, `${name} preserves timeout blockers`);
+      assert.match(content, /Every blocked (?:outcome|status)[\s\S]{0,60}`TESTS_FAILING`/i, `${name} cannot return green when blocked`);
+      assert.match(content, /no\s+frontend implementer digest/i, `${name} limits the backend-only exemption`);
+    }
+    assert.match(tester, /record that evidence in `tester\.md`[\s\S]{0,120}closed `QaReportV1` schema/i,
+      'fresh-build proof stays in the digest rather than adding invalid QA fields');
+    assert.match(digestContract, /verdict:[^\n]*SHIPPED[^\n]*FAILED/i,
+      'canonical digest contract permits a failed shipper verdict');
+    assert.match(digestContract, /exact `currentRunId`[\s\S]{0,180}never synthesize or\s+reformat/i,
+      'canonical digest contract preserves the exact machine run id');
+
+    for (const [name, content] of [
+      ['senior shipper', shipper],
+      ['shipper spawn template', testerPrompt],
+    ] as const) {
+      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report\.json/i, `${name} names the canonical QA report`);
+      assert.match(content, /QaReportV1/i, `${name} requires the strict QA contract`);
+      assert.match(content, /no frontend implementer digest/i, `${name} limits the backend-only exemption`);
+      assert.match(content, /do not (?:stamp|deploy)|STOP/i, `${name} blocks shipping without QA`);
+    }
+
+    assert.match(orchestrator, /Codex parent-browser bridge/);
+    assert.match(orchestrator, /same[^\n]*`senior-tester` agent/i);
+    assert.match(orchestrator, /consumes no\s+reviewer\/tester fix cycle/i);
+    assert.match(orchestrator, /Unresolved-run directive/);
+    assert.match(orchestrator, /preserve currentRunId/i);
+    assert.match(orchestrator, /verification blocked/);
+    for (const heading of [
+      'Implementation status',
+      'Passing mechanical checks',
+      'Unresolved reviewer/tester findings',
+      'QA status',
+      'User decision required',
+    ]) assert.match(orchestrator, new RegExp(`${heading}:`, 'i'));
+    assert.match(orchestrator, /blocked\/nonterminal run[\s\S]{0,200}never enters Phase 5/i);
+
+    const installedRunStatus = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs';
+    const transitions = [
+      '--status blocked --outcome review-cycle-cap',
+      '--status blocked --outcome test-cycle-cap',
+      '--status blocked --outcome environment-blocked',
+      '--status failed --outcome agent-failed',
+      '--status active --reason user-authorized-extra-cycle',
+      '--status completed --outcome verified',
+      '--status completed --outcome shipped',
+    ];
+    for (const [name, content] of [
+      ['orchestrator', orchestrator],
+      ['prompt templates', testerPrompt],
+    ] as const) {
+      assert.ok(content.includes(installedRunStatus), `${name} resolves the installed run-status helper`);
+      for (const transition of transitions) {
+        assert.ok(content.includes(transition), `${name} documents ${transition}`);
+      }
+      assert.match(content, /completed (?:transitions|commands) are evidence-gated/i,
+        `${name} keeps completed transitions behind evidence`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('generated instructions contain no obsolete Codex no-model or fork_context guidance', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-codex-model-contract-'));
   const staleCodexNoModelClaims = [
