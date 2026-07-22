@@ -65,10 +65,13 @@ Traffic One hook trust records are present, and the current `cwd` is covered by
 a trusted project root. Trust the generated-project parent or create projects
 under Codex's trusted default project root before starting Traffic One work.
 
-If Traffic One skills are visible but hooks or root instructions were not
-injected, do not treat that as a safe inactive state. Run
+If Traffic One skills are visible but hooks did not run, or an opted-in project
+was not materialized with its root instructions, do not treat that as a safe
+inactive state. Run
 `node dist/scripts/doctor.cjs --session <session-id>` from this source checkout
-to inspect the Codex transcript.
+to inspect the Codex transcript. Incident mode anchors project preferences,
+hook trust, and project-state probes to the cwd recorded in that session rather
+than to this source checkout.
 Traffic One implementation remains gated until the project has `pluginUse`
 enabled and the canonical API-key record is valid. If the user declines the
 plugin, ordinary work continues without Traffic One features.
@@ -87,7 +90,7 @@ plugin, ordinary work continues without Traffic One features.
 │   ├── rules/               ← Shared rule templates generated from src/modules/**/rules
 │   ├── agents/              ← Senior role docs generated from src/modules/**/agent.md
 │   ├── CLAUDE.md            ← Claude Code entry point
-│   ├── AGENTS.md            ← Codex CLI and OpenCode rule entry point
+│   ├── AGENTS.md            ← project-materialization source and cross-host rule mirror
 │   ├── settings.json        ← Claude Code hooks
 │   ├── hooks/hooks.json     ← Codex CLI hooks
 │   ├── hooks/hooks-copilot.json ← GitHub Copilot hooks
@@ -179,12 +182,17 @@ source metadata lives in skill frontmatter; the readable source map lives in
 | "review this Go service" | language skills |
 | "audit this UI design system" | frontend/design skills |
 
-### Rules auto-attach
-Path-scoped rules load only when a matching file is open — zero token cost otherwise:
+### Rule loading by host
+Cursor path-scoped rules load only when a matching file is open — zero token cost otherwise:
 - Open `src/components/Button.tsx` → component rules appear in context
 - Open `src/pages/DashboardPage.tsx` → UI quality, typography, accessibility, and design-quality rules appear
 - Open `src/services/users.ts` → service + security rules appear
 - Open `Button.test.tsx` → testing rules appear
+
+Codex instead loads the project-materialized root `AGENTS.md` rule index and
+reads the matching rule bodies on demand. Plugin-root `AGENTS.md` is retained as
+materialization source and for cross-host compatibility; Codex does not inject
+it directly from the plugin manifest.
 
 ### Generated plugin automation
 Regenerate generated artifacts after editing content under `src/modules/`:
@@ -315,6 +323,10 @@ a generated local checkout. Run `npm run plugin:build`, then replace
 `/absolute/path/to/traffic-one/dist` with this repo's generated `dist` path, for
 example `/Users/John/Projects/traffic-one/dist`.
 
+Traffic One requires Node.js 22 or newer on `PATH`; its generated runtime package
+also declares this requirement so host and CI installations can reject an
+incompatible Node version early.
+
 ### Claude Code
 
 ```
@@ -324,8 +336,15 @@ claude plugin install traffic-one@traffic-one --scope user
 
 ### Codex CLI
 
+Codex marketplaces and plugins are separate directories. Stage the generated
+plugin under the marketplace root before registering that root:
+
 ```
-codex plugin marketplace add /absolute/path/to/traffic-one/dist
+mkdir -p /absolute/path/to/traffic-one-codex-marketplace/.agents/plugins
+mkdir -p /absolute/path/to/traffic-one-codex-marketplace/plugins/traffic-one
+rsync -a --delete /absolute/path/to/traffic-one/dist/ /absolute/path/to/traffic-one-codex-marketplace/plugins/traffic-one/
+cp /absolute/path/to/traffic-one/dist/.agents/plugins/marketplace.json /absolute/path/to/traffic-one-codex-marketplace/.agents/plugins/marketplace.json
+codex plugin marketplace add /absolute/path/to/traffic-one-codex-marketplace
 codex plugin add traffic-one@traffic-one-local
 ```
 

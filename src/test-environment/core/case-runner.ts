@@ -9,10 +9,15 @@ import { isInsidePluginAuthoringRoot } from '../../shared/authoring-root';
 import { writeState } from '../../shared/state/normalize';
 import { modelForRoleHost } from '../../shared/performance';
 import type {
-  Assertion, AssertionContext, AssertionResult, Case, CaseRunResult,
+  Assertion, AssertionContext, AssertionResult, AssertionSpec, Case, CaseRunResult,
   HostId, HostRunResult, RootTestConfig,
 } from './types';
 import { buildCaseEnv, withCaseEnv, type CaseEnv } from './env';
+import {
+  RUNTIME_PROOF_ENTRY_ENV,
+  RUNTIME_PROOF_FILE_ENV,
+  RUNTIME_PROOF_TOKEN_ENV,
+} from './current-dist';
 import { materializeFixture } from './fixtures';
 import { preseed } from './preseed';
 import { driveOnboarding } from './onboarding-sim';
@@ -74,6 +79,11 @@ export async function runCase(
     }
   });
 
+  // The proof file must be created by the selected host runtime, never by a
+  // previous attempt or by the in-process seed/materialization phase.
+  const runtimeProofFile = env[RUNTIME_PROOF_FILE_ENV];
+  if (runtimeProofFile) fs.rmSync(runtimeProofFile, { force: true });
+
   // --- optional host run ---
   let hostResult: HostRunResult = { status: 'NOT_RUN', exitCode: null, durationMs: 0 };
   if (target !== 'pure-node' && testCase.layer === 'host-e2e') {
@@ -109,12 +119,30 @@ export async function runCase(
   }
 
   // --- assertions ---
-  const results = await runAssertions(testCase, target, tmpDir, env, hostResult, assertions);
+  const results = await runAssertions(
+    testCase,
+    target,
+    tmpDir,
+    env,
+    hostResult,
+    assertions,
+    config,
+    assertionSpecsForRun(testCase, target),
+  );
 
   // --- capture artifacts (the live project is persisted in place; copy a stable
   // snapshot of .one.json for the report/verdict agent's convenience) ---
   copyIfExists(path.join(projectDir, '.traffic-one', '.one.json'), path.join(caseFolder, 'state', 'one.json'));
-  fs.writeFileSync(path.join(caseFolder, 'meta.json'), JSON.stringify({ caseId: testCase.id, target, projectDir, hostResult }, null, 2));
+  fs.writeFileSync(path.join(caseFolder, 'meta.json'), JSON.stringify({
+    caseId: testCase.id,
+    target,
+    projectDir,
+    distRoot,
+    runtimeProof: env[RUNTIME_PROOF_TOKEN_ENV] && env[RUNTIME_PROOF_ENTRY_ENV]
+      ? { token: env[RUNTIME_PROOF_TOKEN_ENV], entry: env[RUNTIME_PROOF_ENTRY_ENV] }
+      : undefined,
+    hostResult,
+  }, null, 2));
 
   return {
     caseId: testCase.id,
@@ -138,9 +166,11 @@ async function runAssertions(
   env: CaseEnv,
   hostResult: HostRunResult,
   assertions: Map<string, Assertion>,
+  config: RootTestConfig,
+  specs: AssertionSpec[],
 ): Promise<AssertionResult[]> {
   const results: AssertionResult[] = [];
-  for (const spec of testCase.assertions) {
+  for (const spec of specs) {
     const assertion = assertions.get(spec.id);
     if (!assertion) {
       results.push({ id: spec.id, title: spec.id, status: 'INCONCLUSIVE', detail: 'no such assertion registered' });
@@ -150,7 +180,15 @@ async function runAssertions(
       results.push({ id: spec.id, title: assertion.title, status: 'SKIP', detail: 'not applicable to this case' });
       continue;
     }
-    const ctx: AssertionContext = { cwd, env, host: target, testCase, spec, hostResult };
+    const ctx: AssertionContext = {
+      cwd,
+      env,
+      host: target,
+      testCase,
+      spec,
+      hostResult,
+      hostConfig: target === 'pure-node' ? undefined : config.hosts[target],
+    };
     try {
       const r = await withCaseEnvAsync(env, () => Promise.resolve(assertion.run(ctx)));
       r.title = assertion.title;
@@ -176,8 +214,34 @@ export async function reassertCase(
   const startedAt = new Date().toISOString();
   const caseFolder = path.join(runDir, 'projects', `${testCase.id}__${target}`);
   const projectDir = path.join(caseFolder, 'project');
-  const env = buildCaseEnv(config, caseFolder, '', target);
-  const results = await runAssertions(testCase, target, projectDir, env, hostResult, assertions);
+  let recordedDistRoot = '';
+  let recordedRuntimeProof: { token: string; entry: string } | null = null;
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(caseFolder, 'meta.json'), 'utf8')) as {
+      distRoot?: unknown;
+      runtimeProof?: { token?: unknown; entry?: unknown };
+    };
+    if (typeof meta.distRoot === 'string') recordedDistRoot = meta.distRoot;
+    if (typeof meta.runtimeProof?.token === 'string' && typeof meta.runtimeProof.entry === 'string') {
+      recordedRuntimeProof = { token: meta.runtimeProof.token, entry: meta.runtimeProof.entry };
+    }
+  } catch { /* pre-fingerprint run */ }
+  const env = buildCaseEnv(config, caseFolder, recordedDistRoot, target);
+  if (recordedRuntimeProof) {
+    env[RUNTIME_PROOF_FILE_ENV] = path.join(caseFolder, 'runtime-proof.json');
+    env[RUNTIME_PROOF_TOKEN_ENV] = recordedRuntimeProof.token;
+    env[RUNTIME_PROOF_ENTRY_ENV] = recordedRuntimeProof.entry;
+  }
+  const results = await runAssertions(
+    testCase,
+    target,
+    projectDir,
+    env,
+    hostResult,
+    assertions,
+    config,
+    assertionSpecsForRun(testCase, target),
+  );
   return {
     caseId: testCase.id,
     category: testCase.category,
@@ -189,6 +253,24 @@ export async function reassertCase(
     startedAt,
     finishedAt: new Date().toISOString(),
   };
+}
+
+// Runtime fingerprinting is a harness invariant, not an opt-in case assertion.
+// This makes every selected Cursor filter prove its live pointer and also catches
+// stale/missing plugin loads on the scripted marketplace hosts.
+export function assertionSpecsForRun(
+  testCase: Case,
+  target: HostId | 'pure-node',
+): AssertionSpec[] {
+  const specs = [...testCase.assertions];
+  if (
+    target !== 'pure-node'
+    && testCase.layer === 'host-e2e'
+    && !specs.some((spec) => spec.id === 'plugin-runtime-fingerprint')
+  ) {
+    specs.push({ id: 'plugin-runtime-fingerprint' });
+  }
+  return specs;
 }
 
 function resolvePrompt(testCase: Case): string {

@@ -9,6 +9,7 @@ import * as path from 'path';
 
 import type { HostCommandConfig, HostDriver, HostId, HostRunContext, HostRunResult } from '../core/types';
 import { hostIsAvailable } from '../core/preflight';
+import { RUNTIME_PROOF_ENTRY_ENV, RUNTIME_PROOF_TOKEN_ENV } from '../core/current-dist';
 
 function expand(arg: string, ctx: HostRunContext, cfg: HostCommandConfig, promptFilePath: string): string {
   return arg
@@ -23,6 +24,28 @@ function expand(arg: string, ctx: HostRunContext, cfg: HostCommandConfig, prompt
 interface Invocation {
   argv: string[];
   stdin?: string;
+}
+
+// Host CLIs must select the installed/plugin-dir runtime themselves. In
+// particular, exporting TRAFFIC_ONE_PLUGIN_ROOT to Codex would make an old
+// installed hook execute the checkout's current scripts and counterfeit the
+// release proof. Expected token/entry values also stay harness-side; the
+// injected runtime receives only the output file path and carries its token in
+// its own bytes.
+export function hostSubprocessEnv(
+  caseEnv: NodeJS.ProcessEnv,
+  ambient: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env = { ...ambient, ...caseEnv };
+  for (const key of [
+    'TRAFFIC_ONE_PLUGIN_ROOT',
+    'CLAUDE_PLUGIN_ROOT',
+    'CODEX_PLUGIN_ROOT',
+    'CURSOR_PLUGIN_ROOT',
+    RUNTIME_PROOF_TOKEN_ENV,
+    RUNTIME_PROOF_ENTRY_ENV,
+  ]) delete env[key];
+  return env;
 }
 
 // On a non-zero exit, pull the real reason out of the captured output so the
@@ -89,7 +112,7 @@ function runCommand(cfg: HostCommandConfig, ctx: HostRunContext): Promise<HostRu
     try {
       child = spawn(cfg.bin, argv, {
         cwd: ctx.cwd,
-        env: { ...process.env, ...ctx.env },
+        env: hostSubprocessEnv(ctx.env),
         stdio: ['pipe', outFd, errFd],
       });
     } catch (e) {

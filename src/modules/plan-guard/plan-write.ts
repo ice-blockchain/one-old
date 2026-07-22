@@ -35,7 +35,7 @@ import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-p
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../shared/materialize';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { isNativeState, readEffectiveState } from '../../shared/state';
+import { activeAgentRole, hookSessionIdentity, isNativeState, readEffectiveState } from '../../shared/state';
 import { capturePlanGuardDebug } from '../../shared/state/claim-capture';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 import { planReadinessViolations } from './plan-readiness';
@@ -248,10 +248,16 @@ export function planWriteGate(ctx: Ctx): HookResult {
 
   if (violations.length === 0) return noop();
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
+  // Attribution makes multi-agent runs debuggable: without it a deny line can't
+  // be tied to the subagent that was denied except by transcript archaeology.
+  const denyIdentity = hookSessionIdentity(raw);
   capturePlanGuardDebug(projectRoot, runId, {
     filePath,
     filePaths: writeTargetPaths,
     host: ctx.host,
+    sessionId: denyIdentity.sessionId || null,
+    isSubagent: denyIdentity.isSubagent || false,
+    role: activeAgentRole(state),
     violations: violations.map((v) => (v.length > 400 ? `${v.slice(0, 400)}…` : v)),
   });
   return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}`);

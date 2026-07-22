@@ -30,7 +30,7 @@ re-grepping the repo.
 # <role> digest — run <run-id>
 
 verdict: PLAN_READY | APPROVED | CHANGES_REQUESTED | TESTS_GREEN | TESTS_FAILING | SHIPPED | FAILED
-finished_at: <ISO-8601 UTC>
+finished_at: <ISO-8601 UTC — run `date -u +%Y-%m-%dT%H:%M:%SZ` for the real value; never guess, hand-compute an elapsed time, or write a midnight/future placeholder. Traffic One host-stamps this line with the real write-time and OVERWRITES any value that is malformed, in the future, or dated before the run began — a fabricated timestamp is silently corrected, not trusted.>
 
 ## Touched
 - path/to/file.ts        # one-line note on what changed

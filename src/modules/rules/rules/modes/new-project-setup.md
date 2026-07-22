@@ -41,7 +41,7 @@ do not skip. The spine carries the step index — this file is the detail.
      normally converges this
      after any host tool event once `.traffic-one/.one.json` is complete; if the host
      runtime does not emit the hook, run
-     `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/hook-runtime.cjs" materialize-project`
+     `node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','hook-runtime.cjs'))" materialize-project`
      from the project root and verify `.traffic-one/.one.json` has `version`,
      `materializedStack`, `materializedAt`, and `materializedVersion`. Never
      write those `materialized*` fields manually; they are output from the

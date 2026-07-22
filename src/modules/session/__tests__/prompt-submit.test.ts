@@ -376,6 +376,22 @@ test('authed + incomplete new project → setup required + wizard URL (no popup)
   });
 });
 
+test('incomplete-project waiter carries the normalized prompt session id', () => {
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    const prompt = 'build a shop with checkout';
+    const input: HookInput = {
+      event: 'UserPromptSubmit',
+      host: 'claude',
+      cwd,
+      prompt,
+      raw: { prompt, session_id: 'prompt:session' },
+    };
+    const r = runUserPromptSubmit({ input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(r.context.includes("'--sync-session=prompt_session'"));
+  });
+});
+
 test('opencode: incomplete onboarding prompt uses sanitized setup text', () => {
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
     const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'opencode'));

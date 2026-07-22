@@ -101,6 +101,12 @@ export interface QaReportValidationOptions {
   nowMs?: number;
   /** Reject evidence generated before this instant. Numeric run ids are used by default. */
   minimumGeneratedAtMs?: number;
+  /**
+   * Trusted filesystem write-time for the canonical report. readQaReportV1
+   * supplies this itself; it disambiguates a whole-second generatedAt at a
+   * millisecond contract boundary without weakening older-report rejection.
+   */
+  reportMtimeMs?: number;
   /** Optional additional freshness window measured back from nowMs. */
   maxAgeMs?: number;
   /** Future clock skew tolerated before a report is rejected. Defaults to five minutes. */
@@ -128,7 +134,7 @@ const PRIMARY_ACTION_STATUSES = new Set<QaPrimaryActionStatus>([
   'not-applicable',
 ]);
 const REQUIRED_SCREENSHOT_WIDTHS = new Set<QaRequiredWidth>([390, 1440]);
-const ISO_UTC_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const ISO_UTC_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 const MAX_SAFE_SUMMARY_LENGTH = 500;
 const MAX_PRIMARY_ACTION_REASON_LENGTH = 300;
 const MAX_ROUTE_LENGTH = 2048;
@@ -140,6 +146,16 @@ const KNOWN_TOKEN_PREFIX_RE = /\b(?:sk-[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Collects the first failing field path so invalid-schema rejections can name it. */
+interface SchemaFailure {
+  path: string;
+}
+
+function schemaFail(failure: SchemaFailure, path: string): null {
+  if (!failure.path) failure.path = path;
+  return null;
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
@@ -217,19 +233,22 @@ function parseCanonicalInstant(value: unknown): number | null {
   if (typeof value !== 'string' || !ISO_UTC_INSTANT_RE.test(value)) return null;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed).toISOString() === value ? parsed : null;
+  // Milliseconds are optional: a second-precision instant is canonical when its
+  // millisecond expansion round-trips, so calendar rollovers still reject.
+  const canonical = new Date(parsed).toISOString();
+  return canonical === value || canonical === value.replace(/Z$/, '.000Z') ? parsed : null;
 }
 
-function parsePrimaryAction(value: unknown): QaPrimaryActionResult | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['status', 'reason'])) return null;
+function parsePrimaryAction(value: unknown, at: string, failure: SchemaFailure): QaPrimaryActionResult | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['status', 'reason'])) return schemaFail(failure, at);
   if (typeof value.status !== 'string' || !PRIMARY_ACTION_STATUSES.has(value.status as QaPrimaryActionStatus)) {
-    return null;
+    return schemaFail(failure, `${at}.status`);
   }
   if (value.reason !== undefined && !isCleanBoundedText(value.reason, MAX_PRIMARY_ACTION_REASON_LENGTH)) {
-    return null;
+    return schemaFail(failure, `${at}.reason`);
   }
   if (value.status === 'not-applicable' && !isCleanBoundedText(value.reason, MAX_PRIMARY_ACTION_REASON_LENGTH)) {
-    return null;
+    return schemaFail(failure, `${at}.reason`);
   }
   return {
     status: value.status as QaPrimaryActionStatus,
@@ -237,7 +256,7 @@ function parsePrimaryAction(value: unknown): QaPrimaryActionResult | null {
   };
 }
 
-function parseViewport(value: unknown): QaViewportResult | null {
+function parseViewport(value: unknown, at: string, failure: SchemaFailure): QaViewportResult | null {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'width',
     'status',
@@ -246,15 +265,15 @@ function parseViewport(value: unknown): QaViewportResult | null {
     'elementOverflow',
     'primaryAction',
     'screenshotPath',
-  ])) return null;
+  ])) return schemaFail(failure, at);
 
-  if (!QA_REQUIRED_WIDTHS.includes(value.width as QaRequiredWidth)) return null;
-  if (typeof value.status !== 'string' || !REPORT_STATUSES.has(value.status as QaReportStatus)) return null;
-  if (!Number.isSafeInteger(value.consoleErrorCount) || Number(value.consoleErrorCount) < 0) return null;
-  if (typeof value.documentOverflow !== 'boolean' || typeof value.elementOverflow !== 'boolean') return null;
-  const primaryAction = parsePrimaryAction(value.primaryAction);
+  if (!QA_REQUIRED_WIDTHS.includes(value.width as QaRequiredWidth)) return schemaFail(failure, `${at}.width`);
+  if (typeof value.status !== 'string' || !REPORT_STATUSES.has(value.status as QaReportStatus)) return schemaFail(failure, `${at}.status`);
+  if (!Number.isSafeInteger(value.consoleErrorCount) || Number(value.consoleErrorCount) < 0) return schemaFail(failure, `${at}.consoleErrorCount`);
+  if (typeof value.documentOverflow !== 'boolean' || typeof value.elementOverflow !== 'boolean') return schemaFail(failure, `${at}.documentOverflow/elementOverflow`);
+  const primaryAction = parsePrimaryAction(value.primaryAction, `${at}.primaryAction`, failure);
   if (!primaryAction) return null;
-  if (value.screenshotPath !== undefined && !isCleanBoundedText(value.screenshotPath, 4096)) return null;
+  if (value.screenshotPath !== undefined && !isCleanBoundedText(value.screenshotPath, 4096)) return schemaFail(failure, `${at}.screenshotPath`);
 
   return {
     width: value.width as QaRequiredWidth,
@@ -267,27 +286,27 @@ function parseViewport(value: unknown): QaViewportResult | null {
   };
 }
 
-function parseRoute(value: unknown): QaRouteResult | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['route', 'viewports'])) return null;
-  if (!isCleanBoundedText(value.route, MAX_ROUTE_LENGTH) || !value.route.startsWith('/')) return null;
-  if (!Array.isArray(value.viewports) || value.viewports.length === 0) return null;
+function parseRoute(value: unknown, at: string, failure: SchemaFailure): QaRouteResult | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['route', 'viewports'])) return schemaFail(failure, at);
+  if (!isCleanBoundedText(value.route, MAX_ROUTE_LENGTH) || !value.route.startsWith('/')) return schemaFail(failure, `${at}.route`);
+  if (!Array.isArray(value.viewports) || value.viewports.length === 0) return schemaFail(failure, `${at}.viewports`);
   const viewports: QaViewportResult[] = [];
-  for (const rawViewport of value.viewports) {
-    const viewport = parseViewport(rawViewport);
+  for (const [index, rawViewport] of value.viewports.entries()) {
+    const viewport = parseViewport(rawViewport, `${at}.viewports[${index}]`, failure);
     if (!viewport) return null;
     viewports.push(viewport);
   }
   return { route: value.route, viewports };
 }
 
-function parseBlocker(value: unknown): QaBlocker | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['code', 'summary'])) return null;
-  if (typeof value.code !== 'string' || !BLOCKER_CODES.has(value.code as QaBlockerCode)) return null;
-  if (!isMachineSafeSummary(value.summary)) return null;
+function parseBlocker(value: unknown, failure: SchemaFailure): QaBlocker | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['code', 'summary'])) return schemaFail(failure, 'blocker');
+  if (typeof value.code !== 'string' || !BLOCKER_CODES.has(value.code as QaBlockerCode)) return schemaFail(failure, 'blocker.code');
+  if (!isMachineSafeSummary(value.summary)) return schemaFail(failure, 'blocker.summary');
   return { code: value.code as QaBlockerCode, summary: value.summary };
 }
 
-function parseReport(value: unknown): QaReportV1 | null {
+function parseReport(value: unknown, failure: SchemaFailure): QaReportV1 | null {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'schemaVersion',
     'runId',
@@ -296,29 +315,29 @@ function parseReport(value: unknown): QaReportV1 | null {
     'status',
     'routes',
     'blocker',
-  ])) return null;
-  if (value.schemaVersion !== QA_CONTRACT_VERSION) return null;
-  if (typeof value.runId !== 'string' || !isSafeRunId(value.runId)) return null;
-  if (parseCanonicalInstant(value.generatedAt) === null) return null;
-  if (typeof value.producer !== 'string' || !PRODUCERS.has(value.producer as QaReportProducer)) return null;
-  if (typeof value.status !== 'string' || !REPORT_STATUSES.has(value.status as QaReportStatus)) return null;
-  if (!Array.isArray(value.routes) || value.routes.length === 0 || value.routes.length > MAX_ROUTES) return null;
+  ])) return schemaFail(failure, '(top-level keys)');
+  if (value.schemaVersion !== QA_CONTRACT_VERSION) return schemaFail(failure, 'schemaVersion');
+  if (typeof value.runId !== 'string' || !isSafeRunId(value.runId)) return schemaFail(failure, 'runId');
+  if (parseCanonicalInstant(value.generatedAt) === null) return schemaFail(failure, 'generatedAt');
+  if (typeof value.producer !== 'string' || !PRODUCERS.has(value.producer as QaReportProducer)) return schemaFail(failure, 'producer');
+  if (typeof value.status !== 'string' || !REPORT_STATUSES.has(value.status as QaReportStatus)) return schemaFail(failure, 'status');
+  if (!Array.isArray(value.routes) || value.routes.length === 0 || value.routes.length > MAX_ROUTES) return schemaFail(failure, 'routes');
 
   const routes: QaRouteResult[] = [];
-  for (const rawRoute of value.routes) {
-    const route = parseRoute(rawRoute);
+  for (const [index, rawRoute] of value.routes.entries()) {
+    const route = parseRoute(rawRoute, `routes[${index}]`, failure);
     if (!route) return null;
     routes.push(route);
   }
 
-  const blocker = value.blocker === undefined ? undefined : parseBlocker(value.blocker);
+  const blocker = value.blocker === undefined ? undefined : parseBlocker(value.blocker, failure);
   if (value.blocker !== undefined && !blocker) return null;
   const status = value.status as QaReportStatus;
   if (status.startsWith('blocked:')) {
     const expectedCode = status.slice('blocked:'.length) as QaBlockerCode;
-    if (!blocker || blocker.code !== expectedCode) return null;
+    if (!blocker || blocker.code !== expectedCode) return schemaFail(failure, 'blocker (must match blocked:* status)');
   } else if (blocker !== undefined) {
-    return null;
+    return schemaFail(failure, 'blocker (only allowed with blocked:* status)');
   }
 
   return {
@@ -435,9 +454,11 @@ export function validateQaReportV1(
   if (!isSafeRunId(expectedRunId)) {
     return rejection(projectRoot, expectedRunId, 'invalid-run-id', 'The expected QA run id is not a safe path segment.');
   }
-  const report = parseReport(value);
+  const failure: SchemaFailure = { path: '' };
+  const report = parseReport(value, failure);
   if (!report) {
-    return rejection(projectRoot, expectedRunId, 'invalid-schema', 'QA report does not match QaReportV1.');
+    const detail = failure.path ? ` (first invalid field: ${failure.path})` : '';
+    return rejection(projectRoot, expectedRunId, 'invalid-schema', `QA report does not match QaReportV1${detail}.`);
   }
   if (report.runId !== expectedRunId) {
     return rejection(projectRoot, expectedRunId, 'run-id-mismatch', 'QA report runId does not match the current run.');
@@ -448,7 +469,16 @@ export function validateQaReportV1(
   const minimumGeneratedAtMs = Number.isFinite(options.minimumGeneratedAtMs)
     ? Number(options.minimumGeneratedAtMs)
     : inferredRunStartMs(expectedRunId);
-  if (minimumGeneratedAtMs !== undefined && generatedAtMs < minimumGeneratedAtMs) {
+  const reportMtimeMs = Number.isFinite(options.reportMtimeMs) ? Number(options.reportMtimeMs) : undefined;
+  const wholeSecondAtFreshnessBoundary = minimumGeneratedAtMs !== undefined
+    && generatedAtMs < minimumGeneratedAtMs
+    && !/\.\d{3}Z$/.test(report.generatedAt)
+    && Math.floor(generatedAtMs / 1000) === Math.floor(minimumGeneratedAtMs / 1000)
+    && reportMtimeMs !== undefined
+    && reportMtimeMs >= minimumGeneratedAtMs;
+  if (minimumGeneratedAtMs !== undefined
+    && generatedAtMs < minimumGeneratedAtMs
+    && !wholeSecondAtFreshnessBoundary) {
     return rejection(projectRoot, expectedRunId, 'stale-report', 'QA report predates the current run.');
   }
   if (Number.isFinite(options.maxAgeMs) && Number(options.maxAgeMs) >= 0
@@ -578,8 +608,11 @@ export function readQaReportV1(
   }
   const reportPath = qaReportPath(projectRoot, expectedRunId);
   let text: string;
+  let reportMtimeMs: number | undefined;
   try {
     text = fs.readFileSync(reportPath, 'utf8');
+    const mtime = fs.statSync(reportPath).mtimeMs;
+    if (Number.isFinite(mtime)) reportMtimeMs = mtime;
   } catch (error) {
     const code = isRecord(error) && error.code === 'ENOENT' ? 'report-missing' : 'report-unreadable';
     return rejection(
@@ -595,5 +628,8 @@ export function readQaReportV1(
   } catch {
     return rejection(projectRoot, expectedRunId, 'invalid-json', 'Canonical QA report is not valid JSON.');
   }
-  return validateQaReportV1(value, projectRoot, expectedRunId, options);
+  return validateQaReportV1(value, projectRoot, expectedRunId, {
+    ...options,
+    ...(reportMtimeMs !== undefined ? { reportMtimeMs } : {}),
+  });
 }

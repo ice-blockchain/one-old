@@ -86,7 +86,7 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
     return outcome(
       'missing-state',
       'traffic-one — `.traffic-one/.one.json` is missing or invalid; cannot materialize project rules',
-      'Write the complete Traffic One state file first, then run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/hook-runtime.cjs" materialize-project` from the project root.',
+      'Write the complete Traffic One state file first, then run `node -e "const p=require(\'node:path\'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,\'traffic-one-runtime\');require(p.join(r,\'scripts\',\'hook-runtime.cjs\'))" materialize-project` from the project root.',
     );
   }
 

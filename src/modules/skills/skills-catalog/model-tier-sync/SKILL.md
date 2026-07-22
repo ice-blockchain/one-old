@@ -62,10 +62,9 @@ the base and `auto` is generated as a mirror of the resolved `balanced` row.
 ## Skip when
 
 - You are inside a generated user project rather than the Traffic One plugin
-  authoring repo, where the source config lives at `src/config/model-tiers.ts`.
-  An installed plugin's `scripts/**` files are generated copies and will be
-  overwritten by the next plugin update. If asked there, say so and point the
-  user at the authoring repo.
+  authoring repo. An installed plugin's `scripts/**` files are generated copies
+  and will be overwritten by the next plugin update. If asked there, say so and
+  point the user at the authoring repo.
 
 ## What the tiers mean (do not change this contract)
 
@@ -75,16 +74,17 @@ Three host-agnostic capability tiers, ordered most → least capable:
 - `balanced` — the strong mid-tier used for most implementation + review.
 - `cheapest` — the fast, low-cost model used for QA and high-volume work.
 
-Each performance level maps agents to tiers (see `src/shared/performance-config.ts`);
-this skill only changes which concrete model each tier resolves to per host. Never
-reorder or rename the tiers, and never change `src/shared/performance-config.ts`.
+Each performance level maps agents to tiers in a separate policy module; this
+skill only changes which concrete model each tier resolves to per host. Never
+reorder or rename the tiers, and never change the performance-to-tier policy.
 
 ## Procedure
 
-1. **Read the complete bundled catalog.** In `src/config/model-tiers.ts`, inspect
-   every `HOST_MODELS` host entry: its base `tiers`, plan overrides,
-   and `HOST_PLAN_IDS`. Each tier array is preferred-first; the first model is the
-   default and the remaining models are accepted fallbacks.
+1. **Read the complete bundled catalog.** In the authoring repo, locate the
+   TypeScript module that exports `HOST_MODELS` and inspect every host entry: its
+   base `tiers`, plan overrides, and `HOST_PLAN_IDS`. Each tier array is
+   preferred-first; the first model is the default and the remaining models are
+   accepted fallbacks.
 
 2. **Research the current model lineup — official sources only.** Use WebSearch /
    WebFetch against the providers' own docs. Do NOT guess or use a model name you
@@ -181,7 +181,7 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
   ordering.
 - Never publish a preferred model, plan override, or fallback set/order change
   without incrementing the corresponding remote config row version.
-- Never hand-edit generated `dist/scripts/**`; edit source config/tests and
+- Never hand-edit generated runtime copies; edit the authoring catalog/tests and
   regenerate.
 - Never hand-maintain a second model catalog in the operator artefacts. Generate
   them from `HOST_MODELS`, then publish the reviewed rows independently.

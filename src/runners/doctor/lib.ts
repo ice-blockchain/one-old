@@ -163,9 +163,19 @@ export function getPayloadText(payload: unknown): string {
 export function commandLooksMutating(name: string, rawArgs: unknown): boolean {
   if (name === 'apply_patch') return true;
   if (name === 'request_plugin_install' || name === 'automation_update') return true;
-  if (name !== 'exec_command') return false;
-  const args = safeJsonParse(typeof rawArgs === 'string' ? rawArgs : '', {}) ?? {};
-  const command = typeof args.cmd === 'string' ? args.cmd : String(rawArgs || '');
+  const rawText = typeof rawArgs === 'string' ? rawArgs : String(rawArgs || '');
+  // Codex Desktop records the public orchestration wrapper as a custom `exec`
+  // call. Inspect only actual nested tool invocations, never arbitrary text in
+  // function outputs, so current transcripts retain the same diagnostics as
+  // older direct `exec_command` / `apply_patch` envelopes.
+  if (name === 'exec') {
+    if (/\btools\.(?:apply_patch|request_plugin_install|automation_update)\s*\(/.test(rawText)) return true;
+    if (!/\btools\.exec_command\s*\(/.test(rawText)) return false;
+  } else if (name !== 'exec_command') {
+    return false;
+  }
+  const args = name === 'exec_command' ? (safeJsonParse(rawText, {}) ?? {}) : {};
+  const command = typeof args.cmd === 'string' ? args.cmd : rawText;
   return /\b(apply_patch|npm\s+install|pnpm\s+(install|add|approve-builds|rebuild)|yarn\s+(install|add)|bun\s+(install|add)|npx\s+create-|mkdir\b|touch\b|rm\b|mv\b|cp\b|rsync\b|git\s+(init|checkout|reset|clean)|tee\b|cat\s*>|>\s*[^&])/.test(command);
 }
 

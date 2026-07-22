@@ -19,7 +19,12 @@ import {
   type WindsurfHookEvent,
 } from '../../config/windsurf-host';
 import { globalTrafficOneDir } from '../../shared/state/traffic-one-paths';
-import { devinUserHookCommand, windsurfUserHookCommand } from '../../shared/windsurf-hook-command';
+import {
+  devinUserHookCommand,
+  matchesDevinUserHookCommand,
+  matchesWindsurfUserHookCommand,
+  windsurfUserHookCommand,
+} from '../../shared/windsurf-hook-command';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
@@ -116,7 +121,7 @@ function ownedHookEntry(entry: unknown, event: WindsurfHookEvent, pluginRoots: r
   if (!entry || typeof entry !== 'object') return false;
   const command = (entry as Rec).command;
   return typeof command === 'string'
-    && pluginRoots.some((pluginRoot) => command === windsurfUserHookCommand(pluginRoot, event));
+    && pluginRoots.some((pluginRoot) => matchesWindsurfUserHookCommand(command, pluginRoot, event));
 }
 
 function hookCommand(pluginRoot: string, event: WindsurfHookEvent): string {
@@ -172,7 +177,7 @@ function ownedDevinCommand(entry: unknown, pluginRoots: readonly string[]): bool
   if (!entry || typeof entry !== 'object') return false;
   const command = (entry as Rec).command;
   return typeof command === 'string' && pluginRoots.some((pluginRoot) => (
-    DEVIN_NATIVE_HOOKS.some((spec) => command === devinUserHookCommand(pluginRoot, spec.subcommand))
+    DEVIN_NATIVE_HOOKS.some((spec) => matchesDevinUserHookCommand(command, pluginRoot, spec.subcommand))
   ));
 }
 
@@ -374,7 +379,7 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
         return entries.some((entry) => {
           const command = entry && typeof entry === 'object' ? (entry as Rec).command : undefined;
           return typeof command === 'string'
-            && pluginRoots.some((pluginRoot) => command === devinUserHookCommand(pluginRoot, spec.subcommand));
+            && pluginRoots.some((pluginRoot) => matchesDevinUserHookCommand(command, pluginRoot, spec.subcommand));
         });
       });
       if (!present) issues.push(`missing Devin Local hook ${spec.event}/${spec.subcommand}`);

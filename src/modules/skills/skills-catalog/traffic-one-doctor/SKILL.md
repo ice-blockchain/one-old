@@ -39,9 +39,10 @@ Runs `scripts/doctor.cjs` (read-only). The script probes:
    workspace coverage, and a redacted canonical-auth probe reporting the
    `one.json` path, validity, and update time without exposing the API key.
 6. **Session incident debug** — with `--session <id>`, resolves the Codex JSONL
-   transcript and reports hook payload count, prompt requests, Traffic One root
-   instruction injection, canonical auth state at session start, and mutating
-   tool use before the auth gate.
+   transcript, anchors the project/trust probes to that session's recorded cwd,
+   and reports attributable Traffic One hook-output evidence, structured prompt
+   and permission decisions, plus total and mutating tool calls. A missing-output
+   finding is informational because applicable hooks may intentionally no-op.
 
 It outputs a JSON report with one of three summaries:
 
@@ -65,6 +66,10 @@ For a specific Codex incident:
 ```bash
 node ~/.traffic-one/bin/doctor.cjs --session <session-id>
 ```
+
+Incident mode uses the resolved transcript's cwd even when the command is run
+from the plugin root or another project. Without `--session`, run from the
+project root whose setup should be checked.
 
 In Codex, prefer `TRAFFIC_ONE_PLUGIN_ROOT` or `CODEX_PLUGIN_ROOT` when the
 host exposes one. If no plugin-root env var is available, use the absolute

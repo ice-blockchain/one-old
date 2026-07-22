@@ -5,9 +5,9 @@ description: Wording source for the Traffic One PostToolUse materialize/post-sta
 
 # Traffic One Materialize / Post-Stack-Setup
 
-PostToolUse message wording. Dispatch + materialization logic lives in
-`src/modules/materialize/`. `{{PLACEHOLDER}}` tokens are filled by the handler.
-Each block has a verbatim fallback in code.
+PostToolUse message wording. Dispatch and materialization are implemented by the
+installed Traffic One runtime. `{{PLACEHOLDER}}` tokens are filled by the
+handler. Each block has a verbatim fallback in code.
 
 <!-- T1BLOCK:BEGIN digest-size -->
 [digest-size] Your `{{ROLE}}.md` digest is {{KB}} KB; the spec target is ≤2 KB (see `rules/common/agent-handoff-digests.md`). Re-write before completing your turn:

@@ -35,6 +35,21 @@ function rawCtx(cwd: string, toolName: string, toolInput: Record<string, unknown
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+function applyPatchCtx(cwd: string, patchText: string): Ctx {
+  const input: HookInput = {
+    event: 'PostToolUse',
+    host: 'codex',
+    cwd,
+    raw: { tool_name: 'apply_patch', tool_input: patchText },
+    tool: {
+      class: 'file-write',
+      rawName: 'apply_patch',
+      patchText,
+    },
+  };
+  return { input, host: 'codex', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
 function withAuthedProject(materialized: boolean, fn: (cwd: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-pss-')));
   const env = process.env;
@@ -288,6 +303,63 @@ test('oversized handoff digest → trim warning', () => {
       assert.ok(r.systemMessage?.includes('digest architect.md'));
       assert.ok(r.context.includes('[digest-size]'));
     }
+  });
+});
+
+test('digest with a future finished_at is host-stamped on disk (F3)', () => {
+  withAuthedProject(false, (cwd) => {
+    const digestDir = path.join(cwd, '.traffic-one', 'digests', 'run1');
+    fs.mkdirSync(digestDir, { recursive: true });
+    const digestFile = path.join(digestDir, 'backend.md');
+    fs.writeFileSync(digestFile,
+      '# backend digest — run run1\n\nverdict: TESTS_GREEN\nfinished_at: 2099-01-01T00:00:00Z\n\n## Touched\n- x.ts\n',
+      'utf8');
+    const r = runPostStackSetup(ctx(cwd, { file_path: digestFile }));
+    const after = fs.readFileSync(digestFile, 'utf8');
+    assert.doesNotMatch(after, /2099-01-01T00:00:00Z/); // fabricated value overwritten
+    assert.match(after, /^finished_at: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m);
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.systemMessage?.includes('host-stamped'));
+      assert.ok(r.systemMessage?.includes('was future'));
+    }
+  });
+});
+
+test('Codex apply_patch digest writes are host-stamped even without file_path', () => {
+  withAuthedProject(false, (cwd) => {
+    const digestDir = path.join(cwd, '.traffic-one', 'digests', 'run1');
+    fs.mkdirSync(digestDir, { recursive: true });
+    const digestFile = path.join(digestDir, 'tester.md');
+    fs.writeFileSync(digestFile,
+      '# tester digest — run run1\n\nverdict: TESTS_GREEN\nfinished_at: 2099-01-01T00:00:00Z\n',
+      'utf8');
+    const patchText = [
+      '*** Begin Patch',
+      '*** Update File: .traffic-one/digests/run1/tester.md',
+      '@@',
+      '-finished_at: 2098-01-01T00:00:00Z',
+      '+finished_at: 2099-01-01T00:00:00Z',
+      '*** End Patch',
+    ].join('\n');
+    const result = runPostStackSetup(applyPatchCtx(cwd, patchText));
+    assert.doesNotMatch(fs.readFileSync(digestFile, 'utf8'), /2099-01-01T00:00:00Z/);
+    assert.equal(result.kind, 'context');
+    if (result.kind === 'context') assert.match(result.systemMessage || '', /digest tester\.md.*host-stamped/);
+  });
+});
+
+test('digest with a plausible finished_at is left byte-identical → noop', () => {
+  withAuthedProject(false, (cwd) => {
+    const digestDir = path.join(cwd, '.traffic-one', 'digests', 'run1');
+    fs.mkdirSync(digestDir, { recursive: true });
+    const digestFile = path.join(digestDir, 'reviewer.md');
+    const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const body = `# reviewer digest — run run1\n\nverdict: APPROVED\nfinished_at: ${nowIso}\n\n## Findings\n- none\n`;
+    fs.writeFileSync(digestFile, body, 'utf8');
+    const r = runPostStackSetup(ctx(cwd, { file_path: digestFile }));
+    assert.equal(fs.readFileSync(digestFile, 'utf8'), body); // untouched
+    assert.equal(r.kind, 'noop');
   });
 });
 

@@ -13,18 +13,19 @@ import { collectHandlers, defaultModulesDir, loadModules } from '../core/registr
 import { selectAdapter } from '../adapters/select';
 import { detectHost } from '../shared/host';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
+import { hasValidPreToolPayload, isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
 import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
+import { markCodexHookContext } from '../shared/codex-hook-evidence';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
 // Fail-closed SessionStart fallback: a crashed session-start must still surface
 // the auth gate (fail toward "unverified") rather than emit nothing.
-function sessionStartFallback(message: string): string {
+function sessionStartFallback(message: string, host: string): string {
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: message,
+      additionalContext: host === 'codex' ? markCodexHookContext('SessionStart', message) : message,
     },
   });
 }
@@ -38,6 +39,9 @@ export async function runClaudeHook(
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: '', exitCode: 0 };
   const host = detectHost(env, ['--host', subcommand]); // never cursor here
+  if (isGatePreToolSubcommand(subcommand) && !hasValidPreToolPayload(stdin, subcommand, 'nested')) {
+    return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };
+  }
   // This subcommand is wired only to the exact managed MCP matcher. Deny before
   // module loading so pluginUse opt-out or a damaged runtime cannot reopen it.
   if (subcommand === 'check-one-mcp-tool') {
@@ -52,7 +56,7 @@ export async function runClaudeHook(
     if (hookFallbackStandsDown(stdin, env)) return { stdout: '', exitCode: 0 };
     if (subcommand === 'session-start') {
       const message = authFallbackMessage(stdin, env);
-      return { stdout: message ? sessionStartFallback(message) : '', exitCode: 0 };
+      return { stdout: message ? sessionStartFallback(message, host) : '', exitCode: 0 };
     }
     if (isGatePreToolSubcommand(subcommand)) {
       return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };

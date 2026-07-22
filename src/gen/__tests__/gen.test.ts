@@ -9,7 +9,14 @@ import { distRoot, runGen, sourceRepoRoot } from '../index';
 import { GenRun } from '../lib/run';
 import { emitManifests, emitMcp } from '../emit/manifests';
 import { emitStaticPluginFiles } from '../emit/static';
-import { CURSOR_EVENTS, CURSOR_PLUGIN_ROOT_TOKEN, cursorCommand } from '../sources/hooks';
+import {
+  CURSOR_EVENTS,
+  CURSOR_PLUGIN_ROOT_TOKEN,
+  PLUGIN_ROOT_ENV_KEYS,
+  claudeCommand,
+  cursorCommand,
+  windsurfCommand,
+} from '../sources/hooks';
 import { HOST_MODELS } from '../../config/model-tiers';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -18,6 +25,13 @@ const MAX_CURSOR_TIER_LENGTH = Math.max(
   ...Object.values(HOST_MODELS.cursor.plans ?? {})
     .flatMap((plan) => Object.values(plan).map((row) => row?.length ?? 0)),
 );
+
+function assertPortableNodeHookCommand(command: string, label: string): void {
+  assert.match(command, /^node -e "/, `${label} must launch through Node`);
+  assert.doesNotMatch(command, /\$\{[A-Z][A-Z0-9_]*:-/, `${label} must not use POSIX parameter expansion`);
+  assert.doesNotMatch(command, /(?:^|\s)[A-Z][A-Z0-9_]*=/, `${label} must not use inline shell env assignments`);
+  assert.doesNotMatch(command, /\bsh\s+-[lc]+\b/, `${label} must not require sh`);
+}
 
 test('runGen writes a generated plugin root and --check round-trips', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-plugin-'));
@@ -39,9 +53,20 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     assert.equal(copilotHooks.hooks.SessionStart[0].env.TRAFFIC_ONE_HOST, 'copilot');
     const windsurfHooks = JSON.parse(fs.readFileSync(path.join(dir, 'hooks', 'hooks-windsurf.json'), 'utf8'));
     assert.ok(windsurfHooks.hooks.pre_user_prompt[0].command.includes('windsurf-hook-runtime.cjs'));
-    assert.ok(windsurfHooks.hooks.pre_user_prompt[0].command.includes('TRAFFIC_ONE_HOST=windsurf'));
+    assert.ok(windsurfHooks.hooks.pre_user_prompt[0].command.includes("e.TRAFFIC_ONE_HOST='windsurf'"));
     assert.ok(windsurfHooks.hooks.post_mcp_tool_use[0].command.includes('post_mcp_tool_use'));
+    for (const [event, entries] of Object.entries(windsurfHooks.hooks) as Array<[string, Array<{ command: string }>]>) {
+      for (const entry of entries) assertPortableNodeHookCommand(entry.command, `Windsurf ${event}`);
+    }
     const claudeHooks = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+    const sharedClaudeHooks = JSON.parse(fs.readFileSync(path.join(dir, 'hooks', 'hooks.json'), 'utf8'));
+    for (const [configLabel, config] of [['settings', claudeHooks], ['hooks.json', sharedClaudeHooks]] as const) {
+      for (const [event, groups] of Object.entries(config.hooks) as Array<[string, Array<{ hooks: Array<{ command: string }> }>]>) {
+        for (const group of groups) {
+          for (const entry of group.hooks) assertPortableNodeHookCommand(entry.command, `Claude/Codex ${configLabel} ${event}`);
+        }
+      }
+    }
     const managedClaudeGate = claudeHooks.hooks.PreToolUse.find((group: { matcher?: string }) => group.matcher?.includes('traffic-one-mcp'));
     assert.equal(managedClaudeGate.matcher, '^mcp__traffic-one-mcp__(get_config|report_codebase_metadata)$');
     assert.ok(managedClaudeGate.hooks[0].command.endsWith('check-one-mcp-tool'));
@@ -83,9 +108,8 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     assert.deepEqual(cursorHooks.hooks.beforeMCPExecution, [{
       command: 'node "${CURSOR_PLUGIN_ROOT}/scripts/cursor-hook-runtime.cjs" before-mcp-execution',
     }]);
-    const expectedVersion = JSON.parse(
-      fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'),
-    ).version;
+    const sourcePackage = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+    const expectedVersion = sourcePackage.version;
     const generatedPackage = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
     const claudePlugin = JSON.parse(fs.readFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), 'utf8'));
     const claudeMarketplace = JSON.parse(fs.readFileSync(path.join(dir, '.claude-plugin', 'marketplace.json'), 'utf8'));
@@ -93,6 +117,7 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     const cursorPlugin = JSON.parse(fs.readFileSync(path.join(dir, '.cursor-plugin', 'plugin.json'), 'utf8'));
     const copilotPlugin = JSON.parse(fs.readFileSync(path.join(dir, 'plugin.json'), 'utf8'));
     assert.equal(generatedPackage.version, expectedVersion, 'generated package version must follow package.json');
+    assert.equal(generatedPackage.engines?.node, sourcePackage.engines?.node, 'generated package Node engine must follow package.json');
     assert.equal(claudePlugin.version, expectedVersion, 'Claude plugin version must follow package.json');
     assert.equal(claudeMarketplace.plugins[0]?.version, expectedVersion, 'Claude marketplace version must follow package.json');
     assert.equal(codexPlugin.version, expectedVersion, 'Codex plugin version must follow package.json');
@@ -101,6 +126,13 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     assert.equal(copilotPlugin.mcpServers, './.mcp-copilot.json');
     const sharedMcp = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
     const copilotMcp = JSON.parse(fs.readFileSync(path.join(dir, '.mcp-copilot.json'), 'utf8'));
+    for (const [label, config] of [['shared', sharedMcp], ['Copilot', copilotMcp]] as const) {
+      const worker = config.mcpServers['opencode-worker'] as { command: string; args: string[] };
+      assert.equal(worker.command, 'node', `${label} MCP worker must not require sh`);
+      assert.equal(worker.args[0], '-e');
+      assert.doesNotMatch(worker.args.join(' '), /\$\{[A-Z][A-Z0-9_]*[:+\-]/, `${label} MCP worker must not use shell expansion`);
+      assert.doesNotMatch(worker.args.join(' '), /\[\s+-f\s+|\bexec\s+node\b/, `${label} MCP worker must use the Node bootstrap`);
+    }
     assert.equal(sharedMcp.mcpServers['traffic-one-mcp'], undefined, 'Claude/Cursor/Codex must not expose the public server');
     assert.equal(copilotMcp.mcpServers['traffic-one-mcp'], undefined, 'milestone A keeps public registration build-disabled');
     const frontendAgent = fs.readFileSync(path.join(dir, 'agents', 'senior-frontend.agent.md'), 'utf8');
@@ -124,6 +156,85 @@ test('generated non-test documentation contains no concrete claimable Traffic On
     for (const relPath of docs) {
       const content = fs.readFileSync(path.join(dir, relPath), 'utf8');
       assert.doesNotMatch(content, concreteMarker, `${relPath} contains a claimable concrete role marker`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated agent-facing documentation contains no Traffic One authoring paths or POSIX root expansion', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-agent-doc-portability-'));
+  // Project examples such as apps/web/src/features/** and src/services/** are
+  // intentionally legal. These patterns name Traffic One's authoring topology
+  // and therefore cannot resolve inside an installed plugin.
+  const authoringPath = /(?:\bsrc\/(?:modules\/|gen\/|build\/|hooks\/(?:claude|copilot|cursor|devin|kilo|opencode|windsurf)-entry\.ts\b|config\/model-tiers\.ts\b|shared\/(?:performance-config|stack-layout)\.ts\b|(?:shared|runners)\/onboarding-server(?:\/|\b))|\bdist\/scripts\/)/;
+  try {
+    const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const docs = write.written.filter((relPath) => (
+      /\.(?:md|mdc)$/i.test(relPath)
+      && (relPath === 'AGENTS.md'
+        || relPath === 'CLAUDE.md'
+        || relPath.startsWith('agents/')
+        || relPath.startsWith('rules/')
+        || relPath.startsWith('skills-catalog/')
+        || relPath.startsWith('.cursor/rules/')
+        || relPath.startsWith('.devin/rules/')
+        || /^scripts\/modules\/[^/]+\/skill\/SKILL\.md$/.test(relPath))
+    ));
+    assert.ok(docs.length > 0, 'expected generated agent-facing documentation to scan');
+    for (const relPath of docs) {
+      const content = fs.readFileSync(path.join(dir, relPath), 'utf8');
+      assert.doesNotMatch(content, authoringPath, `${relPath} leaks a Traffic One authoring-only src path`);
+      assert.doesNotMatch(
+        content,
+        /\$\{[A-Z][A-Z0-9_]*:-/,
+        `${relPath} embeds POSIX-only plugin-root parameter expansion`,
+      );
+    }
+
+    const gateSkills = fs.readdirSync(path.join(REPO_ROOT, 'src', 'modules'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(REPO_ROOT, 'src', 'modules', entry.name, 'skill', 'SKILL.md'))
+      .filter((filePath) => fs.existsSync(filePath));
+    for (const filePath of gateSkills) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const label = path.relative(REPO_ROOT, filePath);
+      assert.doesNotMatch(content, authoringPath, `${label} leaks a Traffic One authoring-only src path`);
+      assert.doesNotMatch(
+        content,
+        /\$\{[A-Z][A-Z0-9_]*:-/,
+        `${label} embeds POSIX-only plugin-root parameter expansion`,
+      );
+    }
+
+    const planGuard = fs.readFileSync(
+      path.join(REPO_ROOT, 'src', 'modules', 'plan-guard', 'skill', 'SKILL.md'),
+      'utf8',
+    );
+    const launcher = planGuard.match(/node -e "([^"\n]+)" materialize-project/)?.[1];
+    assert.ok(launcher, 'plan guard must include the portable materialize-project launcher');
+    const pluginRoot = path.join(dir, 'installed plugin with spaces');
+    fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginRoot, 'scripts', 'hook-runtime.cjs'),
+      "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
+      'utf8',
+    );
+    for (const [label, rootValue, cwd] of [
+      ['absolute root', pluginRoot, dir],
+      ['relative root', path.relative(dir, pluginRoot), dir],
+    ] as const) {
+      const launched: { status: number | null; stdout: string; stderr: string } = spawnSync(
+        process.execPath,
+        ['-e', launcher!, 'materialize-project'],
+        {
+          cwd,
+          encoding: 'utf8',
+          env: { ...process.env, TRAFFIC_ONE_PLUGIN_ROOT: rootValue },
+        },
+      );
+      assert.equal(launched.status, 0, `${label}: ${launched.stderr}`);
+      assert.deepEqual(JSON.parse(launched.stdout), ['materialize-project'], label);
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -223,7 +334,7 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
     ]) assert.match(orchestrator, new RegExp(`${heading}:`, 'i'));
     assert.match(orchestrator, /blocked\/nonterminal run[\s\S]{0,200}never enters Phase 5/i);
 
-    const installedRunStatus = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs';
+    const installedRunStatus = "'scripts','run-status.cjs'";
     const transitions = [
       '--status blocked --outcome review-cycle-cap',
       '--status blocked --outcome test-cycle-cap',
@@ -237,7 +348,8 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       ['orchestrator', orchestrator],
       ['prompt templates', testerPrompt],
     ] as const) {
-      assert.ok(content.includes(installedRunStatus), `${name} resolves the installed run-status helper`);
+      assert.ok(content.includes(installedRunStatus), `${name} resolves the installed run-status helper through Node`);
+      assert.ok(content.includes('--run-id "<run-id>"'), `${name} uses a shell-neutral run-id placeholder`);
       for (const transition of transitions) {
         assert.ok(content.includes(transition), `${name} documents ${transition}`);
       }
@@ -323,6 +435,70 @@ test('Cursor hook commands resolve the installed runtime from a foreign cwd and 
     });
     assert.notEqual(unresolved.status, 0, 'an unreplaced plugin-root token must fail closed');
     assert.equal(fs.existsSync(decoyMarker), false, 'missing token replacement must not fall back to the project runtime');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Claude, Codex, and Windsurf hook commands resolve plugin roots through the portable Node launcher', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-portable-hook-command-')));
+  const pluginRoot = path.join(dir, 'installed plugin with spaces');
+  const foreignCwd = path.join(dir, 'foreign workspace');
+  const decoyMarker = path.join(dir, 'project-decoy-ran');
+  const runtimeSource = [
+    "'use strict';",
+    "let stdin='';",
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data',(chunk)=>{stdin+=chunk;});",
+    "process.stdin.on('end',()=>{process.stdout.write(JSON.stringify({runtime:require('path').basename(__filename),args:process.argv.slice(2),root:process.env.TRAFFIC_ONE_PLUGIN_ROOT||'',host:process.env.TRAFFIC_ONE_HOST||'',cwd:process.cwd(),stdin}));});",
+  ].join('\n');
+  try {
+    fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(foreignCwd, 'scripts'), { recursive: true });
+    for (const runtime of ['hook-runtime.cjs', 'windsurf-hook-runtime.cjs']) {
+      fs.writeFileSync(path.join(pluginRoot, 'scripts', runtime), runtimeSource, 'utf8');
+      fs.writeFileSync(path.join(foreignCwd, 'scripts', runtime), [
+        "'use strict';",
+        `require('fs').writeFileSync(${JSON.stringify(decoyMarker)}, 'ran', 'utf8');`,
+        'process.exitCode=91;',
+      ].join('\n'), 'utf8');
+    }
+
+    const run = (command: string, rootKey: typeof PLUGIN_ROOT_ENV_KEYS[number]): Record<string, unknown> => {
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      for (const key of PLUGIN_ROOT_ENV_KEYS) delete env[key];
+      delete env.TRAFFIC_ONE_HOST;
+      env[rootKey] = pluginRoot;
+      const result = spawnSync(command, {
+        cwd: foreignCwd,
+        encoding: 'utf8',
+        env,
+        input: '{"portable":true}',
+        shell: true,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout) as Record<string, unknown>;
+    };
+
+    for (const rootKey of ['CLAUDE_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'] as const) {
+      assert.deepEqual(run(claudeCommand('check-plan-write'), rootKey), {
+        runtime: 'hook-runtime.cjs',
+        args: ['check-plan-write'],
+        root: pluginRoot,
+        host: '',
+        cwd: foreignCwd,
+        stdin: '{"portable":true}',
+      });
+    }
+    assert.deepEqual(run(windsurfCommand('pre_run_command'), 'TRAFFIC_ONE_PLUGIN_ROOT'), {
+      runtime: 'windsurf-hook-runtime.cjs',
+      args: ['pre_run_command', '--host=windsurf'],
+      root: pluginRoot,
+      host: 'windsurf',
+      cwd: foreignCwd,
+      stdin: '{"portable":true}',
+    });
+    assert.equal(fs.existsSync(decoyMarker), false, 'foreign workspace runtime must never execute');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

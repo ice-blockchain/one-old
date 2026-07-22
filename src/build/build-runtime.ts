@@ -12,6 +12,7 @@
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { copyModuleDescriptors } from './copy-module-assets';
@@ -113,11 +114,46 @@ export function buildLighthouse(outDir: string): void {
 
 export interface BuildResult { modulesCopied: number; assetsCopied: string[]; shimsWritten: string[]; lighthouseEmitted: boolean; }
 
-export function buildRuntime(outDir: string): BuildResult {
-  const resolvedOutDir = path.resolve(outDir);
-  if (resolvedOutDir === path.parse(resolvedOutDir).root || resolvedOutDir === REPO_ROOT) {
-    throw new Error(`refusing to clean unsafe runtime output directory: ${resolvedOutDir}`);
+function isWithin(parent: string, candidate: string): boolean {
+  const rel = path.relative(parent, candidate);
+  return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+}
+
+// Resolve existing ancestors before appending missing path segments. This keeps
+// a symlink placed inside an apparently safe temp path from redirecting cleanup
+// to an unrelated directory.
+function canonicalPath(target: string): string {
+  let existing = path.resolve(target);
+  const suffix: string[] = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    suffix.unshift(path.basename(existing));
+    existing = parent;
   }
+  const realExisting = fs.realpathSync.native(existing);
+  return path.resolve(realExisting, ...suffix);
+}
+
+/** Return the canonical output path or reject it before any destructive write. */
+export function assertSafeRuntimeOutput(outDir: string): string {
+  const candidate = canonicalPath(outDir);
+  // Deliberately do not follow a dist/scripts symlink here: an owned path that
+  // redirects outside the real repository must be rejected, not blessed.
+  const generatedScripts = path.join(fs.realpathSync.native(REPO_ROOT), 'dist', 'scripts');
+  if (isWithin(generatedScripts, candidate)) return candidate;
+
+  const tempRoot = canonicalPath(os.tmpdir());
+  if (isWithin(tempRoot, candidate) && candidate !== tempRoot) {
+    const firstSegment = path.relative(tempRoot, candidate).split(path.sep)[0]?.toLowerCase() ?? '';
+    if (firstSegment.startsWith('t1-') || firstSegment.startsWith('traffic-one-')) return candidate;
+  }
+
+  throw new Error(`refusing to clean unsafe runtime output directory: ${candidate}`);
+}
+
+export function buildRuntime(outDir: string): BuildResult {
+  const resolvedOutDir = assertSafeRuntimeOutput(outDir);
   // TypeScript never removes outputs whose source files were deleted. Rebuild
   // the complete scripts tree so no retired module or shim can survive an
   // incremental build merely because its old JavaScript file already exists.

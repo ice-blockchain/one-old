@@ -58,8 +58,11 @@ export function codexPluginManifest(version: string): Record<string, unknown> {
     description: CODEX_DESCRIPTION,
     author: { ...AUTHOR },
     skills: './skills/',
-    hooks: './hooks/hooks.json',
-    instructions: './AGENTS.md',
+    // Codex discovers hooks/hooks.json by convention. Keep the default instead
+    // of adding a redundant manifest override so the package also satisfies the
+    // strict ingestion validator used by the plugin publishing workflow.
+    // Project instructions are materialized into the end-user project by the
+    // runtime; `instructions` is not a supported Codex manifest field.
     mcpServers: './.mcp.json',
     interface: { ...CODEX_INTERFACE },
   };
@@ -104,9 +107,9 @@ export function agentsMarketplaceManifest(): Record<string, unknown> {
     plugins: [
       {
         name: NAME,
-        source: { source: 'local', path: './.' },
-        policy: { installation: 'AVAILABLE' },
-        category: 'Engineering',
+        source: { source: 'local', path: './plugins/traffic-one' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        category: 'Developer Tools',
       },
     ],
   };

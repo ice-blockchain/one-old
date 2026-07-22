@@ -44,6 +44,10 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
   const rawState = project.state && typeof project.state === 'object' ? project.state : null;
   const state = normalizedProjectState(project as unknown as Rec);
   const provider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+  const pluginUse = project.localPreferences?.pluginUse && typeof project.localPreferences.pluginUse === 'object'
+    ? project.localPreferences.pluginUse as Rec
+    : null;
+  const pluginExplicitlyDeclined = pluginUse?.enabled === false;
 
   if (sessionDiagnostics) {
     if (sessionDiagnostics.found === false) {
@@ -53,18 +57,13 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
         message: `Could not find Codex session ${sessionDiagnostics.id} under ${sessionDiagnostics.sessionsDir}.`,
       });
     } else {
-      if (sessionDiagnostics.hookPayloadCount === 0 && sessionDiagnostics.promptRequestCount === 0) {
+      if (sessionDiagnostics.hookPayloadCount === 0
+        && !pluginExplicitlyDeclined
+        && codexHooks?.pluginEnabled !== false) {
         findings.push({
-          severity: 'fix-needed',
-          code: 'CODEX_HOOKS_NOT_INVOKED_FOR_SESSION',
-          message: `Codex session ${sessionDiagnostics.id} contains no Traffic One hook payloads or prompt requests. Hooks likely did not run for cwd ${sessionDiagnostics.cwd || '(unknown)'}.`,
-        });
-      }
-      if (sessionDiagnostics.trafficOneInstructionInjected === false) {
-        findings.push({
-          severity: 'fix-needed',
-          code: 'TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED',
-          message: `Codex session ${sessionDiagnostics.id} did not receive Traffic One root instructions at session start. Skill metadata may still be visible, but plugin instructions were not active.`,
+          severity: 'info',
+          code: 'CODEX_HOOK_OUTPUT_NOT_OBSERVED_FOR_SESSION',
+          message: `Codex session ${sessionDiagnostics.id} contains no attributable Traffic One hook-output evidence for cwd ${sessionDiagnostics.cwd || '(unknown)'}. Hooks may have returned only intentional no-ops; use the config and trust findings to determine whether hooks were unavailable.`,
         });
       }
     }

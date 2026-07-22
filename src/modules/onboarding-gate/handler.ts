@@ -28,20 +28,25 @@ import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onb
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
 import { firstEmitThisSession } from '../../shared/once';
-import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-links';
+import { commitWizardLinksShown, wizardLinksShownWithin } from '../../shared/onboarding-server/wizard-links';
+import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { canonicalToolName, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, isTrafficOneDoctorCommand, parsedToolInput } from '../../shared/tool-classify';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
-import { onboardingDeclineCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
+import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import { cursorRunPolicyMissingTiers, ensureRunModelPolicy, runModelPolicyPath } from '../../shared/run-model-policy';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
+
+// Matches WIZARD_URL_TTL_MS in runners/onboarding-wait: links shown within this
+// window are "already in the conversation" and must not be re-printed.
+const WIZARD_LINKS_SHOWN_TTL_MS = 15 * 60 * 1000;
 
 export function onboardingGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
@@ -73,6 +78,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // both incomplete and complete flows so a child can never mint/rebase the
   // parent run policy or be sent back through onboarding.
   const identity = hookSessionIdentity(raw);
+  const syncSession = onboardingSyncSessionId(identity.sessionId);
   const workspaceRoot = asString(ctx.input.workspaceRoot);
   const cursorSessionRoot = isOnboardedProjectRoot(root)
     ? root
@@ -130,7 +136,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
       // a URL the user has not said yes to.
       if (usePluginQuestionPending(root)) return noop();
       if (ctx.host === 'cursor') {
-        const prepared = prepareOnboardingServer(root, ctx.host);
+        const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
         // The wait command is the recovery path when the hook sandbox itself
         // cannot launch the wizard. Never deny that recovery command merely
         // because the same restricted hook cannot pre-create its URL.
@@ -144,7 +150,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
             LOCAL_URL: server.localWizardUrl,
             WAIT_CMD: waitCommand,
           }));
-          commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl);
+          commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
           return result;
         }
       }
@@ -154,10 +160,10 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // Deny mutating work with the HOST-CHAT question — no wizard server, no
     // setup URL, until the user answers (yes → --use runs the normal wait).
     if (usePluginQuestionPending(root)) {
-      return deny(usePluginQuestion(root, ctx.host));
+      return deny(usePluginQuestion(root, ctx.host, undefined, syncSession));
     }
     const declineCmd = onboardingDeclineCommand(root, ctx.host);
-    const prepared = prepareOnboardingServer(root, ctx.host);
+    const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
     if (prepared.kind !== 'ready') {
       if (prepared.kind === 'start-failed' && isTrafficOneDoctorCommand(toolName, toolInput)) return noop();
       // Windsurf renders a denied read as a failed tool card. Its prompt hook
@@ -168,6 +174,9 @@ export function onboardingGate(ctx: Ctx): HookResult {
       return deny(prepared.reason);
     }
     const { server, waitCommand } = prepared;
+    // Every deny below prescribes the wait command; make sure the host's
+    // permission classifier will let it run without another interruption.
+    ensureOnboardingWaitPermission(root, ctx.host);
     const vars = {
       URL: server.dashboardUrl,
       LOCAL_URL: server.localWizardUrl,
@@ -189,7 +198,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
         + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.\n\n`
         + `If the user does not want Traffic One for this project, run instead: ${declineCmd}`,
       );
-      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl);
+      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
       return result;
     }
     if (ctx.host === 'windsurf') {
@@ -203,7 +212,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
       const result = first
         ? deny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, vars.LOCAL_URL, vars.WAIT_CMD)))
         : deny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, vars.LOCAL_URL, vars.WAIT_CMD)));
-      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl);
+      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
       return result;
     }
     // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
@@ -217,16 +226,28 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // (observed on Codex). One denied orientation call is the cost; the deny prose
     // itself says orientation is allowed and to open the wizard, so the agent
     // pivots immediately.
+    // Claude Code is the exception among these hosts: its prompt-hook context is
+    // reliable (the ask-first question already landed through it) and a denied
+    // read renders as a red failed-tool card, so orientation flows like on
+    // Windsurf and the walkthrough lands on the first mutating call instead.
+    if (ctx.host === 'claude' && isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
     if (firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId)) {
-      const result = deny(block('server-deny-reason', vars));
-      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl);
+      // The bootstrap banner (or session-start/prompt surface) may have shown
+      // the wizard links moments ago; ordering a re-print races the user
+      // finishing setup in the browser (observed: stale link re-shown seconds
+      // after completion). When links are already in the conversation, point
+      // at them and go straight to the wait command instead.
+      const result = wizardLinksShownWithin(root, server.token, WIZARD_LINKS_SHOWN_TTL_MS, syncSession)
+        ? deny(block('server-deny-reason-links-shown', vars))
+        : deny(block('server-deny-reason', vars));
+      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
       return result;
     }
     // Recipe already delivered this session → orientation flows; every further
     // non-orientation / mutating attempt repeats only the URL + wait-command.
     if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
     const result = deny(block('server-deny-reason-repeat', vars));
-    commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl);
+    commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
     return result;
   }
 

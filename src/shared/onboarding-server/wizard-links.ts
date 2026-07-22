@@ -1,10 +1,16 @@
 import { createHash } from 'crypto';
 
 import { emittedWithin, stampEmitMarker } from '../once';
+import { onboardingSyncSessionId } from './wait-command';
 
-function markerLabel(token: string): string {
-  const digest = createHash('sha256').update(token || 'pending', 'utf8').digest('hex').slice(0, 20);
-  return `wizard-links-shown-v2:${digest}`;
+function markerLabel(token: string, sessionId?: string | null): string {
+  // A wizard server/token is project-scoped and can outlive several host
+  // conversations. Suppression is conversation-scoped: a new task must receive
+  // its own clickable links even when it reuses the same live server. Hosts
+  // without a stable session id retain the legacy project/token scope.
+  const scope = onboardingSyncSessionId(sessionId) || 'session-unknown';
+  const digest = createHash('sha256').update(`${token || 'pending'}\0${scope}`, 'utf8').digest('hex').slice(0, 20);
+  return `wizard-links-shown-v3:${digest}`;
 }
 
 function emittedPayloadText(payload: unknown): string {
@@ -26,16 +32,22 @@ export function commitWizardLinksShown(
   payload: unknown,
   dashboardUrl: string,
   localWizardUrl: string,
+  sessionId?: string | null,
 ): boolean {
   if (!token || !dashboardUrl || !localWizardUrl) return false;
   const text = emittedPayloadText(payload);
   if (!text.includes(dashboardUrl) || !text.includes(localWizardUrl)) return false;
-  stampEmitMarker(cwd, markerLabel(token));
+  stampEmitMarker(cwd, markerLabel(token, sessionId));
   return true;
 }
 
-export function wizardLinksShownWithin(cwd: string, token: string, ttlMs: number): boolean {
-  return Boolean(token) && emittedWithin(cwd, markerLabel(token), ttlMs);
+export function wizardLinksShownWithin(
+  cwd: string,
+  token: string,
+  ttlMs: number,
+  sessionId?: string | null,
+): boolean {
+  return Boolean(token) && emittedWithin(cwd, markerLabel(token, sessionId), ttlMs);
 }
 
 export function wizardLinkLines(dashboardUrl: string, localWizardUrl: string): string[] {

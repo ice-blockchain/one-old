@@ -23,6 +23,7 @@ import {
   probeOpenCodeMcp,
   probeProject,
   probeSessionDiagnostics,
+  type SessionDiagnosticsResult,
 } from './probes';
 
 export { buildFindings } from './findings';
@@ -42,9 +43,20 @@ export {
   resolveCodexSession,
 } from './probes';
 
+export function selectDoctorProjectCwd(invocationCwd: string, sessionDiagnostics: SessionDiagnosticsResult): string {
+  const recordedCwd = sessionDiagnostics && sessionDiagnostics.found === true
+    && typeof sessionDiagnostics.cwd === 'string' && sessionDiagnostics.cwd.trim()
+    ? sessionDiagnostics.cwd
+    : invocationCwd;
+  return resolveProjectRoot(recordedCwd);
+}
+
 export function main(): void {
   const args = parseArgs();
-  const cwd = resolveProjectRoot(process.cwd());
+  // Resolve the incident first: `doctor --session` must not combine a target
+  // transcript with project prefs/trust from whichever directory invoked it.
+  const sessionDiagnostics = probeSessionDiagnostics(args.session);
+  const cwd = selectDoctorProjectCwd(process.cwd(), sessionDiagnostics);
   const node = probeNode();
   const nvm = probeNvm();
   const gitnexus = probeGitnexus();
@@ -53,7 +65,6 @@ export function main(): void {
   const auth = probeCanonicalAuth();
   const oneMcp = probeOneMcp();
   const openCodeMcp = probeOpenCodeMcp();
-  const sessionDiagnostics = probeSessionDiagnostics(args.session);
   const findings = buildFindings({ node, nvm, gitnexus, project, codexHooks, auth, oneMcp, openCodeMcp, sessionDiagnostics });
   const summary = findings.some((f) => f.severity === 'fix-needed')
     ? 'ACTION_NEEDED'

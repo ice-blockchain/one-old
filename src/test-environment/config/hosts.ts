@@ -25,13 +25,15 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     // events as they happen, so a long run killed by --timeout still leaves a
     // partial transcript (plain json only emits one blob at the very end, lost on
     // kill). bypassPermissions lets the agent act without prompts in the temp project.
-    runArgs: ['-p', '{PROMPT}', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions', '--model', '{MODEL}'],
+    // Exclude user-scoped plugin settings and load this run's freshly built
+    // dist directly. This bypasses Claude's version-keyed plugin cache while
+    // retaining normal auth, project settings, and local settings.
+    runArgs: ['--setting-sources', 'project,local', '--plugin-dir', '{DIST}', '-p', '{PROMPT}', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions', '--model', '{MODEL}'],
     outputFormat: 'stream-json',
     probeArgs: ['--version'],
-    installArgs: [
-      ['plugin', 'marketplace', 'add', '{DIST}'],
-      ['plugin', 'install', 'traffic-one@traffic-one'],
-    ],
+    installArgs: [],
+    currentDistProof: 'session-plugin-dir',
+    headlessSubagents: 'unsupported',
     defaultModelByTier: defaultModels('claude'),
     verified: true,
   },
@@ -41,13 +43,17 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     promptVia: 'arg',
     // DEFAULTS-TO-VERIFY: confirm `codex exec` accepts a positional prompt, the
     // --json envelope, and the correct sandbox-bypass flag for headless writes.
-    runArgs: ['exec', '--json', '--cd', '{CWD}', '--sandbox', 'danger-full-access', '-m', '{MODEL}', '{PROMPT}'],
+    // The isolated temp workspace is disposable, so explicitly bypass hook trust;
+    // otherwise Codex can withhold the newly installed plugin's hooks there.
+    runArgs: ['exec', '--json', '--cd', '{CWD}', '--sandbox', 'danger-full-access', '--dangerously-bypass-hook-trust', '-c', 'plugins."traffic-one@traffic-one-local".enabled=false', '-m', '{MODEL}', '{PROMPT}'],
     outputFormat: 'json',
     probeArgs: ['--version'],
     installArgs: [
-      ['plugin', 'marketplace', 'add', '{DIST}'],
-      ['plugin', 'add', 'traffic-one@traffic-one-local'],
+      ['plugin', 'marketplace', 'add', '{MARKETPLACE_ROOT}'],
+      ['plugin', 'add', 'traffic-one@{MARKETPLACE}'],
     ],
+    currentDistProof: 'host-install',
+    headlessSubagents: 'unsupported',
     defaultModelByTier: defaultModels('codex'),
     verified: false,
   },
@@ -62,12 +68,14 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     // for scripts) or `cursor-agent login` once. STILL verified:false because the
     // open question is whether headless cursor-agent loads the traffic-one plugin
     // (hooks/rules) — Cursor installs as a LIVE dir pointer via the in-editor
-    // `/add-plugin <dist>` (not scriptable), so installArgs is empty and
-    // build-and-install prints a reminder. A first run confirms plugin loading.
+    // `/add-plugin <dist>` (not scriptable), so this is the sole explicit
+    // release-harness exemption. Strict behavior assertions must still pass.
     runArgs: ['-p', '--force', '--output-format', 'text', '--model', '{MODEL}', '{PROMPT}'],
     outputFormat: 'text',
     probeArgs: ['--version'],
     installArgs: [],
+    currentDistProof: 'manual-live-pointer',
+    headlessSubagents: 'unsupported',
     defaultModelByTier: defaultModels('cursor'),
     // Keep host smoke runs on Cursor's `auto`: the exact per-account selector
     // variants are captured at onboarding and cannot be assumed by headless CI.
@@ -85,6 +93,8 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     outputFormat: 'json',
     probeArgs: ['--version'],
     installArgs: [],
+    currentDistProof: 'case-wrapper',
+    headlessSubagents: 'unsupported',
     defaultModelByTier: defaultModels('opencode'),
     verified: false,
   },
@@ -98,6 +108,8 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     outputFormat: 'json',
     probeArgs: ['--version'],
     installArgs: [],
+    currentDistProof: 'case-wrapper',
+    headlessSubagents: 'unsupported',
     defaultModelByTier: defaultModels('kilo'),
     verified: false,
   },

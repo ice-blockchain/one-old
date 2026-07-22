@@ -48,6 +48,7 @@ import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { agentOnboardingUrls } from '../../config/dashboard';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { commitWizardLinksShown, wizardLinksShownWithin } from '../../shared/onboarding-server/wizard-links';
+import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
@@ -353,6 +354,7 @@ export function announceWizardUrl(
   cwd: string,
   write: (s: string) => void = (s) => process.stdout.write(s),
   host: string = detectHost(),
+  sessionId?: string,
 ): void {
   try {
     const rec = readServerRecord(cwd, process.env, host);
@@ -363,7 +365,7 @@ export function announceWizardUrl(
     // already showed this exact link moments ago — repeating the full banner
     // renders the URL twice in the same turn (observed on Cursor). Keep a
     // compact wait line so the terminal output still explains the block.
-    if (wizardLinksShownWithin(cwd, rec.token, WIZARD_URL_TTL_MS)) {
+    if (wizardLinksShownWithin(cwd, rec.token, WIZARD_URL_TTL_MS, sessionId)) {
       write('\nWaiting for Traffic One setup to complete (hosted and local links shown above; this command keeps the turn open)…\n');
       return;
     }
@@ -381,10 +383,28 @@ export function announceWizardUrl(
       + '════════════════════════════════════════════════════════════════\n'
     );
     write(banner);
-    commitWizardLinksShown(cwd, rec.token, banner, urls.dashboardUrl, urls.localWizardUrl);
+    commitWizardLinksShown(cwd, rec.token, banner, urls.dashboardUrl, urls.localWizardUrl, sessionId);
   } catch {
     // best-effort — the wait still works without the banner
   }
+}
+
+// Bootstrap-only is itself a user-visible URL surface. Stamp the same
+// conversation marker as prompt/session/gate output before exiting so the
+// follow-up waiter prints only its compact "links shown above" line.
+export function bootstrapReadyOutput(
+  cwd: string,
+  token: string,
+  dashboardUrl: string,
+  localWizardUrl: string,
+  sessionId?: string,
+): string {
+  const localFallback = localWizardUrl
+    ? `If the hosted page is unavailable or returns 404, open the local wizard directly: ${localWizardUrl}\n`
+    : '';
+  const output = `TRAFFIC_ONE_SETUP_READY\nSetup link: ${dashboardUrl || localWizardUrl}\n${localFallback}`;
+  commitWizardLinksShown(cwd, token, output, dashboardUrl, localWizardUrl, sessionId);
+  return output;
 }
 
 // Cursor's Browser editor is not a script-opened browser window, so page JavaScript
@@ -568,12 +588,14 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   let launchError: unknown;
   let ensuredLocalUrl = '';
   let ensuredDashboardUrl = '';
+  let ensuredToken = '';
   try {
     if (!alreadyDone) {
       const server = ensureOnboardingServer(cwd, { host });
       if (server.localWizardUrl && !server.localWizardUrl.includes(':0/')) {
         ensuredLocalUrl = server.localWizardUrl;
         ensuredDashboardUrl = server.dashboardUrl;
+        ensuredToken = server.token;
       }
     }
   } catch (error) {
@@ -594,14 +616,21 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       process.stdout.write(`TRAFFIC_ONE_SETUP_BOOTSTRAP_FAILED\n\n${onboardingStartFailureReason(failure, host)}\n`);
       process.exit(2);
     }
+    // The follow-up wait command has a per-session argument tail the host's
+    // permission classifier may not recognize; pre-allow it while we are still
+    // inside this user-approved shell boundary.
+    ensureOnboardingWaitPermission(cwd, host);
     // `Setup link:` must carry the traffic.io dashboard deep link — the same URL
     // every other setup surface shows (observed on OpenCode: printing the raw
     // loopback URL here made the agent repost 127.0.0.1 instead of traffic.io).
     // The loopback wizard stays named as the fallback for a 404ing dashboard (A4).
-    const localFallback = ensuredLocalUrl
-      ? `If the hosted page is unavailable or returns 404, open the local wizard directly: ${ensuredLocalUrl}\n`
-      : '';
-    process.stdout.write(`TRAFFIC_ONE_SETUP_READY\nSetup link: ${ensuredDashboardUrl || ensuredLocalUrl}\n${localFallback}`);
+    process.stdout.write(bootstrapReadyOutput(
+      cwd,
+      ensuredToken,
+      ensuredDashboardUrl,
+      ensuredLocalUrl,
+      syncSessionFromArgv(argv),
+    ));
     process.exit(0);
   }
   // Windsurf opens the wizard before the prompt and runs this waiter inside the
@@ -624,7 +653,12 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     process.stdout.write(`${marker}\n\n${reason}\n`);
     process.exit(2);
   }
-  if (!argv.includes('--quiet-url')) announceWizardUrl(cwd, (s) => process.stdout.write(s), host);
+  if (!argv.includes('--quiet-url')) announceWizardUrl(
+    cwd,
+    (s) => process.stdout.write(s),
+    host,
+    syncSessionFromArgv(argv),
+  );
   const outcome = waitForOnboarding(cwd, {
     timeoutMs: positiveIntFlag(argv, '--timeout-ms') ?? undefined,
     intervalMs: positiveIntFlag(argv, '--interval-ms') ?? undefined,

@@ -88,7 +88,11 @@ existing files in place. Use the role-scoped Write/Edit tools for every file
 creation and edit; they create parent directories. Bash is read-only inspection
 or verification only: never use `mkdir`, redirection, `cat <<`, `tee`, `cp`,
 `mv`, or a script to create or modify project files. In a team run those shell
-writes are deliberately blocked because ownership cannot be verified.
+writes are deliberately blocked because ownership cannot be verified. When an
+inspection command verifies that a file does NOT exist yet (an expected-absence
+pre-check such as `ls .traffic-one/plan.md` before you write it), end the
+command exit-0 — append `|| true` or a final `echo ok` — otherwise the host
+renders your successful check as a failed tool call in the user's transcript.
 
 ### Required workspace scaffold (stack=default OR frontend=react-vite)
 
@@ -255,7 +259,7 @@ Patterns are project-relative, `/`-separated; a trailing `/` is a directory pref
 Derive the partition from REAL paths, never guessed directory names:
 - Existing project: classify the directories you actually read in the tree (where routes/components/controllers/migrations live for THIS repo's stack — Next.js `src/app`, Laravel `app/Http` + `routes` + `database`, Django `*/views.py` + `*/migrations`, Flutter `lib/`, etc.).
 - New project: derive from the Module map you just designed (the apps/packages/services you will scaffold).
-- Optional starting point: `proposeLayoutSeed(state)` in `src/shared/stack-layout.ts` returns default seeds per stack id, but you MUST override them with the repo's real paths; unknown stacks return `[]` and you write the observed/designed paths yourself. Correctness must not depend on this helper.
+- Optional starting point: use the selected stack in `.traffic-one/.one.json` to seed likely module boundaries, then override every guess with paths observed in the repository or explicitly created by this plan. Unknown stacks require you to write the observed/designed paths yourself; correctness must never depend on an authoring-repository helper.
 
 Guarantees you must uphold (the gate trusts the manifest):
 - **Disjoint** — no path belongs to two roles' scopes. Use `exclude` to split a shared subtree (e.g. backend owns `src/app/api/`, frontend owns the rest of `src/app/`).

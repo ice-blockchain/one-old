@@ -7,6 +7,7 @@
 import { toolClassForRawName } from '../core/events';
 import type { CanonicalEvent, HostId, ToolInput } from '../core/types';
 import { patchTextFromToolInput } from '../shared/apply-patch';
+import { codexHookEvidenceMarker, isCodexHookEvent, markCodexHookContext } from '../shared/codex-hook-evidence';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, asString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
@@ -70,10 +71,13 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
     serialize(result, input) {
       if (result.kind === 'noop') return '';
       if (result.kind === 'context') {
+        const additionalContext = id === 'codex' && isCodexHookEvent(input.event)
+          ? markCodexHookContext(input.event, result.context)
+          : result.context;
         return JSON.stringify({
           ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
           ...(result.promptRequest !== undefined ? { promptRequest: result.promptRequest } : {}),
-          hookSpecificOutput: { hookEventName: input.event, additionalContext: result.context },
+          hookSpecificOutput: { hookEventName: input.event, additionalContext },
         });
       }
       return JSON.stringify({
@@ -83,7 +87,11 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
           permissionDecisionReason: result.reason,
-          ...(result.context ? { additionalContext: result.context } : {}),
+          ...(id === 'codex'
+            ? { additionalContext: result.context
+              ? markCodexHookContext('PreToolUse', result.context)
+              : codexHookEvidenceMarker('PreToolUse') }
+            : (result.context ? { additionalContext: result.context } : {})),
         },
       });
     },

@@ -15,6 +15,10 @@ import {
 import { DEVIN_NATIVE_HOOKS, WINDSURF_HOOK_EVENTS } from '../../../config/windsurf-host';
 import { devinUserHookCommand, windsurfUserHookCommand } from '../../../shared/windsurf-hook-command';
 
+function legacyShellQuote(value: string): string {
+  return `"${value.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
 function withHome(fn: (env: NodeJS.ProcessEnv) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-host-'));
   try {
@@ -55,13 +59,14 @@ test('install preserves custom Cascade entries, refreshes owned entries, and is 
     const oldPluginRoot = path.join(path.dirname(env.TRAFFIC_ONE_PLUGIN_ROOT!), 'old-plugin');
     const stamp = path.join(env.HOME!, '.traffic-one', 'windsurf-plugin-root');
     const nearCollision = 'node "/other/plugin/scripts/windsurf-hook-runtime.cjs" pre_run_command --host=windsurf';
+    const legacyOwned = `TRAFFIC_ONE_PLUGIN_ROOT=${legacyShellQuote(oldPluginRoot)} TRAFFIC_ONE_HOST=windsurf node ${legacyShellQuote(path.join(oldPluginRoot, 'scripts', 'windsurf-hook-runtime.cjs'))} pre_run_command --host=windsurf`;
     fs.mkdirSync(path.dirname(stamp), { recursive: true });
     fs.writeFileSync(stamp, `${oldPluginRoot}\n`, 'utf8');
     fs.mkdirSync(path.dirname(hooksFile), { recursive: true });
     fs.writeFileSync(hooksFile, JSON.stringify({ hooks: { pre_run_command: [
       { command: 'python3 custom.py' },
       { command: nearCollision },
-      { command: windsurfUserHookCommand(oldPluginRoot, 'pre_run_command') },
+      { command: legacyOwned },
     ] } }, null, 2), 'utf8');
     assert.equal(installWrapper(env, ['install', '--yes']).code, 0);
     assert.equal(installWrapper(env, ['install', '--yes']).code, 0);
@@ -69,7 +74,7 @@ test('install preserves custom Cascade entries, refreshes owned entries, and is 
     const entries = hooks.hooks.pre_run_command ?? [];
     assert.equal(entries.filter((entry) => entry.command === 'python3 custom.py').length, 1);
     assert.equal(entries.filter((entry) => entry.command === nearCollision).length, 1);
-    assert.equal(entries.filter((entry) => entry.command === windsurfUserHookCommand(oldPluginRoot, 'pre_run_command')).length, 0);
+    assert.equal(entries.filter((entry) => entry.command === legacyOwned).length, 0);
     assert.equal(entries.filter((entry) => entry.command === windsurfUserHookCommand(env.TRAFFIC_ONE_PLUGIN_ROOT!, 'pre_run_command')).length, 1);
   });
 });

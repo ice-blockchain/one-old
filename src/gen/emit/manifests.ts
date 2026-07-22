@@ -12,7 +12,7 @@ import {
 import { pluginVersion } from '../../config/plugin-identity';
 import type { GenRun } from '../lib/run';
 import { generatedAgents } from './agents';
-import { PLUGIN_ROOT_EXPR } from '../sources/hooks';
+import { PLUGIN_ROOT_ENV_KEYS } from '../sources/hooks';
 import {
   agentsMarketplaceManifest,
   claudeMarketplaceManifest,
@@ -47,16 +47,16 @@ export function emitMcp(
     registration: publicRegistrationActive,
     reporting: false,
   }, publicEndpoint, liveManifestVerified);
-  const bundledWorker = openCodeMcpServerEntry(PLUGIN_ROOT_EXPR);
+  const bundledWorker = openCodeMcpServerEntry(PLUGIN_ROOT_ENV_KEYS);
   // Shared by Claude, Cursor, and Codex. The public server is deliberately
   // absent because those plugin formats cannot hide its AI-facing tools while
   // leaving the endpoint available to the hook runtime.
   run.json('.mcp.json', {
     mcpServers: {
-      // The bundled OpenCode delegate. Launched via stdio (sh -c, so the shared
-      // plugin-root chain expands) — a host-spawned subprocess runs OUTSIDE the
-      // per-tool-call sandbox, which is what lets OpenCode reach the network +
-      // git that the orchestrator's own (sandboxed) shell cannot.
+      // The bundled OpenCode delegate. Launched via stdio through a portable
+      // Node bootstrap that resolves the shared plugin-root chain — the host-spawned
+      // process runs OUTSIDE the per-tool-call sandbox, which is what lets OpenCode
+      // reach the network + git that the orchestrator's own (sandboxed) shell cannot.
       [OPENCODE_MCP_SERVER_KEY]: bundledWorker,
     },
   });

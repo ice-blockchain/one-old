@@ -114,6 +114,37 @@ test('accepts a complete passing route matrix with confined mobile and desktop s
   }
 });
 
+test('accepts second-precision generatedAt and names the failing field on schema rejection', () => {
+  const item = fixture();
+  try {
+    const secondPrecision = { ...item.report, generatedAt: '2026-07-20T12:01:00Z' };
+    writeCanonicalReport(item, secondPrecision);
+    assert.equal(readQaReportV1(item.root, RUN_ID, { nowMs: NOW_MS }).ok, true);
+
+    const rolledOver = { ...item.report, generatedAt: '2026-02-30T12:00:00Z' };
+    assert.equal(validateQaReportV1(rolledOver, item.root, RUN_ID, { nowMs: NOW_MS }).code, 'invalid-schema');
+
+    const offsetIso = validateQaReportV1(
+      { ...item.report, generatedAt: '2026-07-20T15:01:00+03:00' },
+      item.root,
+      RUN_ID,
+      { nowMs: NOW_MS },
+    );
+    assert.equal(offsetIso.ok, false);
+    if (!offsetIso.ok) assert.match(offsetIso.message, /first invalid field: generatedAt/);
+
+    const badViewport = structuredClone(item.report) as unknown as {
+      routes: Array<{ viewports: Array<Record<string, unknown>> }>;
+    };
+    badViewport.routes[0]!.viewports[1]!.consoleErrorCount = -1;
+    const nested = validateQaReportV1(badViewport, item.root, RUN_ID, { nowMs: NOW_MS });
+    assert.equal(nested.ok, false);
+    if (!nested.ok) assert.match(nested.message, /routes\[0\]\.viewports\[1\]\.consoleErrorCount/);
+  } finally {
+    item.cleanup();
+  }
+});
+
 test('fails closed on malformed JSON, malformed schema, and unknown fields', () => {
   const item = fixture();
   try {

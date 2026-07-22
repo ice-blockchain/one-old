@@ -14,8 +14,9 @@ import { ALL_CATEGORIES, ALL_HOSTS, defaultConfig } from './config/test-config';
 import { ALL_CASES } from './config/cases';
 import { discoverAssertions } from './assertions/registry';
 import { preflight } from './core/preflight';
-import { buildAndInstall } from './core/build-and-install';
+import { buildAndInstall, cleanupBuildInstall, type BuildResult } from './core/build-and-install';
 import { runCase, reassertCase } from './core/case-runner';
+import { releaseResultFailed } from './core/result-policy';
 import { writeReport } from './reporting/aggregate-report';
 import { runVerdict } from './reporting/verdict';
 import type { CaseRunResult as CaseRunResultType, HostRunResult } from './core/types';
@@ -87,6 +88,15 @@ interface PlannedRun {
   targets: (HostId | 'pure-node')[];
 }
 
+function cleanupReleaseInstall(build: BuildResult): boolean {
+  const cleanup = cleanupBuildInstall(build);
+  for (const note of cleanup.notes) console.log(`  cleanup: ${note}`);
+  for (const failure of cleanup.failures) {
+    console.error(`release-install cleanup failed (${failure.host}): ${failure.detail}`);
+  }
+  return cleanup.failures.length === 0;
+}
+
 function selectRuns(config: RootTestConfig): PlannedRun[] {
   const runs: PlannedRun[] = [];
   for (const c of ALL_CASES) {
@@ -133,8 +143,8 @@ async function reassertRun(
 
   const summary = writeReport(out, config, startedAt, dir);
   console.log(`\nreport: ${summary.reportPath}`);
-  console.log(`assertions: PASS ${summary.pass} · FAIL ${summary.fail} · SKIP ${summary.skip} · INCONCLUSIVE ${summary.inconclusive}`);
-  return summary.fail > 0 || (config.strict && summary.skip + summary.inconclusive > 0) ? 1 : 0;
+  console.log(`assertions: PASS ${summary.pass} · FAIL ${summary.fail} · SKIP ${summary.skip} · INCONCLUSIVE ${summary.inconclusive} · UNSUPPORTED ${summary.unsupported}`);
+  return releaseResultFailed(summary, config.strict) ? 1 : 0;
 }
 
 // Best-effort `latest` symlink → newest run, for quick access. All runs are kept.
@@ -198,46 +208,64 @@ async function main(): Promise<number> {
 
   // Build + install only when host-e2e runs are planned.
   let distRoot = '';
+  let releaseBuild: BuildResult | null = null;
   if (anyE2E) {
     const build = buildAndInstall(config, [...e2eHosts]);
+    releaseBuild = build;
     distRoot = build.distRoot;
-    console.log(`build: dist=${distRoot} built=${build.built} installed=[${build.installed.join(', ')}]`);
+    console.log(`build: dist=${distRoot} fingerprint=${build.distFingerprint || 'unavailable'} built=${build.built} installed=[${build.installed.join(', ')}] session=[${build.sessionProof.join(', ')}] per-case=[${build.perCaseProof.join(', ')}] exempted=[${build.exempted.join(', ')}]`);
     for (const n of build.notes) console.log(`  note: ${n}`);
     if (config.build.refreshDist && !build.built) {
       console.error('dist build failed — aborting host-e2e run.');
+      cleanupReleaseInstall(build);
+      return 2;
+    }
+    if (!build.currentDistReady) {
+      for (const failure of build.currentDistFailures) {
+        console.error(`current-dist proof failed (${failure.host}): ${failure.detail}`);
+      }
+      console.error('selected hosts are not proven to use the current dist — aborting host-e2e run.');
+      cleanupReleaseInstall(build);
       return 2;
     }
   }
 
-  const assertions = discoverAssertions();
-  console.log(`assertions: ${[...assertions.keys()].join(', ')}`);
+  let exitCode = 0;
+  let cleanupOk = true;
+  try {
+    const assertions = discoverAssertions();
+    console.log(`assertions: ${[...assertions.keys()].join(', ')}`);
 
-  // Execute (serial — in-process state isolation assumes concurrency 1).
-  const results: CaseRunResult[] = [];
-  for (const p of planned) {
-    const testCase = caseById.get(p.caseId);
-    if (!testCase) continue;
-    for (const target of p.targets) {
-      process.stdout.write(`run ${p.caseId} @ ${target} ... `);
-      const r = await runCase(testCase, target, config, distRoot, assertions, runDir);
-      const f = r.assertions.filter((a) => a.status === 'FAIL').length;
-      console.log(f > 0 ? `FAIL (${f})` : 'ok');
-      results.push(r);
+    // Execute (serial — in-process state isolation assumes concurrency 1).
+    const results: CaseRunResult[] = [];
+    for (const p of planned) {
+      const testCase = caseById.get(p.caseId);
+      if (!testCase) continue;
+      for (const target of p.targets) {
+        process.stdout.write(`run ${p.caseId} @ ${target} ... `);
+        const r = await runCase(testCase, target, config, distRoot, assertions, runDir);
+        const f = r.assertions.filter((a) => a.status === 'FAIL').length;
+        console.log(f > 0 ? `FAIL (${f})` : 'ok');
+        results.push(r);
+      }
     }
+
+    const summary = writeReport(results, config, startedAt, runDir);
+    updateLatestPointer(config.runsRoot, runDir);
+    console.log(`\nrun dir: ${runDir}`);
+    console.log(`report: ${summary.reportPath}`);
+    console.log(`assertions: PASS ${summary.pass} · FAIL ${summary.fail} · SKIP ${summary.skip} · INCONCLUSIVE ${summary.inconclusive} · UNSUPPORTED ${summary.unsupported}`);
+
+    const verdict = await runVerdict(config, distRoot, runDir);
+    if (verdict.ran) console.log(`verdict (${verdict.host}): ${verdict.status}${verdict.verdictPath ? ` → ${verdict.verdictPath}` : ` — ${verdict.note}`}`);
+    else if (verdict.note) console.log(`verdict: ${verdict.note}`);
+
+    const failed = releaseResultFailed(summary, config.strict);
+    exitCode = failed ? 1 : 0;
+  } finally {
+    if (releaseBuild) cleanupOk = cleanupReleaseInstall(releaseBuild);
   }
-
-  const summary = writeReport(results, config, startedAt, runDir);
-  updateLatestPointer(config.runsRoot, runDir);
-  console.log(`\nrun dir: ${runDir}`);
-  console.log(`report: ${summary.reportPath}`);
-  console.log(`assertions: PASS ${summary.pass} · FAIL ${summary.fail} · SKIP ${summary.skip} · INCONCLUSIVE ${summary.inconclusive}`);
-
-  const verdict = await runVerdict(config, distRoot, runDir);
-  if (verdict.ran) console.log(`verdict (${verdict.host}): ${verdict.status}${verdict.verdictPath ? ` → ${verdict.verdictPath}` : ` — ${verdict.note}`}`);
-  else if (verdict.note) console.log(`verdict: ${verdict.note}`);
-
-  const failed = summary.fail > 0 || (config.strict && summary.skip + summary.inconclusive > 0);
-  return failed ? 1 : 0;
+  return cleanupOk ? exitCode : 2;
 }
 
 main().then((code) => { process.exitCode = code; }).catch((e) => {

@@ -64,6 +64,7 @@ work already started, pause at the next safe point, resolve it, then continue.
 - **Kilo spawn — OpenCode-compatible hook path, built-in Task worker plus role contract.** Use Kilo's writable `task` subagent type `general`, always include `[t1-role: senior-<role>]` as the FIRST line, and immediately tell the child to read `.kilo/agents/senior-<role>.md` before acting. That file carries the full Traffic One role contract; it is not a Kilo Task type name in this host build. Omit `model` so Kilo inherits the model selected for the active session or agent. Do not use `explore`, and do not switch to main-agent simulation: `general` with the marker-and-contract protocol is the supported Kilo subagent path.
 - Subagents do not inherit the parent's skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
 - **In subagents mode, a first spawn that is DENIED or "Couldn't start" → RE-SPAWN it once, do NOT build the role inline.** The very first spawn (usually the architect) commonly hits a one-time *readiness* deny: the gate converges materialization on the first gated call and denies-for-retry (deny prose: "rerun the same agent spawn now; materialization is current"). Cursor renders this as a terse "New subagent — Couldn't start". It is NOT a real failure — re-issue the SAME spawn and it succeeds. Treating it as terminal and implementing the role yourself silently breaks subagents mode (the parent must not write feature source). Only after a re-spawn ALSO fails is the spawn tool genuinely broken.
+- **Spawn dies instantly with a `git … origin/HEAD` error (remote-less repo).** Some hosts inject startup git context into subagents that assumes an `origin` remote; a fresh Traffic One scaffold has none, so the subagent (observed: the reviewer) aborts before producing a transcript. Recovery recipe: create a temporary local ref — `git update-ref refs/remotes/origin/HEAD "$(git rev-parse HEAD)"` — re-issue the SAME spawn (it now resolves), and delete the ref during settlement cleanup with `git update-ref -d refs/remotes/origin/HEAD` so the user's repo stays pristine. Never add a real remote and never treat the dead spawn's claim as active (a superseding spawn releases it).
 - If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). Simulate the same roles manually (same dependency order, mirrored `00-agent-senior-*` role contexts) ONLY when Low is chosen (`team.mode: "main-agent"`) or the spawn tool genuinely errors at runtime AFTER a re-spawn (per the bullet above) — all supported hosts expose a callable subagent tool, so never simulate merely because the project-scoped global OpenCode agent is temporarily missing (restart OpenCode so `~/.config/opencode/agents/` reloads) or because Kilo custom agent files are not Task types (use `general` and the materialized role contract).
 - Role → write-scope mapping (use a writer-capable agent for implementers, scoped to its owned area; a read-only agent for the reviewer). For implementers the AUTHORITATIVE scope is the role's entry in the per-run assignments manifest `.traffic-one/runs/<runId>/assignments.json` (authored by the architect in Phase 1, enforced by the run-team gate). The lines below are the human summary:
   - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, docs, the per-run `assignments.json` manifest, and required workspace scaffold files. It may create empty package `src/index.ts` barrels as scaffold only; filling them is implementer-owned.
@@ -372,7 +373,7 @@ role agent has failed unrecoverably, persist `failed/agent-failed` before the
 final blocked-style summary:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status failed --outcome agent-failed
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status failed --outcome agent-failed
 ```
 
 Do not use `agent-failed` for reviewer/tester cycle caps or environment/browser,
@@ -508,7 +509,7 @@ After 2 unsuccessful cycles, record the cap before escalating to the user with
 both diffs and the latest review:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome review-cycle-cap
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome review-cycle-cap
 ```
 
 ### Phase 3b — Tester fix loop (capped at 2 cycles)
@@ -531,14 +532,14 @@ code caused them. For any environment blocker that will remain unresolved at
 the end of this turn, persist it before showing the blocked summary:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome environment-blocked
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome environment-blocked
 ```
 
 After 2 unsuccessful implementation/test fix cycles, record the cap and then
 escalate to the user:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome test-cycle-cap
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome test-cycle-cap
 ```
 
 ### Phase 3c — Parent integration pass (visual builds)
@@ -614,7 +615,7 @@ Before the maintenance stamp, settle the terminal run idempotently. If the
 shipper actually completed the deploy and wrote its successful digest, use:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status completed --outcome shipped
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome shipped
 ```
 
 Never issue `completed/shipped` from deploy intent or a textual claim alone.
@@ -622,7 +623,7 @@ For an unshipped run, independently validate the strict reviewer + tester + QA
 or backend-only combination, then use:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status completed --outcome verified
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome verified
 ```
 
 Do not use `completed/verified` merely because the digest text contains green
@@ -757,7 +758,7 @@ the authorized resume before continuing. Run this only after the user has
 explicitly authorized the extra cycle:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status active --reason user-authorized-extra-cycle
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
 ```
 
 ## Handoff back to user

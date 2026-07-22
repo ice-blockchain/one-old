@@ -17,6 +17,20 @@ export type Category =
 // host-e2e   → drives a real host CLI headlessly against a seeded temp project.
 export type RunLayer = 'host-e2e' | 'pure-node';
 
+// How a host-e2e run proves that it is exercising the freshly built dist.
+// `host-install` runs installArgs against a content-addressed marketplace before
+// the suite; `session-plugin-dir` loads the selected dist directly for the host
+// process; `case-wrapper` installs it into each isolated case environment;
+// `manual-live-pointer` is reserved for Cursor, whose editor-only `/add-plugin`
+// flow cannot be automated and therefore needs an on-disk runtime fingerprint.
+export type CurrentDistProof = 'host-install' | 'session-plugin-dir' | 'case-wrapper' | 'manual-live-pointer';
+
+// Some headless host entrypoints cannot expose the interactive host's subagent
+// primitive. That is a host capability gap, not evidence that a loaded plugin
+// failed. Runtime fingerprint/materialization assertions independently prove
+// that the plugin loaded before this exemption can apply.
+export type HeadlessSubagentSupport = 'supported' | 'unsupported' | 'unknown';
+
 export type ProjectMode = 'new-project' | 'existing-codebase';
 
 export type FixtureKind =
@@ -70,7 +84,8 @@ export interface Case {
 
 // Per-host command template. Everything a driver needs is data here, so the
 // maintainer can fix a flag without touching code. Tokens substituted at run
-// time: {PROMPT} {PROMPT_FILE} {CWD} {MODEL} {OUTPUT_FORMAT} {DIST}.
+// time: {PROMPT} {PROMPT_FILE} {CWD} {MODEL} {OUTPUT_FORMAT} {DIST}; install
+// commands may additionally use {MARKETPLACE_ROOT} and {MARKETPLACE}.
 export interface HostCommandConfig {
   bin: string; // 'claude' | 'codex' | 'cursor-agent'
   promptVia: 'arg' | 'stdin' | 'file';
@@ -78,6 +93,10 @@ export interface HostCommandConfig {
   outputFormat?: string;
   probeArgs?: string[]; // presence probe; default ['--version']
   installArgs?: string[][]; // idempotent install/update commands, run in order
+  // Required for every host selected for E2E. Missing/invalid proof is a
+  // release-gate failure rather than an implicit best-effort skip.
+  currentDistProof?: CurrentDistProof;
+  headlessSubagents?: HeadlessSubagentSupport;
   defaultModelByTier?: Partial<Record<'highest' | 'balanced' | 'cheapest', string>>;
   // Fixed model for harness runs, bypassing tier resolution. Use when the
   // plugin's model-tiers table may be stale for this host (e.g. 'auto' for
@@ -104,14 +123,14 @@ export interface RootTestConfig {
   // ~/traffic-one-test-runs. All runs are kept; clear them manually.
   runsRoot: string;
   isolateStateHome: boolean;
-  strict: boolean; // SKIP/INCONCLUSIVE count as failure
+  strict: boolean; // SKIP/INCONCLUSIVE count as failure; declared UNSUPPORTED capability does not
   dryRun: boolean;
   caseFilter?: string[]; // explicit case ids
   hosts: Record<HostId, HostCommandConfig>;
   envOverrides: Record<string, string>;
 }
 
-export type AssertionStatus = 'PASS' | 'FAIL' | 'SKIP' | 'INCONCLUSIVE';
+export type AssertionStatus = 'PASS' | 'FAIL' | 'SKIP' | 'INCONCLUSIVE' | 'UNSUPPORTED';
 
 export interface AssertionResult {
   id: string;
@@ -170,6 +189,7 @@ export interface AssertionContext {
   testCase: Case;
   spec: AssertionSpec;
   hostResult: HostRunResult;
+  hostConfig?: HostCommandConfig;
 }
 
 export interface Assertion {

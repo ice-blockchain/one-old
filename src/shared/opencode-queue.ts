@@ -511,7 +511,11 @@ export function openCodeQueuePolicyReport(units: PlanDelegationUnit[]): OpenCode
     if (mentionsInlineDependencyField(unit.task)) {
       add(`OpenCode unit \`${unit.id}\` puts a dependency marker inside task text; add it as a pipe-delimited \`depends:\` field instead`, unit.id);
     }
-    if (mentionsTestWork(unit.task) && !allowsTestOrConfigPath(unit.allowedFiles)) {
+    // Docs-only units document commands rather than perform them (same rationale
+    // as the dependency exemption above): a CONTRIBUTING.md draft saying "run
+    // `pnpm test` before a PR" is prose, not test work — its allowlist already
+    // confines it to documentation files (observed false-deny on a root-docs unit).
+    if (!isDocsOnlyUnit(unit) && mentionsTestWork(unit.task) && !allowsTestOrConfigPath(unit.allowedFiles)) {
       add(`OpenCode unit \`${unit.id}\` mentions tests/testability but its files allowlist does not include exact test/spec/config paths; either add those paths explicitly or remove the test acceptance criteria`, unit.id);
     }
     for (const allowed of unit.allowedFiles) {

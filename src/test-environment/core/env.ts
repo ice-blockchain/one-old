@@ -7,6 +7,12 @@
 import * as path from 'path';
 
 import type { HostId, RootTestConfig } from './types';
+import {
+  readDistRuntimeProof,
+  RUNTIME_PROOF_ENTRY_ENV,
+  RUNTIME_PROOF_FILE_ENV,
+  RUNTIME_PROOF_TOKEN_ENV,
+} from './current-dist';
 
 export interface CaseEnv {
   [key: string]: string;
@@ -25,6 +31,10 @@ export function buildCaseEnv(
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(caseFolder, 'state', 'preferences.json'),
     // Never pop the onboarding HTTP wizard during a headless/seeded run.
     TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
+    // Pin the auth mode even when it is off. Production defaults auth to on
+    // when this variable is absent, and the harness must not inherit that
+    // default (or an ambient maintainer setting) for isolated cases.
+    TRAFFIC_ONE_AUTH: config.auth,
     // Pure-node runs execute inside whichever host launched the maintainer test
     // process. Pin them to Claude so Codex/Cursor ambient markers cannot seed
     // preferences under the wrong host. Host-E2E runs overwrite this below.
@@ -33,7 +43,18 @@ export function buildCaseEnv(
 
   // Force runtime scripts to resolve to the freshly built dist tree (e2e only;
   // empty for pure-node, where an empty value is correctly ignored by pluginRoot()).
-  if (distRoot) env.TRAFFIC_ONE_PLUGIN_ROOT = distRoot;
+  if (distRoot) {
+    env.TRAFFIC_ONE_PLUGIN_ROOT = distRoot;
+    const proof = readDistRuntimeProof(distRoot);
+    if (proof && host !== 'pure-node') {
+      const entry = proof.entries[host];
+      if (entry) {
+        env[RUNTIME_PROOF_FILE_ENV] = path.join(caseFolder, 'runtime-proof.json');
+        env[RUNTIME_PROOF_TOKEN_ENV] = proof.token;
+        env[RUNTIME_PROOF_ENTRY_ENV] = entry;
+      }
+    }
+  }
 
   if (config.isolateStateHome) {
     // Redirects ~/.traffic-one (machine settings incl. codeGraphProvider, one-uid)
@@ -48,7 +69,6 @@ export function buildCaseEnv(
   }
 
   if (config.auth === 'on') {
-    env.TRAFFIC_ONE_AUTH = 'on';
     env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp'; // dead port
   }
 

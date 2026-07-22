@@ -209,6 +209,42 @@ test('resuming a legacy run advances the strict QA freshness watermark', () => {
   }
 });
 
+test('whole-second QA timestamps use report mtime at a millisecond activation boundary', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-second-boundary-'));
+  try {
+    const runId = 'whole-second-boundary-ui';
+    const ledger = ensureRunLedger(dir, runId, { status: 'active' });
+    const activatedAtMs = Math.floor(Date.now() / 1000) * 1000 + 500;
+    const runFile = path.join(dir, '.traffic-one', 'runs', runId, 'run.json');
+    fs.writeFileSync(runFile, JSON.stringify({
+      ...ledger,
+      createdAt: new Date(activatedAtMs).toISOString(),
+      qaContractActivatedAt: new Date(activatedAtMs).toISOString(),
+    }));
+    writeDigest(dir, runId, 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    const frontendFile = path.join(dir, '.traffic-one', 'digests', runId, 'frontend.md');
+    const testerFile = path.join(dir, '.traffic-one', 'digests', runId, 'tester.md');
+    fs.utimesSync(frontendFile, new Date(activatedAtMs), new Date(activatedAtMs));
+
+    const generatedAt = new Date(Math.floor(activatedAtMs / 1000) * 1000)
+      .toISOString()
+      .replace('.000Z', 'Z');
+    const reportFile = writePassingQaReport(dir, runId, { generatedAt });
+    fs.utimesSync(reportFile, new Date(activatedAtMs - 1), new Date(activatedAtMs - 1));
+    fs.utimesSync(testerFile, new Date(activatedAtMs + 20), new Date(activatedAtMs + 20));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a whole-second value does not bypass freshness when the report file predates activation');
+
+    fs.utimesSync(reportFile, new Date(activatedAtMs + 10), new Date(activatedAtMs + 10));
+    assert.equal(runReachedTerminalVerdict(dir, runId), true,
+      'the canonical file mtime proves same-second evidence was written after activation');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a parent-browser replacement needs a later tester digest re-attestation', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-parent-reattest-'));
   try {
@@ -924,6 +960,159 @@ test('claimThreadRole stakes a role claim keyed by thread id; a child write reso
 
     // Idempotent.
     assert.equal(claimThreadRole(dir, state, FRONTEND_THREAD, 'senior-frontend')?.sessionId, FRONTEND_THREAD);
+  });
+});
+
+test('a released claim reactivates in place on resume — metadata intact, release markers cleared', () => {
+  withPrefs((dir) => {
+    const state = { ...materializedState(), currentRunId: '1784600000001' };
+    const first = claimThreadRole(dir, state, FRONTEND_THREAD, 'senior-frontend', {
+      parentSessionId: 'orchestrator',
+      model: 'opus',
+    });
+    assert.ok(first);
+    const runId = String(first!.runId);
+    assert.equal(releaseRunClaims(dir, runId, 'interrupt-sweep'), 1);
+    const claimFile = path.join(dir, '.traffic-one', 'runs', runId, `${FRONTEND_THREAD}.json`);
+    const released = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    const oldCreatedAt = new Date(Date.now() - 60_000).toISOString();
+    fs.writeFileSync(claimFile, JSON.stringify({ ...released, createdAt: oldCreatedAt }), 'utf8');
+
+    // Resume: SubagentStart re-fires for the SAME thread with no model in the payload.
+    const resumed = claimThreadRole(dir, state, FRONTEND_THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' });
+    assert.ok(resumed);
+    const file = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    assert.equal(file.status, 'claimed', 'resumed thread is claimed again');
+    assert.equal(file.model, 'opus', 'model survives the release/resume cycle');
+    assert.notEqual(file.createdAt, oldCreatedAt, 'resume refreshes the claim freshness window');
+    assert.equal(file.releasedAt, undefined, 'release markers are cleared on reactivation');
+    assert.equal(file.releasedReason, undefined);
+  });
+});
+
+test('a retired thread cannot resume over the live replacement for its role', () => {
+  withPrefs((dir) => {
+    const state = { ...materializedState(), currentRunId: '1784600000003' };
+    assert.ok(claimThreadRole(dir, state, 'reviewer-thread-retired', 'senior-reviewer', {
+      model: 'sonnet',
+      recordAgent: false,
+    }));
+    const runId = String(state.currentRunId);
+    recordRunAgent(dir, runId, 'senior-reviewer', {
+      agentId: 'reviewer-thread-retired',
+      model: 'sonnet',
+    });
+    markRunAgentReplaced(dir, runId, 'senior-reviewer');
+
+    assert.ok(claimThreadRole(dir, state, 'reviewer-thread-replacement', 'senior-reviewer', {
+      model: 'sonnet',
+      recordAgent: false,
+      refuseOccupiedRole: true,
+    }), 'verified replacement binds after the old registry row is retired');
+
+    assert.equal(claimThreadRole(dir, state, 'reviewer-thread-retired', 'senior-reviewer', {
+      model: 'sonnet',
+      recordAgent: false,
+      refuseOccupiedRole: true,
+    }), null, 'late resume of the retired thread is refused');
+
+    const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+    const retired = JSON.parse(fs.readFileSync(path.join(runDir, 'reviewer-thread-retired.json'), 'utf8'));
+    const replacement = JSON.parse(fs.readFileSync(path.join(runDir, 'reviewer-thread-replacement.json'), 'utf8'));
+    assert.equal(retired.status, 'released');
+    assert.equal(replacement.status, 'claimed', 'late old-thread activity does not release the replacement');
+  });
+});
+
+test('a retired thread cannot reclaim after an interrupt releases it and its registered replacement', () => {
+  withPrefs((dir) => {
+    const state = { ...materializedState(), currentRunId: '1784600000004' };
+    const runId = String(state.currentRunId);
+    assert.ok(claimThreadRole(dir, state, 'reviewer-thread-old', 'senior-reviewer', {
+      model: 'sonnet',
+      recordAgent: false,
+    }));
+    recordRunAgent(dir, runId, 'senior-reviewer', {
+      agentId: 'reviewer-thread-old',
+      model: 'sonnet',
+    });
+    markRunAgentReplaced(dir, runId, 'senior-reviewer');
+
+    assert.ok(claimThreadRole(dir, state, 'reviewer-thread-new', 'senior-reviewer', {
+      model: 'sonnet',
+      recordAgent: false,
+      refuseOccupiedRole: true,
+    }));
+    recordRunAgent(dir, runId, 'senior-reviewer', {
+      agentId: 'reviewer-thread-new',
+      model: 'sonnet',
+    });
+    assert.equal(releaseRunClaims(dir, runId, 'interrupt-sweep'), 1,
+      'the retired claim was already superseded; the interrupt releases its current replacement');
+    const releasedRunDir = path.join(dir, '.traffic-one', 'runs', runId);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(releasedRunDir, 'reviewer-thread-old.json'), 'utf8')).status, 'released');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(releasedRunDir, 'reviewer-thread-new.json'), 'utf8')).status, 'released');
+
+    assert.equal(claimThreadRole(dir, state, 'reviewer-thread-old', 'senior-reviewer', {
+      model: 'sonnet',
+      recordAgent: false,
+      refuseOccupiedRole: true,
+    }), null, 'registry ownership prevents the old thread from reclaiming first');
+    assert.ok(claimThreadRole(dir, state, 'reviewer-thread-new', 'senior-reviewer', {
+      model: 'sonnet',
+      recordAgent: false,
+      refuseOccupiedRole: true,
+    }), 'the registered replacement can reactivate its own released claim');
+
+    const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+    const oldClaim = JSON.parse(fs.readFileSync(path.join(runDir, 'reviewer-thread-old.json'), 'utf8'));
+    const newClaim = JSON.parse(fs.readFileSync(path.join(runDir, 'reviewer-thread-new.json'), 'utf8'));
+    assert.equal(oldClaim.status, 'released');
+    assert.equal(newClaim.status, 'claimed');
+  });
+});
+
+test('a verified replacement supersedes only the explicitly retired same-role claim', () => {
+  withPrefs((dir) => {
+    const state = { ...materializedState(), currentRunId: '1784600000002' };
+    const first = claimThreadRole(dir, state, 'reviewer-thread-dead', 'senior-reviewer', {
+      model: 'sonnet',
+      recordAgent: false,
+    });
+    assert.ok(first, 'first reviewer claim binds');
+    const runId = String(first!.runId);
+    recordRunAgent(dir, runId, 'senior-reviewer', {
+      agentId: 'reviewer-thread-dead',
+      model: 'sonnet',
+    });
+
+    // A live duplicate remains blocked even when its model/role are valid.
+    assert.equal(claimThreadRole(dir, state, 'reviewer-thread-live', 'senior-reviewer', {
+      model: 'sonnet',
+      refuseOccupiedRole: true,
+    }), null);
+
+    // The normal replacement gate records that the first reviewer died before
+    // starting a NEW thread. Its fresh claim must no longer block that verified
+    // SubagentStart bind.
+    markRunAgentReplaced(dir, runId, 'senior-reviewer');
+    const second = claimThreadRole(dir, state, 'reviewer-thread-live', 'senior-reviewer', {
+      model: 'sonnet',
+      refuseOccupiedRole: true,
+    });
+    assert.ok(second, 'replacement reviewer claim binds');
+
+    const dead = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'reviewer-thread-dead.json'),
+      'utf8',
+    ));
+    assert.equal(dead.status, 'released', 'dead sibling claim is superseded');
+    assert.match(String(dead.releasedReason), /^superseded-by-/);
+    const live = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'reviewer-thread-live.json'),
+      'utf8',
+    ));
+    assert.equal(live.status, 'claimed');
   });
 });
 

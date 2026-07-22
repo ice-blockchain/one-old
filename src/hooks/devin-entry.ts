@@ -13,9 +13,10 @@ import { windsurfSetupReason } from '../shared/onboarding-server/windsurf-setup'
 import { resolveProjectRoot } from '../shared/hook-paths';
 import { isNonProjectRoot } from '../shared/authoring-root';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
-import { devinPreToolDeny, isGatePreToolSubcommand } from './fail-closed';
+import { devinPreToolDeny, hasValidPreToolPayload, isGatePreToolSubcommand } from './fail-closed';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { commitWizardLinksShown } from '../shared/onboarding-server/wizard-links';
+import { onboardingSyncSessionId } from '../shared/onboarding-server/wait-command';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -31,7 +32,8 @@ function onboardingStopResult(stdin: string, cwd: string): string {
   if (data.stop_hook_active === true) return '';
   const root = resolveProjectRoot(cwd);
   if (isNonProjectRoot(root) || computeOnboarding(root).done) return '';
-  const prepared = prepareOnboardingServer(root, 'windsurf');
+  const syncSession = onboardingSyncSessionId(data.session_id ?? data.sessionId);
+  const prepared = prepareOnboardingServer(root, 'windsurf', { syncSession });
   if (prepared.kind !== 'ready') {
     return JSON.stringify({ decision: 'block', reason: prepared.reason });
   }
@@ -49,6 +51,7 @@ function onboardingStopResult(stdin: string, cwd: string): string {
     payload,
     prepared.server.dashboardUrl,
     prepared.server.localWizardUrl,
+    syncSession,
   );
   return payload;
 }
@@ -59,6 +62,9 @@ export async function runDevinHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: '', exitCode: 0 };
+  if (isGatePreToolSubcommand(subcommand) && !hasValidPreToolPayload(stdin, subcommand, 'nested')) {
+    return { stdout: devinPreToolDeny(), exitCode: 0 };
+  }
   try {
     stampWindsurfBackend('devin', env);
     const cwd = cwdFrom(stdin);

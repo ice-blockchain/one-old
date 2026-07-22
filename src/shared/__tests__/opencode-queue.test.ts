@@ -120,6 +120,26 @@ test('openCodeQueuePolicyViolations: a docs-only unit describing install steps s
   assert.deepEqual(openCodeQueuePolicyViolations(units), []);
 });
 
+test('openCodeQueuePolicyViolations: a docs-only unit documenting test commands stays on OpenCode', () => {
+  // The root-docs incident: a CONTRIBUTING.md draft saying "run pnpm test before
+  // a PR" documents a command; it cannot write tests — its allowlist is docs-only.
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: root-docs | role: docs | kind: docs | files: README.md, CONTRIBUTING.md, CHANGELOG.md | task: draft root docs; CONTRIBUTING.md tells contributors to run pnpm typecheck and pnpm test before opening a PR',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(units), []);
+});
+
+test('openCodeQueuePolicyViolations: a non-docs unit mentioning tests still needs test paths in its allowlist', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: helpers | role: frontend | kind: helper | files: packages/utils/src/format.ts | task: add pure helpers with vitest coverage for each',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(units).some((error) => /mentions tests\/testability/.test(error)));
+});
+
 test('openCodeQueuePolicyViolations: a unit mixing docs with package.json still routes to paid', () => {
   const units = parsePlanDelegationUnits([
     '<!-- opencode-delegate:start -->',

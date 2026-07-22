@@ -723,6 +723,47 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
   }
 });
 
+test('bootstrap-only output stamps the same session marker consumed by the waiter', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { announceWizardUrl, bootstrapReadyOutput } = await import('../index');
+  const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-bootstrap-marker-')));
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const previousDashboard = process.env.TRAFFIC_ONE_DASHBOARD_URL;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  process.env.TRAFFIC_ONE_DASHBOARD_URL = 'https://dash.example.test';
+  try {
+    const token = 'bootstrap-token';
+    const dashboard = `https://dash.example.test/onboarding/agent#p=55188&t=${token}`;
+    const local = `http://127.0.0.1:55188/local?t=${token}`;
+    const ready = bootstrapReadyOutput(dir, token, dashboard, local, 'bootstrap:session');
+    assert.match(ready, /TRAFFIC_ONE_SETUP_READY/);
+    assert.ok(ready.includes(dashboard));
+    assert.ok(ready.includes(local));
+
+    writeServerRecord(dir, {
+      pid: process.pid,
+      port: 55188,
+      token,
+      url: `http://127.0.0.1:55188/?t=${token}`,
+      startedAt: 'x',
+    }, process.env, 'cursor');
+    let waiter = '';
+    announceWizardUrl(dir, (chunk) => { waiter += chunk; }, 'cursor', 'bootstrap_session');
+    assert.doesNotMatch(waiter, /onboarding\/agent|127\.0\.0\.1:55188\/local/);
+    assert.match(waiter, /links shown above/i);
+  } finally {
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
+    if (previousDashboard === undefined) delete process.env.TRAFFIC_ONE_DASHBOARD_URL;
+    else process.env.TRAFFIC_ONE_DASHBOARD_URL = previousDashboard;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('announceWizardUrl ignores a legacy hosted-only marker and emits the direct /local fallback', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');

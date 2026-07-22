@@ -140,7 +140,7 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
       DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host),
     });
   }
-  commitWizardLinksShown(cwd, server.token, directive, server.dashboardUrl, server.localWizardUrl);
+  commitWizardLinksShown(cwd, server.token, directive, server.dashboardUrl, server.localWizardUrl, syncSession);
   return directive;
 }
 const STACK_IDS = new Set(Object.keys(STACKS));

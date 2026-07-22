@@ -6,7 +6,7 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { detectCopilotWireSurface, makeCopilotAdapter } from '../adapters/copilot';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { copilotPreToolDeny, hasValidHookObjectPayload } from './fail-closed';
+import { copilotPreToolDeny, hasValidPreToolPayload } from './fail-closed';
 import { asRecord, firstString } from '../adapters/coerce';
 import { isManagedOneMcpAgentTool, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
 
@@ -50,7 +50,9 @@ export async function runCopilotHook(
     const surface = detectCopilotWireSurface(env);
     return { stdout: surface === 'vscode' ? COPILOT_NOOP_VSCODE : COPILOT_NOOP_CLI, exitCode: 0 };
   }
-  const inputValid = hasValidHookObjectPayload(stdin);
+  const inputValid = subcommand === 'before-tool-use'
+    ? hasValidPreToolPayload(stdin, subcommand, 'copilot')
+    : true;
   let parsedRaw: unknown = {};
   try { parsedRaw = JSON.parse(stdin); } catch { /* empty stdin */ }
   const surface = detectCopilotWireSurface(env, parsedRaw);

@@ -178,7 +178,7 @@ only.
 Before emitting PLAN_READY, verify project-local context is materialized. If
 `.traffic-one/manifest.json`, `.traffic-one/rules`, `.traffic-one/skills`,
 root `AGENTS.md`, or root `CLAUDE.md` is missing, run:
-  node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/hook-runtime.cjs" materialize-project
+  node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','hook-runtime.cjs'))" materialize-project
 from the project root, then verify those paths again. If materialization fails,
 report the blocker instead of emitting PLAN_READY.
 
@@ -239,6 +239,11 @@ product-specific demo/seed fixture data inside your owned frontend scope and
 render the actual workflow in demo/degraded mode until live data is configured.
 Do not invent a backend contract beyond the plan; make fixtures conform to the
 planned public contract and surface any contract gaps in your digest.
+
+Do not add `@ts-nocheck`, `@ts-ignore`, or an equivalent broad type-check
+suppression. Convert repository/API results into explicit domain types. A
+successful live response must drive every affected rendered surface; fixtures
+are permitted only for absent configuration, empty results, or handled errors.
 
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/frontend.md
@@ -370,8 +375,10 @@ document overflow, element overflow, primary-action reachability (or explicit
 N/A), and a passing/failing status for every viewport. Mobile and desktop
 entries require existing screenshot paths inside this run's QA directory.
 Write the canonical QaReportV1 to the exact report.json path above with
-`schemaVersion: 1`, the exact run id, canonical ISO-UTC `generatedAt`, producer
-`senior-tester`, and `routes: [{ route, viewports }]`. Every route contains each
+`schemaVersion: 1`, the exact run id, canonical ISO-UTC `generatedAt` in the
+exact form `YYYY-MM-DDTHH:MM:SSZ` or `YYYY-MM-DDTHH:MM:SS.sssZ` (emit
+`new Date().toISOString()` verbatim — never a locale string or numeric offset),
+producer `senior-tester`, and `routes: [{ route, viewports }]`. Every route contains each
 width exactly once. Each viewport has `width`, an allowed `status`, nonnegative
 integer `consoleErrorCount`, boolean `documentOverflow`, boolean
 `elementOverflow`, `primaryAction: { status, reason? }` (`reachable`,
@@ -409,30 +416,30 @@ Token budget: ~8k.
 ## Run-ledger settlement (orchestrator only)
 
 The parent orchestrator, not a verifier role, records the current run through
-the shipped idempotent helper. Use the installed plugin-root expansion exactly;
-never hand-edit `run.json`.
+the shipped idempotent helper. Use the portable Node launcher exactly, replace
+`<run-id>` with the current run id, and never hand-edit `run.json`.
 
 ```bash
 # Reviewer cap after the second unsuccessful cycle.
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome review-cycle-cap
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome review-cycle-cap
 
 # Tester cap after the second unsuccessful implementation/test fix cycle.
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome test-cycle-cap
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome test-cycle-cap
 
 # Browser/sandbox/usage-limit/timeout blocker that remains unresolved.
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status blocked --outcome environment-blocked
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome environment-blocked
 
 # Unrecoverable orchestration/role-agent failure only.
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status failed --outcome agent-failed
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status failed --outcome agent-failed
 
 # Same-run resume only after explicit user authorization.
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status active --reason user-authorized-extra-cycle
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
 
 # Strictly verified terminal run; reviewer + tester + QA/backend-only gate passed.
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status completed --outcome verified
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome verified
 
 # Successful shipper digest after the deploy actually completed.
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/run-status.cjs" --run-id "$RUN_ID" --status completed --outcome shipped
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome shipped
 ```
 
 The completed commands are evidence-gated. Never infer them from green text,

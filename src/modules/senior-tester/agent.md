@@ -85,6 +85,11 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
 
 1. Read the changed files and the plan's Public contracts.
 2. For each new feature, write at minimum: one happy-path unit, one error-path unit, one integration test for the boundary (HTTP, DB, file I/O, WS), and an E2E smoke when a route was touched.
+   For typed JS/TS changes, scan touched production files for new
+   `@ts-nocheck`, `@ts-ignore`, or equivalent broad suppressions and fail the
+   run if found. When demo fixtures back a live repository/API, the integration
+   test must prove successful live results reach each affected rendered surface
+   and that fixtures are used only on the explicit absent/empty/error path.
 3. For generated websites or changed web routes, add/update metadata coverage:
    every created or changed public route's title, description, canonical URL,
    Open Graph image, JSON-LD entity type, sitemap inclusion, and

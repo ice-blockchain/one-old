@@ -6,9 +6,9 @@ description: Wording source for the Traffic One plan-write gate deny reasons. Re
 # Traffic One Plan Guard
 
 Deny-reason wording for the PreToolUse file-write/file-edit plan gate.
-Enforcement (the actual conditions + `permissionDecision:"deny"`) lives in
-`src/modules/plan-guard/`. `{{PLACEHOLDER}}` tokens are filled by the gate.
-Each block has a verbatim fallback in code, so a missing block never disables a gate.
+Enforcement (the actual conditions + `permissionDecision:"deny"`) is implemented
+by the installed Traffic One runtime. `{{PLACEHOLDER}}` tokens are filled by the
+gate. Each block has a verbatim fallback in code, so a missing block never disables a gate.
 
 <!-- T1BLOCK:BEGIN monorepo-package-json -->
 New-project monorepo gate: stack=default / React-Vite new projects must start with the Traffic One Turborepo root package.json: `private: true`, `packageManager: pnpm@...`, and a workspace declaration (`pnpm-workspace.yaml` or package.json `workspaces`) for `apps/*` and `packages/*`. Read `rules/modes/new-project.md` and scaffold the monorepo before feature code.
@@ -27,7 +27,7 @@ State gate: root .traffic-one/.one.json is missing or incomplete. Write the Traf
 <!-- T1BLOCK:END state-gate -->
 
 <!-- T1BLOCK:BEGIN materialization-gate -->
-Materialization gate: stack context for {{FINGERPRINT}} has not been materialized on disk yet. Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/hook-runtime.cjs" materialize-project` from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, `.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.
+Materialization gate: stack context for {{FINGERPRINT}} has not been materialized on disk yet. Run `node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','hook-runtime.cjs'))" materialize-project` from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, `.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.
 <!-- T1BLOCK:END materialization-gate -->
 
 <!-- T1BLOCK:BEGIN plan-gate -->

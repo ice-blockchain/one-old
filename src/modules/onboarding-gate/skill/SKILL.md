@@ -6,11 +6,10 @@ description: Wording source for the Traffic One setup gate. The onboarding quest
 # Traffic One Onboarding Gate
 
 Directive PROSE for the onboarding gate. The questions themselves moved into the
-local setup wizard (`src/shared/onboarding-server` + `src/runners/onboarding-server`),
-which the gate launches and points the user at — so this file only carries the
-gate's agent-facing messages, not the questions. `{{PLACEHOLDER}}` tokens are filled
-by the gate, and each block has a verbatim fallback in code, so a missing block
-never disables the gate.
+installed local setup wizard, which the gate launches and points the user at —
+so this file only carries the gate's agent-facing messages, not the questions.
+`{{PLACEHOLDER}}` tokens are filled by the gate, and each block has a verbatim
+fallback in code, so a missing block never disables the gate.
 
 <!-- T1BLOCK:BEGIN server-bootstrap-required -->
 Traffic One setup could not start inside this host's restricted hook sandbox ({{ERROR_CODE}}). Private preferences MUST remain in `~/.traffic-one/projects`; do not create `preferences.json`, `machine.json`, or onboarding runtime files inside the project.
@@ -47,7 +46,9 @@ wait. Do NOT try to answer the setup questions yourself, and do NOT create or ed
 .claude/launch.json.
 
 Present this clickable setup link to the user as your FIRST visible action, before any
-wait command — put it on its own line, not buried in a terminal block:
+wait command — put it on its own line, not buried in a terminal block. Show it as
+plain clickable text only; do NOT open it with a browser/navigate tool — the user
+clicks it themselves:
 
     Open Traffic One setup: {{URL}}
 
@@ -59,8 +60,9 @@ fallback instead; the redirecting loopback root is not a fallback:
 All setup logic and saves stay on this machine; the dashboard is just the UI.
 
 CONTINUE AUTOMATICALLY — do NOT end your turn after showing the link. Immediately run
-this command and keep your turn open; it BLOCKS until the user finishes setup (run it
-with a long timeout, ~9 minutes / 540000 ms):
+this command in the FOREGROUND of this turn (never as a background task) and keep your
+turn open; it BLOCKS until the user finishes setup (run it with a long timeout,
+~9 minutes / 540000 ms):
 
 {{WAIT_CMD}}
 
@@ -108,6 +110,28 @@ request. Full instructions were given on the first denial this session.
 Don't use Traffic One: if the user says they don't want it for this project, run:
 {{DECLINE_CMD}}
 <!-- T1BLOCK:END server-deny-reason-repeat -->
+
+<!-- T1BLOCK:BEGIN server-deny-reason-links-shown -->
+Traffic One setup is required before building — and the clickable setup links were
+ALREADY surfaced in this conversation moments ago. Do NOT print the links again: the
+user may have just finished setup or be mid-setup in the browser, and a repeated link
+reads as "start over". Only repeat a link if the user says they cannot find it.
+
+CONTINUE AUTOMATICALLY — run this wait command NOW, in the FOREGROUND of this turn
+(never as a background task, and do not open any URL with a browser tool), with a long
+timeout (~9 minutes / 540000 ms). It BLOCKS until the user finishes setup and returns
+IMMEDIATELY if setup is already complete:
+
+{{WAIT_CMD}}
+
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, IMMEDIATELY continue the user's original
+request. If it prints `TRAFFIC_ONE_SETUP_PENDING` (it timed out before setup
+finished), run the exact same command again. Read-only orientation stays allowed;
+feature writes, installs, and subagent work stay blocked until setup completes.
+
+Don't use Traffic One: if the user says they don't want it for this project, run:
+{{DECLINE_CMD}}
+<!-- T1BLOCK:END server-deny-reason-links-shown -->
 
 <!-- T1BLOCK:BEGIN windsurf-server-deny-reason -->
 Traffic One setup is required before building.

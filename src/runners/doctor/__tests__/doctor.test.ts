@@ -34,6 +34,7 @@ import {
   type ProjectProbe,
 } from '../probes';
 import { buildFindings } from '../findings';
+import { selectDoctorProjectCwd } from '../index';
 
 function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `t1-doctor-${prefix}-`));
@@ -43,6 +44,30 @@ test('parseArgs reads --session', () => {
   assert.deepEqual(parseArgs(['--session', 'abc']), { session: 'abc' });
   assert.deepEqual(parseArgs([]), { session: null });
   assert.deepEqual(parseArgs(['--session']), { session: null });
+});
+
+test('selectDoctorProjectCwd anchors incident probes to the session cwd', () => {
+  const invocation = tmp('doctor-invocation');
+  const incident = tmp('doctor-incident');
+  try {
+    fs.mkdirSync(path.join(incident, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(incident, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+    assert.equal(selectDoctorProjectCwd(invocation, {
+      found: true,
+      id: 'session-id',
+      cwd: incident,
+      startedAt: null,
+      hookPayloadCount: 0,
+      promptRequestCount: 0,
+      permissionDecisionCount: 0,
+      toolCallCount: 0,
+      mutatingToolCallCount: 0,
+    }), incident);
+    assert.equal(selectDoctorProjectCwd(invocation, null), invocation);
+  } finally {
+    fs.rmSync(invocation, { recursive: true, force: true });
+    fs.rmSync(incident, { recursive: true, force: true });
+  }
 });
 
 test('parseTomlScalar coerces booleans + strips quotes', () => {
@@ -85,6 +110,10 @@ test('commandLooksMutating flags installs/patches, not reads', () => {
   assert.equal(commandLooksMutating('apply_patch', ''), true);
   assert.equal(commandLooksMutating('exec_command', JSON.stringify({ cmd: 'npm install left-pad' })), true);
   assert.equal(commandLooksMutating('exec_command', JSON.stringify({ cmd: 'ls -la' })), false);
+  assert.equal(commandLooksMutating('exec', 'await tools.apply_patch("*** Begin Patch")'), true);
+  assert.equal(commandLooksMutating('exec', 'await tools.exec_command({cmd: "pnpm install"})'), true);
+  assert.equal(commandLooksMutating('exec', 'await tools.exec_command({cmd: "ls -la"})'), false);
+  assert.equal(commandLooksMutating('exec', 'text("apply_patch was not called")'), false);
   assert.equal(commandLooksMutating('shell', 'rm -rf /'), false); // only exec_command/apply_patch count
 });
 
@@ -103,9 +132,15 @@ test('rawStateHasLegacyShape detects legacy fields', () => {
 test('probeProject reads + normalizes the state file', () => {
   const dir = tmp('proj');
   const savedPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  const prefsPath = path.join(dir, 'prefs.json');
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prefsPath;
   try {
-    assert.equal(probeProject(dir).hasState, false);
+    fs.writeFileSync(prefsPath, JSON.stringify({ pluginUse: { enabled: false } }), 'utf8');
+    const beforeState = probeProject(dir);
+    assert.equal(beforeState.hasState, false);
+    assert.equal((beforeState.localPreferences.pluginUse as { enabled?: boolean })?.enabled, false);
+    assert.equal(beforeState.hasLocalPreferences, true);
+    assert.equal(beforeState.localPreferencesPath, prefsPath);
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'new-project', stack: 'default' }), 'utf8');
     const p = probeProject(dir);
@@ -293,21 +328,113 @@ test('probeOneMcp falls back to bundled when runtime rejects a cache from anothe
   }
 });
 
-test('analyzeCodexSessionFile counts tools and detects injected instructions', () => {
+test('analyzeCodexSessionFile detects Codex hook developer messages without requiring plugin-root instructions', () => {
   const dir = tmp('codexsess');
   try {
     const file = path.join(dir, 'rollout-sess1.jsonl');
     fs.writeFileSync(file, [
-      JSON.stringify({ type: 'session_meta', timestamp: '2026-01-01T00:00:00Z', payload: { id: 'sess1', cwd: '/proj', base_instructions: { text: 'Traffic One Codex Instructions\nUse the canonical API-key wizard' } } }),
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-01-01T00:00:00Z', payload: { id: 'sess1', cwd: '/proj' } }),
+      JSON.stringify({ type: 'event_msg', timestamp: '2026-01-01T00:00:20Z', payload: { type: 'user_message' } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:30Z', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '[ACTIVE STACK: default]\n\nTraffic One setup is complete.' }] } }),
       JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:01:00Z', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'npm install x' }) } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:01:10Z', payload: { type: 'custom_tool_call', call_id: 'call-2', name: 'exec', input: 'const r = await tools.apply_patch("*** Begin Patch"); text(r);' } }),
     ].join('\n'), 'utf8');
     const d = analyzeCodexSessionFile(file);
     assert.ok(d);
     assert.equal(d?.id, 'sess1');
     assert.equal(d?.cwd, '/proj');
-    assert.equal(d?.toolCallCount, 1);
-    assert.equal(d?.mutatingToolCallCount, 1);
-    assert.equal(d?.trafficOneInstructionInjected, true);
+    assert.equal(d?.hookPayloadCount, 1);
+    assert.equal(d?.toolCallCount, 2);
+    assert.equal(d?.mutatingToolCallCount, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCodexSessionFile does not mistake project AGENTS instructions for hook execution', () => {
+  const dir = tmp('codexsess-project-agents');
+  try {
+    const file = path.join(dir, 'rollout-sess2.jsonl');
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-01-01T00:00:00Z', payload: { id: 'sess2', cwd: '/proj' } }),
+      JSON.stringify({ type: 'event_msg', timestamp: '2026-01-01T00:00:01Z', payload: { type: 'user_message' } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:02Z', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '# Traffic One Local Agent Context\n<!-- GENERATED BY traffic-one: project-local active rules -->\n[ACTIVE STACK: default]\n[traffic-one] example only' }] } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:03Z', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '# Traffic One Codex Instructions\ntraffic-one — example only' }] } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:04Z', payload: { type: 'custom_tool_call_output', call_id: 'unmatched', output: '{"hookSpecificOutput":{"promptRequest":{},"permissionDecision":"deny"}}' } }),
+    ].join('\n'), 'utf8');
+    const d = analyzeCodexSessionFile(file);
+    assert.equal(d?.hookPayloadCount, 0);
+    assert.equal(d?.promptRequestCount, 0);
+    assert.equal(d?.permissionDecisionCount, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCodexSessionFile recognizes valid structured hook output once and ignores quoted field names', () => {
+  const dir = tmp('codexsess-structured');
+  try {
+    const file = path.join(dir, 'rollout-sess3.jsonl');
+    fs.writeFileSync(file, [
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'traffic-one — claim required',
+        },
+        promptRequest: { id: 'confirm' },
+      }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'none', output: 'hookSpecificOutput promptRequest permissionDecision' } }),
+    ].join('\n'), 'utf8');
+    const d = analyzeCodexSessionFile(file);
+    assert.equal(d?.hookPayloadCount, 1);
+    assert.equal(d?.promptRequestCount, 1);
+    assert.equal(d?.permissionDecisionCount, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCodexSessionFile validates versioned markers against their causal event window', () => {
+  const dir = tmp('codexsess-markers');
+  try {
+    const file = path.join(dir, 'rollout-sess4.jsonl');
+    const developer = (text: string): string => JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text }] } });
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } }),
+      developer('<!-- traffic-one-hook-context:v1 event=SessionStart -->\n[ACTIVE STACK: default]'),
+      developer('<!-- traffic-one-hook-context:v1 event=UserPromptSubmit -->\n[ACTIVE STACK: default]'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'agent_reasoning' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message' } }),
+      developer('<!-- traffic-one-hook-context:v1 event=UserPromptSubmit -->\n[ACTIVE STACK: default]'),
+      JSON.stringify({ type: 'response_item', payload: { type: 'reasoning' } }),
+      developer('[ACTIVE STACK: default]'),
+    ].join('\n'), 'utf8');
+    assert.equal(analyzeCodexSessionFile(file)?.hookPayloadCount, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCodexSessionFile bounds historical markers to prompt and matched tool windows', () => {
+  const dir = tmp('codexsess-causal');
+  try {
+    const file = path.join(dir, 'rollout-sess5.jsonl');
+    const developer = (text: string): string => JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text }] } });
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message' } }),
+      developer('Total output lines: 42\n\n═══ traffic-one — setup required'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'agent_reasoning' } }),
+      developer('[ACTIVE STACK: default]'),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call-a', name: 'exec', input: 'text("read only")' } }),
+      developer('[traffic-one] pre-tool context'),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-a', output: 'ok' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'token_count' } }),
+      developer('[graphify] Auto-bootstrap failed safely'),
+      JSON.stringify({ type: 'response_item', payload: { type: 'reasoning' } }),
+      developer('[traffic-one] quoted after the causal window'),
+    ].join('\n'), 'utf8');
+    assert.equal(analyzeCodexSessionFile(file)?.hookPayloadCount, 3);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -367,6 +494,53 @@ const gn = (over: Partial<GitnexusProbe> = {}): GitnexusProbe => ({ onPath: null
 test('buildFindings: session-not-found', () => {
   const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), sessionDiagnostics: { id: 's', found: false, sessionsDir: '/d' } });
   assert.ok(f.some((x) => x.code === 'CODEX_SESSION_NOT_FOUND'));
+});
+
+test('buildFindings: hook evidence is sufficient without plugin-root instruction injection', () => {
+  const f = buildFindings({
+    node: node(),
+    nvm: nvm(),
+    gitnexus: gn(),
+    project: baseProject(),
+    sessionDiagnostics: {
+      found: true,
+      id: 's',
+      cwd: '/repo',
+      startedAt: '2026-01-01T00:00:00Z',
+      hookPayloadCount: 1,
+      promptRequestCount: 0,
+      permissionDecisionCount: 0,
+      toolCallCount: 0,
+      mutatingToolCallCount: 0,
+    },
+  });
+  assert.equal(f.some((x) => x.code === 'CODEX_HOOK_OUTPUT_NOT_OBSERVED_FOR_SESSION'), false);
+  assert.equal(f.some((x) => x.code.includes('INSTRUCTIONS_NOT_INJECTED')), false);
+});
+
+test('buildFindings: absent hook output is informational evidence, not proof hooks failed', () => {
+  const sessionDiagnostics = {
+    found: true as const,
+    id: 's',
+    cwd: '/repo',
+    startedAt: '2026-01-01T00:00:00Z',
+    hookPayloadCount: 0,
+    promptRequestCount: 3,
+    permissionDecisionCount: 0,
+    toolCallCount: 0,
+    mutatingToolCallCount: 0,
+  };
+  const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), sessionDiagnostics });
+  const finding = f.find((x) => x.code === 'CODEX_HOOK_OUTPUT_NOT_OBSERVED_FOR_SESSION');
+  assert.equal(finding?.severity, 'info');
+  assert.match(finding?.message || '', /no attributable Traffic One hook-output evidence/i);
+
+  const declined = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({ localPreferences: { pluginUse: { enabled: false } }, hasLocalPreferences: true }),
+    sessionDiagnostics,
+  });
+  assert.equal(declined.some((x) => x.code === 'CODEX_HOOK_OUTPUT_NOT_OBSERVED_FOR_SESSION'), false);
 });
 
 test('buildFindings: codex plugin disabled', () => {

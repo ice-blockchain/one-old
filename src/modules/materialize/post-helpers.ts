@@ -18,6 +18,27 @@ type Rec = Record<string, unknown>;
 export const FUNCTION_PATH_RE = /\/supabase\/functions\/([^/]+)\/(index|deno)\.(ts|tsx|mts|js)$/;
 export const DIGEST_PATH_RE = /(?:^|\/)\.traffic-one\/digests\/[^/]+\/(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
 export const DIGEST_HARD_BYTES = 3 * 1024; // warn over 3 KB; target is ≤2 KB
+const DIGEST_RUN_ID_RE = /\/\.traffic-one\/digests\/([^/]+)\//;
+
+// The run's start (createdAt) in epoch-ms for a digest path, read from that
+// run's run.json. Lets the finished_at host-stamp reject a placeholder dated
+// before the run began. Returns undefined when the id or run.json is unreadable
+// (the future-skew check still applies without it).
+export function runStartMsForDigest(digestPath: string): number | undefined {
+  const normalized = digestPath.replace(/\\/g, '/');
+  const runId = normalized.match(DIGEST_RUN_ID_RE)?.[1];
+  if (!runId) return undefined;
+  const root = normalized.replace(/\/\.traffic-one\/digests\/.*$/, '');
+  const runJson = path.join(root, '.traffic-one', 'runs', runId, 'run.json');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(runJson, 'utf8')) as { createdAt?: unknown };
+    if (typeof parsed.createdAt !== 'string') return undefined;
+    const ms = Date.parse(parsed.createdAt);
+    return Number.isFinite(ms) ? ms : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export const PROJECT_ROOT_HINT_FIELDS = ['file_path', 'path', 'cwd', 'workdir'];
 export const PROJECT_COMMAND_HINT_FIELDS = ['command', 'cmd', 'shell_command'];

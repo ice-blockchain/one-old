@@ -1946,6 +1946,37 @@ export function releaseAllRunClaims(cwd: string, reason: string): number {
   return total;
 }
 
+// One live agent per role: when a fresh claim is bound for a role, an older
+// same-role claim from a DIFFERENT thread that is still 'claimed' is superseded
+// — typically a spawn that died before producing any output (observed live: a
+// reviewer aborted at startup left its claim 'claimed' until the terminal
+// sweep). Released claims keep resolving identity (see releaseRunClaims), so
+// this only corrects liveness accounting, never resolution. Caller must hold
+// the run's claims lock.
+function releaseSupersededRoleClaimsLocked(
+  cwd: string,
+  runId: string,
+  role: string,
+  keepSessionId: string,
+  newClaimId: string,
+): void {
+  for (const { filePath, claim } of listClaimedAgentEntries(cwd, runId)) {
+    if (claim.role !== role || claim.status === 'released') continue;
+    if (typeof claim.claimId !== 'string') continue; // role-bearing sidecars are not claims
+    if (firstString(claim.sessionId) === keepSessionId) continue;
+    try {
+      writeJson(filePath, {
+        ...claim,
+        status: 'released',
+        releasedAt: stateTimestamp(),
+        releasedReason: newClaimId ? `superseded-by-${newClaimId}` : 'superseded',
+      });
+    } catch {
+      // best-effort: an unreleased sibling ages out via SUBAGENT_STALE_MS
+    }
+  }
+}
+
 function countRunClaimsForRole(cwd: string, runId: string, role: string): number {
   const pending = listPendingClaims(cwd, runId).filter(({ claim }) => claim.role === role).length;
   const claimed = listClaimedAgents(cwd, runId).filter((claim) => claim.role === role).length;
@@ -2308,6 +2339,9 @@ export function resolveRunAgentContext(
           claimed!.parentSessionId as string | null,
           claimed!.claimId as string | null,
         );
+        releaseSupersededRoleClaimsLocked(
+          cwd, runId, String(claimed!.role || ''), sessionId, String(claimed!.claimId || ''),
+        );
       });
       if (claimedUnderLock && claimed) return contextFromClaim(claimed, 'run-agent');
     }
@@ -2374,13 +2408,39 @@ export function claimThreadRole(
         if (isCorrectionGradeEvidence(evidence, existing.roleSource)) rebindExpected = existing;
         return;
       }
+      // A released-but-fresh claim for THIS thread means the agent resumed after
+      // an interrupt sweep: reactivate it in place (metadata intact) instead of
+      // handing back a claim whose status contradicts the live agent. Only while
+      // the run ledger is still active — never fight terminal settlement.
+      const reclaiming = existing.status === 'released'
+        && runLedgerStatusRecord(cwd, runId).status === 'active'
+        // An explicitly retired claim must not come back while the parent is
+        // replacing it, and an older thread must never displace a replacement
+        // that already owns the live role slot.
+        && !roleRegistryDisownsClaim(cwd, runId, role, existing)
+        && !activeClaimForOtherThread(cwd, source, runId, role, id);
+      // Released claims remain useful for read-only identity resolution, but a
+      // SubagentStart bind may return one only after it was safely reactivated.
+      // Otherwise the retired thread would keep receiving write authority even
+      // though another thread owns this role.
+      if (existing.status === 'released' && !reclaiming) return;
       const nextSource = strongestRoleSource(evidence?.source, existing.roleSource);
+      const reactivatedAt = reclaiming ? stateTimestamp() : '';
       const next: Rec = {
         ...existing,
         ...(nextSource ? { roleSource: nextSource } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
+        ...(reclaiming ? {
+          status: 'claimed',
+          createdAt: reactivatedAt,
+          claimedAt: reactivatedAt,
+        } : {}),
       };
-      if (nextSource !== existing.roleSource || (transcriptPath && transcriptPath !== existing.transcriptPath)) {
+      if (reclaiming) {
+        delete next.releasedAt;
+        delete next.releasedReason;
+      }
+      if (reclaiming || nextSource !== existing.roleSource || (transcriptPath && transcriptPath !== existing.transcriptPath)) {
         try { writeJson(runAgentFile(cwd, runId, id), next); } catch { return; }
       }
       removeSiblingPendingClaims(
@@ -2403,6 +2463,11 @@ export function claimThreadRole(
     if (ledger?.status !== 'active') return;
 
     const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId, model);
+    // Re-claim of THIS same thread after its earlier claim was released or aged
+    // stale (interrupt/resume): the resume hook payload often carries no model,
+    // so without the prior record the rebuilt claim forgets what the agent runs
+    // on (observed live: model "opus" → null across a sleep interrupt).
+    const prior = existing && existing.role === role ? existing : null;
     const spawnIndex = pending && typeof pending.claim.spawnIndex === 'number'
       ? pending.claim.spawnIndex
       : nextSpawnIndex(cwd, source, runId, role);
@@ -2416,18 +2481,28 @@ export function claimThreadRole(
       spawnIndex,
       status: 'claimed',
       sessionId: id,
-      parentSessionId: parentSessionId || (pending && typeof pending.claim.parentSessionId === 'string' ? pending.claim.parentSessionId : null),
+      parentSessionId: parentSessionId
+        || (pending && typeof pending.claim.parentSessionId === 'string' ? pending.claim.parentSessionId : null)
+        || (prior && typeof prior.parentSessionId === 'string' ? prior.parentSessionId : null),
+      // createdAt stays fresh — claimAllowsState gates resolution on it; the
+      // prior lineage is preserved in previousClaimId below instead.
       createdAt: pending && typeof pending.claim.createdAt === 'string' ? pending.claim.createdAt : now,
       claimedAt: now,
       stackFingerprint: pending && typeof pending.claim.stackFingerprint === 'string' ? pending.claim.stackFingerprint : stackFingerprint(source),
-      model: model || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null),
-      roleSource: strongestRoleSource(evidence?.source, pending?.claim.roleSource) || 'explicit-bind',
-      transcriptPath: transcriptPath || (pending && typeof pending.claim.transcriptPath === 'string' ? pending.claim.transcriptPath : null),
+      model: model
+        || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null)
+        || (prior && typeof prior.model === 'string' ? prior.model : null),
+      roleSource: strongestRoleSource(evidence?.source, pending?.claim.roleSource ?? prior?.roleSource) || 'explicit-bind',
+      transcriptPath: transcriptPath
+        || (pending && typeof pending.claim.transcriptPath === 'string' ? pending.claim.transcriptPath : null)
+        || (prior && typeof prior.transcriptPath === 'string' ? prior.transcriptPath : null),
+      ...(prior && typeof prior.claimId === 'string' ? { previousClaimId: prior.claimId } : {}),
     };
     fs.mkdirSync(runDir(cwd, runId), { recursive: true });
     writeJson(runAgentFile(cwd, runId, id), claim);
     if (pending) removePendingClaim(pending.filePath);
     removeSiblingPendingClaims(cwd, source, runId, role, claim!.parentSessionId as string | null, claim!.claimId as string | null);
+    releaseSupersededRoleClaimsLocked(cwd, runId, role, id, String(claim!.claimId || ''));
     created = true;
   });
   if (!locked) return null;
@@ -2495,9 +2570,37 @@ function activeClaimForOtherThread(
 ): Rec | null {
   return listClaimedAgents(cwd, runId).find((claim) => (
     claimAllowsState(state, claim)
+    && claim.status !== 'released'
     && claim.role === role
     && firstString(claim.sessionId) !== threadId
+    // The parent-side replacement gate marks an exhausted/dead role in the
+    // reuse registry before it starts the replacement child. That durable,
+    // id-correlated marker is the authority to retire the old claim; freshness
+    // alone cannot distinguish a just-crashed child from a live sibling. Keep
+    // refusing an unmarked duplicate, but do not let the old claim deadlock the
+    // verified replacement's SubagentStart bind.
+    && !roleRegistryDisownsClaim(cwd, runId, role, claim)
   )) || null;
+}
+
+// The role registry is the durable ownership lineage when an interrupt sweep
+// releases every claim file. A matching `replaced` entry retires that claim;
+// once the replacement is recorded, its live entry also disowns every older
+// same-role claim. Conversely, a replaced entry for the OLD agent must not
+// reject the not-yet-recorded replacement whose id differs.
+function roleRegistryDisownsClaim(
+  cwd: string,
+  runId: string,
+  role: string,
+  claim: Rec,
+): boolean {
+  const registry = obj(readJson(agentRegistryFile(cwd, runId), null));
+  const entry = obj(obj(registry?.agents)?.[role]);
+  if (!entry) return false;
+  const sessionId = firstString(claim.sessionId);
+  if (!sessionId) return false;
+  const registryOwnsClaim = idsForRunAgent(entry).includes(sessionId);
+  return registryOwnsClaim ? entry.replaced === true : entry.replaced !== true;
 }
 
 const AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES = 32 * 1024;

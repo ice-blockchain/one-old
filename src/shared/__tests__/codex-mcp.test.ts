@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 import {
   codexConfigPath,
+  codexMcpServerBlock,
   codexStablePluginRoot,
   ensureCodexMcpServerRegistered,
   ensureCodexOneMcpServerRegistered,
@@ -24,6 +25,40 @@ function withCodexHome(fn: (home: string, env: NodeJS.ProcessEnv) => void): void
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function writeRegistrationChild(home: string): string {
+  const moduleUrl = pathToFileURL(path.resolve(process.cwd(), 'src', 'shared', 'codex-mcp.ts')).href;
+  const scriptFile = path.join(home, 'codex-mcp-registration-child.mts');
+  fs.writeFileSync(scriptFile, `
+    const m = await import(${JSON.stringify(moduleUrl)});
+    const fn = process.env.TRAFFIC_ONE_TEST_REGISTRATION_FN;
+    process.stdout.write(m[fn](process.env));
+  `, 'utf8');
+  return scriptFile;
+}
+
+function runRegistrationChild(
+  scriptFile: string,
+  functionName: 'ensureCodexMcpServerRegistered' | 'ensureCodexOneMcpServerRegistered',
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', scriptFile], {
+      cwd: process.cwd(),
+      env: { ...process.env, ...env, TRAFFIC_ONE_TEST_REGISTRATION_FN: functionName },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`child exited ${code}: ${stderr}`));
+    });
+  });
 }
 
 test('codexStablePluginRoot derives the version-stable marketplace source from the cache path', () => {
@@ -52,16 +87,203 @@ test('ensureCodexMcpServerRegistered writes the [mcp_servers.opencode-worker] bl
   withCodexHome((home, env) => {
     assert.equal(ensureCodexMcpServerRegistered(env), 'registered');
     const cfg = fs.readFileSync(codexConfigPath(env), 'utf8');
+    const stableServer = path.join(home, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one', 'scripts', 'opencode-mcp.cjs');
     assert.match(cfg, /\[mcp_servers\.opencode-worker\]/);
-    assert.match(cfg, /command = "sh"/);
-    assert.match(cfg, /exec node/);
+    assert.ok(cfg.includes(`command = ${JSON.stringify(process.execPath)}`));
+    assert.ok(cfg.includes(`args = [${JSON.stringify(stableServer)}]`));
+    assert.doesNotMatch(cfg, /command = "sh"|"-lc"|exec node/);
+    assert.match(cfg, /# >>> traffic-one managed opencode-worker MCP/);
     // points at the version-stable marketplace SOURCE, never the version cache
-    assert.match(cfg, /local-marketplaces\/traffic-one-local\/plugins\/traffic-one\/scripts\/opencode-mcp\.cjs/);
-    assert.doesNotMatch(cfg, /plugins\/cache/);
+    assert.ok(cfg.includes(JSON.stringify(stableServer)));
+    assert.equal(cfg.includes(JSON.stringify(env.CODEX_PLUGIN_ROOT)), false);
     // idempotent: a second call leaves the file byte-identical
     assert.equal(ensureCodexMcpServerRegistered(env), 'already-present');
     assert.equal(fs.readFileSync(codexConfigPath(env), 'utf8'), cfg);
   });
+});
+
+test('codex MCP block encodes Windows paths without a shell wrapper', () => {
+  const serverPath = 'C:\\Users\\Ada Lovelace\\Traffic "One"\\scripts\\opencode-mcp.cjs';
+  const nodePath = 'C:\\Program Files\\nodejs\\node.exe';
+  const block = codexMcpServerBlock(serverPath, nodePath);
+  assert.ok(block.includes(`command = ${JSON.stringify(nodePath)}`));
+  assert.ok(block.includes(`args = [${JSON.stringify(serverPath)}]`));
+  assert.doesNotMatch(block, /command = "sh"|"-lc"|exec node|\$\{/);
+});
+
+test('codex MCP block launches the server directly with spaces preserved', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codex-mcp-launch-'));
+  const serverPath = path.join(dir, 'plugin with spaces', 'scripts', 'opencode-mcp.cjs');
+  try {
+    fs.mkdirSync(path.dirname(serverPath), { recursive: true });
+    fs.writeFileSync(serverPath, "process.stdout.write(JSON.stringify({argv:process.argv.slice(2)}));\n", 'utf8');
+    const block = codexMcpServerBlock(serverPath);
+    const commandLine = block.split('\n').find((line) => line.startsWith('command = '));
+    const argsLine = block.split('\n').find((line) => line.startsWith('args = '));
+    assert.ok(commandLine && argsLine);
+    const command = JSON.parse(commandLine.slice('command = '.length)) as string;
+    const args = JSON.parse(argsLine.slice('args = '.length)) as string[];
+
+    const result = spawnSync(command, args, { encoding: 'utf8' });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { argv: [] });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ensureCodexMcpServerRegistered migrates only the exact legacy Traffic One shell block', () => {
+  withCodexHome((home, env) => {
+    const cfgPath = codexConfigPath(env);
+    const serverPath = path.join(home, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one', 'scripts', 'opencode-mcp.cjs');
+    const shellQuoted = `'${serverPath.replace(/'/g, `'\\''`)}'`;
+    const tomlEscaped = `exec node ${shellQuoted}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const prefix = '# user config remains byte-identical\nmodel = "gpt-5"\n';
+    const legacy = [
+      '',
+      '[mcp_servers.opencode-worker]',
+      'command = "sh"',
+      `args = ["-lc", "${tomlEscaped}"]`,
+      'startup_timeout_sec = 120',
+      '',
+    ].join('\n');
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, prefix + legacy, 'utf8');
+
+    assert.equal(ensureCodexMcpServerRegistered(env), 'registered');
+    const migrated = fs.readFileSync(cfgPath, 'utf8');
+    assert.ok(migrated.startsWith(prefix));
+    assert.ok(migrated.includes(`command = ${JSON.stringify(process.execPath)}`));
+    assert.ok(migrated.includes(`args = [${JSON.stringify(serverPath)}]`));
+    assert.doesNotMatch(migrated, /command = "sh"|"-lc"|exec node/);
+    assert.match(migrated, /# >>> traffic-one managed opencode-worker MCP/);
+  });
+
+  withCodexHome((_home, env) => {
+    const cfgPath = codexConfigPath(env);
+    const userOwned = '[mcp_servers.opencode-worker]\ncommand = "sh"\nargs = ["-lc", "custom-server"]\n';
+    fs.writeFileSync(cfgPath, userOwned, 'utf8');
+    assert.equal(ensureCodexMcpServerRegistered(env), 'already-present');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), userOwned);
+  });
+
+  withCodexHome((home, env) => {
+    const cfgPath = codexConfigPath(env);
+    const serverPath = path.join(home, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one', 'scripts', 'opencode-mcp.cjs');
+    const priorPortableBlock = [
+      '',
+      '[mcp_servers.opencode-worker]',
+      'command = "node"',
+      `args = [${JSON.stringify(serverPath)}]`,
+      'startup_timeout_sec = 120',
+      '',
+    ].join('\n');
+    fs.writeFileSync(cfgPath, priorPortableBlock, 'utf8');
+    assert.equal(ensureCodexMcpServerRegistered(env), 'registered');
+    const migrated = fs.readFileSync(cfgPath, 'utf8');
+    assert.ok(migrated.includes(`command = ${JSON.stringify(process.execPath)}`));
+    assert.match(migrated, /# >>> traffic-one managed opencode-worker MCP/);
+  });
+});
+
+test('ensureCodexMcpServerRegistered refreshes only its marked block when the Node path changes', () => {
+  withCodexHome((home, env) => {
+    const cfgPath = codexConfigPath(env);
+    const serverPath = path.join(home, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one', 'scripts', 'opencode-mcp.cjs');
+    const oldNodePath = path.join(home, 'Old Node Runtime', 'node');
+    const newNodePath = path.join(home, 'New Node Runtime', 'node');
+    const prefix = '# user bytes stay untouched\nmodel = "gpt-5"\n';
+    fs.writeFileSync(cfgPath, prefix + codexMcpServerBlock(serverPath, oldNodePath), 'utf8');
+
+    assert.equal(ensureCodexMcpServerRegistered(env, newNodePath), 'registered');
+    const refreshed = fs.readFileSync(cfgPath, 'utf8');
+    assert.equal(refreshed, prefix + codexMcpServerBlock(serverPath, newNodePath));
+    assert.equal(ensureCodexMcpServerRegistered(env, newNodePath), 'already-present');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), refreshed);
+  });
+});
+
+test('ensureCodexMcpServerRegistered preserves every valid user-owned same-name TOML form', () => {
+  const declarations = [
+    '[mcp_servers]\nopencode-worker = { command = "custom" }\n',
+    'mcp_servers.opencode-worker = { command = "custom" }\n',
+    '["mcp_servers"."opencode-worker"]\ncommand = "custom"\n',
+    '["mcp_servers"]\n"opencode-worker" = { command = "custom" }\n',
+    'mcp_servers = { opencode-worker = { command = "custom" } }\n',
+  ];
+  for (const userOwned of declarations) {
+    withCodexHome((_home, env) => {
+      const cfgPath = codexConfigPath(env);
+      fs.writeFileSync(cfgPath, userOwned, 'utf8');
+      assert.equal(ensureCodexMcpServerRegistered(env), 'already-present', userOwned);
+      assert.equal(fs.readFileSync(cfgPath, 'utf8'), userOwned);
+    });
+  }
+});
+
+test('ensureCodexMcpServerRegistered serializes concurrent cold registrations', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codexmcp-worker-race-'));
+  try {
+    const scriptFile = writeRegistrationChild(home);
+    const cacheRoot = path.join(home, 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.109');
+    const env = {
+      CODEX_HOME: home,
+      CODEX_PLUGIN_ROOT: cacheRoot,
+      TRAFFIC_ONE_HOST: 'codex',
+    } as NodeJS.ProcessEnv;
+    const results = await Promise.all(Array.from({ length: 8 }, () => (
+      runRegistrationChild(scriptFile, 'ensureCodexMcpServerRegistered', env)
+    )));
+    assert.equal(results.filter((value) => value === 'registered').length, 1);
+    assert.ok(results.every((value) => value === 'registered' || value === 'already-present'));
+    const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+    assert.equal((config.match(/\[mcp_servers\.opencode-worker\]/g) || []).length, 1);
+    assert.equal((config.match(/# >>> traffic-one managed opencode-worker MCP/g) || []).length, 1);
+    assert.deepEqual(fs.readdirSync(home).filter((name) => name.includes('traffic-one-mcp.lock')), []);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('legacy worker migration and concurrent public registration preserve both config edits', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codexmcp-mixed-race-'));
+  try {
+    const scriptFile = writeRegistrationChild(home);
+    const cacheRoot = path.join(home, 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.109');
+    const stableServer = path.join(home, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one', 'scripts', 'opencode-mcp.cjs');
+    const shellQuoted = `'${stableServer.replace(/'/g, `'\\''`)}'`;
+    const tomlEscaped = `exec node ${shellQuoted}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const prefix = '# user config remains byte-identical\nmodel = "gpt-5"\n';
+    const legacy = [
+      '',
+      '[mcp_servers.opencode-worker]',
+      'command = "sh"',
+      `args = ["-lc", "${tomlEscaped}"]`,
+      'startup_timeout_sec = 120',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(home, 'config.toml'), prefix + legacy, 'utf8');
+    const env = {
+      CODEX_HOME: home,
+      CODEX_PLUGIN_ROOT: cacheRoot,
+      TRAFFIC_ONE_HOST: 'codex',
+    } as NodeJS.ProcessEnv;
+
+    const results = await Promise.all([
+      runRegistrationChild(scriptFile, 'ensureCodexMcpServerRegistered', env),
+      runRegistrationChild(scriptFile, 'ensureCodexOneMcpServerRegistered', env),
+    ]);
+    assert.ok(results.every((value) => value === 'registered' || value === 'already-present'));
+    const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+    assert.ok(config.startsWith(prefix));
+    assert.equal((config.match(/\[mcp_servers\.opencode-worker\]/g) || []).length, 1);
+    assert.equal((config.match(/\[mcp_servers\.traffic-one-mcp\]/g) || []).length, 1);
+    assert.match(config, /# >>> traffic-one managed opencode-worker MCP/);
+    assert.match(config, /# >>> traffic-one managed public MCP \(disabled\)/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('ensureCodexMcpServerRegistered works in Codex Desktop when no plugin-root env is set', () => {
@@ -74,8 +296,9 @@ test('ensureCodexMcpServerRegistered works in Codex Desktop when no plugin-root 
 
     assert.equal(ensureCodexMcpServerRegistered(env), 'registered');
     const cfg = fs.readFileSync(codexConfigPath(env), 'utf8');
+    const stableServer = path.join(root, 'scripts', 'opencode-mcp.cjs');
     assert.match(cfg, /\[mcp_servers\.opencode-worker\]/);
-    assert.match(cfg, /local-marketplaces\/traffic-one-local\/plugins\/traffic-one\/scripts\/opencode-mcp\.cjs/);
+    assert.ok(cfg.includes(`args = [${JSON.stringify(stableServer)}]`));
   });
 });
 

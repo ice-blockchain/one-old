@@ -55,9 +55,10 @@ function withProject(
   }
 }
 
-function ctxFor(cwd: string, command: string): Ctx {
+function ctxFor(cwd: string, command: string, workspaceRoot?: string): Ctx {
   const input: HookInput = {
     event: 'PostToolUse', host: 'claude', cwd, raw: {},
+    ...(workspaceRoot ? { workspaceRoot } : {}),
     tool: { class: 'shell', rawName: 'Bash', command },
   };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
@@ -139,6 +140,28 @@ test('post-build code-graph hint runs graphify bootstrap + emits the success ban
       assert.ok(r.context.includes('[graphify] Codebase graph built'));
       assert.ok(r.context.includes('installed `graphifyy` via pipx'));
     }
+  });
+});
+
+test('post-build code-graph bootstrap resolves a nested monorepo build to the workspace root', () => {
+  withProject({ provider: 'graphify' }, (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ workspaces: ['apps/*'] }), 'utf8');
+    const app = path.join(cwd, 'apps', 'web');
+    fs.mkdirSync(app, { recursive: true });
+    fs.writeFileSync(path.join(app, 'package.json'), '{}', 'utf8');
+    let bootstrapCwd = '';
+    __setCodeGraphBootstraps({
+      graphify: (root) => {
+        bootstrapCwd = root;
+        return { ok: true, action: 'installed-pipx', durationMs: 10 };
+      },
+    });
+
+    const r = postBuildCodeGraphHint(ctxFor(app, 'pnpm build', cwd));
+
+    assert.equal(r.kind, 'context');
+    assert.equal(bootstrapCwd, cwd);
+    assert.equal(fs.existsSync(path.join(app, '.traffic-one')), false);
   });
 });
 

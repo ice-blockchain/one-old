@@ -23,11 +23,13 @@ import { isMutatingPreToolUse, normalizedToolName, parsedToolInput } from '../..
 const skillBlock = makeSkillBlock(pluginRoot);
 
 // Verbatim fallback: a missing T1BLOCK must never disable the gate.
-const AUTHORING_DENY_FALLBACK = 'traffic-one — write blocked: "{{PATH}}" is inside the Traffic One plugin source repository ({{ROOT}}). '
-  + 'This repo is the plugin\'s own codebase, never a Traffic One project: do not create `.traffic-one/**` here '
+const AUTHORING_DENY_FALLBACK = 'traffic-one — blocked: "{{PATH}}" is inside the Traffic One plugin source repository ({{ROOT}}). '
+  + 'This repo is the plugin\'s own codebase, never a Traffic One project: do not create or touch `.traffic-one/**` here '
   + '(no .one.json, manifest.json, one-mcp-report.json, runs/, rules/skills copies) and do not write generated '
-  + 'AGENTS.md/CLAUDE.md project context into it. Traffic One conventions inherited from a parent directory\'s '
-  + 'AGENTS.md do not apply inside this repo. Continue the user\'s task with plain source edits.';
+  + 'AGENTS.md/CLAUDE.md project context into it. Shell commands referencing `.traffic-one` under this root are blocked '
+  + 'unless clearly read-only — if your command was a read, re-run it in a form the classifier can verify (plain '
+  + '`grep`/`ls`/`cat` on absolute paths, no command substitution). Traffic One conventions inherited from a parent '
+  + 'directory\'s AGENTS.md do not apply inside this repo. Continue the user\'s task with plain source edits.';
 
 const MATERIALIZED_TITLE = '# Traffic One Local Agent Context';
 

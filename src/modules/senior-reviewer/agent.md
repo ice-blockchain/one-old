@@ -117,7 +117,12 @@ CHANGES_REQUESTED — <one line summary>.
   at most one shared missing-config banner pattern is visible per page, and the
   actual workflow still renders a credible demo, seeded, empty, or degraded
   state.
-- No hardcoded secrets, no `any` slipping in, no inline styles for static styling, no DOM tags in RN, no vanilla-extract imports, no `dangerouslySetInnerHTML` without DOMPurify, no `eval` / `new Function` with user input.
+- No hardcoded secrets, no `any` slipping in, no new `@ts-nocheck` / `@ts-ignore`
+  or equivalent broad type-check suppression, no inline styles for static
+  styling, no DOM tags in RN, no vanilla-extract imports, no
+  `dangerouslySetInnerHTML` without DOMPurify, no `eval` / `new Function` with
+  user input. Successful live repository/API responses drive every affected
+  rendered surface; fixtures are fallback data, never a post-fetch replacement.
 - Auth + authorization checks on every protected handler. Parameterised SQL only. Validation at boundaries with a schema.
 - Supabase missing-config UI (`<EnvBanner />`, `<SupabaseConfigAlert />`,
   `<ConfigurePromptCard />`, protected-route fallbacks, auth/profile/job empty
