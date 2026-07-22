@@ -18,6 +18,7 @@ import {
   isTeamApproved,
   normalizeState,
 } from '../../shared/state';
+import { platformPathContains, resolvePlatformPath } from './path-identity';
 
 type Rec = Record<string, unknown>;
 export const which = exec.which;
@@ -54,7 +55,8 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): DoctorArgs {
 }
 
 export function codexConfigPath(env: NodeJS.ProcessEnv = process.env): string | null {
-  const codexHome = env.CODEX_HOME || (env.HOME ? path.join(env.HOME, '.codex') : '');
+  const userHome = env.HOME || env.USERPROFILE || '';
+  const codexHome = env.CODEX_HOME || (userHome ? path.join(userHome, '.codex') : '');
   return codexHome ? path.join(codexHome, 'config.toml') : null;
 }
 
@@ -89,14 +91,13 @@ export function parseCodexConfigToml(text: unknown): Record<string, Rec> {
 }
 
 export function trustedProjectForCwd(cwd: string, sections: Record<string, Rec>): string | null {
-  const resolvedCwd = path.resolve(cwd);
   let best: string | null = null;
   for (const [section, values] of Object.entries(sections || {})) {
     const match = section.match(/^projects\."(.+)"$/);
     if (!match || match[1] === undefined) continue;
     if (!values || values.trust_level !== 'trusted') continue;
-    const projectRoot = path.resolve(match[1]);
-    const covered = resolvedCwd === projectRoot || resolvedCwd.startsWith(`${projectRoot}${path.sep}`);
+    const projectRoot = resolvePlatformPath(match[1]);
+    const covered = platformPathContains(projectRoot, cwd);
     if (!covered) continue;
     if (!best || projectRoot.length > best.length) best = projectRoot;
   }

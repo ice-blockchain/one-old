@@ -25,6 +25,14 @@ import {
   probeSessionDiagnostics,
   type SessionDiagnosticsResult,
 } from './probes';
+export {
+  CODEX_HOOK_EXPECTED_COUNT,
+  CODEX_TRAFFIC_ONE_HOOK_KEYS,
+  CODEX_TRAFFIC_ONE_PLUGIN_ID,
+  probeCodexHookTrust,
+  resolveCodexBinary,
+} from './codex-hook-trust';
+export type { CodexHookTrustProbe, CodexHookTrustProbeOptions, CodexHookTrustStatus } from './codex-hook-trust';
 
 export { buildFindings } from './findings';
 export type { Finding, BuildFindingsInput } from './findings';
@@ -51,7 +59,7 @@ export function selectDoctorProjectCwd(invocationCwd: string, sessionDiagnostics
   return resolveProjectRoot(recordedCwd);
 }
 
-export function main(): void {
+export async function main(): Promise<void> {
   const args = parseArgs();
   // Resolve the incident first: `doctor --session` must not combine a target
   // transcript with project prefs/trust from whichever directory invoked it.
@@ -61,7 +69,7 @@ export function main(): void {
   const nvm = probeNvm();
   const gitnexus = probeGitnexus();
   const project = probeProject(cwd);
-  const codexHooks = probeCodexHooks(cwd);
+  const codexHooks = await probeCodexHooks(cwd);
   const auth = probeCanonicalAuth();
   const oneMcp = probeOneMcp();
   const openCodeMcp = probeOpenCodeMcp();
@@ -79,4 +87,6 @@ export function main(): void {
   }, null, 2)}\n`);
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  void main().catch(() => { process.exitCode = 1; });
+}

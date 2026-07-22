@@ -40,6 +40,11 @@ import {
   walkJsonlFiles,
   which,
 } from './lib';
+import {
+  probeCodexHookTrust,
+  type CodexHookTrustProbe,
+  type CodexHookTrustProbeOptions,
+} from './codex-hook-trust';
 
 type Rec = Record<string, unknown>;
 
@@ -274,11 +279,7 @@ export interface CodexHooksProbe {
   configExists: boolean;
   cwd: string;
   pluginEnabled?: boolean | null;
-  hookStateEntryCount?: number;
-  hookStateEnabledCount?: number;
-  hookStateTrustedHashCount?: number;
-  hookEvents?: string[];
-  missingHookEvents?: string[];
+  hookTrust: CodexHookTrustProbe;
   trustCovered?: boolean;
   trustedProject?: string | null;
   // Whether [mcp_servers.opencode-worker] is present in config.toml — Codex
@@ -286,43 +287,25 @@ export interface CodexHooksProbe {
   // never appears (a Codex restart is needed after it is written).
   opencodeMcpRegistered?: boolean;
 }
-export function probeCodexHooks(cwd: string, env: NodeJS.ProcessEnv = process.env): CodexHooksProbe {
+export async function probeCodexHooks(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: CodexHookTrustProbeOptions = {},
+): Promise<CodexHooksProbe> {
   const configPath = codexConfigPath(env);
   const text = configPath ? safeRead(configPath) : null;
-  if (!text) {
-    return { host: 'codex', configPath, configExists: false, cwd: path.resolve(cwd) };
-  }
-
-  const sections = parseCodexConfigToml(text);
+  const sections = parseCodexConfigToml(text || '');
   const pluginSection = sections['plugins."traffic-one@traffic-one-local"'] || null;
-  const hookSections = Object.entries(sections)
-    .filter(([section]) => section.startsWith('hooks.state."traffic-one@traffic-one-local:hooks/hooks.json:'));
-  const hookEvents = new Set<string>();
-  let hookStateEnabledCount = 0;
-  let hookStateTrustedHashCount = 0;
-  for (const [section, values] of hookSections) {
-    const eventMatch = section.match(/hooks\/hooks\.json:([^:]+):/);
-    if (eventMatch && eventMatch[1] !== undefined) hookEvents.add(eventMatch[1]);
-    if (values && values.enabled === true) hookStateEnabledCount += 1;
-    if (values && typeof values.trusted_hash === 'string' && values.trusted_hash.startsWith('sha256:')) {
-      hookStateTrustedHashCount += 1;
-    }
-  }
-  const requiredHookEvents = ['session_start', 'user_prompt_submit', 'pre_tool_use', 'post_tool_use'];
-  const missingHookEvents = requiredHookEvents.filter((event) => !hookEvents.has(event));
   const trustedProject = trustedProjectForCwd(cwd, sections);
+  const hookTrust = await probeCodexHookTrust(cwd, env, options);
 
   return {
     host: 'codex',
     configPath,
-    configExists: true,
+    configExists: text !== null,
     cwd: path.resolve(cwd),
     pluginEnabled: pluginSection ? pluginSection.enabled === true : null,
-    hookStateEntryCount: hookSections.length,
-    hookStateEnabledCount,
-    hookStateTrustedHashCount,
-    hookEvents: [...hookEvents].sort(),
-    missingHookEvents,
+    hookTrust,
     trustCovered: Boolean(trustedProject),
     trustedProject,
     opencodeMcpRegistered: Object.prototype.hasOwnProperty.call(sections, `mcp_servers.${OPENCODE_MCP_SERVER_KEY}`),

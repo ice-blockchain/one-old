@@ -15,6 +15,9 @@ import { ALL_CASES } from './config/cases';
 import { discoverAssertions } from './assertions/registry';
 import { preflight } from './core/preflight';
 import { buildAndInstall, cleanupBuildInstall, type BuildResult } from './core/build-and-install';
+import {
+  runRequiredCodexTrustUpgradeProof,
+} from './core/codex-trust-upgrade-proof';
 import { runCase, reassertCase } from './core/case-runner';
 import { releaseResultFailed } from './core/result-policy';
 import { writeReport } from './reporting/aggregate-report';
@@ -227,6 +230,23 @@ async function main(): Promise<number> {
       console.error('selected hosts are not proven to use the current dist — aborting host-e2e run.');
       cleanupReleaseInstall(build);
       return 2;
+    }
+    if (e2eHosts.has('codex')) {
+      console.log('codex trust-upgrade proof: isolated v1 approval -> byte-identical hooks on v2 (no bypass)');
+    }
+    const proof = await runRequiredCodexTrustUpgradeProof(e2eHosts, {
+      distRoot: build.distRoot,
+      codexBin: config.hosts.codex.bin,
+    });
+    if (proof) {
+      for (const note of proof.notes) console.log(`  trust-proof note: ${note}`);
+      if (!proof.ok) {
+        console.error(`codex trust-upgrade proof failed at ${proof.stage}: ${proof.detail}`);
+        console.error('Codex E2E cases are blocked because persisted hook trust was not proven.');
+        cleanupReleaseInstall(build);
+        return 2;
+      }
+      console.log(`  trust-proof: ${proof.afterTrusted}/${proof.expectedHooks} trusted; observed [${proof.observedEvents.join(', ')}]`);
     }
   }
 

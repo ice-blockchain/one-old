@@ -11,6 +11,8 @@
 
 import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME } from '../../config/one-mcp';
 
+export const CODEX_HOOK_ABI_VERSION = 1;
+
 function regexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

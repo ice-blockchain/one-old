@@ -43,8 +43,11 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     promptVia: 'arg',
     // DEFAULTS-TO-VERIFY: confirm `codex exec` accepts a positional prompt, the
     // --json envelope, and the correct sandbox-bypass flag for headless writes.
-    // The isolated temp workspace is disposable, so explicitly bypass hook trust;
-    // otherwise Codex can withhold the newly installed plugin's hooks there.
+    // The isolated temp workspace is disposable, so the generic behavior matrix
+    // bypasses hook trust for its content-addressed (new-per-run) marketplace.
+    // This is NOT evidence that persisted Codex hook trust survives an upgrade;
+    // run.ts requires the separate no-bypass trust-upgrade proof before any
+    // selected Codex E2E case is allowed to start.
     runArgs: ['exec', '--json', '--cd', '{CWD}', '--sandbox', 'danger-full-access', '--dangerously-bypass-hook-trust', '-c', 'plugins."traffic-one@traffic-one-local".enabled=false', '-m', '{MODEL}', '{PROMPT}'],
     outputFormat: 'json',
     probeArgs: ['--version'],

@@ -11,6 +11,7 @@ import {
   ONE_MCP_DECODER_VERSION,
 } from '../../../config/one-mcp';
 import {
+  codexConfigPath,
   commandLooksMutating,
   getPayloadText,
   parseArgs,
@@ -20,6 +21,7 @@ import {
   sessionIdFromFile,
   trustedProjectForCwd,
 } from '../lib';
+import { platformPathContains, samePlatformPath } from '../path-identity';
 import {
   analyzeCodexSessionFile,
   probeCanonicalAuth,
@@ -32,7 +34,12 @@ import {
   type NodeProbe,
   type NvmProbe,
   type ProjectProbe,
+  type CodexHooksProbe,
 } from '../probes';
+import {
+  CODEX_TRAFFIC_ONE_HOOK_KEYS,
+  type CodexHookTrustProbe,
+} from '../codex-hook-trust';
 import { buildFindings } from '../findings';
 import { selectDoctorProjectCwd } from '../index';
 
@@ -44,6 +51,13 @@ test('parseArgs reads --session', () => {
   assert.deepEqual(parseArgs(['--session', 'abc']), { session: 'abc' });
   assert.deepEqual(parseArgs([]), { session: null });
   assert.deepEqual(parseArgs(['--session']), { session: null });
+});
+
+test('codexConfigPath supports Windows USERPROFILE when HOME is absent', () => {
+  assert.equal(
+    codexConfigPath({ USERPROFILE: path.join('C:', 'Users', 'doctor') }),
+    path.join('C:', 'Users', 'doctor', '.codex', 'config.toml'),
+  );
 });
 
 test('selectDoctorProjectCwd anchors incident probes to the session cwd', () => {
@@ -100,6 +114,13 @@ test('trustedProjectForCwd returns the longest covering trusted root', () => {
   assert.equal(trustedProjectForCwd('/elsewhere', sections), null);
 });
 
+test('doctor path identity is case-insensitive on Windows and boundary-aware', () => {
+  assert.equal(samePlatformPath('C:\\Users\\Doctor\\Repo', 'c:\\users\\doctor\\repo', 'win32'), true);
+  assert.equal(platformPathContains('C:\\Users\\Doctor\\Repo', 'c:\\users\\doctor\\repo\\sub', 'win32'), true);
+  assert.equal(platformPathContains('C:\\Users\\Doctor\\Repo', 'c:\\users\\doctor\\repo-other', 'win32'), false);
+  assert.equal(samePlatformPath('/Repo', '/repo', 'linux'), false);
+});
+
 test('sessionIdFromFile extracts uuid or strips rollout-/.jsonl', () => {
   assert.equal(sessionIdFromFile('/x/rollout-2026-01-01T00-00-00-12345678-1234-1234-1234-123456789abc.jsonl'), '12345678-1234-1234-1234-123456789abc');
   assert.equal(sessionIdFromFile('/x/rollout-sess9.jsonl'), 'sess9');
@@ -154,12 +175,14 @@ test('probeProject reads + normalizes the state file', () => {
   }
 });
 
-test('probeCodexHooks parses plugin + hook trust from config.toml', () => {
+test('probeCodexHooks parses structural plugin/workspace state but does not claim structural hook trust', async () => {
   const home = tmp('codexhome');
   const savedHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = home;
   try {
-    assert.equal(probeCodexHooks('/repo').configExists, false);
+    const absent = await probeCodexHooks('/repo');
+    assert.equal(absent.configExists, false);
+    assert.equal(absent.hookTrust.evaluation, 'indeterminate');
     const cfg = [
       '[plugins."traffic-one@traffic-one-local"]',
       'enabled = true',
@@ -170,12 +193,16 @@ test('probeCodexHooks parses plugin + hook trust from config.toml', () => {
       'trust_level = "trusted"',
     ].join('\n');
     fs.writeFileSync(path.join(home, 'config.toml'), cfg, 'utf8');
-    const probe = probeCodexHooks('/repo');
+    const probe = await probeCodexHooks('/repo');
     assert.equal(probe.configExists, true);
     assert.equal(probe.pluginEnabled, true);
-    assert.equal(probe.hookStateEntryCount, 1);
     assert.equal(probe.trustCovered, true);
-    assert.deepEqual(probe.missingHookEvents, ['user_prompt_submit', 'pre_tool_use', 'post_tool_use']);
+    assert.deepEqual(probe.hookTrust, {
+      evaluation: 'indeterminate',
+      source: 'structural-config',
+      reason: 'plugin-cache-missing',
+      detail: null,
+    });
   } finally {
     if (savedHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedHome;
     fs.rmSync(home, { recursive: true, force: true });
@@ -490,6 +517,27 @@ function baseProject(over: Partial<ProjectProbe> = {}): ProjectProbe {
 const node = (over: Partial<NodeProbe> = {}): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, ...over });
 const nvm = (over: Partial<NvmProbe> = {}): NvmProbe => ({ installed: false, ...over });
 const gn = (over: Partial<GitnexusProbe> = {}): GitnexusProbe => ({ onPath: null, absoluteV22: null, crashRiskInOldNvm: false, ...over });
+type VerifiedHookTrust = Extract<CodexHookTrustProbe, { evaluation: 'verified' }>;
+const healthyHookTrust = (over: Partial<VerifiedHookTrust> = {}): VerifiedHookTrust => ({
+  evaluation: 'verified',
+  source: 'codex-hooks-list',
+  expectedCount: 15,
+  counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
+  missingKeys: [],
+  unexpectedKeys: [],
+  hooks: CODEX_TRAFFIC_ONE_HOOK_KEYS.map((key) => ({
+    key, eventName: 'preToolUse', enabled: true, trustStatus: 'trusted', currentHash: 'sha256:current',
+  })),
+  binaryPath: '/usr/bin/codex',
+  codexVersion: '1.0.0',
+  warnings: [],
+  errors: [],
+  ...over,
+});
+const codexProbe = (over: Partial<CodexHooksProbe> = {}): CodexHooksProbe => ({
+  host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true,
+  hookTrust: healthyHookTrust(), trustCovered: true, ...over,
+});
 
 test('buildFindings: session-not-found', () => {
   const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), sessionDiagnostics: { id: 's', found: false, sessionsDir: '/d' } });
@@ -544,8 +592,8 @@ test('buildFindings: absent hook output is informational evidence, not proof hoo
 });
 
 test('buildFindings: codex plugin disabled', () => {
-  const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: false } });
-  assert.ok(f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_PLUGIN_DISABLED'));
+  const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), codexHooks: codexProbe({ pluginEnabled: false }) });
+  assert.ok(f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED'));
 });
 
 test('buildFindings: One MCP invalid, missing, and temporary outcomes are bounded informational diagnostics', () => {
@@ -606,23 +654,67 @@ test('buildFindings: One MCP invalid, missing, and temporary outcomes are bounde
   assert.match(f.find((finding) => finding.code === 'ONE_MCP_SYNC_UNAVAILABLE')?.message || '', /transport-failed/);
 });
 
-test('buildFindings: Codex trusted hashes do not require enabled hook counters', () => {
+test('buildFindings: exact runnable Codex hooks are healthy', () => {
   const f = buildFindings({
     node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(),
-    codexHooks: {
-      host: 'codex',
-      configPath: '/c',
-      configExists: true,
-      cwd: '/repo',
-      pluginEnabled: true,
-      hookStateEntryCount: 13,
-      hookStateEnabledCount: 0,
-      hookStateTrustedHashCount: 13,
-      missingHookEvents: [],
-      trustCovered: true,
-    },
+    codexHooks: codexProbe(),
   });
   assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED'));
+  assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOK_ABI_MISMATCH'));
+  assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED'));
+  assert.ok(!f.some((x) => x.code === 'CODEX_HOOK_TRUST_INDETERMINATE'));
+});
+
+test('buildFindings: official Codex hook findings distinguish ABI, disabled, trust, and indeterminate', () => {
+  const base = { node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject() };
+  const abi = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: healthyHookTrust({
+        counts: { discovered: 14, trusted: 14, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 14 },
+        missingKeys: [CODEX_TRAFFIC_ONE_HOOK_KEYS[14] as string],
+      }),
+    }),
+  });
+  assert.ok(abi.some((finding) => finding.code === 'CODEX_TRAFFIC_ONE_HOOK_ABI_MISMATCH'));
+
+  const disabled = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: healthyHookTrust({
+        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 1, runnable: 14 },
+      }),
+    }),
+  });
+  assert.ok(disabled.some((finding) => finding.code === 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED'));
+
+  const notTrusted = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: healthyHookTrust({
+        counts: { discovered: 15, trusted: 0, managed: 0, modified: 13, untrusted: 2, disabled: 0, runnable: 0 },
+      }),
+    }),
+  });
+  assert.ok(notTrusted.some((finding) => finding.code === 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED'));
+
+  const notFullyRunnable = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: healthyHookTrust({
+        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 14 },
+      }),
+    }),
+  });
+  assert.ok(notFullyRunnable.some((finding) => finding.code === 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED'));
+
+  const uncertain = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: { evaluation: 'indeterminate', source: 'structural-config', reason: 'unsupported-api', detail: null },
+    }),
+  });
+  assert.ok(uncertain.some((finding) => finding.code === 'CODEX_HOOK_TRUST_INDETERMINATE'));
 });
 
 test('buildFindings: legacy state shape + local prefs in project state', () => {
@@ -668,9 +760,9 @@ test('buildFindings: opencode enabled on codex without [mcp_servers.opencode-wor
     node: node(), nvm: nvm(), gitnexus: gn(),
     project: baseProject({ normalizedState: { openCode: { enabled: true } } }),
   };
-  const missing = buildFindings({ ...base, codexHooks: { host: 'codex' as const, configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: false } });
+  const missing = buildFindings({ ...base, codexHooks: codexProbe({ opencodeMcpRegistered: false }) });
   assert.ok(missing.some((x) => x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED'));
-  const registered = buildFindings({ ...base, codexHooks: { host: 'codex' as const, configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: true } });
+  const registered = buildFindings({ ...base, codexHooks: codexProbe({ opencodeMcpRegistered: true }) });
   assert.ok(!registered.some((x) => x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED'));
 });
 
@@ -678,7 +770,7 @@ test('buildFindings: opencode findings are silent when delegation is not enabled
   const f = buildFindings({
     node: node(), nvm: nvm(), gitnexus: gn(),
     project: baseProject({ openCodeCli: 'missing' }),
-    codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: false },
+    codexHooks: codexProbe({ opencodeMcpRegistered: false }),
   });
   assert.ok(!f.some((x) => x.code === 'OPENCODE_CLI_MISSING' || x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED' || x.code === 'OPENCODE_CLI_UNMANAGED'));
 });

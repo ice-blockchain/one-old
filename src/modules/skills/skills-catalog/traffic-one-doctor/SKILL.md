@@ -75,6 +75,40 @@ In Codex, prefer `TRAFFIC_ONE_PLUGIN_ROOT` or `CODEX_PLUGIN_ROOT` when the
 host exposes one. If no plugin-root env var is available, use the absolute
 plugin root that contains this `SKILL.md`.
 
+## Codex hook-trust activation and remediation
+
+For Codex, a healthy installation has **15 trusted / 15 runnable** Traffic One
+hooks. If Doctor emits `CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED`, reports
+any other totals, or the review was only partially accepted, keep the summary at
+`ACTION_NEEDED`; there is no supported degraded Traffic One mode.
+
+Give the user this primary recovery flow:
+
+1. Install or reinstall the current Traffic One build.
+2. In Codex Desktop, open **Plugins → Traffic One → Hooks → Review** and inspect
+   every displayed command. Compare all 15 hook keys and commands with the
+   installed `hooks/hooks.json` fixture.
+3. Only if the count, keys, and commands match, ask the user to choose
+   **Trust all**. If anything differs, do not trust the set; reinstall or update
+   the current Traffic One build and review it again.
+4. Reload if Desktop offers it or fully restart Desktop, then open a new task in
+   a trusted project and rerun Doctor. Completion requires `HEALTHY` and
+   **15 trusted / 15 runnable**.
+
+If Desktop cannot complete that flow, give this CLI fallback:
+
+1. Fully quit Codex Desktop so it cannot write hook state concurrently.
+2. Start `codex` from a trusted project, run `/hooks`, inspect the 15 fixture
+   entries, and approve only Traffic One — never unrelated plugin hooks.
+3. Exit the CLI, restart Desktop, open a new task in the trusted project, and
+   rerun Doctor.
+
+A partial selection, cancelling the review, or choosing **Continue without
+trusting** is still `ACTION_NEEDED`. Traffic One has no hook-trust auto-approval,
+and onboarding cannot activate or recover untrusted hooks because the hook that
+starts onboarding is itself inactive. Do not suggest rerunning onboarding as a
+hook-trust repair.
+
 Parse the JSON. Walk findings in order. For each `severity: "fix-needed"`:
 
 - If a `recommendedCommand` is present, surface it to the user and offer to run

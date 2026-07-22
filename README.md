@@ -58,12 +58,47 @@ invalidate `one.json.auth`.
 
 Codex only invokes plugin hooks inside trusted workspaces. If a project is
 created in an untrusted folder, Traffic One cannot fail closed from inside the
-hook because the hook never starts. Run `node scripts/doctor.cjs` from an
-installed plugin root, or `node dist/scripts/doctor.cjs` from this source
-checkout after `npm run plugin:build`, to verify the Codex plugin is enabled,
-Traffic One hook trust records are present, and the current `cwd` is covered by
-a trusted project root. Trust the generated-project parent or create projects
-under Codex's trusted default project root before starting Traffic One work.
+hook because the hook never starts. Traffic One onboarding is itself started by
+those hooks, so onboarding cannot recover inactive or withheld hooks. Traffic
+One never auto-approves Codex hook trust.
+
+### Codex Desktop hook-trust activation
+
+On the first Traffic One installation, activate its hook fixture before starting
+Traffic One work:
+
+1. In Codex Desktop, open **Plugins → Traffic One → Hooks → Review**.
+2. Inspect every displayed command. The installed plugin must show exactly the
+   15 Traffic One hook keys and commands shipped in its `hooks/hooks.json`
+   fixture. Only when both the count and the keys/commands match, choose
+   **Trust all**.
+3. If Desktop offers **Reload**, use it; otherwise fully restart Desktop. Open a
+   new task in a trusted project so the newly trusted session hooks can run.
+4. Run `node ~/.traffic-one/bin/doctor.cjs` from that project. Do not proceed
+   until Doctor reports `HEALTHY` with **15 trusted / 15 runnable** Traffic One
+   hooks and confirms that the workspace is covered by a trusted project root.
+
+If the review shows any other count, hook key, or command, do **not** choose
+**Trust all**. Reinstall or update Traffic One, reopen the review, and compare
+it with the installed fixture again. A partial selection, cancelling the
+review, or choosing **Continue without trusting** leaves Doctor at
+`ACTION_NEEDED`; there is no supported degraded Traffic One mode.
+
+If Desktop cannot complete the review, use the CLI fallback without running
+Desktop and the CLI concurrently:
+
+1. Fully quit Codex Desktop.
+2. From a trusted project, start `codex`, run `/hooks`, inspect the 15 fixture
+   entries, and approve only Traffic One. Do not approve unrelated plugin hooks.
+3. Exit the CLI, restart Desktop, open a new task in that trusted project, and
+   rerun Doctor until it reports **15 trusted / 15 runnable**.
+
+Run `node scripts/doctor.cjs` from an installed plugin root, or
+`node dist/scripts/doctor.cjs` from this source checkout after
+`npm run plugin:build`, to verify the Codex plugin is enabled, Traffic One hook
+trust records are present, and the current `cwd` is covered by a trusted project
+root. Trust the generated-project parent or create projects under Codex's
+trusted default project root before starting Traffic One work.
 
 If Traffic One skills are visible but hooks did not run, or an opted-in project
 was not materialized with its root instructions, do not treat that as a safe

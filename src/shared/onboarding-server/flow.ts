@@ -26,7 +26,7 @@ import { ASK_USE_PLUGIN_FIRST, STEP_COPY, TEAM_ROLES, type StepCopy, type Wizard
 import { readPluginUseChoice } from '../state/plugin-use';
 import { TIER_IDS } from '../../config/model-tiers';
 import { recommendTierForPlan } from '../model-tiers';
-import { currentHostModelTarget, currentModelsForTier } from '../current-model-tiers';
+import { currentModelsForTier } from '../current-model-tiers';
 import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
@@ -75,11 +75,6 @@ export type PerformanceRepickReason =
   | 'models-changed'
   | 'team-settings-changed';
 
-export interface PerformanceCatalogTier {
-  tier: string;
-  models: string[];
-}
-
 // The static step copy (kind/title/question/options/fields) is owned by
 // config/onboarding.ts (STEP_COPY); StepMeta layers on the fields flow.ts
 // resolves at display time.
@@ -92,9 +87,6 @@ export interface StepMeta extends StepCopy {
   recommendedTier?: string;
   host?: string;
   plan?: string;
-  catalogSource?: 'one-mcp' | 'bundled';
-  catalogVersion?: number;
-  catalogTiers?: PerformanceCatalogTier[];
   repickReason?: PerformanceRepickReason;
   previousPlan?: string;
   // Exact model ids offered on the team step, grouped by capability tier. Each
@@ -489,14 +481,6 @@ function enrichPerformanceMeta(
   meta.recommendedTier = recommendTierForPlan(host, plan);
   meta.host = host;
   meta.plan = plan;
-
-  const catalog = currentHostModelTarget(host, plan, env);
-  meta.catalogSource = catalog.source;
-  meta.catalogVersion = catalog.configVersion;
-  meta.catalogTiers = TIER_IDS.map((tier) => ({
-    tier,
-    models: [...catalog.snapshot.tiers[tier]],
-  }));
 
   const performance = obj(state.performance);
   const previousTarget = obj(performance?.target);

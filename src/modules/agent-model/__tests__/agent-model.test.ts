@@ -90,6 +90,42 @@ test('inferTrafficOneSpawnRole filters non-candidates and fails closed only with
   );
 });
 
+test('inferTrafficOneSpawnRole resolves fix-cycle prompts without the "Traffic One" literal (7c Couldn\'t-start fix)', () => {
+  // Observed 7c: the orchestrator sent CHANGES_REQUESTED fixes as fresh generic
+  // workers whose prompt named only the owning role — no "Traffic One" literal,
+  // no [t1-role:] marker. Role inference returned none, the child stayed
+  // unbound, and Cursor rendered it as "New subagent — Couldn't start". The
+  // ownership phrasing must resolve to the OWNING implementer even though the
+  // findings also mention `senior-reviewer` as their source.
+  assert.equal(
+    inferTrafficOneSpawnRole({
+      subagent_type: 'general-purpose',
+      task: 'Fix CHANGES_REQUESTED item owned by senior-backend. Stay in your assignment scope.\n\n'
+        + 'Finding VERBATIM from senior-reviewer:\n\n3. `packages/api-client/src/coursesService.ts:119` — unescaped search.',
+    }),
+    'senior-backend',
+  );
+  assert.equal(
+    inferTrafficOneSpawnRole({
+      subagent_type: 'generalPurpose',
+      prompt: 'Fix CHANGES_REQUESTED items owned by senior-frontend. Stay in your assignment scope.\n\n'
+        + 'Findings VERBATIM from senior-reviewer:\n\n1. `apps/web/src/lib/seo.ts:25` — slug mismatch.',
+    }),
+    'senior-frontend',
+  );
+  // The fix-cycle re-spawn template ("You are continuing as `<role>`…") resolves too.
+  assert.equal(
+    inferTrafficOneSpawnRole({
+      prompt: 'You are continuing as `senior-frontend` in run 1784727578206, fix cycle #1. End with FIXES_APPLIED.',
+    }),
+    'senior-frontend',
+  );
+  // Without a role-bearing phrase, generic work stays unclaimed, and the weaker
+  // bare-mention tier still requires the "Traffic One" literal.
+  assert.equal(inferTrafficOneSpawnRole({ prompt: 'Fix the failing build owned by the platform team.' }), null);
+  assert.equal(inferTrafficOneSpawnRole({ prompt: 'Ping senior-backend about the schema.' }), null);
+});
+
 test('inferTrafficOneSpawnRole inspects both source envelopes and accepts outer threadSpawn camelCase', () => {
   const nestedPayload = inferTrafficOneSpawnRoleEvidence({
     source: { event: 'subagent-start' },
@@ -3294,6 +3330,38 @@ test('reuse (Cursor): duplicate spawn deny names Task resume UUID after PostTool
       if (dup.kind === 'deny') {
         assert.ok(dup.reason.includes('bff46cd7-3681-4cf0-adcf-263bf55cc301'), 'deny must name Cursor resume UUID, not tool_* id');
         assert.ok(!dup.reason.includes('tool_b1b73265'), 'deny must not name tool_* id');
+      }
+    });
+  });
+});
+
+test('reuse (Cursor): a generic fix-cycle spawn ("owned by senior-X") is denied with the resume recipe instead of dying unbound (7c)', () => {
+  withMaterialized({ teamApproved: true, cursorModels: DEFAULT_CURSOR_MODELS }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-cursor-fixcycle');
+      freezeRunPolicy(cwd, 'cursor', 'run-cursor-fixcycle');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'composer-2.5-fast', prompt: 'build the API' },
+        'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 (can be used with the resume parameter)',
+        'parent-1',
+        'cursor',
+      ));
+      // Observed 7c: after CHANGES_REQUESTED the orchestrator spawned a fresh
+      // `general-purpose` Task whose prompt named the owning role only in prose.
+      // Pre-fix the role never resolved, the gate noop'd, and the unbound child
+      // died as "New subagent — Couldn't start". Now the ownership phrasing
+      // resolves the role and the reuse gate redirects to the live agent.
+      const fix = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'general-purpose',
+        model: 'composer-2.5-fast',
+        prompt: 'Fix CHANGES_REQUESTED item owned by senior-backend. Stay in your assignment scope.\n\n'
+          + 'Finding VERBATIM from senior-reviewer:\n\n3. `packages/api-client/src/coursesService.ts:119` — unescaped search filter.',
+      }, 'parent-1', 'cursor'));
+      assert.equal(fix.kind, 'deny', 'the role-less generic fix spawn must be intercepted at PreToolUse');
+      if (fix.kind === 'deny') {
+        assert.ok(fix.reason.includes('bff46cd7-3681-4cf0-adcf-263bf55cc301'), 'deny names the live backend resume UUID');
+        assert.match(fix.reason, /resume/i, 'deny teaches the Task resume continuation');
       }
     });
   });

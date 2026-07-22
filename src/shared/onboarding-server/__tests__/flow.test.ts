@@ -275,9 +275,9 @@ test('existing project: plan/model drift reopens Performance while metadata-only
     const modelsChanged = computeOnboarding(cwd);
     assert.equal(modelsChanged.step, 'performance');
     assert.equal(modelsChanged.meta.repickReason, 'models-changed');
-    assert.equal(modelsChanged.meta.catalogSource, 'one-mcp');
-    assert.equal(modelsChanged.meta.catalogVersion, 2);
-    assert.equal(modelsChanged.meta.catalogTiers?.find((row) => row.tier === 'highest')?.models[0], 'gpt-new-frontier');
+    // The Performance step no longer ships the tier-catalog card — repickReason
+    // is the entire models-changed surface.
+    assert.equal('catalogTiers' in modelsChanged.meta, false);
     assert.equal(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'), beforeCatalogChange);
   });
 });
@@ -1080,9 +1080,7 @@ test('plan-aware performance step: the recommended option follows the plan', () 
     assert.equal(view.meta.recommendedTier, 'cheapest'); // headline plan tier surfaced on the step
     assert.equal(view.meta.host, 'codex');
     assert.equal(view.meta.plan, 'free');
-    assert.equal(view.meta.catalogSource, 'bundled');
-    assert.equal(view.meta.catalogVersion, 0);
-    assert.equal(view.meta.catalogTiers?.length, 3);
+    assert.equal('catalogTiers' in view.meta, false); // tier-catalog card removed from the step
     assert.equal(view.meta.repickReason, 'initial');
     assert.equal(view.meta.options?.[0]?.id, 'low'); // recommended floats to the top
     assert.ok(/Recommended/.test(view.meta.options?.[0]?.hint || ''));

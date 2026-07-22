@@ -139,14 +139,26 @@ export function inferTrafficOneSpawnRoleEvidence(toolInput: Record<string, unkno
   if (markerResolution.kind !== 'none') return markerResolution;
 
   const joined = texts.join('\n');
-  if (!/\bTraffic One\b/i.test(joined)) return { kind: 'none' };
+  const hasTrafficOneLiteral = /\bTraffic One\b/i.test(joined);
 
+  // Fix-cycle prompts routinely omit the literal "Traffic One" (observed 7c: the
+  // orchestrator spawned generic `general-purpose` workers with "Fix
+  // CHANGES_REQUESTED items owned by senior-frontend" — role unresolved, the
+  // unbound child died as "Couldn't start"). The explicit ownership/continuation
+  // phrasings below name a canonical role directly, so they resolve without the
+  // literal; the weaker bare-mention tier at the bottom stays gated behind it.
   const primary = firstHeuristicTier(texts, [
-    /(?:acting as|you are)(?:\s+the)?\s+Traffic One[\s`'"*]*([a-z][a-z-]+)/i,
-    /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
-    /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+    /\bowned by\b[^.\n]{0,24}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+    /\bcontinuing as\b[^.\n]{0,24}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+    ...(hasTrafficOneLiteral ? [
+      /(?:acting as|you are)(?:\s+the)?\s+Traffic One[\s`'"*]*([a-z][a-z-]+)/i,
+      /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+      /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+    ] : []),
   ]);
   if (primary.kind !== 'none') return primary;
+
+  if (!hasTrafficOneLiteral) return { kind: 'none' };
 
   const mentioned = Array.from(new Set(
     Array.from(joined.matchAll(/\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper)|quick-fix)\b/ig))

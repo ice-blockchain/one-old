@@ -7,6 +7,7 @@ import * as path from 'path';
 
 import { REPO_ROOT_PATH, defaultConfig } from '../config/test-config';
 import { buildAndInstall, cleanupBuildInstall } from './build-and-install';
+import { codexTrustUpgradeProofRequired } from './codex-trust-upgrade-proof';
 import {
   distTreeFingerprint,
   readDistRuntimeProof,
@@ -296,10 +297,13 @@ test('successful Codex staging is cleaned with only its unique E2E ids', (t) => 
   assert.equal(readDistRuntimeProof(dist.root), null);
 });
 
-test('the production E2E package script enables strict result handling', () => {
+test('production E2E is strict and keeps the generic Codex bypass separate from the mandatory trust proof', () => {
   const pkg = JSON.parse(fs.readFileSync(`${REPO_ROOT_PATH}/package.json`, 'utf8')) as {
     scripts?: Record<string, string>;
   };
   assert.match(pkg.scripts?.['test:env:e2e'] ?? '', /(?:^|\s)--strict(?:\s|$)/);
+  // The content-addressed generic matrix needs this bypass, but it is not a
+  // persisted-trust assertion. run.ts separately gates every Codex E2E suite.
   assert.ok(defaultConfig().hosts.codex.runArgs.includes('--dangerously-bypass-hook-trust'));
+  assert.equal(codexTrustUpgradeProofRequired(new Set(['codex'])), true);
 });

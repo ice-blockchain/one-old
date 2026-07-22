@@ -135,9 +135,9 @@ test('wizard: completion page has no OpenCode restart button or Ctrl+C instructi
   assert.ok(!html.includes('terminal where opencode is running'));
   assert.ok(!html.includes('Ctrl+C'));
   assert.ok(!html.includes('Press Ctrl+C and relaunch opencode to apply changes.'));
-  assert.ok(html.includes('renderPerformanceCatalog'), 'Performance must render host/catalog context');
+  assert.ok(!html.includes('catalogTiers'), 'the Performance tier-catalog card is removed');
+  assert.ok(html.includes('renderPerformanceRepickNote'), 'Performance still explains why it reopened');
   assert.ok(html.includes('repickReason'), 'Performance must explain why it reopened');
-  assert.ok(html.includes('catalogTiers'), 'Performance must show the current mapped model tiers');
   assert.ok(
     html.includes('c.tier === m.tier && c.model === m.model'),
     'Team selector defaults must identify the exact tier/model pair',
