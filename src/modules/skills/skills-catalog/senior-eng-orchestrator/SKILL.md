@@ -249,9 +249,13 @@ The spawn gate, the run-team gate, and OpenCode delegation key EVERY per-run mar
 `assignments.json` manifest, and every digest off this EXACT `currentRunId`. A second or
 differently-formatted id creates a separate `.traffic-one/runs/<id>/` tree, so the run-team
 gate finds no `assignments.json` and blocks every implementer write ("New subagent —
-Couldn't start"). Each subagent template tells the subagent to read `currentRunId` itself
-for its `.traffic-one/runs/<runId>/…` and `.traffic-one/digests/<runId>/…` paths — do not
-substitute a literal. The full per-phase prompt templates live in
+Couldn't start"). When building spawn prompts from the templates, substitute `$RUN_ID` into
+every `<run-id>` placeholder — subagents must receive fully concrete
+`.traffic-one/runs/<runId>/…` and `.traffic-one/digests/<runId>/…` paths (each template also
+tells the subagent to verify against `currentRunId` itself). A leftover literal `<run-id>`
+will not block the spawn — the gate reads it as `currentRunId`, and rewrite-capable hosts
+correct the child's prompt in-flight — but never leave one on purpose. The full per-phase
+prompt templates live in
 `resources/prompt-templates.md`; reference them rather than inlining their full text here.
 
 Cleanup at the end (Phase 5): use the retention runner (`traffic-one-cleanup.cjs`) so runs, digests, reports, fix cycles, OpenCode state, backups, `.once`, stale locks, and debug logs are pruned together while durable project memory stays whitelisted.

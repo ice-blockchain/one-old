@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { makeClaudeAdapter } from '../claude';
 import { dispatch } from '../../core/dispatch';
 import { context, deny, noop } from '../../core/result';
-import type { Handler } from '../../core/types';
+import type { Handler, HookInput } from '../../core/types';
 
 const claude = makeClaudeAdapter('claude');
 
@@ -51,6 +51,36 @@ test('claude: SessionStart context → additionalContext JSON', async () => {
   const parsed = JSON.parse(await dispatch(claude, handlers, { stdin, argv: [] }));
   assert.equal(parsed.hookSpecificOutput.hookEventName, 'SessionStart');
   assert.equal(parsed.hookSpecificOutput.additionalContext, 'hello session');
+});
+
+test('claude: PreToolUse updatedToolInput → hookSpecificOutput.updatedInput; codex never emits it', () => {
+  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd: '/tmp/p', raw: {} };
+  const updated = { subagent_type: 'senior-architect', model: 'opus', prompt: 'runs/123/x' };
+  // Rewrite-only allow: updatedInput carried, empty additionalContext omitted,
+  // and NO permissionDecision — the normal permission flow stays untouched.
+  const out = JSON.parse(claude.serialize(context('', { updatedToolInput: updated }), input));
+  assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.deepEqual(out.hookSpecificOutput.updatedInput, updated);
+  assert.equal('additionalContext' in out.hookSpecificOutput, false);
+  assert.equal('permissionDecision' in out.hookSpecificOutput, false);
+  // Context text and updatedInput can ride together.
+  const both = JSON.parse(claude.serialize(context('note', { updatedToolInput: updated }), input));
+  assert.equal(both.hookSpecificOutput.additionalContext, 'note');
+  assert.deepEqual(both.hookSpecificOutput.updatedInput, updated);
+  // Non-PreToolUse events never carry updatedInput.
+  const post = JSON.parse(claude.serialize(
+    context('note', { updatedToolInput: updated }),
+    { ...input, event: 'PostToolUse' },
+  ));
+  assert.equal('updatedInput' in post.hookSpecificOutput, false);
+  // Codex has no documented input rewrite — the meta is dropped, its evidence-marked
+  // additionalContext channel stays intact.
+  const codexOut = JSON.parse(makeClaudeAdapter('codex').serialize(
+    context('note', { updatedToolInput: updated }),
+    { ...input, host: 'codex' },
+  ));
+  assert.equal('updatedInput' in codexOut.hookSpecificOutput, false);
+  assert.ok(String(codexOut.hookSpecificOutput.additionalContext).includes('note'));
 });
 
 test('codex: context carries versioned Traffic One provenance while Claude remains byte-for-byte unchanged', () => {

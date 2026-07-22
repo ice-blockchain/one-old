@@ -51,3 +51,18 @@ test('runIdPathViolation: no currentRunId → no enforcement (returns null)', ()
     block,
   }), null);
 });
+
+test('runIdPathViolation: a WRITE to a literal <run-id> placeholder path still denies', () => {
+  // The SPAWN gate tolerates the template placeholder in prompts; the WRITE guard
+  // must not — a child that writes to the literal path would strand run state
+  // under a `runs/<run-id>/` dir. Regression guard for the spawn-side tolerance.
+  const v = runIdPathViolation({
+    state: { currentRunId: CURRENT },
+    relTargets: ['.traffic-one/runs/<run-id>/assignments.json'],
+    command: '',
+    block,
+  });
+  assert.ok(v, 'placeholder write must violate');
+  assert.match(v as string, /<run-id>/);
+  assert.match(v as string, new RegExp(CURRENT));
+});

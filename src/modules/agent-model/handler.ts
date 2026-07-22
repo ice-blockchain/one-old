@@ -69,7 +69,7 @@ import {
   verdictAgentConflict,
 } from '../../shared/state';
 import { ensureRunnerShims } from '../../shared/runner-shims';
-import { strayRunIdInText } from '../../shared/run-id-paths';
+import { hasRunIdPlaceholder, strayRunIdInText, substituteRunIdPlaceholder } from '../../shared/run-id-paths';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
@@ -748,14 +748,22 @@ export function agentModelGate(ctx: Ctx): HookResult {
   }
   // The spawn's prompt across every host field — reused by the run-id guard here AND
   // the agent-reuse marker check below (single source of the field list).
-  const spawnPromptText = [toolInput.prompt, toolInput.message, toolInput.task, toolInput.description]
+  const spawnPromptFields = ['prompt', 'message', 'task', 'description'] as const;
+  const spawnPromptText = spawnPromptFields.map((field) => toolInput[field])
     .filter((v): v is string => typeof v === 'string')
     .join('\n');
   const badTrafficOnePaths = absoluteTrafficOnePathsOutsideProject(spawnPromptText, cwd);
   if (badTrafficOnePaths.length > 0) {
     return absoluteTrafficOnePathDeny(badTrafficOnePaths, cwd);
   }
-  const strayRunId = strayRunIdInText(spawnPromptText, spawnRunId);
+  // Placeholder-tolerant run-id check: the orchestrator templates ship
+  // `runs/<run-id>/…` paths with the literal `<run-id>` placeholder, and a
+  // template-faithful prompt must not be denied for it (observed 6c: the FIRST
+  // architect spawn of the run died on the placeholder as "Couldn't start").
+  // Normalize the placeholder to the current run id in the CHECKED text only —
+  // a genuinely fabricated id (`date`/ISO, foreign epoch) still denies, and the
+  // plan-gate WRITE guard still rejects literal `<run-id>` write paths.
+  const strayRunId = strayRunIdInText(substituteRunIdPlaceholder(spawnPromptText, spawnRunId), spawnRunId);
   if (strayRunId) {
     // SELF-HEALING deny: hand back the spawn prompt with the run-id ALREADY corrected so a weak
     // orchestrator can copy-paste it verbatim, instead of being told to "rebuild" it (composer-2.5
@@ -764,7 +772,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     // prompt and re-deny the retry. Echo only when the prompt is paste-sized; otherwise give the
     // exact substitution. This deny has NO once-marker — it is self-correcting, so it can fire as
     // many times as needed without tripping the no-deadlock budget.
-    let fixed = spawnPromptText;
+    let fixed = substituteRunIdPlaceholder(spawnPromptText, spawnRunId);
     for (let i = 0; i < 8; i++) {
       const s = strayRunIdInText(fixed, spawnRunId);
       if (!s) break;
@@ -775,6 +783,28 @@ export function agentModelGate(ctx: Ctx): HookResult {
       : `RE-ISSUE THE SAME Task spawn — same subagent_type, same model — after replacing EVERY \`${strayRunId}\` with \`${spawnRunId}\` in your prompt (it appears in the "Run ID:" line and the \`.traffic-one/runs/\` and \`digests/\` paths).`;
     return deny(`traffic-one — run-id gate: your spawn prompt used run-id \`${strayRunId}\`, but the ONLY valid run-id is \`currentRunId\` = \`${spawnRunId}\` (read from .traffic-one/.one.json — never \`date\`/ISO/UTC). ${action}`);
   }
+
+  // Claude can rewrite a tool call's input from PreToolUse (updatedInput — a
+  // FULL tool_input replacement), so when the allowed prompt still carries the
+  // literal `<run-id>` placeholder, hand the child fully substituted paths
+  // instead of leaving it the placeholder to resolve. Other hosts can only
+  // allow/deny; there the child resolves `<run-id>` itself (Run ID header +
+  // .one.json), with the plan-gate write guard as the backstop. Every ALLOW
+  // exit below this point must flow through allowSpawn().
+  const placeholderPromptFields = ctx.host === 'claude' && spawnRunId
+    ? spawnPromptFields.filter((field) => typeof toolInput[field] === 'string'
+      && hasRunIdPlaceholder(toolInput[field]))
+    : [];
+  const allowSpawn = (result: HookResult): HookResult => {
+    if (placeholderPromptFields.length === 0 || result.kind === 'deny') return result;
+    const updatedToolInput: Record<string, unknown> = { ...toolInput };
+    for (const field of placeholderPromptFields) {
+      updatedToolInput[field] = substituteRunIdPlaceholder(toolInput[field] as string, spawnRunId);
+    }
+    return result.kind === 'context'
+      ? { ...result, updatedToolInput }
+      : context('', { updatedToolInput });
+  };
 
   // New-project Phase 2 invariant: if the architect queued a Step-0
   // `opencode_delegate_from_plan` batch, no implementer may start until that
@@ -1065,7 +1095,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
         roleSource: roleEvidence.source,
       });
     }
-    return noop();
+    return allowSpawn(noop());
   }
 
   const isNewProject = state.mode === 'new-project';
@@ -1082,7 +1112,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const level = runPolicy?.performanceLevel && PERFORMANCE_LEVEL_IDS.has(runPolicy.performanceLevel)
     ? runPolicy.performanceLevel
     : mutableLevel;
-  if (!level) return noop();
+  if (!level) return allowSpawn(noop());
 
   if (teamModeForLevel(level) === 'main-agent') {
     return deny(block('performance-main-agent', { LEVEL: level, ROLE: role }));
@@ -1132,7 +1162,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     }
   }
   if (ctx.host === 'kilo' && agentType.toLowerCase() !== 'general') return kiloGeneralAgentDeny(role, agentType);
-  if (!expected) return noop();
+  if (!expected) return allowSpawn(noop());
   if (!modelParamEnforced(ctx.host)) {
     recordSpawnParentSession(cwd, raw);
     ensureRunAgentClaim(cwd, state, role, raw, {
@@ -1141,7 +1171,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
       model: passedModel || expected,
       roleSource: roleEvidence.source,
     });
-    return noop();
+    return allowSpawn(noop());
   }
   if (!modelSatisfiesTier(ctx, passedModel, expected, runPolicy, role)) {
     // No/wrong `model` arg → an orchestrator-actionable "pass model=X" deny (NOT a user-facing
@@ -1188,5 +1218,5 @@ export function agentModelGate(ctx: Ctx): HookResult {
       roleSource: roleEvidence.source,
     });
   }
-  return advisory ?? noop();
+  return allowSpawn(advisory ?? noop());
 }

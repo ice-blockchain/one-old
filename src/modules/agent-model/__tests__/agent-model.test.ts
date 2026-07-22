@@ -716,6 +716,88 @@ test('spawn whose prompt fabricates a non-currentRunId run-id is denied, naming 
   });
 });
 
+test('literal <run-id> template placeholder never trips the spawn gate; Claude rewrites the child input', () => {
+  // Hermetic: the agent-reuse gate is teams-env-gated on Claude — force it off so
+  // consecutive same-role spawns exercise the run-id path, not reuse denies.
+  const prevTeams = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0';
+  try {
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-architect', model: 'opus' }));
+      const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
+      assert.ok(runId.length > 0, 'currentRunId minted');
+
+      // Template-faithful prompt (the 6c first-spawn shape): correct `Run ID:` header,
+      // literal `<run-id>` placeholders left in the runs/digests paths.
+      const spawn = agentModelGate(spawnCtx(cwd, {
+        subagent_type: 'senior-architect', model: 'opus',
+        prompt: `[t1-role: senior-architect]\nRun ID: ${runId}\n\nWrite .traffic-one/runs/<run-id>/assignments.json LAST, then the digest to .traffic-one/digests/<run-id>/architect.md`,
+      }));
+      assert.notEqual(spawn.kind, 'deny', 'placeholder prompt must not be denied');
+      // Claude supports PreToolUse input rewrite: the allow carries a FULL
+      // updatedToolInput (every field preserved) with the placeholders substituted.
+      assert.equal(spawn.kind, 'context');
+      if (spawn.kind === 'context') {
+        const updated = spawn.updatedToolInput;
+        assert.ok(updated, 'allow carries updatedToolInput');
+        assert.equal(updated?.subagent_type, 'senior-architect');
+        assert.equal(updated?.model, 'opus');
+        const rewritten = String(updated?.prompt);
+        assert.ok(!rewritten.includes('<run-id>'), 'placeholder substituted in the child prompt');
+        assert.ok(rewritten.includes(`runs/${runId}/assignments.json`));
+        assert.ok(rewritten.includes(`digests/${runId}/architect.md`));
+      }
+
+      // A fabricated id ALONGSIDE placeholders still denies — naming the fabricated
+      // id, and echoing a corrected prompt with neither it nor any placeholder left.
+      const bad = agentModelGate(spawnCtx(cwd, {
+        subagent_type: 'senior-architect', model: 'opus',
+        prompt: 'Write .traffic-one/runs/2026-06-17T13-47-00Z/assignments.json and .traffic-one/digests/<run-id>/architect.md',
+      }));
+      assert.equal(bad.kind, 'deny');
+      if (bad.kind === 'deny') {
+        assert.ok(bad.reason.includes('run-id gate'));
+        assert.ok(bad.reason.includes('2026-06-17T13-47-00Z'), 'names the fabricated id, not the placeholder');
+        assert.ok(bad.reason.includes(`runs/${runId}/assignments.json`), 'echo corrects the fabricated id');
+        assert.ok(bad.reason.includes(`digests/${runId}/architect.md`), 'echo substitutes the placeholder too');
+        assert.ok(!bad.reason.includes('<run-id>'), 'no placeholder survives into the echo');
+      }
+    });
+
+    // Non-rewrite host (fresh project so the run policy freezes for copilot): the
+    // same placeholder prompt is allowed AS-IS — no deny, no updatedToolInput; the
+    // child resolves `<run-id>` itself and the plan write-guard stays the backstop.
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      const copilot = agentModelGate(spawnCtx(cwd, {
+        subagent_type: 'senior-architect', model: 'gpt-5.6-sol',
+        prompt: '[t1-role: senior-architect]\nWrite .traffic-one/runs/<run-id>/assignments.json',
+      }, 'copilot'));
+      assert.equal(copilot.kind, 'noop');
+    });
+
+    // The 6c incident shape verbatim: the VERY FIRST spawn of the run, on Cursor,
+    // template-faithful prompt (correct `Run ID:` header, placeholder paths), exact
+    // captured Task-tool slug. Pre-6c-fix this denied as "Couldn't start"; it must
+    // now be allowed on attempt one — and Cursor (no input rewrite) gets no
+    // updatedToolInput.
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
+      assert.ok(runId.length > 0, 'run pre-minted before any spawn (as in the incident)');
+      const first = agentModelGate(spawnCtx(cwd, {
+        subagent_type: 'senior-architect', model: 'claude-fable-5-thinking-high',
+        prompt: `[t1-role: senior-architect]\nRun ID: ${runId}\n\nAlso write assignments.json to .traffic-one/runs/<run-id>/assignments.json LAST.\n\nOn finish, write handoff digest to:\n  .traffic-one/digests/<run-id>/architect.md`,
+      }, 'cursor'));
+      assert.notEqual(first.kind, 'deny', 'first Cursor architect spawn must not be denied on the template placeholder');
+      if (first.kind === 'context') {
+        assert.equal(first.updatedToolInput, undefined, 'Cursor allow carries no input rewrite');
+      }
+    });
+  } finally {
+    if (prevTeams === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+    else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = prevTeams;
+  }
+});
+
 test('Cursor: model-param requires an exact captured Task-tool slug before staking a claim', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // high senior-frontend → highest tier → cursor "claude-fable-5-thinking-high" (the exact

@@ -11,7 +11,8 @@ export function context(text: string, meta: ResultMeta = {}): HookResult {
   if (!hasText
     && meta.systemMessage === undefined
     && meta.promptRequest === undefined
-    && meta.followupMessage === undefined) {
+    && meta.followupMessage === undefined
+    && meta.updatedToolInput === undefined) {
     return { kind: 'noop' };
   }
   return { kind: 'context', context: text || '', ...meta };
@@ -52,7 +53,7 @@ export function askUser(question: string, agentMessage: string): HookResult {
 
 // Merge results: the first deny wins (short-circuit). Otherwise concatenate
 // context strings and keep the first systemMessage / promptRequest /
-// followupMessage seen.
+// followupMessage / updatedToolInput seen.
 export function mergeResults(results: readonly HookResult[]): HookResult {
   for (const result of results) {
     if (isDeny(result)) return result;
@@ -61,17 +62,20 @@ export function mergeResults(results: readonly HookResult[]): HookResult {
   let systemMessage: string | undefined;
   let promptRequest: unknown;
   let followupMessage: string | undefined;
+  let updatedToolInput: Record<string, unknown> | undefined;
   for (const result of results) {
     if (result.kind !== 'context') continue;
     if (result.context && result.context.trim()) contexts.push(result.context);
     if (systemMessage === undefined && result.systemMessage !== undefined) systemMessage = result.systemMessage;
     if (promptRequest === undefined && result.promptRequest !== undefined) promptRequest = result.promptRequest;
     if (followupMessage === undefined && result.followupMessage !== undefined) followupMessage = result.followupMessage;
+    if (updatedToolInput === undefined && result.updatedToolInput !== undefined) updatedToolInput = result.updatedToolInput;
   }
   if (contexts.length === 0
     && systemMessage === undefined
     && promptRequest === undefined
-    && followupMessage === undefined) {
+    && followupMessage === undefined
+    && updatedToolInput === undefined) {
     return { kind: 'noop' };
   }
   return {
@@ -80,5 +84,6 @@ export function mergeResults(results: readonly HookResult[]): HookResult {
     ...(systemMessage !== undefined ? { systemMessage } : {}),
     ...(promptRequest !== undefined ? { promptRequest } : {}),
     ...(followupMessage !== undefined ? { followupMessage } : {}),
+    ...(updatedToolInput !== undefined ? { updatedToolInput } : {}),
   };
 }

@@ -10,8 +10,8 @@
 
 These are the canonical templates the orchestrator uses when spawning each
 subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
-etc.) is the orchestrator's job; the templates stay lean so the subagent's
-context stays clean. The ONE exception is `<run-id>` — see below.
+`<run-id>`, etc.) is the orchestrator's job; the templates stay lean so the
+subagent's context stays clean. The `<run-id>` substitution rules are below.
 
 On Codex, structured task identity is mandatory. Current Desktop rollouts store
 the spawn message encrypted in the child transcript, so the marker cannot be
@@ -81,9 +81,15 @@ second `runs/<id>/` tree, so the run-team gate finds no `assignments.json` under
 now **doubly enforced**: the SPAWN gate DENIES a subagent spawn whose prompt references any
 run-id other than `currentRunId` (so you cannot even hand a worker a wrong id), and the plan
 gate DENIES any write to `.traffic-one/runs/<id>/…` or `digests/<id>/…` whose `<id>` is not
-`currentRunId` — both naming the correct value. Wherever a
-template shows `<run-id>`, **read `currentRunId` from `.traffic-one/.one.json` and use that
-exact value** — the orchestrator does NOT substitute it; each subagent reads it itself. The
+`currentRunId` — both naming the correct value. Wherever a template shows `<run-id>`,
+**substitute `currentRunId` (read from `.traffic-one/.one.json`) into every occurrence
+BEFORE spawning** — like every other placeholder, so each subagent receives fully concrete
+paths. The literal `<run-id>` placeholder itself never trips the spawn gate (the gate reads
+it as `currentRunId`, and hosts that support hook input rewrite correct the child's prompt
+in-flight), so a missed substitution cannot block a spawn — but then the child must resolve
+the placeholder itself from its `Run ID:` line / `.one.json`, and the plan gate still
+rejects any WRITE to a literal `runs/<run-id>/…` path. Substituting up front is the
+reliable path. The
 claim files, `opencode-attempts`/`opencode-gate-denies` markers, `assignments.json`, and the
 digest folder all key off this one value.
 
@@ -98,7 +104,7 @@ project. For scratch build logs, print to stdout or write under
 ## Phase 1 — Architect
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The user's request is:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The user's request is:
 
 > <user-request quoted verbatim>
 
@@ -189,7 +195,7 @@ token PLAN_READY on its own line.
 ## Phase 2 — Frontend (parallel with Backend)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The architect digest is at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The architect digest is at:
   .traffic-one/digests/<run-id>/architect.md
 
 Read in priority order:
@@ -258,7 +264,7 @@ pending.
 ## Phase 2 — Backend (parallel with Frontend)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The architect digest is at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The architect digest is at:
   .traffic-one/digests/<run-id>/architect.md
 
 Read in priority order:
@@ -298,7 +304,7 @@ End your reply with a one-line status of what you produced.
 ## Phase 3 — Reviewer (parallel with Tester)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The implementer digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The implementer digests are at:
   .traffic-one/digests/<run-id>/frontend.md
   .traffic-one/digests/<run-id>/backend.md
 
@@ -340,7 +346,7 @@ Token budget: ~6k. Don't full-scroll files; read targeted line ranges.
 ## Phase 3 — Tester (parallel with Reviewer)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The implementer digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The implementer digests are at:
   .traffic-one/digests/<run-id>/frontend.md
   .traffic-one/digests/<run-id>/backend.md
 
@@ -449,7 +455,7 @@ the run and its role agents for the unresolved-run flow.
 ## Phase 4 — Shipper (only on explicit deploy intent)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The reviewer + tester digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The reviewer + tester digests are at:
   .traffic-one/digests/<run-id>/reviewer.md     (must contain "verdict: APPROVED")
   .traffic-one/digests/<run-id>/tester.md       (must contain "verdict: TESTS_GREEN")
 

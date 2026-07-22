@@ -74,10 +74,21 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
         const additionalContext = id === 'codex' && isCodexHookEvent(input.event)
           ? markCodexHookContext(input.event, result.context)
           : result.context;
+        // Claude-only PreToolUse input rewrite (hookSpecificOutput.updatedInput —
+        // a FULL tool_input replacement). Codex has no documented equivalent, and
+        // its additionalContext stays unconditional: it doubles as the hook
+        // evidence channel.
+        const updatedInput = id === 'claude' && input.event === 'PreToolUse'
+          ? result.updatedToolInput
+          : undefined;
         return JSON.stringify({
           ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
           ...(result.promptRequest !== undefined ? { promptRequest: result.promptRequest } : {}),
-          hookSpecificOutput: { hookEventName: input.event, additionalContext },
+          hookSpecificOutput: {
+            hookEventName: input.event,
+            ...(id === 'claude' && !additionalContext ? {} : { additionalContext }),
+            ...(updatedInput !== undefined ? { updatedInput } : {}),
+          },
         });
       }
       return JSON.stringify({
