@@ -134,6 +134,34 @@ test('tester overlay: senior-tester may write test files inside implementer scop
   });
 });
 
+test('tester overlay: test-runner configs are tester-owned even inside FE scope (8c/11c/12c)', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-tester', { parentSessionId: 'orchestrator' }));
+    // 12c shape: the architect's frontend assignment explicitly covers the
+    // root test configs, which used to deny every tester write to them.
+    writeManifest(dir, [
+      {
+        role: 'senior-frontend',
+        agentKey: 'senior-frontend',
+        scope: { include: ['src/app/', 'src/components/', 'vitest.setup.ts', 'playwright.config.ts', 'apps/web/jest.config.js', 'next.config.js'] },
+      },
+      { role: 'senior-backend', agentKey: 'senior-backend', scope: { include: ['src/app/api/'] } },
+    ]);
+    assert.equal(gate(dir, state, 'vitest.setup.ts', rawFor(THREAD)), null);
+    assert.equal(gate(dir, state, 'playwright.config.ts', rawFor(THREAD)), null);
+    assert.equal(gate(dir, state, 'apps/web/jest.config.js', rawFor(THREAD)), null);
+    // app bundler config is NOT test infra — still frontend-owned
+    const reason = gate(dir, state, 'next.config.js', rawFor(THREAD));
+    assert.ok(reason && reason.includes('assigned scope'));
+    // mixed test-config + app-config patch stays all-or-nothing → denied
+    const mixed = gate(dir, state, 'playwright.config.ts', rawFor(THREAD), {
+      featureTargetPaths: ['playwright.config.ts', 'next.config.js'],
+    });
+    assert.ok(mixed && mixed.includes('assigned scope'));
+  });
+});
+
 test('tester overlay: non-test feature source is still denied for senior-tester', () => {
   withDir((dir) => {
     const state = baseState();

@@ -5,6 +5,7 @@ import {
   applyPatchTargetPaths,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
+  isTestInfraConfigPath,
   isTestScopePath,
   roleCanWriteFeatureSource,
   shellWriteTargetsStateDir,
@@ -151,6 +152,27 @@ test('isTestScopePath classifies test files and conventional test dirs', () => {
   assert.equal(isTestScopePath('src/test-utils/render.tsx'), false);
   assert.equal(isTestScopePath(''), false);
   assert.equal(isTestScopePath(undefined), false);
+});
+
+test('isTestInfraConfigPath classifies test-runner configs, not app bundler configs', () => {
+  // the observed 8c/11c/12c tester denials
+  assert.equal(isTestInfraConfigPath('apps/web/jest.config.js'), true);
+  assert.equal(isTestInfraConfigPath('playwright.config.ts'), true);
+  assert.equal(isTestInfraConfigPath('vitest.setup.ts'), true);
+  // flavours
+  assert.equal(isTestInfraConfigPath('vitest.config.mts'), true);
+  assert.equal(isTestInfraConfigPath('vitest.workspace.ts'), true);
+  assert.equal(isTestInfraConfigPath('cypress.config.cjs'), true);
+  assert.equal(isTestInfraConfigPath('./jest.setup.js'), true);
+  // app configs stay implementer-owned
+  assert.equal(isTestInfraConfigPath('next.config.js'), false);
+  assert.equal(isTestInfraConfigPath('vite.config.ts'), false);
+  assert.equal(isTestInfraConfigPath('tailwind.config.ts'), false);
+  // near-misses
+  assert.equal(isTestInfraConfigPath('src/vitest.config.helper.ts'), false);
+  assert.equal(isTestInfraConfigPath('myvitest.config.ts'), false);
+  assert.equal(isTestInfraConfigPath(''), false);
+  assert.equal(isTestInfraConfigPath(undefined), false);
 });
 
 test('applyPatchTargetPaths extracts Add/Update/Delete/Move targets, normalized', () => {

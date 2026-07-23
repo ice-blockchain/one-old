@@ -125,11 +125,14 @@ implementer. Every scaffolded package's `package.json` includes a `test` script
 (vitest on web; an explicit `"test": "echo \"no tests\" && exit 0"` no-op is
 allowed, absence is not). Scaffold the coverage provider with the test runner:
 the matching coverage devDependency (`@vitest/coverage-v8` for vitest) in the
-root `package.json` and a root `test:coverage` script. The tester role owns
-ONLY test files — it cannot add coverage deps or wire `test` scripts into
-implementer-owned `package.json`/config later (observed live: coverage was
-unmeasurable until a fix cycle re-engaged the owning roles), so this must exist
-from the scaffold.
+root `package.json` and a root `test:coverage` script. When the plan's testing
+strategy names a runner (vitest / playwright / jest / cypress), also scaffold
+its config/setup stub (`vitest.config.ts` + `vitest.setup.ts`,
+`playwright.config.ts`, …) so the tester extends a file instead of authoring
+project config from scratch. The tester role owns test files and those
+test-runner configs — but NOT implementer-owned `package.json` or bundler
+configs, so deps/scripts must exist from the scaffold (observed live: coverage
+was unmeasurable until a fix cycle re-engaged the owning roles).
 
 Write the root `package.json` first, before `tsconfig`, Vite, or package files.
 Its first version must already declare the workspace, so it passes the
