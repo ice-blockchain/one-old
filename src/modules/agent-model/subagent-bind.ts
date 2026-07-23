@@ -135,10 +135,19 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   const codexMeta = ctx.host === 'codex' && transcriptPath
     ? readCodexSessionMetaIdentity(transcriptPath)
     : null;
+  // Codex reports the ROOT conversation as session_id for EVERY child while
+  // line-zero `parent_thread_id` names the IMMEDIATE parent — for a depth-2
+  // spawn (a senior child spawning a same-role replacement sibling) the two are
+  // different TRUE statements, not an identity mismatch (observed 9c-codex: the
+  // frontend-spawned backend replacement failed role binding here). A parent
+  // contradiction exists only when the hook EXPLICITLY names a parent that is
+  // neither the line-zero immediate parent nor the root session.
   const codexIdentityMismatch = Boolean(codexMeta && (
     (codexMeta.threadId && transcriptThread && codexMeta.threadId.toLowerCase() !== transcriptThread.toLowerCase())
     || (codexMeta.threadId && identity.agentId && codexMeta.threadId.toLowerCase() !== identity.agentId.toLowerCase())
-    || (codexMeta.parentThreadId && identity.sessionId && codexMeta.parentThreadId !== identity.sessionId)
+    || (codexMeta.parentThreadId && identity.parentSessionId
+      && codexMeta.parentThreadId !== identity.parentSessionId
+      && identity.parentSessionId !== identity.sessionId)
   ));
   const transcriptResolution = mayUseTranscript
     ? inferRoleEvidenceFromTranscript(transcriptPath)
@@ -152,10 +161,15 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   const codexActualModel = ctx.host === 'codex'
     ? asString(raw.model ?? payload.model).trim()
     : '';
+  // Observation parent: line-zero's immediate parent when readable; otherwise
+  // NOTHING. Recording the SubagentStart-time guess (the hook's root session)
+  // made the first PreToolUse — which reads the line-zero parent — a terminal
+  // `parent-session-conflict` for every depth-2 replacement (observed 9c-codex).
+  const codexObservedParent = codexMeta?.parentThreadId || null;
   let codexObservation = ctx.host === 'codex' && runId && codexChildId
     ? observeCodexChildModel(cwd, runId, {
       childId: codexChildId,
-      parentSessionId: parentSession,
+      parentSessionId: codexObservedParent,
       actualModel: codexActualModel || null,
       role: role || null,
       source: 'SubagentStart',
@@ -220,7 +234,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     }
     codexObservation = observeCodexChildModel(cwd, runId, {
       childId: codexChildId,
-      parentSessionId: parentSession,
+      parentSessionId: codexObservedParent,
       actualModel: codexActualModel || null,
       role,
       source: 'SubagentStart',

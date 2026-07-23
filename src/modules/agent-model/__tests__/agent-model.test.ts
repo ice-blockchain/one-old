@@ -2006,6 +2006,75 @@ test('codex depth-2 replacement spawn (child-of-child) passes the parent-pair ch
   });
 });
 
+test('codex depth-2 replacement survives the SubagentStart→PreToolUse parent upgrade', () => {
+  // The exact 9c-codex failure: SubagentStart fires before the child rollout
+  // flushes line-zero (parent unknown at that moment), then the first
+  // PreToolUse reads line-zero's IMMEDIATE parent (another senior child, not
+  // the root session). That upgrade used to persist as a terminal
+  // `parent-session-conflict`, killing every depth-2 replacement on arrival.
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      freezeRunPolicy(cwd, 'codex');
+      const root = '019f8f7c-501d-76f1-892f-5cedbd39f57d';
+      const frontend = '019f9003-27d2-7f11-a0e3-50866abbb205';
+      const child = '019f9012-d290-73d0-a235-02b3bd84e52e';
+      const transcript = path.join(cwd, `rollout-parent-upgrade-${child}.jsonl`);
+      fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
+      const start = subagentStartBind(subagentStartCtx(cwd, {
+        hook_event_name: 'SubagentStart', agent_id: child, session_id: root,
+        transcript_path: transcript, task_name: 'senior_tester', model: 'gpt-5.6-terra',
+      }));
+      assert.ok(start.kind === 'noop' || start.kind === 'context', 'SubagentStart is never a deny here');
+      // line-zero now appears: this child was spawned BY the frontend (depth 2)
+      fs.writeFileSync(
+        transcript,
+        `${JSON.stringify(codexSessionMeta(child, frontend, '/root/senior_frontend/senior_tester'))}\n`,
+        'utf8',
+      );
+      const gate = codexChildModelGate(codexChildPreToolCtx(cwd, child, root, transcript, 'gpt-5.6-terra'));
+      assert.equal(gate.kind, 'noop', 'parent upgrade (spawn-time unknown → line-zero immediate parent) must not conflict');
+      const observation = readCodexModelObservation(cwd, 'run-test', [child]);
+      assert.equal(observation?.status, 'verified');
+      assert.equal(observation?.parentSessionId, frontend, 'the line-zero immediate parent wins');
+    });
+  });
+});
+
+test('codex observation parent upgrades across evidence grades but conflicts within a grade', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    const root = '019f8f7c-501d-76f1-892f-5cedbd39f57d';
+    const frontend = '019f9003-27d2-7f11-a0e3-50866abbb205';
+    // legacy/other-caller shape: SubagentStart recorded the ROOT session as parent
+    const upgraded = (() => {
+      observeCodexChildModel(cwd, 'run-test', {
+        childId: 'child-upgrade', parentSessionId: root, actualModel: 'gpt-5.6-terra',
+        role: 'senior-tester', source: 'SubagentStart',
+      });
+      return observeCodexChildModel(cwd, 'run-test', {
+        childId: 'child-upgrade', parentSessionId: frontend, actualModel: 'gpt-5.6-terra',
+        role: 'senior-tester', source: 'PreToolUse',
+      });
+    })();
+    assert.equal(upgraded?.status, 'verified');
+    assert.equal(upgraded?.parentSessionId, frontend);
+    // a later, weaker SubagentStart parent notion is ignored, not a conflict
+    const lateStart = observeCodexChildModel(cwd, 'run-test', {
+      childId: 'child-upgrade', parentSessionId: root, actualModel: 'gpt-5.6-terra',
+      role: 'senior-tester', source: 'SubagentStart',
+    });
+    assert.equal(lateStart?.status, 'verified');
+    assert.equal(lateStart?.parentSessionId, frontend);
+    // same-grade disagreement (line-zero itself changed) stays terminal
+    const conflicted = observeCodexChildModel(cwd, 'run-test', {
+      childId: 'child-upgrade', parentSessionId: root, actualModel: 'gpt-5.6-terra',
+      role: 'senior-tester', source: 'PreToolUse',
+    });
+    assert.equal(conflicted?.status, 'conflict');
+    assert.equal(conflicted?.reason, 'parent-session-conflict');
+  });
+});
+
 test('codex authoritative role correction revalidates a provisional mismatch before creating child state', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     withTeamsEnv(() => {

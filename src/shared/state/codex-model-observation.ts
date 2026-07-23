@@ -156,11 +156,27 @@ function evaluate(
       writeStore(cwd, runId, observations);
       return conflict;
     }
+    // Parent identity has two grades of evidence: SubagentStart fires in the
+    // spawner's context before the child rollout is readable (its parent notion
+    // may be missing or the ROOT session), while PreToolUse reads the child's
+    // line-zero `parent_thread_id` (the immediate parent). A disagreement across
+    // grades is an upgrade, not a contradiction — flagging it stranded every
+    // depth-2 replacement with `parent-session-conflict` (observed 9c-codex).
+    // Same-grade disagreement (line-zero itself changed) remains terminal.
+    let resolvedParent = previous?.parentSessionId || parentSessionId;
     if (previous?.parentSessionId && parentSessionId && previous.parentSessionId !== parentSessionId) {
-      const conflict = { ...previous, status: 'conflict' as const, reason: 'parent-session-conflict', updatedAt: now };
-      observations[childId] = conflict;
-      writeStore(cwd, runId, observations);
-      return conflict;
+      const previousAuthoritative = (previous.modelSources || []).includes('PreToolUse');
+      const incomingAuthoritative = source === 'PreToolUse';
+      if (incomingAuthoritative && !previousAuthoritative) {
+        resolvedParent = parentSessionId;
+      } else if (!incomingAuthoritative && previousAuthoritative) {
+        resolvedParent = previous.parentSessionId;
+      } else {
+        const conflict = { ...previous, status: 'conflict' as const, reason: 'parent-session-conflict', updatedAt: now };
+        observations[childId] = conflict;
+        writeStore(cwd, runId, observations);
+        return conflict;
+      }
     }
     if (previous?.actualModel && actualModel && previous.actualModel !== actualModel) {
       const conflict = { ...previous, status: 'conflict' as const, reason: 'hook-model-conflict', updatedAt: now };
@@ -199,7 +215,7 @@ function evaluate(
     if (previous?.status === 'mismatch' && !allowRoleCorrection) return previous;
     const next: CodexModelObservation = {
       childId,
-      parentSessionId: previous?.parentSessionId || parentSessionId,
+      parentSessionId: resolvedParent,
       policyId: policy.policyId,
       role: nextRole,
       actualModel: nextModel,
