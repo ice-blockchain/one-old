@@ -203,7 +203,7 @@ do not skip. The spine carries the step index — this file is the detail.
      docs.
    - Create or refresh the relevant canonical docs from
      `rules/common/documentation.md`: `README.md`, `AGENTS.md`, concise
-     `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `.traffic-one/plan.md`,
+     `CLAUDE.md` or symlink, `.traffic-one/plan.md`,
      `.traffic-one/decisions/`, `.traffic-one/api.md`,
      `.traffic-one/database.md`, `.traffic-one/deployment.md`,
      `.traffic-one/security.md`, `CHANGELOG.md`,

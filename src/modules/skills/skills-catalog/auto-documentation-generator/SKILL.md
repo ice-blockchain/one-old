@@ -2,7 +2,7 @@
 name: auto-documentation-generator
 description: >
   Generate or refresh the documentation humans and agents actually read:
-  README.md, AGENTS.md, CLAUDE.md, Cursor .mdc rules, `.traffic-one/plan.md`, ADRs,
+  README.md, AGENTS.md, CLAUDE.md, `.traffic-one/plan.md`, ADRs,
   `.traffic-one/api.md`, `.traffic-one/database.md`,
   `.traffic-one/deployment.md`, `.traffic-one/security.md`, CHANGELOG.md,
   `.traffic-one/environment-setup.md`, CONTRIBUTING.md, and llms.txt for SPA + Supabase,
@@ -30,7 +30,7 @@ Use this skill when the user asks to:
 
 - Generate, refresh, audit, or repair project documentation.
 - Prepare launch, handoff, onboarding, or production-readiness docs.
-- Create or update `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
+- Create or update `README.md`, `AGENTS.md`, `CLAUDE.md`,
   `.traffic-one/plan.md`, `.traffic-one/decisions/`, `.traffic-one/api.md`,
   `.traffic-one/database.md`, `.traffic-one/deployment.md`,
   `.traffic-one/security.md`, `CHANGELOG.md`,
@@ -65,7 +65,7 @@ Use this skill when the user asks to:
 
 Read only what is needed:
 
-1. `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
+1. `README.md`, `AGENTS.md`, `CLAUDE.md`,
    `.traffic-one/` project memory/docs, legacy root docs, and legacy `docs/`
    only when present.
 2. `package.json`, workspace config, lockfile, `.nvmrc`, `.tool-versions`,
@@ -99,7 +99,6 @@ Create or refresh these files when relevant:
 | `README.md` | Human entry point | What it is, who it is for, one-command setup, live deploy link, where deeper docs live. |
 | `AGENTS.md` | Agent entry point | Build/test commands, code-style rules, gotchas, repo map, security/deploy warnings. Root file first; nested files only for large subprojects. |
 | `CLAUDE.md` | Claude-specific memory | Per the `project-memory` symlink rule; otherwise keep under ~300 lines with only project-specific traps and pointers. Do not duplicate linter rules. |
-| `.cursor/rules/*.mdc` | Cursor-specific guidance | Short scoped rules with `description`, `globs`, and `alwaysApply`; split large rules by domain. |
 | `.traffic-one/plan.md` | Plan and system map | Current goal, module map, public contracts, risks, cut-list, key dependencies, and links to ADRs. Legacy `architecture.md` files are migration-only. |
 | `.traffic-one/decisions/NNNN-*.md` | Decision log | Use `architecture-decision-records`; one short Nygard-style ADR per significant decision with Context, Decision, Status, and Consequences. |
 | `.traffic-one/api.md` | API reference | Generate from OpenAPI for Edge Functions or route handlers. Include auth, request/response schemas, errors, and examples. |
