@@ -28,6 +28,14 @@ and `frontend/<flavour>/core.md`.
 - Functions one responsibility, ~50 lines max. Extract helpers above that.
 - Early returns over nested conditionals. No magic numbers.
 
+## Formatting
+- Write formatted source: ONE statement per line, multi-line JSX/markup, and
+  the project formatter's line width. Never collapse a function body or a JSX
+  tree onto a single line — collapsed/minified source is a defect even when
+  lint and typecheck pass, and it survives review because nobody can read it.
+- Multi-line edits are safe: anchor patches on the surrounding context lines
+  instead of flattening code to make a patch "simpler".
+
 ## Code smells to avoid
 - Deep nesting (>3 levels) — extract or early-return.
 - Long parameter lists (>4) — pass an options object.

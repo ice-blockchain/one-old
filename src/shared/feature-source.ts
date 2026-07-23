@@ -215,6 +215,73 @@ export function isTestInfraConfigPath(filePath: unknown): boolean {
   return p.length > 0 && TEST_INFRA_CONFIG_RE.test(p);
 }
 
+// A single simple `cp`/`mv` that IMPORTS a read-only file from OUTSIDE the
+// project into a project path is a verifiable per-target write, not an opaque
+// shell mutation: the plan-write gate re-routes its DEST through the same
+// ownership checks as Write/Edit instead of the blanket shell-write deny.
+// Observed 10c-codex: a generated OG raster could never be placed — `cp` was
+// denied as a shell write and Write/Edit are text-only — so the deliverable
+// shipped without its asset. Strict on purpose; return null (= no carve-out,
+// normal shell-write handling) unless ALL of:
+//   - exactly one simple command: no separators, pipes, redirects, subshells,
+//     command substitution, or glob characters;
+//   - plain `cp`/`mv` with optional flags;
+//   - every SOURCE is an absolute path OUTSIDE the project root (a read-only
+//     import — sources inside the project stay on the shell-write deny so
+//     in-repo moves cannot dodge per-file gates);
+//   - the DEST (resolved against the command's workdir) lands INSIDE the
+//     project and never under a dot-directory (`.git/`, `.traffic-one/` keep
+//     their own rules).
+// Returns the project-relative DEST path.
+export function shellAssetImportDest(command: unknown, workdir: unknown, projectRoot: unknown): string | null {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  if (typeof workdir !== 'string' || !workdir.startsWith('/')) return null;
+  if (typeof projectRoot !== 'string' || !projectRoot.startsWith('/')) return null;
+  if (/[\n;|&<>`]|\$\(/.test(command)) return null;
+  if (/[*?{}[\]~]/.test(command)) return null;
+  const tokens: string[] = [];
+  const tokenRe = /'([^']*)'|"([^"]*)"|(\S+)/g;
+  for (let m = tokenRe.exec(command); m; m = tokenRe.exec(command)) {
+    tokens.push(m[1] ?? m[2] ?? m[3] ?? '');
+  }
+  if (tokens.length < 3) return null;
+  const [cmd, ...rest] = tokens;
+  if (cmd !== 'cp' && cmd !== 'mv') return null;
+  const args: string[] = [];
+  let flagsDone = false;
+  for (const token of rest) {
+    if (!flagsDone && token === '--') { flagsDone = true; continue; }
+    if (!flagsDone && token.startsWith('-') && token.length > 1) continue;
+    args.push(token);
+  }
+  if (args.length < 2) return null;
+  const root = projectRoot.replace(/\/+$/, '');
+  const base = workdir.replace(/\/+$/, '');
+  const literalAbsolute = (p: string): string | null => {
+    const abs = p.startsWith('/') ? p : `${base}/${p}`;
+    // literal paths only: reject `..`/`.` segments and empty segments (`//`);
+    // the leading '' from splitting the root slash is expected
+    const segments = abs.split('/');
+    if (segments[0] !== '' || segments.slice(1).some((s) => s === '' || s === '.' || s === '..')) return null;
+    return abs;
+  };
+  const relativeToRoot = (abs: string): string | null => (
+    abs !== root && abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null
+  );
+  const dest = args[args.length - 1]!;
+  for (const source of args.slice(0, -1)) {
+    if (!source.startsWith('/')) return null;
+    const abs = literalAbsolute(source);
+    if (!abs || relativeToRoot(abs) !== null) return null;
+  }
+  const destAbs = literalAbsolute(dest);
+  if (!destAbs) return null;
+  const rel = relativeToRoot(destAbs);
+  if (!rel) return null;
+  if (rel.split('/').some((segment) => segment.startsWith('.'))) return null;
+  return rel;
+}
+
 export function commandAppearsToWriteExternalTemp(command: unknown): boolean {
   if (typeof command !== 'string' || !command.trim()) return false;
   const tempPath = "(?:/tmp|/private/tmp|/var/tmp)/[^\\s'\"`;|&>]+";

@@ -28,6 +28,7 @@ import {
   commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
+  shellAssetImportDest,
   shellWriteTargetsStateDir,
 } from '../../shared/feature-source';
 import { parseApplyPatch, patchTextFromToolInput, type PatchFileOperation } from '../../shared/apply-patch';
@@ -185,9 +186,22 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // digests, fix-cycle notes), not an implementation write — even when its BODY
   // cites feature-source paths. Mirrors the Write/Edit target-path exemption.
   const shellStateDirWrite = isShellToolName(toolName) && shellWriteTargetsStateDir(rawCommand);
-  const writingFeatureSourceViaCommand = isShellToolName(toolName) && !shellStateDirWrite
+  // Asset-import carve-out: a single `cp`/`mv` bringing a read-only file from
+  // OUTSIDE the project into a project path has a verifiable DEST — route it
+  // through the same per-target ownership checks as Write/Edit instead of the
+  // blanket shell-write deny (binary deliverables have no text-tool path;
+  // observed 10c-codex: a generated OG raster could never be placed).
+  const assetImportDest = isShellToolName(toolName) && !shellStateDirWrite
+    ? shellAssetImportDest(rawCommand, patchBase, projectRoot)
+    : null;
+  if (assetImportDest) {
+    appendUnique(writeTargetPaths, [assetImportDest]);
+    if (FEATURE_SOURCE_RE.test(assetImportDest)) appendUnique(featureTargetPaths, [assetImportDest]);
+    if (BUILD_ARTIFACT_RE.test(assetImportDest)) appendUnique(buildArtifactTargetPaths, [assetImportDest]);
+  }
+  const writingFeatureSourceViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
     && commandAppearsToWriteFeatureSource(rawCommand);
-  const writingBuildArtifactViaCommand = isShellToolName(toolName) && !shellStateDirWrite
+  const writingBuildArtifactViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
     && commandAppearsToWriteBuildArtifact(rawCommand);
   const writingExternalTempViaCommand = isShellToolName(toolName) && commandAppearsToWriteExternalTemp(rawCommand);
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;

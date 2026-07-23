@@ -111,7 +111,45 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
   }
   if (!exists(projectRoot, 'packages/i18n/package.json')) missing.push('packages/i18n/package.json');
   if (!exists(projectRoot, 'packages/i18n/src/index.ts')) missing.push('packages/i18n/src/index.ts');
+  // Formatting is a delivery gate. Without a formatter config + a root
+  // `format:check` script the generated code ships collapsed/minified and still
+  // passes lint (observed 10c: every page component landed as one multi-
+  // thousand-character line — ESLint carried no formatting rule, prettier was
+  // configured nowhere, and no mechanical gate ran `format:check`).
+  if (!hasPrettierConfig(projectRoot)) {
+    missing.push('.prettierrc (or prettier.config.*, or a "prettier" key in root package.json)');
+  }
+  if (!rootPackageJsonScript(projectRoot, 'format:check')) {
+    missing.push('package.json "format:check" script (e.g. "prettier --check .") plus the prettier devDependency and a .prettierignore for build output');
+  }
   return missing;
+}
+
+const PRETTIER_CONFIG_PATHS = [
+  '.prettierrc', '.prettierrc.json', '.prettierrc.json5', '.prettierrc.yaml', '.prettierrc.yml',
+  '.prettierrc.js', '.prettierrc.cjs', '.prettierrc.mjs', '.prettierrc.toml',
+  'prettier.config.js', 'prettier.config.cjs', 'prettier.config.mjs',
+];
+
+function hasPrettierConfig(projectRoot: string): boolean {
+  if (existsAny(projectRoot, PRETTIER_CONFIG_PATHS)) return true;
+  try {
+    const parsed = obj(JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')));
+    return Boolean(parsed && parsed.prettier != null);
+  } catch {
+    return false;
+  }
+}
+
+function rootPackageJsonScript(projectRoot: string, name: string): boolean {
+  try {
+    const parsed = obj(JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')));
+    const scripts = obj(parsed?.scripts);
+    const value = scripts?.[name];
+    return typeof value === 'string' && value.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function readTrimmed(projectRoot: string, relPath: string): string | null {

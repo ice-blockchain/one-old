@@ -9,6 +9,7 @@ import {
   isTestInfraConfigPath,
   isTestScopePath,
   roleCanWriteFeatureSource,
+  shellAssetImportDest,
   shellWriteTargetsStateDir,
   subagentMayWriteFeatureSource,
 } from '../feature-source';
@@ -176,6 +177,34 @@ test('digests heredoc carve-out ignores write-primitive lookalikes inside the bo
     "cat > .traffic-one/digests/123/tester.md <<'EOF'\nReproduce with: pnpm lint > lint.log\nEOF"), true);
   // real write primitives OUTSIDE the body still disable the carve-out
   assert.equal(shellWriteTargetsStateDir(`${digestHeredoc}\nrm -rf apps/web/src`), false);
+});
+
+test('shellAssetImportDest accepts only single outside→inside cp/mv imports', () => {
+  const root = '/proj';
+  const wd = '/proj';
+  // the observed 10c shape: generated raster into an owned public path
+  assert.equal(
+    shellAssetImportDest('cp /Users/u/.codex/generated_images/s1/exec-abc.png apps/web/public/og-default.png', wd, root),
+    'apps/web/public/og-default.png',
+  );
+  assert.equal(shellAssetImportDest('mv -f /outside/a.png public/a.png', wd, root), 'public/a.png');
+  assert.equal(shellAssetImportDest("cp '/outside/with space.png' apps/web/public/a.png", wd, root), 'apps/web/public/a.png');
+  assert.equal(shellAssetImportDest('cp /outside/a.png /proj/apps/web/public/a.png', wd, root), 'apps/web/public/a.png');
+  // subdir workdir resolves the relative dest correctly
+  assert.equal(shellAssetImportDest('cp /outside/a.png public/a.png', '/proj/apps/web', root), 'apps/web/public/a.png');
+  // rejections: in-repo source, relative source, dest outside, dot-dirs, compounds, globs, redirects
+  assert.equal(shellAssetImportDest('cp /proj/public/a.png public/b.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp local.png public/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/a.png /elsewhere/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/a.png .traffic-one/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/a.png public/a.png && rm -rf src', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/*.png public/', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/a.png public/a.png > log.txt', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/../etc/passwd public/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('scp /outside/a.png public/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp public/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('', wd, root), null);
+  assert.equal(shellAssetImportDest(undefined, wd, root), null);
 });
 
 test('isTestScopePath classifies test files and conventional test dirs', () => {

@@ -627,6 +627,67 @@ test('subagents project: assignment manifest routes writes by scope end-to-end',
   });
 });
 
+test('subagents project: cp asset-import from outside the project routes through scope ownership', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    frontend: 'nextjs',
+    backend: 'none',
+    materializedStack: 'default|nextjs|none|none',
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const threadId = '019e7390-ca45-7e03-84d3-284bda1ba905';
+    const transcript = path.join(cwd, `rollout-2026-05-29T14-48-49-${threadId}.jsonl`);
+    assert.ok(claimThreadRole(cwd, state, threadId, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+
+    const manifest = path.join(cwd, '.traffic-one', 'runs', 'run-1', 'assignments.json');
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({
+      version: 1, runId: 'run-1', assignments: [
+        { role: 'senior-frontend', agentKey: 'senior-frontend', scope: { include: ['src/app/', 'public/'], exclude: ['src/app/api/'] } },
+        { role: 'senior-backend', agentKey: 'senior-backend', scope: { include: ['src/app/api/'] } },
+      ],
+    }), 'utf8');
+    const raw = { session_id: 'orchestrator', transcript_path: transcript };
+
+    // the observed 10c shape: a generated raster imported into an owned path
+    const mine = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: '/usr/bin/env true', // placeholder replaced below
+    }, raw));
+    assert.equal(mine.kind, 'noop'); // sanity: plain reads stay unaffected
+
+    const allowed = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: `cp /Users/u/.codex/generated_images/session-1/exec-abc.png ${cwd}/public/og-default.png`,
+    }, raw));
+    assert.equal(allowed.kind, 'noop', 'import into my owned scope is allowed');
+
+    const relative = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cp /Users/u/.codex/generated_images/session-1/exec-abc.png public/og-default.png',
+    }, raw));
+    assert.equal(relative.kind, 'noop', 'relative dest resolves against the project root');
+
+    const theirs = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cp /Users/u/.codex/generated_images/session-1/exec-abc.png src/app/api/og.png',
+    }, raw));
+    assert.equal(theirs.kind, 'deny');
+    if (theirs.kind === 'deny') assert.ok(theirs.reason.includes('assigned scope'), 'wrong-role dest denies by ownership, not by shell blanket');
+
+    // an in-repo cp is NOT an import — the blanket shell-write deny stays
+    const inRepo = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cp src/app/a.png src/app/b.png',
+    }, raw));
+    assert.equal(inRepo.kind, 'deny');
+    if (inRepo.kind === 'deny') assert.ok(inRepo.reason.includes('cannot verify role ownership'));
+
+    // compound commands are never imports
+    const compound = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cp /outside/a.png public/a.png && rm -rf src',
+    }, raw));
+    assert.equal(compound.kind, 'deny');
+  });
+});
+
 test('subagents project: run-state heredocs pass; feature-source heredocs still deny (B1/B5)', () => {
   withMaterialized({
     currentRunId: 'run-1',

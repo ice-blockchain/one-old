@@ -25,6 +25,12 @@ to bypass accidentally.
 Every JavaScript/TypeScript project exposes these root scripts when applicable:
 
 - `format` and `format:check` for Prettier or the repo-selected formatter.
+  On JS/TS scaffolds these are NOT optional: scaffold the formatter config
+  (`.prettierrc`), a `.prettierignore` covering build output/reports/lockfiles,
+  and the `prettier` devDependency together with the scripts — the architect
+  completion gate refuses `PLAN_READY` for the default web stack until the
+  config and the root `format:check` script exist, and the tester runs
+  `format:check` as a mechanical release gate.
 - `lint` and `lint:fix` for ESLint or the repo-selected linter.
 - `typecheck` for `tsc --noEmit` or the framework-equivalent type check.
 - `test` for unit/integration tests.
@@ -63,6 +69,11 @@ omitting the script.
   ignore application source to make the checker pass.
 - `_` prefixes are the standard way to mark intentionally unused variables or
   parameters.
+- Source is WRITTEN formatted, never collapsed: one statement per line and
+  multi-line JSX. A component authored as a single multi-hundred-character line
+  is a defect even when lint passes — do not rely on a later `format` pass to
+  repair it; a formatter also cannot restore the intent-revealing line breaks
+  you never wrote.
 
 ## Type checks
 

@@ -54,7 +54,9 @@ function writeRequiredScaffold(dir: string): void {
     private: true,
     packageManager: 'pnpm@10.12.1',
     workspaces: ['apps/*', 'packages/*'],
+    scripts: { 'format:check': 'prettier --check .' },
   }), 'utf8');
+  fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100, "singleQuote": true }\n', 'utf8');
   for (const rel of [
     'apps/web',
     'packages/ui/src',
@@ -293,6 +295,36 @@ test('architect completion gate: PLAN_READY requires the baseline monorepo scaff
   });
 });
 
+test('architect completion gate: PLAN_READY requires formatter config + format:check script', () => {
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir);
+    // strip only the formatting pieces (observed 10c: collapsed one-line code
+    // shipped because nothing forced a formatter into the scaffold)
+    fs.rmSync(path.join(dir, '.prettierrc'));
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as Record<string, unknown>;
+    delete pkg.scripts;
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg), 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    assert.ok(planReadinessViolations(gateArgs).includes('architect-scaffold-gate'));
+
+    // a "prettier" key in package.json + the script satisfies both requirements
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      ...pkg,
+      prettier: { printWidth: 100 },
+      scripts: { 'format:check': 'prettier --check .' },
+    }), 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('architect-scaffold-gate'));
+  });
+});
+
 test('architect completion gate: PLAN_READY is allowed once scaffold files exist', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);
@@ -318,6 +350,7 @@ test('architect completion gate: PLAN_READY accepts pnpm-workspace.yaml plus roo
       private: true,
       packageManager: 'pnpm@10.23.0',
       engines: { node: '>=22' },
+      scripts: { 'format:check': 'prettier --check .' },
     }), 'utf8');
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',

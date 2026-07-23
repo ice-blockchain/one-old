@@ -103,7 +103,13 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    number in your digest. Below 80% is a numbered finding in your verdict (with
    the uncovered files), not a silent omission — never claim the target without
    the measurement; if coverage tooling is unavailable, say so explicitly.
-6. Run the active-stack test command. Capture the output.
+6. Run the mechanical gates and capture their output: the active-stack test
+   command, plus — whenever the scripts exist — `lint`, `typecheck`,
+   `format:check`, and the production `build`. On a JS/TS stack a missing
+   `format:check` script or formatter config is itself a numbered finding, not
+   a skip: without it, collapsed/minified source (multi-statement one-liners,
+   single-line JSX trees) ships straight through a green lint. A `format:check`
+   failure is a failing item like any other gate.
 7. **Fresh build metadata gate** (projects with a UI): before E2E or visual QA,
    prove the preview is backed by a build newer than the last changed source
    file. Use the stack's production build, a fresh preview start timestamp, or
