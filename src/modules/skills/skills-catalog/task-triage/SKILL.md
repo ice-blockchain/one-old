@@ -41,6 +41,14 @@ honor that and drop a tier. If they say "build the whole …" / "a full feature 
 
 The directive states the project's **team mode** and whether **OpenCode** is active. Route accordingly. On OpenCode or Kilo hosts, OpenCode delegation is inactive by design; do not call `opencode_delegate` from inside those peer/self hosts.
 
+**Run bookkeeping (all tiers) — never copy or hand-write
+`.traffic-one/runs/<runId>/assignments.json`.** With no fresh architect run, the
+run-team gate automatically scopes implementer writes via the NEWEST existing
+manifest (the build's) — no per-run copy is needed. A hand-copied manifest makes
+the new run look architect-fresh, which re-arms the Step-0 plan-batch gate on the
+previous build's stale `plan.md` queue and kills the first implementer spawn.
+Only `senior-architect` authors that file, in complex-tier runs.
+
 ### trivial
 - **Subagents mode:** delegate to a `quick-fix` worker — a dedicated cheap maintenance role with its
   own agent definition.

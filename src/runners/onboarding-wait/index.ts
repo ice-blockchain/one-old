@@ -402,7 +402,11 @@ export function bootstrapReadyOutput(
   const localFallback = localWizardUrl
     ? `If the hosted page is unavailable or returns 404, open the local wizard directly: ${localWizardUrl}\n`
     : '';
-  const output = `TRAFFIC_ONE_SETUP_READY\nSetup link: ${dashboardUrl || localWizardUrl}\n${localFallback}`;
+  // The trailing line is model-facing: the links are shown to the user exactly
+  // once (observed 9c: the orchestrator re-typed the full Setup/local links in
+  // a later message from its own context, so the user saw the URL block twice).
+  const output = `TRAFFIC_ONE_SETUP_READY\nSetup link: ${dashboardUrl || localWizardUrl}\n${localFallback}`
+    + 'Show these links to the user ONCE. In later messages refer to the links already shown above — do not print the URLs again.\n';
   commitWizardLinksShown(cwd, token, output, dashboardUrl, localWizardUrl, sessionId);
   return output;
 }

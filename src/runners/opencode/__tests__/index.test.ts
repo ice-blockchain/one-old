@@ -748,9 +748,11 @@ test('delegateFromPlan delegates in maintenance when the architect wrote a fresh
       '- id: revamp-ui | role: frontend | files: unit-1.txt | task: build a revamp unit',
       '<!-- opencode-delegate:end -->',
     ].join('\n'), 'utf8');
-    // A run-scoped assignments.json is the architect's freshness proof: its
-    // presence flips `hasFreshArchitectQueueForRun` true so the maintenance
-    // from-plan batch delegates THIS run's queue instead of suppressing it.
+    // A run-scoped assignments.json PLUS architect-run evidence (digest) is the
+    // architect's freshness proof: together they flip `hasFreshArchitectQueueForRun`
+    // true so the maintenance from-plan batch delegates THIS run's queue instead
+    // of suppressing it. (The manifest alone doesn't count — an orchestrator can
+    // hand-copy it; observed 11c.)
     fs.mkdirSync(path.join(dir, memoryDir, 'runs', 'maint-fresh'), { recursive: true });
     fs.writeFileSync(path.join(dir, memoryDir, 'runs', 'maint-fresh', 'assignments.json'), JSON.stringify({
       version: 1,
@@ -758,6 +760,9 @@ test('delegateFromPlan delegates in maintenance when the architect wrote a fresh
       createdBy: 'senior-architect',
       assignments: [{ role: 'senior-frontend', scope: { include: ['unit-1.txt'], exclude: [] } }],
     }), 'utf8');
+    fs.mkdirSync(path.join(dir, memoryDir, 'digests', 'maint-fresh'), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'digests', 'maint-fresh', 'architect.md'),
+      '# architect digest — run maint-fresh\n\nverdict: PLAN_READY\n', 'utf8');
 
     const r = delegateFromPlan(dir);
 
