@@ -10,8 +10,8 @@
 
 These are the canonical templates the orchestrator uses when spawning each
 subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
-etc.) is the orchestrator's job; the templates stay lean so the subagent's
-context stays clean. The ONE exception is `<run-id>` — see below.
+`<run-id>`, etc.) is the orchestrator's job; the templates stay lean so the
+subagent's context stays clean. The `<run-id>` substitution rules are below.
 
 On Codex, structured task identity is mandatory. Current Desktop rollouts store
 the spawn message encrypted in the child transcript, so the marker cannot be
@@ -81,9 +81,15 @@ second `runs/<id>/` tree, so the run-team gate finds no `assignments.json` under
 now **doubly enforced**: the SPAWN gate DENIES a subagent spawn whose prompt references any
 run-id other than `currentRunId` (so you cannot even hand a worker a wrong id), and the plan
 gate DENIES any write to `.traffic-one/runs/<id>/…` or `digests/<id>/…` whose `<id>` is not
-`currentRunId` — both naming the correct value. Wherever a
-template shows `<run-id>`, **read `currentRunId` from `.traffic-one/.one.json` and use that
-exact value** — the orchestrator does NOT substitute it; each subagent reads it itself. The
+`currentRunId` — both naming the correct value. Wherever a template shows `<run-id>`,
+**substitute `currentRunId` (read from `.traffic-one/.one.json`) into every occurrence
+BEFORE spawning** — like every other placeholder, so each subagent receives fully concrete
+paths. The literal `<run-id>` placeholder itself never trips the spawn gate (the gate reads
+it as `currentRunId`, and hosts that support hook input rewrite correct the child's prompt
+in-flight), so a missed substitution cannot block a spawn — but then the child must resolve
+the placeholder itself from its `Run ID:` line / `.one.json`, and the plan gate still
+rejects any WRITE to a literal `runs/<run-id>/…` path. Substituting up front is the
+reliable path. The
 claim files, `opencode-attempts`/`opencode-gate-denies` markers, `assignments.json`, and the
 digest folder all key off this one value.
 
@@ -98,7 +104,7 @@ project. For scratch build logs, print to stdout or write under
 ## Phase 1 — Architect
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The user's request is:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The user's request is:
 
 > <user-request quoted verbatim>
 
@@ -178,7 +184,7 @@ only.
 Before emitting PLAN_READY, verify project-local context is materialized. If
 `.traffic-one/manifest.json`, `.traffic-one/rules`, `.traffic-one/skills`,
 root `AGENTS.md`, or root `CLAUDE.md` is missing, run:
-  node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/hook-runtime.cjs" materialize-project
+  node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','hook-runtime.cjs'))" materialize-project
 from the project root, then verify those paths again. If materialization fails,
 report the blocker instead of emitting PLAN_READY.
 
@@ -189,7 +195,7 @@ token PLAN_READY on its own line.
 ## Phase 2 — Frontend (parallel with Backend)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The architect digest is at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The architect digest is at:
   .traffic-one/digests/<run-id>/architect.md
 
 Read in priority order:
@@ -240,8 +246,16 @@ render the actual workflow in demo/degraded mode until live data is configured.
 Do not invent a backend contract beyond the plan; make fixtures conform to the
 planned public contract and surface any contract gaps in your digest.
 
+Do not add `@ts-nocheck`, `@ts-ignore`, or an equivalent broad type-check
+suppression. Convert repository/API results into explicit domain types. A
+successful live response must drive every affected rendered surface; fixtures
+are permitted only for absent configuration, empty results, or handled errors.
+
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/frontend.md
+Format: rules/common/agent-handoff-digests.md. Digest verdict line:
+`IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED,
+CHANGES_REQUESTED, or TESTS_GREEN; those tokens belong to other roles.
 
 Token budget: ~12k total. Don't read more than ~3 files outside the scope
 above unless the digest/plan/graph all came up empty for the question.
@@ -253,7 +267,7 @@ pending.
 ## Phase 2 — Backend (parallel with Frontend)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The architect digest is at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The architect digest is at:
   .traffic-one/digests/<run-id>/architect.md
 
 Read in priority order:
@@ -283,6 +297,9 @@ your backend digest.
 
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/backend.md
+Format: rules/common/agent-handoff-digests.md. Digest verdict line:
+`IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED,
+CHANGES_REQUESTED, or TESTS_GREEN; those tokens belong to other roles.
 
 Token budget: ~12k total. Don't read more than ~3 files outside the scope
 above unless the digest/plan/graph all came up empty for the question.
@@ -293,7 +310,7 @@ End your reply with a one-line status of what you produced.
 ## Phase 3 — Reviewer (parallel with Tester)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The implementer digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The implementer digests are at:
   .traffic-one/digests/<run-id>/frontend.md
   .traffic-one/digests/<run-id>/backend.md
 
@@ -335,7 +352,7 @@ Token budget: ~6k. Don't full-scroll files; read targeted line ranges.
 ## Phase 3 — Tester (parallel with Reviewer)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The implementer digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The implementer digests are at:
   .traffic-one/digests/<run-id>/frontend.md
   .traffic-one/digests/<run-id>/backend.md
 
@@ -356,6 +373,44 @@ Add or update tests for the changed surface. Run them. Verdict format:
     1. <test name> — <file:line> — <error excerpt>.
     2. …
 
+`TESTS_GREEN` is legal only when the mechanical tests pass AND either:
+  - this run has a frontend implementer digest and its canonical
+    .traffic-one/reports/qa/<run-id>/report.json is a fresh, parser-valid
+    QaReportV1 with overall status `passed`; or
+  - this run has no frontend implementer digest and is genuinely backend-only.
+Frontend runs never use a prose "not applicable" escape. Screenshots alone,
+arbitrary JSON, and Lighthouse reports are not functional QA evidence.
+
+For a frontend run, prove fresh build metadata, start the app/preview, and run
+every key route at widths 390, 768, and 1440. Record console-error count,
+document overflow, element overflow, primary-action reachability (or explicit
+N/A), and a passing/failing status for every viewport. Mobile and desktop
+entries require existing screenshot paths inside this run's QA directory.
+Write the canonical QaReportV1 to the exact report.json path above with
+`schemaVersion: 1`, the exact run id, canonical ISO-UTC `generatedAt` in the
+exact form `YYYY-MM-DDTHH:MM:SSZ` or `YYYY-MM-DDTHH:MM:SS.sssZ` (emit
+`new Date().toISOString()` verbatim — never a locale string or numeric offset),
+producer `senior-tester`, and `routes: [{ route, viewports }]`. Every route contains each
+width exactly once. Each viewport has `width`, an allowed `status`, nonnegative
+integer `consoleErrorCount`, boolean `documentOverflow`, boolean
+`elementOverflow`, `primaryAction: { status, reason? }` (`reachable`,
+`unreachable`, or reasoned `not-applicable`), and `screenshotPath` where
+required. A strict pass has every viewport passed with zero errors, no
+overflow, and a reachable or reasoned-N/A primary action.
+
+If the browser/tool is genuinely unavailable after all other checks complete,
+write `blocked:browser-unavailable`; sandbox policy, usage limits, and bounded
+timeouts use `blocked:sandbox`, `blocked:usage-limit`, and `blocked:timeout`
+respectively. Include the bounded blocker code and safe error summary required
+by `blocker: { code, summary }` in QaReportV1. Every blocked status requires
+`TESTS_FAILING`; never convert it to green. The parent may bridge only
+`blocked:browser-unavailable`, and only when every non-browser check passed. If
+the unavailable browser makes screenshots impossible, keep the full matrix and
+do not invent paths; screenshot validation remains fail-closed while the parsed
+status/blocker identifies the bridge candidate. If continued after that bridge,
+validate the parent-browser report, screenshot paths, run id, freshness, and
+full matrix, then update tester.md and re-emit your verdict.
+
 For generated websites or changed web routes, include metadata regression
 coverage for every created or changed public route's title, description,
 canonical URL, OG image, JSON-LD, sitemap inclusion, and private/admin noindex.
@@ -370,10 +425,43 @@ Write your digest to:
 Token budget: ~8k.
 ```
 
+## Run-ledger settlement (orchestrator only)
+
+The parent orchestrator, not a verifier role, records the current run through
+the shipped idempotent helper. Use the portable Node launcher exactly, replace
+`<run-id>` with the current run id, and never hand-edit `run.json`.
+
+```bash
+# Reviewer cap after the second unsuccessful cycle.
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome review-cycle-cap
+
+# Tester cap after the second unsuccessful implementation/test fix cycle.
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome test-cycle-cap
+
+# Browser/sandbox/usage-limit/timeout blocker that remains unresolved.
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome environment-blocked
+
+# Unrecoverable orchestration/role-agent failure only.
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status failed --outcome agent-failed
+
+# Same-run resume only after explicit user authorization.
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
+
+# Strictly verified terminal run; reviewer + tester + QA/backend-only gate passed.
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome verified
+
+# Successful shipper digest after the deploy actually completed.
+node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome shipped
+```
+
+The completed commands are evidence-gated. Never infer them from green text,
+deploy intent, or delegated-only output. Blocked/failed settlement preserves
+the run and its role agents for the unresolved-run flow.
+
 ## Phase 4 — Shipper (only on explicit deploy intent)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The reviewer + tester digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The reviewer + tester digests are at:
   .traffic-one/digests/<run-id>/reviewer.md     (must contain "verdict: APPROVED")
   .traffic-one/digests/<run-id>/tester.md       (must contain "verdict: TESTS_GREEN")
 
@@ -384,6 +472,13 @@ Read in priority order:
   3. .traffic-one/deployments.jsonl, .traffic-one/stack.md,
      and .traffic-one/known-issues.md if present.
   4. .env.example to surface missing env vars.
+
+Before any stamp or deploy, also require strict functional QA: when this run
+has a frontend implementer digest,
+.traffic-one/reports/qa/<run-id>/report.json must be a fresh, parser-valid
+QaReportV1 with status `passed`. Only a run with no frontend implementer digest
+is backend-only. If QA is missing, failed, or blocked, STOP; do not stamp,
+deploy, or advertise shipping.
 
 Run `predeploy-security-check --strict --stamp`, then run the `verification-loop`
 Production-Readiness Score. If the score has hard blockers or is below 80/100
@@ -405,13 +500,22 @@ summary to .traffic-one/agent-log.md. Never log secrets.
 Write your digest to:
   .traffic-one/digests/<run-id>/shipper.md
 
+Set its literal verdict to `SHIPPED` only after the deploy and post-deploy
+checks complete successfully; otherwise set `FAILED`. End the reply with the
+same literal token. A created/nonempty shipper digest is not proof of success.
+
 Token budget: ~5k.
 ```
 
 ## Cleanup (Phase 5 — orchestrator does this, not a subagent)
 
-After Phase 4 (or after Phase 3 if no shipper), keep the last 3 run folders
-under `.traffic-one/digests/`. Remove older ones. Implementation:
+Run cleanup only after strict terminal settlement: reviewer approved, tester
+green, and strict QA passed (or genuinely backend-only), or shipper completed.
+For blocked/nonterminal verification, preserve the current run id, digests, QA
+artifacts, fix-cycle state, and role agents; do not stamp maintenance or run
+this cleanup. After a terminal Phase 4 (or terminal Phase 3 if no shipper), keep
+the last 3 run folders under `.traffic-one/digests/`. Remove older ones.
+Implementation:
 
 ```bash
 ls -t .traffic-one/digests | tail -n +4 | xargs -I{} rm -rf .traffic-one/digests/{}

@@ -1,6 +1,6 @@
 // src/gen/emit/hooks.ts
-// Renders settings.json + hooks/hooks.json + hooks/hooks-cursor.json from the
-// single hook source. Byte-identical to the hand-authored configs.
+// Renders every host hook config from the single hook source. Command generation
+// stays centralized there so portability and matcher changes cannot drift by host.
 
 import type { GenRun } from '../lib/run';
 import {

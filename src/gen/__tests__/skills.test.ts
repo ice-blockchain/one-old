@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import { generatedSkillDocs } from '../emit/skills';
-import { claudePluginManifest, codexPluginManifest, cursorPluginManifest } from '../sources/product';
+import {
+  agentsMarketplaceManifest,
+  claudePluginManifest,
+  codexPluginManifest,
+  cursorPluginManifest,
+} from '../sources/product';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
@@ -54,4 +59,46 @@ test('all host manifests read the managed ./skills/ dir (per-stack filtering)', 
   for (const m of [claudePluginManifest(version, []), codexPluginManifest(version), cursorPluginManifest(version)]) {
     assert.equal(m.skills, './skills/');
   }
+});
+
+test('Codex manifest relies on default hook discovery and carries no unsupported instructions field', () => {
+  const manifest = codexPluginManifest('0.0.0-test');
+  assert.equal('hooks' in manifest, false);
+  assert.equal('instructions' in manifest, false);
+  const interfaceMetadata = manifest.interface as {
+    category: string;
+    shortDescription: string;
+    defaultPrompt: string[];
+  };
+  assert.ok(new Set([
+    'Productivity', 'Creativity', 'Developer Tools', 'Business & Operations',
+    'Data & Analytics', 'Communication', 'Education & Research', 'Security',
+    'Finance', 'Healthcare', 'Travel', 'Entertainment', 'Other',
+  ]).has(interfaceMetadata.category));
+  assert.ok(interfaceMetadata.shortDescription.length <= 30);
+  assert.ok(interfaceMetadata.defaultPrompt.length <= 3);
+  assert.equal(new Set(interfaceMetadata.defaultPrompt).size, interfaceMetadata.defaultPrompt.length);
+  for (const prompt of interfaceMetadata.defaultPrompt) {
+    assert.ok(prompt.length > 0 && prompt.length <= 128);
+    assert.doesNotMatch(prompt, /[\r\n@]/);
+  }
+});
+
+test('Codex marketplace entry carries complete install policy and an accepted category', () => {
+  const marketplace = agentsMarketplaceManifest() as {
+    plugins: Array<{
+      source: { source: string; path: string };
+      policy: { installation: string; authentication: string };
+      category: string;
+    }>;
+  };
+  assert.deepEqual(marketplace.plugins[0]?.source, {
+    source: 'local',
+    path: './plugins/traffic-one',
+  });
+  assert.deepEqual(marketplace.plugins[0]?.policy, {
+    installation: 'AVAILABLE',
+    authentication: 'ON_INSTALL',
+  });
+  assert.equal(marketplace.plugins[0]?.category, 'Developer Tools');
 });

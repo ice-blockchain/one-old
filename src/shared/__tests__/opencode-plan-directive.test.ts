@@ -83,10 +83,16 @@ test('plan-batch directive fires in maintenance only with a fresh run-scoped que
     // Maintenance with a durable plan.md but no fresh architect queue → suppressed.
     assert.equal(buildOpenCodePlanBatchPendingDirective(dir), '');
 
-    // Architect wrote a fresh run-scoped queue THIS run → the directive fires.
+    // A hand-copied manifest alone (no architect digest/agent) stays suppressed.
     fs.mkdirSync(path.join(t1, 'runs', 'run-maint'), { recursive: true });
     fs.writeFileSync(path.join(t1, 'runs', 'run-maint', 'assignments.json'),
       JSON.stringify({ version: 1, runId: 'run-maint', createdBy: 'senior-architect', assignments: [] }), 'utf8');
+    assert.equal(buildOpenCodePlanBatchPendingDirective(dir), '');
+
+    // Architect actually ran THIS run (digest on disk) → the directive fires.
+    fs.mkdirSync(path.join(t1, 'digests', 'run-maint'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'digests', 'run-maint', 'architect.md'),
+      '# architect digest — run run-maint\n\nverdict: PLAN_READY\n', 'utf8');
     const directive = buildOpenCodePlanBatchPendingDirective(dir);
     assert.match(directive, /opencode_delegate_from_plan/);
     assert.match(directive, /Pending queued role\(s\): frontend, backend/);

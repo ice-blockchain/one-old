@@ -23,7 +23,16 @@ import {
   probeOpenCodeMcp,
   probeProject,
   probeSessionDiagnostics,
+  type SessionDiagnosticsResult,
 } from './probes';
+export {
+  CODEX_HOOK_EXPECTED_COUNT,
+  CODEX_TRAFFIC_ONE_HOOK_KEYS,
+  CODEX_TRAFFIC_ONE_PLUGIN_ID,
+  probeCodexHookTrust,
+  resolveCodexBinary,
+} from './codex-hook-trust';
+export type { CodexHookTrustProbe, CodexHookTrustProbeOptions, CodexHookTrustStatus } from './codex-hook-trust';
 
 export { buildFindings } from './findings';
 export type { Finding, BuildFindingsInput } from './findings';
@@ -42,18 +51,28 @@ export {
   resolveCodexSession,
 } from './probes';
 
-export function main(): void {
+export function selectDoctorProjectCwd(invocationCwd: string, sessionDiagnostics: SessionDiagnosticsResult): string {
+  const recordedCwd = sessionDiagnostics && sessionDiagnostics.found === true
+    && typeof sessionDiagnostics.cwd === 'string' && sessionDiagnostics.cwd.trim()
+    ? sessionDiagnostics.cwd
+    : invocationCwd;
+  return resolveProjectRoot(recordedCwd);
+}
+
+export async function main(): Promise<void> {
   const args = parseArgs();
-  const cwd = resolveProjectRoot(process.cwd());
+  // Resolve the incident first: `doctor --session` must not combine a target
+  // transcript with project prefs/trust from whichever directory invoked it.
+  const sessionDiagnostics = probeSessionDiagnostics(args.session);
+  const cwd = selectDoctorProjectCwd(process.cwd(), sessionDiagnostics);
   const node = probeNode();
   const nvm = probeNvm();
   const gitnexus = probeGitnexus();
   const project = probeProject(cwd);
-  const codexHooks = probeCodexHooks(cwd);
+  const codexHooks = await probeCodexHooks(cwd);
   const auth = probeCanonicalAuth();
   const oneMcp = probeOneMcp();
   const openCodeMcp = probeOpenCodeMcp();
-  const sessionDiagnostics = probeSessionDiagnostics(args.session);
   const findings = buildFindings({ node, nvm, gitnexus, project, codexHooks, auth, oneMcp, openCodeMcp, sessionDiagnostics });
   const summary = findings.some((f) => f.severity === 'fix-needed')
     ? 'ACTION_NEEDED'
@@ -68,4 +87,6 @@ export function main(): void {
   }, null, 2)}\n`);
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  void main().catch(() => { process.exitCode = 1; });
+}

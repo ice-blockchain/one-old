@@ -7,6 +7,8 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { authSatisfied } from '../../shared/auth';
+import { isNonProjectRoot } from '../../shared/authoring-root';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { firstEmitThisSession } from '../../shared/once';
 import { hookSessionIdentity, isWebState, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
@@ -102,9 +104,11 @@ function lighthouseBlockedStatus(raw: unknown): { status: 'blocked:sandbox' | 'b
 }
 
 export function postBuildPageSpeed(ctx: Ctx): HookResult {
-  if (pluginUseDeclined(ctx.cwd)) return noop();
+  if (isNonProjectRoot(ctx.cwd)) return noop();
+  const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  if (isNonProjectRoot(cwd) || pluginUseDeclined(cwd)) return noop();
   if (!authSatisfied()) return noop();
-  logToolUse(ctx.cwd, ctx.input.raw && typeof ctx.input.raw === 'object' ? (ctx.input.raw as Record<string, unknown>) : null);
+  logToolUse(cwd, ctx.input.raw && typeof ctx.input.raw === 'object' ? (ctx.input.raw as Record<string, unknown>) : null);
   const command = ctx.input.tool?.command ?? '';
   if (LIGHTHOUSE_COMMAND_RE.test(command)) {
     const blocked = lighthouseBlockedStatus(ctx.input.raw);
@@ -121,10 +125,10 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
     }
   }
   if (!BUILD_COMMAND_RE.test(command)) return noop();
-  if (!isWebState(readEffectiveState(ctx.cwd))) return noop();
+  if (!isWebState(readEffectiveState(cwd))) return noop();
   // Iterative implement-verify loops run `npm run build` many times; the full
   // advisory injects once per session, later builds get a one-line reminder.
-  if (!firstEmitThisSession(ctx.cwd, 'pagespeed-advisory', hookSessionIdentity(ctx.input.raw).sessionId)) {
+  if (!firstEmitThisSession(cwd, 'pagespeed-advisory', hookSessionIdentity(ctx.input.raw).sessionId)) {
     return context(
       '[traffic-one] Lighthouse mobile gate still pending — run: node ~/.traffic-one/bin/lighthouse-runner.cjs --route / (the runner ships with the PLUGIN, not the repo).',
       { systemMessage: 'traffic-one page-speed gate pending after build' },

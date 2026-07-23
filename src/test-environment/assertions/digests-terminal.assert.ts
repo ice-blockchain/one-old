@@ -23,8 +23,17 @@ export const assertion: Assertion = {
     const digestsRoot = path.join(ctx.cwd, '.traffic-one', 'digests');
     const hasDigests = fs.existsSync(digestsRoot) && fs.readdirSync(digestsRoot).length > 0;
 
-    if (!runId || !hasDigests) {
+    if (!runId && !hasDigests) {
+      if (ctx.hostResult.status === 'COMPLETED' && ctx.hostConfig?.headlessSubagents === 'unsupported') {
+        return result(ctx, 'UNSUPPORTED', 'This headless host entrypoint cannot expose subagent digests; runtime fingerprint coverage remains mandatory.');
+      }
       return result(ctx, 'INCONCLUSIVE', 'No run/digests found — orchestration likely did not spawn subagents headlessly.');
+    }
+    if (!runId) {
+      return result(ctx, 'INCONCLUSIVE', 'Digest artifacts exist without an activated run id.');
+    }
+    if (!hasDigests) {
+      return result(ctx, 'INCONCLUSIVE', `Run ${runId} was activated but produced no digests.`);
     }
     const terminal = runReachedTerminalVerdict(ctx.cwd, runId);
     const produced = anyRunProducedImplementerOutput(ctx.cwd);

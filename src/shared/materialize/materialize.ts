@@ -8,6 +8,7 @@ import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
 import { toPosix, writeTextIfChanged } from '../fs-text';
+import { readText } from '../fsjson';
 import { pluginRoot } from '../paths';
 import { BOOTSTRAP_SKILLS } from '../../config/skill-filters';
 import { activeSkillsFor } from '../skill-filters';
@@ -132,9 +133,9 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   }
 
   const mobile = state.mobile as Rec | undefined;
-  const manifest = {
+  const manifestJson = (generatedAt: string): string => `${JSON.stringify({
     generatedBy: 'traffic-one',
-    generatedAt: nowIsoNoMs(),
+    generatedAt,
     contextProfile: leanMode ? 'lean' : 'full',
     stack: (state.stack as string) || 'minimal',
     frontend: (state.frontend as string) || 'none',
@@ -143,8 +144,15 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
     rules: rules.map(toPosix),
     skills,
     ...(windsurfAssets ? { windsurf: { rules: windsurfAssets.rules, skills: windsurfAssets.skills, agents: windsurfAgents } } : {}),
-  };
-  if (writeTextIfChanged(path.join(cwd, '.traffic-one', 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)) {
+  }, null, 2)}\n`;
+  // `generatedAt` refreshes only when the manifest CONTENT changed — otherwise a
+  // repeat materialization would rewrite the file every wall-clock second and
+  // defeat writeTextIfChanged. Compare against the canonical path only (a
+  // legacy rules/manifest.json simply rewrites once).
+  const manifestPath = path.join(cwd, '.traffic-one', 'manifest.json');
+  const prevGeneratedAt = typeof previous.generatedAt === 'string' ? previous.generatedAt : '';
+  const manifestUnchanged = Boolean(prevGeneratedAt) && readText(manifestPath) === manifestJson(prevGeneratedAt);
+  if (!manifestUnchanged && writeTextIfChanged(manifestPath, manifestJson(nowIsoNoMs()))) {
     written += 1;
   }
 

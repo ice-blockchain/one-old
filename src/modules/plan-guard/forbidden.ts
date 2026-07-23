@@ -41,8 +41,6 @@ export function forbiddenForStack(stackOrState: unknown, allowNextjs: boolean): 
     ['(?<!tanstack/)(?<!\\w)react-query(?!-)', 'Use RTK Query for cached server state.'],
   ];
   const web: Rule[] = [
-    ['vitest', 'This stack uses Jest for unit/integration tests.'],
-    ['@vitest/', 'This stack uses Jest for unit/integration tests.'],
     ['styled-components', 'Use Tailwind utility classes with shadcn primitives in packages/ui.'],
     ['@emotion', 'Use Tailwind utility classes with shadcn primitives in packages/ui.'],
     ['@vanilla-extract/', 'vanilla-extract is no longer in the active stack. Use Tailwind + shadcn (run `npx shadcn@latest add <name>`).'],
@@ -75,11 +73,6 @@ export function forbiddenForStack(stackOrState: unknown, allowNextjs: boolean): 
   ];
 
   if (isNativeState(state)) return [...common, ...native];
-  if (isWebState(state) || state.stack === null) {
-    const webRules = state.frontend === 'nextjs'
-      ? web.filter(([pattern]) => pattern !== 'vitest' && pattern !== '@vitest/')
-      : web;
-    return [...common, ...webRules];
-  }
+  if (isWebState(state) || state.stack === null) return [...common, ...web];
   return common;
 }

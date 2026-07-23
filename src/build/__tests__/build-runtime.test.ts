@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { SHIMS, buildRuntime, writeShims } from '../build-runtime';
+import { SHIMS, assertSafeRuntimeOutput, buildRuntime, writeShims } from '../build-runtime';
 
 test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', () => {
   // Hook configs invoke the host runtimes; skills, post-build hints, and deploy
@@ -61,5 +61,33 @@ test('buildRuntime replaces the output tree so deleted source artifacts cannot l
     assert.equal(fs.existsSync(path.join(outDir, 'hook-runtime.cjs')), true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runtime cleanup accepts only generated scripts and Traffic One-owned temp trees', () => {
+  const repoRoot = path.resolve(__dirname, '..', '..', '..');
+  const generatedScripts = path.join(repoRoot, 'dist', 'scripts');
+  const expectedGeneratedScripts = fs.existsSync(generatedScripts)
+    ? fs.realpathSync.native(generatedScripts)
+    : path.join(fs.realpathSync.native(repoRoot), 'dist', 'scripts');
+  assert.equal(assertSafeRuntimeOutput(generatedScripts), expectedGeneratedScripts);
+
+  const safeTemp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runtime-safe-'));
+  try {
+    assert.equal(assertSafeRuntimeOutput(path.join(safeTemp, 'scripts')), path.join(fs.realpathSync.native(safeTemp), 'scripts'));
+  } finally {
+    fs.rmSync(safeTemp, { recursive: true, force: true });
+  }
+
+  for (const unsafe of [
+    path.parse(path.resolve('.')).root,
+    path.resolve(__dirname, '..', '..', '..'),
+    path.resolve(__dirname, '..', '..', '..', 'src'),
+    path.resolve(__dirname, '..', '..', '..', '.git'),
+    os.homedir(),
+    os.tmpdir(),
+    path.join(os.tmpdir(), 'unowned-runtime-output'),
+  ]) {
+    assert.throws(() => assertSafeRuntimeOutput(unsafe), /refusing to clean unsafe runtime output directory/);
   }
 });

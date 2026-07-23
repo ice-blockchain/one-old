@@ -66,7 +66,11 @@ delivering mobile with Ionic/Capacitor.
 - Switch to React Native / Expo only when the user explicitly names RN / Expo / fully native — never for generic "mobile app" requests.
 
 ## Absolute rules
-- Function components only; named exports only (no `export default` for components).
+- Function components only; named exports only (no `export default` for reusable
+  components). Route files are the exception: web page components under
+  `src/pages/` and Expo Router files under `app/` may default-export — that is
+  the `React.lazy` / router contract; do not wrap lazy imports in a
+  `.then((m) => ({ default: m.X }))` shim just to keep a named export.
 - Props have an explicit `ComponentNameProps` interface.
 - All API calls via `services/` or RTK Query — never axios in components.
 - Server state in RTK Query/Redux only — never duplicated in zustand or component state.

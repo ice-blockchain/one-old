@@ -12,7 +12,7 @@ import { collectHandlers, defaultModulesDir, loadModules } from '../core/registr
 import { obj } from '../shared/obj';
 import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { wrapperPreToolDeny } from './fail-closed';
+import { hasValidPreToolPayload, wrapperPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -49,6 +49,9 @@ export async function runOpenCodeHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: OPENCODE_NOOP, exitCode: 0 };
+  if (subcommand === 'before-tool-use' && !hasValidPreToolPayload(stdin, subcommand, 'wrapper')) {
+    return { stdout: OPENCODE_PRE_TOOL_FAIL_CLOSED, exitCode: 0 };
+  }
   try {
     const cwd = cwdFromStdin(stdin);
     if (cwd) initializeTrafficOneEnv(cwd, 'opencode', env);

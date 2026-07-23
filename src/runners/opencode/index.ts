@@ -1169,9 +1169,11 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
   // In maintenance, plan.md is a durable artifact from the last build, so from-plan
   // is a no-op — UNLESS the architect wrote a fresh run-scoped queue for THIS run
-  // (a complex maintenance build). `hasFreshArchitectQueueForRun` gates that: it is
-  // true only when `runs/<runId>/assignments.json` exists, which small/triage
-  // maintenance runs never produce, so a stale plan.md is never re-delegated.
+  // (a complex maintenance build). `hasFreshArchitectQueueForRun` gates that: it
+  // requires `runs/<runId>/assignments.json` PLUS architect-run evidence (digest
+  // or agent-registry entry) for the same run — small/triage maintenance runs
+  // never produce those, and a hand-copied manifest alone doesn't count, so a
+  // stale plan.md is never re-delegated.
   const maintenanceQueueSuppressed =
     isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined) &&
     !hasFreshArchitectQueueForRun(cwd, runId);

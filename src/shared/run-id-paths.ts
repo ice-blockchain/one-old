@@ -10,6 +10,31 @@
 // reference, in an absolute OR project-relative path (slashes normalized first).
 const RUN_ID_PATH_RE = /\.traffic-one\/(?:runs|digests)\/([^/\s"'`\\]+)/g;
 
+// The literal placeholder spellings the orchestrator prose ships inside
+// `runs/`/`digests/` paths: `<run-id>` in resources/prompt-templates.md,
+// `<runId>`/`<currentRunId>` in the SKILL.md continuation/fix-cycle prompts
+// (which reach the spawn gate as Task calls on Cursor). The SPAWN gate
+// substitutes them with `currentRunId` in the text it CHECKS, so a
+// template-faithful prompt is never denied (observed 6c: the first architect
+// spawn of the run was denied on the literal placeholder). The plan-gate WRITE
+// guard deliberately does NOT: a write to a literal `runs/<run-id>/…` path
+// would strand state under a placeholder-named dir — exactly the split this
+// module exists to prevent — so it must keep denying there.
+export const RUN_ID_PLACEHOLDERS = ['<run-id>', '<runId>', '<currentRunId>'] as const;
+
+export function hasRunIdPlaceholder(text: unknown): boolean {
+  const haystack = String(text ?? '');
+  return RUN_ID_PLACEHOLDERS.some((placeholder) => haystack.includes(placeholder));
+}
+
+export function substituteRunIdPlaceholder(text: string, runId: string): string {
+  const id = String(runId ?? '').trim();
+  if (!id) return text;
+  let out = text;
+  for (const placeholder of RUN_ID_PLACEHOLDERS) out = out.split(placeholder).join(id);
+  return out;
+}
+
 // The first run-id segment found in `text` (a path, a list joined by newlines, or a
 // shell command) that is NOT equal to `currentRunId`. Returns null when there is no
 // divergence, or when `currentRunId` is empty (nothing minted yet → can't enforce).

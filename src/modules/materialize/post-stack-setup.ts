@@ -25,7 +25,15 @@ import { isInsidePluginAuthoringRoot, isPluginAuthoringRoot } from '../../shared
 import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { canonicalToolName, isOnboardingWaitCommand, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
+import {
+  canonicalToolName,
+  isOnboardingWaitCommand,
+  isStateFilePath,
+  normalizedToolName,
+  parsedToolInput,
+  patchTextFromToolInput,
+} from '../../shared/tool-classify';
+import { parseApplyPatch } from '../../shared/apply-patch';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
 import { resolveProjectRoot } from '../../shared/hook-paths';
@@ -40,7 +48,8 @@ import {
   materializeProjectIfNeeded,
 } from '../../shared/materialize';
 import { materializeFromProjectMemoryWrite, materializeFromToolInputHints, type ReportOneMcp } from './converge-from-write';
-import { DIGEST_HARD_BYTES, DIGEST_PATH_RE, FUNCTION_PATH_RE, projectRootFromStateFilePath } from './post-helpers';
+import { DIGEST_HARD_BYTES, DIGEST_PATH_RE, FUNCTION_PATH_RE, projectRootFromStateFilePath, runStartMsForDigest } from './post-helpers';
+import { normalizeDigestFinishedAt } from './digest-finished-at';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|followup_task|send_message|send_input|wait_agent)$/i;
@@ -73,6 +82,25 @@ function architectDigestProjectRoot(filePath: string): string | null {
   return match?.[1] ?? null;
 }
 
+// F3: overwrite a fabricated/implausible digest `finished_at` with the real
+// write-time. Agents routinely hand-type future-dated timestamps and nothing
+// downstream validated them (the settlement sanity check only tests presence).
+// Returns a short audit note when it corrected the file, else ''. Never throws —
+// the digest hook must never block or fail the write.
+function hostStampDigestFinishedAt(targetPath: string, role: string): string {
+  try {
+    const content = fs.readFileSync(targetPath, 'utf8');
+    const fix = normalizeDigestFinishedAt(content, Date.now(), { runStartMs: runStartMsForDigest(targetPath) });
+    if (!fix) return '';
+    fs.writeFileSync(targetPath, fix.content);
+    return fix.from === null
+      ? `traffic-one — digest ${role}.md finished_at was missing; host-stamped ${fix.to}`
+      : `traffic-one — digest ${role}.md finished_at (${fix.from}) was ${fix.reason}; host-stamped real UTC ${fix.to}`;
+  } catch {
+    return '';
+  }
+}
+
 export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): HookResult {
   const cwd = ctx.cwd;
   const raw = obj(ctx.input.raw) || {};
@@ -93,6 +121,19 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     : ctx.input.cwd;
   const cwdAbs = path.resolve(cwd);
   const targetPath = filePath ? (path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(pathBase, filePath)) : '';
+  const patchText = normalizedToolName(toolName).toLowerCase() === 'apply_patch'
+    ? patchTextFromToolInput(ctx.input.tool?.patchText, raw.tool_input, raw.toolInput, raw.input, raw, toolInput)
+    : '';
+  const parsedPatch = patchText ? parseApplyPatch(patchText) : null;
+  const patchTargetPaths = parsedPatch?.ok
+    ? parsedPatch.operations.flatMap((operation) => {
+      if (operation.kind === 'delete') return [];
+      const written = operation.kind === 'move' ? operation.destinationPath : operation.path;
+      if (!written) return [];
+      return [path.isAbsolute(written) ? path.resolve(written) : path.resolve(pathBase, written)];
+    })
+    : [];
+  const writtenTargetPaths = [...new Set([targetPath, ...patchTargetPaths].filter(Boolean))];
   const targetInsideCwd = Boolean(targetPath && (targetPath === cwdAbs || targetPath.startsWith(`${cwdAbs}${path.sep}`)));
   if (isPluginAuthoringRoot(cwd) && (!targetPath || targetInsideCwd)) return noop();
   // A write LANDING inside the plugin's own repo must stand down even when the
@@ -101,7 +142,12 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   const fp = filePath.replace(/\\/g, '/');
   const reportOneMcp = deps.reportOneMcp;
-  const digestRoot = architectDigestProjectRoot(targetPath || filePath);
+  const digestTargets = writtenTargetPaths.flatMap((writtenPath) => {
+    const match = writtenPath.replace(/\\/g, '/').match(DIGEST_PATH_RE);
+    return match ? [{ path: writtenPath, role: match[1] as string }] : [];
+  });
+  const architectDigest = digestTargets.find((candidate) => candidate.role === 'architect');
+  const digestRoot = architectDigestProjectRoot(architectDigest?.path || targetPath || filePath);
   // Resolve UP to the workspace root so the one-mcp report + maintenance flip + state
   // read target the real project, not a monorepo sub-package whose stray shallow
   // .one.json would otherwise mint a one-uid / hide maintenance phase there.
@@ -173,11 +219,18 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     return result ? context(result) : noop();
   }
 
-  // 2. Architect PLAN_READY → re-inject OpenCode Step-0 while batch is pending.
-  const digestMatch = fp.match(DIGEST_PATH_RE);
-  if (digestMatch && digestMatch[1] === 'architect' && targetPath && fs.existsSync(targetPath)) {
+  // 2. Digest post-write. Host-stamp an implausible finished_at FIRST (F3) so it
+  //    fires for every role — including architect, whose PLAN_READY branch below
+  //    can return early — then the architect Step-0 re-inject and size warning.
+  const digestStampNotes = digestTargets
+    .filter((candidate) => fs.existsSync(candidate.path))
+    .map((candidate) => hostStampDigestFinishedAt(candidate.path, candidate.role))
+    .filter(Boolean);
+
+  // 2a. Architect PLAN_READY → re-inject OpenCode Step-0 while batch is pending.
+  if (architectDigest && fs.existsSync(architectDigest.path)) {
     let content = '';
-    try { content = fs.readFileSync(targetPath, 'utf8'); } catch { content = ''; }
+    try { content = fs.readFileSync(architectDigest.path, 'utf8'); } catch { content = ''; }
     if (/\bPLAN_READY\b/.test(content)) {
       const planReadyDirective = buildPostPlanReadyOpenCodeDirective(reportRoot);
       if (planReadyDirective) {
@@ -188,15 +241,18 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     }
   }
 
-  // 3. Soft digest-size warning (never blocks the write).
-  if (digestMatch && targetPath && fs.existsSync(targetPath)) {
-    let bytes = 0;
-    try { bytes = fs.statSync(targetPath).size; } catch { bytes = 0; }
-    if (bytes > DIGEST_HARD_BYTES) {
-      const role = digestMatch[1] as string;
+  // 3. Soft digest-size warning (never blocks the write); else surface the
+  //    finished_at correction, if any.
+  if (digestTargets.length > 0) {
+    for (const candidate of digestTargets) {
+      let bytes = 0;
+      try { bytes = fs.statSync(candidate.path).size; } catch { bytes = 0; }
+      if (bytes <= DIGEST_HARD_BYTES) continue;
+      const role = candidate.role;
       const kb = Math.round((bytes / 1024) * 10) / 10;
       return context(digestWarning(role, kb), { systemMessage: `traffic-one — digest ${role}.md is ${kb} KB; trim to ≤2 KB` });
     }
+    if (digestStampNotes.length > 0) return context('', { systemMessage: digestStampNotes.join('\n') });
     return noop();
   }
 

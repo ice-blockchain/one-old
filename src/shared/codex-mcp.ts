@@ -84,12 +84,46 @@ function discoverCodexPluginRoot(env: NodeJS.ProcessEnv): string | null {
   return null;
 }
 
-// The config.toml block. `sh -lc … exec node` gives the server (and its git/
-// opencode child processes) the login-shell PATH; `exec` keeps stdio = the server.
-// The path rides through TWO quoting layers — single-quote it for the shell
-// (inert to $-expansion and spaces), then escape backslashes/double-quotes for
-// the TOML basic string, so quotes or backslashes in the path can't break either.
-export function codexMcpServerBlock(serverPath: string): string {
+const CODEX_MCP_MANAGED_BEGIN = '# >>> traffic-one managed opencode-worker MCP';
+const CODEX_MCP_MANAGED_END = '# <<< traffic-one managed opencode-worker MCP';
+
+// Launch through the exact Node executable already running Traffic One. Codex
+// Desktop does not necessarily inherit a login-shell PATH, while process.execPath
+// is absolute and works on Windows without a POSIX shell. JSON string encoding is
+// valid TOML basic-string encoding for paths, backslashes, spaces, and quotes.
+export function codexMcpServerBlock(
+  serverPath: string,
+  nodePath: string = process.execPath,
+): string {
+  return [
+    '',
+    CODEX_MCP_MANAGED_BEGIN,
+    `[mcp_servers.${OPENCODE_MCP_SERVER_KEY}]`,
+    `command = ${JSON.stringify(nodePath)}`,
+    `args = [${JSON.stringify(serverPath)}]`,
+    'startup_timeout_sec = 120',
+    CODEX_MCP_MANAGED_END,
+    '',
+  ].join('\n');
+}
+
+// Exact unmarked block emitted by the first cross-platform cutover. It is kept
+// only as an ownership-safe migration fingerprint.
+function bareNodeCodexMcpServerBlock(serverPath: string): string {
+  return [
+    '',
+    `[mcp_servers.${OPENCODE_MCP_SERVER_KEY}]`,
+    'command = "node"',
+    `args = [${JSON.stringify(serverPath)}]`,
+    'startup_timeout_sec = 120',
+    '',
+  ].join('\n');
+}
+
+// Exact block emitted before the cross-platform Node cutover. It is never used
+// for new configuration; matching the whole byte sequence lets us migrate our
+// own old entry without rewriting a same-name user-owned MCP declaration.
+function legacyCodexMcpServerBlock(serverPath: string): string {
   const shellQuoted = `'${serverPath.replace(/'/g, `'\\''`)}'`;
   const tomlEscaped = `exec node ${shellQuoted}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return [
@@ -100,6 +134,23 @@ export function codexMcpServerBlock(serverPath: string): string {
     'startup_timeout_sec = 120',
     '',
   ].join('\n');
+}
+
+interface ManagedCodexMcpBlock {
+  readonly start: number;
+  readonly end: number;
+  readonly content: string;
+}
+
+function managedCodexMcpBlock(config: string): ManagedCodexMcpBlock | null {
+  const startNeedle = `\n${CODEX_MCP_MANAGED_BEGIN}\n`;
+  const endNeedle = `${CODEX_MCP_MANAGED_END}\n`;
+  const start = config.indexOf(startNeedle);
+  if (start < 0 || config.indexOf(startNeedle, start + startNeedle.length) >= 0) return null;
+  const endMarker = config.indexOf(endNeedle, start + startNeedle.length);
+  if (endMarker < 0 || config.indexOf(endNeedle, endMarker + endNeedle.length) >= 0) return null;
+  const end = endMarker + endNeedle.length;
+  return { start, end, content: config.slice(start, end) };
 }
 
 // Public traffic-one-mcp registration is deliberately inert: hook-owned HTTP
@@ -326,18 +377,46 @@ export type CodexMcpRegistration =
 
 export type CodexOneMcpRemoval = 'removed' | 'absent' | 'modified' | 'failed';
 
-export function ensureCodexMcpServerRegistered(env: NodeJS.ProcessEnv = process.env): CodexMcpRegistration {
+export function ensureCodexMcpServerRegistered(
+  env: NodeJS.ProcessEnv = process.env,
+  nodePath: string = process.execPath,
+): CodexMcpRegistration {
   try {
     if (detectHost(env) !== 'codex') return 'skipped-not-codex';
     const root = codexStablePluginRoot(env);
     if (!root) return 'skipped-no-root';
     const cfgPath = codexConfigPath(env);
-    const existing = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, 'utf8') : '';
-    // Idempotent: any existing [mcp_servers.opencode-worker] section → leave it.
-    if (existing.includes(`[mcp_servers.${OPENCODE_MCP_SERVER_KEY}]`)) return 'already-present';
-    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-    fs.appendFileSync(cfgPath, codexMcpServerBlock(path.join(root, OPENCODE_MCP_SHIM_PATH)));
-    return 'registered';
+    const serverPath = path.join(root, OPENCODE_MCP_SHIM_PATH);
+    return withCodexMcpLock(cfgPath, () => {
+      // Read only after acquiring the shared config lock. The public MCP
+      // registration uses the same lock, so a cold append cannot be lost when
+      // this transaction migrates an older whole-file snapshot.
+      const existing = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, 'utf8') : '';
+      const expectedBlock = codexMcpServerBlock(serverPath, nodePath);
+      const managedBlock = managedCodexMcpBlock(existing);
+      if (managedBlock) {
+        if (managedBlock.content === expectedBlock) return 'already-present';
+        fs.writeFileSync(
+          cfgPath,
+          `${existing.slice(0, managedBlock.start)}${expectedBlock}${existing.slice(managedBlock.end)}`,
+          'utf8',
+        );
+        return 'registered';
+      }
+      // Migrate only byte-exact blocks Traffic One emitted before ownership
+      // markers. An arbitrary same-name declaration remains user-owned.
+      for (const priorBlock of [
+        legacyCodexMcpServerBlock(serverPath),
+        bareNodeCodexMcpServerBlock(serverPath),
+      ]) {
+        if (!existing.includes(priorBlock)) continue;
+        fs.writeFileSync(cfgPath, existing.replace(priorBlock, expectedBlock), 'utf8');
+        return 'registered';
+      }
+      if (hasCodexMcpServerConfig(existing, OPENCODE_MCP_SERVER_KEY)) return 'already-present';
+      fs.appendFileSync(cfgPath, expectedBlock);
+      return 'registered';
+    });
   } catch {
     return 'failed';
   }

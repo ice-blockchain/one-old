@@ -88,7 +88,11 @@ existing files in place. Use the role-scoped Write/Edit tools for every file
 creation and edit; they create parent directories. Bash is read-only inspection
 or verification only: never use `mkdir`, redirection, `cat <<`, `tee`, `cp`,
 `mv`, or a script to create or modify project files. In a team run those shell
-writes are deliberately blocked because ownership cannot be verified.
+writes are deliberately blocked because ownership cannot be verified. When an
+inspection command verifies that a file does NOT exist yet (an expected-absence
+pre-check such as `ls .traffic-one/plan.md` before you write it), end the
+command exit-0 — append `|| true` or a final `echo ok` — otherwise the host
+renders your successful check as a failed tool call in the user's transcript.
 
 ### Required workspace scaffold (stack=default OR frontend=react-vite)
 
@@ -109,7 +113,26 @@ packages/tailwind-config/package.json # @app/tailwind-config — shared Tailwind
 packages/tailwind-config/src/globals.css # Tailwind v4 CSS-first globals/design tokens
 packages/i18n/package.json            # @app/i18n — shared i18next resources
 packages/i18n/src/index.ts            # empty barrel
+packages/eslint-config/package.json   # @app/eslint-config — required whenever any lint script is emitted
+packages/eslint-config/index.js       # minimal flat config (~10 lines: @eslint/js recommended + typescript-eslint), consumed by a root eslint.config.js re-export
 ```
+
+Script/config parity (see `quality-tooling`): if you emit `lint`/`lint:fix` scripts
+(root or package), you MUST also scaffold `packages/eslint-config`, a root
+`eslint.config.js` re-export, and the eslint devDependencies in the root
+`package.json` — otherwise omit the lint scripts entirely and leave them to an
+implementer. Every scaffolded package's `package.json` includes a `test` script
+(vitest on web; an explicit `"test": "echo \"no tests\" && exit 0"` no-op is
+allowed, absence is not). Scaffold the coverage provider with the test runner:
+the matching coverage devDependency (`@vitest/coverage-v8` for vitest) in the
+root `package.json` and a root `test:coverage` script. When the plan's testing
+strategy names a runner (vitest / playwright / jest / cypress), also scaffold
+its config/setup stub (`vitest.config.ts` + `vitest.setup.ts`,
+`playwright.config.ts`, …) so the tester extends a file instead of authoring
+project config from scratch. The tester role owns test files and those
+test-runner configs — but NOT implementer-owned `package.json` or bundler
+configs, so deps/scripts must exist from the scaffold (observed live: coverage
+was unmeasurable until a fix cycle re-engaged the owning roles).
 
 Write the root `package.json` first, before `tsconfig`, Vite, or package files.
 Its first version must already declare the workspace, so it passes the
@@ -185,7 +208,7 @@ The 3 things most likely to derail the build. One mitigation each.
 What we are NOT building in v1. Concrete features the user might assume but won't get yet.
 
 ## OpenCode delegation queue
-Include this section ONLY when the current host is NOT OpenCode or Kilo and effective OpenCode delegation is active (`openCode.enabled` plus an installed CLI). If the current host is OpenCode or Kilo, omit this entire section and do not write `<!-- opencode-delegate:start -->` markers: OpenCode/Kilo cannot delegate to OpenCode from inside a peer self host, and implementer work runs directly on the current host. When this section is allowed, bounded, low-risk units are delegated to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's paid-host token budget. The canonical catalog of queueable unit kinds is the plugin config (`config/opencode-delegation.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`): fixtures/seed data, pure helpers, i18n source catalogs + draft translations, test scaffolding, QA-report sweeps, reviewer-input audit sweeps, docs drafts (secret-free), Storybook story stubs, mechanical refactors/codemods. NEVER queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts, security/auth/RLS, data-model, migrations, cross-file-invariant work, deploys/credentials — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). Use stable `id` values; when two units overlap files/areas, the later one must declare a pipe-delimited `depends: <earlier-id>` field. Do not hide `depends_on:` or `depends:` inside the task text; the plan gate rejects that because the runner cannot order prose-only dependencies. **On non-OpenCode/Kilo hosts with active delegation, a plan with an EMPTY queue is almost always a mistake** — this applies both to new-project scaffolds AND to the complex existing-codebase/maintenance builds you were spawned for (e.g. a large revamp): both have fixtures, source catalogs, helper stubs, SEO/token files, and story/test scaffolding worth ~3–6 free units (a measured run with an empty queue pushed all of it onto paid workers). The batch runs off THIS run's fresh queue (it is tied to the `runs/<run-id>/assignments.json` you write), so a stale block from a previous build is never re-run — small maintenance fixes that never reach you are delegated per-unit via `opencode_delegate`, not this queue. Leave the block empty only when active delegation is false or the work genuinely has no bounded units.
+Include this section ONLY when the current host is NOT OpenCode or Kilo and effective OpenCode delegation is active (`openCode.enabled` true — plus, when present in the effective state, the `toolchain.opencode.installedVersion` stamp the session start auto-installs). NEVER probe PATH for the CLI (`which`/`command -v opencode`): the managed binary lives outside PATH and CLI presence is checked by the runner itself, which falls back gracefully and no-ops the batch if the CLI is truly absent — do not write "CLI not installed → will no-op" conclusions into the plan, agent log, or digest from a PATH probe. If the current host is OpenCode or Kilo, omit this entire section and do not write `<!-- opencode-delegate:start -->` markers: OpenCode/Kilo cannot delegate to OpenCode from inside a peer self host, and implementer work runs directly on the current host. When this section is allowed, bounded, low-risk units are delegated to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's paid-host token budget. The canonical catalog of queueable unit kinds is the plugin config (`config/opencode-delegation.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`): fixtures/seed data, pure helpers, i18n source catalogs + draft translations, test scaffolding, QA-report sweeps, reviewer-input audit sweeps, docs drafts (secret-free), Storybook story stubs, mechanical refactors/codemods. NEVER queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts, security/auth/RLS, data-model, migrations, cross-file-invariant work, deploys/credentials — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). Use stable `id` values; when two units overlap files/areas, the later one must declare a pipe-delimited `depends: <earlier-id>` field. Do not hide `depends_on:` or `depends:` inside the task text; the plan gate rejects that because the runner cannot order prose-only dependencies. **On non-OpenCode/Kilo hosts with active delegation, a plan with an EMPTY queue is almost always a mistake** — this applies both to new-project scaffolds AND to the complex existing-codebase/maintenance builds you were spawned for (e.g. a large revamp): both have fixtures, source catalogs, helper stubs, SEO/token files, and story/test scaffolding worth ~3–6 free units (a measured run with an empty queue pushed all of it onto paid workers). The batch runs off THIS run's fresh queue (it is tied to the `runs/<run-id>/assignments.json` you write), so a stale block from a previous build is never re-run — small maintenance fixes that never reach you are delegated per-unit via `opencode_delegate`, not this queue. Leave the block empty only when active delegation is false or the work genuinely has no bounded units.
 
 If a unit's task or acceptance mentions tests, testability, Vitest, Playwright, specs, or config/dependency changes, its `files:` allowlist must include the exact test/spec/config/package files it is allowed to touch. Otherwise remove that acceptance from the OpenCode unit and leave verification/config work to the paid implementer/reviewer. Do not queue a helper as "unit-testable" while allowing only the helper source file; OpenCode will naturally add tests/config and the runner will reject the diff.
 
@@ -245,7 +268,7 @@ Patterns are project-relative, `/`-separated; a trailing `/` is a directory pref
 Derive the partition from REAL paths, never guessed directory names:
 - Existing project: classify the directories you actually read in the tree (where routes/components/controllers/migrations live for THIS repo's stack — Next.js `src/app`, Laravel `app/Http` + `routes` + `database`, Django `*/views.py` + `*/migrations`, Flutter `lib/`, etc.).
 - New project: derive from the Module map you just designed (the apps/packages/services you will scaffold).
-- Optional starting point: `proposeLayoutSeed(state)` in `src/shared/stack-layout.ts` returns default seeds per stack id, but you MUST override them with the repo's real paths; unknown stacks return `[]` and you write the observed/designed paths yourself. Correctness must not depend on this helper.
+- Optional starting point: use the selected stack in `.traffic-one/.one.json` to seed likely module boundaries, then override every guess with paths observed in the repository or explicitly created by this plan. Unknown stacks require you to write the observed/designed paths yourself; correctness must never depend on an authoring-repository helper.
 
 Guarantees you must uphold (the gate trusts the manifest):
 - **Disjoint** — no path belongs to two roles' scopes. Use `exclude` to split a shared subtree (e.g. backend owns `src/app/api/`, frontend owns the rest of `src/app/`).

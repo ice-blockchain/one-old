@@ -2,8 +2,8 @@
 // THE single source for every hook wiring. Today the matcher token sets live in
 // settings.json AND hooks/hooks.json AND (re-encoded) hooks-cursor.json — a
 // triple hand-sync. Here they live once: the Claude PreToolUse/PostToolUse
-// groups + the Cursor event→subcommand fan-out. The emitter renders all three
-// configs from this, byte-identical to today (golden-verified).
+// groups + the Cursor event→subcommand fan-out. The emitter renders every host
+// config from this single, golden-verified source.
 //
 // settings.json and hooks/hooks.json are identical except UserPromptSubmit
 // carries a statusMessage in settings.json only — modeled by the `promptStatus`
@@ -11,25 +11,66 @@
 
 import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME } from '../../config/one-mcp';
 
+export const CODEX_HOOK_ABI_VERSION = 1;
+
 function regexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 const ONE_MCP_CLAUDE_MATCHER = `^mcp__${regexLiteral(ONE_MCP_SERVER_NAME)}__(${ONE_MCP_MANAGED_TOOLS.map(regexLiteral).join('|')})$`;
 
-// The literal plugin-root shell expansion (NOT a JS template — single-quoted so
-// the ${...} stays verbatim in the emitted command). Exported so the .mcp.json
-// generator launches the bundled MCP server through the SAME chain (one shared
-// .mcp.json must resolve on Claude/Codex/Cursor alike).
-export const PLUGIN_ROOT_EXPR = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}';
+// Claude/Codex and Windsurf expose different plugin-root environment variables.
+// Resolve the same precedence chain inside Node instead of relying on POSIX
+// `${VAR:-fallback}` expansion: these command strings must also run under cmd.exe
+// and PowerShell. The generated runtime shim is require()d in the launcher
+// process so stdin/stdout and async exit-code behavior stay identical to invoking
+// `node <runtime> <subcommand>` directly.
+export const PLUGIN_ROOT_ENV_KEYS = [
+  'TRAFFIC_ONE_PLUGIN_ROOT',
+  'CURSOR_PLUGIN_ROOT',
+  'CODEX_PLUGIN_ROOT',
+  'CLAUDE_PLUGIN_ROOT',
+] as const;
 
 // Cursor replaces this exact literal before handing the command to the host
-// shell. Keep it separate from PLUGIN_ROOT_EXPR: nested `:-` shell expansion is
-// not recognized by Cursor's replacement and is not portable to Windows.
+// shell. It is a host token, not shell parameter expansion, and remains portable
+// after Cursor substitutes the installed path.
 export const CURSOR_PLUGIN_ROOT_TOKEN = '${CURSOR_PLUGIN_ROOT}';
 
+function portableNodeCommand(
+  runtime: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>> = {},
+): string {
+  const safeToken = /^[A-Za-z0-9_.=-]+$/;
+  if (!safeToken.test(runtime) || args.some((arg) => !safeToken.test(arg))) {
+    throw new Error('portable hook command received an unsafe runtime or argument');
+  }
+  const rootKeys = PLUGIN_ROOT_ENV_KEYS.map((key) => `'${key}'`).join(',');
+  const envAssignments = Object.entries(env)
+    .map(([key, value]) => {
+      if (!/^[A-Z][A-Z0-9_]*$/.test(key) || !safeToken.test(value)) {
+        throw new Error('portable hook command received an unsafe environment override');
+      }
+      return `e.${key}='${value}';`;
+    })
+    .join('');
+  const launcher = [
+    "const p=require('path'),e=process.env;",
+    `const r=p.resolve([${rootKeys}].map(k=>e[k]).find(Boolean)||process.cwd());`,
+    'e.TRAFFIC_ONE_PLUGIN_ROOT=r;',
+    envAssignments,
+    "process.argv.splice(1,0,'traffic-one-launcher');",
+    `require(p.join(r,'scripts','${runtime}'));`,
+  ].join('');
+  // The launcher deliberately contains only single-quoted JS strings. Wrapping
+  // it in one double-quoted shell argument is portable across sh, cmd.exe, and
+  // PowerShell (and avoids every shell-specific variable/env-assignment syntax).
+  return `node -e "${launcher}" ${args.join(' ')}`;
+}
+
 export function claudeCommand(subcommand: string): string {
-  return `node "${PLUGIN_ROOT_EXPR}/scripts/hook-runtime.cjs" ${subcommand}`;
+  return portableNodeCommand('hook-runtime.cjs', [subcommand]);
 }
 
 export function cursorCommand(subcommand: string): string {
@@ -42,7 +83,11 @@ export function copilotCommand(subcommand: string): string {
 }
 
 export function windsurfCommand(subcommand: string): string {
-  return `TRAFFIC_ONE_PLUGIN_ROOT="${PLUGIN_ROOT_EXPR}" TRAFFIC_ONE_HOST=windsurf node "${PLUGIN_ROOT_EXPR}/scripts/windsurf-hook-runtime.cjs" ${subcommand} --host=windsurf`;
+  return portableNodeCommand(
+    'windsurf-hook-runtime.cjs',
+    [subcommand, '--host=windsurf'],
+    { TRAFFIC_ONE_HOST: 'windsurf' },
+  );
 }
 
 export interface CopilotHookEntry {

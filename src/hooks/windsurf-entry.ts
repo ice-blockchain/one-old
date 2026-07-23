@@ -12,7 +12,7 @@ import { pluginUseDeclined } from '../shared/state/plugin-use';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from '../adapters/coerce';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
-import { hasValidHookObjectPayload, isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
+import { hasValidPreToolPayload, isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
 
@@ -109,7 +109,7 @@ export async function runWindsurfHook(
     return { stdout: '', stderr: '', exitCode: 0 };
   }
   if (!action) return { stdout: '', stderr: '', exitCode: 0 };
-  if (isWindsurfPreToolAction(action) && !hasValidHookObjectPayload(stdin)) {
+  if (isWindsurfPreToolAction(action) && !hasValidPreToolPayload(stdin, action, 'windsurf')) {
     return { stdout: '', stderr: preToolFailureReason('Windsurf'), exitCode: 2 };
   }
   try {

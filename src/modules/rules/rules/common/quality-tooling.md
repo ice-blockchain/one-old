@@ -33,6 +33,17 @@ Every JavaScript/TypeScript project exposes these root scripts when applicable:
 Monorepos route the root scripts through Turborepo or workspace filters instead
 of requiring agents to remember per-package commands.
 
+Script/config parity: only emit a script whose tool, config, and
+devDependencies you also scaffold in the same change. A `lint` script without an
+ESLint config (or a `test` script without a runner config) fails the whole
+pipeline for every later agent — either scaffold the config + deps alongside the
+script or omit the script until an implementer adds them.
+
+Every workspace package that ships source exposes its own `test` script (vitest
+on web stacks) so `turbo run test` covers it; a package with intentionally no
+tests declares `"test": "echo \"no tests\" && exit 0"` explicitly rather than
+omitting the script.
+
 ## Local tooling only
 
 - Use repo-owned dependencies and scripts: `pnpm lint`, `pnpm typecheck`,

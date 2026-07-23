@@ -28,6 +28,7 @@ import {
   readCodexModelObservation,
 } from './codex-model-observation';
 import { readRunModelPolicy } from '../run-model-policy';
+import { isQaBrowserBridgeEligible, readQaReportV1, type QaReportValidationResult } from '../qa-report';
 
 export function runIdNow(): string {
   return Date.now().toString();
@@ -47,7 +48,13 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
   const existing = typeof source.currentRunId === 'string'
     ? source.currentRunId.trim()
     : (typeof source.currentRunId === 'number' && Number.isFinite(source.currentRunId) ? String(Math.trunc(source.currentRunId)) : '');
-  if (existing) return existing;
+  if (existing) {
+    // Reading/freezing policy for an existing id is not itself a resume. In
+    // particular SessionStart calls this on every subagent-enabled project.
+    // Actual worker claims and the unresolved-run continue path activate the
+    // ledger and upgrade legacy evidence semantics at their action boundary.
+    return existing;
+  }
   const runId = runIdNow();
   source.currentRunId = runId;
   writeState(cwd, source);
@@ -62,7 +69,12 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
 }
 
 function safePathSegment(value: unknown): string {
-  return String(value ?? '').trim().replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160);
+  const segment = String(value ?? '').trim().replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160);
+  // `.` and `..` survive the character allowlist but are never safe directory
+  // names. Keep legacy sanitization behavior while preventing path traversal.
+  if (segment === '.') return '_';
+  if (segment === '..') return '__';
+  return segment;
 }
 
 function runsRoot(cwd: string): string {
@@ -93,22 +105,199 @@ function authoritativeRebindJournalFile(cwd: string, runId: string, threadId: st
   return path.join(runDir(cwd, runId), 'transactions', `rebind-${safePathSegment(threadId)}.json`);
 }
 
-export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): Rec | null {
-  if (isNonProjectRoot(cwd)) return null;
-  if (typeof runId !== 'string' || !runId.trim()) return null;
-  const id = runId.trim();
+export const RUN_LEDGER_TRANSITION_HISTORY_LIMIT = 32;
+
+export type RunLedgerStatus = 'planned' | 'active' | 'completed' | 'blocked' | 'failed';
+export type RunLedgerOutcome =
+  | 'verified'
+  | 'shipped'
+  | 'review-cycle-cap'
+  | 'test-cycle-cap'
+  | 'environment-blocked'
+  | 'agent-failed';
+
+export interface RunLedgerTransitionOptions {
+  status: RunLedgerStatus;
+  outcome?: RunLedgerOutcome;
+  reason?: string;
+  kind?: string;
+  stackFingerprint?: string;
+  /** Internal compatibility path for terminal settlement of a pre-ledger run. */
+  preserveLegacyQaContract?: boolean;
+}
+
+const RUN_LEDGER_STATUSES = new Set<RunLedgerStatus>(['planned', 'active', 'completed', 'blocked', 'failed']);
+const RUN_LEDGER_OUTCOMES = new Set<RunLedgerOutcome>([
+  'verified',
+  'shipped',
+  'review-cycle-cap',
+  'test-cycle-cap',
+  'environment-blocked',
+  'agent-failed',
+]);
+const RUN_LEDGER_LOCK_TIMEOUT_MS = 2_000;
+const RUN_LEDGER_LOCK_STALE_MS = 15_000;
+const RUN_LEDGER_LOCK_RETRY_MS = 10;
+const RUN_LEDGER_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+function isRunLedgerStatus(value: unknown): value is RunLedgerStatus {
+  return typeof value === 'string' && RUN_LEDGER_STATUSES.has(value as RunLedgerStatus);
+}
+
+function isRunLedgerOutcome(value: unknown): value is RunLedgerOutcome {
+  return typeof value === 'string' && RUN_LEDGER_OUTCOMES.has(value as RunLedgerOutcome);
+}
+
+function isTerminalRunLedgerStatus(status: RunLedgerStatus): boolean {
+  return status === 'completed' || status === 'blocked' || status === 'failed';
+}
+
+function runLedgerTransitionAllowed(from: RunLedgerStatus, to: RunLedgerStatus, reason: unknown): boolean {
+  if (from === to) return true;
+  if (from === 'planned') return to === 'active' || to === 'blocked' || to === 'failed' || to === 'completed';
+  if (from === 'active') return to === 'completed' || to === 'blocked' || to === 'failed';
+  if (from === 'blocked') return to === 'active' && reason === 'user-authorized-extra-cycle';
+  return false;
+}
+
+function outcomeAllowedForStatus(status: RunLedgerStatus, outcome: RunLedgerOutcome | undefined): boolean {
+  if (!outcome) return status === 'planned' || status === 'active';
+  if (status === 'completed') return outcome === 'verified' || outcome === 'shipped';
+  if (status === 'blocked') {
+    return outcome === 'review-cycle-cap' || outcome === 'test-cycle-cap' || outcome === 'environment-blocked';
+  }
+  return status === 'failed' && outcome === 'agent-failed';
+}
+
+function terminalOutcomeTransitionAllowed(
+  status: RunLedgerStatus,
+  previous: RunLedgerOutcome | undefined,
+  requested: RunLedgerOutcome | undefined,
+): boolean {
+  if (previous === requested || previous === undefined) return true;
+  // A verified run may later be shipped without reopening it. Other terminal
+  // outcomes are immutable so replay or reconciliation cannot rewrite history.
+  return status === 'completed' && previous === 'verified' && requested === 'shipped';
+}
+
+function runLedgerHistory(value: unknown): Rec[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(obj).slice(-RUN_LEDGER_TRANSITION_HISTORY_LIMIT);
+}
+
+function runLedgerLockDir(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), '.run-ledger.lock');
+}
+
+function withRunLedgerLock(cwd: string, runId: string, mutate: () => void): boolean {
+  return withOwnedDirLock(
+    runLedgerLockDir(cwd, runId),
+    RUN_LEDGER_LOCK_TIMEOUT_MS,
+    RUN_LEDGER_LOCK_STALE_MS,
+    RUN_LEDGER_LOCK_RETRY_MS,
+    RUN_LEDGER_WAIT,
+    mutate,
+  );
+}
+
+function writeRunLedgerTransition(
+  cwd: string,
+  id: string,
+  patch: Rec,
+  options: { requireValidTransition: boolean },
+): Rec | null {
   const now = stateTimestamp();
   const existing = obj(readJson(runLedgerFile(cwd, id), null)) || {};
+  const isNew = Object.keys(existing).length === 0;
+  const currentStatus = isRunLedgerStatus(existing.status) ? existing.status : 'planned';
+  const requestedStatus = isRunLedgerStatus(patch.status) ? patch.status : currentStatus;
+  const reason = typeof patch.reason === 'string' ? patch.reason : undefined;
+  if (options.requireValidTransition && !runLedgerTransitionAllowed(currentStatus, requestedStatus, reason)) return null;
+
+  const priorOutcome = isRunLedgerOutcome(existing.outcome) ? existing.outcome : undefined;
+  const requestedOutcome = isRunLedgerOutcome(patch.outcome)
+    ? patch.outcome
+    : (requestedStatus === currentStatus ? priorOutcome : undefined);
+  if (options.requireValidTransition && !outcomeAllowedForStatus(requestedStatus, requestedOutcome)) return null;
+  if (options.requireValidTransition
+    && requestedStatus === currentStatus
+    && !terminalOutcomeTransitionAllowed(requestedStatus, priorOutcome, requestedOutcome)) return null;
+  if (options.requireValidTransition && requestedStatus === 'completed') {
+    const idempotentTerminal = currentStatus === 'completed' && requestedOutcome === priorOutcome;
+    if (!idempotentTerminal && !runCompletionEvidenceAllows(cwd, id, requestedOutcome)) return null;
+  }
+
+  const createdAt = typeof existing.createdAt === 'string' && existing.createdAt ? existing.createdAt : now;
+  const statusChanged = isNew || requestedStatus !== currentStatus;
+  const outcomeChanged = requestedOutcome !== priorOutcome;
+  const transitionChanged = statusChanged || outcomeChanged;
+  const history = runLedgerHistory(existing.transitionHistory);
+  if (transitionChanged) {
+    history.push({
+      from: isNew ? null : currentStatus,
+      to: requestedStatus,
+      at: now,
+      ...(requestedOutcome ? { outcome: requestedOutcome } : {}),
+      ...(reason ? { reason } : {}),
+    });
+  }
+
+  const resumesLegacyRun = !isNew && existing.qaContractVersion !== 1 && requestedStatus === 'active';
+  const preserveLegacyQaContract = isNew && patch.preserveLegacyQaContract === true;
+  const qaContractVersion = existing.qaContractVersion === 1
+    || patch.qaContractVersion === 1
+    || (isNew && !preserveLegacyQaContract)
+    || resumesLegacyRun
+    ? 1
+    : undefined;
+  const activatesQaContract = qaContractVersion === 1 && (
+    existing.qaContractVersion !== 1
+    || (requestedStatus === 'active' && currentStatus !== 'active')
+  );
   const next: Rec = {
-    version: typeof existing.version === 'number' ? existing.version : 1,
-    runId: typeof existing.runId === 'string' && existing.runId ? existing.runId : id,
-    status: typeof existing.status === 'string' && existing.status ? existing.status : 'planned',
-    kind: typeof existing.kind === 'string' && existing.kind ? existing.kind : 'planned',
-    createdAt: typeof existing.createdAt === 'string' && existing.createdAt ? existing.createdAt : now,
     ...existing,
     ...patch,
+    version: typeof existing.version === 'number' ? existing.version : 1,
+    runId: typeof existing.runId === 'string' && existing.runId ? existing.runId : id,
+    status: requestedStatus,
+    kind: typeof patch.kind === 'string' && patch.kind
+      ? patch.kind
+      : (typeof existing.kind === 'string' && existing.kind ? existing.kind : 'planned'),
+    createdAt,
+    statusUpdatedAt: transitionChanged
+      ? now
+      : (typeof existing.statusUpdatedAt === 'string' && existing.statusUpdatedAt ? existing.statusUpdatedAt : createdAt),
+    transitionHistory: history.slice(-RUN_LEDGER_TRANSITION_HISTORY_LIMIT),
     updatedAt: now,
   };
+  if (qaContractVersion === 1) next.qaContractVersion = 1;
+  else delete next.qaContractVersion;
+  if (qaContractVersion === 1) {
+    next.qaContractActivatedAt = activatesQaContract
+      // Lifecycle timestamps intentionally retain legacy whole-second precision;
+      // QA freshness needs milliseconds so evidence created just before a resume
+      // in the same second cannot slip past the activation boundary.
+      ? new Date().toISOString()
+      : (typeof existing.qaContractActivatedAt === 'string' && existing.qaContractActivatedAt
+        ? existing.qaContractActivatedAt
+        : createdAt);
+  } else {
+    delete next.qaContractActivatedAt;
+  }
+  delete next.preserveLegacyQaContract;
+  // Resume authorization belongs to the immutable transition entry, not to the
+  // ledger's mutable top level where a later write could make it look current.
+  delete next.reason;
+
+  if (requestedOutcome) next.outcome = requestedOutcome;
+  else delete next.outcome;
+  if (isTerminalRunLedgerStatus(requestedStatus)) {
+    next.finishedAt = typeof existing.finishedAt === 'string' && existing.finishedAt && !statusChanged
+      ? existing.finishedAt
+      : now;
+  } else {
+    delete next.finishedAt;
+  }
   try {
     fs.mkdirSync(runDir(cwd, id), { recursive: true });
     writeJson(runLedgerFile(cwd, id), next);
@@ -116,6 +305,35 @@ export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): R
   } catch {
     return null;
   }
+}
+
+export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): Rec | null {
+  if (isNonProjectRoot(cwd)) return null;
+  if (typeof runId !== 'string' || !runId.trim()) return null;
+  const id = runId.trim();
+  let result: Rec | null = null;
+  const locked = withRunLedgerLock(cwd, id, () => {
+    result = writeRunLedgerTransition(cwd, id, patch, { requireValidTransition: true });
+  });
+  return locked ? result : null;
+}
+
+// The single status-mutation entry point for orchestration settlement. Replaying
+// the same terminal transition is idempotent; a blocked run may become active only
+// after the parent records the exact user-authorized resume reason.
+export function transitionRunStatus(
+  cwd: string,
+  runId: unknown,
+  options: RunLedgerTransitionOptions,
+): Rec | null {
+  if (isNonProjectRoot(cwd)) return null;
+  if (typeof runId !== 'string' || !runId.trim()) return null;
+  const id = runId.trim();
+  let result: Rec | null = null;
+  const locked = withRunLedgerLock(cwd, id, () => {
+    result = writeRunLedgerTransition(cwd, id, options as unknown as Rec, { requireValidTransition: true });
+  });
+  return locked ? result : null;
 }
 
 function firstString(...values: unknown[]): string | null {
@@ -1665,20 +1883,117 @@ function candidateThreadId(candidate: CursorTranscriptCandidate): string | null 
   return isResumeCapableAgentId(candidate.childTranscriptId) ? candidate.childTranscriptId : null;
 }
 
-function listClaimedAgents(cwd: string, runId: string): Rec[] {
+function listClaimedAgentEntries(cwd: string, runId: string): Array<{ filePath: string; claim: Rec }> {
   try {
     const dir = runDir(cwd, runId);
     if (!fs.existsSync(dir)) return [];
-    return fs.readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-      .map((entry) => readClaimFile(path.join(dir, entry.name)))
-      .filter((claim): claim is Rec => (
-        claim !== null
-        && typeof claim.role === 'string'
-        && VALID_AGENT_ROLES.has(claim.role)
-      ));
+    const out: Array<{ filePath: string; claim: Rec }> = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const filePath = path.join(dir, entry.name);
+      const claim = readClaimFile(filePath);
+      if (claim && typeof claim.role === 'string' && VALID_AGENT_ROLES.has(claim.role)) {
+        out.push({ filePath, claim });
+      }
+    }
+    return out;
   } catch {
     return [];
+  }
+}
+
+function listClaimedAgents(cwd: string, runId: string): Rec[] {
+  return listClaimedAgentEntries(cwd, runId).map((entry) => entry.claim);
+}
+
+// Terminal claim sweep for a settled run: pending claims are deleted, claimed
+// files get status "released" (+releasedAt/releasedReason) so hasActiveRunClaims
+// stops counting them while identity resolution (resolveRunAgentContext, the
+// nextSpawnIndex disk count, assignmentForContext) keeps working. Only real
+// agent claims (claimId present) are touched — role-bearing sidecars such as
+// maintenance.json are left alone. Per-file fallback claims under
+// `runs/<runId>/claims/` are advisory write locks (tryFallbackClaim), not
+// identity records: once the run settles they can only go stale, so the sweep
+// DELETES them (observed 8c: 12 architect fallback claims lingered forever
+// after a verified settlement).
+export function releaseRunClaims(cwd: string, runId: string, reason: string): number {
+  if (typeof runId !== 'string' || !runId.trim() || isNonProjectRoot(cwd)) return 0;
+  let released = 0;
+  withRunAgentClaimsLock(cwd, runId.trim(), () => {
+    for (const { filePath } of listPendingClaims(cwd, runId)) {
+      removePendingClaim(filePath);
+      released += 1;
+    }
+    for (const { filePath, claim } of listClaimedAgentEntries(cwd, runId)) {
+      if (typeof claim.claimId !== 'string' || claim.status === 'released') continue;
+      try {
+        writeJson(filePath, { ...claim, status: 'released', releasedAt: stateTimestamp(), releasedReason: reason });
+        released += 1;
+      } catch {
+        // best-effort: an unreleased claim ages out via SUBAGENT_STALE_MS
+      }
+    }
+  });
+  withFallbackClaimsLock(cwd, runId.trim(), () => {
+    try {
+      const dir = fallbackClaimsDir(cwd, runId.trim());
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        try {
+          fs.unlinkSync(path.join(dir, entry.name));
+          released += 1;
+        } catch {
+          // best-effort: a leftover lock only ever goes stale
+        }
+      }
+    } catch {
+      // no fallback-claims dir — nothing to sweep
+    }
+  });
+  return released;
+}
+
+export function releaseAllRunClaims(cwd: string, reason: string): number {
+  if (isNonProjectRoot(cwd)) return 0;
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(runsRoot(cwd), { withFileTypes: true })) {
+      if (entry.isDirectory()) total += releaseRunClaims(cwd, entry.name, reason);
+    }
+  } catch {
+    // no runs dir yet
+  }
+  return total;
+}
+
+// One live agent per role: when a fresh claim is bound for a role, an older
+// same-role claim from a DIFFERENT thread that is still 'claimed' is superseded
+// — typically a spawn that died before producing any output (observed live: a
+// reviewer aborted at startup left its claim 'claimed' until the terminal
+// sweep). Released claims keep resolving identity (see releaseRunClaims), so
+// this only corrects liveness accounting, never resolution. Caller must hold
+// the run's claims lock.
+function releaseSupersededRoleClaimsLocked(
+  cwd: string,
+  runId: string,
+  role: string,
+  keepSessionId: string,
+  newClaimId: string,
+): void {
+  for (const { filePath, claim } of listClaimedAgentEntries(cwd, runId)) {
+    if (claim.role !== role || claim.status === 'released') continue;
+    if (typeof claim.claimId !== 'string') continue; // role-bearing sidecars are not claims
+    if (firstString(claim.sessionId) === keepSessionId) continue;
+    try {
+      writeJson(filePath, {
+        ...claim,
+        status: 'released',
+        releasedAt: stateTimestamp(),
+        releasedReason: newClaimId ? `superseded-by-${newClaimId}` : 'superseded',
+      });
+    } catch {
+      // best-effort: an unreleased sibling ages out via SUBAGENT_STALE_MS
+    }
   }
 }
 
@@ -1728,6 +2043,12 @@ export function ensureRunAgentClaim(
   const identity = hookSessionIdentity(rawInput);
   let claim: Rec | null = null;
   const locked = withRunAgentClaimsLock(cwd, runId, () => {
+    const ledger = ensureRunLedger(cwd, runId, {
+      status: 'active',
+      kind: 'agent-claim',
+      stackFingerprint: stackFingerprint(source),
+    });
+    if (ledger?.status !== 'active') return;
     const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
     const claimId = `${role}-${spawnIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     claim = {
@@ -1746,7 +2067,6 @@ export function ensureRunAgentClaim(
       roleSource: metadata.roleSource || 'spawn-input',
     };
     fs.mkdirSync(pendingDir(cwd, runId), { recursive: true });
-    ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(source) });
     writeJson(path.join(pendingDir(cwd, runId), `${safePathSegment(claimId)}.json`), claim);
   });
   const persistedClaim = claim as Rec | null;
@@ -2016,6 +2336,12 @@ export function resolveRunAgentContext(
           || !claimAllowsState(state, currentPending)) return;
         const existingThreadClaim = readClaimFile(runAgentFile(cwd, runId, sessionId));
         if (existingThreadClaim && claimAllowsState(state, existingThreadClaim)) return;
+        const ledger = ensureRunLedger(cwd, runId, {
+          status: 'active',
+          kind: 'agent-claim',
+          stackFingerprint: stackFingerprint(state),
+        });
+        if (ledger?.status !== 'active') return;
         claimed = {
           ...currentPending,
           status: 'claimed',
@@ -2026,13 +2352,15 @@ export function resolveRunAgentContext(
           transcriptPath: inferenceTranscriptPath || null,
         };
         fs.mkdirSync(runDir(cwd, runId), { recursive: true });
-        ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(state) });
         writeJson(runAgentFile(cwd, runId, sessionId), claimed);
         removePendingClaim(matched.filePath);
         removeSiblingPendingClaims(
           cwd, state, runId, String(claimed!.role || ''),
           claimed!.parentSessionId as string | null,
           claimed!.claimId as string | null,
+        );
+        releaseSupersededRoleClaimsLocked(
+          cwd, runId, String(claimed!.role || ''), sessionId, String(claimed!.claimId || ''),
         );
       });
       if (claimedUnderLock && claimed) return contextFromClaim(claimed, 'run-agent');
@@ -2100,13 +2428,39 @@ export function claimThreadRole(
         if (isCorrectionGradeEvidence(evidence, existing.roleSource)) rebindExpected = existing;
         return;
       }
+      // A released-but-fresh claim for THIS thread means the agent resumed after
+      // an interrupt sweep: reactivate it in place (metadata intact) instead of
+      // handing back a claim whose status contradicts the live agent. Only while
+      // the run ledger is still active — never fight terminal settlement.
+      const reclaiming = existing.status === 'released'
+        && runLedgerStatusRecord(cwd, runId).status === 'active'
+        // An explicitly retired claim must not come back while the parent is
+        // replacing it, and an older thread must never displace a replacement
+        // that already owns the live role slot.
+        && !roleRegistryDisownsClaim(cwd, runId, role, existing)
+        && !activeClaimForOtherThread(cwd, source, runId, role, id);
+      // Released claims remain useful for read-only identity resolution, but a
+      // SubagentStart bind may return one only after it was safely reactivated.
+      // Otherwise the retired thread would keep receiving write authority even
+      // though another thread owns this role.
+      if (existing.status === 'released' && !reclaiming) return;
       const nextSource = strongestRoleSource(evidence?.source, existing.roleSource);
+      const reactivatedAt = reclaiming ? stateTimestamp() : '';
       const next: Rec = {
         ...existing,
         ...(nextSource ? { roleSource: nextSource } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
+        ...(reclaiming ? {
+          status: 'claimed',
+          createdAt: reactivatedAt,
+          claimedAt: reactivatedAt,
+        } : {}),
       };
-      if (nextSource !== existing.roleSource || (transcriptPath && transcriptPath !== existing.transcriptPath)) {
+      if (reclaiming) {
+        delete next.releasedAt;
+        delete next.releasedReason;
+      }
+      if (reclaiming || nextSource !== existing.roleSource || (transcriptPath && transcriptPath !== existing.transcriptPath)) {
         try { writeJson(runAgentFile(cwd, runId, id), next); } catch { return; }
       }
       removeSiblingPendingClaims(
@@ -2121,7 +2475,19 @@ export function claimThreadRole(
     if (options.refuseOccupiedRole
       && activeClaimForOtherThread(cwd, source, runId, role, id)) return;
 
+    const ledger = ensureRunLedger(cwd, runId, {
+      status: 'active',
+      kind: 'agent-claim',
+      stackFingerprint: stackFingerprint(source),
+    });
+    if (ledger?.status !== 'active') return;
+
     const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId, model);
+    // Re-claim of THIS same thread after its earlier claim was released or aged
+    // stale (interrupt/resume): the resume hook payload often carries no model,
+    // so without the prior record the rebuilt claim forgets what the agent runs
+    // on (observed live: model "opus" → null across a sleep interrupt).
+    const prior = existing && existing.role === role ? existing : null;
     const spawnIndex = pending && typeof pending.claim.spawnIndex === 'number'
       ? pending.claim.spawnIndex
       : nextSpawnIndex(cwd, source, runId, role);
@@ -2135,19 +2501,28 @@ export function claimThreadRole(
       spawnIndex,
       status: 'claimed',
       sessionId: id,
-      parentSessionId: parentSessionId || (pending && typeof pending.claim.parentSessionId === 'string' ? pending.claim.parentSessionId : null),
+      parentSessionId: parentSessionId
+        || (pending && typeof pending.claim.parentSessionId === 'string' ? pending.claim.parentSessionId : null)
+        || (prior && typeof prior.parentSessionId === 'string' ? prior.parentSessionId : null),
+      // createdAt stays fresh — claimAllowsState gates resolution on it; the
+      // prior lineage is preserved in previousClaimId below instead.
       createdAt: pending && typeof pending.claim.createdAt === 'string' ? pending.claim.createdAt : now,
       claimedAt: now,
       stackFingerprint: pending && typeof pending.claim.stackFingerprint === 'string' ? pending.claim.stackFingerprint : stackFingerprint(source),
-      model: model || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null),
-      roleSource: strongestRoleSource(evidence?.source, pending?.claim.roleSource) || 'explicit-bind',
-      transcriptPath: transcriptPath || (pending && typeof pending.claim.transcriptPath === 'string' ? pending.claim.transcriptPath : null),
+      model: model
+        || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null)
+        || (prior && typeof prior.model === 'string' ? prior.model : null),
+      roleSource: strongestRoleSource(evidence?.source, pending?.claim.roleSource ?? prior?.roleSource) || 'explicit-bind',
+      transcriptPath: transcriptPath
+        || (pending && typeof pending.claim.transcriptPath === 'string' ? pending.claim.transcriptPath : null)
+        || (prior && typeof prior.transcriptPath === 'string' ? prior.transcriptPath : null),
+      ...(prior && typeof prior.claimId === 'string' ? { previousClaimId: prior.claimId } : {}),
     };
     fs.mkdirSync(runDir(cwd, runId), { recursive: true });
-    ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(source) });
     writeJson(runAgentFile(cwd, runId, id), claim);
     if (pending) removePendingClaim(pending.filePath);
     removeSiblingPendingClaims(cwd, source, runId, role, claim!.parentSessionId as string | null, claim!.claimId as string | null);
+    releaseSupersededRoleClaimsLocked(cwd, runId, role, id, String(claim!.claimId || ''));
     created = true;
   });
   if (!locked) return null;
@@ -2215,9 +2590,37 @@ function activeClaimForOtherThread(
 ): Rec | null {
   return listClaimedAgents(cwd, runId).find((claim) => (
     claimAllowsState(state, claim)
+    && claim.status !== 'released'
     && claim.role === role
     && firstString(claim.sessionId) !== threadId
+    // The parent-side replacement gate marks an exhausted/dead role in the
+    // reuse registry before it starts the replacement child. That durable,
+    // id-correlated marker is the authority to retire the old claim; freshness
+    // alone cannot distinguish a just-crashed child from a live sibling. Keep
+    // refusing an unmarked duplicate, but do not let the old claim deadlock the
+    // verified replacement's SubagentStart bind.
+    && !roleRegistryDisownsClaim(cwd, runId, role, claim)
   )) || null;
+}
+
+// The role registry is the durable ownership lineage when an interrupt sweep
+// releases every claim file. A matching `replaced` entry retires that claim;
+// once the replacement is recorded, its live entry also disowns every older
+// same-role claim. Conversely, a replaced entry for the OLD agent must not
+// reject the not-yet-recorded replacement whose id differs.
+function roleRegistryDisownsClaim(
+  cwd: string,
+  runId: string,
+  role: string,
+  claim: Rec,
+): boolean {
+  const registry = obj(readJson(agentRegistryFile(cwd, runId), null));
+  const entry = obj(obj(registry?.agents)?.[role]);
+  if (!entry) return false;
+  const sessionId = firstString(claim.sessionId);
+  if (!sessionId) return false;
+  const registryOwnsClaim = idsForRunAgent(entry).includes(sessionId);
+  return registryOwnsClaim ? entry.replaced === true : entry.replaced !== true;
 }
 
 const AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES = 32 * 1024;
@@ -2735,7 +3138,11 @@ export function hasActiveRunClaims(cwd: string, state: unknown, options: { since
   };
   for (const runId of runIdsForLookup(cwd, state)) {
     if (listPendingClaims(cwd, runId).some(({ claim }) => afterWatermark(claim))) return true;
-    if (listClaimedAgents(cwd, runId).some((claim) => isFreshTimestamp(claim.createdAt, SUBAGENT_STALE_MS) && afterWatermark(claim))) return true;
+    if (listClaimedAgents(cwd, runId).some((claim) => (
+      claim.status !== 'released'
+      && isFreshTimestamp(claim.createdAt, SUBAGENT_STALE_MS)
+      && afterWatermark(claim)
+    ))) return true;
   }
   return false;
 }
@@ -2919,19 +3326,20 @@ function readDigest(cwd: string, runId: string, name: string): string {
   }
 }
 
-function frontendQaRequired(cwd: string): boolean {
-  const memoryDir = '.traffic' + '-one';
-  const state = obj(readJson(path.join(cwd, memoryDir, '.one.json'), null));
-  if (!state) return false;
-  const frontend = typeof state.frontend === 'string' ? state.frontend.trim().toLowerCase() : '';
-  const stack = typeof state.stack === 'string' ? state.stack.trim().toLowerCase() : '';
-  if (frontend && frontend !== 'none') return true;
-  return stack === 'default' || stack.includes('react') || stack.includes('vite') || fs.existsSync(path.join(cwd, 'apps', 'web'));
-}
-
-function testerDigestHasQaNotApplicable(tester: string): boolean {
-  return /\b(?:qa|visual|browser|e2e)\b[\s\S]{0,160}\bnot applicable\b/i.test(tester)
-    && /\b(?:reason|because|backend-only|api-only|no frontend|no browser surface)\b/i.test(tester);
+function digestFile(cwd: string, runId: string, name: string): string | null {
+  const direct = path.join(digestDir(cwd, runId), name);
+  try {
+    if (fs.statSync(direct).isFile()) return direct;
+  } catch {
+    // Try the legacy senior-* filename below.
+  }
+  if (name.startsWith('senior-')) return null;
+  const legacy = path.join(digestDir(cwd, runId), `senior-${name}`);
+  try {
+    return fs.statSync(legacy).isFile() ? legacy : null;
+  } catch {
+    return null;
+  }
 }
 
 function dirHasAnyFile(dir: string, suffixes: readonly string[]): boolean {
@@ -2954,6 +3362,72 @@ function runCreatedAtMs(cwd: string, runId: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+// Strict QA evidence is scoped to the latest contract activation, not merely to
+// the run's original creation. Resuming a blocked run or upgrading an active
+// legacy run advances this watermark so a report from the previous attempt can
+// never become green evidence in the resumed attempt.
+function runQaContractActivatedAtMs(cwd: string, runId: string): number {
+  const rec = obj(readJson(runLedgerFile(cwd, runId), null));
+  const candidates = [rec?.createdAt, rec?.qaContractActivatedAt]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .map((value) => Date.parse(value))
+    .filter(Number.isFinite);
+  return candidates.length ? Math.max(...candidates) : 0;
+}
+
+function runUsesStrictQaContract(cwd: string, runId: string): boolean {
+  const rec = obj(readJson(runLedgerFile(cwd, runId), null));
+  return rec?.qaContractVersion === 1;
+}
+
+function canonicalQaReportRaw(cwd: string, runId: string): Rec | null {
+  const memoryDir = '.traffic' + '-one';
+  return obj(readJson(path.join(cwd, memoryDir, 'reports', 'qa', safePathSegment(runId), 'report.json'), null));
+}
+
+function strictQaReportResult(cwd: string, runId: string): QaReportValidationResult {
+  const activatedAtMs = runQaContractActivatedAtMs(cwd, runId);
+  let frontendDigestMtimeMs = 0;
+  const frontendFile = digestFile(cwd, runId, 'frontend.md');
+  if (frontendFile) {
+    try { frontendDigestMtimeMs = Math.floor(fs.statSync(frontendFile).mtimeMs); } catch { /* missing digest */ }
+  }
+  const freshnessFloorMs = Math.max(activatedAtMs, frontendDigestMtimeMs);
+  return readQaReportV1(cwd, runId, {
+    ...(freshnessFloorMs > 0 ? { minimumGeneratedAtMs: freshnessFloorMs } : {}),
+  });
+}
+
+export function runHasExplicitBlockedQaOutcome(cwd: string, runId: unknown): boolean {
+  if (typeof runId !== 'string' || !runId) return false;
+  if (runUsesStrictQaContract(cwd, runId)) {
+    const result = strictQaReportResult(cwd, runId);
+    return !result.ok
+      && result.report !== undefined
+      && typeof result.status === 'string'
+      && /^blocked:(?:browser-unavailable|sandbox|usage-limit|timeout)$/.test(result.status);
+  }
+  const tester = readDigest(cwd, runId, 'tester.md');
+  if (/\bblocked:(?:browser-unavailable|sandbox|usage-limit|timeout)\b/i.test(tester)) return true;
+  const raw = canonicalQaReportRaw(cwd, runId);
+  return typeof raw?.status === 'string'
+    && /^blocked:(?:browser-unavailable|sandbox|usage-limit|timeout)$/.test(raw.status);
+}
+
+// Browser-unavailable is recoverable by the parent-browser bridge and must keep
+// the run active. The other validated blocker classes require user-visible
+// environment settlement. Legacy/raw reports cannot qualify for the bridge.
+export function runHasEnvironmentBlockedQaOutcome(cwd: string, runId: unknown): boolean {
+  if (typeof runId !== 'string' || !runId) return false;
+  if (!runUsesStrictQaContract(cwd, runId)) return runHasExplicitBlockedQaOutcome(cwd, runId);
+  const result = strictQaReportResult(cwd, runId);
+  return !result.ok
+    && result.report !== undefined
+    && typeof result.status === 'string'
+    && /^blocked:(?:browser-unavailable|sandbox|usage-limit|timeout)$/.test(result.status)
+    && !isQaBrowserBridgeEligible(result);
+}
+
 function dirHasFreshFile(dir: string, suffixes: readonly string[], minMtimeMs: number): boolean {
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -2974,43 +3448,207 @@ function dirHasFreshFile(dir: string, suffixes: readonly string[], minMtimeMs: n
   return false;
 }
 
-function runHasQaEvidence(cwd: string, runId: string, tester: string): boolean {
-  if (!frontendQaRequired(cwd)) return true;
-  // Per-RUN gate: QA evidence is only required when THIS run actually touched the frontend
-  // (produced a frontend implementer digest; readDigest falls back to senior-frontend.md).
-  // A backend-only run in a frontend project legitimately has no screenshots/Lighthouse —
-  // gating it on project-level frontend config would leave runReachedTerminalVerdict false
-  // forever and pin currentRunId against rotation (the rotation-deadlock class). A genuine
-  // frontend run still requires real evidence (or the explicit N/A escape) below.
+function runHasQaEvidence(cwd: string, runId: string): boolean {
+  // An explicit environment/browser blocker always wins, including for a run
+  // that otherwise qualifies for the backend-only exemption.
+  if (runHasExplicitBlockedQaOutcome(cwd, runId)) return false;
+  // Backend-only is an exact per-run property: the current run has no frontend
+  // implementer digest. Project stack detection and prose N/A claims cannot exempt
+  // a run after the frontend implementer has emitted its digest.
   if (!readDigest(cwd, runId, 'frontend.md').trim()) return true;
+  if (runUsesStrictQaContract(cwd, runId)) {
+    const result = strictQaReportResult(cwd, runId);
+    if (!result.ok) return false;
+    // Every report is provisional until the tester role re-emits its canonical
+    // verdict after the report. This covers both a tester-authored matrix and a
+    // parent-browser replacement, and prevents a stale digest/report pairing
+    // after a same-run implementation fix.
+    const testerFile = digestFile(cwd, runId, 'tester.md');
+    if (!testerFile) return false;
+    try {
+      const testerMtimeMs = Math.floor(fs.statSync(testerFile).mtimeMs);
+      const reportMtimeMs = Math.floor(fs.statSync(result.reportPath).mtimeMs);
+      // The canonical file write-time establishes whether the tester re-attested
+      // after this report. generatedAt is already validated for freshness, but
+      // may legitimately be a few milliseconds ahead of the filesystem clock.
+      return testerMtimeMs >= reportMtimeMs;
+    } catch {
+      return false;
+    }
+  }
+
+  // Pre-contract ledgers keep their historical artifact behavior for compatibility,
+  // except that an explicit structured/digest blocker can never be interpreted as
+  // passing evidence.
   const memoryDir = '.traffic' + '-one';
   const qaDir = path.join(cwd, memoryDir, 'reports', 'qa', safePathSegment(runId));
   if (fs.existsSync(path.join(qaDir, 'report.json'))) return true;
   if (dirHasAnyFile(qaDir, ['.png', '.jpg', '.jpeg', '.webp', '.json'])) return true;
   const lighthouseDir = path.join(cwd, memoryDir, 'reports', 'lighthouse');
   if (dirHasFreshFile(lighthouseDir, ['.json', '.html'], runCreatedAtMs(cwd, runId))) return true;
-  return testerDigestHasQaNotApplicable(tester);
+  return false;
+}
+
+function runLedgerStatusRecord(cwd: string, runId: string): {
+  status: RunLedgerStatus | null;
+  outcome: RunLedgerOutcome | null;
+} {
+  const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+  return {
+    status: isRunLedgerStatus(ledger?.status) ? ledger.status : null,
+    outcome: isRunLedgerOutcome(ledger?.outcome) ? ledger.outcome : null,
+  };
+}
+
+function shipperDigestCompleted(cwd: string, runId: string): boolean {
+  const shipper = readDigest(cwd, runId, 'shipper.md');
+  const shipped = /(?:^|\n)\s*(?:verdict\s*:\s*)?SHIPPED\s*(?:\r?\n|$)/im.test(shipper);
+  const failed = /(?:^|\n)\s*(?:verdict\s*:\s*)?FAILED\s*(?:\r?\n|$)/im.test(shipper);
+  return shipped && !failed;
+}
+
+function exactDigestVerdict(digest: string): string | null {
+  const verdicts = [...digest.matchAll(/^\s*verdict\s*:\s*([A-Z][A-Z_-]*)\s*$/gim)]
+    .map((match) => match[1]?.toUpperCase())
+    .filter((verdict): verdict is string => typeof verdict === 'string');
+  const firstVerdict = verdicts[0];
+  if (!firstVerdict) return null;
+  // Multiple identical lines are harmless, but conflicting machine verdicts fail
+  // closed instead of letting prose order or a stale handoff line choose a winner.
+  return verdicts.every((verdict) => verdict === firstVerdict) ? firstVerdict : null;
 }
 
 // True when run <runId>'s verification has TERMINALLY settled: a shipper digest
 // (written only post-deploy, after reviewer+tester already passed) exists, OR
 // reviewer PASSED and tester PASSED. The canonical tester token is `TESTS_GREEN`,
-// but orchestrators deviate (observed live: gpt-5.5 wrote the tester digest with
-// `verdict: APPROVED`), so a tester is "passed" when it carries a passing token
-// (`TESTS_GREEN`/`APPROVED`) AND no NON-terminal token (`TESTS_FAILING` = failing,
-// `DELEGATED_OK` = delegated-but-unverified). A `CHANGES_REQUESTED` reviewer or a
+// but legacy orchestrators deviated (observed live: gpt-5.5 wrote the tester digest
+// with `verdict: APPROVED`), so pre-contract runs retain that compatibility token.
+// Contract-v1 runs require `TESTS_GREEN`. In both cases a NON-terminal token
+// (`TESTS_FAILING` or delegated-but-unverified `DELEGATED_OK`) wins. A
+// `CHANGES_REQUESTED` reviewer or a
 // mid-fix-cycle `TESTS_FAILING` tester stays non-terminal. The "passing token present
 // AND non-terminal token absent" shape avoids a false positive from a digest that
 // merely mentions the other token.
-export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean {
-  if (typeof runId !== 'string' || !runId) return false;
-  if (maintenanceRunReachedTerminal(cwd, runId)) return true;
-  if (readDigest(cwd, runId, 'shipper.md').trim()) return true;
+function testerDigestPassedForRun(cwd: string, runId: string, tester: string): boolean {
+  if (runUsesStrictQaContract(cwd, runId)) {
+    return exactDigestVerdict(tester) === 'TESTS_GREEN';
+  }
+  const passingToken = /\b(TESTS_GREEN|APPROVED)\b/.test(tester);
+  return passingToken && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
+}
+
+function reviewerDigestApprovedForRun(cwd: string, runId: string, reviewer: string): boolean {
+  if (runUsesStrictQaContract(cwd, runId)) {
+    return exactDigestVerdict(reviewer) === 'APPROVED';
+  }
+  return /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
+}
+
+function runCompletionEvidenceAllows(
+  cwd: string,
+  runId: string,
+  outcome: RunLedgerOutcome | undefined,
+): boolean {
+  if (outcome === 'shipped') return shipperDigestCompleted(cwd, runId);
+  if (outcome !== 'verified') return false;
   const reviewer = readDigest(cwd, runId, 'reviewer.md');
   const tester = readDigest(cwd, runId, 'tester.md');
-  const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
-  const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
-  return reviewerApproved && testerPassed && runHasQaEvidence(cwd, runId, tester);
+  return reviewerDigestApprovedForRun(cwd, runId, reviewer)
+    && testerDigestPassedForRun(cwd, runId, tester)
+    && runHasQaEvidence(cwd, runId);
+}
+
+function buildRunReachedTerminalVerdict(cwd: string, runId: string): boolean {
+  const ledger = runLedgerStatusRecord(cwd, runId);
+  if (ledger.status === 'blocked' || ledger.status === 'failed') return false;
+  if (ledger.status === 'completed' && (ledger.outcome === 'verified' || ledger.outcome === 'shipped')) return true;
+  if (shipperDigestCompleted(cwd, runId)) return true;
+  const reviewer = readDigest(cwd, runId, 'reviewer.md');
+  const tester = readDigest(cwd, runId, 'tester.md');
+  const reviewerApproved = reviewerDigestApprovedForRun(cwd, runId, reviewer);
+  const testerPassed = testerDigestPassedForRun(cwd, runId, tester);
+  return reviewerApproved && testerPassed && runHasQaEvidence(cwd, runId);
+}
+
+export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean {
+  if (typeof runId !== 'string' || !runId) return false;
+  return maintenanceRunReachedTerminal(cwd, runId) || buildRunReachedTerminalVerdict(cwd, runId);
+}
+
+export type RunVerificationState = 'terminal' | 'not-started' | 'nonterminal' | 'empty';
+
+function runProducedImplementerOutput(cwd: string, runId: string): boolean {
+  return Boolean(readDigest(cwd, runId, 'frontend.md').trim() || readDigest(cwd, runId, 'backend.md').trim());
+}
+
+function runHasQaReportFile(cwd: string, runId: string): boolean {
+  const memoryDir = '.traffic' + '-one';
+  return fs.existsSync(path.join(cwd, memoryDir, 'reports', 'qa', safePathSegment(runId), 'report.json'));
+}
+
+// Machine-readable current-run classification for prompt-boundary lifecycle
+// settlement. A verifier artifact without the complete terminal combination is
+// always nonterminal, including delegated-only, requested-changes, failing, and
+// blocked QA results.
+export function runVerificationState(cwd: string, runId: unknown): RunVerificationState {
+  if (typeof runId !== 'string' || !runId) return 'empty';
+  const ledger = runLedgerStatusRecord(cwd, runId);
+  if (ledger.status === 'blocked' || ledger.status === 'failed') return 'nonterminal';
+  // Maintenance outcome markers have their own routing semantics. They must not
+  // make a build terminal: build settlement is only strict verification or shipper.
+  if (buildRunReachedTerminalVerdict(cwd, runId)) return 'terminal';
+  const implementerOutput = runProducedImplementerOutput(cwd, runId);
+  const verifierOutput = Boolean(
+    readDigest(cwd, runId, 'reviewer.md').trim()
+    || readDigest(cwd, runId, 'tester.md').trim()
+    || readDigest(cwd, runId, 'shipper.md').trim()
+    || runHasQaReportFile(cwd, runId),
+  );
+  if (verifierOutput) return 'nonterminal';
+  return implementerOutput ? 'not-started' : 'empty';
+}
+
+// Reconcile a fully verified/shipped build into the central run ledger. This is
+// intentionally separate from runReachedTerminalVerdict: callers performing a
+// read-only probe do not mutate state, while lifecycle settlement can opt in.
+export function settleTerminalRunLedger(
+  cwd: string,
+  runId: unknown,
+  expectedOutcome?: Extract<RunLedgerOutcome, 'verified' | 'shipped'>,
+): Rec | null {
+  if (typeof runId !== 'string' || !runId) return null;
+  const ledgerState = runLedgerStatusRecord(cwd, runId);
+  if (ledgerState.status === 'completed'
+    && (ledgerState.outcome === 'verified' || ledgerState.outcome === 'shipped')) {
+    if (!expectedOutcome || expectedOutcome === ledgerState.outcome) {
+      return transitionRunStatus(cwd, runId, {
+        status: 'completed',
+        outcome: ledgerState.outcome,
+      });
+    }
+    if (ledgerState.outcome === 'shipped' && expectedOutcome === 'verified') return null;
+    // verified→shipped continues below and still requires a positive shipper digest.
+  }
+  const preserveLegacyQaContract = !obj(readJson(runLedgerFile(cwd, runId), null));
+  const shipperCompleted = shipperDigestCompleted(cwd, runId);
+  if (expectedOutcome === 'shipped' && !shipperCompleted) return null;
+  if (shipperCompleted && expectedOutcome !== 'verified') {
+    return transitionRunStatus(cwd, runId, {
+      status: 'completed',
+      outcome: 'shipped',
+      preserveLegacyQaContract,
+    });
+  }
+  const reviewer = readDigest(cwd, runId, 'reviewer.md');
+  const tester = readDigest(cwd, runId, 'tester.md');
+  const reviewerApproved = reviewerDigestApprovedForRun(cwd, runId, reviewer);
+  const testerPassed = testerDigestPassedForRun(cwd, runId, tester);
+  if (!reviewerApproved || !testerPassed || !runHasQaEvidence(cwd, runId)) return null;
+  return transitionRunStatus(cwd, runId, {
+    status: 'completed',
+    outcome: 'verified',
+    preserveLegacyQaContract,
+  });
 }
 
 // Prompt-boundary "settled enough to rotate the run id" — used ONLY by the maintenance
@@ -3024,9 +3662,13 @@ export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean 
 // everywhere else. Both green verdicts co-occur only after the run is done, so this never
 // rotates a genuinely in-flight (still-verifying) run.
 export function runSettledForRotation(cwd: string, runId: unknown): boolean {
-  if (runReachedTerminalVerdict(cwd, runId)) return true;
   if (typeof runId !== 'string' || !runId) return false;
-  if (!readDigest(cwd, runId, 'frontend.md').trim() && !readDigest(cwd, runId, 'backend.md').trim()) return false;
+  // Contract-v1 runs never rotate on textual verdicts alone: the strict parser,
+  // screenshots, freshness, and full matrix must all have passed. Generic
+  // maintenance blocked/failed markers are legacy settlement, not a v1 bypass.
+  if (runUsesStrictQaContract(cwd, runId)) return buildRunReachedTerminalVerdict(cwd, runId);
+  if (runReachedTerminalVerdict(cwd, runId)) return true;
+  if (!runProducedImplementerOutput(cwd, runId) || runHasExplicitBlockedQaOutcome(cwd, runId)) return false;
   const reviewer = readDigest(cwd, runId, 'reviewer.md');
   const tester = readDigest(cwd, runId, 'tester.md');
   const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
@@ -3545,6 +4187,31 @@ export function readRunAgentRegistry(cwd: string, runId: string): Record<string,
     };
   }
   return out;
+}
+
+// Resolve the ROLE a hook session belongs to within a run: match the payload's
+// sessionId against the per-run agent registry (agents.json), then against the
+// run's agent claim files. Diagnostic-strength attribution for deny telemetry
+// (observed 5c/8c: every plan-guard-deny row carried role:null/isSubagent:false
+// even for subagent writes, because the shared state has no per-session role) —
+// never a gate input.
+export function roleForRunSessionId(
+  cwd: string,
+  runId: string | null | undefined,
+  sessionId: string | null | undefined,
+): string | null {
+  if (!runId || !sessionId || isNonProjectRoot(cwd)) return null;
+  try {
+    for (const [role, entry] of Object.entries(readRunAgentRegistry(cwd, runId))) {
+      if (entry.agentId === sessionId || entry.resumeId === sessionId) return role;
+    }
+  } catch {
+    // registry unreadable — fall through to claims
+  }
+  for (const claim of listClaimedAgents(cwd, runId)) {
+    if (firstString(claim.sessionId) === sessionId && typeof claim.role === 'string') return claim.role;
+  }
+  return null;
 }
 
 type RunAgentRecordInput = {

@@ -424,7 +424,17 @@ function stripNegatedDependencyPhrases(task: string): string {
   return task
     .replace(/\b(?:no|without)\s+(?:external\s+)?(?:dependency|dependencies|deps?)\b/gi, '')
     .replace(/\b(?:no|without)\s+(?:dependency|dependencies|deps?)\/version\s+(?:changes?|updates?|work|edits?)\b/gi, '')
-    .replace(/\b(?:no|without)\s+(?:dependency|dependencies|deps?|package[- ]manager|lockfiles?)\s+(?:changes?|updates?|work|edits?|writes?)\b/gi, '');
+    .replace(/\b(?:no|without)\s+(?:dependency|dependencies|deps?|package[- ]manager|lockfiles?)\s+(?:changes?|updates?|work|edits?|writes?)\b/gi, '')
+    // Verb-phrase negations: "do not add packages", "don't install anything",
+    // "never bump dependencies", "avoid touching package.json". The clause is
+    // stripped up to the next sentence/clause boundary so an affirmative
+    // instruction later in the task ("… then run pnpm install X") survives.
+    // Over-stripping only relaxes THIS unsafe-unit heuristic (8c: a negated
+    // draft phrase still routed a pure-helpers unit off OpenCode).
+    .replace(/\b(?:do\s+not|don'?t|never|avoid|without|not\s+to)\s+(?:add(?:ing)?|install(?:ing)?|remov(?:e|ing)|upgrad(?:e|ing)|updat(?:e|ing)|bump(?:ing)?|touch(?:ing)?|modify(?:ing)?|chang(?:e|ing)|edit(?:ing)?)\s+[^.;,\n]*/gi, '')
+    // Reversed noun negations: "no changes to package.json", "without edits to
+    // lockfiles" — the earlier patterns only cover "<neg> <noun> <change-word>".
+    .replace(/\b(?:no|without|zero)\s+(?:changes?|updates?|edits?|writes?|modifications?)\s+to\s+[^.;,\n]*/gi, '');
 }
 
 function isDocumentationPath(p: string): boolean {
@@ -511,7 +521,11 @@ export function openCodeQueuePolicyReport(units: PlanDelegationUnit[]): OpenCode
     if (mentionsInlineDependencyField(unit.task)) {
       add(`OpenCode unit \`${unit.id}\` puts a dependency marker inside task text; add it as a pipe-delimited \`depends:\` field instead`, unit.id);
     }
-    if (mentionsTestWork(unit.task) && !allowsTestOrConfigPath(unit.allowedFiles)) {
+    // Docs-only units document commands rather than perform them (same rationale
+    // as the dependency exemption above): a CONTRIBUTING.md draft saying "run
+    // `pnpm test` before a PR" is prose, not test work — its allowlist already
+    // confines it to documentation files (observed false-deny on a root-docs unit).
+    if (!isDocsOnlyUnit(unit) && mentionsTestWork(unit.task) && !allowsTestOrConfigPath(unit.allowedFiles)) {
       add(`OpenCode unit \`${unit.id}\` mentions tests/testability but its files allowlist does not include exact test/spec/config paths; either add those paths explicitly or remove the test acceptance criteria`, unit.id);
     }
     for (const allowed of unit.allowedFiles) {

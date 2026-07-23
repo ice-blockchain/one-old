@@ -11,6 +11,7 @@ import {
   ONE_MCP_DECODER_VERSION,
 } from '../../../config/one-mcp';
 import {
+  codexConfigPath,
   commandLooksMutating,
   getPayloadText,
   parseArgs,
@@ -20,6 +21,7 @@ import {
   sessionIdFromFile,
   trustedProjectForCwd,
 } from '../lib';
+import { platformPathContains, samePlatformPath } from '../path-identity';
 import {
   analyzeCodexSessionFile,
   probeCanonicalAuth,
@@ -32,8 +34,14 @@ import {
   type NodeProbe,
   type NvmProbe,
   type ProjectProbe,
+  type CodexHooksProbe,
 } from '../probes';
+import {
+  CODEX_TRAFFIC_ONE_HOOK_KEYS,
+  type CodexHookTrustProbe,
+} from '../codex-hook-trust';
 import { buildFindings } from '../findings';
+import { selectDoctorProjectCwd } from '../index';
 
 function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `t1-doctor-${prefix}-`));
@@ -43,6 +51,37 @@ test('parseArgs reads --session', () => {
   assert.deepEqual(parseArgs(['--session', 'abc']), { session: 'abc' });
   assert.deepEqual(parseArgs([]), { session: null });
   assert.deepEqual(parseArgs(['--session']), { session: null });
+});
+
+test('codexConfigPath supports Windows USERPROFILE when HOME is absent', () => {
+  assert.equal(
+    codexConfigPath({ USERPROFILE: path.join('C:', 'Users', 'doctor') }),
+    path.join('C:', 'Users', 'doctor', '.codex', 'config.toml'),
+  );
+});
+
+test('selectDoctorProjectCwd anchors incident probes to the session cwd', () => {
+  const invocation = tmp('doctor-invocation');
+  const incident = tmp('doctor-incident');
+  try {
+    fs.mkdirSync(path.join(incident, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(incident, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+    assert.equal(selectDoctorProjectCwd(invocation, {
+      found: true,
+      id: 'session-id',
+      cwd: incident,
+      startedAt: null,
+      hookPayloadCount: 0,
+      promptRequestCount: 0,
+      permissionDecisionCount: 0,
+      toolCallCount: 0,
+      mutatingToolCallCount: 0,
+    }), incident);
+    assert.equal(selectDoctorProjectCwd(invocation, null), invocation);
+  } finally {
+    fs.rmSync(invocation, { recursive: true, force: true });
+    fs.rmSync(incident, { recursive: true, force: true });
+  }
 });
 
 test('parseTomlScalar coerces booleans + strips quotes', () => {
@@ -75,6 +114,13 @@ test('trustedProjectForCwd returns the longest covering trusted root', () => {
   assert.equal(trustedProjectForCwd('/elsewhere', sections), null);
 });
 
+test('doctor path identity is case-insensitive on Windows and boundary-aware', () => {
+  assert.equal(samePlatformPath('C:\\Users\\Doctor\\Repo', 'c:\\users\\doctor\\repo', 'win32'), true);
+  assert.equal(platformPathContains('C:\\Users\\Doctor\\Repo', 'c:\\users\\doctor\\repo\\sub', 'win32'), true);
+  assert.equal(platformPathContains('C:\\Users\\Doctor\\Repo', 'c:\\users\\doctor\\repo-other', 'win32'), false);
+  assert.equal(samePlatformPath('/Repo', '/repo', 'linux'), false);
+});
+
 test('sessionIdFromFile extracts uuid or strips rollout-/.jsonl', () => {
   assert.equal(sessionIdFromFile('/x/rollout-2026-01-01T00-00-00-12345678-1234-1234-1234-123456789abc.jsonl'), '12345678-1234-1234-1234-123456789abc');
   assert.equal(sessionIdFromFile('/x/rollout-sess9.jsonl'), 'sess9');
@@ -85,6 +131,10 @@ test('commandLooksMutating flags installs/patches, not reads', () => {
   assert.equal(commandLooksMutating('apply_patch', ''), true);
   assert.equal(commandLooksMutating('exec_command', JSON.stringify({ cmd: 'npm install left-pad' })), true);
   assert.equal(commandLooksMutating('exec_command', JSON.stringify({ cmd: 'ls -la' })), false);
+  assert.equal(commandLooksMutating('exec', 'await tools.apply_patch("*** Begin Patch")'), true);
+  assert.equal(commandLooksMutating('exec', 'await tools.exec_command({cmd: "pnpm install"})'), true);
+  assert.equal(commandLooksMutating('exec', 'await tools.exec_command({cmd: "ls -la"})'), false);
+  assert.equal(commandLooksMutating('exec', 'text("apply_patch was not called")'), false);
   assert.equal(commandLooksMutating('shell', 'rm -rf /'), false); // only exec_command/apply_patch count
 });
 
@@ -103,9 +153,15 @@ test('rawStateHasLegacyShape detects legacy fields', () => {
 test('probeProject reads + normalizes the state file', () => {
   const dir = tmp('proj');
   const savedPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  const prefsPath = path.join(dir, 'prefs.json');
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prefsPath;
   try {
-    assert.equal(probeProject(dir).hasState, false);
+    fs.writeFileSync(prefsPath, JSON.stringify({ pluginUse: { enabled: false } }), 'utf8');
+    const beforeState = probeProject(dir);
+    assert.equal(beforeState.hasState, false);
+    assert.equal((beforeState.localPreferences.pluginUse as { enabled?: boolean })?.enabled, false);
+    assert.equal(beforeState.hasLocalPreferences, true);
+    assert.equal(beforeState.localPreferencesPath, prefsPath);
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'new-project', stack: 'default' }), 'utf8');
     const p = probeProject(dir);
@@ -119,12 +175,14 @@ test('probeProject reads + normalizes the state file', () => {
   }
 });
 
-test('probeCodexHooks parses plugin + hook trust from config.toml', () => {
+test('probeCodexHooks parses structural plugin/workspace state but does not claim structural hook trust', async () => {
   const home = tmp('codexhome');
   const savedHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = home;
   try {
-    assert.equal(probeCodexHooks('/repo').configExists, false);
+    const absent = await probeCodexHooks('/repo');
+    assert.equal(absent.configExists, false);
+    assert.equal(absent.hookTrust.evaluation, 'indeterminate');
     const cfg = [
       '[plugins."traffic-one@traffic-one-local"]',
       'enabled = true',
@@ -135,12 +193,16 @@ test('probeCodexHooks parses plugin + hook trust from config.toml', () => {
       'trust_level = "trusted"',
     ].join('\n');
     fs.writeFileSync(path.join(home, 'config.toml'), cfg, 'utf8');
-    const probe = probeCodexHooks('/repo');
+    const probe = await probeCodexHooks('/repo');
     assert.equal(probe.configExists, true);
     assert.equal(probe.pluginEnabled, true);
-    assert.equal(probe.hookStateEntryCount, 1);
     assert.equal(probe.trustCovered, true);
-    assert.deepEqual(probe.missingHookEvents, ['user_prompt_submit', 'pre_tool_use', 'post_tool_use']);
+    assert.deepEqual(probe.hookTrust, {
+      evaluation: 'indeterminate',
+      source: 'structural-config',
+      reason: 'plugin-cache-missing',
+      detail: null,
+    });
   } finally {
     if (savedHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedHome;
     fs.rmSync(home, { recursive: true, force: true });
@@ -293,21 +355,113 @@ test('probeOneMcp falls back to bundled when runtime rejects a cache from anothe
   }
 });
 
-test('analyzeCodexSessionFile counts tools and detects injected instructions', () => {
+test('analyzeCodexSessionFile detects Codex hook developer messages without requiring plugin-root instructions', () => {
   const dir = tmp('codexsess');
   try {
     const file = path.join(dir, 'rollout-sess1.jsonl');
     fs.writeFileSync(file, [
-      JSON.stringify({ type: 'session_meta', timestamp: '2026-01-01T00:00:00Z', payload: { id: 'sess1', cwd: '/proj', base_instructions: { text: 'Traffic One Codex Instructions\nUse the canonical API-key wizard' } } }),
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-01-01T00:00:00Z', payload: { id: 'sess1', cwd: '/proj' } }),
+      JSON.stringify({ type: 'event_msg', timestamp: '2026-01-01T00:00:20Z', payload: { type: 'user_message' } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:30Z', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '[ACTIVE STACK: default]\n\nTraffic One setup is complete.' }] } }),
       JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:01:00Z', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'npm install x' }) } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:01:10Z', payload: { type: 'custom_tool_call', call_id: 'call-2', name: 'exec', input: 'const r = await tools.apply_patch("*** Begin Patch"); text(r);' } }),
     ].join('\n'), 'utf8');
     const d = analyzeCodexSessionFile(file);
     assert.ok(d);
     assert.equal(d?.id, 'sess1');
     assert.equal(d?.cwd, '/proj');
-    assert.equal(d?.toolCallCount, 1);
-    assert.equal(d?.mutatingToolCallCount, 1);
-    assert.equal(d?.trafficOneInstructionInjected, true);
+    assert.equal(d?.hookPayloadCount, 1);
+    assert.equal(d?.toolCallCount, 2);
+    assert.equal(d?.mutatingToolCallCount, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCodexSessionFile does not mistake project AGENTS instructions for hook execution', () => {
+  const dir = tmp('codexsess-project-agents');
+  try {
+    const file = path.join(dir, 'rollout-sess2.jsonl');
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-01-01T00:00:00Z', payload: { id: 'sess2', cwd: '/proj' } }),
+      JSON.stringify({ type: 'event_msg', timestamp: '2026-01-01T00:00:01Z', payload: { type: 'user_message' } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:02Z', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '# Traffic One Local Agent Context\n<!-- GENERATED BY traffic-one: project-local active rules -->\n[ACTIVE STACK: default]\n[traffic-one] example only' }] } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:03Z', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '# Traffic One Codex Instructions\ntraffic-one — example only' }] } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:04Z', payload: { type: 'custom_tool_call_output', call_id: 'unmatched', output: '{"hookSpecificOutput":{"promptRequest":{},"permissionDecision":"deny"}}' } }),
+    ].join('\n'), 'utf8');
+    const d = analyzeCodexSessionFile(file);
+    assert.equal(d?.hookPayloadCount, 0);
+    assert.equal(d?.promptRequestCount, 0);
+    assert.equal(d?.permissionDecisionCount, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCodexSessionFile recognizes valid structured hook output once and ignores quoted field names', () => {
+  const dir = tmp('codexsess-structured');
+  try {
+    const file = path.join(dir, 'rollout-sess3.jsonl');
+    fs.writeFileSync(file, [
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'traffic-one — claim required',
+        },
+        promptRequest: { id: 'confirm' },
+      }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'none', output: 'hookSpecificOutput promptRequest permissionDecision' } }),
+    ].join('\n'), 'utf8');
+    const d = analyzeCodexSessionFile(file);
+    assert.equal(d?.hookPayloadCount, 1);
+    assert.equal(d?.promptRequestCount, 1);
+    assert.equal(d?.permissionDecisionCount, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCodexSessionFile validates versioned markers against their causal event window', () => {
+  const dir = tmp('codexsess-markers');
+  try {
+    const file = path.join(dir, 'rollout-sess4.jsonl');
+    const developer = (text: string): string => JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text }] } });
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } }),
+      developer('<!-- traffic-one-hook-context:v1 event=SessionStart -->\n[ACTIVE STACK: default]'),
+      developer('<!-- traffic-one-hook-context:v1 event=UserPromptSubmit -->\n[ACTIVE STACK: default]'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'agent_reasoning' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message' } }),
+      developer('<!-- traffic-one-hook-context:v1 event=UserPromptSubmit -->\n[ACTIVE STACK: default]'),
+      JSON.stringify({ type: 'response_item', payload: { type: 'reasoning' } }),
+      developer('[ACTIVE STACK: default]'),
+    ].join('\n'), 'utf8');
+    assert.equal(analyzeCodexSessionFile(file)?.hookPayloadCount, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCodexSessionFile bounds historical markers to prompt and matched tool windows', () => {
+  const dir = tmp('codexsess-causal');
+  try {
+    const file = path.join(dir, 'rollout-sess5.jsonl');
+    const developer = (text: string): string => JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text }] } });
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message' } }),
+      developer('Total output lines: 42\n\n═══ traffic-one — setup required'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'agent_reasoning' } }),
+      developer('[ACTIVE STACK: default]'),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call-a', name: 'exec', input: 'text("read only")' } }),
+      developer('[traffic-one] pre-tool context'),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-a', output: 'ok' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'token_count' } }),
+      developer('[graphify] Auto-bootstrap failed safely'),
+      JSON.stringify({ type: 'response_item', payload: { type: 'reasoning' } }),
+      developer('[traffic-one] quoted after the causal window'),
+    ].join('\n'), 'utf8');
+    assert.equal(analyzeCodexSessionFile(file)?.hookPayloadCount, 3);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -363,15 +517,83 @@ function baseProject(over: Partial<ProjectProbe> = {}): ProjectProbe {
 const node = (over: Partial<NodeProbe> = {}): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, ...over });
 const nvm = (over: Partial<NvmProbe> = {}): NvmProbe => ({ installed: false, ...over });
 const gn = (over: Partial<GitnexusProbe> = {}): GitnexusProbe => ({ onPath: null, absoluteV22: null, crashRiskInOldNvm: false, ...over });
+type VerifiedHookTrust = Extract<CodexHookTrustProbe, { evaluation: 'verified' }>;
+const healthyHookTrust = (over: Partial<VerifiedHookTrust> = {}): VerifiedHookTrust => ({
+  evaluation: 'verified',
+  source: 'codex-hooks-list',
+  expectedCount: 15,
+  counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
+  missingKeys: [],
+  unexpectedKeys: [],
+  hooks: CODEX_TRAFFIC_ONE_HOOK_KEYS.map((key) => ({
+    key, eventName: 'preToolUse', enabled: true, trustStatus: 'trusted', currentHash: 'sha256:current',
+  })),
+  binaryPath: '/usr/bin/codex',
+  codexVersion: '1.0.0',
+  warnings: [],
+  errors: [],
+  ...over,
+});
+const codexProbe = (over: Partial<CodexHooksProbe> = {}): CodexHooksProbe => ({
+  host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true,
+  hookTrust: healthyHookTrust(), trustCovered: true, ...over,
+});
 
 test('buildFindings: session-not-found', () => {
   const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), sessionDiagnostics: { id: 's', found: false, sessionsDir: '/d' } });
   assert.ok(f.some((x) => x.code === 'CODEX_SESSION_NOT_FOUND'));
 });
 
+test('buildFindings: hook evidence is sufficient without plugin-root instruction injection', () => {
+  const f = buildFindings({
+    node: node(),
+    nvm: nvm(),
+    gitnexus: gn(),
+    project: baseProject(),
+    sessionDiagnostics: {
+      found: true,
+      id: 's',
+      cwd: '/repo',
+      startedAt: '2026-01-01T00:00:00Z',
+      hookPayloadCount: 1,
+      promptRequestCount: 0,
+      permissionDecisionCount: 0,
+      toolCallCount: 0,
+      mutatingToolCallCount: 0,
+    },
+  });
+  assert.equal(f.some((x) => x.code === 'CODEX_HOOK_OUTPUT_NOT_OBSERVED_FOR_SESSION'), false);
+  assert.equal(f.some((x) => x.code.includes('INSTRUCTIONS_NOT_INJECTED')), false);
+});
+
+test('buildFindings: absent hook output is informational evidence, not proof hooks failed', () => {
+  const sessionDiagnostics = {
+    found: true as const,
+    id: 's',
+    cwd: '/repo',
+    startedAt: '2026-01-01T00:00:00Z',
+    hookPayloadCount: 0,
+    promptRequestCount: 3,
+    permissionDecisionCount: 0,
+    toolCallCount: 0,
+    mutatingToolCallCount: 0,
+  };
+  const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), sessionDiagnostics });
+  const finding = f.find((x) => x.code === 'CODEX_HOOK_OUTPUT_NOT_OBSERVED_FOR_SESSION');
+  assert.equal(finding?.severity, 'info');
+  assert.match(finding?.message || '', /no attributable Traffic One hook-output evidence/i);
+
+  const declined = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({ localPreferences: { pluginUse: { enabled: false } }, hasLocalPreferences: true }),
+    sessionDiagnostics,
+  });
+  assert.equal(declined.some((x) => x.code === 'CODEX_HOOK_OUTPUT_NOT_OBSERVED_FOR_SESSION'), false);
+});
+
 test('buildFindings: codex plugin disabled', () => {
-  const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: false } });
-  assert.ok(f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_PLUGIN_DISABLED'));
+  const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), codexHooks: codexProbe({ pluginEnabled: false }) });
+  assert.ok(f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED'));
 });
 
 test('buildFindings: One MCP invalid, missing, and temporary outcomes are bounded informational diagnostics', () => {
@@ -432,23 +654,67 @@ test('buildFindings: One MCP invalid, missing, and temporary outcomes are bounde
   assert.match(f.find((finding) => finding.code === 'ONE_MCP_SYNC_UNAVAILABLE')?.message || '', /transport-failed/);
 });
 
-test('buildFindings: Codex trusted hashes do not require enabled hook counters', () => {
+test('buildFindings: exact runnable Codex hooks are healthy', () => {
   const f = buildFindings({
     node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(),
-    codexHooks: {
-      host: 'codex',
-      configPath: '/c',
-      configExists: true,
-      cwd: '/repo',
-      pluginEnabled: true,
-      hookStateEntryCount: 13,
-      hookStateEnabledCount: 0,
-      hookStateTrustedHashCount: 13,
-      missingHookEvents: [],
-      trustCovered: true,
-    },
+    codexHooks: codexProbe(),
   });
   assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED'));
+  assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOK_ABI_MISMATCH'));
+  assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED'));
+  assert.ok(!f.some((x) => x.code === 'CODEX_HOOK_TRUST_INDETERMINATE'));
+});
+
+test('buildFindings: official Codex hook findings distinguish ABI, disabled, trust, and indeterminate', () => {
+  const base = { node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject() };
+  const abi = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: healthyHookTrust({
+        counts: { discovered: 14, trusted: 14, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 14 },
+        missingKeys: [CODEX_TRAFFIC_ONE_HOOK_KEYS[14] as string],
+      }),
+    }),
+  });
+  assert.ok(abi.some((finding) => finding.code === 'CODEX_TRAFFIC_ONE_HOOK_ABI_MISMATCH'));
+
+  const disabled = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: healthyHookTrust({
+        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 1, runnable: 14 },
+      }),
+    }),
+  });
+  assert.ok(disabled.some((finding) => finding.code === 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED'));
+
+  const notTrusted = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: healthyHookTrust({
+        counts: { discovered: 15, trusted: 0, managed: 0, modified: 13, untrusted: 2, disabled: 0, runnable: 0 },
+      }),
+    }),
+  });
+  assert.ok(notTrusted.some((finding) => finding.code === 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED'));
+
+  const notFullyRunnable = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: healthyHookTrust({
+        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 14 },
+      }),
+    }),
+  });
+  assert.ok(notFullyRunnable.some((finding) => finding.code === 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED'));
+
+  const uncertain = buildFindings({
+    ...base,
+    codexHooks: codexProbe({
+      hookTrust: { evaluation: 'indeterminate', source: 'structural-config', reason: 'unsupported-api', detail: null },
+    }),
+  });
+  assert.ok(uncertain.some((finding) => finding.code === 'CODEX_HOOK_TRUST_INDETERMINATE'));
 });
 
 test('buildFindings: legacy state shape + local prefs in project state', () => {
@@ -494,9 +760,9 @@ test('buildFindings: opencode enabled on codex without [mcp_servers.opencode-wor
     node: node(), nvm: nvm(), gitnexus: gn(),
     project: baseProject({ normalizedState: { openCode: { enabled: true } } }),
   };
-  const missing = buildFindings({ ...base, codexHooks: { host: 'codex' as const, configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: false } });
+  const missing = buildFindings({ ...base, codexHooks: codexProbe({ opencodeMcpRegistered: false }) });
   assert.ok(missing.some((x) => x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED'));
-  const registered = buildFindings({ ...base, codexHooks: { host: 'codex' as const, configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: true } });
+  const registered = buildFindings({ ...base, codexHooks: codexProbe({ opencodeMcpRegistered: true }) });
   assert.ok(!registered.some((x) => x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED'));
 });
 
@@ -504,7 +770,7 @@ test('buildFindings: opencode findings are silent when delegation is not enabled
   const f = buildFindings({
     node: node(), nvm: nvm(), gitnexus: gn(),
     project: baseProject({ openCodeCli: 'missing' }),
-    codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: false },
+    codexHooks: codexProbe({ opencodeMcpRegistered: false }),
   });
   assert.ok(!f.some((x) => x.code === 'OPENCODE_CLI_MISSING' || x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED' || x.code === 'OPENCODE_CLI_UNMANAGED'));
 });

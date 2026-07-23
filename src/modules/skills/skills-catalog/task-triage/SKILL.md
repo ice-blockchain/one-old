@@ -41,6 +41,14 @@ honor that and drop a tier. If they say "build the whole …" / "a full feature 
 
 The directive states the project's **team mode** and whether **OpenCode** is active. Route accordingly. On OpenCode or Kilo hosts, OpenCode delegation is inactive by design; do not call `opencode_delegate` from inside those peer/self hosts.
 
+**Run bookkeeping (all tiers) — never copy or hand-write
+`.traffic-one/runs/<runId>/assignments.json`.** With no fresh architect run, the
+run-team gate automatically scopes implementer writes via the NEWEST existing
+manifest (the build's) — no per-run copy is needed. A hand-copied manifest makes
+the new run look architect-fresh, which re-arms the Step-0 plan-batch gate on the
+previous build's stale `plan.md` queue and kills the first implementer spawn.
+Only `senior-architect` authors that file, in complex-tier runs.
+
 ### trivial
 - **Subagents mode:** delegate to a `quick-fix` worker — a dedicated cheap maintenance role with its
   own agent definition.
@@ -78,6 +86,16 @@ The directive states the project's **team mode** and whether **OpenCode** is act
   server/data seam. If the request truly needs both layers, spawn those two roles in parallel. Do not
   spawn an architect or create `plan-<feature>.md`; escalate to complex only when opening the files
   reveals cross-cutting impact.
+  - **Reuse the live role agent across requests:** before a fresh spawn, check
+    `.traffic-one/runs/<runId>/agents.json` — when a live agent is already recorded for the role,
+    CONTINUE it with the new bounded task instead of spawning again (the spawn gate denies a
+    duplicate while one is recorded): on Cursor re-invoke `Task` with `resume: "<agentId>"`, on
+    Claude `SendMessage { to: <agentId> }`, on Codex `followup_task { target: "<agentId>" }`, on
+    Copilot the recorded background `agent_id`.
+  - **Scope note:** with no fresh architect run, the run-team gate scopes the implementer's writes
+    via the newest `runs/<id>/assignments.json` (the build's manifest). If the feature genuinely
+    needs paths outside every prior assignment, escalate to complex (fresh architect run) instead
+    of fighting out-of-scope denies.
   - **Kilo:** each direct role is a built-in `general` task with `[t1-role: senior-<role>]` on the
     first line, an immediate read of `.kilo/agents/senior-<role>.md`, and no `model` field.
   - **OpenCode active:** call the `opencode_delegate` tool FIRST for each chosen role, with the current

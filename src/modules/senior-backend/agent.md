@@ -150,7 +150,7 @@ Before your final reply, write your handoff digest to:
 .traffic-one/digests/<run-id>/backend.md
 ```
 
-Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at, Touched (handler / migration / schema files), Public contracts (delta only — endpoint signatures, table columns, auth strategy), Open questions / blockers / assumptions (especially anything frontend assumed differently), Next-phase reading hints for reviewer + tester. Cap at ~2 KB.
+Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at, Touched (handler / migration / schema files), Public contracts (delta only — endpoint signatures, table columns, auth strategy), Open questions / blockers / assumptions (especially anything frontend assumed differently), Next-phase reading hints for reviewer + tester. Cap at ~2 KB. Verdict token: `IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED, CHANGES_REQUESTED, or TESTS_GREEN; those belong to other roles.
 
 ## Hard rules
 

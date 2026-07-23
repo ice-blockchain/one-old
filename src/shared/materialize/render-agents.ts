@@ -218,7 +218,11 @@ export function renderClaudeFallback(): string {
 
 export function writeRootAgents(cwd: string, content: string): boolean {
   const rootAgents = path.join(cwd, 'AGENTS.md');
-  if (fs.existsSync(rootAgents) && !fs.lstatSync(rootAgents).isSymbolicLink() && !isGenerated(rootAgents)) return false;
+  if (fs.existsSync(rootAgents) && !fs.lstatSync(rootAgents).isSymbolicLink()) {
+    if (!isGenerated(rootAgents)) return false;
+    // Same generated content → leave the file (and its mtime) alone.
+    if (readText(rootAgents) === content) return false;
+  }
   if (fs.existsSync(rootAgents)) fs.rmSync(rootAgents, { force: true });
   return writeTextIfChanged(rootAgents, content);
 }
@@ -226,6 +230,12 @@ export function writeRootAgents(cwd: string, content: string): boolean {
 export function writeRootClaude(cwd: string): boolean {
   const rootClaude = path.join(cwd, 'CLAUDE.md');
   if (fs.existsSync(rootClaude) && !fs.lstatSync(rootClaude).isSymbolicLink() && !isGenerated(rootClaude)) return false;
+  try {
+    // Already the canonical symlink → nothing to do.
+    if (fs.lstatSync(rootClaude).isSymbolicLink() && fs.readlinkSync(rootClaude) === 'AGENTS.md') return false;
+  } catch {
+    // missing file → fall through and create it
+  }
   if (fs.existsSync(rootClaude)) fs.rmSync(rootClaude, { force: true });
   try {
     fs.symlinkSync('AGENTS.md', rootClaude);

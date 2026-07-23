@@ -311,7 +311,7 @@ Catalog conventions normalized by the audit: the activation heading is
 
 ## Harness Manifests And Entrypoints
 
-- `AGENTS.md` - Codex CLI and OpenCode rule entrypoint and full rule mirror.
+- `AGENTS.md` - Project-materialization source and cross-host full rule mirror; Codex loads the materialized project-root copy, not this plugin-root file.
 - `CLAUDE.md` - Claude Code entrypoint.
 - `README.md` - human overview and plugin map.
 - `.codex-plugin/plugin.json` - Codex plugin manifest.

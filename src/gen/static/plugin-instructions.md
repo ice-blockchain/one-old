@@ -11,6 +11,15 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 - Treat explicit user requests as implementation intent, not onboarding answers.
 - Local `team.mode="subagents"` remains the source of truth for subagent-enabled runs; never satisfy it with generic helper agents instead of the named senior-role workflow.
 
+## Codex Hook Trust
+
+- On the first Traffic One installation, Codex Desktop activation is an explicit user trust step: **Plugins → Traffic One → Hooks → Review**, inspect every command, then choose **Trust all** only when the review contains exactly the 15 hook keys and commands from the installed `hooks/hooks.json` fixture.
+- If the count, hook keys, or commands differ from that fixture, do not trust the set. Reinstall or update Traffic One, reopen the review, and compare again.
+- After approval, reload when Desktop offers it or fully restart Desktop, then open a new task in a trusted project. Doctor must report `HEALTHY` with **15 trusted / 15 runnable** Traffic One hooks before Traffic One implementation begins.
+- A partial selection, a cancelled review, or **Continue without trusting** remains `ACTION_NEEDED`. Never treat it as informational or continue in a degraded Traffic One mode.
+- CLI fallback: fully quit Desktop, start `codex` from a trusted project, run `/hooks`, inspect the 15 fixture entries, approve only Traffic One, exit the CLI, restart Desktop, open a new task, and rerun Doctor. Never ask the user to approve unrelated plugins.
+- Hook trust has no auto-approval path. Traffic One onboarding cannot activate, repair, or recover hooks that Codex has not trusted because the onboarding hook itself is inactive; require the explicit Desktop or CLI review above.
+
 ## Active Rules
 
 - .traffic-one/rules/common/auth-gate.md
@@ -44,7 +53,7 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 - After opt-in, Traffic One auth is verified by hooks before Traffic One work. Missing or invalid auth reopens the local setup wizard on its API-key step; never ask for the key in chat or pass it through a shell command.
 - The wizard validates the key with authenticated MCP `tools/list`. Only a successful validation writes the sole auth record to the top-level `auth` section of user-level `one.json` (`~/.traffic-one/one.json` by default, mode `0600`), never a project file.
 - The stored key is used only for authenticated onboarding validation/connection. Public config sync and structural reporting are anonymous and never send the key; public 401/403 responses never invalidate `one.json.auth`.
-- If Traffic One skills are visible but hooks or these root instructions were not injected, do not infer "Traffic One inactive" and continue. Treat Traffic One as unverified: run or recommend `node ~/.traffic-one/bin/doctor.cjs` (append `--session <id>` for incident debugging), and stop before scaffolding, installs, source edits, Traffic One agents, or implementation skills. Ordinary work without Traffic One is allowed only when the project's `pluginUse` preference records the user's decline.
+- If Traffic One skills are visible but hooks did not run, or the opted-in project's root instructions were not materialized and loaded, do not infer "Traffic One inactive" and continue. Treat Traffic One as unverified: run or recommend `node ~/.traffic-one/bin/doctor.cjs` (append `--session <id>` for incident debugging), and stop before scaffolding, installs, source edits, Traffic One agents, or implementation skills. Ordinary work without Traffic One is allowed only when the project's `pluginUse` preference records the user's decline.
 - Run `project-memory` and `auto-documentation-generator` as mandatory baselines for generated projects and reconcile them for existing codebases.
 - Keep `.traffic-one/rules/common/documentation.md` and `.traffic-one/rules/common/seo.md` in the mandatory rule set for web work.
 - Apply `rules/frontend/i18n.md` automatically for UI work, even when the user does not mention translations.

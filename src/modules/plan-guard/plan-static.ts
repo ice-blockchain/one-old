@@ -15,6 +15,63 @@ type Block = (name: string, fallback: string, vars?: Vars) => string;
 // source file does not trip the gate's own websocket-location rule.
 const WS_CTOR = 'new ' + 'WebSocket(';
 
+// Extract the object-literal text of every `style={{…}}` occurrence (the text
+// between the inner braces), walking brace depth so nested objects/template
+// literals stay inside their occurrence. Unterminated objects are skipped.
+function inlineStyleObjectTexts(content: string, needle: string): string[] {
+  const out: string[] = [];
+  let idx = content.indexOf(needle);
+  while (idx !== -1) {
+    let depth = 0;
+    let end = -1;
+    for (let i = idx + needle.length - 1; i < content.length; i++) {
+      const ch = content[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end === -1) break;
+    out.push(content.slice(idx + needle.length, end));
+    idx = content.indexOf(needle, end);
+  }
+  return out;
+}
+
+// A style object is STATIC when every `key: value` entry is a plain string or
+// numeric literal — exactly what belongs in a Tailwind class instead. Anything
+// else (identifier, template literal, call, ternary, spread, nested object) is
+// a dynamic/derived value, which the web rule explicitly reserves inline style
+// for (observed 5c/8c: `width: \`${clamped}%\`` was denied and forced a worse
+// workaround). Ambiguous parses fall toward dynamic — this gate fails open.
+function styleObjectIsStatic(objText: string): boolean {
+  const entries: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < objText.length; i++) {
+    const ch = objText[i];
+    if (ch === '{' || ch === '[' || ch === '(') depth += 1;
+    else if (ch === '}' || ch === ']' || ch === ')') depth -= 1;
+    else if (ch === ',' && depth === 0) {
+      entries.push(objText.slice(start, i));
+      start = i + 1;
+    }
+  }
+  entries.push(objText.slice(start));
+  const LITERAL_VALUE = /^\s*(['"][^'"]*['"]|-?\d+(?:\.\d+)?)\s*$/;
+  let sawEntry = false;
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const colon = trimmed.indexOf(':');
+    if (colon === -1) return false; // spread / shorthand identifier → dynamic
+    sawEntry = true;
+    if (!LITERAL_VALUE.test(trimmed.slice(colon + 1))) return false;
+  }
+  return sawEntry;
+}
+
 // Collect plan gate violations for a single file write/edit. `isNative`
 // selects React Native vs web style/placement rules.
 export function planStaticViolations(filePath: string, content: string, isNative: boolean, block: Block): string[] {
@@ -62,13 +119,17 @@ export function planStaticViolations(filePath: string, content: string, isNative
       'Use the workspace package name (`@app/ui`, `@app/ui-native`, `@app/utils`) instead of a deep relative path across packages.'));
   }
 
+  // Route files are exempt from the named-export rule: Expo Router files live
+  // under app/ (never matched here), and web page components under src/pages/
+  // are loaded via React.lazy, whose contract is a default export — denying
+  // them forces the `.then((m) => ({ default: m.X }))` shim (observed 8c).
   if (
     filePath.endsWith('.tsx')
-    && /(src|packages\/(ui|ui-native))\/(components|features|pages)\//.test(filePath)
+    && /(src|packages\/(ui|ui-native))\/(components|features)\//.test(filePath)
     && /^export default /m.test(content)
   ) {
     violations.push(block('default-export',
-      'Use named exports only for reusable components. Expo Router route files under app/ are the default-export exception.'));
+      'Use named exports only for reusable components. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.'));
   }
 
   if (isNative) {
@@ -81,9 +142,14 @@ export function planStaticViolations(filePath: string, content: string, isNative
         'React Native UI must use native primitives (`View`, `Text`, `Pressable`, `TextInput`, etc.), not DOM tags.'));
     }
   } else {
-    if (filePath.endsWith('.tsx') && content.includes(INLINE_STYLE)) {
+    // Web: only STATIC inline styles are denied — a style object whose every
+    // value is a plain literal belongs in Tailwind classes. Dynamic/derived
+    // values (computed width, transform from state) are the rule's own stated
+    // exception and pass.
+    if (filePath.endsWith('.tsx')
+      && inlineStyleObjectTexts(content, INLINE_STYLE).some(styleObjectIsStatic)) {
       violations.push(block('web-inline-style',
-        'No inline styles — use Tailwind utility `className` and shadcn primitives. Inline style is reserved for dynamic/derived values.'));
+        'No static inline styles — use Tailwind utility `className` and shadcn primitives. Inline `style={{}}` is allowed only when a value is dynamic/derived (computed at runtime), never for constant values.'));
     }
     if ((filePath.endsWith('.tsx') || filePath.endsWith('.ts')) && /from ['"]@vanilla-extract\//.test(content)) {
       violations.push(block('vanilla-extract-import',

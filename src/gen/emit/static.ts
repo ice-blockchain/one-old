@@ -4,14 +4,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { NAME, pluginVersion } from '../../config/plugin-identity';
+import { NAME, pluginNodeEngine, pluginVersion } from '../../config/plugin-identity';
 import type { GenRun } from '../lib/run';
 
 // Root docs copied verbatim. The repo-root AGENTS.md/CLAUDE.md are the
-// MAINTAINER guide and deliberately NOT shipped — the installed plugin's
-// AGENTS.md/CLAUDE.md (end-user instructions every host session loads) are
-// emitted from src/gen/static/plugin-instructions.md instead, so a session
-// inside the source repo never reads end-user project conventions.
+// MAINTAINER guide and deliberately NOT shipped. The installable bundle keeps
+// end-user AGENTS.md/CLAUDE.md for cross-host compatibility and as the source
+// materialized into end-user projects; current Codex discovers plugin hooks but
+// does not inject a plugin-root AGENTS.md. Keeping the files distinct also means
+// a session inside the source repo never reads end-user project conventions.
 const STATIC_TEXT_FILES = [
   'README.md',
   'ref.md',
@@ -58,11 +59,13 @@ export function emitStaticPluginFiles(run: GenRun): void {
   run.file('AGENTS.md', pluginInstructions);
   run.file('CLAUDE.md', pluginInstructions);
   run.file(path.join('skills', '.gitkeep'), '');
+  const sourceRoot = sourceRootWith(run, 'package.json');
   run.json('package.json', {
     name: NAME,
-    version: pluginVersion(sourceRootWith(run, 'package.json')),
+    version: pluginVersion(sourceRoot),
     private: true,
     type: 'commonjs',
     description: 'Generated Traffic One plugin runtime.',
+    engines: { node: pluginNodeEngine(sourceRoot) },
   });
 }

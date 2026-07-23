@@ -46,8 +46,15 @@ function withGraphProject(opts: { provider?: string; makeArtefact?: boolean; aut
   }
 }
 
-function ctxFor(cwd: string): Ctx {
-  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: {}, tool: { class: 'search' as ToolClass, rawName: 'Grep' } };
+function ctxFor(cwd: string, workspaceRoot?: string): Ctx {
+  const input: HookInput = {
+    event: 'PreToolUse',
+    host: 'claude',
+    cwd,
+    raw: {},
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+    tool: { class: 'search' as ToolClass, rawName: 'Grep' },
+  };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
@@ -56,6 +63,22 @@ test('graphify hint fires when the gitnexus artefact is present + authed', () =>
     const r = preGraphifyHint(ctxFor(cwd));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') assert.ok(r.context.includes('[graph: gitnexus]'));
+  });
+});
+
+test('graphify hint resolves a nested monorepo search to the root graph artefact', () => {
+  withGraphProject({ provider: 'graphify', makeArtefact: true }, (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ workspaces: ['apps/*'] }), 'utf8');
+    const app = path.join(cwd, 'apps', 'web');
+    fs.mkdirSync(app, { recursive: true });
+    fs.writeFileSync(path.join(app, 'package.json'), '{}', 'utf8');
+
+    const r = preGraphifyHint(ctxFor(app, cwd));
+
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(r.context.includes('[graph: graphify]'));
+    assert.equal(fs.existsSync(path.join(app, '.traffic-one')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', '.once', 'graphify-hint-nosession')), true);
   });
 });
 

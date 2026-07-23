@@ -92,6 +92,29 @@ test('materializeProjectAssets writes rules + skills + manifest + AGENTS.md/CLAU
   });
 });
 
+test('a repeat materializeProjectAssets run is a no-op: written 0, stable skill mtimes and manifest bytes', () => {
+  withPluginAndProject((project) => {
+    const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true, mode: 'new-project' };
+    const first = materializeProjectAssets(project, state);
+    assert.ok(first.written > 0);
+    const skillPath = path.join(project, '.traffic-one', 'skills', 'project-memory', 'SKILL.md');
+    const manifestPath = path.join(project, '.traffic-one', 'manifest.json');
+    const skillMtime = fs.statSync(skillPath).mtimeMs;
+    const manifestText = fs.readFileSync(manifestPath, 'utf8');
+
+    const second = materializeProjectAssets(project, state);
+    assert.equal(second.written, 0, 'repeat run must not rewrite anything');
+    assert.equal(second.removed, 0);
+    assert.equal(fs.statSync(skillPath).mtimeMs, skillMtime, 'skill files keep their mtime');
+    assert.equal(fs.readFileSync(manifestPath, 'utf8'), manifestText, 'manifest bytes (incl. generatedAt) are stable');
+
+    // A real content change (different backend → different rules) still writes.
+    const third = materializeProjectAssets(project, { ...state, backend: 'none' });
+    assert.ok(third.written > 0);
+    assert.notEqual(fs.readFileSync(manifestPath, 'utf8'), manifestText);
+  });
+});
+
 test('cleanupPrevious removes a stale generated rule no longer in the next set', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cleanup-'));
   try {

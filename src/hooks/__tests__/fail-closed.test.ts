@@ -7,6 +7,7 @@ import {
   cursorPreToolDeny,
   devinPreToolDeny,
   hasValidHookObjectPayload,
+  hasValidPreToolPayload,
   isCursorPreToolSubcommand,
   isGatePreToolSubcommand,
   isWindsurfPreToolAction,
@@ -20,6 +21,31 @@ test('hook payload validation accepts only JSON objects', () => {
   assert.equal(hasValidHookObjectPayload('{'), false);
   assert.equal(hasValidHookObjectPayload('[]'), false);
   assert.equal(hasValidHookObjectPayload('null'), false);
+});
+
+test('pre-tool payload validation requires the host-specific tool and project identity', () => {
+  assert.equal(hasValidPreToolPayload('{"cwd":"/tmp"}', 'check-plan-write', 'nested'), false);
+  assert.equal(hasValidPreToolPayload(JSON.stringify({
+    cwd: '/tmp', tool_name: 'Write', tool_input: { file_path: 'x.ts', content: 'x' },
+  }), 'check-plan-write', 'nested'), true);
+
+  assert.equal(hasValidPreToolPayload(JSON.stringify({
+    workspaceRoot: '/tmp', tool: { name: 'write', args: { file_path: 'x.ts' } },
+  }), 'before-tool-use', 'wrapper'), true);
+  assert.equal(hasValidPreToolPayload(JSON.stringify({ cwd: '/tmp', command: 'npm test' }), 'before-shell-execution', 'cursor'), true);
+  assert.equal(hasValidPreToolPayload(JSON.stringify({
+    workspace_roots: ['/tmp'], command: 'traffic-one-mcp', tool_name: 'get_config',
+  }), 'before-mcp-execution', 'cursor'), true);
+  assert.equal(hasValidPreToolPayload(JSON.stringify({
+    cwd: '/tmp', tool_calls: [{ name: 'bash', args: { command: 'npm test' } }],
+  }), 'before-tool-use', 'copilot'), true);
+  assert.equal(hasValidPreToolPayload(JSON.stringify({
+    workspace_root: '/tmp', tool_info: { cwd: '/tmp', command_line: 'npm test' },
+  }), 'pre_run_command', 'windsurf'), true);
+  assert.equal(hasValidPreToolPayload(JSON.stringify({
+    tool_info: { file_path: '/tmp/src/a.ts', edits: [{ new_string: 'x' }] },
+  }), 'pre_write_code', 'windsurf'), true,
+  'Cascade file hooks can derive project identity from an absolute target path');
 });
 
 test('pre-tool fallback classifiers cover every host gate surface but not lifecycle/post hooks', () => {
@@ -44,6 +70,13 @@ test('last-resort payloads deny in every host wire format', () => {
   const nested = JSON.parse(nestedPreToolDeny('Codex'));
   assert.equal(nested.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(nested.hookSpecificOutput.permissionDecisionReason, /fail-closed/);
+  assert.equal(
+    nested.hookSpecificOutput.additionalContext,
+    '<!-- traffic-one-hook-context:v1 event=PreToolUse -->',
+  );
+
+  const claudeNested = JSON.parse(nestedPreToolDeny('Claude'));
+  assert.equal(claudeNested.hookSpecificOutput.additionalContext, undefined);
 
   const cursor = JSON.parse(cursorPreToolDeny());
   assert.equal(cursor.permission, 'deny');

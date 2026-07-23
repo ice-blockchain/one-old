@@ -44,26 +44,37 @@ export interface McpStdioServerEntry {
   readonly args: readonly string[];
 }
 
-// The `.mcp.json` stdio entry for the opencode-worker server. We launch via `sh -c`
-// so the shell can RESOLVE where the server script lives, because hosts disagree:
-//   - Claude/Codex set a *_PLUGIN_ROOT env var → `pluginRootExpr` resolves to the
-//     real plugin dir, so we exec `<root>/scripts/opencode-mcp.cjs` directly.
+// The `.mcp.json` stdio entry for the opencode-worker server. A small inline Node
+// bootstrap resolves where the server script lives without depending on `sh` or
+// POSIX parameter expansion, because hosts disagree:
+//   - Claude/Codex set a *_PLUGIN_ROOT env var → the first populated key resolves
+//     to the real plugin dir, so we launch `<root>/scripts/opencode-mcp.cjs` directly.
 //   - Cursor launches plugin MCP servers with a BARE env (no *_PLUGIN_ROOT) and
-//     CWD=$HOME, so `pluginRootExpr` collapses to `.` → `$HOME/scripts/...` which
+//     CWD=$HOME, so the cwd candidate points at `$HOME/scripts/...`, which
 //     does not exist (observed: MODULE_NOT_FOUND → opencode-worker dead → delegation
 //     degrades → role-gate "Couldn't start"). When the resolved path isn't a file we
 //     fall back to the VERSION-STABLE shim at `<state-home>/bin/opencode-mcp.cjs`
 //     (RUNNER_SHIMS); that shim self-locates the live plugin from the host plugin
 //     caches/local dirs with no env and no useful CWD — proven to resolve bare.
-export function openCodeMcpServerEntry(pluginRootExpr: string): McpStdioServerEntry {
-  // JS-interpolated: the host-aware plugin path (Claude/Codex). The other ${…}/$…
-  // tokens below are PLAIN string constants → emitted verbatim for the shell to expand
-  // at launch (mirrors stableBinDir(): XDG_STATE_HOME/traffic-one, else $HOME/.traffic-one).
-  const direct = `${pluginRootExpr}/${OPENCODE_MCP_SHIM_PATH}`;
-  const stateHome = '${XDG_STATE_HOME:+$XDG_STATE_HOME/traffic-one}';
-  const binFallback = '${S:-$HOME/.traffic-one}/bin/opencode-mcp.cjs';
+export function openCodeMcpServerEntry(pluginRootEnvKeys: readonly string[]): McpStdioServerEntry {
+  if (pluginRootEnvKeys.length === 0 || pluginRootEnvKeys.some((key) => !/^[A-Z][A-Z0-9_]*$/.test(key))) {
+    throw new Error('opencode MCP bootstrap requires safe plugin-root environment keys');
+  }
+  const rootKeys = pluginRootEnvKeys.map((key) => `'${key}'`).join(',');
+  const launcher = [
+    "const fs=require('fs'),os=require('os'),p=require('path'),e=process.env;",
+    `const root=p.resolve([${rootKeys}].map(k=>e[k]).find(Boolean)||process.cwd());`,
+    `const candidate=p.join(root,'${OPENCODE_MCP_SHIM_PATH}');`,
+    "const direct=fs.existsSync(candidate)?candidate:'';",
+    "const state=e.XDG_STATE_HOME?p.join(e.XDG_STATE_HOME,'traffic-one'):p.join(e.HOME||os.homedir(),'.traffic-one');",
+    "const fallback=p.join(state,'bin','opencode-mcp.cjs');",
+    "const target=direct||(fs.existsSync(fallback)?fallback:'');",
+    "if(!target){console.error('traffic-one opencode-worker MCP: server script not found in plugin roots or stable bin. Run Traffic One onboarding or reload the window after sessionStart so the stable shim exists.');process.exit(1);}",
+    "if(direct)e.TRAFFIC_ONE_PLUGIN_ROOT=p.dirname(p.dirname(direct));",
+    'require(target);',
+  ].join('');
   return {
-    command: 'sh',
-    args: ['-c', `P="${direct}"; if [ -f "$P" ]; then exec node "$P"; fi; S="${stateHome}"; B="${binFallback}"; if [ -f "$B" ]; then exec node "$B"; fi; echo "traffic-one opencode-worker MCP: server script not found at $P or $B. Run Traffic One onboarding or reload the window after sessionStart so ~/.traffic-one/bin shims exist." >&2; exit 1`],
+    command: 'node',
+    args: ['-e', launcher],
   };
 }

@@ -333,13 +333,85 @@ test('maintenance plan-batch requires a fresh run-scoped architect queue (assign
     assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run1', state), false);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
 
-    // The architect wrote a fresh run-scoped queue THIS run → plan-batch is live.
+    // A hand-copied manifest ALONE (no architect digest/agent for the run) must
+    // NOT make the queue look fresh (11c: the orchestrator copied the build's
+    // assignments.json into a small maintenance run → one dead spawn).
     fs.mkdirSync(path.join(t1, 'runs', 'run1'), { recursive: true });
     fs.writeFileSync(path.join(t1, 'runs', 'run1', 'assignments.json'),
       JSON.stringify({ version: 1, runId: 'run1', createdBy: 'senior-architect', assignments: [] }), 'utf8');
+    assert.equal(hasFreshArchitectQueueForRun(dir, 'run1'), false);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run1', state), false);
+
+    // The architect actually ran THIS run (digest on disk) → plan-batch is live.
+    fs.mkdirSync(path.join(t1, 'digests', 'run1'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'digests', 'run1', 'architect.md'),
+      '# architect digest — run run1\n\nverdict: PLAN_READY\n', 'utf8');
     assert.equal(hasFreshArchitectQueueForRun(dir, 'run1'), true);
     assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run1', state), true);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('new-project mode in MAINTENANCE does not re-run the stale build queue (8c deny #1)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmaint-'));
+  try {
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    // The durable plan.md still carries the BUILD run's queue after settlement.
+    fs.writeFileSync(path.join(t1, 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: frontend | files: a | task: t\n'
+      + '- role: backend | files: b | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = {
+      mode: 'new-project',
+      lifecycle: { phase: 'maintenance', source: 'prompt-boundary' },
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+
+    // Fresh maintenance run, no architect this run → the stale queue must not
+    // demand a Step-0 batch (mode stays "new-project" for the project's life).
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-maint', state), false);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run-maint', state), []);
+
+    // An orchestrator-copied manifest (no architect evidence) still suppresses
+    // the batch — the exact 11c "Couldn't start" trigger.
+    fs.mkdirSync(path.join(t1, 'runs', 'run-maint'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', 'run-maint', 'assignments.json'),
+      JSON.stringify({ version: 1, runId: 'run-maint', createdBy: 'senior-architect', assignments: [] }), 'utf8');
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-maint', state), false);
+
+    // A complex maintenance run that ACTUALLY re-entered the architect (fresh
+    // manifest + architect digest) re-activates the plan batch.
+    fs.mkdirSync(path.join(t1, 'digests', 'run-maint'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'digests', 'run-maint', 'architect.md'),
+      '# architect digest — run run-maint\n\nverdict: PLAN_READY\n', 'utf8');
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-maint', state), true);
+
+    // Building phase (no lifecycle yet) is unchanged: the queue gates implementers.
+    const building = { ...state, lifecycle: undefined };
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-build', building), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a recorded senior-architect agent also counts as architect-run evidence', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocagentev-'));
+  try {
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(path.join(t1, 'runs', 'run-a'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', 'run-a', 'assignments.json'),
+      JSON.stringify({ version: 1, runId: 'run-a', createdBy: 'senior-architect', assignments: [] }), 'utf8');
+    assert.equal(hasFreshArchitectQueueForRun(dir, 'run-a'), false, 'manifest alone is not evidence');
+    fs.writeFileSync(path.join(t1, 'runs', 'run-a', 'agents.json'), JSON.stringify({
+      version: 1,
+      agents: { 'senior-architect': { agentId: 'arch-1', recordedAt: 'x' } },
+    }), 'utf8');
+    assert.equal(hasFreshArchitectQueueForRun(dir, 'run-a'), true, 'registry entry is evidence');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

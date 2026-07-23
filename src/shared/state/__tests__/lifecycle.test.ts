@@ -50,11 +50,21 @@ test('markMaintenance persists the flag and is idempotent', () => {
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prefs;
   try {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(statePath(dir), JSON.stringify({ mode: 'new-project', stack: 'minimal', frontend: 'react-vite', backend: 'none' }));
+    fs.writeFileSync(statePath(dir), JSON.stringify({ mode: 'new-project', stack: 'minimal', frontend: 'react-vite', backend: 'none', currentRunId: 'run-flip' }));
+    const claimFile = path.join(dir, '.traffic-one', 'runs', 'run-flip', 'child1.json');
+    fs.mkdirSync(path.dirname(claimFile), { recursive: true });
+    fs.writeFileSync(claimFile, JSON.stringify({
+      version: 1, runId: 'run-flip', claimId: 'senior-frontend-1-a', role: 'senior-frontend',
+      status: 'claimed', createdAt: new Date().toISOString(), sessionId: 'child1',
+    }), 'utf8');
 
     assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
 
     assert.equal(markMaintenance(dir, 'heuristic'), true);
+    // The flip sweeps the settled run's claims: claimed → released.
+    const releasedClaim = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    assert.equal(releasedClaim.status, 'released');
+    assert.equal(releasedClaim.releasedReason, 'maintenance-flip');
     const after = readState(dir);
     assert.equal(projectPhase(after, after.mode), 'maintenance');
     const lifecycle = after.lifecycle as Record<string, unknown>;

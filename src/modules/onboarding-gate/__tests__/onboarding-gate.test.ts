@@ -18,6 +18,7 @@ import { captureCursorModels } from '../../../shared/materialize/cursor-models';
 import { modelGateCommand } from '../../../shared/model-gate-command';
 import { runModelPolicyPath } from '../../../shared/run-model-policy';
 import { doctorCommand } from '../../../shared/doctor-command';
+import { commitWizardLinksShown } from '../../../shared/onboarding-server/wizard-links';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
 // ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
@@ -28,6 +29,7 @@ process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
 // The dashboard deep link the gate surfaces for the seeded server record (port+token
 // in the fragment; default dashboard base since no TRAFFIC_ONE_DASHBOARD_URL is set).
 const DASH_URL = 'https://traffic.io/onboarding/agent#p=55222&t=tok';
+const LOCAL_URL = 'http://127.0.0.1:55222/local?t=tok';
 
 function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
@@ -377,14 +379,16 @@ test('existing project with Traffic One state but no local prefs: mutating tools
   });
 });
 
-test('existing project with missing local prefs: first gated call denies with the recipe, then orientation is allowed', () => {
+test('existing project with missing local prefs: claude orientation flows; the first mutating call denies with the recipe', () => {
   withProject(existingState(), (cwd) => {
-    // First gated tool of the session — even read-only orientation — denies ONCE
-    // with the full wizard recipe (the only PreToolUse channel Codex surfaces).
-    const first = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    // Claude renders a denied read as a failed tool card and its prompt-hook
+    // context is reliable, so read-only orientation flows during setup and the
+    // one-time full recipe lands on the first mutating call instead.
+    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    const first = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(first.kind, 'deny');
     if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
-    // Recipe delivered this session → subsequent read-only orientation flows.
+    // Recipe delivered this session → read-only orientation still flows.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
   });
 });
@@ -416,22 +420,57 @@ test('existing project with complete local prefs: mutating tools proceed normall
   });
 });
 
-test('incomplete new project: first gated call denies with the recipe, then orientation (ls) is allowed and mutating writes get the repeat', () => {
+test('incomplete new project: claude orientation (ls) flows, the first write gets the recipe, later writes get the repeat', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
-    const first = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
-    assert.equal(first.kind, 'deny');
-    if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
-    // Recipe delivered → subsequent read-only orientation flows.
+    // Read-only orientation flows on claude even before any deny was delivered.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
     // fd/discard redirects on a compound orientation command are not writes (B6):
     // this exact shape was denied as "setup still pending" in tests/claude/3.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', {
       command: `ls -la ${cwd} 2>/dev/null; echo "---"; ls -la ${cwd}/.traffic-one 2>/dev/null | head -40`,
     })).kind, 'noop');
+    const first = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(first.kind, 'deny');
+    if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
     // A mutating write still denies after the one-time recipe (short repeat block, still URL-bearing).
     const write = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(write.kind, 'deny');
     if (write.kind === 'deny') assert.ok(write.reason.includes(DASH_URL));
+  });
+});
+
+test('claude: link suppression stays within the conversation that already saw them', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    // Session A already received the complete recipe from another surface
+    // (session-start/prompt-submit/wait banner), before its first tool denial.
+    assert.equal(commitWizardLinksShown(
+      cwd,
+      'tok',
+      `${DASH_URL}\n${LOCAL_URL}`,
+      DASH_URL,
+      LOCAL_URL,
+      'claude-main',
+    ), true);
+    // Another surface in the SAME conversation points at the links instead of
+    // re-printing them (which can race setup completion).
+    const rawB = { tool_name: 'Write', tool_input: { file_path: 'src/b.ts', content: 'x' }, session_id: 'claude-main' };
+    const inputB: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: rawB, tool: { class: 'file-write', rawName: 'Write' } };
+    const b = onboardingGate({ input: inputB, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
+    assert.equal(b.kind, 'deny');
+    if (b.kind === 'deny') {
+      assert.ok(!b.reason.includes(DASH_URL), 'links-shown deny must not re-print the dashboard URL');
+      assert.ok(/already\s+surfaced/i.test(b.reason), 'names the links as already surfaced');
+      assert.ok(b.reason.includes("'--host=claude'"), 'still prescribes the wait command');
+      assert.ok(b.reason.includes("'--sync-session=claude-main'"), 'waiter shares the conversation-scoped marker');
+    }
+
+    // A new conversation can reuse the same live server/token, but it has not
+    // seen session A's chat. Its first deny must include the clickable URL.
+    const rawC = { tool_name: 'Write', tool_input: { file_path: 'src/c.ts', content: 'x' }, session_id: 'claude-second' };
+    const inputC: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: rawC, tool: { class: 'file-write', rawName: 'Write' } };
+    const c = onboardingGate({ input: inputC, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
+    assert.equal(c.kind, 'deny');
+    if (c.kind === 'deny') assert.ok(c.reason.includes(DASH_URL));
   });
 });
 

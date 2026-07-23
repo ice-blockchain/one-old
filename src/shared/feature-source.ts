@@ -144,6 +144,23 @@ export function isTestScopePath(filePath: unknown): boolean {
   return p.length > 0 && TEST_SCOPE_RE.test(p);
 }
 
+// Canonical test-runner config/setup files (any directory level): vitest,
+// playwright, jest, cypress `.config`/`.setup`/`.workspace` in every JS/TS
+// flavour. Deliberately NOT part of TEST_SCOPE_RE: that regex also feeds the
+// no-any style exemption, while this predicate exists for the run-team tester
+// overlay — the tester owns test INFRA, not just test files (observed 8c
+// apps/web/jest.config.js, 11c playwright.config.ts, 12c vitest.setup.ts +
+// playwright.config.ts: all correctly-scoped tester writes denied as
+// frontend-owned, forcing fix-cycle detours for test wiring). App bundler
+// configs (next.config, vite.config) stay implementer-owned.
+export const TEST_INFRA_CONFIG_RE =
+  /(?:^|\/)(?:vitest|playwright|jest|cypress)\.(?:config|setup|workspace)\.[cm]?[jt]s$/;
+
+export function isTestInfraConfigPath(filePath: unknown): boolean {
+  const p = String(filePath ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+  return p.length > 0 && TEST_INFRA_CONFIG_RE.test(p);
+}
+
 export function commandAppearsToWriteExternalTemp(command: unknown): boolean {
   if (typeof command !== 'string' || !command.trim()) return false;
   const tempPath = "(?:/tmp|/private/tmp|/var/tmp)/[^\\s'\"`;|&>]+";

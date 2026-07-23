@@ -10,6 +10,7 @@ import { subagentStartBind } from '../subagent-bind';
 import { opencodeSubagentBind } from '../opencode-subagent-bind';
 import { inferTrafficOneSpawnRole, inferTrafficOneSpawnRoleEvidence } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
+import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
@@ -87,6 +88,42 @@ test('inferTrafficOneSpawnRole filters non-candidates and fails closed only with
     'senior-architect',
     'task name outranks readable prompt evidence',
   );
+});
+
+test('inferTrafficOneSpawnRole resolves fix-cycle prompts without the "Traffic One" literal (7c Couldn\'t-start fix)', () => {
+  // Observed 7c: the orchestrator sent CHANGES_REQUESTED fixes as fresh generic
+  // workers whose prompt named only the owning role — no "Traffic One" literal,
+  // no [t1-role:] marker. Role inference returned none, the child stayed
+  // unbound, and Cursor rendered it as "New subagent — Couldn't start". The
+  // ownership phrasing must resolve to the OWNING implementer even though the
+  // findings also mention `senior-reviewer` as their source.
+  assert.equal(
+    inferTrafficOneSpawnRole({
+      subagent_type: 'general-purpose',
+      task: 'Fix CHANGES_REQUESTED item owned by senior-backend. Stay in your assignment scope.\n\n'
+        + 'Finding VERBATIM from senior-reviewer:\n\n3. `packages/api-client/src/coursesService.ts:119` — unescaped search.',
+    }),
+    'senior-backend',
+  );
+  assert.equal(
+    inferTrafficOneSpawnRole({
+      subagent_type: 'generalPurpose',
+      prompt: 'Fix CHANGES_REQUESTED items owned by senior-frontend. Stay in your assignment scope.\n\n'
+        + 'Findings VERBATIM from senior-reviewer:\n\n1. `apps/web/src/lib/seo.ts:25` — slug mismatch.',
+    }),
+    'senior-frontend',
+  );
+  // The fix-cycle re-spawn template ("You are continuing as `<role>`…") resolves too.
+  assert.equal(
+    inferTrafficOneSpawnRole({
+      prompt: 'You are continuing as `senior-frontend` in run 1784727578206, fix cycle #1. End with FIXES_APPLIED.',
+    }),
+    'senior-frontend',
+  );
+  // Without a role-bearing phrase, generic work stays unclaimed, and the weaker
+  // bare-mention tier still requires the "Traffic One" literal.
+  assert.equal(inferTrafficOneSpawnRole({ prompt: 'Fix the failing build owned by the platform team.' }), null);
+  assert.equal(inferTrafficOneSpawnRole({ prompt: 'Ping senior-backend about the schema.' }), null);
 });
 
 test('inferTrafficOneSpawnRole inspects both source envelopes and accepts outer threadSpawn camelCase', () => {
@@ -268,6 +305,26 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('the spawn gate stands down inside the plugin authoring repo', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoring-spawn-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    fs.mkdirSync(path.join(dir, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'gen', 'index.ts'), 'export {};\n', 'utf8');
+    resetAuthoringRootCache();
+    // A role-marked spawn whose prompt carries a literal un-substituted run-id
+    // placeholder — in an end-user project the run-id gate denies this shape.
+    const r = agentModelGate(spawnCtx(dir, {
+      subagent_type: 'Explore',
+      prompt: '[t1-role: senior-frontend] inspect .traffic-one/runs/<runId>/ and report',
+    }));
+    assert.equal(r.kind, 'noop');
+  } finally {
+    resetAuthoringRootCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' = 'claude', workspaceRoot?: string): Ctx {
   const input: HookInput = {
@@ -693,6 +750,88 @@ test('spawn whose prompt fabricates a non-currentRunId run-id is denied, naming 
     }));
     assert.ok(!(ok.kind === 'deny' && ok.reason.includes('run-id gate')), 'correct run-id must not trip the gate');
   });
+});
+
+test('literal <run-id> template placeholder never trips the spawn gate; Claude rewrites the child input', () => {
+  // Hermetic: the agent-reuse gate is teams-env-gated on Claude — force it off so
+  // consecutive same-role spawns exercise the run-id path, not reuse denies.
+  const prevTeams = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0';
+  try {
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-architect', model: 'opus' }));
+      const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
+      assert.ok(runId.length > 0, 'currentRunId minted');
+
+      // Template-faithful prompt (the 6c first-spawn shape): correct `Run ID:` header,
+      // literal `<run-id>` placeholders left in the runs/digests paths.
+      const spawn = agentModelGate(spawnCtx(cwd, {
+        subagent_type: 'senior-architect', model: 'opus',
+        prompt: `[t1-role: senior-architect]\nRun ID: ${runId}\n\nWrite .traffic-one/runs/<run-id>/assignments.json LAST, then the digest to .traffic-one/digests/<run-id>/architect.md`,
+      }));
+      assert.notEqual(spawn.kind, 'deny', 'placeholder prompt must not be denied');
+      // Claude supports PreToolUse input rewrite: the allow carries a FULL
+      // updatedToolInput (every field preserved) with the placeholders substituted.
+      assert.equal(spawn.kind, 'context');
+      if (spawn.kind === 'context') {
+        const updated = spawn.updatedToolInput;
+        assert.ok(updated, 'allow carries updatedToolInput');
+        assert.equal(updated?.subagent_type, 'senior-architect');
+        assert.equal(updated?.model, 'opus');
+        const rewritten = String(updated?.prompt);
+        assert.ok(!rewritten.includes('<run-id>'), 'placeholder substituted in the child prompt');
+        assert.ok(rewritten.includes(`runs/${runId}/assignments.json`));
+        assert.ok(rewritten.includes(`digests/${runId}/architect.md`));
+      }
+
+      // A fabricated id ALONGSIDE placeholders still denies — naming the fabricated
+      // id, and echoing a corrected prompt with neither it nor any placeholder left.
+      const bad = agentModelGate(spawnCtx(cwd, {
+        subagent_type: 'senior-architect', model: 'opus',
+        prompt: 'Write .traffic-one/runs/2026-06-17T13-47-00Z/assignments.json and .traffic-one/digests/<run-id>/architect.md',
+      }));
+      assert.equal(bad.kind, 'deny');
+      if (bad.kind === 'deny') {
+        assert.ok(bad.reason.includes('run-id gate'));
+        assert.ok(bad.reason.includes('2026-06-17T13-47-00Z'), 'names the fabricated id, not the placeholder');
+        assert.ok(bad.reason.includes(`runs/${runId}/assignments.json`), 'echo corrects the fabricated id');
+        assert.ok(bad.reason.includes(`digests/${runId}/architect.md`), 'echo substitutes the placeholder too');
+        assert.ok(!bad.reason.includes('<run-id>'), 'no placeholder survives into the echo');
+      }
+    });
+
+    // Non-rewrite host (fresh project so the run policy freezes for copilot): the
+    // same placeholder prompt is allowed AS-IS — no deny, no updatedToolInput; the
+    // child resolves `<run-id>` itself and the plan write-guard stays the backstop.
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      const copilot = agentModelGate(spawnCtx(cwd, {
+        subagent_type: 'senior-architect', model: 'gpt-5.6-sol',
+        prompt: '[t1-role: senior-architect]\nWrite .traffic-one/runs/<run-id>/assignments.json',
+      }, 'copilot'));
+      assert.equal(copilot.kind, 'noop');
+    });
+
+    // The 6c incident shape verbatim: the VERY FIRST spawn of the run, on Cursor,
+    // template-faithful prompt (correct `Run ID:` header, placeholder paths), exact
+    // captured Task-tool slug. Pre-6c-fix this denied as "Couldn't start"; it must
+    // now be allowed on attempt one — and Cursor (no input rewrite) gets no
+    // updatedToolInput.
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
+      assert.ok(runId.length > 0, 'run pre-minted before any spawn (as in the incident)');
+      const first = agentModelGate(spawnCtx(cwd, {
+        subagent_type: 'senior-architect', model: 'claude-fable-5-thinking-high',
+        prompt: `[t1-role: senior-architect]\nRun ID: ${runId}\n\nAlso write assignments.json to .traffic-one/runs/<run-id>/assignments.json LAST.\n\nOn finish, write handoff digest to:\n  .traffic-one/digests/<run-id>/architect.md`,
+      }, 'cursor'));
+      assert.notEqual(first.kind, 'deny', 'first Cursor architect spawn must not be denied on the template placeholder');
+      if (first.kind === 'context') {
+        assert.equal(first.updatedToolInput, undefined, 'Cursor allow carries no input rewrite');
+      }
+    });
+  } finally {
+    if (prevTeams === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+    else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = prevTeams;
+  }
 });
 
 test('Cursor: model-param requires an exact captured Task-tool slug before staking a claim', () => {
@@ -1223,7 +1362,39 @@ test('architect phase gate: blocks implementers when plan exists but baseline is
     if (denied.kind === 'deny') {
       assert.ok(denied.reason.includes('Architect phase gate'));
       assert.ok(denied.reason.includes('coding.md'));
+      assert.ok(denied.reason.includes('spawn `senior-architect`'), 'prose leads with the next action');
     }
+  });
+});
+
+test('architect phase gate stands down in MAINTENANCE once a prior assignments manifest exists (8c)', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const t1 = path.join(cwd, '.traffic-one');
+    fs.writeFileSync(path.join(t1, 'plan.md'), '# partial plan', 'utf8');
+    // Post-build state: mode stays "new-project", lifecycle flips to maintenance,
+    // and a small-tier feature starts a FRESH run with no architect artifacts.
+    const onePath = path.join(t1, '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-maint-2';
+    one.lifecycle = { phase: 'maintenance', source: 'prompt-boundary' };
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    // No assignments manifest anywhere → the gate still fires (nothing to scope by).
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('Architect phase gate'));
+
+    // The BUILD run's manifest exists → resilient scope fallback → implementer
+    // spawns first-try (task-triage small tier: no architect for a small feature).
+    fs.mkdirSync(path.join(t1, 'runs', 'run-build'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', 'run-build', 'assignments.json'), JSON.stringify({
+      version: 1,
+      runId: 'run-build',
+      createdBy: 'senior-architect',
+      assignments: [{ role: 'senior-frontend', scope: { include: ['apps/web/**'], exclude: [] } }],
+    }), 'utf8');
+    const allowed = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(allowed.kind, 'noop', allowed.kind === 'deny' ? allowed.reason : undefined);
   });
 });
 
@@ -3191,6 +3362,38 @@ test('reuse (Cursor): duplicate spawn deny names Task resume UUID after PostTool
       if (dup.kind === 'deny') {
         assert.ok(dup.reason.includes('bff46cd7-3681-4cf0-adcf-263bf55cc301'), 'deny must name Cursor resume UUID, not tool_* id');
         assert.ok(!dup.reason.includes('tool_b1b73265'), 'deny must not name tool_* id');
+      }
+    });
+  });
+});
+
+test('reuse (Cursor): a generic fix-cycle spawn ("owned by senior-X") is denied with the resume recipe instead of dying unbound (7c)', () => {
+  withMaterialized({ teamApproved: true, cursorModels: DEFAULT_CURSOR_MODELS }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-cursor-fixcycle');
+      freezeRunPolicy(cwd, 'cursor', 'run-cursor-fixcycle');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'composer-2.5-fast', prompt: 'build the API' },
+        'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 (can be used with the resume parameter)',
+        'parent-1',
+        'cursor',
+      ));
+      // Observed 7c: after CHANGES_REQUESTED the orchestrator spawned a fresh
+      // `general-purpose` Task whose prompt named the owning role only in prose.
+      // Pre-fix the role never resolved, the gate noop'd, and the unbound child
+      // died as "New subagent — Couldn't start". Now the ownership phrasing
+      // resolves the role and the reuse gate redirects to the live agent.
+      const fix = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'general-purpose',
+        model: 'composer-2.5-fast',
+        prompt: 'Fix CHANGES_REQUESTED item owned by senior-backend. Stay in your assignment scope.\n\n'
+          + 'Finding VERBATIM from senior-reviewer:\n\n3. `packages/api-client/src/coursesService.ts:119` — unescaped search filter.',
+      }, 'parent-1', 'cursor'));
+      assert.equal(fix.kind, 'deny', 'the role-less generic fix spawn must be intercepted at PreToolUse');
+      if (fix.kind === 'deny') {
+        assert.ok(fix.reason.includes('bff46cd7-3681-4cf0-adcf-263bf55cc301'), 'deny names the live backend resume UUID');
+        assert.match(fix.reason, /resume/i, 'deny teaches the Task resume continuation');
       }
     });
   });

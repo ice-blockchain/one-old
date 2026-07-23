@@ -10,13 +10,13 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { detectMode, isLikelyCodingPrompt, promptHasStackSignal } from '../../shared/detection';
+import { detectMode, isLikelyCodingPrompt, isRuntimeControlPrompt, promptHasStackSignal } from '../../shared/detection';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
-import { onboardingDeclineCommand, onboardingReconsiderCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
+import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
@@ -32,7 +32,7 @@ import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-links';
-import { maintenanceTriageDirective } from './triage-directive';
+import { maintenanceTriageDirective, unresolvedRunDirective } from './triage-directive';
 import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
 import { recordPendingModelChoiceReply } from '../agent-model/choice-reply';
 import { runSessionStartAuthed } from './session-start';
@@ -71,6 +71,8 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   initializeTrafficOneEnv(cwd, ctx.host);
 
   const raw = ctx.input.raw;
+  const sessionId = hookSessionIdentity(raw).sessionId;
+  const syncSession = onboardingSyncSessionId(sessionId);
   const promptText = ctx.input.prompt || promptTextFromSubmit(raw);
 
   // Declined project: Traffic One stays silent on every prompt. The ONE signal
@@ -82,7 +84,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       return context(
         'traffic-one — this project has Traffic One DISABLED by the user\'s own earlier choice. '
         + 'If the user is now asking to use/enable Traffic One here, run this command, then follow its output:\n'
-        + `${onboardingReconsiderCommand(cwd, ctx.host)}\n`
+        + `${onboardingReconsiderCommand(cwd, ctx.host, syncSession)}\n`
         + 'If the user is asking something else, continue without Traffic One and do not mention it.',
       );
     }
@@ -176,12 +178,12 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // no server, no URL, and no writes (seeding included) until the user answers
     // yes. The prompt rides the yes command so the runner seeds it post-yes.
     if (usePluginQuestionPending(cwd)) {
-      return context(`[ACTIVE STACK: ${stack}]\n\n${usePluginQuestion(cwd, ctx.host, promptText)}`, {
+      return context(`[ACTIVE STACK: ${stack}]\n\n${usePluginQuestion(cwd, ctx.host, promptText, syncSession)}`, {
         systemMessage: 'traffic-one [asking whether to use Traffic One]',
       });
     }
     seedOriginalPrompt(cwd, promptText);
-    const prepared = prepareOnboardingServer(cwd, ctx.host);
+    const prepared = prepareOnboardingServer(cwd, ctx.host, { syncSession });
     if (prepared.kind !== 'ready') {
       return context(`[ACTIVE STACK: ${stack}]\n\n${prepared.reason}`, {
         systemMessage: prepared.kind === 'bootstrap-required'
@@ -195,11 +197,11 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       const result = context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.dashboardUrl, server.localWizardUrl, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
         systemMessage,
       });
-      commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl);
+      commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
       return result;
     }
     if (ctx.host === 'windsurf') {
-      const first = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId);
+      const first = firstEmitThisSession(cwd, 'onboarding-deny', sessionId);
       const vars = { URL: server.dashboardUrl, LOCAL_URL: server.localWizardUrl, WAIT_CMD: waitCommand };
       const directive = first
         ? block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, server.localWizardUrl, waitCommand))
@@ -207,12 +209,12 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       const result = context(directive, {
         systemMessage: formatWizardBanner(ctx.host, server.dashboardUrl, server.localWizardUrl, 'traffic-one [setup required]'),
       });
-      commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl);
+      commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
       return result;
     }
     // Full walkthrough once per session (shared marker with the PreToolUse gate);
     // repeat prompts get the short URL + wait-command essentials.
-    const wizardBlock = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId)
+    const wizardBlock = firstEmitThisSession(cwd, 'onboarding-deny', sessionId)
       ? 'server-deny-reason'
       : 'server-deny-reason-repeat';
     // The full recipe rides additional_context (agent-facing). On Cursor that is the
@@ -230,7 +232,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     })}`, {
       systemMessage,
     });
-    commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl);
+    commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
     return result;
   }
 
@@ -249,9 +251,15 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
 
   // ── Post-build maintenance triage (appended to whatever context we return) ──
-  const openCodeReadiness = ensureOpenCodeDelegationReady(cwd, normalizedState);
-  const planBatchReminder = buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
-  const triage = maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
+  // Runtime-only local server/process commands are parent work. Do not even emit
+  // OpenCode setup/batch routing around them; maintenanceTriageDirective also skips
+  // run creation and worker instructions for this same narrow classification.
+  const runtimeControl = isRuntimeControlPrompt(promptText);
+  const unresolved = runtimeControl ? '' : unresolvedRunDirective(cwd, normalizedState, promptText, raw);
+  const parentOwned = runtimeControl || Boolean(unresolved);
+  const openCodeReadiness = parentOwned ? '' : ensureOpenCodeDelegationReady(cwd, normalizedState);
+  const planBatchReminder = parentOwned ? '' : buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
+  const triage = unresolved || maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
 
   const prefixOpenCode = [openCodeReadiness, planBatchReminder].filter(Boolean).join('\n');
 
@@ -264,7 +272,11 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
 
   if (triage) {
-    return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]\n\n${triage}`, { systemMessage: `traffic-one [${stack}] maintenance` });
+    return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]\n\n${triage}`, {
+      systemMessage: unresolved
+        ? `traffic-one [${stack}] unresolved run`
+        : `traffic-one [${stack}] maintenance`,
+    });
   }
   return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
 }

@@ -5,6 +5,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { materializeFromProjectMemoryWrite, materializeFromToolInputHints } from '../converge-from-write';
+import { GENERATED_MARKER } from '../../../shared/materialize/generated';
+import { stackFingerprint, stateVersion } from '../../../shared/state';
 
 function withProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-cfw-')));
@@ -45,6 +47,38 @@ test('materializeFromProjectMemoryWrite never imports or stamps the legacy Curso
     const out = materializeFromProjectMemoryWrite(cwd, legacy);
     assert.deepEqual(JSON.parse(fs.readFileSync(legacy, 'utf8')), payload);
     assert.doesNotMatch((out && out.systemMessage) || '', /model choice|required model/i);
+  });
+});
+
+test('materializeFromProjectMemoryWrite short-circuits an already-materialized project (reporter fires, no writes)', () => {
+  const base = { mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', onboardingComplete: true };
+  const state = {
+    ...base,
+    materializedStack: stackFingerprint(base),
+    materializedVersion: stateVersion(),
+    materializedAt: '2026-01-01T00:00:00Z',
+  };
+  withProject(state, (cwd) => {
+    const t1 = path.join(cwd, '.traffic-one');
+    fs.mkdirSync(path.join(t1, 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'rules', 'core.md'), '# core', 'utf8');
+    const skillPath = path.join(t1, 'skills', 'project-memory', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, `# project-memory\n\n${GENERATED_MARKER}\n`, 'utf8');
+    fs.writeFileSync(path.join(t1, 'manifest.json'), JSON.stringify({
+      generatedBy: 'traffic-one', stack: 'default', rules: ['rules/core.md'], skills: ['project-memory'],
+    }), 'utf8');
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), `# ctx\n\n${GENERATED_MARKER}\n`, 'utf8');
+    fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), '# claude', 'utf8');
+
+    const before = fs.statSync(skillPath).mtimeMs;
+    let reported = 0;
+    const out = materializeFromProjectMemoryWrite(cwd, path.join(t1, 'product.md'), {
+      reportOneMcp: () => { reported += 1; },
+    });
+    assert.equal(out, null, 'fresh assets → no re-materialization outcome');
+    assert.equal(reported, 1, 'the one-mcp reporter still fires');
+    assert.equal(fs.statSync(skillPath).mtimeMs, before, 'skill tree untouched');
   });
 });
 

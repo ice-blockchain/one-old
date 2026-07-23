@@ -39,6 +39,7 @@ import {
   ensureCurrentRunId,
   hasRunAgentState,
   hookSessionIdentity,
+  isMaintenancePhase,
   isSubagentThread,
   legacyRunAgentContext,
   legacyStatePath,
@@ -139,7 +140,7 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
       DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host),
     });
   }
-  commitWizardLinksShown(cwd, server.token, directive, server.dashboardUrl, server.localWizardUrl);
+  commitWizardLinksShown(cwd, server.token, directive, server.dashboardUrl, server.localWizardUrl, syncSession);
   return directive;
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
@@ -397,7 +398,12 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     // run snapshot is create-once; a later machine-global One MCP update affects
     // the next run, never children already pinned to this one.
     const team = obj(state.team);
-    if (team?.mode === 'subagents') {
+    const existingRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    // SessionStart runs before the prompt is known. Do not pre-mint a maintenance
+    // run here: runtime-only prompts must remain parent-only and create no run.
+    // Worker-routing/model gates freeze policy when an implementation prompt
+    // actually starts work. Existing runs still get their immutable policy read.
+    if (team?.mode === 'subagents' && (!isMaintenancePhase(state, mode) || existingRunId)) {
       const runId = ensureCurrentRunId(cwd, state);
       const policy = ensureRunModelPolicy(
         cwd,

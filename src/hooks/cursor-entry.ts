@@ -14,7 +14,7 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { makeCursorAdapter } from '../adapters/cursor';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { cursorPreToolDeny, hasValidHookObjectPayload, isCursorPreToolSubcommand } from './fail-closed';
+import { cursorPreToolDeny, hasValidPreToolPayload, isCursorPreToolSubcommand } from './fail-closed';
 import { asRecord, firstString } from '../adapters/coerce';
 import { parseJson } from '../shared/fsjson';
 import { canonicalOneMcpServerHint, isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
@@ -42,7 +42,7 @@ export async function runCursorHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: CURSOR_NOOP, exitCode: 0 };
-  if (isCursorPreToolSubcommand(subcommand) && !hasValidHookObjectPayload(stdin)) {
+  if (isCursorPreToolSubcommand(subcommand) && !hasValidPreToolPayload(stdin, subcommand, 'cursor')) {
     return { stdout: cursorPreToolDeny(), exitCode: 0 };
   }
   if (subcommand === 'before-mcp-execution' && isManagedCursorMcpInvocation(stdin)) {

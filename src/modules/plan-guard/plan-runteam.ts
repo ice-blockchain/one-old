@@ -5,7 +5,7 @@
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 
 import { obj, type Rec } from '../../shared/obj';
-import { isTestScopePath, roleCanWriteFeatureSource } from '../../shared/feature-source';
+import { isTestInfraConfigPath, isTestScopePath, roleCanWriteFeatureSource } from '../../shared/feature-source';
 import { matchesScope } from '../../shared/scope';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import {
@@ -247,12 +247,16 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
 
   // Tester test-path overlay: tests are interleaved inside implementer scopes
   // (the assignments manifest only carries frontend/backend), so a tester write
-  // whose EVERY target is a test-scope path is owned by the tester regardless
-  // of which assignment covers the surrounding directory. Deliberately
-  // all-or-nothing: a patch mixing a test file with real feature source falls
-  // through and still denies on the source target.
+  // whose EVERY target is a test-scope path — a test file/dir OR a canonical
+  // test-runner config/setup file (vitest/playwright/jest/cypress; observed
+  // 8c/11c/12c: the tester was denied on jest.config.js, playwright.config.ts,
+  // vitest.setup.ts as frontend-owned) — is owned by the tester regardless of
+  // which assignment covers the surrounding directory. App bundler configs
+  // (next.config, vite.config) are NOT test infra and stay implementer-owned.
+  // Deliberately all-or-nothing: a patch mixing a test target with real
+  // feature source falls through and still denies on the source target.
   if (acRole === 'senior-tester' && ownershipTargets.length > 0
-    && ownershipTargets.every(isTestScopePath)) return null;
+    && ownershipTargets.every((target) => isTestScopePath(target) || isTestInfraConfigPath(target))) return null;
 
   if (manifest && agentContext) {
     const mine = assignmentForContext(manifest, agentContext);

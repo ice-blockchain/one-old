@@ -90,11 +90,12 @@ test('Devin PreToolUse blocks scaffolding immediately and allows the ordinary wa
 test('Devin Stop gives an incomplete setup one wait-command retry without looping', async () => {
   await withSetupProject(async (cwd) => {
     const first = await runDevinHook('onboarding-stop', JSON.stringify({
-      hook_event_name: 'Stop', cwd, stop_hook_active: false,
+      hook_event_name: 'Stop', cwd, stop_hook_active: false, session_id: 'devin:stop',
     }));
     const blocked = JSON.parse(first.stdout) as { decision?: string; reason?: string };
     assert.equal(blocked.decision, 'block');
     assert.match(blocked.reason ?? '', /onboarding-wait\.cjs/);
+    assert.match(blocked.reason ?? '', /--sync-session=devin_stop/);
     assert.match(blocked.reason ?? '', /http:\/\/127\.0\.0\.1:56859\/local\?t=native/);
 
     const retry = await runDevinHook('onboarding-stop', JSON.stringify({

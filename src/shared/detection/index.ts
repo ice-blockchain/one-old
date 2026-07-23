@@ -337,6 +337,57 @@ export function isLikelyCodingPrompt(prompt: unknown): boolean {
   return CODING_INTENT_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+// Narrow operational classifier for an already-running local project. This is NOT
+// a general coding-intent signal: it is consumed only by maintenance/unresolved-run
+// routing so a parent can handle local runtime control without creating a worker run.
+// Whole-prompt anchors are deliberate. A request that also asks to fix code/config,
+// change startup behavior, or add an endpoint must continue through normal routing.
+const RUNTIME_IMPLEMENTATION_WORDS = /\b(?:add|build|chang\w*|configur\w*|creat\w*|debug|edit\w*|fix\w*|implement\w*|install\w*|modif\w*|patch\w*|refactor\w*|resolv\w*|rewrit\w*|updat\w*)\b/;
+
+function isSingleRuntimeControlClause(text: string): boolean {
+  const polite = '(?:(?:please|just|now)\\s+)*(?:(?:can|could|would|will)\\s+you\\s+)?(?:please\\s+)?';
+  const tail = '(?:\\s+(?:please|now|again|for\\s+me))?';
+  const server = '(?:the\\s+)?(?:local\\s+)?(?:vite\\s+)?(?:(?:dev(?:elopment)?|preview)\\s+)?server';
+  const action = '(?:start|stop|restart|re-start|relaunch|launch|run|kill|shut\\s+down|bring\\s+up)';
+  const portSuffix = '(?:\\s+(?:on|at)\\s+port\\s+\\d{2,5})?';
+  const patterns = [
+    new RegExp(`^${polite}${action}\\s+${server}${portSuffix}${tail}$`),
+    new RegExp(`^${polite}(?:stop|shut\\s+down)\\s+(?:and\\s+(?:then\\s+)?)(?:restart|start)\\s+${server}${portSuffix}${tail}$`),
+    // Direct package-manager runtime commands, optionally introduced by "run".
+    new RegExp(`^${polite}(?:run\\s+)?(?:npm(?:\\s+run)?|pnpm|yarn|bun(?:\\s+run)?)\\s+(?:dev|start|preview)(?:\\s+--(?:host|port)(?:[=\\s]+[\\w.:-]+)?)?${tail}$`),
+    // Server/process status checks.
+    new RegExp(`^${polite}(?:check|see)(?:\\s+(?:whether|if))?\\s+(?:the\\s+)?(?:process|pid)\\s+\\d+\\s+is\\s+(?:running|alive|up|down)${tail}$`),
+    new RegExp(`^${polite}is\\s+(?:the\\s+)?(?:process|pid)\\s+\\d+\\s+(?:running|alive|up|down)${tail}$`),
+    new RegExp(`^${polite}(?:check|inspect|show|list|find)(?:\\s+me)?(?:\\s+the)?\\s+(?:local\\s+)?(?:vite\\s+)?(?:(?:dev(?:elopment)?|preview)\\s+)?(?:server\\s+)?(?:(?:process|pid)(?:\\s+\\d+)?|port(?:\\s+\\d{2,5})?)(?:\\s+(?:status|usage))?${tail}$`),
+    new RegExp(`^${polite}(?:check|see)(?:\\s+(?:whether|if))?\\s+(?:the\\s+)?(?:(?:local\\s+)?(?:(?:dev(?:elopment)?|preview)\\s+)?server|port\\s+\\d{2,5})\\s+is\\s+(?:running|listening|open|free|available|in\\s+use|up|down)${tail}$`),
+    new RegExp(`^${polite}is\\s+(?:the\\s+)?(?:(?:local\\s+)?(?:(?:dev(?:elopment)?|preview)\\s+)?server\\s+(?:running|up|down)|port\\s+\\d{2,5}\\s+(?:open|free|available|in\\s+use|listening))${tail}$`),
+    new RegExp(`^${polite}(?:what|which)\\s+(?:process|pid)\\s+is\\s+(?:using|on|listening\\s+on)\\s+port\\s+\\d{2,5}${tail}$`),
+    new RegExp(`^${polite}(?:what(?:'s|\\s+is)|show(?:\\s+me)?)\\s+(?:running|listening)\\s+on\\s+port\\s+\\d{2,5}${tail}$`),
+    new RegExp(`^${polite}(?:stop|kill|terminate)\\s+(?:the\\s+)?(?:process|pid)(?:\\s+\\d+)?\\s+(?:(?:that\\s+is|currently)\\s+)?(?:using|on|listening\\s+on)\\s+port\\s+\\d{2,5}${tail}$`),
+    // Local server log display/tailing (read-only runtime observation).
+    new RegExp(`^${polite}(?:show|view|get|display|print|read|check|tail|stream|watch)(?:\\s+me)?\\s+(?:the\\s+)?(?:local\\s+)?(?:(?:dev(?:elopment)?|preview)\\s+)?server\\s+logs${tail}$`),
+    new RegExp(`^${polite}(?:show|view|get|display|print|read|check|tail|stream|watch)(?:\\s+me)?\\s+(?:the\\s+)?logs\\s+(?:for|from)\\s+${server}${tail}$`),
+    // In a multi-clause request the first server-control clause supplies the
+    // context, so an exactly anchored "show/view/get the logs" clause is safe.
+    new RegExp(`^${polite}(?:show|view|get|display|print|read|check|tail|stream|watch)(?:\\s+me)?\\s+(?:the\\s+)?logs${tail}$`),
+  ];
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+export function isRuntimeControlPrompt(prompt: unknown): boolean {
+  const text = String(prompt || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[.!?]+$/g, '')
+    .replace(/\s+/g, ' ');
+  if (!text || text.length > 240 || RUNTIME_IMPLEMENTATION_WORDS.test(text)) return false;
+  if (isSingleRuntimeControlClause(text)) return true;
+  // Multiple requests are operational only when EVERY clause is independently a
+  // runtime-control command. "restart the server and fix startup" therefore routes.
+  const clauses = text.split(/\s+(?:and\s+then|then|and)\s+/);
+  return clauses.length > 1 && clauses.every((clause) => isSingleRuntimeControlClause(clause));
+}
+
 // True when the prompt carries an explicit STACK signal — i.e. it reads as a real
 // project description even without an imperative coding verb. Derived from
 // classifyPromptForStack so there is ONE keyword source of truth (its backendNeed /

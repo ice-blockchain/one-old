@@ -44,6 +44,10 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
   const rawState = project.state && typeof project.state === 'object' ? project.state : null;
   const state = normalizedProjectState(project as unknown as Rec);
   const provider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+  const pluginUse = project.localPreferences?.pluginUse && typeof project.localPreferences.pluginUse === 'object'
+    ? project.localPreferences.pluginUse as Rec
+    : null;
+  const pluginExplicitlyDeclined = pluginUse?.enabled === false;
 
   if (sessionDiagnostics) {
     if (sessionDiagnostics.found === false) {
@@ -53,18 +57,13 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
         message: `Could not find Codex session ${sessionDiagnostics.id} under ${sessionDiagnostics.sessionsDir}.`,
       });
     } else {
-      if (sessionDiagnostics.hookPayloadCount === 0 && sessionDiagnostics.promptRequestCount === 0) {
+      if (sessionDiagnostics.hookPayloadCount === 0
+        && !pluginExplicitlyDeclined
+        && codexHooks?.pluginEnabled !== false) {
         findings.push({
-          severity: 'fix-needed',
-          code: 'CODEX_HOOKS_NOT_INVOKED_FOR_SESSION',
-          message: `Codex session ${sessionDiagnostics.id} contains no Traffic One hook payloads or prompt requests. Hooks likely did not run for cwd ${sessionDiagnostics.cwd || '(unknown)'}.`,
-        });
-      }
-      if (sessionDiagnostics.trafficOneInstructionInjected === false) {
-        findings.push({
-          severity: 'fix-needed',
-          code: 'TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED',
-          message: `Codex session ${sessionDiagnostics.id} did not receive Traffic One root instructions at session start. Skill metadata may still be visible, but plugin instructions were not active.`,
+          severity: 'info',
+          code: 'CODEX_HOOK_OUTPUT_NOT_OBSERVED_FOR_SESSION',
+          message: `Codex session ${sessionDiagnostics.id} contains no attributable Traffic One hook-output evidence for cwd ${sessionDiagnostics.cwd || '(unknown)'}. Hooks may have returned only intentional no-ops; use the config and trust findings to determine whether hooks were unavailable.`,
         });
       }
     }
@@ -100,27 +99,53 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
     }
   }
 
-  if (codexHooks && codexHooks.configExists) {
+  if (codexHooks) {
+    const hookTrust = codexHooks.hookTrust;
     if (codexHooks.pluginEnabled !== true) {
       findings.push({
         severity: 'fix-needed',
-        code: 'CODEX_TRAFFIC_ONE_PLUGIN_DISABLED',
-        message: 'Traffic One is not enabled in Codex config, so Codex will not invoke Traffic One hooks.',
+        code: 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED',
+        message: 'Traffic One is not enabled in Codex config, so its hooks are not runnable.',
       });
     }
-    if (
-      codexHooks.hookStateEntryCount === 0
-      || codexHooks.hookStateTrustedHashCount !== codexHooks.hookStateEntryCount
-      || (Array.isArray(codexHooks.missingHookEvents) && codexHooks.missingHookEvents.length > 0)
-    ) {
-      const missing = Array.isArray(codexHooks.missingHookEvents) && codexHooks.missingHookEvents.length > 0
-        ? ` Missing hook events: ${codexHooks.missingHookEvents.join(', ')}.`
-        : '';
+    if (hookTrust.evaluation === 'indeterminate') {
       findings.push({
         severity: 'fix-needed',
-        code: 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED',
-        message: `Traffic One Codex hook trust records are missing, disabled, or missing trusted hashes; hooks can be skipped or withheld.${missing}`,
+        code: 'CODEX_HOOK_TRUST_INDETERMINATE',
+        message: `Codex hook trust could not be verified through the official hooks/list API (${hookTrust.reason}${hookTrust.detail ? `: ${hookTrust.detail}` : ''}). Structural config alone is not proof that Traffic One hooks are runnable.`,
       });
+    } else {
+      if (
+        hookTrust.counts.discovered !== hookTrust.expectedCount
+        || hookTrust.missingKeys.length > 0
+        || hookTrust.unexpectedKeys.length > 0
+      ) {
+        const missing = hookTrust.missingKeys.length > 0 ? ` Missing: ${hookTrust.missingKeys.join(', ')}.` : '';
+        const unexpected = hookTrust.unexpectedKeys.length > 0 ? ` Unexpected: ${hookTrust.unexpectedKeys.join(', ')}.` : '';
+        findings.push({
+          severity: 'fix-needed',
+          code: 'CODEX_TRAFFIC_ONE_HOOK_ABI_MISMATCH',
+          message: `Codex discovered ${hookTrust.counts.discovered}/${hookTrust.expectedCount} exact Traffic One hook keys.${missing}${unexpected}`,
+        });
+      }
+      if (codexHooks.pluginEnabled === true && hookTrust.counts.disabled > 0) {
+        findings.push({
+          severity: 'fix-needed',
+          code: 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED',
+          message: `${hookTrust.counts.disabled} Traffic One Codex hook${hookTrust.counts.disabled === 1 ? ' is' : 's are'} disabled.`,
+        });
+      }
+      if (
+        hookTrust.counts.modified > 0
+        || hookTrust.counts.untrusted > 0
+        || hookTrust.counts.runnable !== hookTrust.expectedCount
+      ) {
+        findings.push({
+          severity: 'fix-needed',
+          code: 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED',
+          message: `Traffic One Codex hooks are not fully trusted (${hookTrust.counts.modified} modified, ${hookTrust.counts.untrusted} untrusted, ${hookTrust.counts.runnable}/${hookTrust.expectedCount} runnable).`,
+        });
+      }
     }
     if (codexHooks.trustCovered === false) {
       findings.push({

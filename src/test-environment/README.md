@@ -13,7 +13,8 @@ npm run test:env
 # See the planned matrix + resolved host commands without running anything.
 npm run test:env:dry
 
-# Also drive host CLIs end-to-end (real LLM spend; builds dist + updates hosts first).
+# Production release gate: drive host CLIs end-to-end, prove the current dist at
+# runtime, and fail on FAIL, SKIP, or INCONCLUSIVE (real LLM spend).
 npm run test:env:e2e
 ```
 
@@ -29,11 +30,11 @@ npm run test:env:e2e
 | `--category=feature-onboarding` | Restrict to one or more categories. |
 | `--case=onb-balanced-modeloverride` | Run specific case ids. |
 | `--verdict-host=claude\|codex\|cursor\|none` | Spawn a final "plugin tester" agent to write `verdict.md`. Default `none`. |
-| `--no-build` / `--no-install` | Skip refreshing `dist` / updating hosts (e2e only). |
+| `--no-build` / `--no-install` | Skip refreshing `dist` / updating hosts (e2e only). `--no-install` cannot pass Codex's staged-marketplace proof; Claude/OpenCode/Kilo use session/per-case proof. |
 | `--concurrency=N` | Parallel case workers. **Keep at 1** unless you understand the env-isolation note below. |
 | `--timeout=900000` | Per host-e2e case timeout (ms). |
 | `--auth=on\|off` | Auth gate. Harness default `off`; production defaults to enforced. |
-| `--strict` | Treat SKIP/INCONCLUSIVE as failure for the exit code. |
+| `--strict` | Treat SKIP/INCONCLUSIVE as failure for the exit code. A declared unavailable host capability is reported separately as `UNSUPPORTED`. |
 | `--runs-dir=<path>` | Override where run folders are created (default `~/traffic-one-test-runs`). Must be **outside** this repo. |
 | `--reassert=<runDir>` | Re-evaluate a prior run's assertions against its **persisted** projects — no host calls, no token spend. For iterating on assertions or re-scoring a timed-out run. |
 | `--dry-run` | Print the plan and exit. |
@@ -46,7 +47,9 @@ so it can take 15–30 min and may hit `--timeout`. A `TIMEOUT` is not a failure
 assertions still evaluate the partial project (materialization, files), and a
 cut-off missing file is reported `INCONCLUSIVE`, never `FAIL`. Output uses
 `stream-json`, so a killed run still leaves a partial transcript in `stdout.log`.
-To re-score a timed-out run after it persisted, use `--reassert=<runDir>`.
+To re-score a timed-out run after it persisted, use `--reassert=<runDir>`. The
+production `test:env:e2e` script is strict, so any resulting `INCONCLUSIVE`
+assertion still makes the release gate fail.
 
 ### Where everything lands
 
@@ -105,7 +108,8 @@ project would never get a `.one.json`.
   `export const assertion: Assertion`. It is auto-discovered. Reuse the real
   `src/` helpers (`util.ts` exposes `effState`) so expected values track the plugin.
 - **Add / fix a host** → edit `config/hosts.ts`. Commands are token templates
-  (`{PROMPT} {MODEL} {CWD} {OUTPUT_FORMAT} {DIST} {PROMPT_FILE}`), so a flag fix
+  (`{PROMPT} {MODEL} {CWD} {OUTPUT_FORMAT} {DIST} {PROMPT_FILE}` plus
+  `{MARKETPLACE_ROOT} {MARKETPLACE}` for staged install commands), so a flag fix
   needs no code change. Only `claude` is `verified: true`; **Codex and Cursor
   command shapes are DEFAULTS-TO-VERIFY** — confirm them before trusting e2e
   results on those hosts.
@@ -125,11 +129,29 @@ project would never get a `.one.json`.
   the report (e.g. `host error: 401 Failed to authenticate`) and host-e2e
   assertions return SKIP, never false failures.
 - **Headless multi-agent determinism**: the senior-engineer team may not spawn
-  subagents in a headless `-p`/`exec` session. So `digests-terminal` /
-  `run-manifest-roles` return `INCONCLUSIVE` (not `FAIL`) when no orchestrated
-  run is found — the deterministic guarantees live in the pure-Node layer.
-- **Host content freshness**: `--e2e` runs `npm run plugin:build` and re-installs
-  via the marketplace. Claude caches by version, so to force fresh *content* bump
-  the plugin version; `TRAFFIC_ONE_PLUGIN_ROOT` always points runtime scripts at
-  the latest `dist`. Cursor is a live dir pointer — run `/add-plugin <dist>` once
-  inside the editor (the harness can't script that and prints a reminder).
+  subagents in a headless `-p`/`exec` session. A host explicitly declaring this
+  limitation reports `digests-terminal` / `run-manifest-roles` as `UNSUPPORTED`
+  only after a completed host run that never activated a run id; strict releases
+  do not fail for that absent host capability. Once a run id or artifact exists,
+  missing digests/manifests remain `INCONCLUSIVE` and a manifest missing a seeded
+  frontend/backend implementer assignment is `FAIL`. Unknown support, timeouts,
+  partial manifests, contradictions, and every ordinary `INCONCLUSIVE` remain
+  strict failures.
+- **Host content freshness**: `--e2e` runs `npm run plugin:build`. Claude and
+  Codex receive byte-level freshness proof rather than trusting install status.
+  The harness temporarily injects a unique, hard-coded token writer into each
+  selected compiled hook entrypoint and restores `dist` byte-for-byte afterward;
+  every host case must receive that exact token from the expected entrypoint.
+  A stale same-version cache cannot copy the current expected token from the
+  environment, and host subprocesses never inherit checkout/plugin-root overrides.
+  Claude excludes user plugin settings and loads the selected `dist` directly
+  with `--plugin-dir`, bypassing its version cache. Codex copies `dist` into a
+  unique, content-addressed marketplace under `<runs-dir>/.marketplaces`, gives
+  the staged plugin a hash-derived cache version, installs it with hook-trust
+  bypass enabled only inside the isolated harness workspace, then removes only
+  that exact E2E plugin/marketplace after validating its marker and containment.
+  OpenCode and Kilo install current wrappers inside every isolated case. Cursor
+  remains the sole manual live-pointer exemption because `/add-plugin` is
+  editor-only, but its compiled Cursor entrypoint must emit the same unique token;
+  a missing or stale pointer therefore fails even when a generic model could
+  complete the requested edit without Traffic One.

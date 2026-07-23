@@ -140,7 +140,7 @@ Before your final reply, write your handoff digest to:
 .traffic-one/digests/<run-id>/frontend.md
 ```
 
-Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at, Touched (file paths only — no contents), Public contracts (delta only — what API shape the UI now consumes), Open questions / blockers / assumptions (especially backend contract assumptions), Next-phase reading hints for reviewer + tester (which 2–4 files matter most). Cap at ~2 KB.
+Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at, Touched (file paths only — no contents), Public contracts (delta only — what API shape the UI now consumes), Open questions / blockers / assumptions (especially backend contract assumptions), Next-phase reading hints for reviewer + tester (which 2–4 files matter most). Cap at ~2 KB. Verdict token: `IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED, CHANGES_REQUESTED, or TESTS_GREEN; those belong to other roles.
 
 ## Hard rules
 
@@ -152,6 +152,11 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
   `t()` for rich copy with links, React elements, emphasis, line breaks, or rich
   interpolation. Every interactive element has a `:focus-visible` ring and an
   `aria-label` when the visible label is insufficient.
+- Never add `@ts-nocheck`, `@ts-ignore`, or an equivalent broad type-check
+  suppression to make a handoff pass. Narrow or convert boundary data into the
+  planned domain types explicitly. When a live repository/API succeeds, every
+  affected rendered surface must consume that returned data; demo fixtures are
+  allowed only for absent configuration, empty results, or handled errors.
 - Missing Supabase config must never render a setup CTA without `href="https://traffic.io/"`; reviewer/tester should be able to find a regression test for it.
 - Public web routes must not ship without SEO metadata/assets and route
   metadata tests. Private/admin routes must use `noindex,nofollow`.

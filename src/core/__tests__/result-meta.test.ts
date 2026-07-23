@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { context, deny, followup, mergeResults } from '../result';
+import { context, deny, followup, mergeResults, noop } from '../result';
 import { makeClaudeAdapter } from '../../adapters/claude';
 import { makeCursorAdapter } from '../../adapters/cursor';
 import type { HookInput } from '../types';
@@ -55,4 +55,24 @@ test('mergeResults keeps first systemMessage/promptRequest/followupMessage + con
 
 test('followup rejects empty continuation text', () => {
   assert.deepEqual(followup('   '), { kind: 'noop' });
+});
+
+test('updatedToolInput survives the context builder and merge (first one wins)', () => {
+  // A rewrite-only allow (no context text) must NOT collapse to noop…
+  const rewriteOnly = context('', { updatedToolInput: { prompt: 'x' } });
+  assert.equal(rewriteOnly.kind, 'context');
+  // …and mergeResults propagates the first updatedToolInput seen.
+  const merged = mergeResults([
+    noop(),
+    context('', { updatedToolInput: { prompt: 'first' } }),
+    context('note', { updatedToolInput: { prompt: 'second' } }),
+  ]);
+  assert.equal(merged.kind, 'context');
+  if (merged.kind === 'context') {
+    assert.deepEqual(merged.updatedToolInput, { prompt: 'first' });
+    assert.equal(merged.context, 'note');
+  }
+  // A deny still wins outright — no rewrite rides a blocked call.
+  const denied = mergeResults([context('', { updatedToolInput: { prompt: 'x' } }), deny('no')]);
+  assert.equal(denied.kind, 'deny');
 });

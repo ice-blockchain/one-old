@@ -38,8 +38,15 @@ function withProject(stateObj: Record<string, unknown>, authed: boolean, fn: (cw
   }
 }
 
-function ctxFor(cwd: string, command: string, raw: Record<string, unknown> = {}): Ctx {
-  const input: HookInput = { event: 'PostToolUse', host: 'claude', cwd, raw, tool: { class: 'shell' as ToolClass, rawName: 'Bash', command } };
+function ctxFor(cwd: string, command: string, raw: Record<string, unknown> = {}, workspaceRoot?: string): Ctx {
+  const input: HookInput = {
+    event: 'PostToolUse',
+    host: 'claude',
+    cwd,
+    raw,
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+    tool: { class: 'shell' as ToolClass, rawName: 'Bash', command },
+  };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
@@ -51,6 +58,21 @@ test('page-speed fires after a web production build (authed)', () => {
       assert.ok(r.context.includes('Lighthouse'));
       assert.equal(r.systemMessage, 'traffic-one page-speed gate pending after build');
     }
+  });
+});
+
+test('page-speed resolves a nested monorepo build to the onboarded workspace root', () => {
+  withProject({ mode: 'new-project', stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ workspaces: ['apps/*'] }), 'utf8');
+    const app = path.join(cwd, 'apps', 'web');
+    fs.mkdirSync(app, { recursive: true });
+    fs.writeFileSync(path.join(app, 'package.json'), '{}', 'utf8');
+
+    const r = postBuildPageSpeed(ctxFor(app, 'pnpm build', {}, cwd));
+
+    assert.equal(r.kind, 'context');
+    assert.equal(fs.existsSync(path.join(app, '.traffic-one')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', '.once', 'pagespeed-advisory-nosession')), true);
   });
 });
 

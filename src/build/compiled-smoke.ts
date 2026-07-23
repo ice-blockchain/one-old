@@ -132,8 +132,17 @@ async function main(): Promise<void> {
     const windsurfCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-windsurf-'));
 
     const claudeStdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(claudeCwd, 'x.ts'), content: 'export const x = 1;' }, cwd: claudeCwd });
-    const claudeOut = JSON.parse(runShim(scratch, 'hook-runtime.cjs', 'check-plan-write', claudeStdin, env) || '{}');
+    const claudeOut = JSON.parse(runShim(
+      scratch,
+      'hook-runtime.cjs',
+      'check-plan-write',
+      claudeStdin,
+      { ...env, TRAFFIC_ONE_HOST: 'claude' },
+    ) || '{}');
     if (claudeOut.hookSpecificOutput?.permissionDecision !== 'deny') fail('hook-runtime.cjs shim did not deny an unauthed write');
+    if (String(claudeOut.hookSpecificOutput?.additionalContext || '').includes('traffic-one-hook-context:v1')) {
+      fail('Claude hook context incorrectly carried the Codex-only provenance marker');
+    }
 
     const cursorOut = JSON.parse(runShim(scratch, 'cursor-hook-runtime.cjs', 'before-shell-execution', JSON.stringify({ cwd: cursorCwd, command: 'npm run build' }), env) || '{}');
     if (cursorOut.permission !== 'deny') fail('cursor-hook-runtime.cjs shim did not deny an unauthed shell');
@@ -231,7 +240,11 @@ async function main(): Promise<void> {
     }
     const decision = codexOnboardingOut.hookSpecificOutput?.permissionDecision;
     const reason = String(codexOnboardingOut.hookSpecificOutput?.permissionDecisionReason || '');
+    const codexEvidence = String(codexOnboardingOut.hookSpecificOutput?.additionalContext || '');
     if (decision !== 'deny') fail('built Codex hook did not fail closed when ~/.traffic-one was unavailable');
+    if (!codexEvidence.startsWith('<!-- traffic-one-hook-context:v1 event=PreToolUse -->')) {
+      fail('built Codex hook context did not carry the versioned provenance marker');
+    }
     if (!reason.includes('(EPERM)')) fail('built Codex deny did not preserve the canonical user-state EPERM');
     if (!reason.includes('TRAFFIC_ONE_SETUP_READY') || !reason.includes('Setup link:')) {
       fail('built Codex deny did not explain how the approved bootstrap returns the live setup link');
@@ -548,6 +561,9 @@ async function main(): Promise<void> {
       }), { TRAFFIC_ONE_HOST: 'codex' });
       if (codexFallback.hookSpecificOutput?.permissionDecision !== 'deny') fail('Codex missing-modules fallback was not a deny');
       assertReason('Codex', codexFallback.hookSpecificOutput?.permissionDecisionReason);
+      if (codexFallback.hookSpecificOutput?.additionalContext !== '<!-- traffic-one-hook-context:v1 event=PreToolUse -->') {
+        fail('Codex missing-modules fallback had no versioned provenance marker');
+      }
 
       const cursorFallback = invokeJson('Cursor', 'cursor-hook-runtime.cjs', 'before-shell-execution', JSON.stringify({
         cwd: authTmp, command: 'pwd',

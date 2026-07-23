@@ -11,7 +11,9 @@ import * as path from 'path';
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { authSatisfied } from '../../shared/auth';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { firstEmitThisSession } from '../../shared/once';
 import { hookSessionIdentity, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
@@ -24,9 +26,10 @@ export function resetGraphifyHintThrottle(): void {
 }
 
 export function preGraphifyHint(ctx: Ctx): HookResult {
-  if (pluginUseDeclined(ctx.cwd)) return noop();
+  if (isNonProjectRoot(ctx.cwd)) return noop();
+  const cwd = resolveProjectRoot(ctx.cwd, ctx.input.tool?.filePath, { ceiling: ctx.input.workspaceRoot });
+  if (isNonProjectRoot(cwd) || pluginUseDeclined(cwd)) return noop();
   if (!authSatisfied()) return noop();
-  const cwd = ctx.cwd;
   if (graphifyHintSentForCwd === cwd) return noop();
 
   const state = readEffectiveState(cwd);

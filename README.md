@@ -58,17 +58,55 @@ invalidate `one.json.auth`.
 
 Codex only invokes plugin hooks inside trusted workspaces. If a project is
 created in an untrusted folder, Traffic One cannot fail closed from inside the
-hook because the hook never starts. Run `node scripts/doctor.cjs` from an
-installed plugin root, or `node dist/scripts/doctor.cjs` from this source
-checkout after `npm run plugin:build`, to verify the Codex plugin is enabled,
-Traffic One hook trust records are present, and the current `cwd` is covered by
-a trusted project root. Trust the generated-project parent or create projects
-under Codex's trusted default project root before starting Traffic One work.
+hook because the hook never starts. Traffic One onboarding is itself started by
+those hooks, so onboarding cannot recover inactive or withheld hooks. Traffic
+One never auto-approves Codex hook trust.
 
-If Traffic One skills are visible but hooks or root instructions were not
-injected, do not treat that as a safe inactive state. Run
+### Codex Desktop hook-trust activation
+
+On the first Traffic One installation, activate its hook fixture before starting
+Traffic One work:
+
+1. In Codex Desktop, open **Plugins → Traffic One → Hooks → Review**.
+2. Inspect every displayed command. The installed plugin must show exactly the
+   15 Traffic One hook keys and commands shipped in its `hooks/hooks.json`
+   fixture. Only when both the count and the keys/commands match, choose
+   **Trust all**.
+3. If Desktop offers **Reload**, use it; otherwise fully restart Desktop. Open a
+   new task in a trusted project so the newly trusted session hooks can run.
+4. Run `node ~/.traffic-one/bin/doctor.cjs` from that project. Do not proceed
+   until Doctor reports `HEALTHY` with **15 trusted / 15 runnable** Traffic One
+   hooks and confirms that the workspace is covered by a trusted project root.
+
+If the review shows any other count, hook key, or command, do **not** choose
+**Trust all**. Reinstall or update Traffic One, reopen the review, and compare
+it with the installed fixture again. A partial selection, cancelling the
+review, or choosing **Continue without trusting** leaves Doctor at
+`ACTION_NEEDED`; there is no supported degraded Traffic One mode.
+
+If Desktop cannot complete the review, use the CLI fallback without running
+Desktop and the CLI concurrently:
+
+1. Fully quit Codex Desktop.
+2. From a trusted project, start `codex`, run `/hooks`, inspect the 15 fixture
+   entries, and approve only Traffic One. Do not approve unrelated plugin hooks.
+3. Exit the CLI, restart Desktop, open a new task in that trusted project, and
+   rerun Doctor until it reports **15 trusted / 15 runnable**.
+
+Run `node scripts/doctor.cjs` from an installed plugin root, or
+`node dist/scripts/doctor.cjs` from this source checkout after
+`npm run plugin:build`, to verify the Codex plugin is enabled, Traffic One hook
+trust records are present, and the current `cwd` is covered by a trusted project
+root. Trust the generated-project parent or create projects under Codex's
+trusted default project root before starting Traffic One work.
+
+If Traffic One skills are visible but hooks did not run, or an opted-in project
+was not materialized with its root instructions, do not treat that as a safe
+inactive state. Run
 `node dist/scripts/doctor.cjs --session <session-id>` from this source checkout
-to inspect the Codex transcript.
+to inspect the Codex transcript. Incident mode anchors project preferences,
+hook trust, and project-state probes to the cwd recorded in that session rather
+than to this source checkout.
 Traffic One implementation remains gated until the project has `pluginUse`
 enabled and the canonical API-key record is valid. If the user declines the
 plugin, ordinary work continues without Traffic One features.
@@ -87,7 +125,7 @@ plugin, ordinary work continues without Traffic One features.
 │   ├── rules/               ← Shared rule templates generated from src/modules/**/rules
 │   ├── agents/              ← Senior role docs generated from src/modules/**/agent.md
 │   ├── CLAUDE.md            ← Claude Code entry point
-│   ├── AGENTS.md            ← Codex CLI and OpenCode rule entry point
+│   ├── AGENTS.md            ← project-materialization source and cross-host rule mirror
 │   ├── settings.json        ← Claude Code hooks
 │   ├── hooks/hooks.json     ← Codex CLI hooks
 │   ├── hooks/hooks-copilot.json ← GitHub Copilot hooks
@@ -179,12 +217,17 @@ source metadata lives in skill frontmatter; the readable source map lives in
 | "review this Go service" | language skills |
 | "audit this UI design system" | frontend/design skills |
 
-### Rules auto-attach
-Path-scoped rules load only when a matching file is open — zero token cost otherwise:
+### Rule loading by host
+Cursor path-scoped rules load only when a matching file is open — zero token cost otherwise:
 - Open `src/components/Button.tsx` → component rules appear in context
 - Open `src/pages/DashboardPage.tsx` → UI quality, typography, accessibility, and design-quality rules appear
 - Open `src/services/users.ts` → service + security rules appear
 - Open `Button.test.tsx` → testing rules appear
+
+Codex instead loads the project-materialized root `AGENTS.md` rule index and
+reads the matching rule bodies on demand. Plugin-root `AGENTS.md` is retained as
+materialization source and for cross-host compatibility; Codex does not inject
+it directly from the plugin manifest.
 
 ### Generated plugin automation
 Regenerate generated artifacts after editing content under `src/modules/`:
@@ -315,6 +358,10 @@ a generated local checkout. Run `npm run plugin:build`, then replace
 `/absolute/path/to/traffic-one/dist` with this repo's generated `dist` path, for
 example `/Users/John/Projects/traffic-one/dist`.
 
+Traffic One requires Node.js 22 or newer on `PATH`; its generated runtime package
+also declares this requirement so host and CI installations can reject an
+incompatible Node version early.
+
 ### Claude Code
 
 ```
@@ -324,8 +371,15 @@ claude plugin install traffic-one@traffic-one --scope user
 
 ### Codex CLI
 
+Codex marketplaces and plugins are separate directories. Stage the generated
+plugin under the marketplace root before registering that root:
+
 ```
-codex plugin marketplace add /absolute/path/to/traffic-one/dist
+mkdir -p /absolute/path/to/traffic-one-codex-marketplace/.agents/plugins
+mkdir -p /absolute/path/to/traffic-one-codex-marketplace/plugins/traffic-one
+rsync -a --delete /absolute/path/to/traffic-one/dist/ /absolute/path/to/traffic-one-codex-marketplace/plugins/traffic-one/
+cp /absolute/path/to/traffic-one/dist/.agents/plugins/marketplace.json /absolute/path/to/traffic-one-codex-marketplace/.agents/plugins/marketplace.json
+codex plugin marketplace add /absolute/path/to/traffic-one-codex-marketplace
 codex plugin add traffic-one@traffic-one-local
 ```
 

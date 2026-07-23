@@ -16,9 +16,10 @@ re-grepping the repo.
 
 `.traffic-one/digests/<run-id>/<role>.md`
 
-- `<run-id>` — orchestrator's session timestamp, format `YYYY-MM-DDTHH-MM-SSZ`.
-  The orchestrator generates it once in Phase 0 and passes it to every
-  subagent in their synthetic prompt.
+- `<run-id>` — the exact `currentRunId` persisted by Traffic One (new runs use
+  an epoch-millisecond digit string). The orchestrator reads it once in Phase 0
+  and passes that exact value to every subagent; roles never synthesize or
+  reformat a run id.
 - `<role>` — one of `architect`, `frontend`, `backend`, `reviewer`, `tester`,
   `shipper`. One file per role, overwritten on re-spawn within the same run
   (e.g. when reviewer requests changes and the implementer runs again).
@@ -28,8 +29,8 @@ re-grepping the repo.
 ```markdown
 # <role> digest — run <run-id>
 
-verdict: PLAN_READY | APPROVED | CHANGES_REQUESTED | TESTS_GREEN | TESTS_FAILING | SHIPPED
-finished_at: <ISO-8601 UTC>
+verdict: <YOUR OWN role's token ONLY — architect: PLAN_READY · frontend/backend: IMPLEMENTED or BLOCKED <one-line reason> · reviewer: APPROVED or CHANGES_REQUESTED · tester: TESTS_GREEN or TESTS_FAILING · shipper: SHIPPED or FAILED. Never borrow another role's token: an implementer digest must not say PLAN_READY, APPROVED, or CHANGES_REQUESTED (observed live: a backend digest claiming PLAN_READY and a frontend digest claiming CHANGES_REQUESTED).>
+finished_at: <ISO-8601 UTC — run `date -u +%Y-%m-%dT%H:%M:%SZ` for the real value; never guess, hand-compute an elapsed time, or write a midnight/future placeholder. Traffic One host-stamps this line with the real write-time and OVERWRITES any value that is malformed, in the future, dated before the run began, or minutes older than the actual write (stale/backdated) — a fabricated timestamp is silently corrected, not trusted.>
 
 ## Touched
 - path/to/file.ts        # one-line note on what changed

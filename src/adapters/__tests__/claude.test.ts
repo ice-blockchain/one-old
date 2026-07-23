@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { makeClaudeAdapter } from '../claude';
 import { dispatch } from '../../core/dispatch';
 import { context, deny, noop } from '../../core/result';
-import type { Handler } from '../../core/types';
+import type { Handler, HookInput } from '../../core/types';
 
 const claude = makeClaudeAdapter('claude');
 
@@ -53,6 +53,53 @@ test('claude: SessionStart context → additionalContext JSON', async () => {
   assert.equal(parsed.hookSpecificOutput.additionalContext, 'hello session');
 });
 
+test('claude: PreToolUse updatedToolInput → hookSpecificOutput.updatedInput; codex never emits it', () => {
+  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd: '/tmp/p', raw: {} };
+  const updated = { subagent_type: 'senior-architect', model: 'opus', prompt: 'runs/123/x' };
+  // Rewrite-only allow: updatedInput carried, empty additionalContext omitted,
+  // and NO permissionDecision — the normal permission flow stays untouched.
+  const out = JSON.parse(claude.serialize(context('', { updatedToolInput: updated }), input));
+  assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.deepEqual(out.hookSpecificOutput.updatedInput, updated);
+  assert.equal('additionalContext' in out.hookSpecificOutput, false);
+  assert.equal('permissionDecision' in out.hookSpecificOutput, false);
+  // Context text and updatedInput can ride together.
+  const both = JSON.parse(claude.serialize(context('note', { updatedToolInput: updated }), input));
+  assert.equal(both.hookSpecificOutput.additionalContext, 'note');
+  assert.deepEqual(both.hookSpecificOutput.updatedInput, updated);
+  // Non-PreToolUse events never carry updatedInput.
+  const post = JSON.parse(claude.serialize(
+    context('note', { updatedToolInput: updated }),
+    { ...input, event: 'PostToolUse' },
+  ));
+  assert.equal('updatedInput' in post.hookSpecificOutput, false);
+  // Codex has no documented input rewrite — the meta is dropped, its evidence-marked
+  // additionalContext channel stays intact.
+  const codexOut = JSON.parse(makeClaudeAdapter('codex').serialize(
+    context('note', { updatedToolInput: updated }),
+    { ...input, host: 'codex' },
+  ));
+  assert.equal('updatedInput' in codexOut.hookSpecificOutput, false);
+  assert.ok(String(codexOut.hookSpecificOutput.additionalContext).includes('note'));
+});
+
+test('codex: context carries versioned Traffic One provenance while Claude remains byte-for-byte unchanged', () => {
+  const input = { event: 'SessionStart' as const, host: 'codex' as const, cwd: '/tmp/p', raw: {} };
+  const codex = JSON.parse(makeClaudeAdapter('codex').serialize(context('hello session'), input));
+  assert.equal(
+    codex.hookSpecificOutput.additionalContext,
+    '<!-- traffic-one-hook-context:v1 event=SessionStart -->\nhello session',
+  );
+  assert.equal(makeClaudeAdapter('codex').serialize(context(''), input), '');
+  const metaOnly = JSON.parse(makeClaudeAdapter('codex').serialize(
+    context('', { systemMessage: 'visible only', promptRequest: { id: 'confirm' } }),
+    input,
+  ));
+  assert.equal(metaOnly.systemMessage, 'visible only');
+  assert.deepEqual(metaOnly.promptRequest, { id: 'confirm' });
+  assert.equal(metaOnly.hookSpecificOutput.additionalContext, '');
+});
+
 test('claude: no matching handler → empty stdout (noop)', async () => {
   const out = await dispatch(claude, [], {
     stdin: JSON.stringify({ hook_event_name: 'PostToolUse' }),
@@ -74,6 +121,10 @@ test('codex: exec_command hits the SAME canonical shell gate as Claude Bash', as
   const parsed = JSON.parse(await dispatch(codex, handlers, { stdin, argv: [] }));
   assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
   assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'blocked');
+  assert.equal(
+    parsed.hookSpecificOutput.additionalContext,
+    '<!-- traffic-one-hook-context:v1 event=PreToolUse -->',
+  );
 });
 
 test('codex: namespaced multi-agent spawn hits spawn-agent gates', async () => {
@@ -114,8 +165,22 @@ test('codex: exec_command parses cmd/workdir and routes context to the inner app
       cwd: root,
     });
     const parsed = JSON.parse(await dispatch(codex, handlers, { stdin, argv: [] }));
-    assert.equal(parsed.hookSpecificOutput.additionalContext, `cwd=${child}\ncommand=npm test`);
+    assert.equal(
+      parsed.hookSpecificOutput.additionalContext,
+      `<!-- traffic-one-hook-context:v1 event=PreToolUse -->\ncwd=${child}\ncommand=npm test`,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('codex: deny context carries a PreToolUse provenance marker without changing the reason', () => {
+  const codex = makeClaudeAdapter('codex');
+  const input = { event: 'PreToolUse' as const, host: 'codex' as const, cwd: '/tmp/p', raw: {} };
+  const parsed = JSON.parse(codex.serialize(deny('blocked', { context: 'repair this state' }), input));
+  assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'blocked');
+  assert.equal(
+    parsed.hookSpecificOutput.additionalContext,
+    '<!-- traffic-one-hook-context:v1 event=PreToolUse -->\nrepair this state',
+  );
 });

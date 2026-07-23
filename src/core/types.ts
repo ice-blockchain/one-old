@@ -75,6 +75,11 @@ export interface ResultMeta {
   // agent_message branch text. Inert on Claude/Codex (they serialize it as a plain deny).
   readonly askUser?: boolean;
   readonly agentMessage?: string;
+  // Claude only: replace the tool call's input before it runs (PreToolUse
+  // `hookSpecificOutput.updatedInput` — a FULL replacement of tool_input, so it
+  // must carry every field, not a patch). Carried on an allow-path context
+  // result; every other host/event serializer ignores it.
+  readonly updatedToolInput?: Record<string, unknown>;
 }
 
 // The canonical decision. The adapter serialises it to each host's wire shape;

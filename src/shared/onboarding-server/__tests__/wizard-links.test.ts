@@ -17,8 +17,13 @@ test('wizard link marker is committed only by a payload containing dashboard and
     assert.equal(wizardLinksShownWithin(cwd, token, 60_000), false);
 
     const complete = { context: `Setup: ${dashboard}\nDirect local fallback: ${local}` };
-    assert.equal(commitWizardLinksShown(cwd, token, complete, dashboard, local), true);
-    assert.equal(wizardLinksShownWithin(cwd, token, 60_000), true);
+    assert.equal(commitWizardLinksShown(cwd, token, complete, dashboard, local, 'session-a'), true);
+    assert.equal(wizardLinksShownWithin(cwd, token, 60_000, 'session-a'), true);
+    assert.equal(commitWizardLinksShown(cwd, token, complete, dashboard, local, 'session:punctuated'), true);
+    assert.equal(wizardLinksShownWithin(cwd, token, 60_000, 'session_punctuated'), true,
+      'raw host ids and --sync-session ids resolve to the same normalized marker');
+    assert.equal(wizardLinksShownWithin(cwd, token, 60_000, 'session-b'), false,
+      'a new conversation reusing the server token must receive its own links');
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

@@ -10,11 +10,13 @@ import { detectMode } from '../../shared/detection';
 import { isPathWithin, projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import {
+  hasMaterializedProjectAssets,
   type MaterializeOutcome,
   materializeProjectAssets,
   materializeProjectIfNeeded,
 } from '../../shared/materialize';
 import {
+  isMaterialized,
   normalizeState,
   readEffectiveState,
   stackFingerprint,
@@ -47,6 +49,13 @@ function materializeProjectMemoryPath(
 ): MaterializeOutcome | null {
   try {
     if (normalizeState(state, detectMode(projectRoot))) writeState(projectRoot, state);
+    // A memory-doc write cannot change the stack fingerprint or the plugin
+    // version, so an already-materialized project with its assets on disk needs
+    // only the one-mcp report — not a full (skills-tree-touching) re-emit.
+    if (isMaterialized(state) && hasMaterializedProjectAssets(projectRoot, state)) {
+      reportOneMcp(projectRoot, state, trigger);
+      return null;
+    }
     const materialized = materializeProjectAssets(projectRoot, state);
     if (!materialized.skipped) {
       state.materializedStack = stackFingerprint(state);

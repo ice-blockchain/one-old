@@ -12,6 +12,7 @@ import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
 import { ONE_MCP_CONFIG_NAME_BY_HOST } from '../../config/one-mcp';
 import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
 import { readSimpleAuth } from '../../shared/auth';
+import { codexHookEvidenceEvent, hasCodexHookEvidenceMarker, isCodexHookEvent } from '../../shared/codex-hook-evidence';
 import { readOneMcpCache, type OneMcpLastSync } from '../../shared/one-mcp-cache';
 import { usableOneMcpConfigCacheEntry } from '../../shared/current-model-tiers';
 import { oneSettingsPath } from '../../shared/one-settings';
@@ -29,7 +30,6 @@ import {
   codexConfigPath,
   codexSessionsDir,
   commandLooksMutating,
-  getPayloadText,
   parseCodexConfigToml,
   readFirstJsonlObject,
   safeJsonParse,
@@ -40,6 +40,11 @@ import {
   walkJsonlFiles,
   which,
 } from './lib';
+import {
+  probeCodexHookTrust,
+  type CodexHookTrustProbe,
+  type CodexHookTrustProbeOptions,
+} from './codex-hook-trust';
 
 type Rec = Record<string, unknown>;
 
@@ -234,11 +239,9 @@ export function probeProject(cwd: string): ProjectProbe {
   let state: Rec | null = null;
   if (trafficOne) { try { state = JSON.parse(trafficOne) as Rec; } catch { state = null; } }
   let normalizedState: Rec | null = null;
-  let localPreferences: Rec = {};
-  let localPreferencesPath: string | null = null;
+  const localPreferencesPath = projectPrefsPath(cwd);
+  const localPreferences = readProjectPrefs(cwd);
   if (state && typeof state === 'object') {
-    localPreferencesPath = projectPrefsPath(cwd);
-    localPreferences = readProjectPrefs(cwd);
     normalizedState = applyGlobalCodeGraphProvider(effectiveState(stripLocalPreferenceFields(state), localPreferences));
     normalizeState(normalizedState, (typeof normalizedState.mode === 'string' && normalizedState.mode)
       || (typeof normalizedState.projectMode === 'string' && normalizedState.projectMode)
@@ -276,11 +279,7 @@ export interface CodexHooksProbe {
   configExists: boolean;
   cwd: string;
   pluginEnabled?: boolean | null;
-  hookStateEntryCount?: number;
-  hookStateEnabledCount?: number;
-  hookStateTrustedHashCount?: number;
-  hookEvents?: string[];
-  missingHookEvents?: string[];
+  hookTrust: CodexHookTrustProbe;
   trustCovered?: boolean;
   trustedProject?: string | null;
   // Whether [mcp_servers.opencode-worker] is present in config.toml — Codex
@@ -288,43 +287,25 @@ export interface CodexHooksProbe {
   // never appears (a Codex restart is needed after it is written).
   opencodeMcpRegistered?: boolean;
 }
-export function probeCodexHooks(cwd: string, env: NodeJS.ProcessEnv = process.env): CodexHooksProbe {
+export async function probeCodexHooks(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: CodexHookTrustProbeOptions = {},
+): Promise<CodexHooksProbe> {
   const configPath = codexConfigPath(env);
   const text = configPath ? safeRead(configPath) : null;
-  if (!text) {
-    return { host: 'codex', configPath, configExists: false, cwd: path.resolve(cwd) };
-  }
-
-  const sections = parseCodexConfigToml(text);
+  const sections = parseCodexConfigToml(text || '');
   const pluginSection = sections['plugins."traffic-one@traffic-one-local"'] || null;
-  const hookSections = Object.entries(sections)
-    .filter(([section]) => section.startsWith('hooks.state."traffic-one@traffic-one-local:hooks/hooks.json:'));
-  const hookEvents = new Set<string>();
-  let hookStateEnabledCount = 0;
-  let hookStateTrustedHashCount = 0;
-  for (const [section, values] of hookSections) {
-    const eventMatch = section.match(/hooks\/hooks\.json:([^:]+):/);
-    if (eventMatch && eventMatch[1] !== undefined) hookEvents.add(eventMatch[1]);
-    if (values && values.enabled === true) hookStateEnabledCount += 1;
-    if (values && typeof values.trusted_hash === 'string' && values.trusted_hash.startsWith('sha256:')) {
-      hookStateTrustedHashCount += 1;
-    }
-  }
-  const requiredHookEvents = ['session_start', 'user_prompt_submit', 'pre_tool_use', 'post_tool_use'];
-  const missingHookEvents = requiredHookEvents.filter((event) => !hookEvents.has(event));
   const trustedProject = trustedProjectForCwd(cwd, sections);
+  const hookTrust = await probeCodexHookTrust(cwd, env, options);
 
   return {
     host: 'codex',
     configPath,
-    configExists: true,
+    configExists: text !== null,
     cwd: path.resolve(cwd),
     pluginEnabled: pluginSection ? pluginSection.enabled === true : null,
-    hookStateEntryCount: hookSections.length,
-    hookStateEnabledCount,
-    hookStateTrustedHashCount,
-    hookEvents: [...hookEvents].sort(),
-    missingHookEvents,
+    hookTrust,
     trustCovered: Boolean(trustedProject),
     trustedProject,
     opencodeMcpRegistered: Object.prototype.hasOwnProperty.call(sections, `mcp_servers.${OPENCODE_MCP_SERVER_KEY}`),
@@ -409,10 +390,147 @@ export interface SessionDiagnostics {
   hookPayloadCount: number;
   promptRequestCount: number;
   permissionDecisionCount: number;
-  trafficOneInstructionInjected: boolean;
-  baseInstructionsMentionTrafficOne: boolean;
   toolCallCount: number;
   mutatingToolCallCount: number;
+}
+
+function responseMessageText(payload: Rec): string {
+  if (typeof payload.content === 'string') return payload.content;
+  if (!Array.isArray(payload.content)) return '';
+  return payload.content.map((block) => {
+    if (typeof block === 'string') return block;
+    if (!block || typeof block !== 'object') return '';
+    const text = (block as Rec).text;
+    return typeof text === 'string' ? text : '';
+  }).filter(Boolean).join('\n');
+}
+
+function record(value: unknown): Rec | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Rec : null;
+}
+
+function hasOwn(value: Rec, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isProjectInstructionText(text: string): boolean {
+  const trimmed = text.trimStart();
+  return /^(?:# AGENTS\.md instructions|# Traffic One Codex Instructions|# Traffic One Local Agent Context)\b/.test(trimmed)
+    || trimmed.startsWith('<INSTRUCTIONS>')
+    || text.includes('<!-- GENERATED BY traffic-one: project-local active rules -->');
+}
+
+function trafficOneHookTextStart(text: string): string {
+  let trimmed = text.trimStart();
+  // Project/bootstrap instructions can quote hook output examples. They prove
+  // instructions were loaded, not that a hook emitted anything in this session.
+  if (isProjectInstructionText(trimmed)) return '';
+  // Codex can prepend this bounded truncation notice to a hook message.
+  trimmed = trimmed.replace(/^Total output lines:[ \t]*\d+[ \t]*\r?\n(?:[ \t]*\r?\n)?/, '').trimStart();
+  if (isProjectInstructionText(trimmed)) return '';
+  return trimmed;
+}
+
+function isTrafficOneHookText(text: string): boolean {
+  const start = trafficOneHookTextStart(text);
+  if (!start) return false;
+  if (hasCodexHookEvidenceMarker(start)) return true;
+  return /^(?:(?:═{3}[ \t]*)?traffic-one(?:[ \t]+—|[ \t]*[:\[])|\[traffic-one\]|\[ACTIVE STACK:[^\]\r\n]+\]|\[(?:UNRESOLVED TRAFFIC ONE RUN|MAINTENANCE PHASE)\b|\[(?:graphify|gitnexus)\][ \t]+(?:Codebase graph|Auto-bootstrap)\b)/.test(start);
+}
+
+interface CodexHookCausalState {
+  promptWindow: boolean;
+  startupWindow: boolean;
+  pendingToolCallIds: Set<string>;
+  postToolWindow: boolean;
+}
+
+function isTrafficOneHookDeveloperMessage(payload: Rec, state: CodexHookCausalState): boolean {
+  if (payload.type !== 'message' || payload.role !== 'developer') return false;
+  const start = trafficOneHookTextStart(responseMessageText(payload));
+  if (!start) return false;
+  const markedEvent = codexHookEvidenceEvent(start);
+  if (markedEvent === 'SessionStart' || markedEvent === 'SubagentStart') return state.startupWindow;
+  if (markedEvent === 'UserPromptSubmit') return state.promptWindow;
+  if (markedEvent === 'PreToolUse') return state.pendingToolCallIds.size > 0;
+  if (markedEvent === 'PostToolUse') return state.postToolWindow;
+  const historicalWindow = state.promptWindow || state.pendingToolCallIds.size > 0 || state.postToolWindow;
+  return historicalWindow && isTrafficOneHookText(start);
+}
+
+interface StructuredHookSignals {
+  trafficOneEvidence: boolean;
+  promptRequest: boolean;
+  permissionDecision: boolean;
+}
+
+function structuredHookSignals(parsed: Rec): StructuredHookSignals {
+  // Inspect only known object envelopes. Never search serialized text: source
+  // inspection and tool output routinely contain these field names as prose.
+  const payload = record(parsed.payload);
+  const envelopes = payload ? [parsed, payload] : [parsed];
+  const evidenceTexts: string[] = [];
+  let promptRequest = false;
+  let permissionDecision = false;
+  for (const envelope of envelopes) {
+    const hookOutput = record(envelope.hookSpecificOutput);
+    if (!hookOutput || !isCodexHookEvent(hookOutput.hookEventName)) continue;
+    if (hasOwn(envelope, 'promptRequest')) promptRequest = true;
+    if (hasOwn(hookOutput, 'permissionDecision')) permissionDecision = true;
+    if (typeof envelope.systemMessage === 'string') evidenceTexts.push(envelope.systemMessage);
+    if (typeof hookOutput.additionalContext === 'string') evidenceTexts.push(hookOutput.additionalContext);
+    if (typeof hookOutput.permissionDecisionReason === 'string') evidenceTexts.push(hookOutput.permissionDecisionReason);
+  }
+  return {
+    trafficOneEvidence: evidenceTexts.some(isTrafficOneHookText),
+    promptRequest,
+    permissionDecision,
+  };
+}
+
+function clearCodexHookCausalState(state: CodexHookCausalState): void {
+  state.promptWindow = false;
+  state.startupWindow = false;
+  state.pendingToolCallIds.clear();
+  state.postToolWindow = false;
+}
+
+function advanceCodexHookCausalState(parsed: Rec, state: CodexHookCausalState): void {
+  const payload = record(parsed.payload) || {};
+  if (parsed.type === 'event_msg') {
+    if (payload.type === 'task_started') {
+      clearCodexHookCausalState(state);
+      state.startupWindow = true;
+      return;
+    }
+    if (payload.type === 'user_message') {
+      clearCodexHookCausalState(state);
+      state.promptWindow = true;
+      return;
+    }
+    if (payload.type === 'agent_reasoning' || payload.type === 'agent_message'
+      || payload.type === 'task_complete') clearCodexHookCausalState(state);
+    return;
+  }
+  if (parsed.type !== 'response_item') return;
+  if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
+    state.promptWindow = false;
+    state.startupWindow = false;
+    state.postToolWindow = false;
+    const callId = typeof payload.call_id === 'string' ? payload.call_id : '';
+    if (callId) state.pendingToolCallIds.add(callId);
+    return;
+  }
+  if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+    const callId = typeof payload.call_id === 'string' ? payload.call_id : '';
+    if (callId && state.pendingToolCallIds.delete(callId)) state.postToolWindow = true;
+    return;
+  }
+  if (payload.type === 'message' && payload.role === 'developer') {
+    if (isProjectInstructionText(responseMessageText(payload))) clearCodexHookCausalState(state);
+    return;
+  }
+  if (payload.type === 'reasoning' || payload.type === 'message') clearCodexHookCausalState(state);
 }
 
 export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv = process.env): SessionDiagnostics | null {
@@ -427,10 +545,14 @@ export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv
     hookPayloadCount: 0,
     promptRequestCount: 0,
     permissionDecisionCount: 0,
-    trafficOneInstructionInjected: false,
-    baseInstructionsMentionTrafficOne: false,
     toolCallCount: 0,
     mutatingToolCallCount: 0,
+  };
+  const hookCausalState: CodexHookCausalState = {
+    promptWindow: false,
+    startupWindow: false,
+    pendingToolCallIds: new Set<string>(),
+    postToolWindow: false,
   };
 
   for (const rawLine of text.split(/\r?\n/)) {
@@ -439,24 +561,28 @@ export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv
     const parsed = safeJsonParse(line, null);
     if (!parsed) continue;
     const timestamp = typeof parsed.timestamp === 'string' ? parsed.timestamp : null;
-    const serialized = JSON.stringify(parsed);
-    if (serialized.includes('hookSpecificOutput')) diagnostics.hookPayloadCount += 1;
-    if (serialized.includes('promptRequest')) diagnostics.promptRequestCount += 1;
-    if (serialized.includes('permissionDecision')) diagnostics.permissionDecisionCount += 1;
+    const signals = structuredHookSignals(parsed);
+    if (signals.promptRequest) diagnostics.promptRequestCount += 1;
+    if (signals.permissionDecision) diagnostics.permissionDecisionCount += 1;
+
+    const responsePayload = parsed.type === 'response_item'
+      ? record(parsed.payload)
+      : null;
+    if (signals.trafficOneEvidence || (responsePayload && isTrafficOneHookDeveloperMessage(responsePayload, hookCausalState))) {
+      diagnostics.hookPayloadCount += 1;
+    }
+    advanceCodexHookCausalState(parsed, hookCausalState);
 
     if (parsed.type === 'session_meta') {
       const payload = parsed.payload && typeof parsed.payload === 'object' ? (parsed.payload as Rec) : {};
       diagnostics.id = typeof payload.id === 'string' ? payload.id : diagnostics.id;
       diagnostics.cwd = typeof payload.cwd === 'string' ? payload.cwd : diagnostics.cwd;
       diagnostics.startedAt = (typeof payload.timestamp === 'string' ? payload.timestamp : null) || timestamp || diagnostics.startedAt;
-      const instructionText = getPayloadText(payload);
-      diagnostics.baseInstructionsMentionTrafficOne = /Traffic One|traffic-one|\.traffic-one/.test(instructionText);
-      diagnostics.trafficOneInstructionInjected = /Traffic One Codex Instructions|\.traffic-one\/rules\/common\/auth-gate\.md/.test(instructionText);
       continue;
     }
 
     if (parsed.type !== 'response_item') continue;
-    const payload = parsed.payload && typeof parsed.payload === 'object' ? (parsed.payload as Rec) : {};
+    const payload = responsePayload ?? {};
     if (payload.type !== 'function_call' && payload.type !== 'custom_tool_call') continue;
     const name = typeof payload.name === 'string' ? payload.name : '';
     diagnostics.toolCallCount += 1;
