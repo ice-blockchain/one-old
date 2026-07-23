@@ -13,6 +13,7 @@ import { opencodeAssignmentHash, readOpenCodeQueue, readOpenCodeUnitStatuses } f
 import { detectHost } from './host';
 import { canonicalHost } from './model-tiers';
 import { openCodeDelegationActive } from './performance';
+import { isMaintenancePhase } from './state/lifecycle';
 import { obj } from './obj';
 
 type Rec = Record<string, unknown>;
@@ -365,9 +366,15 @@ export function hasFreshArchitectQueueForRun(cwd: string, runId: string): boolea
 // Plan-batch delegation applies to new-project builds AND to complex maintenance
 // builds that re-entered the architect THIS run. Small maintenance work (triage
 // → direct-to-implementer, no fresh architect queue) stays on the per-role
-// `opencode_delegate` path and must NOT re-run a stale plan.md queue.
+// `opencode_delegate` path and must NOT re-run a stale plan.md queue. `mode`
+// stays "new-project" for the project's whole life, so the build-phase disjunct
+// must exclude maintenance explicitly — otherwise every small maintenance run
+// re-triggers Step-0 on the previous build's queue (observed 8c: the first
+// "Couldn't start" on a maintenance feature was this gate demanding a Step-0
+// batch for a stale queue).
 function planBatchPhaseEligible(cwd: string, runId: string, state: unknown): boolean {
-  return obj(state)?.mode === 'new-project' || hasFreshArchitectQueueForRun(cwd, runId);
+  if (hasFreshArchitectQueueForRun(cwd, runId)) return true;
+  return obj(state)?.mode === 'new-project' && !isMaintenancePhase(state);
 }
 
 // True when an implementer spawn must wait for Step-0 from-plan — in a new-project

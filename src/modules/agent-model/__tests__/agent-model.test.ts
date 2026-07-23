@@ -1362,7 +1362,39 @@ test('architect phase gate: blocks implementers when plan exists but baseline is
     if (denied.kind === 'deny') {
       assert.ok(denied.reason.includes('Architect phase gate'));
       assert.ok(denied.reason.includes('coding.md'));
+      assert.ok(denied.reason.includes('spawn `senior-architect`'), 'prose leads with the next action');
     }
+  });
+});
+
+test('architect phase gate stands down in MAINTENANCE once a prior assignments manifest exists (8c)', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const t1 = path.join(cwd, '.traffic-one');
+    fs.writeFileSync(path.join(t1, 'plan.md'), '# partial plan', 'utf8');
+    // Post-build state: mode stays "new-project", lifecycle flips to maintenance,
+    // and a small-tier feature starts a FRESH run with no architect artifacts.
+    const onePath = path.join(t1, '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-maint-2';
+    one.lifecycle = { phase: 'maintenance', source: 'prompt-boundary' };
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    // No assignments manifest anywhere → the gate still fires (nothing to scope by).
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('Architect phase gate'));
+
+    // The BUILD run's manifest exists → resilient scope fallback → implementer
+    // spawns first-try (task-triage small tier: no architect for a small feature).
+    fs.mkdirSync(path.join(t1, 'runs', 'run-build'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', 'run-build', 'assignments.json'), JSON.stringify({
+      version: 1,
+      runId: 'run-build',
+      createdBy: 'senior-architect',
+      assignments: [{ role: 'senior-frontend', scope: { include: ['apps/web/**'], exclude: [] } }],
+    }), 'utf8');
+    const allowed = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(allowed.kind, 'noop', allowed.kind === 'deny' ? allowed.reason : undefined);
   });
 });
 

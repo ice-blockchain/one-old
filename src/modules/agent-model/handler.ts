@@ -62,6 +62,7 @@ import {
   markRunAgentReplacedIfMatches,
   refreshCursorRunAgentFromTranscriptCache,
   readEffectiveState,
+  readRunAssignmentsResilient,
   REPLACE_AGENT_MARKER,
   retireUnverifiedCodexRunAgent,
   subagentContinuationAvailable,
@@ -109,6 +110,16 @@ Do this once before retrying:
 2. Run \`{{CAPTURE_CMD}}\`, replacing the placeholders with those EXACT ids verbatim (e.g. \`claude-fable-5-thinking-high\`, \`gpt-5.6-terra-medium\`, \`composer-2.5-fast\`, or \`gpt-5.4-mini\`). A valid picker id may or may not include a reasoning suffix; never invent one. Include at least one id per tier the team needs — highest + balanced + cheapest. This internal command writes only your local per-user/project Cursor preferences; do not create \`.traffic-one/cursor-models.json\`.
 3. Re-run model-gate, then retry the spawn with the exact role→model value it prints. Project \`.cursor/agents\` contracts remain model-agnostic.
 Do not retry with an uncaptured family guess and do not build the project inline because of this gate.`;
+
+// Verbatim mirror of the SKILL.md `architect-phase-incomplete` block, so a
+// missing block never softens the gate's prose (observed 8c: the orchestrator
+// mis-read this deny as a Step-0 request and burned a second dead spawn — the
+// prose must lead with the exact next action).
+export const ARCHITECT_PHASE_INCOMPLETE_FALLBACK = `Architect phase gate: \`{{ROLE}}\` cannot start yet — spawn \`senior-architect\` for run \`{{RUN_ID}}\` FIRST, in your next message. Do NOT retry \`{{ROLE}}\` unchanged and do NOT run the OpenCode Step-0 plan batch instead; neither clears this gate.
+
+Missing on disk: {{MISSING}}
+
+The architect must finish the project-memory baseline, \`.traffic-one/runs/{{RUN_ID}}/assignments.json\`, and \`.traffic-one/digests/{{RUN_ID}}/architect.md\` containing \`PLAN_READY\`. Only then retry \`{{ROLE}}\` with the same task. Do not spawn other implementers or patch the coordination artifacts yourself.`;
 
 function isPlanBatchGatedRole(role: string): boolean {
   return PLAN_BATCH_GATED_ROLES.has(role);
@@ -1124,14 +1135,21 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // Implementers may not start until the architect phase is complete on disk
   // (scaffold + memory baseline + assignments + digest with PLAN_READY). Checked
   // after team approval so earlier gates (team/materialization) keep their prose.
-  if (isNewProject && isPlanBatchGatedRole(role)) {
+  // `mode` stays "new-project" for the project's whole life, so in MAINTENANCE
+  // this gate stands down when any assignments manifest exists for scope
+  // fallback (readRunAssignmentsResilient): task-triage's small tier
+  // legitimately routes a feature straight to an implementer with no fresh
+  // architect run (observed 8c: two dead "Couldn't start" spawns per
+  // maintenance feature before the orchestrator inferred the architect).
+  if (isNewProject && isPlanBatchGatedRole(role)
+    && !(isMaintenancePhase(state) && readRunAssignmentsResilient(cwd, spawnRunId))) {
     const incomplete = architectPhaseIncompleteReasons(cwd, state);
     if (incomplete.length > 0) {
       return deny(block('architect-phase-incomplete', {
         ROLE: role,
         RUN_ID: spawnRunId,
         MISSING: incomplete.join('; '),
-      }));
+      }, ARCHITECT_PHASE_INCOMPLETE_FALLBACK));
     }
   }
 

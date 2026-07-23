@@ -36,6 +36,7 @@ import {
   recordRunAgent,
   releaseRunClaims,
   resolveRunAgentContext,
+  roleForRunSessionId,
   runHasOrchestratedArtifacts,
   runIdNow,
   runReachedTerminalVerdict,
@@ -894,6 +895,46 @@ test('releaseRunClaims releases claimed files, deletes pending, and hasActiveRun
     const next = ensureRunAgentClaim(dir, state, 'senior-frontend', {}, { toolName: 'Task' });
     assert.ok(next);
     assert.equal(next!.spawnIndex, 2);
+  });
+});
+
+test('releaseRunClaims deletes per-file fallback claims (8c: architect locks lingered post-settlement)', () => {
+  withPrefs((dir) => {
+    const runId = 'run-fallback-sweep';
+    const ctx = fallbackTestContext(runId, 'senior-architect', 'arch-sess-0001');
+    assert.equal(tryFallbackClaim(dir, ctx, 'package.json').blocked, false);
+    assert.equal(tryFallbackClaim(dir, ctx, 'turbo.json').blocked, false);
+    const claimsDir = path.join(dir, '.traffic-one', 'runs', runId, 'claims');
+    assert.equal(fs.readdirSync(claimsDir).filter((n) => n.endsWith('.json')).length, 2);
+
+    assert.equal(releaseRunClaims(dir, runId, 'settled'), 2);
+    const left = fs.existsSync(claimsDir)
+      ? fs.readdirSync(claimsDir).filter((n) => n.endsWith('.json')).length
+      : 0;
+    assert.equal(left, 0, 'fallback claim files are deleted by the terminal sweep');
+    assert.equal(releaseRunClaims(dir, runId, 'again'), 0, 'idempotent once swept');
+  });
+});
+
+test('roleForRunSessionId resolves the writer role from the run registry, then claims', () => {
+  withPrefs((dir) => {
+    const runId = 'run-role-resolve';
+    recordRunAgent(dir, runId, 'senior-frontend', {
+      agentId: 'fe-agent-uuid-1',
+      resumeId: 'fe-agent-uuid-1',
+      parentSessionId: 'parent-1',
+    });
+    assert.equal(roleForRunSessionId(dir, runId, 'fe-agent-uuid-1'), 'senior-frontend');
+    // unknown session (the parent orchestrator) resolves to null
+    assert.equal(roleForRunSessionId(dir, runId, 'parent-1'), null);
+    assert.equal(roleForRunSessionId(dir, runId, null), null);
+
+    // claims fallback: a bound agent claim resolves even without a registry row
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'be-sess-77.json'), JSON.stringify({
+      version: 1, runId, claimId: 'senior-backend-1-z', role: 'senior-backend',
+      status: 'claimed', createdAt: new Date().toISOString(), sessionId: 'be-sess-77',
+    }), 'utf8');
+    assert.equal(roleForRunSessionId(dir, runId, 'be-sess-77'), 'senior-backend');
   });
 });
 

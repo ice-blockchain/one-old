@@ -186,6 +186,30 @@ test('openCodeQueuePolicyViolations allows negated dependency wording in safe fi
   assert.deepEqual(openCodeQueuePolicyViolations(units), []);
 });
 
+test('openCodeQueuePolicyViolations allows verb-phrase negations (8c pure-helpers false positive)', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    // the 8c final wording — reversed noun negation "no changes to package.json"
+    '- id: pure-utils-helpers | role: frontend | kind: pure helpers | files: packages/utils/src/*.ts,packages/utils/src/*.test.ts | task: Implement framework-agnostic helpers in packages/utils/src/ (slugify.ts, format-duration.ts, format-price.ts) exporting named functions, re-exported from src/index.ts. Add unit tests using the vitest setup already declared for this package. No React imports, no dependency on other workspace packages, no changes to package.json or any config file.',
+    // draft-style verb negations that previously kept "add … packages" visible
+    '- id: fixtures-only | role: frontend | kind: fixtures/seed data | files: apps/web/src/fixtures/demo-news.ts | task: Create demo news fixtures with typed exports. Do not add packages or dependencies; do not touch package.json. Never install anything.',
+    "- id: docsless-helpers | role: backend | kind: pure helpers | files: services/api/src/lib/slug.ts | task: Add a slugify helper with tests colocated in the same file's folder, without adding dependencies and without touching lockfiles.",
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  const violations = openCodeQueuePolicyViolations(units)
+    .filter((e) => /dependency\/package-manager work/.test(e));
+  assert.deepEqual(violations, []);
+});
+
+test('verb-phrase negation stripping never hides an affirmative install elsewhere in the task', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: sneaky | role: backend | files: services/api/src/x.ts | task: Do not add comments to generated files. Then run pnpm install lodash before wiring the helper.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(units).some((e) => /dependency\/package-manager work/.test(e)));
+});
+
 test('reconcileAllRunningUnits flips fresh running units to failed', () => {
   withRunDir((cwd, runId) => {
     const runDir = path.join(cwd, '.traffic-one', 'runs', runId);

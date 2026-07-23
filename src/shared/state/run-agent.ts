@@ -1911,7 +1911,11 @@ function listClaimedAgents(cwd: string, runId: string): Rec[] {
 // stops counting them while identity resolution (resolveRunAgentContext, the
 // nextSpawnIndex disk count, assignmentForContext) keeps working. Only real
 // agent claims (claimId present) are touched — role-bearing sidecars such as
-// maintenance.json are left alone.
+// maintenance.json are left alone. Per-file fallback claims under
+// `runs/<runId>/claims/` are advisory write locks (tryFallbackClaim), not
+// identity records: once the run settles they can only go stale, so the sweep
+// DELETES them (observed 8c: 12 architect fallback claims lingered forever
+// after a verified settlement).
 export function releaseRunClaims(cwd: string, runId: string, reason: string): number {
   if (typeof runId !== 'string' || !runId.trim() || isNonProjectRoot(cwd)) return 0;
   let released = 0;
@@ -1928,6 +1932,22 @@ export function releaseRunClaims(cwd: string, runId: string, reason: string): nu
       } catch {
         // best-effort: an unreleased claim ages out via SUBAGENT_STALE_MS
       }
+    }
+  });
+  withFallbackClaimsLock(cwd, runId.trim(), () => {
+    try {
+      const dir = fallbackClaimsDir(cwd, runId.trim());
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        try {
+          fs.unlinkSync(path.join(dir, entry.name));
+          released += 1;
+        } catch {
+          // best-effort: a leftover lock only ever goes stale
+        }
+      }
+    } catch {
+      // no fallback-claims dir — nothing to sweep
     }
   });
   return released;
@@ -4165,6 +4185,31 @@ export function readRunAgentRegistry(cwd: string, runId: string): Record<string,
     };
   }
   return out;
+}
+
+// Resolve the ROLE a hook session belongs to within a run: match the payload's
+// sessionId against the per-run agent registry (agents.json), then against the
+// run's agent claim files. Diagnostic-strength attribution for deny telemetry
+// (observed 5c/8c: every plan-guard-deny row carried role:null/isSubagent:false
+// even for subagent writes, because the shared state has no per-session role) —
+// never a gate input.
+export function roleForRunSessionId(
+  cwd: string,
+  runId: string | null | undefined,
+  sessionId: string | null | undefined,
+): string | null {
+  if (!runId || !sessionId || isNonProjectRoot(cwd)) return null;
+  try {
+    for (const [role, entry] of Object.entries(readRunAgentRegistry(cwd, runId))) {
+      if (entry.agentId === sessionId || entry.resumeId === sessionId) return role;
+    }
+  } catch {
+    // registry unreadable — fall through to claims
+  }
+  for (const claim of listClaimedAgents(cwd, runId)) {
+    if (firstString(claim.sessionId) === sessionId && typeof claim.role === 'string') return claim.role;
+  }
+  return null;
 }
 
 type RunAgentRecordInput = {

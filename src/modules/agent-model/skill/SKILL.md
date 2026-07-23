@@ -135,11 +135,11 @@ Recorded: the team will use the next-eligible fallback model when the recommende
 <!-- T1BLOCK:END model-choice-recorded-fallback -->
 
 <!-- T1BLOCK:BEGIN architect-phase-incomplete -->
-Architect phase gate: do NOT spawn `{{ROLE}}` yet. `.traffic-one/plan.md` exists but the architect phase is incomplete for this new-project build.
+Architect phase gate: `{{ROLE}}` cannot start yet — spawn `senior-architect` for run `{{RUN_ID}}` FIRST, in your next message. Do NOT retry `{{ROLE}}` unchanged and do NOT run the OpenCode Step-0 plan batch instead; neither clears this gate.
 
 Missing on disk: {{MISSING}}
 
-Respawn `senior-architect` (same run `{{RUN_ID}}`) to finish the project-memory baseline, `.traffic-one/runs/{{RUN_ID}}/assignments.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`. Do not spawn implementers or patch coordination artifacts yourself until that digest exists.
+The architect must finish the project-memory baseline, `.traffic-one/runs/{{RUN_ID}}/assignments.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` containing `PLAN_READY`. Only then retry `{{ROLE}}` with the same task. Do not spawn other implementers or patch the coordination artifacts yourself.
 <!-- T1BLOCK:END architect-phase-incomplete -->
 
 <!-- T1BLOCK:BEGIN opencode-plan-batch-required -->

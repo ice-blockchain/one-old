@@ -159,7 +159,7 @@ Use the workspace package name (`@app/ui`, `@app/ui-native`, `@app/utils`) inste
 <!-- T1BLOCK:END deep-relative-package -->
 
 <!-- T1BLOCK:BEGIN default-export -->
-Use named exports only for reusable components. Expo Router route files under app/ are the default-export exception.
+Use named exports only for reusable components. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.
 <!-- T1BLOCK:END default-export -->
 
 <!-- T1BLOCK:BEGIN native-inline-style -->
@@ -171,7 +171,7 @@ React Native UI must use native primitives (`View`, `Text`, `Pressable`, `TextIn
 <!-- T1BLOCK:END native-dom-tags -->
 
 <!-- T1BLOCK:BEGIN web-inline-style -->
-No inline styles — use Tailwind utility `className` and shadcn primitives. Inline `style={{}}` is reserved for dynamic/derived values.
+No static inline styles — use Tailwind utility `className` and shadcn primitives. Inline `style={{}}` is allowed only when a value is dynamic/derived (computed at runtime), never for constant values.
 <!-- T1BLOCK:END web-inline-style -->
 
 <!-- T1BLOCK:BEGIN vanilla-extract-import -->

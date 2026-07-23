@@ -78,6 +78,16 @@ The directive states the project's **team mode** and whether **OpenCode** is act
   server/data seam. If the request truly needs both layers, spawn those two roles in parallel. Do not
   spawn an architect or create `plan-<feature>.md`; escalate to complex only when opening the files
   reveals cross-cutting impact.
+  - **Reuse the live role agent across requests:** before a fresh spawn, check
+    `.traffic-one/runs/<runId>/agents.json` — when a live agent is already recorded for the role,
+    CONTINUE it with the new bounded task instead of spawning again (the spawn gate denies a
+    duplicate while one is recorded): on Cursor re-invoke `Task` with `resume: "<agentId>"`, on
+    Claude `SendMessage { to: <agentId> }`, on Codex `followup_task { target: "<agentId>" }`, on
+    Copilot the recorded background `agent_id`.
+  - **Scope note:** with no fresh architect run, the run-team gate scopes the implementer's writes
+    via the newest `runs/<id>/assignments.json` (the build's manifest). If the feature genuinely
+    needs paths outside every prior assignment, escalate to complex (fresh architect run) instead
+    of fighting out-of-scope denies.
   - **Kilo:** each direct role is a built-in `general` task with `[t1-role: senior-<role>]` on the
     first line, an immediate read of `.kilo/agents/senior-<role>.md`, and no `model` field.
   - **OpenCode active:** call the `opencode_delegate` tool FIRST for each chosen role, with the current

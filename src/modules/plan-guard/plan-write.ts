@@ -35,7 +35,7 @@ import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-p
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../shared/materialize';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { activeAgentRole, hookSessionIdentity, isNativeState, readEffectiveState } from '../../shared/state';
+import { activeAgentRole, hookSessionIdentity, isNativeState, readEffectiveState, roleForRunSessionId } from '../../shared/state';
 import { capturePlanGuardDebug } from '../../shared/state/claim-capture';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 import { planReadinessViolations } from './plan-readiness';
@@ -250,14 +250,19 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
   // Attribution makes multi-agent runs debuggable: without it a deny line can't
   // be tied to the subagent that was denied except by transcript archaeology.
+  // The shared state carries no per-session role (parallel implementers), so
+  // resolve the writer through the run's agent registry/claims by sessionId —
+  // hosts like Cursor also never flag subagent-ness in the payload, so a
+  // registry match doubles as the isSubagent signal.
   const denyIdentity = hookSessionIdentity(raw);
+  const registryRole = roleForRunSessionId(projectRoot, runId, denyIdentity.sessionId);
   capturePlanGuardDebug(projectRoot, runId, {
     filePath,
     filePaths: writeTargetPaths,
     host: ctx.host,
     sessionId: denyIdentity.sessionId || null,
-    isSubagent: denyIdentity.isSubagent || false,
-    role: activeAgentRole(state),
+    isSubagent: denyIdentity.isSubagent || Boolean(registryRole),
+    role: activeAgentRole(state) || registryRole,
     violations: violations.map((v) => (v.length > 400 ? `${v.slice(0, 400)}…` : v)),
   });
   return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}`);

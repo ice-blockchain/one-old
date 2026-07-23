@@ -123,7 +123,13 @@ Script/config parity (see `quality-tooling`): if you emit `lint`/`lint:fix` scri
 `package.json` — otherwise omit the lint scripts entirely and leave them to an
 implementer. Every scaffolded package's `package.json` includes a `test` script
 (vitest on web; an explicit `"test": "echo \"no tests\" && exit 0"` no-op is
-allowed, absence is not).
+allowed, absence is not). Scaffold the coverage provider with the test runner:
+the matching coverage devDependency (`@vitest/coverage-v8` for vitest) in the
+root `package.json` and a root `test:coverage` script. The tester role owns
+ONLY test files — it cannot add coverage deps or wire `test` scripts into
+implementer-owned `package.json`/config later (observed live: coverage was
+unmeasurable until a fix cycle re-engaged the owning roles), so this must exist
+from the scaffold.
 
 Write the root `package.json` first, before `tsconfig`, Vite, or package files.
 Its first version must already declare the workspace, so it passes the

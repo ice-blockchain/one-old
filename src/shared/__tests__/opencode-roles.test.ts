@@ -345,6 +345,44 @@ test('maintenance plan-batch requires a fresh run-scoped architect queue (assign
   }
 });
 
+test('new-project mode in MAINTENANCE does not re-run the stale build queue (8c deny #1)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmaint-'));
+  try {
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    // The durable plan.md still carries the BUILD run's queue after settlement.
+    fs.writeFileSync(path.join(t1, 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: frontend | files: a | task: t\n'
+      + '- role: backend | files: b | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = {
+      mode: 'new-project',
+      lifecycle: { phase: 'maintenance', source: 'prompt-boundary' },
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+
+    // Fresh maintenance run, no architect this run → the stale queue must not
+    // demand a Step-0 batch (mode stays "new-project" for the project's life).
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-maint', state), false);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run-maint', state), []);
+
+    // A complex maintenance run that re-entered the architect (fresh run-scoped
+    // assignments.json) re-activates the plan batch.
+    fs.mkdirSync(path.join(t1, 'runs', 'run-maint'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', 'run-maint', 'assignments.json'),
+      JSON.stringify({ version: 1, runId: 'run-maint', createdBy: 'senior-architect', assignments: [] }), 'utf8');
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-maint', state), true);
+
+    // Building phase (no lifecycle yet) is unchanged: the queue gates implementers.
+    const building = { ...state, lifecycle: undefined };
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-build', building), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('plan-batch per-role markers alone do not clear gate without terminal batch.json', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocrole-only-'));
   try {

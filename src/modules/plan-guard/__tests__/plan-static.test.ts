@@ -46,12 +46,53 @@ test('deep relative package imports are flagged', () => {
 
 test('default export in a reusable component is flagged', () => {
   assert.deepEqual(check('packages/ui/src/components/Btn.tsx', 'export default function Btn() {}'), ['default-export']);
+  assert.deepEqual(check('apps/web/src/features/x/Card.tsx', 'export default function Card() {}'), ['default-export']);
+});
+
+test('default export in web page/route files is the exception (8c: React.lazy contract)', () => {
+  assert.deepEqual(check('apps/web/src/pages/HomePage.tsx', 'export default function HomePage() {}'), []);
+  assert.deepEqual(check('src/pages/CoursesPage.tsx', 'export default function CoursesPage() {}'), []);
+  // named exports in pages remain fine too
+  assert.deepEqual(check('apps/web/src/pages/NewsPage.tsx', 'export function NewsPage() {}'), []);
 });
 
 test('web inline styles + vanilla-extract + css.ts imports flagged on the web stack', () => {
   assert.deepEqual(check('apps/web/src/features/x/View.tsx', `<div ${INLINE} />`), ['web-inline-style']);
   assert.deepEqual(check('apps/web/src/x.ts', `import 'x' ${VE};`), ['vanilla-extract-import']);
   assert.deepEqual(check('apps/web/src/x.ts', `import { s } ${CSSTS};`), ['css-ts-import']);
+});
+
+test('web inline style with dynamic/derived values is the rule\'s own exception (5c-F1)', () => {
+  const style = (body: string): string => 'style={' + '{' + body + '}}';
+  // template-literal width — the exact 5c/8c progress-bar case
+  assert.deepEqual(
+    check('packages/ui/src/components/progress.tsx', `<div ${style(' width: `${clamped}%` ')} />`),
+    [],
+  );
+  // identifier value
+  assert.deepEqual(check('apps/web/src/features/x/View.tsx', `<div ${style(' width: pct ')} />`), []);
+  // mixed static + dynamic → the dynamic member justifies inline
+  assert.deepEqual(
+    check('apps/web/src/features/x/View.tsx', `<div ${style(" color: 'red', width: pct ")} />`),
+    [],
+  );
+  // spread → dynamic
+  assert.deepEqual(check('apps/web/src/features/x/View.tsx', `<div ${style(' ...styleProp ')} />`), []);
+  // all-literal objects stay denied (string and numeric literals)
+  assert.deepEqual(
+    check('apps/web/src/features/x/View.tsx', `<div ${style(" color: 'red', marginTop: 8 ")} />`),
+    ['web-inline-style'],
+  );
+  // a second static occurrence still denies even when the first is dynamic
+  assert.deepEqual(
+    check('apps/web/src/features/x/View.tsx', `<div ${style(' width: pct ')} /><span ${style(" color: 'red' ")} />`),
+    ['web-inline-style'],
+  );
+});
+
+test('native inline style stays denied even for dynamic values (StyleSheet.create owns those)', () => {
+  const dynamic = 'style={' + '{ width: pct }}';
+  assert.ok(check('apps/mobile/src/features/x/View.tsx', `<View ${dynamic} />`, true).includes('native-inline-style'));
 });
 
 test('native rules: NativeWind className + native primitives', () => {

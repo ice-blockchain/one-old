@@ -140,7 +140,7 @@ Before your final reply, write your handoff digest to:
 .traffic-one/digests/<run-id>/frontend.md
 ```
 
-Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at, Touched (file paths only — no contents), Public contracts (delta only — what API shape the UI now consumes), Open questions / blockers / assumptions (especially backend contract assumptions), Next-phase reading hints for reviewer + tester (which 2–4 files matter most). Cap at ~2 KB.
+Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at, Touched (file paths only — no contents), Public contracts (delta only — what API shape the UI now consumes), Open questions / blockers / assumptions (especially backend contract assumptions), Next-phase reading hints for reviewer + tester (which 2–4 files matter most). Cap at ~2 KB. Verdict token: `IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED, CHANGES_REQUESTED, or TESTS_GREEN; those belong to other roles.
 
 ## Hard rules
 

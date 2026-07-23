@@ -253,6 +253,9 @@ are permitted only for absent configuration, empty results, or handled errors.
 
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/frontend.md
+Format: rules/common/agent-handoff-digests.md. Digest verdict line:
+`IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED,
+CHANGES_REQUESTED, or TESTS_GREEN; those tokens belong to other roles.
 
 Token budget: ~12k total. Don't read more than ~3 files outside the scope
 above unless the digest/plan/graph all came up empty for the question.
@@ -294,6 +297,9 @@ your backend digest.
 
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/backend.md
+Format: rules/common/agent-handoff-digests.md. Digest verdict line:
+`IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED,
+CHANGES_REQUESTED, or TESTS_GREEN; those tokens belong to other roles.
 
 Token budget: ~12k total. Don't read more than ~3 files outside the scope
 above unless the digest/plan/graph all came up empty for the question.

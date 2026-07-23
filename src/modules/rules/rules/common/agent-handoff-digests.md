@@ -29,8 +29,8 @@ re-grepping the repo.
 ```markdown
 # <role> digest — run <run-id>
 
-verdict: PLAN_READY | APPROVED | CHANGES_REQUESTED | TESTS_GREEN | TESTS_FAILING | SHIPPED | FAILED
-finished_at: <ISO-8601 UTC — run `date -u +%Y-%m-%dT%H:%M:%SZ` for the real value; never guess, hand-compute an elapsed time, or write a midnight/future placeholder. Traffic One host-stamps this line with the real write-time and OVERWRITES any value that is malformed, in the future, or dated before the run began — a fabricated timestamp is silently corrected, not trusted.>
+verdict: <YOUR OWN role's token ONLY — architect: PLAN_READY · frontend/backend: IMPLEMENTED or BLOCKED <one-line reason> · reviewer: APPROVED or CHANGES_REQUESTED · tester: TESTS_GREEN or TESTS_FAILING · shipper: SHIPPED or FAILED. Never borrow another role's token: an implementer digest must not say PLAN_READY, APPROVED, or CHANGES_REQUESTED (observed live: a backend digest claiming PLAN_READY and a frontend digest claiming CHANGES_REQUESTED).>
+finished_at: <ISO-8601 UTC — run `date -u +%Y-%m-%dT%H:%M:%SZ` for the real value; never guess, hand-compute an elapsed time, or write a midnight/future placeholder. Traffic One host-stamps this line with the real write-time and OVERWRITES any value that is malformed, in the future, dated before the run began, or minutes older than the actual write (stale/backdated) — a fabricated timestamp is silently corrected, not trusted.>
 
 ## Touched
 - path/to/file.ts        # one-line note on what changed
