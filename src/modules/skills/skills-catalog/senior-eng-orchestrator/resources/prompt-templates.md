@@ -163,7 +163,9 @@ key MUST be `assignments`, an ARRAY (never a `roles` object), and every entry MU
 instructions exactly; the plan gate rejects any other shape before the file reaches disk. One entry
 per implementer role (`senior-frontend`, `senior-backend`) with a DISJOINT set of owned path
 patterns (`scope.include` + optional `scope.exclude`), derived from the project's REAL
-directories — not guessed names. Do NOT include `senior-architect` in this manifest: the
+directories — not guessed names. Root manifests (`package.json`, workspace/tool configs)
+must land in exactly one implementer's scope — frontend for web builds, backend when no
+frontend role runs — or parallel writers collide on the fallback lock. Do NOT include `senior-architect` in this manifest: the
 architect may create empty scaffold barrels/packages, but those files must remain writable by
 the implementer that fills them. Shared package barrels such as `packages/ui/src/index.ts`,
 `packages/i18n/src/index.ts`, and `packages/types/src/index.ts` belong to the implementer that

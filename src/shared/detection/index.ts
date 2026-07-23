@@ -84,7 +84,10 @@ function detectFrontendFromText(text: string): string | null {
 }
 
 function hasBackendLanguagePhrase(text: string, terms: readonly string[]): boolean {
-  const backendNoun = '(?:backend|api|server|service)';
+  // Plural + microservice forms included: "microservices in go" is a natural
+  // API-project phrasing that the singular noun set missed (observed while
+  // fixing 13c — the prompt fell back to supabase/default).
+  const backendNoun = '(?:backend|apis?|servers?|(?:micro)?services?)';
   return terms.some((term) => {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\ /g, '\\s+');
     return [
@@ -272,8 +275,26 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
   const explicitCustomFrontend = Boolean(frontend && frontend !== 'react-vite');
   const explicitCustomBackend = Boolean(backend && backend !== 'supabase' && backend !== 'none');
   const noBackend = backend === 'none';
+  // API-only: an explicit custom backend + API-service vocabulary + ZERO
+  // frontend/UI signals proposes `frontend: none`, not the react-vite fallback.
+  // Observed 13c: "create a golang api project…" scaffolded a full React app +
+  // pnpm monorepo nobody asked for, because `frontend || 'react-vite'` had no
+  // API-only concept and the wizard preselected the fallback. Deliberately
+  // scoped to explicit custom backends (go/rust/java/php/…): ambiguous
+  // supabase-tier prompts keep the web default, and the wizard still lets the
+  // user add a frontend.
+  const apiOnlyBackend = !frontend && !mobile.enabled && explicitCustomBackend
+    && includesAny(text, [
+      /\bapis?\b/, /\bmicroservices?\b/, /\bgrpc\b/, /\brest(?:ful)?\b/,
+      /\bendpoints?\b/, /\bbackend\b/, /\bserver\b/, /\bworkers?\b/, /\bcli\b/,
+    ])
+    && !includesAny(text, [
+      /\bfront[- ]?end\b/, /\bui\b/, /\bux\b/, /\bwebsites?\b/, /\bweb ?app\b/,
+      /\bsite\b/, /\bpages?\b/, /\bdashboards?\b/, /\binterface\b/,
+      /\bscreens?\b/, /\bresponsive\b/, /\bdesign\b/, /\bcomponents?\b/,
+    ]);
 
-  let resolvedFrontend = frontend || 'react-vite';
+  let resolvedFrontend = frontend || (apiOnlyBackend ? 'none' : 'react-vite');
   let resolvedBackend = backend || (backendNeed || mobile.enabled ? 'supabase' : 'none');
   let stack: string;
 

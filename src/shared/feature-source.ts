@@ -184,8 +184,14 @@ export function shellWriteTargetsStateDir(command: unknown): boolean {
 // frontend/backend scopes — carving them out of every assignment glob would be
 // fragile). Covers *.test.*/*.spec.* files plus conventional test directories,
 // including the singular `test/` segment for JVM `src/test/` layouts.
+// Test files by directory convention or filename convention. The filename arm
+// covers dot-infix JS/TS (`.test.` / `.spec.`) AND the side-by-side suffix/
+// prefix conventions of Go (`*_test.go` lives NEXT to the source package —
+// observed 13c: the tester was denied on services/api/internal/middleware/
+// middleware_test.go as backend-owned and dropped the test) and pytest
+// (`test_*.py` / `*_test.py`).
 export const TEST_SCOPE_RE =
-  /(?:^|\/)(?:__tests__|__mocks__|__fixtures__|tests|test|e2e|cypress|playwright|\.maestro)\/|\.(?:test|spec)\.[^/]+$/;
+  /(?:^|\/)(?:__tests__|__mocks__|__fixtures__|tests|test|e2e|cypress|playwright|\.maestro)\/|\.(?:test|spec)\.[^/]+$|_test\.go$|(?:^|\/)test_[^/]+\.py$|_test\.py$/;
 
 export function isTestScopePath(filePath: unknown): boolean {
   const p = String(filePath ?? '').replace(/\\/g, '/').replace(/^\.\//, '');

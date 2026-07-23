@@ -191,6 +191,15 @@ test('isTestScopePath classifies test files and conventional test dirs', () => {
   assert.equal(isTestScopePath('src/test-utils/render.tsx'), false);
   assert.equal(isTestScopePath(''), false);
   assert.equal(isTestScopePath(undefined), false);
+  // Go side-by-side tests (13c: tester denied on a backend-owned _test.go)
+  assert.equal(isTestScopePath('services/api/internal/middleware/middleware_test.go'), true);
+  assert.equal(isTestScopePath('cmd/server/main.go'), false);
+  assert.equal(isTestScopePath('internal/contest.go'), false); // no underscore — not a test
+  // pytest side-by-side conventions
+  assert.equal(isTestScopePath('app/models/test_user.py'), true);
+  assert.equal(isTestScopePath('app/models/user_test.py'), true);
+  assert.equal(isTestScopePath('app/models/latest.py'), false);
+  assert.equal(isTestScopePath('app/models/protest.py'), false);
 });
 
 test('isTestInfraConfigPath classifies test-runner configs, not app bundler configs', () => {

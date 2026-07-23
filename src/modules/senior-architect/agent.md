@@ -281,6 +281,14 @@ Guarantees you must uphold (the gate trusts the manifest):
   prompt that lockfile updates from installs are always in scope). A role must
   never delete or revert a lockfile to satisfy its scope — that leaves the
   workspace without install determinism and burns a reviewer finding.
+- **Root manifests need an owner too** — the root `package.json` (and root
+  workspace/tool configs such as `pnpm-workspace.yaml`, `turbo.json`,
+  `tsconfig.base.json`, `eslint.config.js`) must fall in exactly ONE
+  implementer's scope: the frontend for web builds, the backend when no
+  frontend role runs. Leaving them uncovered routes every dep/script edit
+  through the first-writer fallback lock, and parallel implementers then
+  collide on it mid-build (observed live: three denied writes on root
+  `package.json` in one run).
 
 If you cannot partition the surface disjointly, report the blocker instead of emitting `PLAN_READY`.
 

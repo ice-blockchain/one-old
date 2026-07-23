@@ -36,6 +36,39 @@ test('classifyPromptForStack: django api → custom-backend', () => {
   assert.equal(c.stack, 'custom-backend');
 });
 
+test('classifyPromptForStack: API-only custom backend → frontend none (13c)', () => {
+  // the exact 13c prompt that scaffolded an unrequested React app
+  const c = classifyPromptForStack('create a golang api project with api fetching products, product info, news, auth');
+  assert.equal(c.backend, 'go');
+  assert.equal(c.stack, 'custom-backend');
+  assert.equal(c.frontend, 'none');
+
+  const micro = classifyPromptForStack('build a rest api with microservices in go');
+  assert.equal(micro.frontend, 'none');
+  assert.equal(micro.backend, 'go');
+
+  const dj = classifyPromptForStack('build a django rest api');
+  assert.equal(dj.frontend, 'none');
+});
+
+test('classifyPromptForStack: custom backend WITH ui signals keeps the web frontend', () => {
+  const c = classifyPromptForStack('create a golang web app with a dashboard ui');
+  assert.equal(c.backend, 'go');
+  assert.equal(c.frontend, 'react-vite');
+
+  // explicit react wording is untouched by the API-only branch
+  const react = classifyPromptForStack('React frontend and a Go server for the API');
+  assert.equal(react.frontend, 'react-vite');
+});
+
+test('classifyPromptForStack: ambiguous supabase-tier api prompt keeps the web default', () => {
+  // no explicit custom backend → NOT api-only; stays on the default stack
+  const c = classifyPromptForStack('create an api for products with auth');
+  assert.equal(c.frontend, 'react-vite');
+  assert.equal(c.backend, 'supabase');
+  assert.equal(c.stack, 'default');
+});
+
 test('classifyPromptForStack: React with Go as backend → custom-backend/go', () => {
   const prompts = [
     'build a web development academy in react with go as backend',
