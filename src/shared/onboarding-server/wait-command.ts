@@ -127,7 +127,9 @@ export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: strin
     + 'Recommend it, but do not decide for the user: still STOP and wait for their answer.',
     '',
     '- If the user answers YES, do these steps IN ORDER:',
-    `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt, syncSession)}`,
+    `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately${host === 'codex'
+      ? '. Codex: run it via exec_command with `sandbox_permissions: "require_escalated"` — it stores the choice under `~/.traffic-one`, outside the workspace sandbox, so an unescalated run fails with EPERM'
+      : ''}:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt, syncSession)}`,
     '  2. Show that setup link to the user in chat; if a browser tool is available, ALSO open the link there so they can complete setup. (Skip this step if step 1 printed TRAFFIC_ONE_SETUP_COMPLETE.)',
     `  3. Run this command to wait for setup to finish — IN THE BACKGROUND when the shell tool supports it (a foreground run hides its output while it blocks and looks hung). Do read-only orientation meanwhile; when it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request:\n${onboardingWaitCommand(cwd, host, syncSession)}`,
     `- If the user answers NO, run this command — the choice is saved outside the project (no files are added to it) and Traffic One stays silent here until the user explicitly asks for it again:\n${onboardingDeclineCommand(cwd, host)}`,

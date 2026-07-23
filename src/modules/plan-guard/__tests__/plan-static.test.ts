@@ -33,6 +33,18 @@ test('components directly under src/ are rejected (web vs native target)', () =>
   assert.deepEqual(check('apps/web/src/Card.ts', ''), ['component-placement']);
 });
 
+test('the canonical root component src/App.tsx is exempt from component placement', () => {
+  // every Vite template ships index.html → src/main.tsx → src/App.tsx
+  // (observed 8c-codex: the gate forced a non-standard components/App.tsx move)
+  assert.deepEqual(check('apps/web/src/App.tsx', 'export function App() { return null; }'), []);
+  assert.deepEqual(check('src/App.tsx', 'export function App() { return null; }'), []);
+  assert.deepEqual(check('src/App.ts', ''), []);
+  // only the root component — siblings stay gated
+  assert.deepEqual(check('apps/web/src/AppShell.tsx', ''), ['component-placement']);
+  // deeper App.tsx files never matched this rule and still do not
+  assert.deepEqual(check('apps/web/src/components/App.tsx', 'export const App = () => null;'), []);
+});
+
 test('cross-feature imports are flagged', () => {
   const content = "import { x } " + "from '@/features/billing/api';";
   assert.deepEqual(check('src/features/auth/widget.ts', content), ['cross-feature-import']);

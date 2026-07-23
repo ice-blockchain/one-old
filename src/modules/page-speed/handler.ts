@@ -118,8 +118,14 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
         : blocked.status === 'blocked:timeout'
           ? 'the Lighthouse runner timed out'
           : 'usage limit blocked Lighthouse';
+      // Codex's workspace-write sandbox denies binding the 127.0.0.1 preview
+      // port (`listen EPERM`, observed 8c-codex). Escalation is routine there —
+      // prescribe the exact retry instead of leaving page speed unverified.
+      const codexEscalation = ctx.host === 'codex' && blocked.status === 'blocked:sandbox'
+        ? ' On Codex, rerun the SAME runner command via exec_command with `sandbox_permissions: "require_escalated"` and the persistent prefix `["node", "~/.traffic-one/bin/lighthouse-runner.cjs"]` — the runner must bind a 127.0.0.1 preview port, which the workspace sandbox forbids.'
+        : '';
       return context(
-        `[traffic-one] Lighthouse mobile gate reported ${blocked.status}: ${blocked.error || label}. Treat page speed as unverified, list concrete page-speed risks, and use a staging/already-running URL if available.`,
+        `[traffic-one] Lighthouse mobile gate reported ${blocked.status}: ${blocked.error || label}. Treat page speed as unverified, list concrete page-speed risks, and use a staging/already-running URL if available.${codexEscalation}`,
         { systemMessage: `traffic-one page-speed ${blocked.status}` },
       );
     }
@@ -145,6 +151,10 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
       'Audit `/` plus the 1-2 heaviest public routes (catalog/listing pages — rerun with `--route <path>`); the home route alone hides heavy-route regressions. A metric flagged `withinTolerance` passed the gate — do NOT iterate on it. A confirmation re-run with no code changes in between may add `--skip-build`. If the local sandbox blocks preview binding, use an already-running or staging URL with `--url ... --skip-preview`. The summary also carries Accessibility/Best-Practices/SEO scores from the same audit — surface a11y warnings to the team.',
       '',
       'If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. If the environment blocks Lighthouse, report the structured status (`blocked:sandbox`, `blocked:usage-limit`, or `blocked:timeout`) with concrete risks; never imply page speed was verified.',
+      ...(ctx.host === 'codex' ? [
+        '',
+        'Codex: the workspace sandbox denies binding the preview port (`blocked:sandbox`, listen EPERM). Run the runner via exec_command with `sandbox_permissions: "require_escalated"` and the persistent prefix `["node", "~/.traffic-one/bin/lighthouse-runner.cjs"]`, or audit an already-running/staging URL with `--url ... --skip-preview`.',
+      ] : []),
     ].join('\n'),
     { systemMessage: 'traffic-one page-speed gate pending after build' },
   );

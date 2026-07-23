@@ -2623,6 +2623,56 @@ function roleRegistryDisownsClaim(
   return registryOwnsClaim ? entry.replaced === true : entry.replaced !== true;
 }
 
+// A child whose observed model terminally conflicts with the immutable run
+// policy can never act again — every tool call is denied. On hosts whose spawn
+// results bind via SubagentStart (Codex), nothing ever set the registry's
+// `replaced` marker for such a child, so the role slot stayed occupied and the
+// parent's FRESH policy-compliant replacement was refused as a duplicate
+// (observed 8c-codex: reviewer stranded after a followup model drift, all
+// respawn paths dead-ended). Durably disown the dead child here — the existing
+// machinery (activeClaimForOtherThread → roleRegistryDisownsClaim) then lets
+// exactly the next verified same-role child claim the slot, and the recorder
+// preserves this lineage in registry history. Only the entry actually owned by
+// one of the given thread ids is marked; a live replacement is never touched.
+export function disownConflictedRoleAgent(
+  cwd: string,
+  runId: string,
+  role: string,
+  threadIds: readonly string[],
+  reason: string,
+): boolean {
+  if (!VALID_AGENT_ROLES.has(role) || !runId) return false;
+  const ids = threadIds.map((id) => String(id || '').trim()).filter(Boolean);
+  if (ids.length === 0) return false;
+  let disowned = false;
+  withAgentRegistryLock(cwd, runId, () => {
+    const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+    const agents = obj(registry.agents) || {};
+    const entry = obj(agents[role]);
+    if (!entry) return;
+    const entryIds = idsForRunAgent(entry);
+    if (!ids.some((id) => entryIds.includes(id))) return;
+    if (entry.replaced === true) {
+      disowned = true;
+      return;
+    }
+    agents[role] = {
+      ...entry,
+      replaced: true,
+      replacedAt: stateTimestamp(),
+      replacementReason: reason,
+    };
+    try {
+      fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
+      disowned = true;
+    } catch {
+      // best-effort: the deny still blocks the dead child; the parent can retry
+    }
+  });
+  return disowned;
+}
+
 const AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES = 32 * 1024;
 const AUTHORITATIVE_REBIND_PENDING_LIMIT = 8;
 

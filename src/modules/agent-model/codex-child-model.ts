@@ -6,6 +6,7 @@ import { obj } from '../../shared/obj';
 import {
   claimThreadRole,
   correctCodexChildObservationRole,
+  disownConflictedRoleAgent,
   hookSessionIdentity,
   isSubagentThread,
   observeCodexChildModel,
@@ -71,10 +72,18 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
   const hookChildId = identity.agentId || identity.threadId || transcriptId || '';
   const hookParentId = identity.parentSessionId
     || (identity.sessionId && identity.sessionId !== hookChildId ? identity.sessionId : null);
+  // Codex hooks report the ROOT conversation as session_id for EVERY child, at
+  // any depth, while line-zero `parent_thread_id` names the IMMEDIATE parent.
+  // For a depth-2 spawn (a senior child spawning a replacement sibling) the two
+  // are different TRUE statements, not a contradiction — comparing them raw
+  // stranded every architect-spawned replacement (observed 8c-codex). A parent
+  // claim is only contradictory when the hook names a parent that is neither
+  // the line-zero immediate parent nor the root session it runs under.
+  const hookParentIsRootSession = Boolean(hookParentId && identity.sessionId && hookParentId === identity.sessionId);
   if ((meta?.threadId && hookChildId && meta.threadId.toLowerCase() !== hookChildId.toLowerCase())
-    || (meta?.parentThreadId && hookParentId && meta.parentThreadId !== hookParentId)
+    || (meta?.parentThreadId && hookParentId && meta.parentThreadId !== hookParentId && !hookParentIsRootSession)
     || (observation?.childId && hookChildId && observation.childId.toLowerCase() !== hookChildId.toLowerCase())
-    || (observation?.parentSessionId && hookParentId && observation.parentSessionId !== hookParentId)) {
+    || (observation?.parentSessionId && hookParentId && observation.parentSessionId !== hookParentId && !hookParentIsRootSession)) {
     return deny(
       'traffic-one — Codex child blocked: hook, line-zero session metadata, and persisted model observation '
       + 'do not identify the same child/parent pair. Stop this child; the parent must respawn it.',
@@ -114,9 +123,30 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     source: 'PreToolUse',
   });
   if (!updated || updated.status !== 'verified' || !updated.actualModel) {
+    const status = updated?.status || 'unavailable';
+    const reason = updated?.reason || 'run model policy missing';
+    // conflict/mismatch is terminal for THIS thread: every later call stays
+    // denied, so durably disown its role slot in the reuse registry. Without
+    // that marker no replacement could ever bind on Codex — the fresh verified
+    // child was refused as a duplicate of the dead incumbent (observed
+    // 8c-codex: followup turns silently ran on the parent's model, and the
+    // stranded role forced the run into Low/main-agent fallback).
+    if (status === 'conflict' || status === 'mismatch') {
+      const released = role
+        ? disownConflictedRoleAgent(cwd, runId, role, [childId, ...candidateIds], reason)
+        : false;
+      return deny(
+        `traffic-one — Codex child blocked: observed model status is ${status} (${reason}). `
+        + `This thread is retired — every later call stays blocked${released ? ', and its role slot is now released for ONE replacement' : ''}. `
+        + 'Parent: spawn a FRESH child for this role with the canonical task_name, fork_turns "none", and the exact '
+        + 'model from .traffic-one/runs/<runId>/model-policy.json. Do NOT follow-up or interrupt-respawn this same '
+        + "task_name — the host can silently reattach this retired runtime (follow-up turns may run on the parent's "
+        + 'model); if a same-name respawn reattaches, spawn the replacement from another live senior child instead.',
+      );
+    }
     return deny(
-      `traffic-one — Codex child blocked: observed model status is ${updated?.status || 'unavailable'} `
-      + `(${updated?.reason || 'run model policy missing'}). Parent: interrupt/replace this child and respawn `
+      `traffic-one — Codex child blocked: observed model status is ${status} `
+      + `(${reason}). Parent: interrupt/replace this child and respawn `
       + 'with the exact model in .traffic-one/runs/<runId>/model-policy.json.',
     );
   }

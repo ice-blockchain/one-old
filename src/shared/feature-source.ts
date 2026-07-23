@@ -73,13 +73,34 @@ const INTERPRETER_EVAL_WRITE_RE = new RegExp(
   + String.raw`|\bunlink\b|\bos\.(?:remove|rename|replace)\b|\bshutil\b|['"]>{1,2}['"])`,
 );
 
+// `sed` is a write only when an actual in-place flag appears among the option
+// tokens that PRECEDE its script/file arguments. The old free-span match
+// (`/\bsed\b[\s\S]*-i/`) turned pure reads into writes whenever ANY later text
+// merely contained "-i" — observed 8c-codex: `sed -n '1,240p' … known-issues.md`
+// (the "-i" inside the filename) denied the tester's read-only orientation, and
+// the same pattern inside a heredoc BODY voided the digest carve-out below.
+// GNU's postfix form (`sed 's/…/…/' -i file`) is deliberately not chased — the
+// canonical `sed -i` spelling stays caught without the filename false positives.
+function sedInPlaceFlag(command: string): boolean {
+  const sedRe = /\bsed\b/g;
+  for (let match = sedRe.exec(command); match; match = sedRe.exec(command)) {
+    for (const token of command.slice(match.index + match[0].length).split(/\s+/)) {
+      if (!token) continue;
+      if (!token.startsWith('-') || token === '--') break; // script/file args end the option run
+      if (token === '--in-place' || token.startsWith('--in-place=')) return true;
+      if (/^-[a-zA-Z]*i/.test(token)) return true; // -i, -i.bak, -ni, -Ei…
+    }
+  }
+  return false;
+}
+
 function shellCommandHasWritePrimitive(command: string): boolean {
   const hasOutputRedirect = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)/.test(command);
   return hasOutputRedirect
     || /\btee\b/.test(command)
     || /\bcat\b[\s\S]*<</.test(command)
     || INTERPRETER_EVAL_WRITE_RE.test(command)
-    || /\bsed\b[\s\S]*-i/.test(command)
+    || sedInPlaceFlag(command)
     // mkdir creates no file content and carries no implementation ownership.
     // Treating it as a source write rejects foreground architect scaffolding in
     // Devin Local. Destructive/copying/content primitives remain gated.
@@ -113,17 +134,44 @@ export function commandAppearsToWriteBuildArtifact(command: unknown): boolean {
 // through the Write tool so plan-content validation still runs.
 const RUN_STATE_TARGET_RE = /^(?:\.\/)?\.traffic-one\/(?:digests|fix-cycles|runs)\/|\/\.traffic-one\/(?:digests|fix-cycles|runs)\//;
 
+// Heredoc BODIES are quoted data, not commands. A reviewer digest whose text
+// merely cites `sed -i`, `rm`, or an output redirect must not void the
+// run-state carve-out (observed 8c-codex: the digest heredoc was denied because
+// a finding mentioned `sed -i`). Remove each `<<TERM … TERM` body before the
+// disqualifier/target scans; the redirect that feeds the heredoc target
+// (`cat > path <<'EOF'`) precedes the operator, so it survives the strip.
+function stripHeredocBodies(command: string): string {
+  const heredocRe = /<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
+  let result = '';
+  let cursor = 0;
+  for (let m = heredocRe.exec(command); m; m = heredocRe.exec(command)) {
+    if (m.index < cursor) continue; // operator text inside an already-stripped body
+    const term = m[1] || m[2] || m[3] || '';
+    const operatorEnd = m.index + m[0].length;
+    const bodyStart = command.indexOf('\n', operatorEnd);
+    if (bodyStart === -1) { result += command.slice(cursor, operatorEnd); cursor = command.length; break; }
+    result += command.slice(cursor, bodyStart);
+    const termRe = new RegExp(`\\n[\\t ]*${term}[\\t ]*(?=\\n|$)`);
+    const terminator = termRe.exec(command.slice(bodyStart));
+    if (!terminator) { cursor = command.length; break; } // unterminated: body runs to the end
+    cursor = bodyStart + terminator.index; // resume at the newline before TERM
+    heredocRe.lastIndex = cursor;
+  }
+  return result + command.slice(cursor);
+}
+
 export function shellWriteTargetsStateDir(command: unknown): boolean {
   if (typeof command !== 'string' || !command.trim()) return false;
-  if (INTERPRETER_EVAL_WRITE_RE.test(command)) return false;
-  if (/\bsed\b[\s\S]*-i/.test(command)) return false;
-  if (/(?:^|[\s;&|])(?:rm|mv|cp|touch|truncate)\b/.test(command)) return false;
-  if (/(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(command)) return false;
+  const scanned = stripHeredocBodies(command);
+  if (INTERPRETER_EVAL_WRITE_RE.test(scanned)) return false;
+  if (sedInPlaceFlag(scanned)) return false;
+  if (/(?:^|[\s;&|])(?:rm|mv|cp|touch|truncate)\b/.test(scanned)) return false;
+  if (/(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(scanned)) return false;
   const targets: string[] = [];
   const redirectRe = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)((?:"[^"]+")|(?:'[^']+')|[^\s;&|<>]+)/g;
-  for (let m = redirectRe.exec(command); m; m = redirectRe.exec(command)) { if (m[1]) targets.push(m[1]); }
+  for (let m = redirectRe.exec(scanned); m; m = redirectRe.exec(scanned)) { if (m[1]) targets.push(m[1]); }
   const teeRe = /\btee\b(?:\s+-[a-zA-Z]+)*\s+((?:"[^"]+")|(?:'[^']+')|[^\s;&|]+)/g;
-  for (let m = teeRe.exec(command); m; m = teeRe.exec(command)) { if (m[1]) targets.push(m[1]); }
+  for (let m = teeRe.exec(scanned); m; m = teeRe.exec(scanned)) { if (m[1]) targets.push(m[1]); }
   if (targets.length === 0) return false;
   return targets.every((raw) => {
     const target = raw.replace(/^['"]|['"]$/g, '').replace(/\\/g, '/');

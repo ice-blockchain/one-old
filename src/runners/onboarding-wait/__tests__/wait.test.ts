@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   beginOnboardingAttempt,
+  consentPhaseFailureOutput,
   cursorSetupCloseDirective,
   openCodeRestartWarning,
   preSpawnArchitectDirective,
@@ -45,6 +46,35 @@ test('waitForOnboarding: returns "complete" when setup finishes mid-wait (after 
   });
   assert.equal(r, 'complete');
   assert.equal(polls, 3);
+});
+
+test('consent-phase EPERM maps to a clean escalation recipe that keeps the recorded yes', () => {
+  // the live 8c-codex crash: `--use --bootstrap-only` ran inside the workspace
+  // sandbox and mkdir(~/.traffic-one/projects/…) threw a raw EPERM stack
+  const eperm = Object.assign(
+    new Error("EPERM: operation not permitted, mkdir '/Users/u/.traffic-one/projects/abc'"),
+    { code: 'EPERM' },
+  );
+  const argv = [
+    '--use', '--bootstrap-only', '/proj',
+    '--host=codex',
+    '--seed-prompt=create a modern learning platform with courses',
+    '--sync-session=sess-1',
+  ] as const;
+  const out = consentPhaseFailureOutput('/proj', 'codex', argv, eperm);
+  assert.match(out, /^TRAFFIC_ONE_SETUP_PERMISSION_REQUIRED\n/);
+  assert.match(out, /require_escalated/);
+  assert.doesNotMatch(out, /at Object\.mkdirSync/); // no raw stack traces
+  // the prescribed retry is the ORIGINAL yes command — consent and seed intact
+  assert.match(out, /--use/);
+  assert.match(out, /--bootstrap-only/);
+  assert.match(out, /--seed-prompt=/);
+  assert.match(out, /--sync-session=sess-1/);
+
+  // non-permission failures stay terminal diagnostics, not retry loops
+  const broken = consentPhaseFailureOutput('/proj', 'codex', argv, new Error('unexpected token in prefs.json'));
+  assert.match(broken, /^TRAFFIC_ONE_SETUP_START_FAILED\n/);
+  assert.match(broken, /plugin\/runtime failure/);
 });
 
 test('openCodeRestartWarning tells the user to restart before continuing development', () => {

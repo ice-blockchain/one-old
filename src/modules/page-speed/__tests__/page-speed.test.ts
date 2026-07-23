@@ -100,6 +100,35 @@ test('page-speed surfaces structured Lighthouse blocked statuses after runner ca
   });
 });
 
+test('codex blocked:sandbox prescribes the escalated re-run recipe', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    const runnerOutput = JSON.stringify({
+      status: 'blocked:sandbox',
+      error: 'listen EPERM: operation not permitted "127.0.0.1"',
+    }, null, 2);
+    const input: HookInput = {
+      event: 'PostToolUse', host: 'codex', cwd,
+      raw: { tool_response: { stdout: `${runnerOutput}\n` } },
+      tool: { class: 'shell' as ToolClass, rawName: 'exec_command', command: 'node ~/.traffic-one/bin/lighthouse-runner.cjs --route /' },
+    };
+    const r = postBuildPageSpeed({ input, host: 'codex', cwd, now: () => 'x' } as unknown as Ctx);
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('require_escalated'), 'codex sandbox denial names the escalation recipe');
+      assert.ok(r.context.includes('lighthouse-runner.cjs'));
+      assert.ok(r.context.includes('unverified'));
+    }
+    // non-codex hosts keep the plain unverified message
+    const claude = postBuildPageSpeed(ctxFor(
+      cwd,
+      'node ~/.traffic-one/bin/lighthouse-runner.cjs --route /',
+      { tool_response: { stdout: `${runnerOutput}\n` } },
+    ));
+    assert.equal(claude.kind, 'context');
+    if (claude.kind === 'context') assert.ok(!claude.context.includes('require_escalated'));
+  });
+});
+
 test('page-speed surfaces a Lighthouse runner timeout as blocked:timeout', () => {
   withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
     const runnerOutput = JSON.stringify({

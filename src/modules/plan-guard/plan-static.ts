@@ -93,7 +93,12 @@ export function planStaticViolations(filePath: string, content: string, isNative
       'Expo Router route files must stay thin. Service/store/hook/slice files belong in src/features/, src/services/, or packages/*.'));
   }
 
-  if (/(apps\/[^/]+\/)?src\/[A-Z][a-zA-Z]+\.(tsx|ts)$/.test(filePath)) {
+  // `src/App.tsx` is exempt: it is the canonical root component of every Vite
+  // (and src-layout RN/Expo) template — index.html → main.tsx → App. Denying it
+  // forces a non-standard `src/components/App.tsx` relocation (observed
+  // 8c-codex). Every other capitalized module directly in src/ stays gated.
+  if (/(apps\/[^/]+\/)?src\/[A-Z][a-zA-Z]+\.(tsx|ts)$/.test(filePath)
+    && !/(?:^|\/)src\/App\.(?:tsx|ts)$/.test(filePath)) {
     const target = isNative
       ? 'src/components/, src/features/<name>/components/, or packages/ui-native/*'
       : 'src/components/, src/features/<name>/components/, or packages/ui/*';

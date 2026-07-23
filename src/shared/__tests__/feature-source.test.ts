@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   applyPatchTargetPaths,
+  commandAppearsToWriteBuildArtifact,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
   isTestInfraConfigPath,
@@ -137,6 +138,44 @@ test('shellWriteTargetsStateDir carves out run-state heredocs only', () => {
   assert.equal(shellWriteTargetsStateDir('cat .traffic-one/digests/123/reviewer.md'), false);
   assert.equal(shellWriteTargetsStateDir(''), false);
   assert.equal(shellWriteTargetsStateDir(undefined), false);
+});
+
+test('sed -i detection anchors on sed option tokens, not any later "-i" text', () => {
+  // the live 8c-codex tester denials: pure read chains where "-i" only appears
+  // inside the filename `known-issues.md`
+  assert.equal(commandAppearsToWriteBuildArtifact(
+    "sed -n '1,240p' package.json && sed -n '1,240p' apps/web/package.json && sed -n '1,220p' vitest.config.ts"
+    + " && sed -n '1,220p' playwright.config.ts && sed -n '1,180p' .traffic-one/.one.json && sed -n '1,180p' .traffic-one/known-issues.md",
+  ), false);
+  assert.equal(commandAppearsToWriteFeatureSource(
+    "sed -n '1,50p' apps/web/src/App.tsx && sed -n '1,20p' .traffic-one/known-issues.md",
+  ), false);
+  // stdout-only sed whose SCRIPT merely contains "-i" stays a read
+  assert.equal(commandAppearsToWriteFeatureSource("sed -e 's/-i/x/' src/a.ts"), false);
+  // real in-place flag spellings stay writes
+  assert.equal(commandAppearsToWriteFeatureSource("sed -i.bak 's/a/b/' src/x.ts"), true);
+  assert.equal(commandAppearsToWriteFeatureSource("sed --in-place 's/a/b/' src/x.ts"), true);
+  assert.equal(commandAppearsToWriteFeatureSource("sed -ni 's/a/b/p' src/x.ts"), true);
+});
+
+test('digests heredoc carve-out ignores write-primitive lookalikes inside the body', () => {
+  // the live 8c-codex reviewer digest: body cites `sed -i`, `rm`, touch targets…
+  const digestHeredoc = [
+    'mkdir -p .traffic-one/digests/123',
+    "cat > .traffic-one/digests/123/reviewer.md <<'EOF'",
+    '# reviewer digest — run 123',
+    '',
+    'verdict: CHANGES_REQUESTED',
+    '1. `apps/web/src/App.tsx` — replace the `sed -i` hack and the `rm -rf` cleanup step.',
+    '2. touch targets under 44px on mobile.',
+    'EOF',
+  ].join('\n');
+  assert.equal(shellWriteTargetsStateDir(digestHeredoc), true);
+  // a redirect inside the body is quoted data, not a second write target
+  assert.equal(shellWriteTargetsStateDir(
+    "cat > .traffic-one/digests/123/tester.md <<'EOF'\nReproduce with: pnpm lint > lint.log\nEOF"), true);
+  // real write primitives OUTSIDE the body still disable the carve-out
+  assert.equal(shellWriteTargetsStateDir(`${digestHeredoc}\nrm -rf apps/web/src`), false);
 });
 
 test('isTestScopePath classifies test files and conventional test dirs', () => {
