@@ -473,13 +473,16 @@ export async function probeCodexHookTrust(
 ): Promise<CodexHookTrustProbe> {
   const startedAt = Date.now();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const binaryPath = Object.prototype.hasOwnProperty.call(options, 'binaryPath')
-    ? options.binaryPath || null
-    : resolveCodexBinary(env);
-  if (!binaryPath) return indeterminate('codex-not-found');
+  const hasBinaryOverride = Object.prototype.hasOwnProperty.call(options, 'binaryPath');
+  const binaryPath = hasBinaryOverride ? options.binaryPath || null : resolveCodexBinary(env);
+  // An explicit null override is a deterministic binary probe used by callers
+  // and tests. During normal auto-detection, report the earlier structural
+  // prerequisite first so doctor output is stable on hosts without Codex in PATH.
+  if (hasBinaryOverride && !binaryPath) return indeterminate('codex-not-found');
   const realHome = codexHome(env);
   const cache = realHome ? trafficOneCache(realHome) : null;
   if (!cache) return indeterminate('plugin-cache-missing');
+  if (!binaryPath) return indeterminate('codex-not-found');
 
   let shadowHome: string | null = null;
   let result: CodexHookTrustProbe | null = null;

@@ -3468,8 +3468,10 @@ function runHasQaEvidence(cwd: string, runId: string): boolean {
     try {
       const testerMtimeMs = Math.floor(fs.statSync(testerFile).mtimeMs);
       const reportMtimeMs = Math.floor(fs.statSync(result.reportPath).mtimeMs);
-      const generatedAtMs = Date.parse(result.report.generatedAt);
-      return testerMtimeMs >= Math.max(reportMtimeMs, generatedAtMs);
+      // The canonical file write-time establishes whether the tester re-attested
+      // after this report. generatedAt is already validated for freshness, but
+      // may legitimately be a few milliseconds ahead of the filesystem clock.
+      return testerMtimeMs >= reportMtimeMs;
     } catch {
       return false;
     }
