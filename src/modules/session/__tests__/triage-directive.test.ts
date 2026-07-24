@@ -5,6 +5,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { maintenanceTriageDirective } from '../triage-directive';
+import { runModelPolicyPath } from '../../../shared/run-model-policy';
+import { currentHostModelTarget } from '../../../shared/current-model-tiers';
 import type { Rec } from '../../../shared/obj';
 
 // The maintenance triage directive starts a FRESH run (rotates currentRunId,
@@ -157,6 +159,49 @@ test('rotates when there is no orchestrated run (no assignments) — common main
     maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
     assert.notEqual(state.currentRunId, 'OLD', 'a plain maintenance edit with no orchestrated run still rotates');
     assert.match(String(state.currentRunId), /^\d{13}$/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('F3: a rotated maintenance run freezes model-policy at mint (first followup is not denied)', () => {
+  const { dir, state } = setup({});
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_HOST = 'codex';
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  // The MERGED state must carry the acknowledged catalog (readState strips
+  // performance as a host pref, so beginFreshMaintenanceRun freezes off the
+  // passed-in state, matching the build-run handler's effectiveState).
+  const target = currentHostModelTarget('codex', 'pro', process.env);
+  state.performance = {
+    level: 'high',
+    source: 'prompted',
+    target: { plan: 'pro', appliedFingerprint: target.appliedFingerprint, configVersion: target.configVersion },
+  };
+  try {
+    maintenanceTriageDirective(dir, state, PROMPT, {}, 'codex');
+    assert.notEqual(state.currentRunId, 'OLD', 'a fresh maintenance run should rotate');
+    assert.ok(fs.existsSync(runModelPolicyPath(dir, String(state.currentRunId))),
+      'the maintenance run must freeze its model-policy at mint so the first followup_task is not denied on a missing policy');
+  } finally {
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    cleanup(dir);
+  }
+});
+
+test('F3: maintenance rotation stays best-effort when the model policy cannot be frozen', () => {
+  // No performance level in state → buildRunModelPolicy returns null; the freeze
+  // must no-op WITHOUT throwing, and the run must still rotate + route.
+  const { dir, state } = setup({});
+  try {
+    let directive = '';
+    assert.doesNotThrow(() => { directive = maintenanceTriageDirective(dir, state, PROMPT, {}, 'codex'); });
+    assert.notEqual(state.currentRunId, 'OLD', 'rotation still happens even if the policy freeze no-ops');
+    assert.ok(directive.length > 0, 'triage must still return its routing directive');
   } finally {
     cleanup(dir);
   }

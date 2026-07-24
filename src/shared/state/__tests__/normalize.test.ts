@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { normalizeState, readState, requireAddon, statePath, writeState } from '../normalize';
+import { preserveCurrentRunId } from '../project-state-lock';
 import { mergeProjectHostPrefs, readEffectiveState, writeGlobalCodeGraphProvider } from '../local-prefs';
 import { nextLocalPreferenceStep } from '../../onboarding/local-prefs';
 
@@ -57,6 +58,35 @@ test('currentRunId is normalized to the digit string gates expect', () => {
     fs.writeFileSync(statePath(dir), JSON.stringify({ stack: 'default', currentRunId: 1715091785001 }), 'utf8');
     assert.equal(readEffectiveState(dir).currentRunId, '1715091785001');
   });
+});
+
+test('writeState never blanks a live currentRunId (F1 lost-update); a new id still rotates', () => {
+  withPrefs((dir) => {
+    const A = '1715091785000';
+    const B = '1715091999999';
+    writeState(dir, { stack: 'default', mode: 'new-project', currentRunId: A });
+    assert.equal(JSON.parse(fs.readFileSync(statePath(dir), 'utf8')).currentRunId, A);
+    // A stale snapshot (e.g. the one-mcp/convergence writer, read before the mint)
+    // that lacks currentRunId must NOT clobber the live id — the 11c double-mint cause.
+    writeState(dir, { stack: 'default', mode: 'new-project' });
+    assert.equal(JSON.parse(fs.readFileSync(statePath(dir), 'utf8')).currentRunId, A,
+      'a stale snapshot must not blank currentRunId');
+    // A legitimate rotation to a NEW id must still flip the pointer.
+    writeState(dir, { stack: 'default', mode: 'new-project', currentRunId: B });
+    assert.equal(JSON.parse(fs.readFileSync(statePath(dir), 'utf8')).currentRunId, B,
+      'a new minted id must still rotate currentRunId');
+  });
+});
+
+test('preserveCurrentRunId: fills only when replacement lacks an id; keeps a new/flipped id', () => {
+  // absent in replacement, present on disk → restored
+  assert.equal(preserveCurrentRunId({ currentRunId: 'A' }, { stack: 'x' }).currentRunId, 'A');
+  // present in replacement (a legit flip) → kept, never frozen to the old id
+  assert.equal(preserveCurrentRunId({ currentRunId: 'A' }, { currentRunId: 'B' }).currentRunId, 'B');
+  // numeric replacement id counts as present → kept as-is
+  assert.equal(preserveCurrentRunId({ currentRunId: 'A' }, { currentRunId: 12 }).currentRunId, 12);
+  // blank replacement id + no disk id → never invents a real id
+  assert.equal(String(preserveCurrentRunId({}, { currentRunId: '  ' }).currentRunId ?? '').trim(), '');
 });
 
 test('writeState keeps local prefs out of .one.json; readEffectiveState merges them back', () => {

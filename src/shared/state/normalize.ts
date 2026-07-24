@@ -27,7 +27,7 @@ import { KNOWN_ADDONS } from '../../config/state';
 import { stateTimestamp, stateVersion } from './io';
 import { hasLocalPreferenceFields, splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
 import { initializeToolchainState } from './toolchain';
-import { preserveOneMcpReportId, withProjectStateLock } from './project-state-lock';
+import { preserveCurrentRunId, preserveOneMcpReportId, withProjectStateLock } from './project-state-lock';
 
 function defaultMobileState(): Rec {
   return { enabled: false, framework: 'none', source: 'none' };
@@ -138,7 +138,7 @@ export function writeState(cwd: string, state: unknown): void {
   const replacement = { ...source, version: stateVersion() };
   withProjectStateLock(cwd, () => {
     const current = readJson<Rec>(filePath, {});
-    writeJson(filePath, preserveOneMcpReportId(current, replacement));
+    writeJson(filePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)));
   });
 }
 

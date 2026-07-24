@@ -94,7 +94,7 @@ function sedInPlaceFlag(command: string): boolean {
   return false;
 }
 
-function shellCommandHasWritePrimitive(command: string): boolean {
+export function shellCommandHasWritePrimitive(command: string): boolean {
   const hasOutputRedirect = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)/.test(command);
   return hasOutputRedirect
     || /\btee\b/.test(command)

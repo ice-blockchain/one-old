@@ -9,6 +9,7 @@ import { legacyStatePath, statePath } from '../../shared/state';
 import { pluginVersion } from '../../config/plugin-identity';
 import { writeJson } from '../../shared/fsjson';
 import {
+  preserveCurrentRunId,
   preserveOneMcpReportId,
   withProjectStateLock,
 } from '../../shared/state/project-state-lock';
@@ -78,6 +79,6 @@ export function stampState(cwd: string, report: Report, relativeReportPath: stri
     delete state.pluginVersion;
     const version = pluginVersion();
     if (version) state.version = version;
-    writeJson(nextStatePath, preserveOneMcpReportId(current, state));
+    writeJson(nextStatePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, state)));
   });
 }

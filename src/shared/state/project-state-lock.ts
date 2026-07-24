@@ -53,6 +53,34 @@ export function preserveOneMcpReportId(current: unknown, replacement: unknown): 
   return next;
 }
 
+// Normalize a currentRunId value (epoch-ms string, or a legacy number) to a
+// non-empty trimmed string, or '' when absent/blank.
+function runIdValue(raw: unknown): string {
+  if (typeof raw === 'string') return raw.trim();
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(Math.trunc(raw));
+  return '';
+}
+
+// currentRunId is the build/maintenance run pointer. UNLIKE the immutable
+// one-mcp report id, it legitimately CHANGES when a new run is minted (build
+// onboarding, or a maintenance-triage rotation) — so we must NOT freeze it.
+// We preserve it ONLY when the incoming replacement carries no id: a stale
+// whole-state snapshot (read before the id was minted, then written back under
+// the lock by a concurrent .one.json writer) must never BLANK a live
+// currentRunId. Blanking it makes the next run claim mint a SECOND run —
+// observed 11c: the run-id-announce hook broadcast run A while the claim minted
+// run B, so the announced id and the enforced id diverged. A replacement that
+// DOES carry an id (including a freshly-minted rotation id) is returned
+// untouched, so legitimate run rotation still flips the pointer. Applied only
+// after the writer holds the shared lock and re-read the on-disk `current`.
+export function preserveCurrentRunId(current: unknown, replacement: unknown): Rec {
+  const next = record(replacement) ? { ...(replacement as Rec) } : {};
+  if (runIdValue(next.currentRunId)) return next; // replacement carries an id (possibly a legit new one)
+  const currentId = runIdValue(record(current)?.currentRunId);
+  if (currentId) next.currentRunId = currentId; // never let a stale snapshot blank a live id
+  return next;
+}
+
 function sleepSync(ms: number): void {
   if (ms <= 0) return;
   try {

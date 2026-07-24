@@ -20,6 +20,7 @@ import { obj, type Rec } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
+import { ensureRunModelPolicy } from '../../shared/run-model-policy';
 import { makeSkillBlock } from '../../shared/skill-block';
 import {
   ensureRunLedger,
@@ -49,7 +50,7 @@ function isExplicitRunResumePrompt(promptText: string): boolean {
     .test(promptText);
 }
 
-function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
+function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string): void {
   // Never rotate while the CURRENT run is still LIVE: it has run artifacts
   // (assignments/digests) but has NOT reached a terminal verdict. Rotating then would
   // split run state across two ids — the run-id gate resolves no scope for the in-flight
@@ -76,8 +77,21 @@ function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
   }
   const runId = runIdNow();
   const sharedState = readState(cwd);
-  writeState(cwd, { ...sharedState, currentRunId: runId, spawnIndex: {} });
-  ensureRunLedger(cwd, runId, { status: 'planned', kind: 'maintenance-triage', stackFingerprint: stackFingerprint({ ...sharedState, currentRunId: runId }) });
+  const rotatedState = { ...sharedState, currentRunId: runId, spawnIndex: {} };
+  writeState(cwd, rotatedState);
+  ensureRunLedger(cwd, runId, { status: 'planned', kind: 'maintenance-triage', stackFingerprint: stackFingerprint(rotatedState) });
+  // Freeze this maintenance run's model policy at mint, exactly as the build run
+  // does in the onboarding-gate spawn preflight. Without it the FIRST followup_task
+  // to a retained implementer thread is denied ("run's model policy not materialized
+  // yet") because only a spawn preflight — not a followup — would otherwise create it
+  // (observed 11c). Use the MERGED `state` (not the prefs-stripped `sharedState`):
+  // buildRunModelPolicy reads the performance level, which readState strips as a
+  // host pref. Best-effort — if the catalog can't be frozen the existing model-policy
+  // deny still fires later, no worse than today; a freeze failure must never break
+  // triage (which must always return its routing directive).
+  try {
+    ensureRunModelPolicy(cwd, runId, host, { ...state, currentRunId: runId }, { ...process.env, TRAFFIC_ONE_HOST: host });
+  } catch { /* best-effort freeze; the deny path still covers a missing policy */ }
   state.currentRunId = runId;
   state.spawnIndex = {};
 }
@@ -164,7 +178,7 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   // pass it on the quick-fix spawn without resolving a bundled indirection.
   const cheapest = currentModelForTier('cheapest', host, detectHostPlan(host)) || 'the cheapest model for this host';
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
-  if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state);
+  if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state, host);
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
   const ocActive = openCodeDelegationActive(state, host);
   // Render the OpenCode instruction only when delegation is actually active, so an

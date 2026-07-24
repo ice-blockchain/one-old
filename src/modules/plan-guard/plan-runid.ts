@@ -7,6 +7,7 @@
 // reason (or null). Enforcement-bearing: a verbatim TS fallback ships the prose.
 
 import type { Rec } from '../../shared/obj';
+import { shellCommandHasWritePrimitive } from '../../shared/feature-source';
 import { strayRunIdInText } from '../../shared/run-id-paths';
 
 type Vars = Record<string, string | number | null | undefined>;
@@ -23,7 +24,15 @@ export function runIdPathViolation(args: RunIdArgs): string | null {
   const { state, relTargets, command, block } = args;
   const currentRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (!currentRunId) return null;           // not minted yet → nothing to enforce against
-  const haystack = [...relTargets, command].filter(Boolean).join('\n');
+  // relTargets are Write/Edit/apply_patch destinations — always writes, always
+  // scanned. The shell `command` is scanned only when it actually WRITES (a
+  // redirect/tee/heredoc/cp/mv/sed -i under a runs|digests path is what strands
+  // state); a pure read that merely NAMES another run dir — e.g. `sed -n '1,80p'
+  // .traffic-one/runs/<other-id>/model-policy.json`, which the agent runs after a
+  // run-id-announce points it at a now-stale id — must not be denied (observed
+  // 11c: a read of the announced-but-orphaned run dir was blocked here).
+  const commandWrites = shellCommandHasWritePrimitive(command) ? command : '';
+  const haystack = [...relTargets, commandWrites].filter(Boolean).join('\n');
   const stray = strayRunIdInText(haystack, currentRunId);
   if (!stray) return null;
   return block('run-id-mismatch',

@@ -18,6 +18,7 @@ import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
 import { stripLocalPreferenceFields } from '../../shared/state/local-prefs';
 import {
+  preserveCurrentRunId,
   preserveOneMcpReportId,
   withProjectStateLock,
 } from '../../shared/state/project-state-lock';
@@ -104,7 +105,7 @@ export function writeProjectState(cwd: string, state: unknown): void {
   const replacement = stripLocalPreferenceFields(state && typeof state === 'object' ? state : {});
   withProjectStateLock(cwd, () => {
     const current = readJson(filePath, {});
-    writeJson(filePath, preserveOneMcpReportId(current, replacement));
+    writeJson(filePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)));
   });
 }
 
