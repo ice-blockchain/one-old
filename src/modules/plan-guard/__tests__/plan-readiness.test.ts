@@ -341,6 +341,51 @@ test('architect completion gate: PLAN_READY is allowed once scaffold files exist
   });
 });
 
+test('frontend completion gate: IMPLEMENTED is denied while product source is collapsed, allowed once split/formatted', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src/pages'), { recursive: true });
+    const collapsedLine = `function App() { ${'const x = <div className="a">hi</div>; return <section>{x}</section>; '.repeat(12)} }`;
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), `${collapsedLine}\n`, 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\nTouched: apps/web/src/App.tsx\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    assert.ok(collapsedLine.length > 500, 'fixture line is a genuine collapse');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-collapse-gate'));
+
+    // Split into multi-line, formatted source — the gate clears.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), [
+      'export function App() {',
+      '  const x = <div className="a">hi</div>;',
+      '  return <section>{x}</section>;',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+  });
+});
+
+test('frontend completion gate: a long single-string/data-URI line is NOT flagged as collapse', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    // A 900-char string literal has no statement/JSX punctuation — real code, not collapse.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/logo.ts'), `export const LOGO = "data:image/svg+xml;base64,${'A'.repeat(900)}"\n`, 'utf8');
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, [], 'a long single literal must not trip the collapse gate');
+  });
+});
+
 test('architect completion gate: an upgraded packages/ui/src/index.tsx barrel still satisfies PLAN_READY', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);

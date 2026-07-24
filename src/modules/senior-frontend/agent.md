@@ -164,5 +164,21 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
   first screen needs product-specific content, complete interaction states, and
   a recorded design brief/references unless it is matching an existing product
   aesthetic.
+- **Split the app across the scaffolded module structure.** Each route/page,
+  feature, and reusable component lives in its OWN file under the scaffolded
+  dirs (`apps/*/src/pages|features|components`, `packages/ui/src/...`); shared
+  fixtures/types live in `lib`/`services`/`types`. `App.tsx` (or the router
+  entry) wires the router and shell ONLY — never concentrate multiple
+  routes/pages, the course/data catalog, or feature logic into it. Leaving the
+  scaffolded `pages/`/`features/`/`components/` dirs empty while one file holds
+  the whole app is a delivery defect.
+- **Write formatted, multi-line source and self-verify before `IMPLEMENTED`.**
+  One statement per line, multi-line JSX — a source line packing an entire
+  function/component (hundreds of chars) is collapsed/minified code and a defect
+  even though build and typecheck pass on it. Run the workspace `format:check`
+  (fix with `format`), `lint`, and `typecheck` yourself and only then emit
+  `IMPLEMENTED`; do not leave collapsed source for the tester's mechanical gate.
+  The frontend completion gate denies an `IMPLEMENTED` digest while any product
+  source line is collapsed.
 - End your reply with a one-line status: which routes/components you produced, what's still pending, what backend contracts you assumed.
 - You may receive FOLLOW-UP tasks in this same agent session (the next planned part, reviewer/tester fix cycles). Treat each new message as a fresh task under this same role contract — same owned scope, update your digest under `.traffic-one/digests/<runId>/`, end with the same status format. Build on what you already read instead of re-exploring it.

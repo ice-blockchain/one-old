@@ -28,6 +28,61 @@ type Block = (name: string, fallback: string, vars?: Vars) => string;
 const PLAN_FILE_RE = /(^|\/)\.traffic-one\/plan\.md$/;
 const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json$/;
 const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/architect\.md$/;
+const FRONTEND_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/frontend\.md$/;
+// Collapsed-source delivery guard. A single source line packing an entire
+// component/route (observed 16c: apps/web/src/App.tsx held the whole app —
+// Catalog, CoursePage, LessonPage, Dashboard, routing, data — as one-line
+// functions up to 1722 chars, leaving every scaffolded pages/features/components
+// dir empty; the frontend still reported IMPLEMENTED because build/typecheck
+// pass on collapsed code). A hand-written code line does not approach this
+// length; a long string/URL/data-URI has none of the statement/JSX punctuation
+// required below, so the threshold is safe from false positives.
+const COLLAPSE_SOURCE_RE = /\.(?:tsx?|jsx?|mjs|cjs|css|scss)$/;
+const COLLAPSE_SKIP_DIR_RE = /(^|\/)(node_modules|dist|build|coverage|out|\.turbo|\.next|\.vite|generated|__generated__)(\/|$)/;
+const COLLAPSE_LINE_CHARS = 500;
+const COLLAPSE_MAX_FILES = 600;
+
+function collapsedProductSourceFile(projectRoot: string): string | null {
+  const stack = ['apps', 'packages'].map((dir) => path.join(projectRoot, dir));
+  let scanned = 0;
+  while (stack.length > 0 && scanned < COLLAPSE_MAX_FILES) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      const rel = path.relative(projectRoot, full).replace(/\\/g, '/');
+      if (COLLAPSE_SKIP_DIR_RE.test(`/${rel}`)) continue;
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile() || !COLLAPSE_SOURCE_RE.test(entry.name)) continue;
+      if (++scanned > COLLAPSE_MAX_FILES) break;
+      let text: string;
+      try {
+        text = fs.readFileSync(full, 'utf8');
+      } catch {
+        continue;
+      }
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i]!;
+        if (line.length <= COLLAPSE_LINE_CHARS) continue;
+        const statements = (line.match(/;/g) || []).length;
+        const jsxClose = (line.match(/<\//g) || []).length;
+        // Real collapse packs many statements or JSX closings onto one line; a
+        // single long string/URI/data literal trips neither.
+        if (statements >= 3 || jsxClose >= 2) return `${rel}:${i + 1}`;
+      }
+    }
+  }
+  return null;
+}
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
 const ROOT_MONOREPO_FLAT_RE = /^tsconfig(?!\.base\.json$)(\.[a-z0-9-]+)?\.json$/;
@@ -427,6 +482,20 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     if (state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
       violations.push(block('architect-opencode-self-delegation-gate',
         'Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the current host.'));
+    }
+  }
+
+  // Frontend completion gate: an `IMPLEMENTED` digest must not ship collapsed
+  // product source. build/typecheck/lint all pass on a one-line-per-function
+  // App.tsx, so nothing else stops it before the tester's format:check — and a
+  // run interrupted before Phase 3 delivers a monolithic collapsed app with
+  // empty scaffolded module dirs (observed 16c).
+  if (FRONTEND_DIGEST_RE.test(filePath) && /\bIMPLEMENTED\b/.test(content)) {
+    const collapsed = collapsedProductSourceFile(projectRoot);
+    if (collapsed) {
+      violations.push(block('frontend-collapse-gate',
+        `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed}\` packs an entire component/route onto a single line (over ${COLLAPSE_LINE_CHARS} chars) — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
+        { FILE: collapsed }));
     }
   }
 

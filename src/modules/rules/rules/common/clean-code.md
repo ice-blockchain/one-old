@@ -32,7 +32,10 @@ and `frontend/<flavour>/core.md`.
 - Write formatted source: ONE statement per line, multi-line JSX/markup, and
   the project formatter's line width. Never collapse a function body or a JSX
   tree onto a single line — collapsed/minified source is a defect even when
-  lint and typecheck pass, and it survives review because nobody can read it.
+  lint and typecheck pass, and it survives review because nobody can read it. A
+  source line packing multiple statements or a whole component (hundreds of
+  characters) is collapse; keep hand-written lines near the formatter width.
+  Delivery gates deny a completion digest while product source stays collapsed.
 - Multi-line edits are safe: anchor patches on the surrounding context lines
   instead of flattening code to make a patch "simpler".
 
