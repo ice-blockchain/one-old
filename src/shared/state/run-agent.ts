@@ -526,12 +526,27 @@ const ROLE_DECLARATION_RES = [
 
 // Normalize only an exact role-shaped namespace/path leaf. Host-generic values
 // such as `default`, `worker`, or `general` are absent evidence, not conflicts.
+// Replacement suffixes a role name may carry and still bind to the base role: a
+// numeric variant (`-2`), or a distinct reattach-dodging name (`_fix_1`, observed
+// 15c). Deliberately a CLOSED vocabulary — `senior_architect_helper` is a
+// different worker, not the architect, and must still resolve to null.
+const ROLE_REPLACEMENT_SUFFIX_RE = /-(?:fix|retry|replacement|replace|redo|rework|rev)(?:-[1-9]\d*)?$/;
+
 export function normalizeRoleIdentity(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const leaf = (value.trim().replace(/\\/g, '/').split(/[/:]/).pop() || '').trim().toLowerCase();
-  const withoutReplacement = leaf.replace(/(?:_|-)([1-9]\d*)$/, '');
-  const role = withoutReplacement.replace(/_/g, '-');
-  return VALID_AGENT_ROLES.has(role) ? role : null;
+  const dashed = leaf.replace(/_/g, '-');
+  if (VALID_AGENT_ROLES.has(dashed)) return dashed; // canonical (e.g. quick-fix) wins first
+  // Legacy numeric replacement variant: senior-frontend-2.
+  const numericStripped = dashed.replace(/-[1-9]\d*$/, '');
+  if (numericStripped !== dashed && VALID_AGENT_ROLES.has(numericStripped)) return numericStripped;
+  // Named reattach-dodging replacement: a plain same-name Codex respawn is
+  // silently reattached to the retired runtime (→ hook-model-conflict), so root
+  // spawns `senior_frontend_fix_1` for a genuinely fresh thread — which must
+  // still bind to senior-frontend or the fix cycle deadlocks (observed 15c).
+  const namedStripped = dashed.replace(ROLE_REPLACEMENT_SUFFIX_RE, '');
+  if (namedStripped !== dashed && VALID_AGENT_ROLES.has(namedStripped)) return namedStripped;
+  return null;
 }
 
 function resolveRoleCandidates(candidates: RoleEvidence[]): RoleEvidenceResolution {

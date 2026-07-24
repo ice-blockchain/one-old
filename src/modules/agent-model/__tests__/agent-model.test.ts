@@ -126,6 +126,22 @@ test('inferTrafficOneSpawnRole resolves fix-cycle prompts without the "Traffic O
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'Ping senior-backend about the schema.' }), null);
 });
 
+test('inferTrafficOneSpawnRole binds a distinct-named reattach-dodging replacement (senior_frontend_fix_1) to its role', () => {
+  // 15c-codex: after a hook-model-conflict retirement, a plain same-name
+  // `senior_frontend` respawn kept reattaching the dead runtime, so root tried
+  // `senior_frontend_fix_1` — which must still bind to senior-frontend (only a
+  // numeric suffix used to be stripped, so it resolved to null and deadlocked
+  // the fix cycle).
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior_frontend_fix_1' }), 'senior-frontend');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior_backend_fix_2' }), 'senior-backend');
+  assert.equal(inferTrafficOneSpawnRole({ subagent_type: 'senior-reviewer-retry' }), 'senior-reviewer');
+  // Canonical and numeric-suffixed forms still resolve; a non-role name stays null.
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior_tester' }), 'senior-tester');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior-shipper-2' }), 'senior-shipper');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'quick_fix_1' }), 'quick-fix');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'totally_unrelated_worker' }), null);
+});
+
 test('inferTrafficOneSpawnRole inspects both source envelopes and accepts outer threadSpawn camelCase', () => {
   const nestedPayload = inferTrafficOneSpawnRoleEvidence({
     source: { event: 'subagent-start' },
@@ -1931,6 +1947,10 @@ test('codex followup model drift retires the child and frees the role for one re
       assert.match(drift.reason, /released for ONE replacement/);
       assert.match(drift.reason, /spawn a FRESH child/i);
       assert.match(drift.reason, /Do NOT follow-up or interrupt-respawn/i);
+      // The reattach escape hatch: a DISTINCT role-named task_name (15c-codex).
+      assert.match(drift.reason, /senior_tester_fix_<n>/);
+      assert.match(drift.reason, /distinct name stops the reattach/i);
+      assert.match(drift.reason, /nested from another senior/i);
     }
     assert.equal(readCodexModelObservation(cwd, 'run-test', [childA])?.status, 'conflict');
     const registryRaw = JSON.parse(fs.readFileSync(

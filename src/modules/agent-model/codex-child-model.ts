@@ -155,12 +155,16 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       return deny(
         `traffic-one — Codex child blocked: observed model status is ${status} (${reason}). `
         + `This thread is retired — every later call stays blocked${released ? ', and its role slot is now released for ONE replacement' : ''}. `
-        + 'ROOT orchestrator: spawn a FRESH child for this role with the canonical task_name, fork_turns "none", and '
-        + 'the exact model from .traffic-one/runs/<runId>/model-policy.json. Do NOT follow-up or interrupt-respawn '
-        + "this same retired thread — the host can silently reattach it (follow-up turns may run on the parent's "
-        + 'model). Do NOT spawn the replacement nested from another senior child either: the host attributes a '
-        + "nested child's edits to the SPAWNING child, so it can never own this role's disjoint files (its writes "
-        + 'are denied). Only the root parent respawns senior roles.',
+        + 'ROOT orchestrator: spawn a FRESH child for this role with fork_turns "none" and the exact model from '
+        + '.traffic-one/runs/<runId>/model-policy.json. Do NOT follow-up or interrupt-respawn this same retired '
+        + "thread — the host can silently reattach it (follow-up turns may run on the parent's model, which trips "
+        + 'this exact conflict). If a plain same-name respawn keeps reattaching the retired runtime, give the '
+        + `replacement a DISTINCT task_name that still names the role: \`${role.replace(/-/g, '_')}_fix_<n>\` `
+        + `(e.g. \`${role.replace(/-/g, '_')}_fix_1\`) with \`[t1-role: ${role}]\` as the first message line — a `
+        + 'distinct name stops the reattach and the suffix still binds to the role. Do NOT spawn the replacement '
+        + 'nested from another senior '
+        + "child: the host attributes a nested child's edits to the SPAWNING child, so it can never own this "
+        + "role's disjoint files. Only the root parent respawns senior roles.",
       );
     }
     return deny(
