@@ -1502,43 +1502,48 @@ test('inferRoleFromTranscript retains a marker anywhere in a recognized user rec
   });
 });
 
-test('inferRoleFromTranscript recovers the spawn-prompt marker when session_meta names no role', () => {
+function rolelessCodexMeta(records: Record<string, unknown>[]): Record<string, unknown> {
+  const meta = JSON.parse(JSON.stringify(records[0])) as {
+    payload: Record<string, unknown> & {
+      source: { subagent: { thread_spawn: Record<string, unknown> } };
+    };
+  };
+  meta.payload.agent_path = null;
+  meta.payload.agent_type = 'default';
+  meta.payload.source.subagent.thread_spawn.agent_path = null;
+  meta.payload.source.subagent.thread_spawn.agent_role = null;
+  return meta as unknown as Record<string, unknown>;
+}
+
+function codexUserRecord(text: string): Record<string, unknown> {
+  return {
+    timestamp: '2026-07-16T08:16:00.000Z',
+    type: 'response_item',
+    payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+  };
+}
+
+test('inferRoleFromTranscript recovers the spawn-prompt marker even when host context precedes it', () => {
   withPrefs((dir) => {
     const records = codexCollaborationV2FixtureRecords();
     // A spawn issued WITHOUT task_name leaves agent_path/agent_role null in the
-    // child's line-zero session_meta (observed 13c-codex: the architect looped
-    // on "role not observable" and the team was unusable). The plaintext spawn
-    // prompt still carries the marker — the head-capped scan must recover it.
-    const roleLessMeta = JSON.parse(JSON.stringify(records[0])) as {
-      payload: Record<string, unknown> & {
-        source: { subagent: { thread_spawn: Record<string, unknown> } };
-      };
-    };
-    roleLessMeta.payload.agent_path = null;
-    roleLessMeta.payload.agent_type = 'default';
-    roleLessMeta.payload.source.subagent.thread_spawn.agent_path = null;
-    roleLessMeta.payload.source.subagent.thread_spawn.agent_role = null;
-    const spawnPrompt = {
-      timestamp: '2026-07-16T08:16:00.000Z',
-      type: 'response_item',
-      payload: {
-        type: 'message',
-        role: 'user',
-        content: [{
-          type: 'input_text',
-          text: '[t1-role: senior-architect]\nRun ID: 1784885645038\nUser request: build the platform.',
-        }],
-      },
-    };
-    const file = writeTranscriptRecords(dir, 'codex-roleless-meta-marker.jsonl', [
-      roleLessMeta,
+    // child's line-zero session_meta. The spawn prompt carries the marker, but it
+    // is NOT the first user record — the host injects its own context first
+    // (observed 14c-codex: `<recommended_plugins>` is user record #1, the marker
+    // rides record #2; a first-record-only scan looped forever on "role not
+    // observable"). The head-capped scan must read every user record.
+    const injectedContext = codexUserRecord('<recommended_plugins>\nHere is a list of plugins that are available but not installed.\n- GitHub');
+    const spawnPrompt = codexUserRecord('[t1-role: senior-architect]\nRun ID: 1784885645038\nUser request: build the platform.');
+    const file = writeTranscriptRecords(dir, 'codex-roleless-context-then-marker.jsonl', [
+      rolelessCodexMeta(records),
+      injectedContext,
       spawnPrompt,
       ...records.slice(2),
     ]);
     assert.equal(
       inferRoleFromTranscript(file),
       'senior-architect',
-      'a task_name-less spawn resolves from the plaintext spawn-prompt marker',
+      'a task_name-less spawn resolves from the spawn-prompt marker in a non-first user record',
     );
   });
 });
@@ -1565,6 +1570,33 @@ test('ensureCurrentRunId adopts a concurrently persisted id instead of minting a
   });
 });
 
+test('ensureCurrentRunId adopts a recent runs/ ledger when currentRunId was blanked, re-persisting it', () => {
+  withPrefs((dir) => {
+    const freshState = () => ({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
+    });
+    const first = ensureCurrentRunId(dir, freshState());
+    // Simulate a writer that rewrote .one.json WITHOUT currentRunId (11c F1
+    // residual observed 14c: a fresh id was minted 3.7s later while spawn-gate
+    // ledgers already existed). The on-disk read now misses the live run, but
+    // the runs/ scan must adopt it rather than mint a sibling.
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    const blanked = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    delete blanked.currentRunId;
+    fs.writeFileSync(statePath, JSON.stringify(blanked), 'utf8');
+
+    const again = ensureCurrentRunId(dir, freshState());
+    assert.equal(again, first, 'the blanked id is recovered from the runs/ ledger, not re-minted');
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, '.traffic-one', 'runs')).filter((name) => /^\d{13}$/.test(name)),
+      [first],
+      'no sibling run is created',
+    );
+    const rePersisted = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    assert.equal(rePersisted.currentRunId, first, 'the blanked currentRunId is re-persisted to .one.json');
+  });
+});
+
 test('inferRoleFromTranscript fails closed when valid structured Codex roles conflict', () => {
   withPrefs((dir) => {
     const records = codexCollaborationV2FixtureRecords();
@@ -1586,9 +1618,12 @@ test('inferRoleFromTranscript fails closed when valid structured Codex roles con
   });
 });
 
-test('current Codex roleless session_meta does not fall through to a later readable user marker', () => {
+test('current Codex roleless session_meta ignores a MID-LINE (non-anchored) marker in any user record', () => {
   withPrefs((dir) => {
     const childId = '019f69ff-0000-7000-8000-000000000011';
+    // The roleless-meta fallthrough accepts ONLY a line-anchored spawn-prompt
+    // marker. A marker quoted mid-prose in inherited/echoed context must never
+    // grant a role, no matter which user record carries it.
     const file = writeTranscriptRecords(dir, `rollout-roleless-${childId}.jsonl`, [
       {
         type: 'session_meta',
@@ -1605,7 +1640,7 @@ test('current Codex roleless session_meta does not fall through to a later reada
         payload: {
           type: 'message',
           role: 'user',
-          content: [{ type: 'input_text', text: 'Inherited context [t1-role: senior-frontend]' }],
+          content: [{ type: 'input_text', text: 'Inherited context [t1-role: senior-frontend] pasted from another thread.' }],
         },
       },
     ]);

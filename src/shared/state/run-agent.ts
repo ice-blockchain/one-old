@@ -84,6 +84,21 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
         source.currentRunId = diskId;
         return;
       }
+      // Second line of defense against a re-mint: a writer that rewrote
+      // .one.json WITHOUT currentRunId (blanking it — 11c F1 residual observed
+      // 14c: a fresh id was minted 3.7s after the first while three spawn-gate
+      // ledgers already existed) makes the disk read above miss the live run.
+      // Adopt a recent planned spawn-gate ledger from runs/ and RE-PERSIST it
+      // instead of minting a sibling. Bounded to a fresh window so an existing
+      // project's ancient run is never resurrected (its currentRunId is set, so
+      // it never reaches here anyway).
+      const adoptable = recentAdoptableRunId(cwd);
+      if (adoptable) {
+        runId = adoptable;
+        source.currentRunId = adoptable;
+        writeState(cwd, source); // re-persist the blanked id (re-enters the held lock)
+        return;
+      }
       mint(); // writeState re-enters the already-held project-state lock
     });
   } catch {
@@ -120,6 +135,32 @@ function runDir(cwd: string, runId: string): string {
 }
 function runLedgerFile(cwd: string, runId: string): string {
   return path.join(runDir(cwd, runId), 'run.json');
+}
+
+// Newest recently-minted planned spawn-gate run under runs/, or '' when none.
+// Used only as the mint fallback when .one.json carries no currentRunId: adopt an
+// in-flight run rather than mint a sibling. Bounded to a fresh window (and never
+// a future id) so an existing project's older run is not resurrected.
+const RUN_ADOPT_WINDOW_MS = 10 * 60 * 1000;
+function recentAdoptableRunId(cwd: string, nowMs: number = Date.now()): string {
+  let best = '';
+  let bestVal = 0;
+  try {
+    for (const name of fs.readdirSync(runsRoot(cwd))) {
+      if (!/^\d{13}$/.test(name)) continue; // epoch-ms mint ids only
+      const val = Number(name);
+      if (!Number.isFinite(val) || val <= bestVal) continue;
+      if (nowMs - val > RUN_ADOPT_WINDOW_MS || val - nowMs > 60_000) continue; // recent, not future
+      const ledger = readJson<Rec>(runLedgerFile(cwd, name), null as unknown as Rec);
+      if (!ledger || ledger.kind !== 'spawn-gate') continue;
+      if (typeof ledger.status === 'string' && ledger.status !== 'planned') continue;
+      best = name;
+      bestVal = val;
+    }
+  } catch {
+    // runs/ absent or unreadable — nothing to adopt.
+  }
+  return best;
 }
 function pendingDir(cwd: string, runId: string): string {
   return path.join(runDir(cwd, runId), 'pending');
@@ -659,19 +700,22 @@ export function inferRoleEvidenceFromTranscript(transcriptPath: unknown): RoleEv
   // Current Codex rollouts are decided from capped line zero when it carries role
   // evidence (task_name → agent_path). When line zero parses but names NO role —
   // a spawn issued without task_name leaves agent_path/agent_role null (observed
-  // 13c-codex: the architect looped on "role not observable" and the whole team
-  // was unusable) — recover the role from the SPAWN PROMPT: the FIRST readable
-  // user record is plaintext in current child rollouts and, per the spawn
-  // contract, carries a LINE-ANCHORED `[t1-role: …]` marker. Only that exact
-  // shape is evidence here — a marker quoted mid-prose in inherited context or
-  // any LATER user record never authenticates a role, and a line-zero role
+  // 13c/14c-codex: the architect looped on "role not observable" and the whole
+  // team was unusable) — recover the role from the SPAWN PROMPT. The prompt is
+  // plaintext in current child rollouts, but it is NOT the first user record:
+  // the host injects its own context (e.g. `<recommended_plugins>`) as earlier
+  // user records, so the marker rides the SECOND+ user record (14c). Scan every
+  // readable user record in a head-capped read, but accept ONLY a LINE-ANCHORED
+  // `[t1-role: …]` marker (start of a line) — that is the spawn-contract shape
+  // and it excludes a marker quoted mid-prose in inherited/echoed context
+  // ("Inherited context [t1-role: …]" is not evidence). A line-zero role
   // CONFLICT stays terminal (prose must not outvote contradictory host identity).
   const currentCodexMeta = readCodexSessionMetaIdentity(transcriptPath);
   if (currentCodexMeta && currentCodexMeta.role.kind !== 'none') return currentCodexMeta.role;
   if (currentCodexMeta) {
     const head = readHeadCapped(transcriptPath);
     if (!head) return { kind: 'none' };
-    let firstUserText = '';
+    const anchored: RoleEvidence[] = [];
     for (const line of head.split('\n')) {
       if (!line.includes('"user"')) continue; // cheap prefilter before JSON.parse
       let parsed: unknown;
@@ -681,17 +725,12 @@ export function inferRoleEvidenceFromTranscript(transcriptPath: unknown): RoleEv
         continue;
       }
       const text = userLineText(parsed);
-      if (text) {
-        firstUserText = text;
-        break;
+      if (!text) continue;
+      ROLE_MARKER_LINE_ANCHORED_RE.lastIndex = 0;
+      for (let match = ROLE_MARKER_LINE_ANCHORED_RE.exec(text); match; match = ROLE_MARKER_LINE_ANCHORED_RE.exec(text)) {
+        const candidate = roleCandidate(match[1], 'user-role-marker', 'explicit');
+        if (candidate) anchored.push(candidate);
       }
-    }
-    if (!firstUserText) return { kind: 'none' };
-    const anchored: RoleEvidence[] = [];
-    ROLE_MARKER_LINE_ANCHORED_RE.lastIndex = 0;
-    for (let match = ROLE_MARKER_LINE_ANCHORED_RE.exec(firstUserText); match; match = ROLE_MARKER_LINE_ANCHORED_RE.exec(firstUserText)) {
-      const candidate = roleCandidate(match[1], 'user-role-marker', 'explicit');
-      if (candidate) anchored.push(candidate);
     }
     return resolveRoleCandidates(anchored);
   }
