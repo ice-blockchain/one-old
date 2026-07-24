@@ -1,6 +1,6 @@
 {
   "name": "traffic-one",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "private": true,
   "type": "commonjs",
   "description": "Build + codegen tooling for the Traffic One plugin. Readable source lives in src/; generated plugin output lives in ignored dist/.",

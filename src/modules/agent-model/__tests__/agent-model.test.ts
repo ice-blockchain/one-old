@@ -1920,74 +1920,165 @@ test('codex child PreToolUse completes a pending-role observation after line-zer
   });
 });
 
-test('codex followup model drift retires the child and frees the role for one replacement', () => {
+test('codex followup drift on a CHILD-VERIFIED thread is an accepted continuation that keeps the same agent', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     withTeamsEnv(() => {
     freezeRunPolicy(cwd, 'codex');
     const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
     const childA = '019f8fa1-1111-7000-8000-00000000000a';
-    const childB = '019f8fa1-2222-7000-8000-00000000000b';
     const transcriptA = path.join(cwd, `rollout-drift-${childA}.jsonl`);
-    const transcriptB = path.join(cwd, `rollout-drift-${childB}.jsonl`);
     fs.writeFileSync(transcriptA, `${JSON.stringify(codexSessionMeta(childA, parentThread, '/root/senior_tester'))}\n`, 'utf8');
-    fs.writeFileSync(transcriptB, `${JSON.stringify(codexSessionMeta(childB, parentThread, '/root/senior_tester'))}\n`, 'utf8');
 
-    // spawn-time model verifies and claims the role
+    // the child's OWN blocking turn verifies its model and claims the role
     assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'noop');
     assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childA);
 
-    // a later followup turn silently runs on the PARENT's model (observed
-    // 8c-codex): terminal conflict, and the deny both retires the thread and
-    // durably releases the role slot in the reuse registry
+    // A later followup turn runs on the PARENT's model because the host continues
+    // that same runtime. Retiring the thread here made every fix cycle spawn a
+    // FRESH agent that reloads the whole context (observed 12c/15c/17c/18c:
+    // senior_<role>_fix_1/_fix_2 proliferation), so this is now accepted.
     const drift = codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-sol'));
+    assert.equal(drift.kind, 'noop', 'the continuation proceeds');
+    const observed = readCodexModelObservation(cwd, 'run-test', [childA]);
+    assert.equal(observed?.status, 'verified', 'the thread stays verified');
+    assert.equal(observed?.actualModel, 'gpt-5.6-terra', 'the child-verified model stays the policy anchor');
+    assert.equal(observed?.reason, 'continuation-on-gpt-5.6-sol', 'the accepted drift stays auditable');
+
+    // the same agent keeps the role slot — no replacement, no history churn
+    const registryRaw = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'run-test', 'agents.json'), 'utf8',
+    )) as { agents: Record<string, { agentId?: string; replaced?: boolean }>; history?: unknown[] };
+    assert.equal(registryRaw.agents['senior-tester']?.agentId, childA);
+    assert.equal(registryRaw.agents['senior-tester']?.replaced, false, 'the reuse row is NOT marked replaced');
+    assert.equal((registryRaw.history || []).length, 0, 'a continuation creates no replacement history');
+
+    // The continuation turn must still RESOLVE its role context, or its writes are
+    // denied while the slot stays occupied — a fresh deadlock. The hook model on
+    // that turn is the drifted one, which no longer equals the anchor.
+    const continuationCtx = resolveRunAgentContext(cwd, readEffectiveState(cwd), {
+      hook_event_name: 'PreToolUse', agent_id: childA, session_id: parentThread,
+      transcript_path: transcriptA, model: 'gpt-5.6-sol',
+    }, { claimPending: false, host: 'codex' });
+    assert.equal(continuationCtx?.role, 'senior-tester', 'the drifted continuation turn still owns its role');
+
+    // further turns — on the parent model or back on its own — keep working
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-sol')).kind, 'noop');
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childA);
+    });
+  });
+});
+
+test('codex child running on a policy-forbidden model is STILL denied on its first blocking turn (SubagentStart anchor is not proof)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childA = '019f8fa1-5555-7000-8000-00000000000e';
+    const transcriptA = path.join(cwd, `rollout-requested-${childA}.jsonl`);
+    fs.writeFileSync(transcriptA, `${JSON.stringify(codexSessionMeta(childA, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+
+    // SubagentStart fires in the SPAWNER's context and reports the model the
+    // parent REQUESTED — it can reach `verified` before the child ever runs.
+    subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: childA, session_id: parentThread,
+      transcript_path: transcriptA, model: 'gpt-5.6-terra',
+    }));
+    const anchored = readCodexModelObservation(cwd, 'run-test', [childA]);
+    assert.equal(anchored?.status, 'verified', 'the requested model verifies at SubagentStart');
+    assert.deepEqual([...(anchored?.modelSources || [])], ['SubagentStart']);
+
+    // The child then ACTUALLY runs on a model its role forbids. Accepting that as
+    // a "continuation" off the requested anchor would make the child's own first
+    // blocking check vacuous, so it must still be terminal.
+    const forbidden = codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-sol'));
+    assert.equal(forbidden.kind, 'deny', 'the first blocking turn is not vacuous');
+    if (forbidden.kind === 'deny') assert.match(forbidden.reason, /hook-model-conflict/);
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childA])?.status, 'conflict');
+    });
+  });
+});
+
+test('a conflict on a VERIFIED codex incumbent still retires it and releases the role slot for one replacement', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childA = '019f8fa1-6666-7000-8000-00000000000f';
+    const childB = '019f8fa1-7777-7000-8000-000000000010';
+    const transcriptA = path.join(cwd, `rollout-incumbent-${childA}.jsonl`);
+    const transcriptB = path.join(cwd, `rollout-incumbent-${childB}.jsonl`);
+    fs.writeFileSync(transcriptA, `${JSON.stringify(codexSessionMeta(childA, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+    fs.writeFileSync(transcriptB, `${JSON.stringify(codexSessionMeta(childB, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+
+    // childA verifies on its own turn and owns the reuse slot
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childA);
+
+    // A non-model conflict (here: the same thread observed under another role)
+    // is still terminal for a verified incumbent — accepting model continuations
+    // must not disable the OTHER conflict reasons or the slot release.
+    assert.equal(observeCodexChildModel(cwd, 'run-test', {
+      childId: childA,
+      parentSessionId: parentThread,
+      actualModel: 'gpt-5.6-terra',
+      role: 'senior-frontend',
+      source: 'PreToolUse',
+    })?.status, 'conflict');
+
+    const denied = codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra'));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.match(denied.reason, /released for ONE replacement/);
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.replaced, true, 'the incumbent slot is released');
+
+    // a FRESH policy-compliant child takes the released slot
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childB, parentThread, transcriptB, 'gpt-5.6-terra')).kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childB);
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.replaced, false);
+    });
+  });
+});
+
+test('codex model drift BEFORE verification is still terminal and frees the role for one replacement', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childA = '019f8fa1-3333-7000-8000-00000000000c';
+    const childB = '019f8fa1-4444-7000-8000-00000000000d';
+    const transcriptA = path.join(cwd, `rollout-unverified-${childA}.jsonl`);
+    const transcriptB = path.join(cwd, `rollout-unverified-${childB}.jsonl`);
+    fs.writeFileSync(transcriptA, `${JSON.stringify(codexSessionMeta(childA, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+    fs.writeFileSync(transcriptB, `${JSON.stringify(codexSessionMeta(childB, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+
+    // a model observed before any role is resolvable: pending-role, NOT verified
+    assert.equal(observeCodexChildModel(cwd, 'run-test', {
+      childId: childA,
+      parentSessionId: parentThread,
+      actualModel: 'gpt-5.6-sol',
+      role: null,
+      source: 'SubagentStart',
+    })?.status, 'pending-role');
+
+    const drift = codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra'));
     assert.equal(drift.kind, 'deny');
     if (drift.kind === 'deny') {
       assert.match(drift.reason, /hook-model-conflict/);
       assert.match(drift.reason, /retired/i);
-      assert.match(drift.reason, /released for ONE replacement/);
-      assert.match(drift.reason, /spawn a FRESH child/i);
-      assert.match(drift.reason, /Do NOT follow-up or interrupt-respawn/i);
-      // The reattach escape hatch: a DISTINCT role-named task_name (15c-codex).
       assert.match(drift.reason, /senior_tester_fix_<n>/);
-      assert.match(drift.reason, /distinct name stops the reattach/i);
       assert.match(drift.reason, /nested from another senior/i);
     }
     assert.equal(readCodexModelObservation(cwd, 'run-test', [childA])?.status, 'conflict');
-    const registryRaw = JSON.parse(fs.readFileSync(
-      path.join(cwd, '.traffic-one', 'runs', 'run-test', 'agents.json'), 'utf8',
-    )) as { agents: Record<string, { agentId?: string; replaced?: boolean; replacementReason?: string }>; history?: unknown[] };
-    assert.equal(registryRaw.agents['senior-tester']?.replaced, true);
-    assert.equal(registryRaw.agents['senior-tester']?.replacementReason, 'hook-model-conflict');
-    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.replaced, true, 'the reuse row is marked replaced');
+    // This child never verified, so it never held the reuse slot — there is no
+    // incumbent to release, and the role stays claimable by a compliant child.
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester'], undefined);
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'deny',
+      'the retired thread stays blocked on every later call');
 
-    // the retired thread stays blocked on every later call
-    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'deny');
-
-    // a FRESH policy-compliant child now claims the released slot
+    // a FRESH policy-compliant child claims the released slot
     assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childB, parentThread, transcriptB, 'gpt-5.6-terra')).kind, 'noop');
     assert.equal(readCodexModelObservation(cwd, 'run-test', [childB])?.status, 'verified');
-    const replaced = JSON.parse(fs.readFileSync(
-      path.join(cwd, '.traffic-one', 'runs', 'run-test', 'agents.json'), 'utf8',
-    )) as { agents: Record<string, { agentId?: string; replaced?: boolean }>; history?: Array<Record<string, unknown>> };
-    assert.equal(replaced.agents['senior-tester']?.agentId, childB);
-    assert.equal(replaced.agents['senior-tester']?.replaced, false);
-    assert.ok(
-      (replaced.history || []).some((entry) => entry.oldAgentId === childA && entry.newAgentId === childB
-        && entry.replacementReason === 'hook-model-conflict'),
-      'the retired incumbent is preserved in registry history',
-    );
-    const claimB = JSON.parse(fs.readFileSync(
-      path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childB}.json`), 'utf8',
-    )) as Record<string, unknown>;
-    assert.equal(claimB.role, 'senior-tester');
-
-    // the dead thread cannot disturb the live replacement
-    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-sol')).kind, 'deny');
-    const after = JSON.parse(fs.readFileSync(
-      path.join(cwd, '.traffic-one', 'runs', 'run-test', 'agents.json'), 'utf8',
-    )) as { agents: Record<string, { agentId?: string; replaced?: boolean }> };
-    assert.equal(after.agents['senior-tester']?.agentId, childB);
-    assert.equal(after.agents['senior-tester']?.replaced, false);
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childB);
     });
   });
 });

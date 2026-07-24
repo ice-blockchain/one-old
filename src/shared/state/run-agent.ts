@@ -26,6 +26,7 @@ import { writeState } from './normalize';
 import { withProjectStateLock } from './project-state-lock';
 import {
   type CodexModelObservation,
+  continuationModelOf,
   correctCodexChildObservationRole,
   readCodexModelObservation,
 } from './codex-model-observation';
@@ -2326,11 +2327,17 @@ export function resolveRunAgentContext(
   const verifiedCodexObservation = (runId: string, role?: string | null): CodexModelObservation | null => {
     if (!requiresCodexObservation) return null;
     const observed = readCodexModelObservation(cwd, runId, codexChildIds);
+    // A tolerated host continuation legitimately reports a model different from
+    // the child-verified anchor. Without this the observation looks like an
+    // identity mismatch: the context resolves to null, every write is denied, and
+    // the role slot is not released either — a fresh deadlock. Only the ONE model
+    // the observation store accepted as that continuation may differ.
+    const continuationModel = continuationModelOf(observed);
     if (!observed
       || observed.status !== 'verified'
       || !observed.actualModel
       || (role && observed.role !== role)
-      || (identity.model && observed.actualModel !== identity.model)
+      || (identity.model && observed.actualModel !== identity.model && continuationModel !== identity.model)
       || (hookCodexMeta?.threadId && observed.childId.toLowerCase() !== hookCodexMeta.threadId.toLowerCase())
       || (hookCodexMeta?.parentThreadId && observed.parentSessionId
         && observed.parentSessionId !== hookCodexMeta.parentThreadId)) return null;
