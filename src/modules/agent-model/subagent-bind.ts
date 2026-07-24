@@ -123,7 +123,10 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // by hookSessionIdentity.declaredRole). Cursor may also send a generic
   // subagent_type and put the real role marker in the task body. Codex identity
   // comes from exact task_name when the hook carries it or line-zero child
-  // session_meta; encrypted task content is never treated as role evidence.
+  // session_meta; when the spawn omitted task_name (schema-variant spawn tools),
+  // the plaintext spawn prompt in the child rollout carries the `[t1-role: …]`
+  // marker and the transcript inference below recovers it (or the first
+  // PreToolUse does, once the record has landed).
   const inputResolution = inferTrafficOneSpawnRoleEvidence(raw);
   // Cursor SubagentStart normally points at the parent's transcript. Never let
   // historical user records there grant the new child a role; the task body or
@@ -204,10 +207,11 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       + 'Parent/orchestrator: stop or replace this child and retry the same role. On Codex use the exact canonical '
       + '`task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, '
       + '`senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and '
-      + '`fork_turns: "none"`. Current Codex encrypts the spawn message in the child rollout, '
-      + 'so task name and line-zero `session_meta`—not prompt prose—carry identity. On hosts with readable task '
-      + 'records, retain the unclaimable documentation placeholder `[t1-role: senior-<role>]` and substitute the '
-      + 'actual role in the task message; marker position is not an identity requirement. Do not self-assert a role in assistant prose.',
+      + '`fork_turns: "none"`. If the exposed spawn tool has NO task_name field, the FIRST line of the spawn '
+      + 'message must carry the literal role marker `[t1-role: senior-<role>]` (with the actual role substituted) — '
+      + 'the child rollout records the spawn prompt readably and the write gate recovers the role from it. '
+      + 'This binding may also complete on the child\'s first tool call once the spawn prompt lands in its '
+      + 'rollout. Do not self-assert a role in assistant prose.',
     );
   }
 

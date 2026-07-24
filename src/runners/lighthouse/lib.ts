@@ -40,13 +40,19 @@ export interface LighthouseArgs {
   maxRuntimeMs: number;
   build: boolean;
   preview: boolean;
+  // Never fall back to a network install (`pnpm dlx lighthouse@…`) when no local
+  // binary exists — exit with blocked:lighthouse-missing instead. Approval layers
+  // that deny registry-download execution (observed: Codex Desktop guardian) deny
+  // the WHOLE runner when the dlx branch is reachable; this flag makes the
+  // no-download contract explicit in the invocation.
+  localOnly: boolean;
   url?: string;
   help?: boolean;
   skipPreview?: boolean;
 }
 
 export function parseArgs(argv: string[]): LighthouseArgs {
-  const args: LighthouseArgs = { ...DEFAULTS, build: true, preview: true };
+  const args: LighthouseArgs = { ...DEFAULTS, build: true, preview: true, localOnly: false };
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
     const next = argv[index + 1];
@@ -114,6 +120,9 @@ export function parseArgs(argv: string[]): LighthouseArgs {
       case '--skip-preview':
         args.preview = false;
         break;
+      case '--local-only':
+        args.localOnly = true;
+        break;
       case '--help':
       case '-h':
         args.help = true;
@@ -153,15 +162,29 @@ export function usage(): string {
     '  --max-runtime <ms>          Overall runner budget before it aborts with blocked:timeout (default 240000)',
     '  --skip-build                Do not run the build script',
     '  --skip-preview              Do not start preview; requires --url',
+    '  --local-only                Never network-install lighthouse (no `dlx`); exit',
+    '                              blocked:lighthouse-missing when no local binary exists.',
+    '                              Also enabled via TRAFFIC_ONE_LIGHTHOUSE_LOCAL_ONLY=1.',
   ].join('\n');
 }
 
-export type BlockedStatus = 'blocked:sandbox' | 'blocked:usage-limit' | 'blocked:timeout';
+export type BlockedStatus = 'blocked:sandbox' | 'blocked:usage-limit' | 'blocked:timeout' | 'blocked:lighthouse-missing';
+
+// Canonical missing-binary message: thrown by the runner in --local-only mode and
+// matched by classifyBlockedStatus, so the caller always gets a structured,
+// actionable status instead of an approval-layer denial of the dlx branch.
+export function lighthouseMissingMessage(packageManager: PackageManager, lighthouseVersion: string): string {
+  const add = packageManager === 'yarn' ? 'yarn add -D' : packageManager === 'npm' ? 'npm install -D' : `${packageManager} add -D`;
+  return `No local Lighthouse binary (node_modules/.bin/lighthouse) and network install is disabled (--local-only). `
+    + `Install it as a devDependency with the project's package manager (\`${add} lighthouse@${lighthouseVersion}\`) and re-run. `
+    + 'Do not drop --local-only on hosts whose approval layer denies registry-download execution.';
+}
 
 // Maps a runner failure message to the structured status the page-speed hook
 // parses. Sandbox and usage-limit keep priority over the timeout branch so a
 // bind-denial that also mentions a timeout still reads as blocked:sandbox.
 export function classifyBlockedStatus(message: string): BlockedStatus | null {
+  if (/No local Lighthouse binary/i.test(message)) return 'blocked:lighthouse-missing';
   if (/listen EPERM|EACCES|operation not permitted|Chrome.*(failed|sandbox)|No usable sandbox|ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(message)) {
     return 'blocked:sandbox';
   }

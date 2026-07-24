@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
+import { STATE_FILE } from '../../config/paths';
 import { parseJson, readJson, writeJson } from '../fsjson';
 import { normalizeRelPath, type AssignedScope } from '../scope';
 import {
@@ -22,6 +23,7 @@ import { TIER_IDS, type TierId } from '../../config/model-tiers';
 import { stateTimestamp } from './io';
 import { activeAgentRole, getSpawnIndex, isSubagentSession, stackFingerprint } from './materialization';
 import { writeState } from './normalize';
+import { withProjectStateLock } from './project-state-lock';
 import {
   type CodexModelObservation,
   correctCodexChildObservationRole,
@@ -55,10 +57,43 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
     // ledger and upgrade legacy evidence semantics at their action boundary.
     return existing;
   }
-  const runId = runIdNow();
-  source.currentRunId = runId;
-  writeState(cwd, source);
-  ensureRunLedger(cwd, runId, { status: 'planned', kind: 'spawn-gate', stackFingerprint: stackFingerprint(source) });
+  // Mint-once: serialize the check-and-mint with every canonical .one.json
+  // writer and RE-READ the on-disk state under the lock. Parallel first tool
+  // calls each run their own hook process off a pre-mint state snapshot; each
+  // minting independently produced three runs/<id>/ trees with divergent model
+  // policies in one session (observed 13c-codex — the orchestrator then read an
+  // orphan policy id and the run-id gate denied its first spawn). Late arrivals
+  // must ADOPT the persisted id, not mint a sibling.
+  let runId = '';
+  let minted = false;
+  const mint = () => {
+    runId = runIdNow();
+    minted = true;
+    source.currentRunId = runId;
+    writeState(cwd, source);
+  };
+  try {
+    withProjectStateLock(cwd, () => {
+      const onDisk = readJson<Rec>(path.join(cwd, STATE_FILE), {});
+      const diskRaw = onDisk.currentRunId;
+      const diskId = typeof diskRaw === 'string'
+        ? diskRaw.trim()
+        : (typeof diskRaw === 'number' && Number.isFinite(diskRaw) ? String(Math.trunc(diskRaw)) : '');
+      if (diskId) {
+        runId = diskId;
+        source.currentRunId = diskId;
+        return;
+      }
+      mint(); // writeState re-enters the already-held project-state lock
+    });
+  } catch {
+    // Lock acquisition failed (timeout/contention edge): keep the previous
+    // unserialized behavior rather than failing the caller's hook outright.
+    if (!runId) mint();
+  }
+  if (minted) {
+    ensureRunLedger(cwd, runId, { status: 'planned', kind: 'spawn-gate', stackFingerprint: stackFingerprint(source) });
+  }
   // Keep the caller's in-memory `state` in sync so a later ensureRunAgentClaim (which
   // reads currentRunId off the SAME state object) reuses THIS id instead of minting a
   // second one. Without this the spawn's run markers (OpenCode attempts, model
@@ -439,6 +474,10 @@ export interface CodexSessionMetaIdentity {
 }
 
 const ROLE_MARKER_RE = /\[t1-role:\s*((?:senior[-_](?:architect|frontend|backend|reviewer|tester|shipper)|quick[-_]fix)(?:[-_]\d+)?)\s*\]/ig;
+// Line-anchored variant for the roleless-Codex-meta fallthrough: only a marker
+// deliberately placed at the START of a line in the SPAWN PROMPT is identity —
+// a marker quoted mid-prose in inherited context must never grant a role.
+const ROLE_MARKER_LINE_ANCHORED_RE = /^[ \t]*\[t1-role:\s*((?:senior[-_](?:architect|frontend|backend|reviewer|tester|shipper)|quick[-_]fix)(?:[-_]\d+)?)\s*\]/igm;
 const ROLE_DECLARATION_RES = [
   /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
   /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
@@ -546,6 +585,29 @@ function readFirstLineCapped(filePath: string, maxBytes: number = CODEX_SESSION_
   }
 }
 
+// Head-capped whole-file read for the readable-record role scan below. The spawn
+// prompt (and its `[t1-role: …]` marker) lands within the first few records of a
+// child rollout, so a bounded head read recovers it without loading a potentially
+// very large transcript; a trailing partial line simply fails JSON.parse and is
+// skipped by the scanners.
+const TRANSCRIPT_ROLE_SCAN_MAX_BYTES = 1024 * 1024;
+
+function readHeadCapped(filePath: string, maxBytes: number = TRANSCRIPT_ROLE_SCAN_MAX_BYTES): string {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(maxBytes);
+    const bytesRead = fs.readSync(fd, buffer, 0, maxBytes, 0);
+    return bytesRead > 0 ? buffer.subarray(0, bytesRead).toString('utf8') : '';
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* best-effort */ }
+    }
+  }
+}
+
 export function readCodexSessionMetaIdentity(transcriptPath: unknown): CodexSessionMetaIdentity | null {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
   const line = readFirstLineCapped(transcriptPath).trim();
@@ -594,11 +656,45 @@ function userLineText(parsed: unknown): string {
 
 export function inferRoleEvidenceFromTranscript(transcriptPath: unknown): RoleEvidenceResolution {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return { kind: 'none' };
-  // Current Codex rollouts are decided from capped line zero without loading the
-  // (potentially very large) encrypted rollout. Only hosts/legacy transcripts
-  // without a recognized session_meta record need the readable-record scan.
+  // Current Codex rollouts are decided from capped line zero when it carries role
+  // evidence (task_name → agent_path). When line zero parses but names NO role —
+  // a spawn issued without task_name leaves agent_path/agent_role null (observed
+  // 13c-codex: the architect looped on "role not observable" and the whole team
+  // was unusable) — recover the role from the SPAWN PROMPT: the FIRST readable
+  // user record is plaintext in current child rollouts and, per the spawn
+  // contract, carries a LINE-ANCHORED `[t1-role: …]` marker. Only that exact
+  // shape is evidence here — a marker quoted mid-prose in inherited context or
+  // any LATER user record never authenticates a role, and a line-zero role
+  // CONFLICT stays terminal (prose must not outvote contradictory host identity).
   const currentCodexMeta = readCodexSessionMetaIdentity(transcriptPath);
-  if (currentCodexMeta) return currentCodexMeta.role;
+  if (currentCodexMeta && currentCodexMeta.role.kind !== 'none') return currentCodexMeta.role;
+  if (currentCodexMeta) {
+    const head = readHeadCapped(transcriptPath);
+    if (!head) return { kind: 'none' };
+    let firstUserText = '';
+    for (const line of head.split('\n')) {
+      if (!line.includes('"user"')) continue; // cheap prefilter before JSON.parse
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const text = userLineText(parsed);
+      if (text) {
+        firstUserText = text;
+        break;
+      }
+    }
+    if (!firstUserText) return { kind: 'none' };
+    const anchored: RoleEvidence[] = [];
+    ROLE_MARKER_LINE_ANCHORED_RE.lastIndex = 0;
+    for (let match = ROLE_MARKER_LINE_ANCHORED_RE.exec(firstUserText); match; match = ROLE_MARKER_LINE_ANCHORED_RE.exec(firstUserText)) {
+      const candidate = roleCandidate(match[1], 'user-role-marker', 'explicit');
+      if (candidate) anchored.push(candidate);
+    }
+    return resolveRoleCandidates(anchored);
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(transcriptPath, 'utf8');
@@ -2039,7 +2135,13 @@ export function ensureRunAgentClaim(
   if (!VALID_AGENT_ROLES.has(role)) return null;
   if (isNonProjectRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
-  const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
+  // Missing-id fallback flows through the serialized mint (adopting a
+  // concurrently persisted id) — a bare runIdNow() here parented the claim
+  // under an orphan run no other gate call could see (13c-codex sibling mints).
+  const runId = typeof source.currentRunId === 'string' && source.currentRunId
+    ? source.currentRunId
+    : ensureCurrentRunId(cwd, state);
+  if (!source.currentRunId) source.currentRunId = runId;
   const identity = hookSessionIdentity(rawInput);
   let claim: Rec | null = null;
   const locked = withRunAgentClaimsLock(cwd, runId, () => {
@@ -2411,7 +2513,11 @@ export function claimThreadRole(
   if (isNonProjectRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const id = threadId.trim();
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
-  const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
+  // Same serialized-mint fallback as ensureRunAgentClaim (13c-codex sibling mints).
+  const runId = typeof source.currentRunId === 'string' && source.currentRunId
+    ? source.currentRunId
+    : ensureCurrentRunId(cwd, state);
+  if (!source.currentRunId) source.currentRunId = runId;
   const parentSessionId = firstString(options.parentSessionId);
   const model = firstString(options.model);
   const transcriptPath = firstString(options.transcriptPath);

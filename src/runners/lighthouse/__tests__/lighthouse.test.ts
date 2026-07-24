@@ -15,6 +15,7 @@ import {
   findReportHtml,
   findReportJson,
   findViteAppDir,
+  lighthouseMissingMessage,
   nextConfigOutputExport,
   normalizeRoute,
   packageHasDependency,
@@ -39,6 +40,23 @@ test('parseArgs reads flags, valued options, and a positional http url', () => {
   assert.equal(parseArgs(['http://127.0.0.1:4173/']).url, 'http://127.0.0.1:4173/');
   assert.equal(parseArgs([]).route, '/');
   assert.equal(parseArgs(['-h']).help, true);
+});
+
+test('parseArgs reads --local-only and defaults it off', () => {
+  assert.equal(parseArgs(['--local-only']).localOnly, true);
+  assert.equal(parseArgs([]).localOnly, false);
+});
+
+test('the missing-binary refusal maps to blocked:lighthouse-missing with a package-manager remedy', () => {
+  // Approval layers that deny registry-download execution (Codex Desktop
+  // guardian) deny the WHOLE runner when the dlx branch is reachable; the
+  // --local-only refusal must classify to a structured status with the exact
+  // devDependency remedy instead (observed 12c: perf shipped unverified).
+  const message = lighthouseMissingMessage('pnpm', DEFAULTS.lighthouseVersion);
+  assert.equal(classifyBlockedStatus(message), 'blocked:lighthouse-missing');
+  assert.match(message, new RegExp(`pnpm add -D lighthouse@${DEFAULTS.lighthouseVersion.replace(/\./g, '\\.')}`));
+  assert.match(lighthouseMissingMessage('npm', '13.2.0'), /npm install -D lighthouse@13\.2\.0/);
+  assert.match(lighthouseMissingMessage('yarn', '13.2.0'), /yarn add -D lighthouse@13\.2\.0/);
 });
 
 test('parseArgs reads the runner budgets and falls back on invalid values', () => {

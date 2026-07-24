@@ -104,7 +104,14 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
   }
   if (!hasAnyAppPackage(projectRoot)) missing.push('apps/<name>/package.json');
   if (!exists(projectRoot, 'packages/ui/package.json')) missing.push('packages/ui/package.json');
-  if (!exists(projectRoot, 'packages/ui/src/index.ts')) missing.push('packages/ui/src/index.ts');
+  // The UI barrel legitimately becomes index.tsx once components land in it.
+  // Accepting only index.ts made the architect's own digest unwritable AFTER a
+  // sibling role upgraded the barrel: the completion gate re-validated the
+  // original scaffold shape and refused every `PLAN_READY`-bearing rewrite
+  // (observed 12c: an ownership-transfer bookkeeping update had to be skipped).
+  if (!existsAny(projectRoot, ['packages/ui/src/index.ts', 'packages/ui/src/index.tsx'])) {
+    missing.push('packages/ui/src/index.ts (or index.tsx)');
+  }
   if (!exists(projectRoot, 'packages/tailwind-config/package.json')) missing.push('packages/tailwind-config/package.json');
   if (!existsAny(projectRoot, TAILWIND_CONFIG_BASELINE_PATHS)) {
     missing.push(CANONICAL_TAILWIND_GLOBALS_PATH);
@@ -120,7 +127,7 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
     missing.push('.prettierrc (or prettier.config.*, or a "prettier" key in root package.json)');
   }
   if (!rootPackageJsonScript(projectRoot, 'format:check')) {
-    missing.push('package.json "format:check" script (e.g. "prettier --check .") plus the prettier devDependency and a .prettierignore for build output');
+    missing.push('package.json "format:check" script (e.g. "prettier --check .") plus the prettier devDependency and a .prettierignore covering build output AND the generated `.traffic-one/` tree (its prose/metadata is not product source and must not fail the gate)');
   }
   return missing;
 }

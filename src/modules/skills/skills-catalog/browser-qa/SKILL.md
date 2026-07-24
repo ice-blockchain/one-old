@@ -92,6 +92,13 @@ runner before declaring page-speed work complete:
 node ~/.traffic-one/bin/lighthouse-runner.cjs --route /
 ```
 
+The runner prefers the workspace's local `lighthouse` binary (install it as a
+devDependency at scaffold time). Without one it falls back to a network install
+(`pnpm dlx lighthouse@…`) — on hosts whose approval layer denies
+registry-download execution (Codex Desktop guardian), pass `--local-only`
+instead: it exits with a structured `blocked:lighthouse-missing` status telling
+you to add the devDependency; never retry the dlx path on those hosts.
+
 When working from the plugin source checkout, run it from the app/repo root with:
 
 ```bash

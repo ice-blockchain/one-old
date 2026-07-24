@@ -1502,6 +1502,69 @@ test('inferRoleFromTranscript retains a marker anywhere in a recognized user rec
   });
 });
 
+test('inferRoleFromTranscript recovers the spawn-prompt marker when session_meta names no role', () => {
+  withPrefs((dir) => {
+    const records = codexCollaborationV2FixtureRecords();
+    // A spawn issued WITHOUT task_name leaves agent_path/agent_role null in the
+    // child's line-zero session_meta (observed 13c-codex: the architect looped
+    // on "role not observable" and the team was unusable). The plaintext spawn
+    // prompt still carries the marker — the head-capped scan must recover it.
+    const roleLessMeta = JSON.parse(JSON.stringify(records[0])) as {
+      payload: Record<string, unknown> & {
+        source: { subagent: { thread_spawn: Record<string, unknown> } };
+      };
+    };
+    roleLessMeta.payload.agent_path = null;
+    roleLessMeta.payload.agent_type = 'default';
+    roleLessMeta.payload.source.subagent.thread_spawn.agent_path = null;
+    roleLessMeta.payload.source.subagent.thread_spawn.agent_role = null;
+    const spawnPrompt = {
+      timestamp: '2026-07-16T08:16:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: '[t1-role: senior-architect]\nRun ID: 1784885645038\nUser request: build the platform.',
+        }],
+      },
+    };
+    const file = writeTranscriptRecords(dir, 'codex-roleless-meta-marker.jsonl', [
+      roleLessMeta,
+      spawnPrompt,
+      ...records.slice(2),
+    ]);
+    assert.equal(
+      inferRoleFromTranscript(file),
+      'senior-architect',
+      'a task_name-less spawn resolves from the plaintext spawn-prompt marker',
+    );
+  });
+});
+
+test('ensureCurrentRunId adopts a concurrently persisted id instead of minting a sibling run', () => {
+  withPrefs((dir) => {
+    const freshState = () => ({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
+    });
+    const first = ensureCurrentRunId(dir, freshState());
+    // A second hook process whose state snapshot predates the mint (parallel
+    // first tool calls each read .one.json before anyone wrote it) must adopt
+    // the persisted id under the state lock — three sibling runs/<id>/ trees
+    // with divergent model policies were minted this way (observed 13c-codex).
+    const stale: Record<string, unknown> = freshState();
+    const second = ensureCurrentRunId(dir, stale);
+    assert.equal(second, first);
+    assert.equal(stale.currentRunId, first, 'the adopting caller syncs its in-memory state');
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, '.traffic-one', 'runs')).filter((name) => /^\d{13}$/.test(name)),
+      [first],
+      'no sibling runs/<id>/ ledger is created by the adopting caller',
+    );
+  });
+});
+
 test('inferRoleFromTranscript fails closed when valid structured Codex roles conflict', () => {
   withPrefs((dir) => {
     const records = codexCollaborationV2FixtureRecords();

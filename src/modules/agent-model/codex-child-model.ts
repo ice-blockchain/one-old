@@ -8,6 +8,7 @@ import {
   correctCodexChildObservationRole,
   disownConflictedRoleAgent,
   hookSessionIdentity,
+  inferRoleEvidenceFromTranscript,
   isSubagentThread,
   observeCodexChildModel,
   readCodexModelObservation,
@@ -65,7 +66,17 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
   const metaRole = meta?.role.kind === 'evidence' ? meta.role.evidence : null;
   const rawRole = inferTrafficOneSpawnRoleEvidence(raw);
   const rawRoleEvidence = rawRole.kind === 'evidence' ? rawRole.evidence : null;
-  const evidence = metaRole || rawRoleEvidence;
+  // Spawn issued without task_name: line-zero session_meta then carries no role,
+  // but the plaintext spawn prompt (first user record, `[t1-role: …]` marker)
+  // does. The SubagentStart-time read can race that record landing in the
+  // rollout; by the first PreToolUse it is durably present — recover it here
+  // instead of retiring the child as role-less (observed 13c-codex: the
+  // architect looped on "role not observable" and the run stalled at Phase 1).
+  const transcriptRoleResolution = !metaRole && !observation?.role && !rawRoleEvidence && transcriptPath
+    ? inferRoleEvidenceFromTranscript(transcriptPath)
+    : { kind: 'none' } as const;
+  const transcriptRole = transcriptRoleResolution.kind === 'evidence' ? transcriptRoleResolution.evidence : null;
+  const evidence = metaRole || rawRoleEvidence || transcriptRole;
   const looksLikeChild = Boolean(observation || metaRole || isSubagentThread(raw));
   if (!looksLikeChild) return noop();
 
@@ -110,9 +121,15 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       metaRole.role,
     ) || observation;
   }
-  const role = metaRole?.role || observation?.role || rawRoleEvidence?.role || '';
+  const role = metaRole?.role || observation?.role || rawRoleEvidence?.role || transcriptRole?.role || '';
   if (!role) {
-    return deny('traffic-one — Codex child blocked: its senior role is not yet observable from SubagentStart or line-zero session metadata. Stop this child and respawn with the canonical task_name, the exact role model from the immutable run policy, and fork_turns: "none".');
+    return deny(
+      'traffic-one — Codex child blocked: its senior role is not observable from SubagentStart, line-zero session '
+      + 'metadata, or the spawn prompt. Stop this child and respawn with the canonical task_name, the exact role '
+      + 'model from the immutable run policy, and fork_turns: "none". If this host\'s spawn tool exposes no '
+      + 'task_name field, the FIRST line of the spawn message must carry the literal role marker '
+      + '`[t1-role: senior-<role>]` instead.',
+    );
   }
   const actualModel = asString(raw.model ?? payload.model).trim() || observation?.actualModel || '';
   const updated = observeCodexChildModel(cwd, runId, {
@@ -138,10 +155,12 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       return deny(
         `traffic-one — Codex child blocked: observed model status is ${status} (${reason}). `
         + `This thread is retired — every later call stays blocked${released ? ', and its role slot is now released for ONE replacement' : ''}. `
-        + 'Parent: spawn a FRESH child for this role with the canonical task_name, fork_turns "none", and the exact '
-        + 'model from .traffic-one/runs/<runId>/model-policy.json. Do NOT follow-up or interrupt-respawn this same '
-        + "task_name — the host can silently reattach this retired runtime (follow-up turns may run on the parent's "
-        + 'model); if a same-name respawn reattaches, spawn the replacement from another live senior child instead.',
+        + 'ROOT orchestrator: spawn a FRESH child for this role with the canonical task_name, fork_turns "none", and '
+        + 'the exact model from .traffic-one/runs/<runId>/model-policy.json. Do NOT follow-up or interrupt-respawn '
+        + "this same retired thread — the host can silently reattach it (follow-up turns may run on the parent's "
+        + 'model). Do NOT spawn the replacement nested from another senior child either: the host attributes a '
+        + "nested child's edits to the SPAWNING child, so it can never own this role's disjoint files (its writes "
+        + 'are denied). Only the root parent respawns senior roles.',
       );
     }
     return deny(

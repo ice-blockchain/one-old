@@ -26,6 +26,7 @@ import {
   findReportJson,
   findFrontendApp,
   findUp,
+  lighthouseMissingMessage,
   localLighthouseBin,
   parseArgs,
   parseSummary,
@@ -212,8 +213,8 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
   throw new Error(`Preview did not become ready within ${timeoutMs}ms: ${url}`);
 }
 
-async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lighthouseVersion, lighthouseTimeoutMs }: {
-  appDir: string; rootDir: string; packageManager: PackageManager; url: string; outDir: string; lighthouseVersion: string; lighthouseTimeoutMs: number;
+async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lighthouseVersion, lighthouseTimeoutMs, localOnly }: {
+  appDir: string; rootDir: string; packageManager: PackageManager; url: string; outDir: string; lighthouseVersion: string; lighthouseTimeoutMs: number; localOnly: boolean;
 }): Promise<{ jsonPath: string; htmlPath: string | null }> {
   mkdirSync(outDir, { recursive: true });
   const baseName = reportBaseName(url);
@@ -233,6 +234,11 @@ async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lig
   const localBin = localLighthouseBin(rootDir, appDir);
   if (localBin) {
     await runCommand(localBin, lighthouseArgs, { cwd: appDir, timeoutMs: lighthouseTimeoutMs });
+  } else if (localOnly) {
+    // Structured refusal instead of a network install: approval layers that deny
+    // registry-download execution (Codex Desktop guardian) deny the whole runner
+    // when the dlx branch is reachable — surface the devDependency remedy.
+    throw new Error(lighthouseMissingMessage(packageManager, lighthouseVersion));
   } else {
     await runCommand(packageManager, dlxArgs(packageManager, `lighthouse@${lighthouseVersion}`, lighthouseArgs), {
       cwd: rootDir,
@@ -326,6 +332,8 @@ async function main(): Promise<void> {
       outDir,
       lighthouseVersion: args.lighthouseVersion,
       lighthouseTimeoutMs: args.lighthouseTimeoutMs,
+      localOnly: args.localOnly
+        || ['1', 'true'].includes(String(process.env.TRAFFIC_ONE_LIGHTHOUSE_LOCAL_ONLY || '').toLowerCase()),
     });
     const report = readJson(reportPaths.jsonPath);
     if (!report) {

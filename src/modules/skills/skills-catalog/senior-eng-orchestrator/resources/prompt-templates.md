@@ -13,11 +13,10 @@ subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
 `<run-id>`, etc.) is the orchestrator's job; the templates stay lean so the
 subagent's context stays clean. The `<run-id>` substitution rules are below.
 
-On Codex, structured task identity is mandatory. Current Desktop rollouts store
-the spawn message encrypted in the child transcript, so the marker cannot be
-role evidence there. Use the exact underscore-form task name (`senior_architect`,
-`senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or
-`senior_shipper`), pass the role's exact runtime-resolved `model`, and set
+On Codex, structured task identity is mandatory. Use the exact underscore-form
+task name (`senior_architect`, `senior_frontend`, `senior_backend`,
+`senior_reviewer`, `senior_tester`, or `senior_shipper`), pass the role's exact
+runtime-resolved `model` AND its `reasoning_effort` from the run policy, and set
 `fork_turns: "none"` on every fresh spawn. For example:
 
 ```json
@@ -25,14 +24,25 @@ role evidence there. Use the exact underscore-form task name (`senior_architect`
   "task_name": "senior_architect",
   "message": "[t1-role: senior-<role>]\n...",
   "fork_turns": "none",
-  "model": "<runtime-model>"
+  "model": "<runtime-model>",
+  "reasoning_effort": "<runtime-effort>"
 }
 ```
 
-Line-zero `session_meta` is child-side identity corroboration, while the live
-hooks provide the actual model evidence checked against the immutable run
-policy. Keep the matching marker in the message for other hosts, but never rely
-on its position or visibility for Codex identity or model evidence.
+If the spawn tool this Codex session exposes has NO `task_name` field (schemas
+vary across builds — some expose only `model` and `message` with no
+task-identity or fork field), do NOT improvise pseudo-metadata: the
+`[t1-role: senior-<role>]` marker on the FIRST line of the message is the
+identity channel — current child rollouts record the spawn prompt readably and
+the gates recover the role from it (the bind may complete on the child's first
+tool call). Everything else (exact model, effort, run-id) stays mandatory.
+
+Line-zero `session_meta` (from `task_name`) is the strongest child-side
+identity; the marker is the fallback. The live hooks provide the actual model
+evidence checked against the immutable run policy. Senior-role spawns and
+replacements are issued by the ROOT orchestrator only — never nested from
+another senior child (the host attributes a nested child's edits to the
+spawning child, so its writes to the replaced role's files are denied).
 
 ## Per-role model / profile mapping
 

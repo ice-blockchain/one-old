@@ -19,6 +19,14 @@ live in `frontend/react/performance.md`.
   The runner builds the app, starts production preview, runs Lighthouse mobile,
   writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
   non-zero below the default thresholds.
+- Install `lighthouse` as a workspace devDependency at scaffold time so the
+  runner always finds a local binary. Without one it falls back to a network
+  install (`pnpm dlx lighthouse@…`), and approval layers that deny
+  registry-download execution (Codex Desktop guardian) then deny the WHOLE
+  runner. On such hosts run
+  `node ~/.traffic-one/bin/lighthouse-runner.cjs --route / --local-only`;
+  a `blocked:lighthouse-missing` result means: add the devDependency with the
+  project's package manager, then re-run — never retry the dlx path there.
 - Run the audit for the primary generated route and any route whose above-the-fold content, media, or third-party scripts changed.
 - Use Lighthouse findings to fix avoidable page-speed regressions before delivery.
 - The runner is time-bounded and always emits one final JSON status line; a `blocked:timeout` (or other `blocked:*`) result means page speed is UNVERIFIED — report it with concrete risks, do not invent scores, and do not poll the runner with a foreground sleep loop.

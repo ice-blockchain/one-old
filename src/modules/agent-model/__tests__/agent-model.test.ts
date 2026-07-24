@@ -1800,8 +1800,8 @@ test('codex unresolved SubagentStart reports canonical recovery and creates no c
         assert.match(result.context, /stop or replace this child and retry the same role/i);
         assert.match(result.context, /`senior_architect`/);
         assert.match(result.context, /`senior_frontend`/);
-        assert.match(result.context, /encrypts the spawn message/i);
-        assert.match(result.context, /marker position is not an identity requirement/i);
+        assert.match(result.context, /FIRST line of the spawn message must carry the literal role marker/i);
+        assert.match(result.context, /first tool call once the spawn prompt lands in its rollout/i);
         assert.match(result.context, /Do not self-assert a role in assistant prose/i);
       }
       assert.equal(

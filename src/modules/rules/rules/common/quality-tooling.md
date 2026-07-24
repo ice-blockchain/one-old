@@ -26,11 +26,14 @@ Every JavaScript/TypeScript project exposes these root scripts when applicable:
 
 - `format` and `format:check` for Prettier or the repo-selected formatter.
   On JS/TS scaffolds these are NOT optional: scaffold the formatter config
-  (`.prettierrc`), a `.prettierignore` covering build output/reports/lockfiles,
-  and the `prettier` devDependency together with the scripts — the architect
-  completion gate refuses `PLAN_READY` for the default web stack until the
-  config and the root `format:check` script exist, and the tester runs
-  `format:check` as a mechanical release gate.
+  (`.prettierrc`), a `.prettierignore` covering build output/reports/lockfiles
+  AND the generated `.traffic-one/` tree (its prose, digests, reports, and
+  fix-cycle metadata are not product source — leaving it in scope makes
+  `format:check` fail on generated files the roles must then hand-dismiss as
+  noise), and the `prettier` devDependency together with the scripts — the
+  architect completion gate refuses `PLAN_READY` for the default web stack
+  until the config and the root `format:check` script exist, and the tester
+  runs `format:check` as a mechanical release gate.
 - `lint` and `lint:fix` for ESLint or the repo-selected linter.
 - `typecheck` for `tsc --noEmit` or the framework-equivalent type check.
 - `test` for unit/integration tests.

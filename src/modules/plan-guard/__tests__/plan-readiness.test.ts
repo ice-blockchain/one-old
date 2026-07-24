@@ -341,6 +341,28 @@ test('architect completion gate: PLAN_READY is allowed once scaffold files exist
   });
 });
 
+test('architect completion gate: an upgraded packages/ui/src/index.tsx barrel still satisfies PLAN_READY', () => {
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir);
+    // A sibling role legitimately upgrades the empty barrel to .tsx once
+    // components land in it (observed 12c: after the swap, every PLAN_READY-
+    // bearing architect digest rewrite — including pure ownership-transfer
+    // bookkeeping — was refused because the gate re-required index.ts).
+    fs.rmSync(path.join(dir, 'packages/ui/src/index.ts'));
+    fs.writeFileSync(path.join(dir, 'packages/ui/src/index.tsx'), 'export const ProgressBar = () => null;\n', 'utf8');
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, []);
+  });
+});
+
 test('architect completion gate: PLAN_READY accepts pnpm-workspace.yaml plus root package without workspaces', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);
