@@ -238,6 +238,6 @@ Remote cache (Turborepo Remote Cache or self-hosted) is opt-in: set `TURBO_TOKEN
 - [ ] No circular package dependencies (`madge --circular`).
 - [ ] No deep relative imports across workspaces (`grep -rE "from ['\"]\.\.\/\.\.\/packages\/"`).
 - [ ] Shared `eslint-config`, `tsconfig`, and `tailwind-config` packages exist and are consumed by every app.
-- [ ] Every package exposes a `test` script wired into `turbo run test` (an explicit no-op is allowed, absence is not).
+- [ ] Every package that ships runtime source exposes a real `test` script wired into `turbo run test`; a config-only package (eslint config, tsconfig, tailwind tokens) omits `test` entirely — `turbo run test` skips a missing task. Never a `"test": "echo \"no tests\" && exit 0"` no-op: it inflates a green root run.
 - [ ] No script names a tool whose config/deps are missing (script/config parity — see `quality-tooling`).
 - [ ] CI uses `--frozen-lockfile` and caches `.turbo/`.

@@ -371,13 +371,14 @@ Mechanics on hosts with agent continuation: Claude uses `SendMessage` when `CLAU
 6. **Replacement (rare)**: when a continuation call errors ("agent not found") or the agent's replies show context exhaustion, re-spawn the role with the literal marker `[t1-replace-agent]` in the spawn prompt — the gate allows that one replacement and re-records the new id. On Cursor, a transcript-correlated startup/mid-run failure follows the three-flow recovery above instead: reconciliation persists the result and tier anchor before retiring the false-live agent, and the prescribed retry is accepted even when it arrives without `[t1-replace-agent]`. React in the same turn rather than waiting for sibling roles, and pass only the exact prescribed fallback slug so a generic replacement cannot bypass model gates. Replacements are ALWAYS spawned by the root orchestrator at depth 1 — never nested from another senior child: hosts attribute a nested child's edits to the SPAWNING child, so the nested worker can never own the replaced role's disjoint files (its writes are denied; observed live as a blocked backend-under-frontend replacement). A senior child that needs another role's work hands the need back to the root instead of spawning it.
 7. **Keep role threads open after MVP/maintenance** unless the user explicitly archives them, the agent is dead/replaced, or host active-agent caps require cleanup. A finished first MVP is often the start of the next feature, and the live role context is valuable.
 8. **No continuation available** (flag unset, non-teams host): the gate stays inert; fall back to the legacy re-spawn protocol below. On OpenCode the gate is not inert: it records the child session id and denies bare duplicate spawns, so use the explicit replacement marker for completed-task follow-ups.
+9. **Never interrupt a role turn that is still working.** A long verification turn (browser QA across routes and viewports, coverage, a production build) legitimately runs for many minutes. Silence toward YOU is not evidence of a stall: a mid-flight agent cannot answer a nudge, because a mid-flight message lands in its context and is only read when it next composes a reply — so "I prompted it twice and it did not respond" says nothing about whether it is stuck. Before aborting a role turn (`interrupt_agent` or any host equivalent), require POSITIVE evidence of inactivity: no new tool call, patch, or output from that agent for several consecutive minutes. If it is still emitting tool calls, it is working — wait. Aborting a working verifier destroys the verdict it was composing; when you do abort one, you MUST re-run that role's full verification, and its pre-abort QA report and digest STOP counting as current evidence (they describe a tree that has since changed). Prefer waiting over re-running: the interrupt costs the whole pass.
 
 If the prescribed retry/replacement paths are exhausted and orchestration or a
 role agent has failed unrecoverably, persist `failed/agent-failed` before the
 final blocked-style summary:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status failed --outcome agent-failed
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status failed --outcome agent-failed
 ```
 
 Do not use `agent-failed` for reviewer/tester cycle caps or environment/browser,
@@ -515,7 +516,7 @@ After 2 unsuccessful cycles, record the cap before escalating to the user with
 both diffs and the latest review:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome review-cycle-cap
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome review-cycle-cap
 ```
 
 ### Phase 3b — Tester fix loop (capped at 2 cycles)
@@ -538,14 +539,14 @@ code caused them. For any environment blocker that will remain unresolved at
 the end of this turn, persist it before showing the blocked summary:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome environment-blocked
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome environment-blocked
 ```
 
 After 2 unsuccessful implementation/test fix cycles, record the cap and then
 escalate to the user:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome test-cycle-cap
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome test-cycle-cap
 ```
 
 ### Phase 3c — Parent integration pass (visual builds)
@@ -621,7 +622,7 @@ Before the maintenance stamp, settle the terminal run idempotently. If the
 shipper actually completed the deploy and wrote its successful digest, use:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome shipped
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status completed --outcome shipped
 ```
 
 Never issue `completed/shipped` from deploy intent or a textual claim alone.
@@ -629,7 +630,7 @@ For an unshipped run, independently validate the strict reviewer + tester + QA
 or backend-only combination, then use:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome verified
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status completed --outcome verified
 ```
 
 Do not use `completed/verified` merely because the digest text contains green
@@ -764,7 +765,7 @@ the authorized resume before continuing. Run this only after the user has
 explicitly authorized the extra cycle:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
 ```
 
 ## Handoff back to user

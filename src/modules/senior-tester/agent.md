@@ -181,9 +181,22 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    absence of loosely detected `apps/web` changes and a prose “N/A” claim never
    override a frontend digest.
 9. Placeholder hygiene: a package whose `test` script is a no-op ("no tests
-   yet", `exit 0`) inflates a green root run. Either write one real minimal
-   test for it (within your scope) or list the package as a numbered finding —
-   a `TESTS_GREEN` that includes no-op packages must say so.
+   yet", `exit 0`) inflates a green root run, because it reports success while
+   covering nothing. What you do about it depends on whether real source is
+   hiding behind it, and you never edit `package.json` yourself — that file is
+   implementer-owned and the run-team ownership gate denies a tester write to it.
+   - The package SHIPS RUNTIME SOURCE: write one real minimal test for it (test
+     files are your scope). If you cannot cover it within your scope, escalate as
+     a numbered finding — this is a genuine coverage gap and it blocks
+     `TESTS_GREEN`.
+   - The package is CONFIG-ONLY (eslint config, tsconfig, tailwind tokens — no
+     runtime source): the no-op hides nothing, so it is a hygiene NOTE in your
+     digest, not a finding. Name the package and the role that owns it so the
+     orchestrator can have the owner delete the script; a config-only package is
+     meant to have no `test` script at all (`turbo run test` skips a missing
+     task). This alone does NOT block `TESTS_GREEN`.
+   A package that legitimately has NO `test` script is never a finding. Never ask
+   for a ceremony test that only asserts a config file parses.
 10. End with `TESTS_GREEN` only if every mechanical test passed AND either the
     current frontend run has a fresh, parser-valid `QaReportV1` whose overall
     status is `passed`, or the current run is genuinely backend-only under the

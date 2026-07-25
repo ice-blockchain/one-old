@@ -334,7 +334,11 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
     ]) assert.match(orchestrator, new RegExp(`${heading}:`, 'i'));
     assert.match(orchestrator, /blocked\/nonterminal run[\s\S]{0,200}never enters Phase 5/i);
 
-    const installedRunStatus = "'scripts','run-status.cjs'";
+    // 19c-F2: the run-status helper is reached through the version-stable shim,
+    // never an env-var chain — an agent's exec sandbox on Codex has no
+    // *_PLUGIN_ROOT set, so the old `node -e` launcher resolved to the PROJECT
+    // dir and died with MODULE_NOT_FOUND.
+    const installedRunStatus = 'node ~/.traffic-one/bin/run-status.cjs';
     const transitions = [
       '--status blocked --outcome review-cycle-cap',
       '--status blocked --outcome test-cycle-cap',
@@ -348,7 +352,9 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       ['orchestrator', orchestrator],
       ['prompt templates', testerPrompt],
     ] as const) {
-      assert.ok(content.includes(installedRunStatus), `${name} resolves the installed run-status helper through Node`);
+      assert.ok(content.includes(installedRunStatus), `${name} reaches run-status through the version-stable shim`);
+      assert.ok(!/run-status\.cjs'\)\)"/.test(content),
+        `${name} must not resolve run-status through a *_PLUGIN_ROOT env chain`);
       assert.ok(content.includes('--run-id "<run-id>"'), `${name} uses a shell-neutral run-id placeholder`);
       for (const transition of transitions) {
         assert.ok(content.includes(transition), `${name} documents ${transition}`);
@@ -356,6 +362,68 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       assert.match(content, /completed (?:transitions|commands) are evidence-gated/i,
         `${name} keeps completed transitions behind evidence`);
     }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 19c-F3: the architect was told a `"test": "echo \"no tests\" && exit 0"` no-op
+// was REQUIRED ("absence is not allowed") while the tester was told to flag it —
+// a green run was blocked only by scaffolding the plugin itself demanded, and
+// the frontend unblocked it with ceremony tests. Every doc must now agree that a
+// config-only package omits `test` entirely.
+// 19c-F1: root aborted a tester that was mid-digest 11s after a successful tool
+// call, destroying a verdict, because nothing defined what "stalled" means.
+test('generated role contracts agree on no-op test scripts and forbid interrupting a working agent', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-role-contract-coherence-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const docs = {
+      architect: fs.readFileSync(path.join(dir, 'agents', 'senior-architect.md'), 'utf8'),
+      tester: fs.readFileSync(path.join(dir, 'agents', 'senior-tester.md'), 'utf8'),
+      qualityTooling: fs.readFileSync(path.join(dir, 'rules', 'common', 'quality-tooling.md'), 'utf8'),
+      newProject: fs.readFileSync(path.join(dir, 'rules', 'modes', 'new-project-setup.md'), 'utf8'),
+      // Mandatory architect skill for stack=default / frontend=react-vite, and
+      // the authority for the scaffold's exact package.json content — the first
+      // pass of this fix left the old rule live here, so it must be scanned too.
+      monorepo: fs.readFileSync(
+        path.join(dir, 'skills-catalog', 'monorepo-architecture', 'SKILL.md'),
+        'utf8',
+      ),
+    };
+
+    // No doc may PRESCRIBE the no-op; every mention must be a prohibition.
+    for (const [name, content] of Object.entries(docs)) {
+      for (const line of content.split('\n')) {
+        if (!/no tests/i.test(line)) continue;
+        assert.ok(
+          /\bnever\b|\bno hollow\b|\bno-op\b|false signal|inflates|meaningless/i.test(line),
+          `${name} mentions a no-tests script outside a prohibition: ${line.trim()}`,
+        );
+      }
+      assert.ok(!/no-op is\s+allowed|allowed, absence is not/i.test(content),
+        `${name} still permits a no-op test script`);
+    }
+    // The architect must say config-only packages omit the script.
+    assert.match(docs.architect, /omits? `?test`? entirely/i);
+    assert.match(docs.qualityTooling, /omits? `?test`? entirely/i);
+    assert.match(docs.monorepo, /omits? `?test`? entirely/i);
+    // The tester must not demand a ceremony test for a package with no source.
+    assert.match(docs.tester, /not a finding/i);
+    // The tester must never be told it may edit package.json: the run-team
+    // ownership gate denies that write, so any such instruction is unfollowable.
+    assert.doesNotMatch(docs.tester, /both are inside your scope/i);
+    assert.match(docs.tester, /never edit `?package\.json`? yourself/i);
+
+    const orchestrator = fs.readFileSync(
+      path.join(dir, 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'),
+      'utf8',
+    );
+    assert.match(orchestrator, /never interrupt a role turn that is still working/i);
+    assert.match(orchestrator, /positive evidence of inactivity/i);
+    assert.match(orchestrator, /silence toward you is not evidence/i);
+    // An aborted verifier's stale evidence must not be reusable.
+    assert.match(orchestrator, /stop counting as current evidence/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

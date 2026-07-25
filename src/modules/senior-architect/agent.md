@@ -121,9 +121,12 @@ Script/config parity (see `quality-tooling`): if you emit `lint`/`lint:fix` scri
 (root or package), you MUST also scaffold `packages/eslint-config`, a root
 `eslint.config.js` re-export, and the eslint devDependencies in the root
 `package.json` — otherwise omit the lint scripts entirely and leave them to an
-implementer. Every scaffolded package's `package.json` includes a `test` script
-(vitest on web; an explicit `"test": "echo \"no tests\" && exit 0"` no-op is
-allowed, absence is not). Scaffold the coverage provider with the test runner:
+implementer. Every scaffolded package that ships runtime source gets a real
+`test` script (vitest on web); a config-only package that ships no runtime
+source (eslint config, tsconfig, tailwind tokens) omits `test` entirely —
+`turbo run test` skips a missing task. Never emit a
+`"test": "echo \"no tests\" && exit 0"` no-op: it inflates a green root run and
+the tester is required to report it. Scaffold the coverage provider with the test runner:
 the matching coverage devDependency (`@vitest/coverage-v8` for vitest) in the
 root `package.json` and a root `test:coverage` script. When the plan's testing
 strategy names a runner (vitest / playwright / jest / cypress), also scaffold

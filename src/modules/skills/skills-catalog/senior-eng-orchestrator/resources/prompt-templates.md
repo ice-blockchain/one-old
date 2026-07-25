@@ -440,30 +440,33 @@ Token budget: ~8k.
 ## Run-ledger settlement (orchestrator only)
 
 The parent orchestrator, not a verifier role, records the current run through
-the shipped idempotent helper. Use the portable Node launcher exactly, replace
-`<run-id>` with the current run id, and never hand-edit `run.json`.
+the shipped idempotent helper. Call it through the version-stable shim below
+exactly as written — the shim resolves the live plugin root itself, so it keeps
+working across plugin upgrades and needs no `*_PLUGIN_ROOT` environment variable
+(your shell has none). Replace `<run-id>` with the current run id, and never
+hand-edit `run.json`.
 
 ```bash
 # Reviewer cap after the second unsuccessful cycle.
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome review-cycle-cap
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome review-cycle-cap
 
 # Tester cap after the second unsuccessful implementation/test fix cycle.
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome test-cycle-cap
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome test-cycle-cap
 
 # Browser/sandbox/usage-limit/timeout blocker that remains unresolved.
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome environment-blocked
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome environment-blocked
 
 # Unrecoverable orchestration/role-agent failure only.
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status failed --outcome agent-failed
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status failed --outcome agent-failed
 
 # Same-run resume only after explicit user authorization.
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
 
 # Strictly verified terminal run; reviewer + tester + QA/backend-only gate passed.
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome verified
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status completed --outcome verified
 
 # Successful shipper digest after the deploy actually completed.
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome shipped
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status completed --outcome shipped
 ```
 
 The completed commands are evidence-gated. Never infer them from green text,

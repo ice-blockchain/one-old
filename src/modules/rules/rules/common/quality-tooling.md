@@ -49,9 +49,10 @@ pipeline for every later agent — either scaffold the config + deps alongside t
 script or omit the script until an implementer adds them.
 
 Every workspace package that ships source exposes its own `test` script (vitest
-on web stacks) so `turbo run test` covers it; a package with intentionally no
-tests declares `"test": "echo \"no tests\" && exit 0"` explicitly rather than
-omitting the script.
+on web stacks) so `turbo run test` covers it. A config-only package that ships
+no runtime source omits `test` entirely — `turbo run test` skips a missing task.
+Never declare a `"test": "echo \"no tests\" && exit 0"` no-op: it makes a green
+root run meaningless, and the tester is required to report it as a finding.
 
 ## Local tooling only
 

@@ -36,6 +36,7 @@ export const RUNNER_SHIMS: ReadonlyArray<{ shim: string; rel: string }> = [
   { shim: 'one-mcp-report.cjs', rel: 'scripts/one-mcp-report.cjs' },
   { shim: 'traffic-one-cleanup.cjs', rel: 'scripts/traffic-one-cleanup.cjs' },
   { shim: 'doctor.cjs', rel: 'scripts/doctor.cjs' },
+  { shim: 'run-status.cjs', rel: 'scripts/run-status.cjs' },
   { shim: 'windsurf-hook-runtime.cjs', rel: 'scripts/windsurf-hook-runtime.cjs' },
 ];
 
