@@ -369,6 +369,53 @@ test('frontend completion gate: IMPLEMENTED is denied while product source is co
   });
 });
 
+// REGRESSION (observed live, cursor-16c): the frontend re-emitted its digest 11s AFTER the
+// tester generated the QA report, so the settlement freshness floor silently refused the
+// report — reviewer APPROVED + tester TESTS_GREEN + a `passed` sweep still left the run
+// non-terminal, and it only recovered by accident when an unrelated request triggered a new
+// sweep. The gate makes the stale verdict fail loudly at write time instead.
+test('tester completion gate: TESTS_GREEN is denied while the QA report predates the implementation', () => {
+  withProject((dir) => {
+    const runId = 'R';
+    const digests = path.join(dir, '.traffic-one', 'digests', runId);
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', runId);
+    fs.mkdirSync(digests, { recursive: true });
+    fs.mkdirSync(qaDir, { recursive: true });
+    const reportAt = '2026-07-25T16:44:58.194Z';
+    fs.writeFileSync(path.join(qaDir, 'report.json'),
+      JSON.stringify({ schemaVersion: 1, runId, generatedAt: reportAt, producer: 'senior-tester', status: 'passed', routes: [] }), 'utf8');
+
+    const gateArgs = {
+      filePath: `.traffic-one/digests/${runId}/tester.md`,
+      content: 'verdict: TESTS_GREEN\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    // Frontend digest NEWER than the report → the sweep never saw the current code.
+    fs.writeFileSync(path.join(digests, 'frontend.md'), 'verdict: IMPLEMENTED\n', 'utf8');
+    const newer = new Date(Date.parse(reportAt) + 11_000);
+    fs.utimesSync(path.join(digests, 'frontend.md'), newer, newer);
+    assert.ok(planReadinessViolations(gateArgs).includes('tester-stale-qa-gate'));
+
+    // A fresh sweep (report now newer than every implementer digest) clears the gate.
+    fs.writeFileSync(path.join(qaDir, 'report.json'),
+      JSON.stringify({ schemaVersion: 1, runId, generatedAt: new Date(newer.getTime() + 60_000).toISOString(), producer: 'senior-tester', status: 'passed', routes: [] }), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // TESTS_FAILING is never gated — an honest failure must always be writable.
+    fs.writeFileSync(path.join(qaDir, 'report.json'),
+      JSON.stringify({ schemaVersion: 1, runId, generatedAt: reportAt, producer: 'senior-tester', status: 'passed', routes: [] }), 'utf8');
+    assert.deepEqual(planReadinessViolations({ ...gateArgs, content: 'verdict: TESTS_FAILING\n' }), []);
+
+    // No QA report at all → other gates own that case, this one stays silent.
+    fs.rmSync(path.join(qaDir, 'report.json'));
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+  });
+});
+
 test('frontend completion gate: a long single-string/data-URI line is NOT flagged as collapse', () => {
   withProject((dir) => {
     fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });

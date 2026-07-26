@@ -19,6 +19,7 @@ import {
   readCodexSessionMetaIdentity,
   observeCodexChildModel,
   readEffectiveState,
+  normalizeHostCallId,
   recordCursorSpawnObservation,
   recordRunAgent,
   transcriptThreadId,
@@ -267,7 +268,15 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // and the orchestrator CONTINUES it (Task resume continuation) instead of re-spawning.
   // Cursor-only (gated on the subagent_id field; Claude/Codex record via the PostToolUse
   // recorder, which sees their agent_id in the tool result).
-  const cursorSubagentId = asString(raw.subagent_id);
+  // Normalize at the SOURCE. Cursor 3.12.30 leaks an HTTP chunk-length line into this
+  // id ("16\\nfc_…"), and this ONE value is written to TWO stores below
+  // (cursor-spawns.json via recordCursorSpawnObservation, agents.json via
+  // recordRunAgent). Normalizing only on the read side made those stores DIVERGE — the
+  // spawn ledger held the clean id while the agent registry held the raw one — which
+  // breaks every cross-store comparison (live-agent match, replace-if-matches retirement,
+  // PostToolUse result correlation, lifecycle followup targeting). One normalization here
+  // keeps both stores byte-identical, whichever spelling the host sent.
+  const cursorSubagentId = normalizeHostCallId(raw.subagent_id);
   if (ctx.host === 'cursor' && cursorSubagentId && boundRunId) {
     const rolePolicy = runPolicy?.host === 'cursor' ? runPolicy.roles[role] : null;
     const tier = rolePolicy?.tier || null;

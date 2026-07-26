@@ -32,6 +32,7 @@ import {
   inferRoleFromTranscript,
   isResumeCapableAgentId,
   listCursorSpawnObservations,
+  normalizeHostCallId,
   listCursorSubagentTranscriptCandidates,
   markCursorSpawnObservationRetryHandled,
   markRunAgentReplacedIfMatches,
@@ -468,7 +469,10 @@ function cursorPostToolResultIds(raw: unknown): Set<string> {
     payload.subagent_id,
     payload.subagentId,
   ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  return new Set(ids.map((value) => value.trim()));
+  // BOTH spellings: stores written after the chunk-prefix fix hold the normalized id, older
+  // ledgers hold the raw "16\nfc_…" one. A superset keeps correlation working across the
+  // upgrade instead of silently missing every comparison.
+  return new Set(ids.flatMap((value) => withNormalizedSpelling(value)));
 }
 
 function correlatedPostToolObservation(
@@ -1131,13 +1135,22 @@ function rawLifecycleTimeMs(raw: unknown): number {
   return Date.now();
 }
 
+// A host id plus its normalized form (chunk-length prefix stripped), de-duplicated. Used
+// wherever an INCOMING payload id is matched against a PERSISTED one, so a ledger written
+// before or after the normalization fix both compare equal.
+function withNormalizedSpelling(value: string): string[] {
+  const trimmed = value.trim();
+  const normalized = normalizeHostCallId(trimmed);
+  return normalized && normalized !== trimmed ? [trimmed, normalized] : [trimmed];
+}
+
 function rawSubagentIds(raw: unknown): Set<string> {
   const { data, payload } = rawLifecycleRecord(raw);
   return new Set([
     data.subagent_id, data.subagentId, data.tool_call_id, data.toolCallId,
     payload.subagent_id, payload.subagentId, payload.tool_call_id, payload.toolCallId,
   ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    .map((value) => value.trim()));
+    .flatMap((value) => withNormalizedSpelling(value)));
 }
 
 interface CursorLifecycleTarget {

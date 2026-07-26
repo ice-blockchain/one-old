@@ -29,6 +29,7 @@ const PLAN_FILE_RE = /(^|\/)\.traffic-one\/plan\.md$/;
 const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json$/;
 const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/architect\.md$/;
 const FRONTEND_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/frontend\.md$/;
+const TESTER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?tester\.md$/;
 // Collapsed-source delivery guard. A single source line packing an entire
 // component/route (observed 16c: apps/web/src/App.tsx held the whole app —
 // Catalog, CoursePage, LessonPage, Dashboard, routing, data — as one-line
@@ -41,6 +42,48 @@ const COLLAPSE_SOURCE_RE = /\.(?:tsx?|jsx?|mjs|cjs|css|scss)$/;
 const COLLAPSE_SKIP_DIR_RE = /(^|\/)(node_modules|dist|build|coverage|out|\.turbo|\.next|\.vite|generated|__generated__)(\/|$)/;
 const COLLAPSE_LINE_CHARS = 500;
 const COLLAPSE_MAX_FILES = 600;
+
+/**
+ * A QA report that predates the newest implementer digest, i.e. a sweep that did not see
+ * the code it claims to cover. Mirrors the settlement floor exactly: the report's
+ * `generatedAt` FIELD (never its mtime — a re-copied file would look fresh) versus the
+ * implementer digest mtimes. Returns null when there is no report, no implementer digest,
+ * or the report is current — the caller must stay silent in every ambiguous case.
+ */
+function qaReportOlderThanImplementation(
+  projectRoot: string,
+  runId: string,
+): { generatedAt: string; digest: string; digestAt: string } | null {
+  if (!runId || /[\\/]/.test(runId)) return null;
+  const memoryDir = '.traffic' + '-one';
+  let generatedAtMs = 0;
+  let generatedAt = '';
+  try {
+    const raw = JSON.parse(fs.readFileSync(
+      path.join(projectRoot, memoryDir, 'reports', 'qa', runId, 'report.json'), 'utf8',
+    )) as { generatedAt?: unknown };
+    generatedAt = typeof raw?.generatedAt === 'string' ? raw.generatedAt : '';
+    generatedAtMs = Date.parse(generatedAt);
+  } catch {
+    return null; // no report → other gates own that case
+  }
+  if (!Number.isFinite(generatedAtMs) || generatedAtMs <= 0) return null;
+  let newest: { digest: string; digestAt: string; ms: number } | null = null;
+  for (const name of ['frontend.md', 'senior-frontend.md', 'backend.md', 'senior-backend.md']) {
+    try {
+      const st = fs.statSync(path.join(projectRoot, memoryDir, 'digests', runId, name));
+      if (!st.isFile() || st.size <= 0) continue;
+      const ms = Math.floor(st.mtimeMs);
+      if (!newest || ms > newest.ms) {
+        newest = { digest: name, digestAt: new Date(ms).toISOString(), ms };
+      }
+    } catch {
+      // digest absent under this spelling
+    }
+  }
+  if (!newest || newest.ms <= generatedAtMs) return null;
+  return { generatedAt, digest: newest.digest, digestAt: newest.digestAt };
+}
 
 function collapsedProductSourceFile(projectRoot: string): string | null {
   const stack = ['apps', 'packages'].map((dir) => path.join(projectRoot, dir));
@@ -496,6 +539,25 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       violations.push(block('frontend-collapse-gate',
         `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed}\` packs an entire component/route onto a single line (over ${COLLAPSE_LINE_CHARS} chars) — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
         { FILE: collapsed }));
+    }
+  }
+
+  // Tester completion gate: `TESTS_GREEN` must not rest on a QA report that predates the
+  // implementation it claims to verify. The settlement floor already REFUSES such a report
+  // (strictQaReportResult uses max(qaContractActivatedAt, frontend digest mtime)), but it
+  // refuses SILENTLY: observed live in cursor-16c the frontend re-emitted its digest 11s
+  // after the sweep ran, so reviewer APPROVED + tester TESTS_GREEN + a `passed` report still
+  // left the run non-terminal — and it only recovered by accident when an unrelated feature
+  // request triggered a fresh sweep. The orchestrator prose already tells the tester to
+  // re-run the sweep after a fix cycle; this turns "ignored instruction, silent stall" into
+  // an actionable deny at the moment the stale verdict is written.
+  const testerDigest = TESTER_DIGEST_RE.exec(filePath);
+  if (testerDigest && /\bTESTS_GREEN\b/.test(content)) {
+    const staleQa = qaReportOlderThanImplementation(projectRoot, testerDigest[2] || '');
+    if (staleQa) {
+      violations.push(block('tester-stale-qa-gate',
+        `Tester completion gate: do not write \`TESTS_GREEN\` on a stale QA report. The report was generated at ${staleQa.generatedAt} but \`${staleQa.digest}\` was re-emitted at ${staleQa.digestAt}, so the sweep did not see the current implementation and the run cannot settle. Re-run the visual QA sweep now, write the fresh report, and only then re-emit \`TESTS_GREEN\`.`,
+        { GENERATED_AT: staleQa.generatedAt, DIGEST: staleQa.digest, DIGEST_AT: staleQa.digestAt }));
     }
   }
 

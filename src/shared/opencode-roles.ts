@@ -517,6 +517,30 @@ export function openCodeRoleAttempted(cwd: string, runId: string, role: string):
 // marker file itself stays an existence-only flag written exclusively by
 // markOpenCodeRoleAttempted (the spawn gate must not see pre-CLI environment
 // failures as real attempts).
+// The plugin version of the tree THIS module was loaded from. Deliberately derived from
+// __dirname (compiled layout: <root>/scripts/shared/opencode-roles.js) rather than any env
+// var, cwd, or plugin-root helper: the whole point is to reveal when the runtime serving a
+// delegation is a DIFFERENT install than the one the rest of the session believes in.
+// Memoized; returns null (never a fake version) when it cannot be read.
+let runtimeVersionMemo: string | null | undefined;
+function runtimeVersion(): string | null {
+  if (runtimeVersionMemo !== undefined) return runtimeVersionMemo;
+  let resolved: string | null = null;
+  for (const up of [['..', '..'], ['..', '..', '..']]) {
+    try {
+      const pkg = obj(JSON.parse(fs.readFileSync(path.resolve(__dirname, ...up, 'package.json'), 'utf8')));
+      if (pkg?.name === 'traffic-one' && typeof pkg.version === 'string' && pkg.version) {
+        resolved = pkg.version;
+        break;
+      }
+    } catch {
+      // try the next level up
+    }
+  }
+  runtimeVersionMemo = resolved;
+  return resolved;
+}
+
 export function recordOpenCodeAttemptOutcome(
   cwd: string,
   runId: string,
@@ -535,6 +559,12 @@ export function recordOpenCodeAttemptOutcome(
       error: outcome.error ? String(outcome.error).slice(0, 500) : null,
       durationMs: typeof outcome.durationMs === 'number' ? Math.round(outcome.durationMs) : undefined,
       touched: typeof outcome.touched === 'number' ? outcome.touched : undefined,
+      // WHICH plugin build actually ran this delegation. In cursor-15c the hooks ran
+      // 1.0.17 while the MCP server that owns this code ran 1.0.15, so a fixed timeout
+      // silently never applied and proving it took process forensics. Resolved from THIS
+      // file's own location — never from env/cwd/pluginRoot(), which is the very bug class
+      // being diagnosed. A missing field in an old log therefore means "pre-stamp runtime".
+      runtimeVersion: runtimeVersion(),
     });
     fs.appendFileSync(p, `${line}\n`, 'utf8');
   } catch {

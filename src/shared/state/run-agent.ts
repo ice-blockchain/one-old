@@ -420,6 +420,26 @@ function firstString(...values: unknown[]): string | null {
   return null;
 }
 
+// Cursor 3.12.30 leaks an HTTP chunk-length line into the spawn identity: observed
+// live as `subagent_id` AND `tool_call_id` = "16\nfc_otWVB6Z-…" on one spawn and
+// "78\nfc_otWf1Ee-…" on another (the number varies, which is what identifies it as
+// a chunk header rather than part of the id). Stored verbatim, such an id is a
+// multi-LINE ledger key: it is not the documented `tool_<uuid>` shape, it corrupts
+// any single-line log or message that embeds it, and two spellings of the same
+// spawn (one sanitized upstream by the host, one not) would never compare equal.
+// Keep the LAST non-empty line and drop a pure hex/decimal length prefix.
+export function normalizeHostCallId(value: unknown): string | null {
+  const raw = firstString(value);
+  if (!raw) return null;
+  if (!raw.includes('\n') && !raw.includes('\r')) return raw;
+  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  // A leading bare length token is the chunk header; anything else we keep as-is
+  // (last line wins) rather than guessing at an unknown multi-line shape.
+  const last = lines[lines.length - 1]!;
+  return last;
+}
+
 function nestedValue(source: unknown, keys: string[]): unknown {
   let current: unknown = source;
   for (const key of keys) {
@@ -871,7 +891,7 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
   // (= tool_<uuid>) and the role as `subagent_type` (Claude uses agent_id/agent_type;
   // Codex carries neither). Read Cursor's spellings too so a Cursor subagent is
   // recognized as a subagent and its reuse id + role are captured.
-  const agentId = firstString(data.agent_id, data.agentId, payload.agent_id, payload.agentId, data.subagent_id, payload.subagent_id);
+  const agentId = normalizeHostCallId(firstString(data.agent_id, data.agentId, payload.agent_id, payload.agentId, data.subagent_id, payload.subagent_id));
   const declaredRoles = uniqueStrings([
     data.agent_type, data.agentType, payload.agent_type, payload.agentType,
     data.subagent_type, data.subagentType, payload.subagent_type, payload.subagentType,
@@ -1288,7 +1308,7 @@ function normalizeCursorSpawnObservation(value: unknown): CursorSpawnObservation
   const item = obj(value);
   if (!item) return null;
   const parentSessionId = firstString(item.parentSessionId, item.parent_session_id);
-  const toolCallId = firstString(item.toolCallId, item.tool_call_id, item.observationId);
+  const toolCallId = normalizeHostCallId(firstString(item.toolCallId, item.tool_call_id, item.observationId));
   const role = firstString(item.role);
   const requestedModel = firstString(item.requestedModel, item.requested_model, item.model);
   const expectedModel = firstString(item.expectedModel, item.expected_model, item.expected);
@@ -3530,33 +3550,91 @@ export function readRunAssignmentsResilient(cwd: string, preferredRunId: unknown
 function digestDir(cwd: string, runId: string): string {
   return path.join(cwd, '.traffic-one', 'digests', safePathSegment(runId));
 }
-function readDigest(cwd: string, runId: string, name: string): string {
-  try {
-    return fs.readFileSync(path.join(digestDir(cwd, runId), name), 'utf8');
-  } catch {
-    if (name.startsWith('senior-')) return '';
+// Resolve a role digest across BOTH spellings, NEWEST-WINS.
+//
+// The canonical name is `<role>.md` (roleDigestName strips `senior-`), but real
+// orchestrators write `senior-<role>.md` too — observed live in cursor 14c, where
+// the SAME run held `frontend.md` (the previous feature) alongside a NEWER
+// `senior-frontend.md` (the current one). Preferring the canonical name BY NAME
+// then handed every gate the stale digest: the QA freshness floor
+// (strictQaReportResult) computed its floor from the old mtime, so a report
+// predating the current implementation would have passed as fresh evidence — the
+// exact stale digest/report pairing that floor exists to prevent. Ordering by
+// mtime instead makes the newest emitted digest authoritative regardless of which
+// spelling the orchestrator chose, and is a no-op when only one file exists.
+// Newest-wins resolves WHICH verdict/mtime is authoritative. It must NEVER be able to
+// hide a digest that exists: an EMPTY-but-newer `senior-<role>.md` masking a
+// content-bearing `frontend.md` would falsely grant the backend-only QA exemption at
+// runHasQaEvidence and settle a frontend run `verified` with ZERO QA evidence (adversarial
+// review proved this by differential execution against the pre-change code). So a
+// candidate only competes when it is a readable file with non-blank content, and every
+// EXISTENCE/emptiness question goes through the union helper below instead of picking one
+// file. Ties favour the canonical spelling, preserving the pre-change behaviour.
+function digestCandidateNames(name: string): readonly string[] {
+  return name.startsWith('senior-') ? [name] : [name, `senior-${name}`];
+}
+
+interface DigestCandidate { file: string; mtimeMs: number; text: string }
+
+// Every readable, non-blank spelling of one role digest, canonical spelling FIRST so a
+// stable sort keeps it winning an exact mtime tie.
+function digestCandidates(cwd: string, runId: string, name: string): DigestCandidate[] {
+  const found: DigestCandidate[] = [];
+  for (const candidate of digestCandidateNames(name)) {
+    const file = path.join(digestDir(cwd, runId), candidate);
     try {
-      return fs.readFileSync(path.join(digestDir(cwd, runId), `senior-${name}`), 'utf8');
+      const st = fs.statSync(file);
+      if (!st.isFile() || st.size <= 0) continue;
+      // Read here, not later: statSync succeeds without read permission, so resolving by
+      // stat alone let an unreadable canonical file win and return '' where the old code
+      // fell back to the readable sibling — which at the QA exemption meant fake-green.
+      const text = fs.readFileSync(file, 'utf8');
+      if (!text.trim()) continue;
+      found.push({ file, mtimeMs: Math.floor(st.mtimeMs), text });
     } catch {
-      return '';
+      // Missing/unreadable candidate — the other spelling may still serve.
     }
   }
+  return found;
+}
+
+function newestDigestCandidate(cwd: string, runId: string, name: string): DigestCandidate | null {
+  const found = digestCandidates(cwd, runId, name);
+  if (!found.length) return null;
+  return found.reduce((best, item) => (item.mtimeMs > best.mtimeMs ? item : best), found[0]!);
 }
 
 function digestFile(cwd: string, runId: string, name: string): string | null {
-  const direct = path.join(digestDir(cwd, runId), name);
-  try {
-    if (fs.statSync(direct).isFile()) return direct;
-  } catch {
-    // Try the legacy senior-* filename below.
-  }
-  if (name.startsWith('senior-')) return null;
-  const legacy = path.join(digestDir(cwd, runId), `senior-${name}`);
-  try {
-    return fs.statSync(legacy).isFile() ? legacy : null;
-  } catch {
-    return null;
-  }
+  return newestDigestCandidate(cwd, runId, name)?.file ?? null;
+}
+
+function readDigest(cwd: string, runId: string, name: string): string {
+  return newestDigestCandidate(cwd, runId, name)?.text ?? '';
+}
+
+/**
+ * True when ANY spelling of this role digest carries content — a UNION, never a pick.
+ * Use for "did this role emit anything at all" questions (the backend-only QA exemption,
+ * implementer output, verifier output). Matches the existsSync-union already used by
+ * anyRunProducedImplementerOutput/runHasOrchestratedArtifacts, so run-agent stays
+ * internally consistent about existence.
+ */
+function anyDigestSpellingHasContent(cwd: string, runId: string, name: string): boolean {
+  return digestCandidates(cwd, runId, name).length > 0;
+}
+
+/**
+ * True when both spellings exist and their machine verdicts DISAGREE. Callers fail closed,
+ * mirroring exactDigestVerdict's rule for conflicting verdict lines inside one file: a
+ * disagreement means nobody has emitted an authoritative verdict, so newest-mtime must not
+ * get to pick the winner (it would let a newer `senior-reviewer.md` APPROVED override a
+ * canonical CHANGES_REQUESTED and rotate/settle the run).
+ */
+function digestVerdictsConflict(cwd: string, runId: string, name: string): boolean {
+  const verdicts = digestCandidates(cwd, runId, name)
+    .map((candidate) => exactDigestVerdict(candidate.text))
+    .filter((verdict): verdict is string => typeof verdict === 'string');
+  return new Set(verdicts).size > 1;
 }
 
 function dirHasAnyFile(dir: string, suffixes: readonly string[]): boolean {
@@ -3672,7 +3750,7 @@ function runHasQaEvidence(cwd: string, runId: string): boolean {
   // Backend-only is an exact per-run property: the current run has no frontend
   // implementer digest. Project stack detection and prose N/A claims cannot exempt
   // a run after the frontend implementer has emitted its digest.
-  if (!readDigest(cwd, runId, 'frontend.md').trim()) return true;
+  if (!anyDigestSpellingHasContent(cwd, runId, 'frontend.md')) return true;
   if (runUsesStrictQaContract(cwd, runId)) {
     const result = strictQaReportResult(cwd, runId);
     if (!result.ok) return false;
@@ -3718,16 +3796,38 @@ function runLedgerStatusRecord(cwd: string, runId: string): {
 }
 
 function shipperDigestCompleted(cwd: string, runId: string): boolean {
+  if (digestVerdictsConflict(cwd, runId, 'shipper.md')) return false;
   const shipper = readDigest(cwd, runId, 'shipper.md');
   const shipped = /(?:^|\n)\s*(?:verdict\s*:\s*)?SHIPPED\s*(?:\r?\n|$)/im.test(shipper);
   const failed = /(?:^|\n)\s*(?:verdict\s*:\s*)?FAILED\s*(?:\r?\n|$)/im.test(shipper);
   return shipped && !failed;
 }
 
+// Machine verdict tokens. Used to spot a CONFLICTING token in the trailing summary
+// an agent may append to its verdict line.
+const DIGEST_VERDICT_TOKENS = /\b(PLAN_READY|IMPLEMENTED|BLOCKED|APPROVED|CHANGES_REQUESTED|TESTS_GREEN|TESTS_FAILING|DELEGATED_OK|SHIPPED|FAILED)\b/g;
+
 function exactDigestVerdict(digest: string): string | null {
-  const verdicts = [...digest.matchAll(/^\s*verdict\s*:\s*([A-Z][A-Z_-]*)\s*$/gim)]
-    .map((match) => match[1]?.toUpperCase())
-    .filter((verdict): verdict is string => typeof verdict === 'string');
+  // The token must be the FIRST thing after `verdict:`, but a trailing summary on the
+  // same line is tolerated. Requiring a bare line made a fully GREEN run impossible to
+  // settle: observed live in cursor-15c, the tester wrote
+  //   `verdict: TESTS_GREEN — 37 tests passed; pages 87%, apps/web 70.1%.`
+  // which parsed as NO verdict, so reviewer APPROVED + tester TESTS_GREEN + a passing QA
+  // report still left the run `nonterminal` forever — and, through buildSettlement, also
+  // kept the project from ever flipping to maintenance. Agents naturally append a summary;
+  // the parser, not the prose, was the thing that had to give.
+  const verdicts: string[] = [];
+  for (const match of digest.matchAll(/^[ \t]*verdict[ \t]*:[ \t]*([A-Z][A-Z_-]*)\b([^\n]*)$/gim)) {
+    const token = match[1]?.toUpperCase();
+    if (!token) continue;
+    // A DIFFERENT machine token inside the trailing text (e.g. "TESTS_GREEN — was
+    // TESTS_FAILING") is ambiguous, so it still fails closed. Prose never picks a winner;
+    // it can only be neutral.
+    const trailingConflict = [...String(match[2] || '').toUpperCase().matchAll(DIGEST_VERDICT_TOKENS)]
+      .some((hit) => hit[1] !== token);
+    if (trailingConflict) return null;
+    verdicts.push(token);
+  }
   const firstVerdict = verdicts[0];
   if (!firstVerdict) return null;
   // Multiple identical lines are harmless, but conflicting machine verdicts fail
@@ -3747,6 +3847,7 @@ function exactDigestVerdict(digest: string): string | null {
 // AND non-terminal token absent" shape avoids a false positive from a digest that
 // merely mentions the other token.
 function testerDigestPassedForRun(cwd: string, runId: string, tester: string): boolean {
+  if (digestVerdictsConflict(cwd, runId, 'tester.md')) return false;
   if (runUsesStrictQaContract(cwd, runId)) {
     return exactDigestVerdict(tester) === 'TESTS_GREEN';
   }
@@ -3755,6 +3856,10 @@ function testerDigestPassedForRun(cwd: string, runId: string, tester: string): b
 }
 
 function reviewerDigestApprovedForRun(cwd: string, runId: string, reviewer: string): boolean {
+  // Both spellings present with DISAGREEING verdicts = no authoritative verdict. Fail
+  // closed rather than letting mtime crown a `senior-reviewer.md` APPROVED over a
+  // canonical CHANGES_REQUESTED (which would settle/rotate a rejected run).
+  if (digestVerdictsConflict(cwd, runId, 'reviewer.md')) return false;
   if (runUsesStrictQaContract(cwd, runId)) {
     return exactDigestVerdict(reviewer) === 'APPROVED';
   }
@@ -3795,7 +3900,8 @@ export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean 
 export type RunVerificationState = 'terminal' | 'not-started' | 'nonterminal' | 'empty';
 
 function runProducedImplementerOutput(cwd: string, runId: string): boolean {
-  return Boolean(readDigest(cwd, runId, 'frontend.md').trim() || readDigest(cwd, runId, 'backend.md').trim());
+  return anyDigestSpellingHasContent(cwd, runId, 'frontend.md')
+    || anyDigestSpellingHasContent(cwd, runId, 'backend.md');
 }
 
 function runHasQaReportFile(cwd: string, runId: string): boolean {
@@ -3815,12 +3921,10 @@ export function runVerificationState(cwd: string, runId: unknown): RunVerificati
   // make a build terminal: build settlement is only strict verification or shipper.
   if (buildRunReachedTerminalVerdict(cwd, runId)) return 'terminal';
   const implementerOutput = runProducedImplementerOutput(cwd, runId);
-  const verifierOutput = Boolean(
-    readDigest(cwd, runId, 'reviewer.md').trim()
-    || readDigest(cwd, runId, 'tester.md').trim()
-    || readDigest(cwd, runId, 'shipper.md').trim()
-    || runHasQaReportFile(cwd, runId),
-  );
+  const verifierOutput = anyDigestSpellingHasContent(cwd, runId, 'reviewer.md')
+    || anyDigestSpellingHasContent(cwd, runId, 'tester.md')
+    || anyDigestSpellingHasContent(cwd, runId, 'shipper.md')
+    || runHasQaReportFile(cwd, runId);
   if (verifierOutput) return 'nonterminal';
   return implementerOutput ? 'not-started' : 'empty';
 }

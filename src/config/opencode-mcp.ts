@@ -63,9 +63,16 @@ export function openCodeMcpServerEntry(pluginRootEnvKeys: readonly string[]): Mc
   const rootKeys = pluginRootEnvKeys.map((key) => `'${key}'`).join(',');
   const launcher = [
     "const fs=require('fs'),os=require('os'),p=require('path'),e=process.env;",
-    `const root=p.resolve([${rootKeys}].map(k=>e[k]).find(Boolean)||process.cwd());`,
-    `const candidate=p.join(root,'${OPENCODE_MCP_SHIM_PATH}');`,
-    "const direct=fs.existsSync(candidate)?candidate:'';",
+    // Only a HOST-provided root may be used directly. Falling back to process.cwd()
+    // let any directory that happens to contain scripts/opencode-mcp.cjs pose as the
+    // plugin (Cursor launches MCP servers with no *_PLUGIN_ROOT and PWD=/), which is
+    // how a wrong tree got to serve delegation. With no host root we go straight to the
+    // stable shim, which resolves the NEWEST installed version across all hosts.
+    `const envRoot=[${rootKeys}].map(k=>e[k]).find(Boolean);`,
+    'const root=envRoot?p.resolve(envRoot):\'\';',
+    `const candidate=root?p.join(root,'${OPENCODE_MCP_SHIM_PATH}'):'';`,
+    "const isPlugin=(r)=>{try{return JSON.parse(fs.readFileSync(p.join(r,'package.json'),'utf8')).name==='traffic-one';}catch{return false;}};",
+    "const direct=candidate&&fs.existsSync(candidate)&&isPlugin(root)?candidate:'';",
     "const state=e.XDG_STATE_HOME?p.join(e.XDG_STATE_HOME,'traffic-one'):p.join(e.HOME||os.homedir(),'.traffic-one');",
     "const fallback=p.join(state,'bin','opencode-mcp.cjs');",
     "const target=direct||(fs.existsSync(fallback)?fallback:'');",

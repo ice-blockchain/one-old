@@ -27,6 +27,7 @@ import {
   markCursorSpawnObservationFollowupEmitted,
   markCursorSpawnObservationRetryHandled,
   markRunAgentReplaced,
+  normalizeHostCallId,
   pruneExpiredPendingClaims,
   readRunAgentRegistry,
   readRunAssignments,
@@ -459,6 +460,178 @@ test('runReachedTerminalVerdict requires terminal verdict tokens, not mere diges
     // anyRunReachedTerminalVerdict scans every run dir.
     assert.equal(anyRunReachedTerminalVerdict(dir), true);
     assert.equal(anyRunReachedTerminalVerdict(path.join(dir, 'nope')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('role digests resolve NEWEST-WINS across the canonical and senior- spellings', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-digest-newest-'));
+  try {
+    const runId = 'r-newest';
+    const d = path.join(dir, '.traffic-one', 'digests', runId);
+
+    // Only the prefixed spelling exists → it must still be found (legacy fallback).
+    writeDigest(dir, runId, 'senior-reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'senior-tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, runId), true,
+      'a run whose orchestrator only ever wrote senior-*.md digests must still settle');
+
+    // CONFLICTING verdicts across the two spellings must FAIL CLOSED, exactly like
+    // conflicting verdict lines inside one file. Letting mtime crown a winner would let a
+    // newer senior-reviewer.md APPROVED override a canonical CHANGES_REQUESTED and
+    // settle/rotate a rejected run.
+    writeDigest(dir, runId, 'reviewer.md', 'CHANGES_REQUESTED');
+    fs.utimesSync(path.join(d, 'reviewer.md'), new Date(60_000), new Date(60_000));
+    fs.utimesSync(path.join(d, 'senior-reviewer.md'), new Date(120_000), new Date(120_000));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a newer senior-reviewer.md APPROVED must NOT override a canonical CHANGES_REQUESTED');
+    fs.utimesSync(path.join(d, 'reviewer.md'), new Date(180_000), new Date(180_000));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'the conflict fails closed in BOTH mtime directions');
+
+    // Agreeing verdicts across spellings still settle (the conflict guard must not
+    // punish an orchestrator that simply wrote the digest under both names).
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    assert.equal(runReachedTerminalVerdict(dir, runId), true,
+      'both spellings agreeing on APPROVED must still settle');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// REGRESSION (found by adversarial review of the newest-wins change, proved by
+// differential execution): an EMPTY-but-newer `senior-<role>.md` must never mask a
+// content-bearing canonical digest. When it did, the backend-only QA exemption was
+// falsely granted and a frontend run with ZERO QA evidence settled `verified` — a
+// fake-green hole in the very gate built to stop fake-green.
+test('an empty newer senior-*.md cannot mask a content-bearing digest', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-digest-empty-'));
+  try {
+    const runId = 'r-empty';
+    const d = path.join(dir, '.traffic-one', 'digests', runId);
+    // A frontend run: reviewer APPROVED + tester TESTS_GREEN but NO QA report at all.
+    // The frontend digest exists, so the backend-only exemption must NOT apply.
+    writeDigest(dir, runId, 'frontend.md', 'IMPLEMENTED');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a frontend run with no QA evidence is not terminal');
+
+    // Now drop an EMPTY, NEWER senior-frontend.md next to it.
+    fs.writeFileSync(path.join(d, 'senior-frontend.md'), '', 'utf8');
+    fs.utimesSync(path.join(d, 'frontend.md'), new Date(60_000), new Date(60_000));
+    fs.utimesSync(path.join(d, 'senior-frontend.md'), new Date(120_000), new Date(120_000));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'an empty newer senior-frontend.md must not hide the frontend digest and grant the backend-only QA exemption');
+
+    // Whitespace-only is the same trap as zero-byte.
+    fs.writeFileSync(path.join(d, 'senior-frontend.md'), '   \n\t\n', 'utf8');
+    fs.utimesSync(path.join(d, 'senior-frontend.md'), new Date(180_000), new Date(180_000));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a whitespace-only newer senior-frontend.md must not grant the exemption either');
+
+    // Verification state must still see the implementer + verifier output (union), so the
+    // run stays nonterminal instead of collapsing to not-started (which would flip the
+    // project to maintenance and silence the unresolved-run directive).
+    assert.equal(runVerificationState(dir, runId), 'nonterminal',
+      'empty sibling digests must not downgrade nonterminal to not-started');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('normalizeHostCallId strips the chunk-length line Cursor leaks into spawn ids', () => {
+  // Cursor 3.12.30 emitted `subagent_id`/`tool_call_id` as "16\nfc_…" and "78\nfc_…"
+  // (the number varies per spawn — that is what identifies it as an HTTP chunk header).
+  assert.equal(normalizeHostCallId('16\nfc_otWVB6Z-3LYxF7-0393d566-aws_ue1_1'),
+    'fc_otWVB6Z-3LYxF7-0393d566-aws_ue1_1');
+  assert.equal(normalizeHostCallId('78\r\nfc_otWf1Ee-3LYxF7-8f7ebcd6-aws_ue1_0'),
+    'fc_otWf1Ee-3LYxF7-8f7ebcd6-aws_ue1_0');
+  // Clean ids pass through untouched, including the documented tool_<uuid> shape.
+  assert.equal(normalizeHostCallId('tool_2b1e4c60-0f6a-4a41-9d4a-2c2f1c3a5f77'),
+    'tool_2b1e4c60-0f6a-4a41-9d4a-2c2f1c3a5f77');
+  assert.equal(normalizeHostCallId('  fc_plain  '), 'fc_plain');
+  // Non-ids stay null so a missing field is never turned into a bogus key.
+  assert.equal(normalizeHostCallId(''), null);
+  assert.equal(normalizeHostCallId('\n\n'), null);
+  assert.equal(normalizeHostCallId(undefined), null);
+  assert.equal(normalizeHostCallId(42), null);
+});
+
+// REGRESSION (found by adversarial review): normalizing only the READ side made the two
+// Cursor stores diverge — cursor-spawns.json got the clean id while agents.json kept the
+// raw "16\nfc_…" — which breaks every cross-store comparison (live-agent match,
+// replace-if-matches retirement, PostToolUse correlation, lifecycle followup targeting).
+// The id is normalized at its single WRITE source instead, so both stores agree.
+test('both Cursor stores agree on the spawn id after a chunk-prefixed host payload', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-storeagree-'));
+  try {
+    const runId = 'r-agree';
+    const raw = '16\nfc_chunky-spawn-id';
+    const clean = normalizeHostCallId(raw) as string;
+    assert.equal(clean, 'fc_chunky-spawn-id');
+
+    recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-agree',
+      toolCallId: clean,
+      role: 'senior-frontend',
+      requestedModel: 'composer-2.5-fast',
+      tier: 'cheapest',
+      expectedModel: 'composer-2.5',
+    });
+    recordRunAgent(dir, runId, 'senior-frontend', {
+      agentId: clean,
+      toolCallId: clean,
+      parentSessionId: 'parent-agree',
+      model: 'composer-2.5-fast',
+      roleSource: 'host-subagent-type',
+      transcriptPath: null,
+    });
+
+    const ledgerId = listCursorSpawnObservations(dir, runId)[0]?.toolCallId;
+    const registry = readRunAgentRegistry(dir, runId)['senior-frontend'];
+    assert.equal(ledgerId, clean, 'spawn ledger holds the clean id');
+    assert.equal(registry?.agentId, clean, 'agent registry holds the SAME clean id');
+    assert.equal(registry?.agentId, ledgerId,
+      'the two stores must agree byte-for-byte or every cross-store comparison silently misses');
+    assert.ok(!String(registry?.agentId ?? '').includes('\n'),
+      'no store may keep a multi-line id');
+    // (registry.toolCallId stays null for a non-`tool_<hex>` id — pre-existing classification,
+    // unaffected by normalization: the raw chunk-prefixed id was not `tool_`-shaped either.)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a spawn observation recorded with a chunk-prefixed id is keyed by the clean id', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-chunkid-'));
+  try {
+    const runId = 'r-chunk';
+    const recorded = recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-1',
+      toolCallId: '16\nfc_leaked-chunk-header',
+      role: 'senior-architect',
+      requestedModel: 'composer-2.5-fast',
+      tier: 'cheapest',
+      expectedModel: 'composer-2.5',
+    });
+    assert.ok(recorded, 'the observation must record despite the malformed host id');
+    assert.equal(recorded.toolCallId, 'fc_leaked-chunk-header',
+      'the ledger key must be the single-line id, not the chunk-prefixed one');
+    // Re-recording under the SANITIZED spelling must dedupe onto the same row, which is
+    // what makes later claim/consume matching work across both spellings.
+    const again = recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-1',
+      toolCallId: 'fc_leaked-chunk-header',
+      role: 'senior-architect',
+      requestedModel: 'composer-2.5-fast',
+      tier: 'cheapest',
+      expectedModel: 'composer-2.5',
+    });
+    assert.equal(again?.toolCallId, 'fc_leaked-chunk-header');
+    assert.equal(listCursorSpawnObservations(dir, runId).length, 1,
+      'the sanitized and raw spellings must resolve to ONE observation, not two');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
