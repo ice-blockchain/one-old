@@ -302,8 +302,16 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       assert.match(content, /Every blocked (?:outcome|status)[\s\S]{0,60}`TESTS_FAILING`/i, `${name} cannot return green when blocked`);
       assert.match(content, /no\s+frontend implementer digest/i, `${name} limits the backend-only exemption`);
     }
-    assert.match(tester, /record that evidence in `tester\.md`[\s\S]{0,120}closed `QaReportV1` schema/i,
-      'fresh-build proof stays in the digest rather than adding invalid QA fields');
+    assert.match(tester, /record that evidence in `tester\.md`/i,
+      'fresh-build proof is recorded in the digest');
+    // Freshness on disk proves only that a build exists — not that the base URL
+    // served it. The one field that answers "which app answered?" is mandatory,
+    // and so is owning the port (a leftover preview on 4173 passed 21/21 checks
+    // against another project's app in a measured run).
+    assert.match(tester, /`verifiedBuild`[\s\S]{0,400}observed OVER HTTP/i,
+      'the tester must record the build identity it observed over HTTP');
+    assert.match(tester, /--strictPort|free port/i,
+      'the tester must own the port it sweeps rather than assume a well-known one');
     assert.match(digestContract, /verdict:[^\n]*SHIPPED[^\n]*FAILED/i,
       'canonical digest contract permits a failed shipper verdict');
     assert.match(digestContract, /exact `currentRunId`[\s\S]{0,180}never synthesize or\s+reformat/i,

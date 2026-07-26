@@ -4465,9 +4465,15 @@ export function verdictAgentConflict(cwd: string, runId: string, role: string, a
   return verdictConflictFromAgents(readRunAgentRegistry(cwd, runId), role, [agentId.trim()]);
 }
 
-/** Cursor surfaces spawn tool-call ids as `tool_<uuid>` — these do NOT work with Task `resume`. */
+/**
+ * Cursor surfaces spawn tool-call ids as `tool_<uuid>` (legacy) or `fc_<call-id>`
+ * (3.13.10 sends `subagent_id === tool_call_id`). Neither works with Task `resume`.
+ * Misfiling `fc_…` as resume-capable made every continuation overwrite the child's
+ * real UUID in agents.json and forge a `new-agent-recorded` history row.
+ */
 export function isCursorToolSubagentId(id: string): boolean {
-  return /^tool_[0-9a-f-]{8,}$/i.test(id.trim());
+  const t = id.trim();
+  return /^tool_[0-9a-f-]{8,}$/i.test(t) || /^fc_[A-Za-z0-9_-]{6,}$/.test(t);
 }
 
 /** True when the id can resume/continue the agent on Cursor (UUID/hex agent id, not tool_*). */
@@ -4568,12 +4574,16 @@ function recordRunAgentUnlocked(cwd: string, runId: string, role: string, entry:
     || (isResumeCapableAgentId(incomingId) ? incomingId : null);
   const incomingTool = (entry.toolCallId && isCursorToolSubagentId(entry.toolCallId) ? entry.toolCallId.trim() : null)
     || (isCursorToolSubagentId(incomingId) ? incomingId : null);
-  const priorResume = prior && typeof prior.resumeId === 'string' && isResumeCapableAgentId(prior.resumeId)
-    ? (prior.resumeId as string)
-    : (prior && typeof prior.agentId === 'string' && isResumeCapableAgentId(prior.agentId as string) ? (prior.agentId as string) : null);
+  // A row explicitly retired via `markRunAgentReplaced` must never lend its ids to
+  // the replacement spawn: inheriting them would point continuation at the DEAD
+  // agent forever. Only a live prior row carries ids forward.
+  const priorLive = prior && prior.replaced !== true ? prior : null;
+  const priorResume = priorLive && typeof priorLive.resumeId === 'string' && isResumeCapableAgentId(priorLive.resumeId)
+    ? (priorLive.resumeId as string)
+    : (priorLive && typeof priorLive.agentId === 'string' && isResumeCapableAgentId(priorLive.agentId as string) ? (priorLive.agentId as string) : null);
   const resumeId = incomingResume || priorResume || null;
   const toolCallId = incomingTool
-    || (prior && typeof prior.toolCallId === 'string' ? (prior.toolCallId as string) : null);
+    || (priorLive && typeof priorLive.toolCallId === 'string' ? (priorLive.toolCallId as string) : null);
   // agentId stays backward-compatible: prefer the resume-capable id when known.
   const agentId = resumeId || incomingId || (prior && typeof prior.agentId === 'string' ? (prior.agentId as string) : incomingId);
   const conflict = verdictConflictFromAgents(agents, role, [agentId, resumeId || '', toolCallId || '']);

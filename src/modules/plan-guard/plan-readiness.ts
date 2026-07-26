@@ -17,9 +17,9 @@ import { hasMaterializedProjectAssets } from '../../shared/materialize';
 import { canonicalHost } from '../../shared/model-tiers';
 import { openCodeDelegationActive } from '../../shared/performance';
 import { OPENCODE_PLAN_MIN_UNITS, parsePlanDelegationUnits, planDelegationUnitCount } from '../../shared/opencode-roles';
-import { openCodeQueuePolicyViolations } from '../../shared/opencode-queue';
+import { openCodeQueuePolicyViolations, type OpenCodeQueuePolicyOptions } from '../../shared/opencode-queue';
 import { obj } from '../../shared/obj';
-import { activeAgentRole, isMaterialized, legacyStatePath, resolveRunAgentContext, stackFingerprint, statePath } from '../../shared/state';
+import { activeAgentRole, isMaterialized, legacyStatePath, readRunAssignmentsResilient, resolveRunAgentContext, stackFingerprint, statePath } from '../../shared/state';
 
 type Rec = Record<string, unknown>;
 type Vars = Record<string, string | number | null | undefined>;
@@ -83,6 +83,59 @@ function qaReportOlderThanImplementation(
   }
   if (!newest || newest.ms <= generatedAtMs) return null;
   return { generatedAt, digest: newest.digest, digestAt: newest.digestAt };
+}
+
+// Identity of the build(s) currently on disk: the entry asset the built HTML
+// references (Vite/CRA `dist|out/index.html`) or the Next `BUILD_ID`. Bounded to the
+// project root and one level of `apps/*` — enough for every stack the plugin
+// scaffolds, and it never walks node_modules.
+function builtAppIdentities(projectRoot: string): string[] {
+  const roots = [projectRoot];
+  try {
+    for (const entry of fs.readdirSync(path.join(projectRoot, 'apps'), { withFileTypes: true })) {
+      if (entry.isDirectory()) roots.push(path.join(projectRoot, 'apps', entry.name));
+    }
+  } catch {
+    // no apps/ dir — single-package project
+  }
+  const found = new Set<string>();
+  for (const root of roots) {
+    for (const outDir of ['dist', 'out']) {
+      try {
+        const html = fs.readFileSync(path.join(root, outDir, 'index.html'), 'utf8');
+        const match = /<script[^>]+src="([^"]*\/assets\/[^"]+\.js)"/.exec(html);
+        if (match?.[1]) found.add(path.basename(match[1]));
+      } catch {
+        // not built with this layout
+      }
+    }
+    try {
+      const buildId = fs.readFileSync(path.join(root, '.next', 'BUILD_ID'), 'utf8').trim();
+      if (buildId && buildId.length <= 200) found.add(buildId);
+    } catch {
+      // not a Next build
+    }
+  }
+  return [...found];
+}
+
+// `verifiedBuild` as the tester recorded it. `null` when there is no readable
+// report at all, so the other QA gates keep owning that case.
+function qaReportVerifiedBuild(
+  projectRoot: string,
+  runId: string,
+): { present: boolean; value: string } | null {
+  if (!runId || /[\\/]/.test(runId)) return null;
+  const memoryDir = '.traffic' + '-one';
+  try {
+    const raw = JSON.parse(fs.readFileSync(
+      path.join(projectRoot, memoryDir, 'reports', 'qa', runId, 'report.json'), 'utf8',
+    )) as { verifiedBuild?: unknown };
+    const value = typeof raw?.verifiedBuild === 'string' ? raw.verifiedBuild.trim() : '';
+    return { present: value.length > 0, value };
+  } catch {
+    return null;
+  }
 }
 
 function collapsedProductSourceFile(projectRoot: string): string | null {
@@ -358,10 +411,13 @@ function planOnDiskHasOpenCodeDelegateMarker(projectRoot: string): boolean {
   }
 }
 
-function planOnDiskOpenCodeQueuePolicyErrors(projectRoot: string): string[] {
+function planOnDiskOpenCodeQueuePolicyErrors(
+  projectRoot: string,
+  options: OpenCodeQueuePolicyOptions = {},
+): string[] {
   try {
     const plan = fs.readFileSync(path.join(projectRoot, T1_MEMORY_DIR, 'plan.md'), 'utf8');
-    return openCodeQueuePolicyErrors(plan);
+    return openCodeQueuePolicyViolations(parsePlanDelegationUnits(plan), options);
   } catch {
     return [];
   }
@@ -559,6 +615,22 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Tester completion gate: do not write \`TESTS_GREEN\` on a stale QA report. The report was generated at ${staleQa.generatedAt} but \`${staleQa.digest}\` was re-emitted at ${staleQa.digestAt}, so the sweep did not see the current implementation and the run cannot settle. Re-run the visual QA sweep now, write the fresh report, and only then re-emit \`TESTS_GREEN\`.`,
         { GENERATED_AT: staleQa.generatedAt, DIGEST: staleQa.digest, DIGEST_AT: staleQa.digestAt }));
     }
+    // Every other QA freshness check is TEMPORAL, so a sweep aimed at a leftover
+    // preview server passes them all: it genuinely ran, just against another app.
+    // Only the served build identity answers "which application answered?".
+    const expectedBuilds = builtAppIdentities(projectRoot);
+    if (expectedBuilds.length > 0) {
+      const observed = qaReportVerifiedBuild(projectRoot, testerDigest[2] || '');
+      if (observed && !observed.present) {
+        violations.push(block('tester-qa-build-identity-missing',
+          `Tester completion gate: do not write \`TESTS_GREEN\` on a QA report that does not name the build it loaded. This run's fresh build is \`${expectedBuilds.join(', ')}\`, but the QA report has no \`verifiedBuild\`. Start the preview on a port THIS run owns (\`--strictPort\`, never a shared default like 4173/5173/3000), fetch the base URL, read the entry asset the served HTML references, record it as \`verifiedBuild\`, and re-run the sweep.`,
+          { EXPECTED: expectedBuilds.join(', ') }));
+      } else if (observed && observed.present && !expectedBuilds.includes(observed.value)) {
+        violations.push(block('tester-qa-build-identity-mismatch',
+          `Tester completion gate: the QA sweep validated a DIFFERENT application. The report records \`verifiedBuild: ${observed.value}\` but this run's fresh build is \`${expectedBuilds.join(', ')}\` — the base URL answered a leftover preview server (observed live: a previous project's \`vite preview\` still held the port, so every check passed against another app). Kill the foreign server or bind your own free port with \`--strictPort\`, re-run the sweep against it, and only then re-emit \`TESTS_GREEN\`.`,
+          { EXPECTED: expectedBuilds.join(', '), OBSERVED: observed.value }));
+      }
+    }
   }
 
   // Queue-policy validation runs whenever a delegate block is present and OpenCode
@@ -566,7 +638,18 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   // was spawned for (which emit the same block). The require-block gate above stays
   // new-project-only; we never force a maintenance plan to contain a queue.
   if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content) && openCodeDelegationActive(state, host) && !planOnDiskMissingOpenCodeBlock(projectRoot)) {
-    const policyErrors = planOnDiskOpenCodeQueuePolicyErrors(projectRoot);
+    // Cross-check the queue against the architect's OWN assignments manifest here,
+    // where both artifacts exist and are still architect-owned: a unit whose files
+    // belong to another role is a contradiction the runtime only catches after
+    // paying for the delegation (17c: `seo-public-assets` → `.env.example`).
+    const scopeManifest = readRunAssignmentsResilient(
+      projectRoot,
+      typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '',
+    );
+    const policyErrors = planOnDiskOpenCodeQueuePolicyErrors(
+      projectRoot,
+      scopeManifest ? { assignments: scopeManifest.assignments } : {},
+    );
     if (policyErrors.length > 0) {
       violations.push(block('architect-opencode-queue-policy-gate',
         `Architect completion gate: OpenCode queue metadata is unsafe: ${policyErrors.join('; ')}. Add stable unique ids, exact files allowlists, and depends edges for overlapping areas before emitting \`PLAN_READY\`.`,

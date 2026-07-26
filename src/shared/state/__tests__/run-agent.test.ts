@@ -22,6 +22,8 @@ import {
   hasActiveRunClaims,
   hasRunAgentState,
   inferRoleFromTranscript,
+  isCursorToolSubagentId,
+  isResumeCapableAgentId,
   listCursorSpawnObservations,
   listCursorSubagentTranscriptCandidates,
   markCursorSpawnObservationFollowupEmitted,
@@ -597,10 +599,105 @@ test('both Cursor stores agree on the spawn id after a chunk-prefixed host paylo
       'the two stores must agree byte-for-byte or every cross-store comparison silently misses');
     assert.ok(!String(registry?.agentId ?? '').includes('\n'),
       'no store may keep a multi-line id');
-    // (registry.toolCallId stays null for a non-`tool_<hex>` id — pre-existing classification,
-    // unaffected by normalization: the raw chunk-prefixed id was not `tool_`-shaped either.)
+    assert.equal(registry?.toolCallId, clean,
+      'an `fc_`-shaped spawn id is a TOOL-CALL id, never a Task `resume` target');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Cursor spawn tool-call ids are classified as tool-call ids, not resume targets', () => {
+  // Cursor 3.13.10 announces `subagent_id === tool_call_id` in the `fc_…` shape
+  // (verified across every captured SubagentStart payload of the 17c e2e run).
+  for (const id of [
+    'fc_otfDrth-6SkKZu-979542d5-aws_ue1_1',
+    'fc_ca69e1eb-5152-9fc8-a440-364d5be5166d_0',
+    'tool_0f9c1d2e-1111-2222-3333-444455556666',
+  ]) {
+    assert.equal(isCursorToolSubagentId(id), true, `${id} is a tool-call id`);
+    assert.equal(isResumeCapableAgentId(id), false, `${id} cannot resume a Cursor agent`);
+  }
+  for (const id of [
+    'ff342cbb-0b3a-451e-a1a8-f4450808a4a3',
+    'agent-old',
+    'ses_opencode123',
+    'senior-frontend background agent',
+  ]) {
+    assert.equal(isCursorToolSubagentId(id), false, `${id} is not a tool-call id`);
+    assert.equal(isResumeCapableAgentId(id), true, `${id} may resume an agent`);
+  }
+});
+
+test('one Cursor spawn plus N continuations keep ONE real resume id', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-continuation-'));
+  try {
+    const runId = 'r-continue';
+    const child = 'ff342cbb-0b3a-451e-a1a8-f4450808a4a3';
+    const record = (agentId: string, transcriptPath: string | null) => recordRunAgent(dir, runId, 'senior-frontend', {
+      agentId,
+      ...(agentId.startsWith('fc_') ? { toolCallId: agentId } : {}),
+      parentSessionId: 'parent-continue',
+      model: 'composer-2.5-fast',
+      roleSource: 'host-subagent-type',
+      transcriptPath,
+    });
+    // spawn → child's first claim upgrades to the real UUID → two continuations,
+    // each announcing a BRAND NEW tool-call id (17c: fc_otfDrth → fc_otfHfVX → fc_otfLVXY).
+    record('fc_otfDrth-6SkKZu-979542d5-aws_ue1_0', null);
+    record(child, `/transcripts/${child}.jsonl`);
+    record('fc_otfHfVX-6SkKZu-1a248eaf-aws_ue1_0', null);
+    record('fc_otfLVXY-6SkKZu-2b359fb1-aws_ue1_0', null);
+
+    const entry = readRunAgentRegistry(dir, runId)['senior-frontend'];
+    assert.equal(entry?.agentId, child, 'the real child UUID survives every continuation');
+    assert.equal(entry?.resumeId, child, 'resume still targets the live child, not a tool-call id');
+    assert.equal(entry?.toolCallId, 'fc_otfLVXY-6SkKZu-2b359fb1-aws_ue1_0',
+      'the tool-call id tracks the CURRENT start');
+    assert.equal(entry?.transcriptPath, `/transcripts/${child}.jsonl`,
+      'the child-owned transcript is never clobbered by a continuation');
+    assert.equal(entry?.tasks, 4, 'tasks counts the spawn plus each continuation');
+    assert.equal(entry?.replaced, false);
+    const history = (JSON.parse(
+      fs.readFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'agents.json'), 'utf8'),
+    ) as { history?: unknown[] }).history || [];
+    assert.equal(history.length, 0,
+      'continuing the same agent must not forge a replacement history row');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a retired agent never lends its resume id to the replacement spawn', () => {
+  for (const nextCallId of ['fc_otfNEWx-6SkKZu-9c0d1e2f-aws_ue1_0', 'tool_11112222-3333-4444-5555-666677778888']) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-retired-'));
+    try {
+      const runId = 'r-retire';
+      const dead = 'ff342cbb-0b3a-451e-a1a8-f4450808a4a3';
+      recordRunAgent(dir, runId, 'senior-frontend', {
+        agentId: dead,
+        parentSessionId: 'parent-retire',
+        model: 'composer-2.5-fast',
+        roleSource: 'host-subagent-type',
+        transcriptPath: null,
+      });
+      markRunAgentReplaced(dir, runId, 'senior-frontend');
+      recordRunAgent(dir, runId, 'senior-frontend', {
+        agentId: nextCallId,
+        toolCallId: nextCallId,
+        parentSessionId: 'parent-retire',
+        model: 'composer-2.5-fast',
+        roleSource: 'host-subagent-type',
+        transcriptPath: null,
+      });
+
+      const entry = readRunAgentRegistry(dir, runId)['senior-frontend'];
+      assert.equal(entry?.agentId, nextCallId, 'the replacement keeps its own id');
+      assert.equal(entry?.resumeId, null, 'a dead agent must not become the resume target');
+      assert.equal(continuationAgentId(entry!, 'cursor'), '',
+        'no continuation recipe may name the retired agent');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 

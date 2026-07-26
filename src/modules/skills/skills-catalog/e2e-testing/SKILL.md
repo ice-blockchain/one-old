@@ -136,9 +136,12 @@ export default defineConfig({
     { name: 'mobile-chrome', use: { ...devices['Pixel 5'] } },
   ],
   webServer: {
-    command: 'npm run dev',
+    command: 'npm run dev -- --strictPort',
     url: 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
+    // Never reuse a server this run did not start: a leftover dev/preview server
+    // from ANOTHER project answers the same well-known port and the whole suite
+    // silently passes against the wrong application.
+    reuseExistingServer: false,
     timeout: 120000,
   },
 })

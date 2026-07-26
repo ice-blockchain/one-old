@@ -43,7 +43,7 @@ bundled `control-in-app-browser` SKILL.md wastes ~8k tokens:
     globalThis.browser = await agent.browsers.get("iab");
     await (await browser.capabilities.get("visibility")).set(true);
     globalThis.qaTab = await browser.tabs.new();
-    await qaTab.goto("http://127.0.0.1:5173/");
+    await qaTab.goto(process.env.QA_BASE_URL);  // the URL YOUR preview printed
     nodeRepl.write("qa tab open");
 
 Then per check (each its own `js` call): `await qaTab.goto(url)` to navigate
@@ -169,6 +169,11 @@ risks instead of claiming the page-speed standard was verified.
 
 ### Phase 3: Visual Regression
 ```
+0. Confirm the base URL is serving YOUR build (entry asset / BUILD_ID observed over
+   HTTP == the build you just produced) and that each route rendered ITS OWN page:
+   assert a ROUTE-SPECIFIC selector, not one that also exists on the home page, and
+   treat a route that redirected away (final pathname != requested path) as passed
+   only when that redirect is documented expected behaviour
 1. Screenshot key pages at 3 breakpoints (375px, 768px, 1440px)
 2. Compare against baseline screenshots (if stored)
 3. Flag layout shifts > 5px, missing elements, overflow

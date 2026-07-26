@@ -53,7 +53,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts' | 'prompt';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -138,6 +138,17 @@ const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created src/foo.ts' } }) + '\\n');
 fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
 fs.writeFileSync(path.join(dir, 'src', 'foo.ts'), 'export const foo = 1;\\n');
+`,
+    // captures the composed prompt OUTSIDE the worktree (writing it inside would
+    // stage it as a delegated diff), so a test can assert what the model was told.
+    prompt: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+if (process.env.T1_PROMPT_CAPTURE) fs.writeFileSync(process.env.T1_PROMPT_CAPTURE, String(process.argv[3] || ''), 'utf8');
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created src/a.ts' } }) + '\\n');
+fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'src', 'a.ts'), 'export const a = 1;\\n');
 `,
     // reads the worktree's foo.txt (which reflects the sandbox BASE) and appends a
     // marker. Lets a test assert which base the sandbox branched from: if the runner
@@ -1171,6 +1182,152 @@ test('delegateFromPlan rejects only unsafe dependency units and still runs safe 
     const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'r-selective-policy', 'opencode-units.json'), 'utf8')) as any[];
     assert.equal(statuses.find((s) => s.id === 'ui-copy')?.status, 'delegated');
     assert.equal(statuses.find((s) => s.id === 'deps')?.status, 'rejected_policy');
+  });
+});
+
+test('delegateFromPlan skips a unit whose declared dependency failed', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: deps | role: backend | files: package.json, pnpm-lock.yaml | task: install zod',
+      '- id: helper | role: backend | files: unit-2.txt | depends: deps | task: create the second unit file on top of zod',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-dep-skip' });
+    assert.equal(r.delegated, 0);
+    assert.equal(r.units.find((u) => u.id === 'deps')?.status, 'rejected_policy');
+    const dependent = r.units.find((u) => u.id === 'helper');
+    assert.equal(dependent?.status, 'skipped');
+    assert.match(String(dependent?.error), /dependency `deps` did not land/);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), false,
+      'the dependent never runs, so it cannot burn a delegation rebuilding its own prerequisites');
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'r-dep-skip', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses.find((s) => s.id === 'helper')?.status, 'skipped');
+    assert.equal(statuses.find((s) => s.id === 'helper')?.attempts?.[0]?.action, 'skipped-dependency-failed',
+      'the discriminating action survives in the attempt log');
+  });
+});
+
+test('the delegated model is told its edit boundary before it works', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('prompt');
+    const capture = path.join(os.tmpdir(), `t1-prompt-${process.pid}-${Date.now()}.txt`);
+    process.env.T1_PROMPT_CAPTURE = capture;
+    try {
+      const r = delegate(dir, { role: 'senior-frontend', task: 'build the card', allowedFiles: 'src/a.ts' });
+      assert.equal(r.ok, true);
+      const prompt = fs.readFileSync(capture, 'utf8');
+      assert.match(prompt, /^build the card/, 'the task still comes first');
+      assert.match(prompt, /Create or modify ONLY: src\/a\.ts/);
+      assert.match(prompt, /NEVER touch: `\.traffic-one\/\*\*`/);
+      assert.match(prompt, /package\.json/);
+      assert.match(prompt, /re-export from a barrel\/index file/);
+      assert.match(prompt, /overrides any AGENTS\.md/);
+    } finally {
+      delete process.env.T1_PROMPT_CAPTURE;
+      fs.rmSync(capture, { force: true });
+    }
+  });
+});
+
+test('the edit boundary omits the allowlist line when no allowlist was given', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('prompt');
+    const capture = path.join(os.tmpdir(), `t1-prompt-none-${process.pid}-${Date.now()}.txt`);
+    process.env.T1_PROMPT_CAPTURE = capture;
+    try {
+      delegate(dir, { role: 'senior-frontend', task: 'build the card' });
+      const prompt = fs.readFileSync(capture, 'utf8');
+      assert.ok(!/Create or modify ONLY:/.test(prompt), 'no empty allowlist line');
+      assert.match(prompt, /NEVER touch/, 'the forbidden-path clause is unconditional');
+    } finally {
+      delete process.env.T1_PROMPT_CAPTURE;
+      fs.rmSync(capture, { force: true });
+    }
+  });
+});
+
+test('delegateFromPlan rejects a unit whose files belong to another role BEFORE delegating', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    const runId = 'r-scope-clash';
+    fs.mkdirSync(path.join(dir, memoryDir, 'runs', runId), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'runs', runId, 'assignments.json'), JSON.stringify({
+      version: 1,
+      runId,
+      createdBy: 'senior-architect',
+      assignments: [
+        { role: 'senior-frontend', agentKey: 'senior-frontend', summary: 'ui', scope: { include: ['unit-1.txt'], exclude: [] } },
+        { role: 'senior-backend', agentKey: 'senior-backend', summary: 'server', scope: { include: ['unit-2.txt'], exclude: [] } },
+      ],
+    }, null, 2), 'utf8');
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: ui-copy | role: frontend | files: unit-1.txt | task: create the first unit file',
+      '- id: cross-role | role: frontend | files: unit-2.txt | task: create the second unit file',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+
+    const r = delegateFromPlan(dir, { runId });
+    assert.equal(r.units.find((u) => u.id === 'ui-copy')?.status, 'delegated',
+      'a unit inside its own role scope still runs');
+    const clash = r.units.find((u) => u.id === 'cross-role');
+    assert.equal(clash?.status, 'rejected_policy');
+    assert.match(String(clash?.error), /outside frontend's assignment scope: unit-2\.txt/);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), false,
+      'the contradiction is caught without spending a delegation');
+  });
+});
+
+test('delegateFromPlan skips across role shards using the persisted ledger', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    const runId = 'r-dep-shard';
+    fs.mkdirSync(path.join(dir, memoryDir, 'runs', runId), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: schemas | role: backend | files: unit-1.txt | task: author the shared schemas',
+      '- id: fixtures | role: tester | files: unit-2.txt | depends: schemas | task: typed fixtures over the shared schemas',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    // The backend shard already ran in its own runner process and was rejected.
+    fs.writeFileSync(path.join(dir, memoryDir, 'runs', runId, 'opencode-units.json'), JSON.stringify([{
+      id: 'schemas',
+      role: 'senior-backend',
+      status: 'rejected_policy',
+      action: 'failed',
+      error: 'delegated diff touched file(s) outside the plan files/area allowlist',
+      touched: [],
+      updatedAt: new Date().toISOString(),
+      attempts: [],
+    }], null, 2), 'utf8');
+
+    const r = delegateFromPlan(dir, { runId, roles: ['tester'] });
+    assert.equal(r.units.find((u) => u.id === 'fixtures')?.status, 'skipped',
+      'a dependency that failed in an earlier shard must still block');
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), false);
+  });
+});
+
+test('delegateFromPlan still runs a dependent whose dependency succeeded or was never recorded', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: ui-copy | role: frontend | files: unit-1.txt | task: create the first unit file',
+      '- id: ui-more | role: frontend | files: unit-2.txt | depends: ui-copy | task: create the second unit file',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-dep-ok' });
+    assert.equal(r.delegated, 2, 'a landed dependency must never block its dependent');
+    assert.equal(r.units.find((u) => u.id === 'ui-more')?.status, 'delegated');
   });
 });
 

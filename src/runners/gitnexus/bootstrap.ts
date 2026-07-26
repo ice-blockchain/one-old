@@ -16,6 +16,7 @@ import * as path from 'path';
 
 import { exec } from '../../shared/exec';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
+import { pruneTrafficOneBackups } from '../../shared/retention';
 import { resolveNode, npmNextToNode } from '../../shared/runtime-resolve';
 import { spawnTool } from '../../shared/spawn-tool';
 import { writeGraphPreview } from '../../shared/materialize';
@@ -133,6 +134,9 @@ function backupConflicts(cwd: string, runStamp: string): Backups {
       // best-effort; absence of backup is non-fatal
     }
   }
+  // Cap the directory here, not only at SessionStart: this bootstrap can run many
+  // times per session and each run snapshots the same unchanged files.
+  try { pruneTrafficOneBackups(cwd, runStamp); } catch { /* best-effort */ }
   return { backupRoot, recorded };
 }
 

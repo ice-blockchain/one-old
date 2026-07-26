@@ -53,6 +53,16 @@ export interface QaReportV1 {
   status: QaReportStatus;
   routes: QaRouteResult[];
   blocker?: QaBlocker;
+  /**
+   * Identity of the build the sweep actually loaded OVER HTTP: the entry-asset
+   * filename referenced by the served HTML (Vite `index-<hash>.js`) or the Next
+   * `BUILD_ID`. Every other freshness check here is temporal, so a sweep run
+   * against a leftover preview server on a shared port passes them all — observed
+   * live (cursor-17c: port 4173 was still held by the PREVIOUS project's preview
+   * and 21/21 checks passed against a different application). This is the only
+   * field that answers "which app answered?".
+   */
+  verifiedBuild?: string;
 }
 
 export type QaReportFailureCode =
@@ -138,6 +148,7 @@ const ISO_UTC_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 const MAX_SAFE_SUMMARY_LENGTH = 500;
 const MAX_PRIMARY_ACTION_REASON_LENGTH = 300;
 const MAX_ROUTE_LENGTH = 2048;
+const MAX_VERIFIED_BUILD_LENGTH = 200;
 const MAX_ROUTES = 100;
 const DEFAULT_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const OBVIOUS_CREDENTIAL_ASSIGNMENT_RE = /(?:^|[^A-Za-z0-9_-])(?:[A-Za-z0-9_-]*(?:api[_-]?key|access[_-]?(?:key|token)|auth[_-]?token|authorization|client[_-]?secret|password|passwd|secret|service[_-]?role[_-]?key|token)[A-Za-z0-9_-]*)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;}\]]+)/i;
@@ -315,11 +326,13 @@ function parseReport(value: unknown, failure: SchemaFailure): QaReportV1 | null 
     'status',
     'routes',
     'blocker',
+    'verifiedBuild',
   ])) return schemaFail(failure, '(top-level keys)');
   if (value.schemaVersion !== QA_CONTRACT_VERSION) return schemaFail(failure, 'schemaVersion');
   if (typeof value.runId !== 'string' || !isSafeRunId(value.runId)) return schemaFail(failure, 'runId');
   if (parseCanonicalInstant(value.generatedAt) === null) return schemaFail(failure, 'generatedAt');
   if (typeof value.producer !== 'string' || !PRODUCERS.has(value.producer as QaReportProducer)) return schemaFail(failure, 'producer');
+  if (value.verifiedBuild !== undefined && !isCleanBoundedText(value.verifiedBuild, MAX_VERIFIED_BUILD_LENGTH)) return schemaFail(failure, 'verifiedBuild');
   if (typeof value.status !== 'string' || !REPORT_STATUSES.has(value.status as QaReportStatus)) return schemaFail(failure, 'status');
   if (!Array.isArray(value.routes) || value.routes.length === 0 || value.routes.length > MAX_ROUTES) return schemaFail(failure, 'routes');
 
@@ -348,6 +361,7 @@ function parseReport(value: unknown, failure: SchemaFailure): QaReportV1 | null 
     status,
     routes,
     ...(blocker ? { blocker } : {}),
+    ...(typeof value.verifiedBuild === 'string' ? { verifiedBuild: value.verifiedBuild } : {}),
   };
 }
 

@@ -215,6 +215,13 @@ Include this section ONLY when the current host is NOT OpenCode or Kilo and effe
 
 If a unit's task or acceptance mentions tests, testability, Vitest, Playwright, specs, or config/dependency changes, its `files:` allowlist must include the exact test/spec/config/package files it is allowed to touch. Otherwise remove that acceptance from the OpenCode unit and leave verification/config work to the paid implementer/reviewer. Do not queue a helper as "unit-testable" while allowing only the helper source file; OpenCode will naturally add tests/config and the runner will reject the diff.
 
+Two mechanical rules decide whether a unit can succeed at all — a measured run lost 6 of 8 units (~23 minutes of free-model time, zero files) because both were violated, and every one of those rejections was for the SAME companion edit the task made unavoidable:
+
+- **INTEGRATION.** A unit that creates a new module, namespace, catalog, or route must EITHER list in `files:` the exact file that registers or re-exports it (the package barrel `index.ts`, the i18n registry, the route table), OR say in the task that the paid implementer wires it up and the unit must not register anything. A unit that adds `packages/types/src/progress.ts` while allowing only that file will re-export it from `index.ts` and lose the entire diff.
+- **FEASIBILITY.** Never queue a unit whose acceptance needs a library or tool the OWNING package's `package.json` does not already declare. The Step-0 batch runs BEFORE the implementers, on a bare scaffold, and OpenCode may not edit manifests or lockfiles — so "implement zod schemas, acceptance: vitest test" against a package with no `zod` dependency is unwinnable by construction. Either pre-declare the dependency in the scaffold you write, or make the acceptance static (file exists, valid JSON, typechecks against already-declared deps).
+
+Both rules are about the unit's OWN files. Cross-role contradictions are a separate error: a unit's `files:` must stay inside the assignment scope you gave that role in `runs/<run-id>/assignments.json` (listing a backend-owned path in a `role: frontend` unit is rejected before it runs).
+
 <!-- opencode-delegate:start -->
 - id: <stable-id> | role: <frontend|backend|tester|docs> | kind: <queueable-kind> | files: <exact path(s)> | depends: <optional earlier-id> | task: <self-contained task: acceptance criteria + exact files/area, no external context>
 <!-- opencode-delegate:end -->

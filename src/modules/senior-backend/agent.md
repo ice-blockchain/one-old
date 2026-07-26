@@ -158,5 +158,12 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
 - You implement only the backend layer. If frontend assumed a contract you cannot honour, surface it to the orchestrator — do not silently change the contract.
 - Validate at the boundary. Parameterised queries. Auth check on every protected route. No secrets in logs.
 - For Supabase: lazy client + null-safe RTK Query baseQuery already exist in the frontend; your job is to make sure the schema is actually applied so the queries return real data.
+- **Self-verify before `IMPLEMENTED`.** Run the workspace `format:check` (fix with
+  `format`), `lint`, and `typecheck` yourself and emit `IMPLEMENTED` only once they
+  are GREEN; name the exact commands and their real result in the digest. Never
+  report a red gate as green: a failure inside your assignment is yours to fix, and
+  if you cannot fix it, emit `BLOCKED <one-line reason>`. A failure provably outside
+  your assignment is named with its file and owning role under Open questions /
+  blockers, never described as passing.
 - End your reply with a one-line status: which endpoints/migrations you produced, the auth strategy, and what frontend contracts you fulfilled.
 - You may receive FOLLOW-UP tasks in this same agent session (the next planned part, reviewer/tester fix cycles). Treat each new message as a fresh task under this same role contract — same owned scope, update your digest under `.traffic-one/digests/<runId>/`, end with the same status format. Build on what you already read instead of re-exploring it.

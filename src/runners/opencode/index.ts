@@ -46,15 +46,18 @@ import {
   markPlanBatchRunningIfNeeded,
 } from '../../shared/opencode-plan-batch';
 import {
+  blockedByFailedDependencies,
   buildOpenCodeQueue,
   normalizeOpenCodeRole,
   opencodeAssignmentHash,
   openCodeQueuePolicyReport,
   parseAllowedFiles,
+  readOpenCodeUnitStatuses,
   recordOpenCodeUnitStatus,
   reconcileStaleRunningUnits,
   statusFromDelegateAction,
   writeOpenCodeQueue,
+  type OpenCodeUnitStatus,
 } from '../../shared/opencode-queue';
 import { roleDigestName } from '../../shared/packing';
 import { isMaintenancePhase, readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
@@ -922,6 +925,25 @@ function validateDelegatedDiff(paths: string[], policy: DelegatedDiffPolicy): st
   return null;
 }
 
+// The guard above runs AFTER the model finished, so an out-of-bounds edit costs the
+// whole unit (17c: 6 of 8 units rejected, ~1395s, every one for a companion edit the
+// model had no way to know was forbidden). State the boundary up front. This mirrors
+// validateDelegatedDiff — keep the two adjacent — but relaxes nothing: an ignored
+// instruction still ends in the same rejection.
+// The sandbox worktree carries the project's own AGENTS.md/`.traffic-one` rules
+// (which, for instance, order a schema.sql refresh after a migration), so the
+// override line is load-bearing, not boilerplate.
+export function delegationBoundaryPrompt(policy: DelegatedDiffPolicy): string {
+  const lines = ['', '## Edit boundary (Traffic One — overrides any AGENTS.md/CLAUDE.md or .traffic-one rule in this sandbox)'];
+  if (policy.allowedPatterns.length > 0) {
+    lines.push(`- Create or modify ONLY: ${policy.allowedPatterns.join(', ')}`);
+  }
+  lines.push('- NEVER touch: `.traffic-one/**` (including schema.sql and the project-memory docs), any `package.json`, any lockfile, or build/cache output.');
+  lines.push('- Do NOT add dependencies, re-export from a barrel/index file, or register your module anywhere else — the paid implementer wires it up afterwards.');
+  lines.push('- If the task cannot be completed inside this boundary, do as much as you can inside it and say what is missing in your final message. Editing outside it discards ALL of your work.');
+  return lines.join('\n');
+}
+
 // Outcome of trying ONE model in its own fresh worktree.
 type ModelRunOutcome =
   | { kind: 'delegated'; touched: string[]; summary: string }
@@ -1195,9 +1217,12 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   const modelErrors: string[] = [];
   let consecutiveStalls = 0;
   let lastModel = models[models.length - 1] as string;
+  // Appended AFTER the task (a boundary read first competes with the work itself)
+  // and below the MCP task-file layer, so the caller's recorded task text is intact.
+  const boundedTask = `${task}\n${delegationBoundaryPrompt(policy)}\n`;
   for (const model of models) {
     lastModel = model;
-    const outcome = runModel(cwd, bin, baseSha, model, task, policy, markCliAttempt);
+    const outcome = runModel(cwd, bin, baseSha, model, boundedTask, policy, markCliAttempt);
     if (outcome.kind === 'delegated') {
       if (fromChain) {
         const idx = OPENCODE_FREE_MODELS.indexOf(model);
@@ -1344,13 +1369,43 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   }
   if (runId) markPlanBatchRunningIfNeeded(cwd, runId);
   try {
-    const policyReport = openCodeQueuePolicyReport(queue);
+    const scopeManifest = runId ? readRunAssignmentsResilient(cwd, runId) : null;
+    const policyReport = openCodeQueuePolicyReport(queue, scopeManifest ? { assignments: scopeManifest.assignments } : {});
     const rejectAll = policyReport.violations.length > 0 && policyReport.byUnitId.size === 0;
+    // Seed from the PERSISTED ledger: role shards are separate runner processes, so a
+    // dependency may already have failed in an earlier shard (17c: a tester unit
+    // depended on a backend unit rejected 3 minutes earlier, then burned 303s
+    // rebuilding what that unit never delivered). Kept current as units settle below.
+    const unitOutcomes = new Map<string, OpenCodeUnitStatus>();
+    if (runId) {
+      for (const status of readOpenCodeUnitStatuses(cwd, runId)) unitOutcomes.set(status.id, status.status);
+    }
 
     for (const entry of entries) {
       const u = entry.unit;
       const formal = entry.formal;
       const normalizedRole = normalizePlanRole(u.role);
+      const blockedBy = blockedByFailedDependencies(formal.dependsOn, unitOutcomes);
+      if (blockedBy.length > 0) {
+        const error = `skipped: dependency ${blockedBy.map((d) => `\`${d}\``).join(', ')} did not land, so this unit's prerequisites are missing`;
+        if (runId) {
+          recordOpenCodeUnitStatus(cwd, runId, {
+            id: formal.id,
+            role: formal.role,
+            status: 'skipped',
+            action: 'skipped-dependency-failed',
+            failureKind: 'skipped',
+            error,
+            touched: [],
+            allowedFiles: formal.allowedFiles,
+            assignmentHash: formalQueue.assignmentHash,
+          });
+        }
+        unitOutcomes.set(formal.id, 'skipped');
+        units.push({ id: formal.id, role: u.role, task: u.task, action: 'skipped', status: 'skipped', touched: [], failureKind: 'skipped', error });
+        processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
+        continue;
+      }
       const unitPolicyViolations = rejectAll ? policyReport.violations : (policyReport.byUnitId.get(formal.id) || []);
       if (unitPolicyViolations.length > 0) {
         const error = unitPolicyViolations.join('; ');
@@ -1367,6 +1422,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
             assignmentHash: formalQueue.assignmentHash,
           });
         }
+        unitOutcomes.set(formal.id, 'rejected_policy');
         units.push({ id: formal.id, role: u.role, task: u.task, action: 'failed', status: 'rejected_policy', touched: [], failureKind: 'diff-rejected', error });
         processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
         continue;
@@ -1419,6 +1475,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
           assignmentHash: formalQueue.assignmentHash,
         });
       }
+      unitOutcomes.set(formal.id, status);
       if (r.ok) delegated += 1;
       units.push({ id: formal.id, role: u.role, task: u.task, action: r.action, status, touched: r.touched, ...(r.model ? { model: r.model } : {}), ...(failureKind ? { failureKind } : {}), error: r.error });
       processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);

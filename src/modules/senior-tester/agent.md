@@ -103,9 +103,17 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    number in your digest. Below 80% is a numbered finding in your verdict (with
    the uncovered files), not a silent omission — never claim the target without
    the measurement; if coverage tooling is unavailable, say so explicitly.
-6. Run the mechanical gates and capture their output: the active-stack test
+6. Run the mechanical gates from the project's CANONICAL root scripts — the same
+   commands CI runs — and capture their output: the active-stack root test
    command, plus — whenever the scripts exist — `lint`, `typecheck`,
-   `format:check`, and the production `build`. On a JS/TS stack a missing
+   `format:check`, and the production `build`. Quote the exact command beside
+   every count you report, so your numbers are comparable with the reviewer's. If
+   you ALSO invoke a runner directly (e.g. `vitest run` for coverage) and it
+   reports MORE tests than the root script, the root script is not covering the
+   repo: that delta is a numbered finding naming the skipped packages, not a
+   footnote (measured: `pnpm test` → `turbo run test` ran 26 while the root
+   `vitest run` ran 44, because a package shipped test files and a runner config
+   but no `test` script, so turbo skipped it silently). On a JS/TS stack a missing
    `format:check` script or formatter config is itself a numbered finding, not
    a skip: without it, collapsed/minified source (multi-statement one-liners,
    single-line JSX trees) ships straight through a green lint. A `format:check`
@@ -115,10 +123,20 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    file. Use the stack's production build, a fresh preview start timestamp, or
    framework metadata (`dist/`, `.next/BUILD_ID`, Vite manifest, Expo/Native
    bundle stamp) and record that evidence in `tester.md` under the mechanical
-   checks (the closed `QaReportV1` schema contains only route-matrix fields). A
-   stale `dist/` or `.next/` directory is a blocker, not a green test.
+   checks. A stale `dist/` or `.next/` directory is a blocker, not a green test.
+   Freshness on disk is NOT enough: prove it against the SERVED response. Fetch
+   the base URL you are about to sweep and require the entry asset the returned
+   HTML references (Vite `assets/index-<hash>.js`) — or `.next/BUILD_ID` — to
+   equal the one in the build you just produced. Record that value as
+   `verifiedBuild` in the QA report. A mismatch means the base URL is answering
+   some other application: that is `TESTS_FAILING`, never a pass.
 8. **Visual regression sweep and strict QA report** (runs with a frontend
-   implementer digest): start the app/preview yourself (tear it down when done),
+   implementer digest): start the app/preview yourself (tear it down when done)
+   on a port THIS run owns — pass `--strictPort` (plain `vite preview` silently
+   rolls 4173 → 4174 when the port is taken) or start on a free port and read the
+   URL the preview actually printed. NEVER hardcode a base URL and never assume a
+   well-known port (4173/5173/3000) is yours; a leftover preview from another
+   project answers it happily and every check passes against the wrong app,
    then run the OBJECTIVE browser checks via local Playwright per the
    `browser-qa` skill. Every key route must be checked at exactly 390px
    (mobile), 768px (tablet — where grids usually break), and 1440px (desktop).
@@ -134,7 +152,8 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    Write exactly one canonical report at
    `.traffic-one/reports/qa/<runId>/report.json`. Its `QaReportV1` shape is:
    `schemaVersion: 1`; exact current `runId`; canonical ISO-UTC `generatedAt`;
-   `producer: "senior-tester"`; top-level `status`; and
+   `producer: "senior-tester"`; top-level `status`; `verifiedBuild` (the entry
+   asset or `BUILD_ID` observed OVER HTTP from the base URL you swept); and
    `routes: [{ route, viewports }]`. Every `viewports` array contains each width
    390, 768, and 1440 exactly once. Each entry has `width`, `status`, a
    nonnegative integer `consoleErrorCount`, boolean `documentOverflow`, boolean
@@ -195,8 +214,12 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
      orchestrator can have the owner delete the script; a config-only package is
      meant to have no `test` script at all (`turbo run test` skips a missing
      task). This alone does NOT block `TESTS_GREEN`.
-   A package that legitimately has NO `test` script is never a finding. Never ask
-   for a ceremony test that only asserts a config file parses.
+   A package with no runtime source and no test files is never a finding — never
+   ask for a ceremony test that only asserts a config file parses. But a package
+   that SHIPS test files or a runner config while having no `test` script IS a
+   finding: `turbo run test` skips it, so those tests never run in the canonical
+   root command. Name the package and the owning role so the orchestrator routes
+   the missing script back to the owner.
 10. End with `TESTS_GREEN` only if every mechanical test passed AND either the
     current frontend run has a fresh, parser-valid `QaReportV1` whose overall
     status is `passed`, or the current run is genuinely backend-only under the

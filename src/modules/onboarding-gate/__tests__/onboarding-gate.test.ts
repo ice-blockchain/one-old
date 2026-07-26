@@ -19,6 +19,7 @@ import { modelGateCommand } from '../../../shared/model-gate-command';
 import { runModelPolicyPath } from '../../../shared/run-model-policy';
 import { doctorCommand } from '../../../shared/doctor-command';
 import { commitWizardLinksShown } from '../../../shared/onboarding-server/wizard-links';
+import { cursorWaitLinkFirstReason } from '../../../shared/onboarding-server/cursor-setup';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
 // ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
@@ -349,6 +350,44 @@ test('Windsurf setup deny is compact and never includes another host recipe', ()
       }
     }
   });
+});
+
+// Cursor collapses a blocked command into "ran N commands", so this deny is
+// agent-visible but NOT user-visible. Observed live (cursor-17c): the agent got the
+// block, never reposted the URL, and told the user to "use the setup link from the
+// previous message" — a message that never contained one.
+test('Cursor first wait deny ORDERS the agent to post the setup link in chat', () => {
+  withProject(null, (cwd) => {
+    const url = 'http://127.0.0.1:51500/?t=curwait';
+    const dashboardUrl = 'https://traffic.io/onboarding/agent#p=51500&t=curwait';
+    const localUrl = 'http://127.0.0.1:51500/local?t=curwait';
+    writeServerRecord(cwd, { pid: process.pid, port: 51500, token: 'curwait', url, startedAt: 'x' }, process.env, 'cursor');
+    const wait = onboardingWaitCommand(cwd, 'cursor');
+    const r = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-main'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes(dashboardUrl), 'the hosted link must be present');
+      assert.ok(r.reason.includes(localUrl), 'the local fallback must be present');
+      assert.match(r.reason, /NEXT CHAT MESSAGE/,
+        'the agent must be told to repost the link where the user can actually see it');
+      assert.match(r.reason, /NOT visible to the user/,
+        'the deny must name its own invisibility, or the agent assumes the link was shown');
+      assert.ok(r.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+  });
+});
+
+test('the Cursor wait-link TS fallback stays verbatim with its skill block', () => {
+  const block = fs.readFileSync(
+    path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8',
+  ).split('<!-- T1BLOCK:BEGIN cursor-wait-link-first -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(block.length > 0, 'the skill block must exist');
+  const rendered = block
+    .replace(/\{\{URL\}\}/g, 'U')
+    .replace(/\{\{LOCAL_URL\}\}/g, 'L')
+    .replace(/\{\{WAIT_CMD\}\}/g, 'W');
+  assert.equal(cursorWaitLinkFirstReason('U', 'L', 'W'), rendered,
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical');
 });
 
 test('Windsurf setup allows read-only orientation and gates the first mutation', () => {

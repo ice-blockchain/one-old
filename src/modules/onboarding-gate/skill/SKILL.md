@@ -86,11 +86,15 @@ files are added to it) and Traffic One stays silent here until they ask for it a
 <!-- T1BLOCK:END server-deny-reason -->
 
 <!-- T1BLOCK:BEGIN cursor-wait-link-first -->
+This notice is NOT visible to the user: Cursor renders a blocked command inside a collapsed "ran N commands" block, so the setup link has still never appeared in the conversation.
+
+Post these two lines to the user in your NEXT CHAT MESSAGE, each on its own line, as plain clickable text — not inside a code block, and do not open them with a browser tool:
+
 Open Traffic One setup: {{URL}}
 
 Direct local fallback: {{LOCAL_URL}}
 
-The setup link was not shown in chat before the wait command, so Traffic One stopped this first wait attempt to surface the clickable URL. Now re-run the wait command and keep the turn open:
+Only after that message is written, re-run the wait command in the FOREGROUND of the same turn and keep the turn open:
 
 {{WAIT_CMD}}
 

@@ -416,6 +416,59 @@ test('tester completion gate: TESTS_GREEN is denied while the QA report predates
   });
 });
 
+// Observed live in cursor-17c: a leftover `vite preview` from the PREVIOUS project
+// still held port 4173, so the sweep scored 21/21 `passed` against a different
+// application. Every existing freshness check is temporal and passed — the sweep
+// really did run, just not against this build.
+test('tester completion gate: TESTS_GREEN is denied when the sweep loaded another build', () => {
+  withProject((dir) => {
+    const runId = 'R';
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', runId);
+    fs.mkdirSync(qaDir, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'apps', 'web', 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'apps', 'web', 'dist', 'index.html'),
+      '<!doctype html><html><head><script type="module" crossorigin src="/assets/index-de4D0Waz.js"></script></head><body></body></html>\n', 'utf8');
+
+    const gateArgs = {
+      filePath: `.traffic-one/digests/${runId}/tester.md`,
+      content: 'verdict: TESTS_GREEN\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    const report = (extra: Record<string, unknown>) => JSON.stringify({
+      schemaVersion: 1,
+      runId,
+      generatedAt: new Date().toISOString(),
+      producer: 'senior-tester',
+      status: 'passed',
+      routes: [],
+      ...extra,
+    });
+
+    // The 17c shape: a report that never says which build answered.
+    fs.writeFileSync(path.join(qaDir, 'report.json'), report({}), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('tester-qa-build-identity-missing'));
+
+    // The 17c failure itself: the served bundle belongs to another project.
+    fs.writeFileSync(path.join(qaDir, 'report.json'), report({ verifiedBuild: 'index-C6Xhh6Ut.js' }), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('tester-qa-build-identity-mismatch'));
+
+    // The served bundle IS this run's build → the gate clears.
+    fs.writeFileSync(path.join(qaDir, 'report.json'), report({ verifiedBuild: 'index-de4D0Waz.js' }), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // An honest failure is never gated.
+    fs.writeFileSync(path.join(qaDir, 'report.json'), report({}), 'utf8');
+    assert.deepEqual(planReadinessViolations({ ...gateArgs, content: 'verdict: TESTS_FAILING\n' }), []);
+
+    // Nothing built yet → nothing to compare against; other gates own that case.
+    fs.rmSync(path.join(dir, 'apps', 'web', 'dist'), { recursive: true, force: true });
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+  });
+});
+
 test('frontend completion gate: a long single-string/data-URI line is NOT flagged as collapse', () => {
   withProject((dir) => {
     fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });

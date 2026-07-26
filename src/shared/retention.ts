@@ -249,3 +249,24 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
     removed,
   };
 }
+
+// Enforce the backup cap at WRITE time. The full sweep only runs at SessionStart,
+// so a session that re-bootstraps the code graph N times accumulates N snapshots
+// (measured: 9 in 18 minutes under `backupKeep: 3`, all byte-identical). `keepName`
+// is the snapshot the caller may still restore from — never a candidate — and at
+// least one snapshot always survives even when the policy asks for zero.
+export function pruneTrafficOneBackups(cwd: string, keepName?: string): number {
+  const root = path.join(cwd, '.traffic-one', 'backups');
+  const keep = Math.max(1, readPolicy(cwd).backupKeep);
+  let removed = 0;
+  for (const name of listDirs(root).sort(numericDesc).slice(keep)) {
+    if (keepName && name === keepName) continue;
+    try {
+      fs.rmSync(path.join(root, name), { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // best-effort; never abort a bootstrap because one path is busy
+    }
+  }
+  return removed;
+}

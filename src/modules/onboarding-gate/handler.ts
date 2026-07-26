@@ -24,6 +24,7 @@ import { buildOrchestrationDirective } from '../../shared/build-orchestration-di
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
+import { cursorWaitLinkFirstReason } from '../../shared/onboarding-server/cursor-setup';
 import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
@@ -149,7 +150,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
             URL: server.dashboardUrl,
             LOCAL_URL: server.localWizardUrl,
             WAIT_CMD: waitCommand,
-          }));
+          }, cursorWaitLinkFirstReason(server.dashboardUrl, server.localWizardUrl, waitCommand)));
           commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
           return result;
         }

@@ -176,9 +176,20 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
   One statement per line, multi-line JSX — a source line packing an entire
   function/component (hundreds of chars) is collapsed/minified code and a defect
   even though build and typecheck pass on it. Run the workspace `format:check`
-  (fix with `format`), `lint`, and `typecheck` yourself and only then emit
-  `IMPLEMENTED`; do not leave collapsed source for the tester's mechanical gate.
-  The frontend completion gate denies an `IMPLEMENTED` digest while any product
-  source line is collapsed.
+  (fix with `format`), `lint`, and `typecheck` yourself and emit `IMPLEMENTED`
+  only once they are GREEN — running them is not the bar, passing them is. Do
+  not leave collapsed source for the tester's mechanical gate. The frontend
+  completion gate denies an `IMPLEMENTED` digest while any product source line
+  is collapsed.
+- **Never report a red gate as green.** Name the exact commands you ran and their
+  real result in the digest. A failure inside your assignment is yours to fix; if
+  you cannot fix it, emit `BLOCKED <one-line reason>` — never `IMPLEMENTED` with a
+  known-failing gate softened as "pre-existing" or "scaffold". A failure provably
+  OUTSIDE your assignment does not block your handoff, but name the file and the
+  owning role under Open questions / blockers so the orchestrator can route it;
+  never describe it as passing. (Measured: a frontend digest emitted `IMPLEMENTED`
+  calling a failing `lint` a pre-existing scaffold issue and `typecheck` passing;
+  six minutes later the reviewer and the tester each found both red, on a
+  frontend-owned `tsconfig.json`.)
 - End your reply with a one-line status: which routes/components you produced, what's still pending, what backend contracts you assumed.
 - You may receive FOLLOW-UP tasks in this same agent session (the next planned part, reviewer/tester fix cycles). Treat each new message as a fresh task under this same role contract — same owned scope, update your digest under `.traffic-one/digests/<runId>/`, end with the same status format. Build on what you already read instead of re-exploring it.

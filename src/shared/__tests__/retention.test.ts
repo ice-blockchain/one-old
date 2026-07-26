@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { sweepTrafficOneRetention } from '../retention';
+import { pruneTrafficOneBackups, sweepTrafficOneRetention } from '../retention';
 
 function withProject(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-retention-'));
@@ -92,5 +92,35 @@ test('sweepTrafficOneRetention never deletes an independent nested onboarded pro
     assert.equal(fs.existsSync(path.join(nested, '.one.json')), true, 'independent nested .one.json preserved');
     assert.equal(fs.existsSync(path.join(nested, 'runs', '9001')), true, 'its runs preserved');
     assert.equal(fs.existsSync(path.join(nested, 'product.md')), true, 'its durable memory preserved');
+  });
+});
+
+// A gitnexus bootstrap can run many times in one session and each run snapshots the
+// same unchanged files; the SessionStart sweep is far too late to cap that.
+test('pruneTrafficOneBackups enforces the cap at write time', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    fs.writeFileSync(path.join(dir, t1, 'retention.json'), JSON.stringify({ keepRuns: 2, backupKeep: 2, orphanTtlDays: 0 }), 'utf8');
+    const stamps = ['2026-07-26T12-00-00Z', '2026-07-26T12-01-00Z', '2026-07-26T12-02-00Z', '2026-07-26T12-03-00Z'];
+    for (const name of stamps) mkdir(dir, path.join(t1, 'backups', name));
+
+    const removed = pruneTrafficOneBackups(dir, stamps[3]);
+    const left = fs.readdirSync(path.join(dir, t1, 'backups')).sort();
+    assert.equal(removed, 2);
+    assert.deepEqual(left, [stamps[2], stamps[3]], 'the newest `backupKeep` snapshots survive');
+  });
+});
+
+test('pruneTrafficOneBackups never drops the snapshot the caller may restore from', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    fs.writeFileSync(path.join(dir, t1, 'retention.json'), JSON.stringify({ keepRuns: 2, backupKeep: 0, orphanTtlDays: 0 }), 'utf8');
+    for (const name of ['001', '002']) mkdir(dir, path.join(t1, 'backups', name));
+
+    // backupKeep: 0 must still leave the restore path usable.
+    pruneTrafficOneBackups(dir, '001');
+    const left = fs.readdirSync(path.join(dir, t1, 'backups')).sort();
+    assert.ok(left.includes('001'), 'the live snapshot is never a prune candidate');
+    assert.ok(left.length >= 1);
   });
 });

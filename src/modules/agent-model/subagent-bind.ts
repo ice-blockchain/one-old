@@ -335,7 +335,12 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       agentType: asString(raw.subagent_type) || null,
       parentSessionId: parentSession,
       roleSource: evidence?.source || null,
-      transcriptPath: transcriptPath || null,
+      // Cursor's SubagentStart transcript is the PARENT rollout (see the
+      // `mayUseTranscript` note above), so recording it as the CHILD agent's
+      // transcript is wrong data — and it re-clobbered the real child path on
+      // every continuation. Let the child-owned path recorded by `claimThreadRole`
+      // stand instead.
+      transcriptPath: transcriptIsChildOwned ? (transcriptPath || null) : null,
     });
   }
 

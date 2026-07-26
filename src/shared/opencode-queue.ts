@@ -9,7 +9,7 @@ import * as path from 'path';
 
 import { opencodeUnitTimeoutMs } from '../config/opencode-timeouts';
 import type { PlanDelegationUnit } from './opencode-roles';
-import { matchesPattern, normalizeRelPath } from './scope';
+import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from './scope';
 
 const T1_DIR = '.traffic' + '-one';
 const UNIT_ID_RE = /^[a-zA-Z0-9._-]+$/;
@@ -477,8 +477,11 @@ function allowsTestOrConfigPath(allowedFiles: string[]): boolean {
   ));
 }
 
-export function openCodeQueuePolicyViolations(units: PlanDelegationUnit[]): string[] {
-  return openCodeQueuePolicyReport(units).violations;
+export function openCodeQueuePolicyViolations(
+  units: PlanDelegationUnit[],
+  options: OpenCodeQueuePolicyOptions = {},
+): string[] {
+  return openCodeQueuePolicyReport(units, options).violations;
 }
 
 export interface OpenCodeQueuePolicyReport {
@@ -486,11 +489,33 @@ export interface OpenCodeQueuePolicyReport {
   byUnitId: Map<string, string[]>;
 }
 
-export function openCodeQueuePolicyReport(units: PlanDelegationUnit[]): OpenCodeQueuePolicyReport {
+export interface OpenCodeQueuePolicyOptions {
+  /**
+   * Per-role write assignments for the run (`runs/<runId>/assignments.json`).
+   * Omitted → the scope cross-check is skipped (the plan can be authored before
+   * the manifest exists); the runtime diff check still fails closed.
+   */
+  assignments?: ReadonlyArray<{ role: string; scope: AssignedScope }>;
+}
+
+// A glob cannot be compared against a scope pattern without false positives, so
+// only LITERAL allowlist entries take part in the scope cross-check.
+const GLOB_META_RE = /[*?[\]{}()!+@]/;
+
+export function openCodeQueuePolicyReport(
+  units: PlanDelegationUnit[],
+  options: OpenCodeQueuePolicyOptions = {},
+): OpenCodeQueuePolicyReport {
   const queue = buildOpenCodeQueue('', '', units);
   const violations: string[] = [];
   const byUnitId = new Map<string, string[]>();
   const idToIndex = new Map<string, number>();
+  const scopesByRole = new Map<string, AssignedScope[]>();
+  for (const assignment of options.assignments || []) {
+    if (!assignment?.role || !assignment.scope) continue;
+    const role = normalizeOpenCodeRole(assignment.role);
+    scopesByRole.set(role, [...(scopesByRole.get(role) || []), assignment.scope]);
+  }
   const add = (message: string, ...ids: Array<string | null | undefined>): void => {
     violations.push(message);
     for (const id of ids) {
@@ -539,6 +564,19 @@ export function openCodeQueuePolicyReport(units: PlanDelegationUnit[]): OpenCode
         add(`OpenCode unit \`${unit.id}\` allowlist includes generated/internal path \`${allowed}\``, unit.id);
       }
     }
+    // A unit's declared files must be writable BY ITS OWN ROLE. validateDelegatedDiff
+    // already fails closed on this, but only AFTER the model ran: observed 17c, unit
+    // `seo-public-assets` (role frontend) listed `.env.example`, which the same
+    // architect's assignments.json gives to backend — a full delegation burned, and the
+    // three in-scope files it did produce were rolled back with the rejected patch.
+    const roleScopes = scopesByRole.get(normalizeOpenCodeRole(unit.role)) || [];
+    if (roleScopes.length > 0) {
+      const outside = unit.allowedFiles.filter((allowed) => !GLOB_META_RE.test(allowed)
+        && !roleScopes.some((scope) => matchesScope(allowed, scope)));
+      if (outside.length > 0) {
+        add(`OpenCode unit \`${unit.id}\` (role ${unit.role}) lists file(s) outside ${unit.role}'s assignment scope: ${outside.join(', ')}; move them to a unit for the owning role, or widen \`runs/<runId>/assignments.json\``, unit.id);
+      }
+    }
   }
 
   for (let i = 0; i < queue.units.length; i++) {
@@ -568,11 +606,35 @@ export function openCodeQueuePolicyReport(units: PlanDelegationUnit[]): OpenCode
   return { violations, byUnitId };
 }
 
+// A unit whose declared `depends:` predecessor ended in one of these has no
+// prerequisites on disk: running it burns a full delegation to fail the same way
+// (17c: a tester unit spent 303s trying to CREATE the package its dependency
+// never produced). `no_changes` and `skipped` are NOT blocking — the dependency
+// simply had nothing to do.
+const DEPENDENCY_BLOCKING_STATUSES = new Set<OpenCodeUnitStatus>(['failed', 'rejected_policy', 'abandoned']);
+
+/**
+ * Ids among `dependsOn` that ended in a blocking state. `outcomes` is the merged
+ * view of the persisted ledger and this batch's in-flight results, so a dependency
+ * that ran in an EARLIER role shard (a different runner process) still counts.
+ * Unknown/absent ids never block: ordering-only edges must keep running.
+ */
+export function blockedByFailedDependencies(
+  dependsOn: readonly string[] | undefined,
+  outcomes: ReadonlyMap<string, OpenCodeUnitStatus>,
+): string[] {
+  if (!dependsOn || dependsOn.length === 0) return [];
+  return dependsOn.filter((id) => {
+    const status = outcomes.get(id);
+    return Boolean(status && DEPENDENCY_BLOCKING_STATUSES.has(status));
+  });
+}
+
 export function statusFromDelegateAction(action: string, error?: string | null): OpenCodeUnitStatus {
   if (action === 'delegated') return 'delegated';
   if (action === 'no-changes') return 'no_changes';
   if (action === 'skipped-no-units') return 'skipped_no_units';
-  if (action === 'skipped') return 'skipped';
+  if (action === 'skipped' || action === 'skipped-dependency-failed') return 'skipped';
   if (action === 'abandoned') return 'abandoned';
   if (/outside .*allowlist|outside .*assignment scope|generated\/internal artifact|assignment scope changed/i.test(error || '')) {
     return 'rejected_policy';

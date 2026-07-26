@@ -168,6 +168,11 @@ as the audit needs.
 
 - Write your digest **before** emitting the terminal status token (PLAN_READY,
   APPROVED, etc.) — the orchestrator reads the digest after the spawn returns.
+- **Verification claims are facts, not summaries.** Every "passes" / "green" /
+  "all clear" statement must name the command you actually ran and reflect its
+  real exit status. Never write a green claim for a gate you did not run or that
+  failed — the next role re-runs the same command, and the contradiction costs a
+  full fix cycle.
 - **Repo-relative paths.** Absolute paths cost ~60 chars per line for nothing.
 - **No parenthetical annotations on Touched.** Use "Public contracts (delta only)"
   for facts that matter.
