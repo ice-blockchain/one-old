@@ -13,6 +13,7 @@
 // (before run-team). The set of violations is identical — only the relative
 // order of the (rarely co-occurring) plan + run-team lines differs.
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 import { asString } from '../../adapters/coerce';
@@ -28,21 +29,30 @@ import {
   commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
+  shellCommandHasWritePrimitive,
   shellAssetImportDest,
+  shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
 } from '../../shared/feature-source';
 import { parseApplyPatch, patchTextFromToolInput, type PatchFileOperation } from '../../shared/apply-patch';
-import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
+import { projectRelativeHookPath } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../shared/materialize';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { activeAgentRole, hookSessionIdentity, isNativeState, readEffectiveState, roleForRunSessionId } from '../../shared/state';
 import { capturePlanGuardDebug } from '../../shared/state/claim-capture';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
+import {
+  capabilityProfileForRun,
+  readCompiledArchitecture,
+  type CompiledArchitectureV1,
+} from '../../shared/architecture-contract';
+import { profileHasWebUi } from '../../shared/capabilities';
 import { planReadinessViolations } from './plan-readiness';
 import { runIdPathViolation } from './plan-runid';
 import { runTeamEnforcementViolation } from './plan-runteam';
 import { planStaticViolations, makePlanBlock } from './plan-static';
+import { resolveToolScope } from '../../shared/tool-scope';
 
 const block = makePlanBlock(makeSkillBlock(pluginRoot));
 
@@ -51,6 +61,166 @@ interface GateTarget {
   resultContent: string;
   addedContent: string;
   staticCheck: boolean;
+}
+
+interface TextEditSpec {
+  oldText: string;
+  newText: string;
+  replaceAll: boolean;
+}
+
+type TextEditReconstruction =
+  | { ok: true; resultContent: string; addedContent: string }
+  | { ok: false; error: string };
+
+const HOT_EDIT_MAX_BYTES = 2 * 1024 * 1024;
+
+function normalizedRelative(value: string): string {
+  return value.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/');
+}
+
+function underRoot(filePath: string, root: string): boolean {
+  const file = normalizedRelative(filePath);
+  const boundary = normalizedRelative(root).replace(/\/+$/, '');
+  return Boolean(boundary)
+    && (file === boundary || file.startsWith(`${boundary}/`));
+}
+
+/**
+ * CompiledArchitectureV1, not a fixed React/monorepo regex, owns the write
+ * boundary for a v2 run. The legacy regex remains only for pre-contract runs.
+ */
+function isCompiledFeatureTarget(
+  architecture: CompiledArchitectureV1 | null,
+  filePath: string,
+): boolean {
+  if (!architecture || !filePath) return false;
+  const roots = [
+    ...architecture.sourceRoots,
+    ...architecture.layers.pages,
+    ...architecture.layers.components,
+    ...architecture.layers.features,
+    ...architecture.layers.lib,
+  ];
+  return architecture.entrypoints.some((entrypoint) => (
+    normalizedRelative(entrypoint) === normalizedRelative(filePath)
+  )) || roots.some((root) => underRoot(filePath, root));
+}
+
+function regexEscape(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function commandAppearsToWriteCompiledFeature(
+  command: string,
+  architecture: CompiledArchitectureV1 | null,
+): boolean {
+  if (!architecture || !shellCommandHasWritePrimitive(command)) return false;
+  const roots = [
+    ...architecture.sourceRoots,
+    ...architecture.layers.pages,
+    ...architecture.layers.components,
+    ...architecture.layers.features,
+    ...architecture.layers.lib,
+    ...architecture.entrypoints.map((entrypoint) => path.posix.dirname(
+      normalizedRelative(entrypoint),
+    )),
+  ]
+    .map(normalizedRelative)
+    .filter((root) => root && root !== '.');
+  return [...new Set(roots)].some((root) => (
+    new RegExp(`(?:^|[\\s'"\\x22\`=(:,/])${regexEscape(root)}(?:/|$|[\\s'"\\x22\`;|&)])`)
+      .test(command.replace(/\\\\/g, '/'))
+  ));
+}
+
+function ownString(rec: Rec | null, keys: readonly string[]): { found: boolean; value: string } {
+  if (!rec) return { found: false, value: '' };
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(rec, key) && typeof rec[key] === 'string') {
+      return { found: true, value: rec[key] as string };
+    }
+  }
+  return { found: false, value: '' };
+}
+
+function editSpec(rec: Rec | null, fallbackNew?: string): TextEditSpec | null {
+  const oldText = ownString(rec, ['old_string', 'oldString', 'old_str', 'oldText']);
+  const newText = ownString(rec, ['new_string', 'newString', 'new_str', 'newText', 'new_content', 'newContent']);
+  if (!oldText.found || (!newText.found && fallbackNew === undefined)) return null;
+  return {
+    oldText: oldText.value,
+    newText: newText.found ? newText.value : (fallbackNew as string),
+    replaceAll: rec?.replace_all === true || rec?.replaceAll === true,
+  };
+}
+
+function editSpecs(raw: Rec, toolInput: Rec, fallbackNew?: string): TextEditSpec[] | null {
+  const editsValue = Array.isArray(toolInput.edits)
+    ? toolInput.edits
+    : (Array.isArray(raw.edits) ? raw.edits : null);
+  if (editsValue) {
+    if (editsValue.length === 0) return null;
+    const specs = editsValue.map((entry) => editSpec(obj(entry)));
+    return specs.every((spec): spec is TextEditSpec => spec !== null) ? specs : null;
+  }
+  return [editSpec(toolInput, fallbackNew) || editSpec(raw, fallbackNew)].filter(
+    (spec): spec is TextEditSpec => spec !== null,
+  );
+}
+
+function occurrenceCount(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let cursor = 0;
+  while ((cursor = haystack.indexOf(needle, cursor)) !== -1) {
+    count += 1;
+    cursor += needle.length;
+  }
+  return count;
+}
+
+function reconstructTextEdit(
+  absoluteFile: string,
+  raw: Rec,
+  toolInput: Rec,
+  fallbackNew?: string,
+): TextEditReconstruction {
+  let current: string;
+  try {
+    const stat = fs.statSync(absoluteFile);
+    if (!stat.isFile()) return { ok: false, error: 'target is not a regular file' };
+    if (stat.size > HOT_EDIT_MAX_BYTES) {
+      return { ok: false, error: `target exceeds the ${HOT_EDIT_MAX_BYTES}-byte hot-scan limit` };
+    }
+    current = fs.readFileSync(absoluteFile, 'utf8');
+    if (current.includes('\0')) return { ok: false, error: 'target is binary' };
+  } catch {
+    return { ok: false, error: 'target does not exist or is unreadable' };
+  }
+
+  const specs = editSpecs(raw, toolInput, fallbackNew);
+  if (!specs || specs.length === 0) {
+    return { ok: false, error: 'old_string/new_string edit evidence is missing or incomplete' };
+  }
+  const added: string[] = [];
+  for (const [index, spec] of specs.entries()) {
+    if (!spec.oldText) {
+      return { ok: false, error: `edit ${index + 1} has an empty old_string` };
+    }
+    const occurrences = occurrenceCount(current, spec.oldText);
+    if (occurrences === 0) {
+      return { ok: false, error: `edit ${index + 1} old_string does not match the current file` };
+    }
+    if (!spec.replaceAll && occurrences !== 1) {
+      return { ok: false, error: `edit ${index + 1} old_string is ambiguous (${occurrences} matches)` };
+    }
+    current = spec.replaceAll
+      ? current.split(spec.oldText).join(spec.newText)
+      : current.replace(spec.oldText, spec.newText);
+    added.push(spec.newText);
+  }
+  return { ok: true, resultContent: current, addedContent: added.join('\n') };
 }
 
 function appendUnique(target: string[], values: readonly string[]): void {
@@ -115,26 +285,23 @@ export function planWriteGate(ctx: Ctx): HookResult {
     ? patchTextFromToolInput(tool?.patchText, raw.tool_input, raw.toolInput, raw.input, raw, toolInput)
     : '';
 
-  const cwd = ctx.cwd;
-  // Never gate the plugin's own authoring repo — the gate/materialiser must never
-  // act on it (mirrors the onboarding gate). Without this, a stale or missing
-  // .traffic-one here makes the plan gate fire on plugin development.
-  if (isPluginAuthoringRoot(cwd)) return noop();
-  if (pluginUseDeclined(cwd)) return noop();
+  const toolScope = resolveToolScope(ctx);
+  // Stand down only when BOTH the hook cwd and every explicit tool/command
+  // target remain inside plugin authoring or machine-config space. An absolute
+  // target in a real project is resolved and gated below.
+  if (toolScope.standsDown) return noop();
 
   const structuralPatch = isApplyPatch ? parseApplyPatch(rawPatchText) : null;
   if (structuralPatch && !structuralPatch.ok) {
     return deny(`traffic-one — invalid apply_patch payload: ${structuralPatch.error}. No write was made.`);
   }
   const firstPatchTarget = structuralPatch?.ok ? structuralPatch.operations[0]?.path || '' : '';
-  const patchBase = tool?.workdir
-    ? (path.isAbsolute(tool.workdir) ? path.resolve(tool.workdir) : path.resolve(cwd, tool.workdir))
-    : cwd;
-  const resolutionBase = isApplyPatch ? patchBase : cwd;
-  const projectRoot = resolveProjectRoot(resolutionBase, rawFilePath || firstPatchTarget, { ceiling: ctx.input.workspaceRoot });
+  const patchBase = toolScope.base;
+  const projectRoot = toolScope.projectRoot;
   // The resolver's fallback can still hand back a dir inside the plugin repo.
   if (isPluginAuthoringRoot(projectRoot)) return noop();
-  const directFilePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
+  if (pluginUseDeclined(projectRoot)) return noop();
+  const directFilePath = projectRelativeHookPath(toolScope.base, projectRoot, rawFilePath);
 
   // Reconstruct before convergence: convergence may legitimately refresh
   // generated .traffic-one files, but validation must describe the exact
@@ -152,7 +319,41 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const directContent = asString(toolInput.content) || asString(toolInput.new_string)
     || asString(toolInput.newString) || asString(tool?.content) || '';
   const state = readEffectiveState(projectRoot);
+  const currentRunId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
+  const compiledArchitecture = currentRunId
+    ? readCompiledArchitecture(projectRoot, currentRunId)
+    : null;
+  const isFeatureTarget = (target: string): boolean => (
+    FEATURE_SOURCE_RE.test(target)
+    || isCompiledFeatureTarget(compiledArchitecture, target)
+  );
   const isNative = isNativeState(state);
+  let directResultContent = directContent;
+  let directAddedContent = directContent;
+  if (
+    tool?.class === 'file-edit'
+    && directFilePath
+    && /\.(?:tsx?|jsx?|mjs|cjs|vue)$/i.test(directFilePath)
+    && profileHasWebUi(capabilityProfileForRun(projectRoot, state))
+  ) {
+    const contentEvidence = ownString(toolInput, ['content', 'new_content', 'newContent']);
+    const fallbackNew = tool?.content !== undefined
+      ? tool.content
+      : (contentEvidence.found ? contentEvidence.value : undefined);
+    const absoluteFile = path.isAbsolute(rawFilePath)
+      ? path.resolve(rawFilePath)
+      : path.resolve(toolScope.base, rawFilePath);
+    const reconstruction = reconstructTextEdit(absoluteFile, raw, toolInput, fallbackNew);
+    if (!reconstruction.ok) {
+      return deny(
+        `traffic-one — plan gate violation(s):\n  - STRUCT_SCAN_INCOMPLETE: cannot safely reconstruct the complete post-Edit file `
+        + `for ${directFilePath} (${reconstruction.error}). No write was made; retry with one exact old_string/new_string match `
+        + 'or a complete apply_patch payload.',
+      );
+    }
+    directResultContent = reconstruction.resultContent;
+    directAddedContent = reconstruction.addedContent;
+  }
 
   if (ctx.host === 'cursor' && state && modelChoiceReplyPending(projectRoot, state as Rec)) {
     return deny(
@@ -165,8 +366,25 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const gateTargets: GateTarget[] = reconstructedPatch?.ok
     ? patchTargets(reconstructedPatch.operations, patchBase, projectRoot)
     : (directFilePath
-      ? [{ filePath: directFilePath, resultContent: directContent, addedContent: directContent, staticCheck: true }]
+      ? [{
+        filePath: directFilePath,
+        resultContent: directResultContent,
+        addedContent: directAddedContent,
+        staticCheck: true,
+      }]
       : []);
+  if (isShellToolName(toolName)) {
+    for (const shellTarget of shellTrafficOneWriteTargets(rawCommand)) {
+      const relative = projectRelativeHookPath(patchBase, projectRoot, shellTarget);
+      if (!relative || gateTargets.some((target) => target.filePath === relative)) continue;
+      gateTargets.push({
+        filePath: relative,
+        resultContent: '',
+        addedContent: '',
+        staticCheck: false,
+      });
+    }
+  }
   const filePath = directFilePath || gateTargets[0]?.filePath || '';
 
   // Resolve every source and destination target. A multi-file patch is one
@@ -177,7 +395,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const targetContents = Object.create(null) as Record<string, string>;
   for (const target of gateTargets) {
     appendUnique(writeTargetPaths, [target.filePath]);
-    if (FEATURE_SOURCE_RE.test(target.filePath)) appendUnique(featureTargetPaths, [target.filePath]);
+    if (isFeatureTarget(target.filePath)) appendUnique(featureTargetPaths, [target.filePath]);
     if (BUILD_ARTIFACT_RE.test(target.filePath)) appendUnique(buildArtifactTargetPaths, [target.filePath]);
     targetContents[target.filePath] = target.resultContent;
   }
@@ -196,11 +414,14 @@ export function planWriteGate(ctx: Ctx): HookResult {
     : null;
   if (assetImportDest) {
     appendUnique(writeTargetPaths, [assetImportDest]);
-    if (FEATURE_SOURCE_RE.test(assetImportDest)) appendUnique(featureTargetPaths, [assetImportDest]);
+    if (isFeatureTarget(assetImportDest)) appendUnique(featureTargetPaths, [assetImportDest]);
     if (BUILD_ARTIFACT_RE.test(assetImportDest)) appendUnique(buildArtifactTargetPaths, [assetImportDest]);
   }
   const writingFeatureSourceViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
-    && commandAppearsToWriteFeatureSource(rawCommand);
+    && (
+      commandAppearsToWriteFeatureSource(rawCommand)
+      || commandAppearsToWriteCompiledFeature(rawCommand, compiledArchitecture)
+    );
   const writingBuildArtifactViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
     && commandAppearsToWriteBuildArtifact(rawCommand);
   const writingExternalTempViaCommand = isShellToolName(toolName) && commandAppearsToWriteExternalTemp(rawCommand);
@@ -214,14 +435,19 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const violations: string[] = [];
   const readinessTargets = gateTargets.length > 0
     ? gateTargets
-    : [{ filePath, resultContent: directContent, addedContent: directContent, staticCheck: true }];
+    : [{
+      filePath,
+      resultContent: directResultContent,
+      addedContent: directAddedContent,
+      staticCheck: true,
+    }];
   for (const target of readinessTargets) {
     appendUnique(violations, planReadinessViolations({
       filePath: target.filePath,
       content: target.resultContent,
       projectRoot,
       state,
-      writingFeatureSource: FEATURE_SOURCE_RE.test(target.filePath)
+      writingFeatureSource: isFeatureTarget(target.filePath)
         || (gateTargets.length === 0 && writingFeatureSourceViaCommand),
       host: ctx.host,
       rawData: raw,
@@ -244,7 +470,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
     filePath,
     state,
     rawData: raw,
-    content: directContent,
+    content: directResultContent,
     writeTargetPaths,
     targetContents,
     featureTargetPaths: runTeamTargetPaths,

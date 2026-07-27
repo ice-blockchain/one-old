@@ -13,6 +13,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { TEAM_ROLES } from '../../config/onboarding';
+import { eligibleRolesForProfile } from '../capabilities';
+import { capabilityProfileForRun } from '../architecture-contract';
 import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
 import { roleAgentBody } from '../skill-filters';
@@ -105,17 +107,37 @@ function agentFile(role: string, label: string, blurb: string): string {
   return out.join('\n');
 }
 
-// Materialize every role contract regardless of this user's team/performance
-// choice. The runtime injects the active lineup and model arguments per session.
-export function writeCursorAgentFiles(cwd: string, _state: Rec): number {
+function cleanupGeneratedAgents(dir: string, keep: ReadonlySet<string>): number {
+  let removed = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      const role = entry.name.slice(0, -'.md'.length);
+      const file = path.join(dir, entry.name);
+      if (keep.has(role) || !isGeneratedCursorAgent(file)) continue;
+      fs.rmSync(file, { force: true });
+      removed += 1;
+    }
+  } catch {
+    // best-effort cleanup
+  }
+  return removed;
+}
+
+// Materialize every capability-eligible role regardless of this user's
+// team/performance choice. Runtime injects the active lineup/models per session.
+export function writeCursorAgentFiles(cwd: string, state: Rec): number {
   const dir = path.join(cwd, CURSOR_AGENTS_REL);
+  const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
+  const members = TEAM_ROLES.filter((member) => eligible.has(member.role));
+  const keep = new Set(members.map((member) => member.role));
+  let written = cleanupGeneratedAgents(dir, keep);
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch {
-    return 0;
+    return written;
   }
-  let written = 0;
-  for (const member of TEAM_ROLES) {
+  for (const member of members) {
     const target = path.join(dir, `${member.role}.md`);
     if (fs.existsSync(target) && !isGeneratedCursorAgent(target)) continue;
     try {

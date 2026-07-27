@@ -75,6 +75,13 @@ export function buildCaseEnv(
   if (host !== 'pure-node') {
     // Honoured by the host runner subprocesses for model-tier host selection.
     env.TRAFFIC_ONE_HOST = host;
+    if (host === 'codex' && config.hosts.codex.testModelByTier) {
+      // The compatibility catalog is a release-harness fixture, not a machine
+      // preference. Pin its cache path inside this case and prevent a live sync
+      // from replacing it between preseed and child spawn.
+      env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(caseFolder, 'state', 'one-mcp.json');
+      env.TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC = '1';
+    }
   }
 
   for (const [k, v] of Object.entries(config.envOverrides)) env[k] = v;

@@ -8,7 +8,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 test('generatedRuleTemplates re-gathers the full nested rules tree', () => {
   const docs = generatedRuleTemplates(REPO_ROOT);
-  assert.equal(docs.length, 79); // 76 + 3 on-demand slices (new-project x2, ui-quality-reference)
+  assert.equal(docs.length, 80); // 76 + default-Vite gateway + 3 on-demand slices
   const paths = new Set(docs.map((d) => d.relPath));
   // Root, common, and deeply-nested rule paths are all preserved exactly.
   assert.ok(paths.has(path.join('rules', 'core.md')));
@@ -19,6 +19,30 @@ test('generatedRuleTemplates re-gathers the full nested rules tree', () => {
   const sorted = [...docs].map((d) => d.relPath).sort((a, b) => a.localeCompare(b));
   assert.deepEqual(docs.map((d) => d.relPath), sorted);
   for (const doc of docs) assert.ok(doc.content.length > 0, `empty: ${doc.relPath}`);
+});
+
+test('new-project rules keep the universal spine stack-neutral and scope the default Vite playbook', () => {
+  const docs = generatedRuleTemplates(REPO_ROOT);
+  const byPath = new Map(docs.map((doc) => [doc.relPath, doc.content]));
+  const spine = byPath.get(path.join('rules', 'modes', 'new-project.md'));
+  const vite = byPath.get(path.join('rules', 'modes', 'new-project-vite-react.md'));
+  const setup = byPath.get(path.join('rules', 'modes', 'new-project-setup.md'));
+  const architecture = byPath.get(path.join('rules', 'modes', 'new-project-architecture.md'));
+  assert.ok(spine);
+  assert.ok(vite);
+  assert.ok(setup);
+  assert.ok(architecture);
+  assert.doesNotMatch(spine, /\b(?:React|Vite|Turborepo|Supabase|Playwright)\b|apps\/web/i);
+  assert.match(spine, /runtime-compiled architecture contract/i);
+  assert.match(spine, /runtime-owned assignments/i);
+  assert.match(spine, /architect writes only the semantic plan\/project memory/i);
+  assert.doesNotMatch(spine, /architect (?:creates|writes|scaffolds).*(?:package|workspace|Tailwind|barrel|assignments)/i);
+  assert.match(vite, /profileId=vite-react/i);
+  assert.match(vite, /eligible implementer\(s\), not the architect/i);
+  assert.match(vite, /rules\/modes\/new-project-setup\.md/);
+  assert.match(vite, /rules\/modes\/new-project-architecture\.md/);
+  assert.match(setup, /Never apply[\s\S]*Next\.js[\s\S]*backend-only[\s\S]*native/i);
+  assert.match(architecture, /not a fallback\s+architecture/i);
 });
 
 test('generated rules do not require architecture.md artifacts', () => {

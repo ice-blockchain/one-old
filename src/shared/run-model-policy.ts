@@ -16,12 +16,28 @@ import {
 import type { HostModelKey, TierId, UserPlan } from '../config/model-tiers';
 import { RUNS_REL_DIR, VALID_AGENT_ROLES } from '../config/state';
 import { isNonProjectRoot } from './authoring-root';
+import {
+  capabilityProfileForRun,
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+} from './architecture-contract';
+import {
+  ensureRunHostCapability,
+  readRunHostCapability,
+  RUN_HOST_CAPABILITY_RELATIVE_FILE,
+} from './host-capabilities';
 import { currentHostModelTarget } from './current-model-tiers';
 import { detectHostPlan } from './host-plan';
 import { freshCursorModels } from './materialize/cursor-models';
 import { canonicalHost, canonicalPlan, modelMatchesExpected, type ModelTierSnapshot } from './model-tiers';
 import { obj, type Rec } from './obj';
 import { roleModelSelection } from './performance';
+import {
+  canResolveRunBootstrapSet,
+  ensureRunBootstrap,
+  type BootstrapRuntimeContractsV1,
+} from './run-bootstrap-policy';
+import { readVerificationContract } from './verification-contract';
 
 export const RUN_MODEL_POLICY_SCHEMA_VERSION = 1;
 const POLICY_FILE = 'model-policy.json';
@@ -39,6 +55,7 @@ export interface RunModelPolicyV1 {
   readonly policyId: string;
   readonly runId: string;
   readonly host: HostModelKey;
+  readonly hostCapabilityFile: typeof RUN_HOST_CAPABILITY_RELATIVE_FILE;
   readonly plan: UserPlan;
   readonly source: 'remote' | 'bundled';
   readonly configVersion: number | null;
@@ -152,6 +169,7 @@ function parsePolicy(value: unknown, expectedRunId?: string): RunModelPolicyV1 |
     || typeof raw.runId !== 'string'
     || (expectedRunId && raw.runId !== expectedRunId)
     || typeof raw.host !== 'string'
+    || raw.hostCapabilityFile !== RUN_HOST_CAPABILITY_RELATIVE_FILE
     || typeof raw.plan !== 'string'
     || (raw.source !== 'remote' && raw.source !== 'bundled')
     || !(raw.configVersion === null || (typeof raw.configVersion === 'number'
@@ -211,6 +229,7 @@ function parsePolicy(value: unknown, expectedRunId?: string): RunModelPolicyV1 |
     schemaVersion: 1 as const,
     runId: raw.runId,
     host,
+    hostCapabilityFile: RUN_HOST_CAPABILITY_RELATIVE_FILE as typeof RUN_HOST_CAPABILITY_RELATIVE_FILE,
     plan,
     source: raw.source as 'remote' | 'bundled',
     configVersion: raw.configVersion,
@@ -372,6 +391,9 @@ export function buildRunModelPolicy(
   const inputs = resolvedRunPolicyInputs(cwd, hostInput, stateInput, env);
   if (!inputs) return null;
   const { host, plan, target, level, overrides, roles, cursorAvailableModels } = inputs;
+  const capability = readRunHostCapability(cwd, runId, host)
+    || ensureRunHostCapability(cwd, runId, host);
+  if (!capability) return null;
   // Cursor's concrete Task slugs are runner-owned capability state. A policy
   // must cover every role row before create-once publication. A non-empty but
   // partial capture would otherwise strand unmatched roles for the entire run,
@@ -384,6 +406,7 @@ export function buildRunModelPolicy(
     schemaVersion: 1 as const,
     runId,
     host,
+    hostCapabilityFile: RUN_HOST_CAPABILITY_RELATIVE_FILE as typeof RUN_HOST_CAPABILITY_RELATIVE_FILE,
     plan,
     source: target.source === 'one-mcp' ? 'remote' as const : 'bundled' as const,
     configVersion: target.source === 'one-mcp' ? target.configVersion : null,
@@ -415,7 +438,7 @@ export function ensureRunModelPolicy(
   if (!runId || isNonProjectRoot(cwd)) return null;
   const filePath = runModelPolicyPath(cwd, runId);
   const existing = readRunModelPolicy(cwd, runId);
-  if (existing) return existing;
+  if (existing) return ensureRunPolicyBootstraps(cwd, existing, state) ? existing : null;
   // Create-once is stronger than "valid existing wins": once the path has
   // been published, a malformed/tampered snapshot must never be silently
   // replaced from mutable machine-global state. Children and parents both fail
@@ -424,16 +447,73 @@ export function ensureRunModelPolicy(
   const candidate = buildRunModelPolicy(cwd, runId, host, state, env);
   if (!candidate) return null;
   const lockPath = acquirePolicyLock(filePath);
-  if (!lockPath) return readRunModelPolicy(cwd, runId);
+  if (!lockPath) {
+    const raced = readRunModelPolicy(cwd, runId);
+    return raced && ensureRunPolicyBootstraps(cwd, raced, state) ? raced : null;
+  }
   try {
     const underLock = readRunModelPolicy(cwd, runId);
-    if (underLock) return underLock;
+    if (underLock) return ensureRunPolicyBootstraps(cwd, underLock, state) ? underLock : null;
     if (fs.existsSync(filePath)) return null;
     writePolicyAtomic(filePath, candidate);
-    return readRunModelPolicy(cwd, runId);
+    const published = readRunModelPolicy(cwd, runId);
+    return published && ensureRunPolicyBootstraps(cwd, published, state) ? published : null;
   } finally {
     try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
+}
+
+export function ensureRunPolicyBootstraps(
+  cwd: string,
+  policy: RunModelPolicyV1,
+  state: unknown,
+): boolean {
+  const capability = capabilityProfileForRun(cwd, state);
+  const architecture = readCompiledArchitecture(cwd, policy.runId);
+  const verification = readVerificationContract(cwd, policy.runId);
+  const assignments = readRuntimeAssignments(cwd, policy.runId);
+  const compiledReady = Boolean(
+    architecture
+    && verification
+    && assignments
+    && assignments.architectureHash === architecture.contractHash
+    && assignments.verificationHash === verification.contractHash,
+  );
+  // Precompile is a planning phase: only the architect has a strict work unit
+  // hashed to the immutable capability+baseline snapshot. Empty implementer,
+  // tester, reviewer, shipper, or quick-fix envelopes are never published.
+  const roles = (compiledReady ? capability.roles : ['senior-architect'])
+    .filter((role) => Boolean(policy.roles[role]));
+  const host = readRunHostCapability(cwd, policy.runId, policy.host)
+    || ensureRunHostCapability(cwd, policy.runId, policy.host);
+  if (!host) return false;
+  const typed = host.typedSubagents === true;
+  return roles.every((role) => Boolean(ensureRunBootstrap(cwd, policy.runId, role, state, {
+    host: policy.host,
+    hostAgentType: typed ? role : null,
+    evidenceSource: 'parent-policy-preflight',
+    modelPolicyId: policy.policyId,
+  })));
+}
+
+export function canPublishRunPolicyBootstraps(
+  cwd: string,
+  policy: RunModelPolicyV1,
+  state: unknown,
+  contracts: BootstrapRuntimeContractsV1,
+): boolean {
+  const capability = capabilityProfileForRun(cwd, state);
+  const roles = capability.roles.filter((role) => Boolean(policy.roles[role]));
+  const host = readRunHostCapability(cwd, policy.runId, policy.host);
+  if (!host) return false;
+  return canResolveRunBootstrapSet(
+    cwd,
+    policy.runId,
+    roles,
+    policy.host,
+    host.typedSubagents === true,
+    contracts,
+  );
 }
 
 export function runRoleModelPolicy(

@@ -39,20 +39,16 @@ Plan gate: .traffic-one/plan.md is missing on a new project in Low/main-agent mo
 <!-- T1BLOCK:END plan-main-agent-gate -->
 
 <!-- T1BLOCK:BEGIN plan-architect-self-gate -->
-Plan gate: .traffic-one/plan.md is missing on this new project. You ARE the `senior-architect` for this run — write `.traffic-one/plan.md` (and the `.traffic-one/` project-memory baseline) BEFORE any feature-source file; do not spawn another architect. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README, empty `packages/*/src/index.ts` barrels, and the shared Tailwind globals baseline.
+Plan gate: .traffic-one/plan.md is missing on this new project. You ARE the `senior-architect` for this run — write `.traffic-one/plan.md`, project memory, and semantic ArchitectureInputV1; do not spawn another architect and do not scaffold implementation files.
 <!-- T1BLOCK:END plan-architect-self-gate -->
-
-<!-- T1BLOCK:BEGIN architect-scaffold-gate -->
-Architect completion gate: do not write `PLAN_READY` until the required Traffic One workspace scaffold exists. Missing: {{MISSING}}. Write the missing baseline files, then update `.traffic-one/digests/<runId>/architect.md` and only then emit `PLAN_READY`.
-<!-- T1BLOCK:END architect-scaffold-gate -->
 
 <!-- T1BLOCK:BEGIN architect-memory-baseline-gate -->
 Architect completion gate: do not write `PLAN_READY` until the required `.traffic-one` project-memory baseline exists with real content. Missing or incomplete: {{MISSING}}. Write the missing memory files yourself (do not delegate `.traffic-one/*` to OpenCode), then update `.traffic-one/digests/<runId>/architect.md` and only then emit `PLAN_READY`.
 <!-- T1BLOCK:END architect-memory-baseline-gate -->
 
-<!-- T1BLOCK:BEGIN architect-pre-ready-feature -->
-Architect scope gate: `senior-architect` may write only workspace scaffold, the shared Tailwind globals baseline, and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files such as `{{TARGET}}`.
-<!-- T1BLOCK:END architect-pre-ready-feature -->
+<!-- T1BLOCK:BEGIN architect-planning-allowlist-gate -->
+Architect scope gate: `senior-architect` may write only the semantic plan/project-memory files, `.traffic-one/runs/<runId>/architecture-input-v1.json`, and its architect digest. `{{TARGET}}` is runtime- or implementer-owned. Do not scaffold packages, workspace/config/source files, barrels, Tailwind assets, tests, or assignments; emit semantic ArchitectureInputV1 and let runtime compile the work units.
+<!-- T1BLOCK:END architect-planning-allowlist-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-gate -->
 Architect completion gate: OpenCode is enabled but the plan is missing at least 3 runnable machine-readable delegation units. Include `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- role: … | files: … | task: …`) in `.traffic-one/plan.md` before emitting `PLAN_READY`. The orchestrator runs `opencode_delegate_from_plan` from that block BEFORE spawning implementers.
@@ -79,28 +75,80 @@ Plan gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add stable unique `id`
 <!-- T1BLOCK:END plan-opencode-queue-policy-gate -->
 
 <!-- T1BLOCK:BEGIN scaffold-stack-gate -->
-Stack gate: this project's stack is React/Vite (Traffic One does not use Next.js or create-react-app). Scaffold the app under `apps/web` with Vite per `.traffic-one/plan.md` and `rules/modes/new-project.md` — do not run create-next-app / create-react-app. See rules/core.md for the approved stack.
+Stack gate: this scaffolder conflicts with the runtime-derived capability contract ({{PROFILE_SUMMARY}}). Use `.traffic-one/plan.md` and `CompiledArchitectureV1` outputs for the detected framework and roots. If the requested stack differs, replan and correct capability evidence before scaffolding.
 <!-- T1BLOCK:END scaffold-stack-gate -->
 
 <!-- T1BLOCK:BEGIN scaffold-plan-gate -->
-Plan gate: run the `senior-architect` subagent FIRST to produce `.traffic-one/plan.md` before scaffolding a new project. On Windsurf/Devin spawn it with `run_subagent` (profile `senior-architect`); it writes the `apps/web` Turborepo monorepo scaffold per the plan. Do not run `create-*` app scaffolders — build on the plan the architect produces.
+Plan gate: run the `senior-architect` subagent FIRST to produce `.traffic-one/plan.md` before scaffolding a new project. On Windsurf/Devin spawn it with `run_subagent` (profile `senior-architect`); the runtime derives the actual framework, roots, allowed roles, skills, and QA before implementation. Do not run `create-*` app scaffolders or invent layout conventions before the compiled plan exists. Runtime contract: {{PROFILE_SUMMARY}}.
 <!-- T1BLOCK:END scaffold-plan-gate -->
 
 <!-- T1BLOCK:BEGIN scaffold-main-agent-plan-gate -->
-Plan gate: `.traffic-one/plan.md` is missing and this project is in Low/main-agent mode. Do NOT call `run_subagent` or another subagent tool. You are the architect in this thread: write the plan and required `.traffic-one/` project memory before root config or workspace scaffolding, then continue with the same ordered phases. Do not run `create-*` app scaffolders before the plan exists.
+Plan gate: `.traffic-one/plan.md` is missing and this project is in Low/main-agent mode. Do NOT call `run_subagent` or another subagent tool. You are the architect in this thread: write the plan and required `.traffic-one/` project memory before root config or workspace scaffolding, then continue with the same ordered phases. Do not run `create-*` app scaffolders before the plan exists. Follow the runtime capability contract, not a frontend default: {{PROFILE_SUMMARY}}.
 <!-- T1BLOCK:END scaffold-main-agent-plan-gate -->
 
-<!-- T1BLOCK:BEGIN assignments-shape-gate -->
-Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. Rewrite it as `{ "version": 1, "runId": "<currentRunId>", "assignments": [{ "role": "senior-frontend", "scope": { "include": ["apps/web/**", "packages/ui/**", "packages/i18n/**", "packages/tailwind-config/**"], "exclude": [] } }, { "role": "senior-backend", "scope": { "include": ["supabase/**", "packages/api-client/**"], "exclude": [] } }] }` and adjust paths to the real Module map.
-<!-- T1BLOCK:END assignments-shape-gate -->
+<!-- T1BLOCK:BEGIN runtime-assignments-owner-gate -->
+Runtime contract gate: `.traffic-one/runs/<runId>/assignments.json` is generated atomically from CompiledArchitectureV1 and VerificationContractV2. Agents and the parent may not create, edit, widen, or replace it; change ArchitectureInputV1 and re-run PLAN_READY compilation instead.
+<!-- T1BLOCK:END runtime-assignments-owner-gate -->
 
-<!-- T1BLOCK:BEGIN assignments-roles-gate -->
-Assignments gate: {{ERRORS}}.
-<!-- T1BLOCK:END assignments-roles-gate -->
+<!-- T1BLOCK:BEGIN architecture-input-gate -->
+Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: {{ERRORS}}.
+<!-- T1BLOCK:END architecture-input-gate -->
 
-<!-- T1BLOCK:BEGIN assignments-owner-gate -->
-Assignments gate: `.traffic-one/runs/<runId>/assignments.json` is architect/orchestrator-owned and must not be changed by `{{ROLE}}` after `PLAN_READY`. Surface the needed scope change in the role digest instead.
-<!-- T1BLOCK:END assignments-owner-gate -->
+<!-- T1BLOCK:BEGIN architecture-assignment-gate -->
+Architecture assignment gate: the runtime-compiled outputs are not covered before spawn. {{ERRORS}}. Amend semantic ArchitectureInputV1 and re-run PLAN_READY compilation; never edit or widen runtime-owned assignments.
+<!-- T1BLOCK:END architecture-assignment-gate -->
+
+<!-- T1BLOCK:BEGIN architecture-contract-gate -->
+Architecture contract gate: do not emit `PLAN_READY` until the run's `architecture-input-v1.json` is valid and runtime compilation succeeds. {{ERROR}}. The architect may change only semantic routes/modules/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.
+<!-- T1BLOCK:END architecture-contract-gate -->
+
+<!-- T1BLOCK:BEGIN verification-contract-scan-gate -->
+Verification contract gate: STRUCT_SCAN_INCOMPLETE ({{ERROR}}). Runtime could not derive the complete diff from the immutable baseline, so `PLAN_READY` is forbidden.
+<!-- T1BLOCK:END verification-contract-scan-gate -->
+
+<!-- T1BLOCK:BEGIN verification-contract-refresh-gate -->
+Verification refresh gate: `IMPLEMENTED` is forbidden because runtime could not rederive and atomically republish VerificationContractV2 from the immutable baseline ({{ERROR}}). Repair the semantic plan or runtime prerequisite and retry the same digest; stale UI-impact requirements never reach QA.
+<!-- T1BLOCK:END verification-contract-refresh-gate -->
+
+<!-- T1BLOCK:BEGIN bootstrap-publication-gate -->
+Bootstrap gate: the parent could not atomically refresh the role/rule/skill and work-unit envelopes against the compiled architecture and verification contracts. No implementer may spawn until the immutable envelopes are published.
+<!-- T1BLOCK:END bootstrap-publication-gate -->
+
+<!-- T1BLOCK:BEGIN frontend-structure-hot-gate -->
+Structural gate: {{FINDINGS}}. Entrypoints may only bootstrap the app; route pages must be separate compiled modules. Formatting the same monolith across more lines does not satisfy this gate.
+<!-- T1BLOCK:END frontend-structure-hot-gate -->
+
+<!-- T1BLOCK:BEGIN frontend-structure-scan-incomplete -->
+Frontend completion gate: STRUCT_SCAN_INCOMPLETE after {{SCANNED}} product source files. A truncated scan is never a pass; narrow generated/output roots or split the project contract before re-emitting `IMPLEMENTED`.
+<!-- T1BLOCK:END frontend-structure-scan-incomplete -->
+
+<!-- T1BLOCK:BEGIN frontend-collapse-gate -->
+Frontend completion gate: do not write `IMPLEMENTED` with collapsed source. `{{FILE}}` packs an entire component/route onto one line. Collapsed or minified product source is a defect even when build and typecheck pass. Format it and split routes, pages, features, and shared components according to the compiled architecture before re-emitting `IMPLEMENTED`.
+<!-- T1BLOCK:END frontend-collapse-gate -->
+
+<!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
+Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Numeric LOC/function-count/component-count findings remain warnings during this rollout.
+<!-- T1BLOCK:END frontend-structure-completion-gate -->
+
+<!-- T1BLOCK:BEGIN reviewer-structure-gate -->
+Reviewer gate: `APPROVED` is forbidden while the complete runtime structure report contains errors ({{FINDINGS}}). Review the compiled architecture and request fixes.
+<!-- T1BLOCK:END reviewer-structure-gate -->
+
+<!-- T1BLOCK:BEGIN tester-qa-v2-gate -->
+Tester completion gate: VerificationContractV2 rejected this verdict ({{ERROR}}). Produce fresh risk-proportional evidence; a blocked environment is not `TESTS_GREEN`.
+<!-- T1BLOCK:END tester-qa-v2-gate -->
+
+<!-- T1BLOCK:BEGIN tester-stale-qa-gate -->
+Tester completion gate: do not write `TESTS_GREEN` on a stale QA report. The report was generated at {{GENERATED_AT}} but `{{DIGEST}}` was re-emitted at {{DIGEST_AT}}. Re-run QA against the current implementation and write fresh evidence before re-emitting `TESTS_GREEN`.
+<!-- T1BLOCK:END tester-stale-qa-gate -->
+
+<!-- T1BLOCK:BEGIN tester-qa-build-identity-missing -->
+Tester completion gate: do not write `TESTS_GREEN` when the report does not identify the build served over HTTP. Expected current builds: {{EXPECTED}}. Start the preview on a free strict port owned by this run, record the served fingerprint, and re-run the sweep.
+<!-- T1BLOCK:END tester-qa-build-identity-missing -->
+
+<!-- T1BLOCK:BEGIN tester-qa-build-identity-mismatch -->
+Tester completion gate: the QA sweep validated a different application. Expected {{EXPECTED}}, observed {{OBSERVED}}. Stop the foreign server or bind a free strict port, then re-run before emitting `TESTS_GREEN`.
+<!-- T1BLOCK:END tester-qa-build-identity-mismatch -->
 
 <!-- T1BLOCK:BEGIN run-team-shell -->
 Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt.
@@ -114,16 +162,12 @@ OpenCode/Kilo external-path gate: do not write scratch logs or build output unde
 Run-team enforcement gate: this project was onboarded with `team.mode="subagents"`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not {{ROLE}}. {{RECOVERY}} Do NOT fall back to delegating from inside a worker or rewriting team preferences.
 <!-- T1BLOCK:END run-team-not-subagent -->
 
-<!-- T1BLOCK:BEGIN run-team-not-owned -->
-Run-team enforcement gate: the file `{{FILEPATH}}` is not under any Traffic One role's owned path patterns (senior-frontend: flat root UI/SEO/i18n paths, `apps/*/src|app/`, and `packages/(ui|i18n|utils)/src/`; senior-backend: flat root API/server/service paths, `packages/(api-client|ws-client|utils)/src/`, `services/*/src/`, `apps/*/src/(services|store)/`). If this is a legitimate project layout, the role-pattern definitions in `roleCanWriteFeatureSource` need to be extended.
-<!-- T1BLOCK:END run-team-not-owned -->
-
 <!-- T1BLOCK:BEGIN run-team-scope-conflict -->
-Run-team enforcement gate: `{{TARGET}}` is in `{{OWNER}}`'s assigned scope for this run, not `{{ROLE}}`'s. Each subagent writes only within its own assignment in `.traffic-one/runs/<runId>/assignments.json`. Let the owning role write this file, or split the patch by assignment.
+Run-team enforcement gate: `{{TARGET}}` is in `{{OWNER}}`'s assigned scope for this run, not `{{ROLE}}`'s. Each subagent writes only within its runtime-compiled assignment in `.traffic-one/runs/<runId>/assignments.json`. Let the owning role write the target, or split the patch along the existing compiled work units.
 <!-- T1BLOCK:END run-team-scope-conflict -->
 
 <!-- T1BLOCK:BEGIN run-team-fallback-taken -->
-Run-team enforcement gate: `{{TARGET}}` is outside every role's assigned scope and is already being written by `{{HOLDER}}` in this run. Coordinate so a single role owns this path, or add it to an assignment in `.traffic-one/runs/<runId>/assignments.json`.
+Run-team enforcement gate: `{{TARGET}}` is outside every runtime-compiled role scope and is already being written by `{{HOLDER}}` in this run. Coordinate so one existing work unit owns the path, or stop for semantic replanning and runtime regeneration of assignments before writing it.
 <!-- T1BLOCK:END run-team-fallback-taken -->
 
 <!-- T1BLOCK:BEGIN run-team-wrong-role -->

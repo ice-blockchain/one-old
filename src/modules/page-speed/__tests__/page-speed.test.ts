@@ -6,7 +6,9 @@ import * as path from 'path';
 
 import { postBuildPageSpeed } from '../handler';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import { compileArchitecture } from '../../../shared/architecture-contract';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { compileVerificationContract } from '../../../shared/verification-contract';
 
 function withProject(stateObj: Record<string, unknown>, authed: boolean, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-pagespeed-'));
@@ -50,8 +52,22 @@ function ctxFor(cwd: string, command: string, raw: Record<string, unknown> = {},
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+function writePerformanceContract(cwd: string, state: Record<string, unknown>, runId = 'R'): void {
+  const architecture = compileArchitecture(cwd, runId, state, {
+    schemaVersion: 1,
+    routes: [],
+    modules: [{ id: 'app-shell', name: 'App', kind: 'app-shell' }],
+  });
+  compileVerificationContract(cwd, runId, state, architecture, {
+    changedPaths: [],
+    performanceRisk: true,
+  });
+}
+
 test('page-speed fires after a web production build (authed)', () => {
-  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+  const state = { stack: 'default', frontend: 'react-vite', currentRunId: 'R' };
+  withProject(state, true, (cwd) => {
+    writePerformanceContract(cwd, state);
     const r = postBuildPageSpeed(ctxFor(cwd, 'pnpm build'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
@@ -61,12 +77,20 @@ test('page-speed fires after a web production build (authed)', () => {
   });
 });
 
+test('page-speed is silent after a normal web build without a performance contract', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    assert.equal(postBuildPageSpeed(ctxFor(cwd, 'pnpm build')).kind, 'noop');
+  });
+});
+
 test('page-speed resolves a nested monorepo build to the onboarded workspace root', () => {
-  withProject({ mode: 'new-project', stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+  const state = { mode: 'new-project', stack: 'default', frontend: 'react-vite', currentRunId: 'R' };
+  withProject(state, true, (cwd) => {
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ workspaces: ['apps/*'] }), 'utf8');
     const app = path.join(cwd, 'apps', 'web');
     fs.mkdirSync(app, { recursive: true });
     fs.writeFileSync(path.join(app, 'package.json'), '{}', 'utf8');
+    writePerformanceContract(cwd, state);
 
     const r = postBuildPageSpeed(ctxFor(app, 'pnpm build', {}, cwd));
 

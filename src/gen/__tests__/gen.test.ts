@@ -275,6 +275,9 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
     runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const tester = fs.readFileSync(path.join(dir, 'agents', 'senior-tester.md'), 'utf8');
     const shipper = fs.readFileSync(path.join(dir, 'agents', 'senior-shipper.md'), 'utf8');
+    const architect = fs.readFileSync(path.join(dir, 'agents', 'senior-architect.md'), 'utf8');
+    const backend = fs.readFileSync(path.join(dir, 'agents', 'senior-backend.md'), 'utf8');
+    const reviewer = fs.readFileSync(path.join(dir, 'agents', 'senior-reviewer.md'), 'utf8');
     const orchestrator = fs.readFileSync(
       path.join(dir, 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'),
       'utf8',
@@ -288,29 +291,46 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       'utf8',
     );
 
+    assert.match(testerPrompt, /<IMPLEMENTER_DIGEST_PATHS>/);
+    assert.doesNotMatch(testerPrompt, /Both implementer digests above/);
+    assert.match(orchestrator, /Never wait for or require a digest from a role absent/i);
+    assert.doesNotMatch(orchestrator, /Wait for both to return before Phase 3/);
+    assert.match(architect, /Runtime compiles architecture, verification, assignments/i);
+    assert.match(architect, /Write only:/i);
+    assert.doesNotMatch(architect, /Required workspace scaffold|Assignments manifest \(REQUIRED\)/i);
+    assert.match(testerPrompt, /runtime compiles and hashes those\s+contracts/i);
+    assert.doesNotMatch(testerPrompt, /Also write the assignments manifest|architect may create empty scaffold/i);
+    assert.doesNotMatch(backend, /spawned in parallel with `senior-frontend`/i);
+    assert.match(backend, /backend-only\/CLI\/worker profiles have no\s+frontend sibling/i);
+    assert.match(reviewer, /never a\s+missing frontend\/backend sibling/i);
+
     for (const [name, content] of [
       ['senior tester', tester],
       ['tester spawn template', testerPrompt],
     ] as const) {
-      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report\.json/i, `${name} names the canonical report`);
-      assert.match(content, /schemaVersion(?::|`)\s*1/i, `${name} requires QaReportV1`);
-      assert.match(content, /390[^\n]*768[^\n]*1440|390[\s\S]{0,300}768[\s\S]{0,300}1440/, `${name} requires the full viewport matrix`);
-      assert.match(content, /blocked:browser-unavailable/, `${name} distinguishes browser unavailability`);
-      assert.match(content, /blocked:sandbox/, `${name} preserves sandbox blockers`);
-      assert.match(content, /blocked:usage-limit/, `${name} preserves usage blockers`);
-      assert.match(content, /blocked:timeout/, `${name} preserves timeout blockers`);
-      assert.match(content, /Every blocked (?:outcome|status)[\s\S]{0,60}`TESTS_FAILING`/i, `${name} cannot return green when blocked`);
-      assert.match(content, /no\s+frontend implementer digest/i, `${name} limits the backend-only exemption`);
+      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report-v2\.json/i, `${name} names the canonical report`);
+      assert.match(content, /schemaVersion(?::|`)\s*2/i, `${name} requires QaReportV2`);
+      for (const impact of ['none', 'nonvisual', 'behavioral', 'visual', 'native-ui']) {
+        assert.match(content, new RegExp(`\\b${impact}\\b`), `${name} covers ${impact}`);
+      }
+      assert.match(content, /behavioral[\s\S]{0,300}(?:(?:does not require|without)\s+screenshots?|screenshots?\s+(?:are\s+)?optional)/i,
+        `${name} does not force behavioral screenshots`);
+      assert.match(content, /390[\s\S]{0,120}1440[\s\S]{0,140}768[\s\S]{0,120}(?:only|tablet)/i,
+        `${name} makes the tablet width conditional`);
+      assert.match(content, /blocked-environment[\s\S]{0,160}`TESTS_FAILING`/i,
+        `${name} cannot return green when the environment is blocked`);
+      assert.match(content, /interactive browser plugin[\s\S]{0,80}optional/i,
+        `${name} keeps the interactive browser optional`);
+      assert.match(content, /local (?:headless )?Playwright/i,
+        `${name} uses local Playwright for browser behavior`);
     }
-    assert.match(tester, /record that evidence in `tester\.md`/i,
-      'fresh-build proof is recorded in the digest');
     // Freshness on disk proves only that a build exists — not that the base URL
     // served it. The one field that answers "which app answered?" is mandatory,
     // and so is owning the port (a leftover preview on 4173 passed 21/21 checks
     // against another project's app in a measured run).
-    assert.match(tester, /`verifiedBuild`[\s\S]{0,400}observed OVER HTTP/i,
+    assert.match(tester, /expected\s+fingerprint[\s\S]{0,120}(?:served fingerprint|fingerprint observed over HTTP)/i,
       'the tester must record the build identity it observed over HTTP');
-    assert.match(tester, /--strictPort|free port/i,
+    assert.match(tester, /strict port|free port/i,
       'the tester must own the port it sweeps rather than assume a well-known one');
     assert.match(digestContract, /verdict:[^\n]*SHIPPED[^\n]*FAILED/i,
       'canonical digest contract permits a failed shipper verdict');
@@ -321,15 +341,16 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       ['senior shipper', shipper],
       ['shipper spawn template', testerPrompt],
     ] as const) {
-      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report\.json/i, `${name} names the canonical QA report`);
-      assert.match(content, /QaReportV1/i, `${name} requires the strict QA contract`);
-      assert.match(content, /no frontend implementer digest/i, `${name} limits the backend-only exemption`);
+      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report-v2\.json/i, `${name} names the canonical QA report`);
+      assert.match(content, /QaReportV2/i, `${name} requires the strict QA contract`);
+      assert.match(content, /matching\s+(?:run\/)?contract\/source\s+hashes/i,
+        `${name} checks runtime-owned identity`);
       assert.match(content, /do not (?:stamp|deploy)|STOP/i, `${name} blocks shipping without QA`);
     }
 
-    assert.match(orchestrator, /Codex parent-browser bridge/);
-    assert.match(orchestrator, /same[^\n]*`senior-tester` agent/i);
-    assert.match(orchestrator, /consumes no\s+reviewer\/tester fix cycle/i);
+    assert.match(orchestrator, /interactive browser[\s\S]{0,100}never part of the mandatory path/i);
+    assert.match(orchestrator, /`senior-tester` owns the mechanical sweep/i);
+    assert.match(orchestrator, /local Playwright/i);
     assert.match(orchestrator, /Unresolved-run directive/);
     assert.match(orchestrator, /preserve currentRunId/i);
     assert.match(orchestrator, /verification blocked/);
@@ -391,9 +412,9 @@ test('generated role contracts agree on no-op test scripts and forbid interrupti
       tester: fs.readFileSync(path.join(dir, 'agents', 'senior-tester.md'), 'utf8'),
       qualityTooling: fs.readFileSync(path.join(dir, 'rules', 'common', 'quality-tooling.md'), 'utf8'),
       newProject: fs.readFileSync(path.join(dir, 'rules', 'modes', 'new-project-setup.md'), 'utf8'),
-      // Mandatory architect skill for stack=default / frontend=react-vite, and
-      // the authority for the scaffold's exact package.json content — the first
-      // pass of this fix left the old rule live here, so it must be scanned too.
+      // Profile-specific implementation guidance remains an authority for the
+      // scaffold's package.json content, so it is scanned independently from
+      // the runtime-owned architect contract.
       monorepo: fs.readFileSync(
         path.join(dir, 'skills-catalog', 'monorepo-architecture', 'SKILL.md'),
         'utf8',
@@ -412,9 +433,13 @@ test('generated role contracts agree on no-op test scripts and forbid interrupti
       assert.ok(!/no-op is\s+allowed|allowed, absence is not/i.test(content),
         `${name} still permits a no-op test script`);
     }
-    // The architect must say config-only packages omit the script.
-    assert.match(docs.architect, /omits? `?test`? entirely/i);
-    assert.match(docs.qualityTooling, /omits? `?test`? entirely/i);
+    // The architect does not author packages or test scripts at all; runtime
+    // assigns those scaffold outputs to an eligible implementer.
+    assert.match(docs.architect, /Runtime compiles architecture, verification, assignments/i);
+    assert.match(docs.architect, /Never create or edit:/i);
+    assert.doesNotMatch(docs.architect, /Required workspace scaffold/i);
+    assert.doesNotMatch(docs.architect, /Assignments manifest \(REQUIRED\)/i);
+    assert.match(docs.qualityTooling, /config-only packages (?:may )?omit (?:the `?test`? script|it)/i);
     assert.match(docs.monorepo, /omits? `?test`? entirely/i);
     // The tester must not demand a ceremony test for a package with no source.
     assert.match(docs.tester, /not a finding/i);

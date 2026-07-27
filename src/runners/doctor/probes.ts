@@ -6,6 +6,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { isMaintenanceTerminal } from '../../shared/maintenance-terminal';
+import { effectiveLegacyRunStatus } from '../../shared/run-settlement';
+import { legacyCustomBackendMigration } from '../../shared/architecture-contract';
 
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
@@ -153,7 +156,7 @@ function probeRunId(cwd: string, state: Rec | null): RunIdProbe {
   if (fs.existsSync(runJson)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(runJson, 'utf8')) as Rec;
-      status = typeof parsed.status === 'string' ? parsed.status : null;
+      status = effectiveLegacyRunStatus(parsed) || null;
     } catch {
       status = null;
     }
@@ -162,9 +165,11 @@ function probeRunId(cwd: string, state: Rec | null): RunIdProbe {
   let maintenanceOverallOutcome: string | null = null;
   let maintenanceOpencodeOutcome: string | null = null;
   let maintenanceFallbackAllowed = false;
+  let maintenanceRecord: Rec | null = null;
   if (fs.existsSync(maintenanceJson)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(maintenanceJson, 'utf8')) as Rec;
+      maintenanceRecord = parsed;
       maintenanceOutcome = typeof parsed.outcome === 'string' ? parsed.outcome : null;
       maintenanceOverallOutcome = typeof parsed.overallOutcome === 'string' ? parsed.overallOutcome : null;
       maintenanceOpencodeOutcome = typeof parsed.opencodeOutcome === 'string' ? parsed.opencodeOutcome : null;
@@ -173,9 +178,11 @@ function probeRunId(cwd: string, state: Rec | null): RunIdProbe {
       maintenanceOutcome = null;
     }
   }
-  const terminalMaintenance = new Set(['success', 'completed', 'failed', 'blocked', 'skipped', 'fallback-paid']);
   const maintenanceTerminalOrFallbackPending = fs.existsSync(maintenanceJson)
-    && (maintenanceFallbackAllowed || terminalMaintenance.has(maintenanceOverallOutcome || maintenanceOutcome || ''));
+    && (
+      maintenanceOverallOutcome === 'fallback-pending'
+      || isMaintenanceTerminal(maintenanceRecord)
+    );
   return {
     currentRunId: raw,
     runDirExists: fs.existsSync(runDir),
@@ -207,6 +214,10 @@ export interface ProjectProbe {
   // How a delegation run would resolve the OpenCode CLI right now: the managed
   // install, a PATH binary (unpinned version), or nothing.
   openCodeCli: 'managed' | 'path' | 'missing';
+  legacyCapabilityMigration: {
+    status: 'not-applicable' | 'auto-correctable' | 'ambiguous';
+    message: string | null;
+  };
 }
 
 function listNestedTrafficOneRoots(cwd: string): string[] {
@@ -251,6 +262,8 @@ export function probeProject(cwd: string): ProjectProbe {
   const gitDir = safeStat(path.join(cwd, '.git'));
   const gitnexusOut = safeStat(path.join(cwd, GITNEXUS_REL));
   const graphifyOut = safeStat(path.join(cwd, GRAPHIFY_REPORT_REL));
+  const runState = probeRunId(cwd, normalizedState || state);
+  const migration = legacyCustomBackendMigration(cwd, state || {});
   return {
     cwd,
     hasState: !!state,
@@ -265,11 +278,16 @@ export function probeProject(cwd: string): ProjectProbe {
       gitnexus: gitnexusOut ? { mtimeMs: gitnexusOut.mtimeMs } : null,
       graphify: graphifyOut ? { mtimeMs: graphifyOut.mtimeMs } : null,
     },
-    runState: probeRunId(cwd, normalizedState || state),
+    runState,
     nestedTrafficOneRoots: listNestedTrafficOneRoots(cwd),
     openCodeCli: fs.existsSync(managedNpmBin('opencode', 'opencode'))
       ? 'managed'
       : (which('opencode') ? 'path' : 'missing'),
+    legacyCapabilityMigration: migration.changed
+      ? { status: 'auto-correctable', message: 'no frontend artifacts were detected' }
+      : migration.ambiguous
+        ? { status: 'ambiguous', message: migration.message || null }
+        : { status: 'not-applicable', message: null },
   };
 }
 

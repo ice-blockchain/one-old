@@ -14,6 +14,8 @@ import { obj, type Rec } from '../../shared/obj';
 import { parseApplyPatch, patchOperationPaths, patchTextFromToolInput } from '../../shared/apply-patch';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
+import { resolveToolScope } from '../../shared/tool-scope';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 
 const DENY_PREFIX = 'traffic-one — workspace boundary blocked';
 
@@ -109,6 +111,14 @@ export function workspaceBoundaryGuard(ctx: Ctx): HookResult {
   const parsedInput = parsedToolInput(ctx.input.tool);
   const rawName = normalizedToolName(ctx.input.tool?.rawName || raw.tool_name || raw.toolName);
   const isApplyPatch = /^apply_patch$/i.test(rawName);
+  const toolScope = resolveToolScope(ctx);
+  if (toolScope.unresolvedWriteTargets.length > 0) {
+    return deny(
+      `${DENY_PREFIX}: a shell write target contains an unresolved environment or command expansion `
+      + `(${toolScope.unresolvedWriteTargets.join(', ')}). `
+      + 'Use a literal path, $PWD/..., or ${PWD}/... so the boundary can be proven before the tool runs.',
+    );
+  }
   // Some hosts omit workspaceRoot. Reads keep their established behavior, but
   // apply_patch is a write boundary and must still be scoped to the resolved
   // active project so an absolute second target cannot escape to a sibling.
@@ -125,6 +135,19 @@ export function workspaceBoundaryGuard(ctx: Ctx): HookResult {
   addCandidatesFromRecord(candidates, raw, { includeCwd: false, includeGlobPattern });
   addCandidatesFromRecord(candidates, rawToolInput, { includeCwd: true, includeGlobPattern });
   addCandidatesFromRecord(candidates, parsedInput, { includeCwd: true, includeGlobPattern });
+  // Shell payloads can cross the workspace without a file_path field (`cd
+  // /sibling && touch x`, `git -C /sibling …`, redirections, quoted paths).
+  // Reuse the same non-evaluating extractor as the stand-down/project resolver.
+  for (const target of toolScope.targets) {
+    // Traffic One's exact recovery/runtime command may live in the installed
+    // plugin (or this authoring checkout), outside Cursor's active workspace.
+    // It is executable policy infrastructure, not a sibling project target.
+    // Keep explicit file/search inputs governed; exempt only paths discovered
+    // inside shell command text and already proven to be non-project space.
+    const targetRoot = target.directoryHint ? target.path : path.dirname(target.path);
+    if (target.source === 'command' && isNonProjectRoot(targetRoot)) continue;
+    addStringCandidate(candidates, target.path);
+  }
   if (isApplyPatch) {
     const patchText = patchTextFromToolInput(ctx.input.tool?.patchText, raw.tool_input, raw.toolInput, raw.input, raw, parsedInput);
     const parsedPatch = parseApplyPatch(patchText);

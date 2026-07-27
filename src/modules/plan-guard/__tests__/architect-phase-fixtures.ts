@@ -2,6 +2,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+  type ArchitectureInputV1,
+} from '../../../shared/architecture-contract';
+import { compileVerificationContract } from '../../../shared/verification-contract';
+
 const DEFAULT_STATE = {
   mode: 'new-project',
   stack: 'default',
@@ -68,13 +76,24 @@ export function writeArchitectPhaseComplete(dir: string, runId: string, state: R
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'runs', runId), { recursive: true });
   fs.mkdirSync(path.join(t1, 'digests', runId), { recursive: true });
-  fs.writeFileSync(path.join(t1, 'runs', runId, 'assignments.json'), JSON.stringify({
-    version: 1,
-    runId,
-    assignments: [
-      { role: 'senior-frontend', scope: { include: ['apps/web/**', 'packages/ui/**', 'packages/i18n/**'] } },
-      { role: 'senior-backend', scope: { include: ['supabase/**', 'packages/api-client/**'] } },
+  const hasUi = typeof state.frontend !== 'string' || state.frontend !== 'none'
+    || (typeof state.mobile === 'object' && state.mobile !== null
+      && (state.mobile as Record<string, unknown>).framework !== 'none');
+  const architecture: ArchitectureInputV1 = hasUi ? {
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [
+      { id: 'app-shell', name: 'App', kind: 'app-shell' },
+      { id: 'home', name: 'Home', kind: 'page' },
     ],
-  }), 'utf8');
+  } : {
+    schemaVersion: 1,
+    routes: [],
+    modules: [{ id: 'app-service', name: 'App Service', kind: 'service' }],
+  };
+  fs.writeFileSync(architectureInputPath(dir, runId), JSON.stringify(architecture), 'utf8');
+  const compiled = compileArchitectureForRun(dir, runId, state);
+  const verification = compileVerificationContract(dir, runId, state, compiled, { changedPaths: [] });
+  publishRuntimeAssignments(dir, compiled, verification.contractHash);
   fs.writeFileSync(path.join(t1, 'digests', runId, 'architect.md'), 'verdict: PLAN_READY\n', 'utf8');
 }

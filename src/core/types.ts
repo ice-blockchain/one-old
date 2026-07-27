@@ -47,6 +47,10 @@ export interface ToolInput {
 export interface HookInput {
   readonly event: CanonicalEvent;
   readonly host: HostId;
+  // Adapter-authenticated native hook/wrapper point. This stays distinct from
+  // the canonical event because several hosts collapse multiple concrete
+  // before/after hooks into PreToolUse/PostToolUse.
+  readonly hostHookPoint?: string;
   readonly cwd: string;
   // The host's AUTHORITATIVE workspace root, when it declares one (Cursor's
   // `workspace_roots`). Project-root resolution never climbs above it, so a hook

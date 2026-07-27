@@ -8,6 +8,9 @@ import * as path from 'path';
 import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
+import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
+import { currentHostModelTarget } from '../../../shared/current-model-tiers';
+import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 
 function sh(cwd: string, cmd: string, args: string[]): void {
   spawnSync(cmd, args, { cwd, encoding: 'utf8', stdio: 'ignore' });
@@ -50,6 +53,23 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
     if (savedRoot === undefined) delete env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else env.TRAFFIC_ONE_TOOLCHAIN_ROOT = savedRoot;
     if (savedPwd === undefined) delete env.PWD; else env.PWD = savedPwd;
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function withCodexProPolicyEnv(
+  fn: (target: ReturnType<typeof currentHostModelTarget>) => void,
+): void {
+  const previousHost = process.env.TRAFFIC_ONE_HOST;
+  const previousPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_HOST = 'codex';
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    fn(currentHostModelTarget('codex', 'pro', process.env));
+  } finally {
+    if (previousHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = previousHost;
+    if (previousPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = previousPlan;
   }
 }
 
@@ -744,46 +764,81 @@ test('delegateFromPlan ignores stale plan queues in maintenance runs', () => {
 });
 
 test('delegateFromPlan delegates in maintenance when the architect wrote a fresh run-scoped queue', () => {
-  withRepo({ openCode: { enabled: true } }, (dir) => {
-    stubOpencode('multi');
-    const memoryDir = '.traffic' + '-one';
-    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
-    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
-      mode: 'existing-codebase',
-      onboardingComplete: true,
-      lifecycle: { phase: 'maintenance' },
-      currentRunId: 'maint-fresh',
-    }), 'utf8');
-    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
-      '<!-- opencode-delegate:start -->',
-      '- id: revamp-ui | role: frontend | files: unit-1.txt | task: build a revamp unit',
-      '<!-- opencode-delegate:end -->',
-    ].join('\n'), 'utf8');
-    // A run-scoped assignments.json PLUS architect-run evidence (digest) is the
-    // architect's freshness proof: together they flip `hasFreshArchitectQueueForRun`
-    // true so the maintenance from-plan batch delegates THIS run's queue instead
-    // of suppressing it. (The manifest alone doesn't count — an orchestrator can
-    // hand-copy it; observed 11c.)
-    fs.mkdirSync(path.join(dir, memoryDir, 'runs', 'maint-fresh'), { recursive: true });
-    fs.writeFileSync(path.join(dir, memoryDir, 'runs', 'maint-fresh', 'assignments.json'), JSON.stringify({
-      version: 1,
-      runId: 'maint-fresh',
-      createdBy: 'senior-architect',
-      assignments: [{ role: 'senior-frontend', scope: { include: ['unit-1.txt'], exclude: [] } }],
-    }), 'utf8');
-    fs.mkdirSync(path.join(dir, memoryDir, 'digests', 'maint-fresh'), { recursive: true });
-    fs.writeFileSync(path.join(dir, memoryDir, 'digests', 'maint-fresh', 'architect.md'),
-      '# architect digest — run maint-fresh\n\nverdict: PLAN_READY\n', 'utf8');
+  withCodexProPolicyEnv((target) => {
+    withRepo({ openCode: { enabled: true } }, (dir) => {
+      stubOpencode('multi');
+      const memoryDir = '.traffic' + '-one';
+      const state = {
+        mode: 'existing-codebase',
+        stack: 'default',
+        frontend: 'react-vite',
+        backend: 'supabase',
+        onboardingComplete: true,
+        lifecycle: { phase: 'maintenance' },
+        currentRunId: 'maint-fresh',
+        performance: {
+          level: 'balanced',
+          target: {
+            plan: 'pro',
+            appliedFingerprint: target.appliedFingerprint,
+            configVersion: target.configVersion,
+          },
+        },
+        team: { mode: 'subagents', approved: true },
+      };
+      fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state), 'utf8');
+      fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+        '<!-- opencode-delegate:start -->',
+        '- id: revamp-ui | role: frontend | files: unit-1.txt | task: build a revamp unit',
+        '<!-- opencode-delegate:end -->',
+      ].join('\n'), 'utf8');
+      // A run-scoped assignments.json PLUS architect-run evidence (digest) is the
+      // architect's freshness proof: together they flip `hasFreshArchitectQueueForRun`
+      // true so the maintenance from-plan batch delegates THIS run's queue instead
+      // of suppressing it. (The manifest alone doesn't count — an orchestrator can
+      // hand-copy it; observed 11c.)
+      fs.mkdirSync(path.join(dir, memoryDir, 'runs', 'maint-fresh'), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, 'runs', 'maint-fresh', 'assignments.json'), JSON.stringify({
+        version: 1,
+        runId: 'maint-fresh',
+        createdBy: 'senior-architect',
+        assignments: [{ role: 'senior-frontend', scope: { include: ['unit-1.txt'], exclude: [] } }],
+      }), 'utf8');
+      fs.mkdirSync(path.join(dir, memoryDir, 'digests', 'maint-fresh'), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, 'digests', 'maint-fresh', 'architect.md'),
+        '# architect digest — run maint-fresh\n\nverdict: PLAN_READY\n', 'utf8');
+      assert.ok(ensureRunModelPolicy(dir, 'maint-fresh', 'codex', state, process.env));
 
-    const r = delegateFromPlan(dir);
+      const r = delegateFromPlan(dir);
 
-    assert.equal(r.total, 1);
-    assert.equal(r.delegated, 1);
-    assert.notEqual(r.units[0]?.id, '__no_units__');
+      assert.equal(r.total, 1);
+      assert.equal(r.delegated, 1);
+      assert.notEqual(r.units[0]?.id, '__no_units__');
+      const bootstrap = readActiveRunBootstrap(dir, 'maint-fresh', 'senior-frontend');
+      assert.ok(bootstrap);
+      assert.equal(bootstrap.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+      assert.deepEqual(bootstrap.workUnit.outputs, [
+        '.traffic-one/digests/maint-fresh/frontend.md',
+        'unit-1.txt',
+      ]);
+      const marker = JSON.parse(fs.readFileSync(
+        path.join(dir, memoryDir, 'runs', 'maint-fresh', 'maintenance.json'),
+        'utf8',
+      )) as any;
+      assert.equal(marker.role, 'senior-frontend');
+      assert.equal(marker.overallOutcome, 'code-delivered');
+      assert.equal(marker.fallbackAllowed, false);
+      const settlement = JSON.parse(fs.readFileSync(
+        path.join(dir, memoryDir, 'runs', 'maint-fresh', 'settlement-v2.json'),
+        'utf8',
+      )) as any;
+      assert.equal(settlement.status, 'code-delivered');
+    });
   });
 });
 
-test('maintenance ad-hoc delegation writes a terminal maintenance marker with failureKind', () => {
+test('maintenance delegation without a parent-published work-unit contract fails closed', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('error');
     const memoryDir = ['.traffic', '-one'].join('');
@@ -795,14 +850,224 @@ test('maintenance ad-hoc delegation writes a terminal maintenance marker with fa
       lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-01-01T00:00:00Z' },
     }), 'utf8');
 
-    const r = delegate(dir, { role: 'quick-fix', task: 'try small fix', runId: 'maint-1' });
+    const r = delegate(dir, {
+      role: 'quick-fix',
+      task: 'try small fix',
+      runId: 'maint-1',
+      allowedFiles: 'README.md',
+    });
 
     assert.equal(r.action, 'failed');
-    assert.equal(r.failureKind, 'opencode-error');
+    assert.equal(r.failureKind, 'diff-rejected');
     const marker = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'maintenance.json'), 'utf8')) as any;
     assert.equal(marker.outcome, 'failed');
+    assert.equal(marker.fallbackAllowed, false);
+    assert.equal(marker.failureKind, 'diff-rejected');
+    assert.equal(marker.overallOutcome, 'failed');
+    assert.equal(marker.workUnitContractHash, undefined);
+    assert.equal(marker.allowlistHash, undefined);
+    assert.match(marker.error, /no valid parent-published WorkUnitContract/);
+    const settlement = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'settlement-v2.json'), 'utf8')) as any;
+    assert.equal(settlement.status, 'failed');
+    assert.match(settlement.reason, /no valid parent-published WorkUnitContract/);
+  });
+});
+
+test('maintenance failure reuses an exact parent-published contract for fallback-pending', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('error');
+    const memoryDir = ['.traffic', '-one'].join('');
+    const state = {
+      version: 1,
+      mode: 'existing-codebase',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'python',
+      currentRunId: 'maint-bound',
+      lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-01-01T00:00:00Z' },
+    };
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state), 'utf8');
+    const bootstrap = ensureRunBootstrap(dir, 'maint-bound', 'quick-fix', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'test-parent',
+      modelPolicyId: 'test-policy',
+      boundedOutputs: ['README.md'],
+      boundedAllowlist: ['README.md'],
+    });
+    assert.ok(bootstrap);
+
+    const r = delegate(dir, {
+      role: 'quick-fix',
+      task: 'try small fix',
+      runId: 'maint-bound',
+      allowedFiles: 'README.md',
+    });
+    assert.equal(r.action, 'failed');
+
+    const marker = JSON.parse(fs.readFileSync(
+      path.join(dir, memoryDir, 'runs', 'maint-bound', 'maintenance.json'),
+      'utf8',
+    )) as any;
     assert.equal(marker.fallbackAllowed, true);
-    assert.equal(marker.failureKind, 'opencode-error');
+    assert.equal(marker.overallOutcome, 'fallback-pending');
+    assert.equal(marker.workUnitContractHash, bootstrap?.workUnit.contractHash);
+    assert.match(marker.allowlistHash, /^[a-f0-9]{64}$/);
+    const settlement = JSON.parse(fs.readFileSync(
+      path.join(dir, memoryDir, 'runs', 'maint-bound', 'settlement-v2.json'),
+      'utf8',
+    )) as any;
+    assert.equal(settlement.status, 'active');
+    assert.equal(settlement.reason, 'fallback-pending');
+    assert.equal(settlement.fallback.workUnitContractHash, bootstrap?.workUnit.contractHash);
+    assert.equal(settlement.fallback.allowlistHash, marker.allowlistHash);
+  });
+});
+
+test('maintenance preflight publishes the exact quick-fix WorkUnit before OpenCode can fail', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('error');
+    const previousHost = process.env.TRAFFIC_ONE_HOST;
+    const previousPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+    process.env.TRAFFIC_ONE_HOST = 'codex';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    try {
+      const target = currentHostModelTarget('codex', 'pro', process.env);
+      const state = {
+        version: 1,
+        mode: 'existing-codebase',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'python',
+        currentRunId: 'maint-preflight',
+        lifecycle: { phase: 'maintenance' },
+        performance: {
+          level: 'balanced',
+          target: {
+            plan: 'pro',
+            appliedFingerprint: target.appliedFingerprint,
+            configVersion: target.configVersion,
+          },
+        },
+        team: { mode: 'subagents', approved: true },
+      };
+      const memoryDir = ['.traffic', '-one'].join('');
+      fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state));
+      assert.ok(ensureRunModelPolicy(dir, 'maint-preflight', 'codex', state, process.env));
+      assert.equal(readActiveRunBootstrap(dir, 'maint-preflight', 'quick-fix'), null);
+
+      const result = delegate(dir, {
+        role: 'quick-fix',
+        task: 'try the exact README fix',
+        runId: 'maint-preflight',
+        allowedFiles: 'README.md',
+      });
+      assert.equal(result.action, 'failed');
+      const bootstrap = readActiveRunBootstrap(dir, 'maint-preflight', 'quick-fix');
+      assert.ok(bootstrap);
+      assert.equal(bootstrap.evidenceSource, 'opencode-maintenance-preflight');
+      assert.deepEqual(bootstrap.workUnit.outputs, [
+        '.traffic-one/digests/maint-preflight/quick-fix.md',
+        'README.md',
+      ]);
+      const marker = JSON.parse(fs.readFileSync(
+        path.join(dir, memoryDir, 'runs', 'maint-preflight', 'maintenance.json'),
+        'utf8',
+      )) as any;
+      assert.equal(marker.overallOutcome, 'fallback-pending');
+      assert.equal(marker.workUnitContractHash, bootstrap.workUnit.contractHash);
+      assert.ok(marker.fallbackSourceBaseline);
+    } finally {
+      if (previousHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+      else process.env.TRAFFIC_ONE_HOST = previousHost;
+      if (previousPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+      else process.env.TRAFFIC_ONE_USER_PLAN = previousPlan;
+    }
+  });
+});
+
+test('maintenance frontend failure publishes an exact bounded WorkUnit and enables only its paid fallback', () => {
+  withCodexProPolicyEnv((target) => {
+    withRepo({ openCode: { enabled: true } }, (dir) => {
+      stubOpencode('error');
+      const memoryDir = ['.traffic', '-one'].join('');
+      const state = {
+        version: 1,
+        mode: 'existing-codebase',
+        stack: 'default',
+        frontend: 'react-vite',
+        backend: 'supabase',
+        currentRunId: 'maint-frontend-fail',
+        lifecycle: { phase: 'maintenance' },
+        performance: {
+          level: 'balanced',
+          target: {
+            plan: 'pro',
+            appliedFingerprint: target.appliedFingerprint,
+            configVersion: target.configVersion,
+          },
+        },
+        team: { mode: 'subagents', approved: true },
+      };
+      fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state));
+      assert.ok(ensureRunModelPolicy(dir, 'maint-frontend-fail', 'codex', state, process.env));
+
+      const result = delegate(dir, {
+        role: 'frontend',
+        task: 'try the exact README frontend fix',
+        runId: 'maint-frontend-fail',
+        allowedFiles: 'README.md',
+      });
+      assert.equal(result.action, 'failed');
+      const bootstrap = readActiveRunBootstrap(dir, 'maint-frontend-fail', 'senior-frontend');
+      assert.ok(bootstrap);
+      assert.equal(bootstrap.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+      assert.deepEqual(bootstrap.workUnit.outputs, [
+        '.traffic-one/digests/maint-frontend-fail/frontend.md',
+        'README.md',
+      ]);
+      const marker = JSON.parse(fs.readFileSync(
+        path.join(dir, memoryDir, 'runs', 'maint-frontend-fail', 'maintenance.json'),
+        'utf8',
+      )) as any;
+      assert.equal(marker.role, 'senior-frontend');
+      assert.equal(marker.overallOutcome, 'fallback-pending');
+      assert.equal(marker.fallbackAllowed, true);
+      assert.equal(marker.workUnitContractHash, bootstrap.workUnit.contractHash);
+      assert.ok(marker.fallbackSourceBaseline);
+    });
+  });
+});
+
+test('maintenance frontend delegation without a parent model policy fails before OpenCode', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('edit');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
+      version: 1,
+      mode: 'existing-codebase',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      currentRunId: 'maint-frontend-no-policy',
+      lifecycle: { phase: 'maintenance' },
+    }));
+
+    const result = delegate(dir, {
+      role: 'frontend',
+      task: 'must not reach OpenCode',
+      runId: 'maint-frontend-no-policy',
+      allowedFiles: 'foo.txt',
+    });
+    assert.equal(result.action, 'failed');
+    assert.equal(result.failureKind, 'diff-rejected');
+    assert.match(result.error || '', /no immutable parent model policy/i);
+    assert.equal(fs.existsSync(path.join(dir, 'foo.txt')), false);
+    assert.equal(readActiveRunBootstrap(dir, 'maint-frontend-no-policy', 'senior-frontend'), null);
   });
 });
 

@@ -8,6 +8,12 @@ import { writeCursorAgentFiles } from '../cursor-agents';
 import { cursorAgentModel } from '../cursor-agent-model';
 
 type Rec = Record<string, unknown>;
+const FULL_STATE = {
+  stack: 'default',
+  frontend: 'react-vite',
+  backend: 'supabase',
+  mobile: { framework: 'none' },
+};
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-agents-'));
@@ -16,7 +22,7 @@ function tmp(): string {
 test('writeCursorAgentFiles writes model-agnostic role contracts without local preferences', () => {
   const dir = tmp();
   try {
-    const n = writeCursorAgentFiles(dir, {} as Rec);
+    const n = writeCursorAgentFiles(dir, FULL_STATE as Rec);
     assert.ok(n >= 1, 'wrote at least one agent file');
     const agentsDir = path.join(dir, '.cursor', 'agents');
     assert.ok(fs.existsSync(path.join(agentsDir, 'senior-architect.md')), 'architect agent file exists');
@@ -57,8 +63,8 @@ test('writeCursorAgentFiles output is independent of local performance and prese
     const custom = path.join(agentsDir, 'senior-architect.md');
     fs.writeFileSync(custom, '---\nname: custom\n---\nuser profile\n', 'utf8');
 
-    writeCursorAgentFiles(dir, { team: { mode: 'main-agent' }, performance: { level: 'low' } } as Rec);
-    writeCursorAgentFiles(other, { team: { mode: 'subagents' }, performance: { level: 'high' } } as Rec);
+    writeCursorAgentFiles(dir, { ...FULL_STATE, team: { mode: 'main-agent' }, performance: { level: 'low' } } as Rec);
+    writeCursorAgentFiles(other, { ...FULL_STATE, team: { mode: 'subagents' }, performance: { level: 'high' } } as Rec);
 
     assert.equal(fs.readFileSync(custom, 'utf8'), '---\nname: custom\n---\nuser profile\n');
     assert.equal(

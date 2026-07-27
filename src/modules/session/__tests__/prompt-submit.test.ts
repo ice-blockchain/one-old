@@ -591,6 +591,21 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
   });
 });
 
+test('Codex trivial maintenance publishes the complete quick_fix spawn contract', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctxHost(cwd, 'change the button copy to Continue', 'codex'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('task_name: "quick_fix"'), 'structured quick-fix identity is explicit');
+      assert.ok(r.context.includes('fork_turns: "none"'), 'fresh spawn never inherits full history');
+      assert.ok(r.context.includes('model: "gpt-5.6-terra"'), 'spawn uses the exact runtime policy model');
+      assert.ok(r.context.includes('never retry with a generic task name'), 'unavailable models do not authorize a generic fallback');
+    }
+  });
+});
+
 test('maintenance runtime-control prompts stay with the parent and do not mint a worker run', () => {
   for (const prompt of [
     'start the dev server',

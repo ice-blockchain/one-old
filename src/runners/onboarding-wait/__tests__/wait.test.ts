@@ -348,6 +348,49 @@ test('Windsurf first-run architect directive uses the always-registered general 
     assert.doesNotMatch(directive, /\[t1-role: senior-(?:architect|frontend|backend|reviewer|tester|shipper)\]/);
     assert.match(directive, /\.devin\/agents\/senior-architect\/AGENT\.md/);
     assert.doesNotMatch(directive, /profile `senior-architect`/);
+    assert.match(directive, /profile `next-app`/);
+    assert.match(directive, /framework `nextjs`/);
+    assert.doesNotMatch(directive, /React\/Vite app lives|Turborepo|apps\/web/);
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Windsurf first-run directive derives backend-only roles and QA from capabilities', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-prespawn-go-')));
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      ...hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
+    }));
+    fs.writeFileSync(path.join(dir, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { framework: 'none' },
+      confirmed: true,
+      onboardingComplete: true,
+    }));
+    const directive = preSpawnArchitectDirective(dir, 'windsurf');
+    assert.match(directive, /profile `backend-only`/);
+    assert.match(directive, /framework `go`/);
+    assert.match(directive, /spawn only `senior-backend`/);
+    assert.doesNotMatch(directive, /spawn (?:only )?`senior-frontend`/);
+    assert.match(directive, /stack-native build\/test\/lint/);
+    assert.doesNotMatch(directive, /React\/Vite app lives|Turborepo|apps\/web/);
   } finally {
     if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
@@ -512,7 +555,11 @@ test('preSpawnRunIdDirective: Cursor captures exact picker models before publish
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
-  const { preSpawnModelDirective, preSpawnRunIdDirective } = await import('../index');
+  const {
+    preSpawnModelDirective,
+    preSpawnRunIdBlocksSetup,
+    preSpawnRunIdDirective,
+  } = await import('../index');
   const { captureCursorModels } = await import('../../../shared/materialize/cursor-models');
 
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-cursor-policy-')));
@@ -534,6 +581,8 @@ test('preSpawnRunIdDirective: Cursor captures exact picker models before publish
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
       confirmed: true, onboardingComplete: true,
     }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Traffic One project context\n', 'utf8');
+    fs.symlinkSync('AGENTS.md', path.join(dir, 'CLAUDE.md'));
 
     const required = preSpawnRunIdDirective(dir, 'cursor');
     assert.match(required, /^TRAFFIC_ONE_CURSOR_MODELS_REQUIRED/);
@@ -552,6 +601,30 @@ test('preSpawnRunIdDirective: Cursor captures exact picker models before publish
     assert.match(frozenMap, /immutable model policy is ready/i);
     assert.doesNotMatch(frozenMap, /Enumerate the exact model ids|--capture-models/);
     assert.match(frozenMap, /Do NOT capture models again for this run/);
+
+    const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+    const baselinePath = path.join(runDir, 'baseline-v1.json');
+    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8')) as {
+      baseline?: { files?: Array<{ path?: string }> };
+    };
+    assert.ok(
+      baseline.baseline?.files?.some((entry) => entry.path === 'CLAUDE.md'),
+      'the materialized root alias is represented in the immutable baseline',
+    );
+
+    // A saved model policy is not sufficient if its runtime-owned capability
+    // snapshot cannot be validated. The completion runner must re-run bootstrap
+    // preflight and report the real failure instead of telling the user to redo
+    // the already-saved Performance step.
+    fs.rmSync(path.join(runDir, 'capability-v1.json'));
+    fs.rmSync(baselinePath);
+    fs.writeFileSync(baselinePath, '{}\n', 'utf8');
+    const blocked = preSpawnRunIdDirective(dir, 'cursor');
+    assert.match(blocked, /^TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
+    assert.equal(preSpawnRunIdBlocksSetup(blocked), true);
+    assert.match(blocked, /valid immutable model policy and saved Performance choice/);
+    assert.match(blocked, /do not redo onboarding/i);
+    assert.doesNotMatch(blocked, /Reopen Performance/i);
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;

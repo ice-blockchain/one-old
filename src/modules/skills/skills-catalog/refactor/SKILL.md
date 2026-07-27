@@ -1,47 +1,49 @@
 ---
 name: refactor
 description: >
-  Use PROACTIVELY whenever the user asks to refactor, clean up, improve, simplify, or fix
-  code quality issues in existing React code.
-  Triggers: "refactor this", "clean up", "improve this code", "simplify", "this is messy",
-  "too complex", "extract", "split this component", "this component is too big".
+  Refactor existing code in any supported stack while preserving observable
+  behavior and runtime-owned architecture, work-unit, and verification
+  contracts. Use for cleanup, simplification, extraction, or complexity
+  reduction; never assume React or a UI.
 ---
 
-# Skill: Refactor
+# Refactor
 
-Identify issues and confirm before making changes.
+## Before editing
 
-1. List each issue found (size, state, performance, type safety, forbidden patterns)
-2. State what will change and what will NOT change
-3. Ask: "Should I go ahead?"
+- Read the capability profile, compiled architecture, work-unit allowlist, and
+  verification contract when present.
+- Identify the smallest ownership boundary and the public behavior that must
+  remain stable: APIs, types, routes, output, errors, persistence, events, CLI
+  exit codes, or UI behavior as applicable.
+- Run focused characterization/regression tests, or record why no executable
+  harness exists.
+- Keep product behavior, dependencies, schema, and public contracts unchanged
+  unless the user explicitly requested a migration.
 
-## Refactor checklist
+## While editing
 
-Before editing:
+- Split responsibilities at the framework's real module boundaries; do not
+  replace them with a generic `components/pages` layout when the compiled
+  profile uses another convention.
+- Prefer explicit data flow and named units over new abstraction layers.
+- Remove duplication only when the extracted concept has one clear owner.
+- Preserve concurrency, transactions, idempotency, error semantics, and
+  compatibility at external boundaries.
+- Do not widen the work-unit allowlist or modify runtime-owned roots, limits,
+  baseline, or contract hashes.
+- Do not add a dependency merely to shorten local code.
+- For UI surfaces, preserve semantics, keyboard/focus behavior, responsive
+  states, copy, and analytics. These checks do not apply to non-UI profiles.
 
-- Capture the behavior that must remain stable: public props/types, routes, API calls,
-  loading/error/empty states, analytics, accessibility, and visible copy.
-- Run the smallest relevant tests or record the missing coverage. Add a regression
-  test before changing logic when the current behavior is easy to break.
-- Identify the narrowest ownership boundary. Do not mix a refactor with unrelated
-  styling, dependency upgrades, or product behavior changes.
+## After editing
 
-While editing:
-
-- Prefer small named components/hooks and explicit data flow over new abstraction
-  layers. Extract only concepts with a clear responsibility or reuse case.
-- Preserve semantic HTML, keyboard behavior, focus order, and responsive states.
-- Keep effects synchronized with their real dependencies; remove duplicated or
-  derived state and avoid memoization without a measured reason.
-- Replace unsafe casts and implicit `any` with domain types and narrowing at input
-  boundaries. Keep exported contracts backward-compatible unless the user approved
-  a migration.
-- Do not add a package merely to shorten local code. Any new dependency still needs
-  the repository's dependency approval flow.
-
-After editing:
-
-- Run focused tests, typecheck, lint, and the relevant production build.
-- Compare the affected UI at supported widths when layout or interaction changed.
-- Report the preserved behavior, the structural improvement, checks run, and any
-  intentionally deferred follow-up.
+- Run the focused tests plus every check required by
+  `VerificationContractV2`.
+- Run the structural analyzer; a refactor cannot use an exception to bypass
+  entrypoint, multi-page, route-module, allowlist, or incomplete-scan blockers.
+- Use Playwright/screenshots only when the derived web `uiImpact` requires
+  them; use native QA for native UI; use no browser for API/CLI/worker/data-only
+  work.
+- Report preserved behavior, structural improvement, exact checks, and any
+  blocked or intentionally deferred evidence.

@@ -7,7 +7,12 @@
 import { obj, type Rec } from '../../shared/obj';
 import { isTestInfraConfigPath, isTestScopePath, roleCanWriteFeatureSource } from '../../shared/feature-source';
 import { matchesScope } from '../../shared/scope';
+import {
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+} from '../../shared/architecture-contract';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
+import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
 import {
   activeAgentRole,
   assignmentForContext,
@@ -27,7 +32,6 @@ import {
 
 type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
-const CANONICAL_TAILWIND_GLOBALS_PATH = 'packages/tailwind-config/src/globals.css';
 
 export interface RunTeamArgs {
   host?: string;
@@ -47,53 +51,6 @@ export interface RunTeamArgs {
   writingBuildArtifactViaCommand?: boolean;
   recordFallbackClaims?: boolean;
   block: Block;
-}
-
-function isArchitectEmptyPackageBarrelTarget(filePath: string): boolean {
-  return /^packages\/[^/]+\/src\/index\.ts$/.test(filePath);
-}
-
-function isEmptyBarrelContent(content: string): boolean {
-  const stripped = content
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n\r]*/g, '')
-    .trim();
-  return stripped === '' || stripped === 'export {}' || stripped === 'export {};';
-}
-
-function isArchitectScaffoldBarrelWrite(
-  role: string | null,
-  targets: string[],
-  content: string | undefined,
-  targetContents?: Readonly<Record<string, string | undefined>>,
-): boolean {
-  return role === 'senior-architect'
-    && targets.length > 0
-    && targets.every(isArchitectEmptyPackageBarrelTarget)
-    && targets.every((target) => isEmptyBarrelContent(targetContents ? (targetContents[target] || '') : (content || '')));
-}
-
-function isArchitectTailwindGlobalsTarget(filePath: string): boolean {
-  return filePath === CANONICAL_TAILWIND_GLOBALS_PATH || filePath === 'packages/tailwind-config/globals.css';
-}
-
-function isArchitectScaffoldBaselineWrite(
-  role: string | null,
-  targets: string[],
-  content: string | undefined,
-  targetContents?: Readonly<Record<string, string | undefined>>,
-): boolean {
-  if (isArchitectScaffoldBarrelWrite(role, targets, content, targetContents)) return true;
-  return role === 'senior-architect'
-    && targets.length > 0
-    && targets.every((target) => isArchitectTailwindGlobalsTarget(target)
-      || (isArchitectEmptyPackageBarrelTarget(target)
-        && isEmptyBarrelContent(targetContents ? (targetContents[target] || '') : (content || ''))));
-}
-
-function isArchitectScaffoldReservation(role: string | null | undefined, target: string): boolean {
-  return role === 'senior-architect'
-    && (isArchitectEmptyPackageBarrelTarget(target) || isArchitectTailwindGlobalsTarget(target));
 }
 
 // Cursor scope-attribution fallback. A spawned worker's write can carry NO role/parent/
@@ -141,7 +98,6 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     filePath,
     state,
     rawData,
-    content,
     featureTargetPaths,
     writingFeatureSource,
     writingFeatureSourceViaCommand,
@@ -156,7 +112,26 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     ? args.writeTargetPaths.filter(Boolean)
     : (filePath ? [filePath] : []);
   const stateRunId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
-  const preManifest = readRunAssignmentsResilient(projectRoot, stateRunId);
+  const runtimeAssignments = stateRunId
+    ? readRuntimeAssignments(projectRoot, stateRunId)
+    : null;
+  const compiledArchitecture = stateRunId
+    ? readCompiledArchitecture(projectRoot, stateRunId)
+    : null;
+  const runtimeManifest: RunManifest | null = runtimeAssignments
+    ? {
+        version: runtimeAssignments.version,
+        runId: runtimeAssignments.runId,
+        createdBy: runtimeAssignments.createdBy,
+        assignments: runtimeAssignments.assignments,
+        schemaVersion: runtimeAssignments.schemaVersion,
+        architectureHash: runtimeAssignments.architectureHash,
+        verificationHash: runtimeAssignments.verificationHash,
+        assignmentsHash: runtimeAssignments.assignmentsHash,
+      }
+    : null;
+  const preManifest = runtimeManifest
+    || (!compiledArchitecture ? readRunAssignmentsResilient(projectRoot, stateRunId) : null);
   const assignedTargets = preManifest
     ? writeTargetPaths.filter((target) => preManifest.assignments.some((assignment) => matchesScope(target, assignment.scope)))
     : [];
@@ -212,35 +187,49 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     role,
     runId: agentContext && agentContext.runId != null ? String(agentContext.runId) : null,
   });
+  if (acRole === 'quick-fix') {
+    const bootstrap = stateRunId
+      ? readActiveRunBootstrap(projectRoot, stateRunId, 'quick-fix')
+      : null;
+    const scope = bootstrap
+      ? { include: bootstrap.workUnit.allowlist, exclude: bootstrap.workUnit.allowlistExclude }
+      : null;
+    if (!scope || !writeTargetPaths.every((target) => matchesScope(target, scope))) {
+      return deny(block('run-team-quick-fix-contract',
+        'Run-team enforcement gate: the quick-fix worker has no valid parent-published WorkUnitContract covering every requested output. No maintenance or fallback write is allowed without the exact original contract and allowlist hash; re-run parent preflight with a bounded runtime-owned contract.',
+        { TARGETS: writeTargetPaths.join(', ') }));
+    }
+    return null;
+  }
+  if (compiledArchitecture && !runtimeAssignments) {
+    return deny(block('run-team-runtime-contract-invalid',
+      'Run-team enforcement gate: this run has CompiledArchitectureV1 but its current-run runtime assignments or VerificationContractV2 are missing, stale, or tampered. The write fails closed; repair/recompile this run and never borrow an assignments manifest from a sibling run.'));
+  }
+  if (isMaintenancePhase(state, (state as Record<string, unknown>).mode) && !runtimeAssignments) {
+    return deny(block('run-team-maintenance-contract',
+      'Run-team enforcement gate: maintenance writes fail closed without a hash-valid runtime assignment or a bounded quick-fix WorkUnitContract. No unattributed or legacy-scope write was made; publish the parent-owned contract before retrying.'));
+  }
   if (!inSubagent) {
-    // Maintenance fail-open. Run-team coordinates PARALLEL BUILD implementers via
-    // the architect's per-run assignments manifest; in maintenance the build is
-    // done and edits come from a single bounded quick-fix worker. On hosts where
-    // run-claim activation is unreliable (claims stay `pending`, so the worker's
-    // write resolves to no context and lands here), failing closed would deadlock
-    // every legitimate maintenance edit. So in maintenance, allow an unattributed
-    // write rather than block it — delegation is guided by the post-build triage
-    // directive, not this build-time gate. (When a claim DOES resolve, the scope
-    // checks below still run, so a real feature run stays coordinated.)
-    if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) return null;
+    if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) {
+      return deny(block('run-team-maintenance-contract',
+        'Run-team enforcement gate: maintenance writes fail closed when the hook cannot resolve a spawned worker with a valid parent-published WorkUnitContract. No unattributed write was made; bind the bounded quick-fix claim and exact allowlist before retrying.'));
+    }
     const recovery = unresolvedChild
-      ? 'This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Do not retry the edit and do not self-assert a role in assistant prose. The PARENT/orchestrator must stop or replace this child and retry the same role. On Codex, use the exact `task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry identity while live hooks verify the actual model. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.'
-      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.';
+      ? 'This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Do not retry the edit and do not self-assert a role in assistant prose. The PARENT/orchestrator must stop or replace this child and retry the same role. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.'
+      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.';
     return deny(block('run-team-not-subagent',
       `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. ${recovery} Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role, RECOVERY: recovery }));
   }
 
-  const scaffoldTargets = featureTargetPaths.length > 0 ? featureTargetPaths : writeTargetPaths;
-  if (isArchitectScaffoldBaselineWrite(acRole, scaffoldTargets, content, args.targetContents)) return null;
-
-  // Preferred path: explicit per-run assignment manifest authored by the architect.
+  // Preferred path: the exact current-run runtime-owned assignment manifest.
   // Ownership is by assigned SCOPE, not by guessed path-kind — stack-agnostic.
   const runId = agentContext && agentContext.runId != null ? String(agentContext.runId) : null;
-  // Resilient: tolerates a run-id split (assignments written under a stray id) so the
-  // gate doesn't block every implementer write when the orchestrator's run-id diverges
-  // from currentRunId. See readRunAssignmentsResilient.
-  const manifest = (runId === stateRunId ? preManifest : readRunAssignmentsResilient(projectRoot, runId)) || preManifest;
+  // Legacy runs may use resilient lookup. Once currentRunId has a compiled v2
+  // contract, a child claim carrying a stray run id cannot redirect scope.
+  const manifest = compiledArchitecture
+    ? preManifest
+    : ((runId === stateRunId ? preManifest : readRunAssignmentsResilient(projectRoot, runId)) || preManifest);
   const ownershipTargets = featureTargetPaths.length > 0
     ? featureTargetPaths
     : (assignedTargets.length > 0 ? assignedTargets : writeTargetPaths);
@@ -255,7 +244,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // (next.config, vite.config) are NOT test infra and stay implementer-owned.
   // Deliberately all-or-nothing: a patch mixing a test target with real
   // feature source falls through and still denies on the source target.
-  if (acRole === 'senior-tester' && ownershipTargets.length > 0
+  if (!runtimeAssignments && acRole === 'senior-tester' && ownershipTargets.length > 0
     && ownershipTargets.every((target) => isTestScopePath(target) || isTestInfraConfigPath(target))) return null;
 
   if (manifest && agentContext) {
@@ -264,18 +253,22 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     for (const target of ownershipTargets) {
       if (mine && matchesScope(target, mine.scope)) continue; // inside my scope -> allowed
       const conflict = manifest.assignments.find((a) => a !== mine
-        && matchesScope(target, a.scope)
-        && !isArchitectScaffoldReservation(a.role, target));
+        && matchesScope(target, a.scope));
       if (conflict) {
         return deny(block('run-team-scope-conflict',
-          `Run-team enforcement gate: \`${target}\` is in \`${conflict.agentKey || conflict.role}\`'s assigned scope for this run, not \`${myKey}\`'s. Each subagent writes only within its own assignment in \`.traffic-one/runs/<runId>/assignments.json\`. Let the owning role write this file, or split the patch by assignment.`,
+          `Run-team enforcement gate: \`${target}\` is in \`${conflict.agentKey || conflict.role}\`'s assigned scope in the runtime-owned WorkUnitContract for this run, not \`${myKey}\`'s. Each subagent writes only within the exact allowlist compiled from ArchitectureInputV1. Let the owning role write this file, or replan the semantic architecture before execution; never patch assignments.json directly.`,
           { TARGET: target, OWNER: String(conflict.agentKey || conflict.role), ROLE: String(myKey) }));
+      }
+      if (runtimeAssignments) {
+        return deny(block('run-team-runtime-allowlist-gap',
+          `Run-team enforcement gate: STRUCT_ASSIGNMENT_ALLOWLIST_GAP — \`${target}\` is outside \`${myKey}\`'s immutable runtime-owned WorkUnitContract. No dynamic claim is allowed for a compiled run. Return the required output in the role digest and replan ArchitectureInputV1 before execution.`,
+          { TARGET: target, ROLE: String(myKey) }));
       }
       // Outside every assignment -> dynamic first-write claim (no hard deadlock).
       const decision = fallbackClaim(agentContext, target);
       if (decision.blocked) {
         return deny(block('run-team-fallback-taken',
-          `Run-team enforcement gate: \`${target}\` is outside every role's assigned scope and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path, or add it to an assignment in \`.traffic-one/runs/<runId>/assignments.json\`.`,
+          `Run-team enforcement gate: \`${target}\` is outside every role's legacy scope and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path. For a compiled run, change ArchitectureInputV1 and let runtime regenerate the exact WorkUnitContract; never add paths to assignments.json manually.`,
           { TARGET: target, HOLDER: String(decision.holder) }));
       }
     }

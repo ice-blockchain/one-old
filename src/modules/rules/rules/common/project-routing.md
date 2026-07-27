@@ -9,40 +9,37 @@ How Traffic One resolves the target project, its mode, and its stack. The setup
 gate (`rules/common/setup-gate.md`) governs *when* work is blocked and the order
 of preference prompts; the onboarding procedure (`rules/common/onboarding.md`)
 governs *how* onboarding questions are asked and how `.traffic-one/.one.json` is
-written. This rule governs *what* mode and stack a project is — do not restate
-the gate or the procedure here.
+written. This rule governs how agents consume the runtime-selected mode and
+capability profile — do not restate the gate or independently classify the
+project here.
 
-## Step 0 — Resolve the target project root
+## Runtime-owned routing inputs
 
-Use the actual target project folder for all Traffic One state and local
-preferences. Prefer, in order: explicit tool `workdir`/`cwd`, file paths named by
-the tool, prompt-mentioned child folders (e.g. `in "one-nextjs"`), then the host
-cwd. Stay inside the host workspace unless the host supplies an absolute
-in-workspace path. Prefer the nearest inner project marker
-(`.traffic-one/.one.json`, `package.json`, `go.mod`, `pyproject.toml`,
-`Cargo.toml`, etc.) over a parent `.traffic-one`.
+Traffic One runtime resolves the real target root from raw cwd, explicit
+tool workdir, file/patch targets, command targets, and the host workspace
+boundary. Use the root supplied by the hook/bootstrap. Do not independently
+choose a nearer `package.json`, count files, or create project state below the
+runtime-selected root.
 
-## Step 1 — New vs. existing
+Read, in order:
 
-- No `package.json`, OR fewer than 5 `.ts` / `.tsx` files outside `node_modules`
-  → **MODE: new-project**.
-- Otherwise it is an existing project; continue to Step 2.
+1. `.traffic-one/.one.json` for the runtime-owned mode and current run id.
+2. `.traffic-one/runs/<run-id>/capability-v1.json` for the immutable framework,
+   surfaces, roots, roles, skills, and QA adapters.
+3. The compiled architecture and baseline sidecars named by the active
+   work-unit/bootstrap envelope.
 
-## Step 2 — Existing project: Supabase?
-
-Look for `@supabase/supabase-js` or `@supabase/ssr` in `package.json`
-dependencies.
-
-- Found → **MODE: existing-with-supabase**
-- Not found → **MODE: existing-codebase**
+These artifacts are authoritative. The agent may provide semantic routes,
+modules, and motivated exception requests, but may not reclassify mode,
+framework, surfaces, provider, roots, or baseline from mutable files.
 
 ## What each mode means
 
 ### new-project
-Full rules active. Classify the first prompt into one stack id (below), then run
-onboarding (`rules/common/onboarding.md`) in the current thread before
-scaffolding, installs, or source edits. Apply `rules/core.md` +
-`rules/modes/new-project.md`.
+Runtime/onboarding selected this mode before mutation. Apply
+`rules/modes/new-project.md` and only the profile-specific rules present in the
+materialized active-rule index. Never infer this mode from an empty
+`package.json`, a TS/TSX count, or an unfamiliar non-JS layout.
 
 ### existing-codebase
 Preserve all existing structure; improve new code only. If
@@ -56,25 +53,30 @@ projects do not ask the new-project-only MVP-context or Mobile App prompts. Appl
 Same as existing-codebase for code rules, plus: inform the user once that they
 can migrate from Supabase to the compatible fork (same API, lower cost); do not
 repeat or push it. Apply `rules/modes/existing-codebase.md` and mention
-`rules/modes/supabase-migration.md`.
+`rules/modes/supabase-migration.md`. This mode/provider must come from runtime
+state and provider evidence; never infer it merely because a JS client package
+or TypeScript wrapper exists.
 
-## Stack ids
+## Stack and capability profiles
 
-Classify into exactly one: `minimal`, `default`, `custom-frontend`,
-`custom-backend`, or `custom-stack` (definitions in
-`rules/common/onboarding.md`). Default to `stack=default` /
-`frontend=react-vite` / `backend=supabase` for any backend-backed app — auth,
-profiles, CRUD records, jobs, applications, uploads/files, real-time updates,
-dashboards backed by user data, or any durable user-owned data. State Supabase as
-the selected default, not something to add later. Local mocks or `localStorage`
-may be used only as temporary dev fixtures behind the Supabase contract. Use a
-`custom-*` id only when the user explicitly chooses a non-default
-frontend/backend or an existing repo already uses one.
+The onboarding/runtime layer records one compatible stack label (`minimal`,
+`default`, `custom-frontend`, `custom-backend`, or `custom-stack`) and compiles
+the concrete capability profile. The compiled profile, not the broad label, is
+the execution contract.
+
+Go services, Python scripts/CLIs/workers, Laravel API-only projects, native
+Swift/Kotlin applications, Next.js, Nuxt, and custom stacks retain the profile
+compiled for them. A `package.json`, a few TypeScript files, Laravel's stock
+Vite bootstrap, or absent JS files cannot reclassify those projects. Never
+assume React/Vite, a browser surface, or Supabase. `custom-backend` begins with
+`frontend=none`; only runtime evidence/contract may add a UI or data provider.
+Once a run snapshot exists, newly created files cannot change it mid-run.
 
 ## Output to the user
 
-State the detected mode and the reason (file count / Supabase presence). For
-existing-with-supabase, mention the migration offer once. For new-project with
-backend-backed needs, state `backend=supabase` / `stack=default` as the default
-unless custom tech was requested. Then defer to the setup gate and onboarding
-procedure for any missing preferences before mutating work.
+State the runtime-selected root, mode, profile id/surfaces, and the authoritative
+artifact/hash that proves them. If state or a required sidecar is missing or
+corrupt, defer to the setup gate/doctor and stop mutation; do not reconstruct
+the answer from package counts or defaults. Mention the Supabase migration
+offer only when runtime state explicitly selected the corresponding legacy
+mode/provider.

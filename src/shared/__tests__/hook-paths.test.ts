@@ -25,12 +25,12 @@ function writePkg(dir: string, json: Record<string, unknown>): void {
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(json), 'utf8');
 }
 
-test('stateRequiresNewProjectMonorepo: default/realtime stacks and react+backend require monorepo', () => {
+test('stateRequiresNewProjectMonorepo: only the named default/realtime profiles require monorepo', () => {
   assert.equal(stateRequiresNewProjectMonorepo({ mode: 'new-project', stack: 'default' }), true);
   assert.equal(stateRequiresNewProjectMonorepo({ mode: 'new-project', stack: 'react-realtime-monorepo' }), true);
   assert.equal(
     stateRequiresNewProjectMonorepo({ mode: 'new-project', stack: 'custom', frontend: 'react-vite', backend: 'supabase' }),
-    true,
+    false,
   );
 });
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import { performance } from 'node:perf_hooks';
 
 import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
@@ -12,6 +13,14 @@ import { observeCodexChildModel, readEffectiveState } from '../../../shared/stat
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { makeKiloAdapter } from '../../../adapters/kilo';
+import { makeOpenCodeAdapter } from '../../../adapters/opencode';
+import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+} from '../../../shared/architecture-contract';
+import { compileVerificationContract } from '../../../shared/verification-contract';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
@@ -81,6 +90,26 @@ test('clean write in a materialized main-agent project → noop', () => {
   });
 });
 
+test('plugin authoring cwd does not exempt an absolute project file from the plan/structure gate', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (project) => {
+    const target = path.join(project, 'apps', 'web', 'src', 'main.tsx');
+    const result = planWriteGate(writeCtx(process.cwd(), 'Write', 'file-write', {
+      file_path: target,
+      content: [
+        'function HomePage() { return <main>Home</main>; }',
+        'function SettingsPage() { return <main>Settings</main>; }',
+        'const router = createBrowserRouter([',
+        "  { path: '/', element: <HomePage /> },",
+        "  { path: '/settings', element: <SettingsPage /> },",
+        ']);',
+      ].join('\n'),
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /STRUCT_ENTRYPOINT_COMPONENT|STRUCT_MULTI_PAGE_MODULE/);
+    assert.equal(fs.existsSync(path.join(process.cwd(), '.traffic-one')), false);
+  });
+});
+
 test('OpenCode write (camelCase filePath) of a root Vite file is gated — was blind on opencode', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     // OpenCode's write tool sends `filePath` (camelCase); the snake_case-only read
@@ -93,6 +122,43 @@ test('OpenCode write (camelCase filePath) of a root Vite file is gated — was b
     }, {}, 'opencode'));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(/root Vite app files are not allowed|monorepo/i.test(r.reason));
+  });
+});
+
+test('OpenCode and Kilo documented output.args edits are reconstructed before structural analysis', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const relativeFile = 'apps/web/src/components/Greeting.tsx';
+    const absoluteFile = path.join(cwd, relativeFile);
+    fs.mkdirSync(path.dirname(absoluteFile), { recursive: true });
+    fs.writeFileSync(absoluteFile, 'export function Greeting() { return <p>Old</p>; }\n', 'utf8');
+
+    for (const [host, adapter] of [
+      ['opencode', makeOpenCodeAdapter()],
+      ['kilo', makeKiloAdapter()],
+    ] as const) {
+      const input = adapter.parse({
+        stdin: JSON.stringify({
+          event: 'tool.execute.before',
+          cwd,
+          tool: 'edit',
+          output: {
+            args: {
+              file_path: relativeFile,
+              old_string: 'Old',
+              new_string: 'New',
+            },
+          },
+        }),
+        argv: ['node', `${host}-hook-runtime`, 'before-tool-use', `--host=${host}`],
+      });
+      const result = planWriteGate({
+        input,
+        host,
+        cwd,
+        now: () => 'x',
+      } as unknown as Ctx);
+      assert.equal(result.kind, 'noop', `${host}: ${result.kind === 'deny' ? result.reason : ''}`);
+    }
   });
 });
 
@@ -115,7 +181,7 @@ test('Kilo write of root tsconfig.base.json is allowed as monorepo baseline', ()
   });
 });
 
-test('Kilo rootless macOS absolute assignments path is normalized to the project manifest', () => {
+test('Kilo rootless macOS absolute assignments path is normalized and runtime-owned', () => {
   withMaterialized({}, (cwd) => {
     const target = path.join(cwd, '.traffic-one', 'runs', 'run-1', 'assignments.json').slice(1);
     const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
@@ -129,7 +195,8 @@ test('Kilo rootless macOS absolute assignments path is normalized to the project
         ],
       }),
     }, { session_id: 'kilo-architect' }, 'kilo'));
-    assert.equal(r.kind, 'noop');
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.match(r.reason, /Runtime contract gate/);
   });
 });
 
@@ -147,6 +214,48 @@ test('subagents project: a feature write outside any role session is denied (run
       assert.match(r.reason, /`senior_frontend`/);
       assert.doesNotMatch(r.reason, /state your role explicitly/i);
     }
+  });
+});
+
+test('compiled Next root blocks an unplanned app/ write before the tool executes', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    frontend: 'nextjs',
+    backend: 'none',
+    materializedStack: 'default|nextjs|none|none',
+    currentRunId: 'run-compiled-root',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    fs.mkdirSync(path.join(cwd, 'app'), { recursive: true });
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const input = {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    };
+    const inputPath = architectureInputPath(cwd, 'run-compiled-root');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify(input), 'utf8');
+    const compiled = compileArchitectureForRun(cwd, 'run-compiled-root', state);
+    assert.ok(compiled.sourceRoots.some((root) => root === 'app'));
+
+    const result = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'app/rogue/page.tsx',
+      content: 'export default function Rogue() { return <main>Rogue</main>; }',
+    }, { session_id: 'orchestrator' }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /runtime assignment|runtime contract|team\.mode|allowlist/i);
+    }
+
+    const shell = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'touch app/rogue/other-page.tsx',
+    }, { session_id: 'orchestrator' }));
+    assert.equal(shell.kind, 'deny');
+    if (shell.kind === 'deny') assert.match(shell.reason, /shell command|runtime contract/i);
   });
 });
 
@@ -497,7 +606,7 @@ test('subagents project: denied readiness write does not leave a fallback path c
   });
 });
 
-test('subagents project: claimed senior-architect can write Tailwind globals baseline before PLAN_READY', () => {
+test('subagents project: architect cannot write Tailwind implementation before PLAN_READY', () => {
   withMaterialized({
     currentRunId: 'run-1',
     team: { mode: 'subagents', source: 'prompted', approved: true },
@@ -509,7 +618,8 @@ test('subagents project: claimed senior-architect can write Tailwind globals bas
       filePath: 'packages/tailwind-config/src/globals.css',
       content: '@import "tailwindcss";\n:root { color-scheme: light; }\n',
     }, { session_id: 'architect-child' }, 'kilo'));
-    assert.equal(r.kind, 'noop');
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.match(r.reason, /Architect scope gate/);
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-1', 'claims')), false);
   });
 });
@@ -563,7 +673,7 @@ test('Cursor pending model choice blocks direct scaffold writes until the user r
   }
 });
 
-test('subagents project: claimed senior-frontend can write flat root Next UI source', () => {
+test('subagents project: existing-codebase writes fail closed before current-run contracts', () => {
   withMaterialized({
     mode: 'existing-codebase',
     frontend: 'nextjs',
@@ -581,17 +691,17 @@ test('subagents project: claimed senior-frontend can write flat root Next UI sou
       file_path: 'src/app/(public)/news/page.tsx',
       content: 'export default function NewsPage() { return null; }',
     }, { session_id: 'orchestrator', transcript_path: transcript }));
-    assert.equal(route.kind, 'noop');
+    assert.equal(route.kind, 'deny');
 
     const feature = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'src/features/news/news-page.tsx',
       content: 'export function NewsPage() { return null; }',
     }, { session_id: 'orchestrator', transcript_path: transcript }));
-    assert.equal(feature.kind, 'noop');
+    assert.equal(feature.kind, 'deny');
   });
 });
 
-test('subagents project: assignment manifest routes writes by scope end-to-end', () => {
+test('subagents project: an agent-authored legacy assignment cannot authorize a v2 run', () => {
   withMaterialized({
     mode: 'existing-codebase',
     frontend: 'nextjs',
@@ -617,17 +727,16 @@ test('subagents project: assignment manifest routes writes by scope end-to-end',
     const mine = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'src/app/(public)/news/page.tsx', content: 'export default function P() { return null; }',
     }, { session_id: 'orchestrator', transcript_path: transcript }));
-    assert.equal(mine.kind, 'noop');
+    assert.equal(mine.kind, 'deny');
 
     const theirs = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'src/app/api/news/route.ts', content: 'export function GET() {}',
     }, { session_id: 'orchestrator', transcript_path: transcript }));
     assert.equal(theirs.kind, 'deny');
-    if (theirs.kind === 'deny') assert.ok(theirs.reason.includes('assigned scope'));
   });
 });
 
-test('subagents project: cp asset-import from outside the project routes through scope ownership', () => {
+test('subagents project: cp asset-import cannot borrow an agent-authored legacy scope', () => {
   withMaterialized({
     mode: 'existing-codebase',
     frontend: 'nextjs',
@@ -660,18 +769,17 @@ test('subagents project: cp asset-import from outside the project routes through
     const allowed = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
       command: `cp /Users/u/.codex/generated_images/session-1/exec-abc.png ${cwd}/public/og-default.png`,
     }, raw));
-    assert.equal(allowed.kind, 'noop', 'import into my owned scope is allowed');
+    assert.equal(allowed.kind, 'deny');
 
     const relative = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
       command: 'cp /Users/u/.codex/generated_images/session-1/exec-abc.png public/og-default.png',
     }, raw));
-    assert.equal(relative.kind, 'noop', 'relative dest resolves against the project root');
+    assert.equal(relative.kind, 'deny');
 
     const theirs = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
       command: 'cp /Users/u/.codex/generated_images/session-1/exec-abc.png src/app/api/og.png',
     }, raw));
     assert.equal(theirs.kind, 'deny');
-    if (theirs.kind === 'deny') assert.ok(theirs.reason.includes('assigned scope'), 'wrong-role dest denies by ownership, not by shell blanket');
 
     // an in-repo cp is NOT an import — the blanket shell-write deny stays
     const inRepo = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
@@ -688,16 +796,18 @@ test('subagents project: cp asset-import from outside the project routes through
   });
 });
 
-test('subagents project: run-state heredocs pass; feature-source heredocs still deny (B1/B5)', () => {
+test('subagents project: child artifacts need WorkUnit evidence; fix-cycle notes still pass', () => {
   withMaterialized({
     currentRunId: 'run-1',
     team: { mode: 'subagents', source: 'prompted', approved: true },
   }, (cwd) => {
-    // reviewer digest heredoc whose BODY cites feature-source paths → allowed
+    // A reviewer digest is a child-owned run artifact. Without the exact active
+    // reviewer WorkUnitContract, a heredoc cannot self-authorize it.
     const digest = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
       command: "mkdir -p .traffic-one/digests/run-1 && cat > .traffic-one/digests/run-1/reviewer.md <<'EOF'\n## Touched\n- apps/web/src/features/catalog.tsx\nEOF",
     }, { session_id: 'reviewer-session' }));
-    assert.equal(digest.kind, 'noop');
+    assert.equal(digest.kind, 'deny');
+    if (digest.kind === 'deny') assert.match(digest.reason, /Run artifact gate/);
     // orchestrator fix-cycle note → allowed
     const fixCycle = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
       command: "cat > .traffic-one/fix-cycles/run-1/senior-frontend-fix-1.md <<'EOF'\nfix src/app.ts dead code\nEOF",
@@ -717,6 +827,30 @@ test('subagents project: run-state heredocs pass; feature-source heredocs still 
   });
 });
 
+test('runtime-owned sidecars are blocked through apply_patch and shell redirects', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    const patch = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-write', {
+      patch: [
+        '*** Begin Patch',
+        '*** Add File: .traffic-one/runs/run-1/architecture-v1.json',
+        '+{}',
+        '*** End Patch',
+      ].join('\n'),
+    }));
+    assert.equal(patch.kind, 'deny');
+    if (patch.kind === 'deny') assert.match(patch.reason, /Runtime sidecar gate/);
+
+    const shell = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "cat > .traffic-one/runs/run-1/verification-v2.json <<'EOF'\n{}\nEOF",
+    }));
+    assert.equal(shell.kind, 'deny');
+    if (shell.kind === 'deny') assert.match(shell.reason, /Runtime sidecar gate/);
+  });
+});
+
 test('static layout violation is denied even in a clean main-agent project', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
@@ -724,6 +858,150 @@ test('static layout violation is denied even in a clean main-agent project', () 
     }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(r.reason.includes('plan gate violation'));
+  });
+});
+
+test('Edit hot structural gate reconstructs the full file and blocks monolithization hidden by a fragment', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, [
+      "import { createRoot } from 'react-dom/client';",
+      "import { App } from './App';",
+      '',
+      'function HomePage() {',
+      '  return null;',
+      '}',
+      '',
+      "createRoot(document.getElementById('root')!).render(<App />);",
+      '',
+    ].join('\n'));
+
+    const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: 'apps/web/src/main.tsx',
+      old_string: '  return null;',
+      new_string: '  return <main>Inline route page</main>;',
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /STRUCT_ENTRYPOINT_COMPONENT/);
+    }
+  });
+});
+
+test('Edit hot structural gate fails closed when old_string is ambiguous', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, [
+      'const first = () => null;',
+      'const second = () => null;',
+      "console.log('bootstrap');",
+      '',
+    ].join('\n'));
+    const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: 'apps/web/src/main.tsx',
+      old_string: 'null',
+      new_string: '<main />',
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /STRUCT_SCAN_INCOMPLETE/);
+      assert.match(result.reason, /ambiguous \(2 matches\)/);
+    }
+  });
+});
+
+test('Edit hot structural gate fails closed when reconstruction evidence is incomplete', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "console.log('bootstrap');\n");
+    const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: 'apps/web/src/main.tsx',
+      new_string: '<main />',
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /STRUCT_SCAN_INCOMPLETE/);
+  });
+});
+
+test('Edit hot structural gate allows a uniquely reconstructed non-structural change', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, [
+      "import { createRoot } from 'react-dom/client';",
+      "import { App } from './App';",
+      'const strict = true;',
+      "createRoot(document.getElementById('root')!).render(<App />);",
+      '',
+    ].join('\n'));
+    const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: 'apps/web/src/main.tsx',
+      old_string: 'const strict = true;',
+      new_string: 'const strict = false;',
+    }));
+    assert.equal(result.kind, 'noop');
+  });
+});
+
+test('complete Write pre-tool path remains below the 150 ms p95 budget with runtime contracts', () => {
+  withMaterialized({
+    currentRunId: 'run-hot-path',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const inputPath = architectureInputPath(cwd, 'run-hot-path');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    }), 'utf8');
+    const architecture = compileArchitectureForRun(cwd, 'run-hot-path', state);
+    const verification = compileVerificationContract(cwd, 'run-hot-path', state, architecture, {
+      changedPaths: [],
+    });
+    const assignments = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const frontend = assignments.assignments.find((assignment) => assignment.role === 'senior-frontend');
+    const home = architecture.modules.find((module) => module.id === 'home');
+    assert.ok(frontend);
+    assert.ok(home);
+    assert.ok(frontend.scope.include.includes(home.output));
+
+    const childId = 'frontend-hot-path-child';
+    assert.ok(claimThreadRole(cwd, state, childId, 'senior-frontend', {
+      parentSessionId: 'orchestrator',
+    }));
+    const ctx = writeCtx(cwd, 'Write', 'file-write', {
+      file_path: home.output,
+      content: [
+        "import { Card } from '../components/Card';",
+        'export function Home() {',
+        '  return <main><Card /></main>;',
+        '}',
+        '',
+      ].join('\n'),
+    }, { session_id: childId });
+
+    for (let warmup = 0; warmup < 20; warmup += 1) {
+      const result = planWriteGate(ctx);
+      assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
+    }
+    const durations: number[] = [];
+    for (let sample = 0; sample < 250; sample += 1) {
+      const started = performance.now();
+      const result = planWriteGate(ctx);
+      durations.push(performance.now() - started);
+      assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
+    }
+    durations.sort((a, b) => a - b);
+    const p95 = durations[Math.floor(durations.length * 0.95)]!;
+    assert.ok(p95 < 150, `complete Write pre-tool p95 ${p95.toFixed(2)} ms exceeds 150 ms`);
   });
 });
 

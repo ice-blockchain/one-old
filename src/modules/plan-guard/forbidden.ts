@@ -5,6 +5,7 @@
 
 import { dependenciesFromPackage, loadPackageJson } from '../../shared/detection';
 import { isNativeState, isWebState } from '../../shared/state';
+import { defaultStateForStack } from '../../shared/capabilities';
 
 export const INSTALL_RE = /(npm (install|i|add)|yarn add|pnpm add|bun add)/;
 
@@ -25,10 +26,10 @@ export function stateFromStackForAllowlist(stackOrState: unknown): Rec {
   if (stack === 'react-native-expo-monorepo' || stack === 'react-native-expo-app') {
     return { stack, frontend: 'none', backend: 'supabase', mobile: { enabled: true, framework: 'react-native-expo' } };
   }
-  if (stack === 'react-realtime-monorepo' || stack === 'react-frontend-only' || stack === 'default' || stack === 'custom-backend') {
+  if (stack === 'react-realtime-monorepo' || stack === 'react-frontend-only') {
     return { stack, frontend: 'react-vite', backend: stack === 'react-frontend-only' ? 'none' : 'supabase', mobile: { enabled: false, framework: 'none' } };
   }
-  return { stack, frontend: 'none', backend: 'none', mobile: { enabled: false, framework: 'none' } };
+  return defaultStateForStack(stack || 'minimal');
 }
 
 export function forbiddenForStack(stackOrState: unknown, allowNextjs: boolean): Rule[] {

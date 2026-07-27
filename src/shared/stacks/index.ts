@@ -5,6 +5,7 @@
 
 import { isMaintenancePhase } from '../state/lifecycle';
 import { templatePath } from './template-path';
+import { defaultStateForStack } from '../capabilities';
 
 export { templatePath };
 
@@ -21,7 +22,6 @@ const COMMON_MANDATORY = [
   'rules/common/senior-engineer-team.md',
   'rules/common/project-memory.md',
   'rules/common/documentation.md',
-  'rules/common/seo.md',
   'rules/common/quality-tooling.md',
   'rules/common/agent-handoff-digests.md',
   'rules/common/codebase-graph.md',
@@ -49,6 +49,7 @@ const FRONTEND_SHARED = [
 ];
 
 const FRONTEND_OPTIONAL = [
+  'rules/common/seo.md',
   'rules/frontend/accessibility.md',
   'rules/frontend/performance.md',
   'rules/frontend/realtime.md',
@@ -114,42 +115,66 @@ const IONIC_OPTIONAL = [
 const SUPABASE_REACT_MANDATORY = ['rules/frontend/react/supabase-client.md'];
 
 const BACKEND_RULES: Readonly<Record<string, string[]>> = {
-  supabase: ['rules/backend/postgres.md'],
-  'our-fork': ['rules/backend/postgres.md'],
-  postgres: ['rules/backend/postgres.md'],
-  node: ['rules/backend/node.md', 'rules/backend/postgres.md'],
-  nestjs: ['rules/backend/node.md', 'rules/backend/postgres.md'],
-  python: ['rules/backend/python.md', 'rules/backend/postgres.md'],
-  django: ['rules/backend/python.md', 'rules/backend/postgres.md'],
-  fastapi: ['rules/backend/python.md', 'rules/backend/postgres.md'],
-  go: ['rules/backend/golang.md', 'rules/backend/postgres.md'],
-  rust: ['rules/backend/rust.md', 'rules/backend/postgres.md'],
-  java: ['rules/backend/java.md', 'rules/backend/postgres.md'],
-  kotlin: ['rules/backend/kotlin.md', 'rules/backend/postgres.md'],
-  php: ['rules/backend/php.md', 'rules/backend/postgres.md'],
-  laravel: ['rules/backend/php.md', 'rules/backend/postgres.md'],
-  dotnet: ['rules/backend/csharp.md', 'rules/backend/postgres.md'],
-  csharp: ['rules/backend/csharp.md', 'rules/backend/postgres.md'],
+  supabase: [],
+  'our-fork': [],
+  postgres: [],
+  postgresql: [],
+  node: ['rules/backend/node.md'],
+  nestjs: ['rules/backend/node.md'],
+  python: ['rules/backend/python.md'],
+  django: ['rules/backend/python.md'],
+  fastapi: ['rules/backend/python.md'],
+  go: ['rules/backend/golang.md'],
+  rust: ['rules/backend/rust.md'],
+  java: ['rules/backend/java.md'],
+  kotlin: ['rules/backend/kotlin.md'],
+  php: ['rules/backend/php.md'],
+  laravel: ['rules/backend/php.md'],
+  dotnet: ['rules/backend/csharp.md'],
+  csharp: ['rules/backend/csharp.md'],
   cpp: ['rules/backend/cpp.md'],
-  perl: ['rules/backend/perl.md', 'rules/backend/postgres.md'],
+  perl: ['rules/backend/perl.md'],
 };
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+}
+
+function stateUsesPostgres(state: Rec, backend: string): boolean {
+  if (['supabase', 'our-fork', 'postgres', 'postgresql'].includes(backend)) return true;
+  const surfaces = [
+    ...stringArray(state.capabilitySurfaces),
+    ...stringArray(state.surfaces),
+  ];
+  const buckets = stringArray(state.capabilitySkillBuckets);
+  if (surfaces.includes('data') || buckets.includes('postgres')) return true;
+  return [
+    state.database,
+    state.databaseProvider,
+    state.database_provider,
+    state.db,
+    state.dbProvider,
+  ].some((value) => typeof value === 'string' && /\b(?:postgres|postgresql|supabase)\b/i.test(value));
+}
 
 export const AGENT_ROLE_BASE_RULES: Readonly<Record<string, string[]>> = {
   'senior-architect': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/project-routing.md', 'rules/common/onboarding.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
     'rules/common/stack-recommendations.md', 'rules/common/library-catalog.md', 'rules/common/project-memory.md',
     'rules/common/documentation.md', 'rules/common/senior-engineer-team.md', 'rules/common/codebase-graph.md',
-    'rules/common/security.md', 'rules/common/agent-handoff-digests.md', 'rules/core.md',
+    'rules/common/security.md', 'rules/common/agent-handoff-digests.md',
   ],
   'senior-frontend': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
     'rules/common/security.md', 'rules/common/codebase-graph.md', 'rules/common/agent-handoff-digests.md',
-    'rules/core.md', 'rules/frontend/i18n.md', 'rules/frontend/ui-quality.md', 'rules/frontend/typography.md',
+    'rules/frontend/i18n.md', 'rules/frontend/ui-quality.md', 'rules/frontend/typography.md',
   ],
   'senior-backend': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
     'rules/common/security.md', 'rules/common/quality-tooling.md', 'rules/common/codebase-graph.md',
-    'rules/common/agent-handoff-digests.md', 'rules/core.md',
+    'rules/common/agent-handoff-digests.md',
   ],
   'senior-reviewer': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/security.md', 'rules/common/quality-tooling.md',
@@ -158,11 +183,15 @@ export const AGENT_ROLE_BASE_RULES: Readonly<Record<string, string[]>> = {
   ],
   'senior-tester': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/quality-tooling.md', 'rules/common/execution-discipline.md',
-    'rules/common/agent-handoff-digests.md', 'rules/common/codebase-graph.md', 'rules/frontend/testing.md',
+    'rules/common/agent-handoff-digests.md', 'rules/common/codebase-graph.md',
   ],
   'senior-shipper': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/security.md', 'rules/common/git.md',
     'rules/common/agent-handoff-digests.md', 'rules/common/quality-tooling.md',
+  ],
+  'quick-fix': [
+    'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md',
+    'rules/common/clean-code.md', 'rules/common/execution-discipline.md', 'rules/common/quality-tooling.md',
   ],
 };
 
@@ -175,16 +204,6 @@ function unique(values: readonly string[]): string[] {
     out.push(value);
   }
   return out;
-}
-
-function defaultStateForStack(stack: string): Rec {
-  if (stack === 'default') {
-    return { stack, frontend: 'react-vite', backend: 'supabase', mobile: { enabled: false, framework: 'none', source: 'none' } };
-  }
-  if (stack === 'custom-backend') {
-    return { stack, frontend: 'react-vite', backend: 'other', mobile: { enabled: false, framework: 'none', source: 'none' } };
-  }
-  return { stack, frontend: 'none', backend: stack === 'minimal' ? 'none' : 'supabase', mobile: { enabled: false, framework: 'none', source: 'none' } };
 }
 
 function normalizedManifestState(input: unknown): Rec {
@@ -224,7 +243,10 @@ export function composeRuleManifest(input: unknown): RuleManifest {
     mandatory.push(...REACT_VITE_MANDATORY);
     optional.push(...REACT_VITE_OPTIONAL);
   } else if (frontend !== 'none') {
-    mandatory.push(...TYPESCRIPT_CORE, ...FRONTEND_SHARED);
+    mandatory.push(...FRONTEND_SHARED);
+    if (['nextjs', 'nuxt', 'vue', 'svelte', 'angular', 'astro'].includes(frontend)) {
+      mandatory.push(...TYPESCRIPT_CORE);
+    }
   }
 
   if (mobileFramework === 'react-native-expo') {
@@ -244,6 +266,7 @@ export function composeRuleManifest(input: unknown): RuleManifest {
 
   const backendRules = BACKEND_RULES[backend];
   if (backendRules) optional.push(...backendRules);
+  if (stateUsesPostgres(state, backend)) optional.push('rules/backend/postgres.md');
 
   if (state.stack === 'minimal') {
     mandatory.push(...COMMON_REFERENCES, ...(setupEra ? ONBOARDING_ONLY_REFERENCES : []));
@@ -263,11 +286,13 @@ export function roleScopedRules(role: string, state: unknown): string[] | null {
   const frontendRules = spec.mandatory.filter((r) => r.startsWith('rules/frontend/'));
   const backendRules = spec.optional.filter((r) => r.startsWith('rules/backend/'));
   const testingRules = spec.optional.filter((r) => /\/testing\.md$/.test(r));
-  if (role === 'senior-frontend') return unique([...base, ...frontendRules]);
+  const languageRules = spec.mandatory.filter((r) => r === 'rules/core.md');
+  if (role === 'senior-frontend') return unique([...base, ...languageRules, ...frontendRules]);
   if (role === 'senior-backend') return unique([...base, ...backendRules]);
-  if (role === 'senior-tester') return unique([...base, ...testingRules, ...backendRules]);
-  if (role === 'senior-architect') return unique([...base, ...frontendRules, ...backendRules]);
-  if (role === 'senior-reviewer') return unique([...base, ...frontendRules, ...backendRules]);
+  if (role === 'senior-tester') return unique([...base, ...languageRules, ...testingRules, ...backendRules]);
+  if (role === 'senior-architect') return unique([...base, ...languageRules, ...frontendRules, ...backendRules]);
+  if (role === 'senior-reviewer') return unique([...base, ...languageRules, ...frontendRules, ...backendRules]);
+  if (role === 'quick-fix') return unique([...base, ...languageRules]);
   return base;
 }
 

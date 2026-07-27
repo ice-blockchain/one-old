@@ -62,6 +62,22 @@ import {
 import { roleDigestName } from '../../shared/packing';
 import { isMaintenancePhase, readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
 import { nowIso } from '../../shared/text';
+import { sha256 } from '../../shared/text';
+import {
+  ensureRunBootstrap,
+  readActiveRunBootstrap,
+  type RunBootstrapEnvelopeV1,
+} from '../../shared/run-bootstrap-policy';
+import { readRunModelPolicy } from '../../shared/run-model-policy';
+import { readRunHostCapability } from '../../shared/host-capabilities';
+import {
+  captureMaintenanceFallbackBaseline,
+  fallbackSourcePaths,
+  workUnitAllowlistHash,
+} from '../../shared/maintenance-fallback';
+import { writeJson } from '../../shared/fsjson';
+import { isMaintenanceTerminal } from '../../shared/maintenance-terminal';
+import { writeRunSettlement } from '../../shared/run-settlement';
 import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
 
 type Rec = Record<string, unknown>;
@@ -216,6 +232,7 @@ export interface DelegateOpts {
   allowedFiles?: string;
   unitId?: string;
   expectedAssignmentHash?: string | null;
+  fallbackAllowed?: boolean;
 }
 
 export type FailureKind =
@@ -554,29 +571,192 @@ function classifyFailureKind(action: DelegateResult['action'], error: string | n
   return 'environment';
 }
 
-function recordMaintenanceDelegationOutcome(cwd: string, state: Rec, runId: string, role: string, result: DelegateResult, startedAt: number): void {
+function bootstrapRole(role: string): string {
+  if (role.startsWith('senior-') || role === 'quick-fix') return role;
+  if (role === 'frontend') return 'senior-frontend';
+  if (role === 'backend') return 'senior-backend';
+  if (role === 'tester') return 'senior-tester';
+  if (role === 'docs') return 'senior-architect';
+  return role;
+}
+
+interface MaintenanceContractPreflight {
+  required: boolean;
+  bootstrap: RunBootstrapEnvelopeV1 | null;
+  error: string | null;
+}
+
+function exactMaintenancePaths(value: unknown): string[] | null {
+  const parsed = parseAllowedFiles(value);
+  if (parsed.length === 0) return null;
+  const exact: string[] = [];
+  for (const entry of parsed) {
+    const normalized = entry.trim().replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/');
+    if (!normalized
+      || normalized.startsWith('/')
+      || normalized === '.'
+      || normalized.split('/').includes('..')
+      || normalized.includes('\0')
+      || /[*?[\]{}]/.test(normalized)
+      || normalized === '.traffic-one'
+      || normalized.startsWith('.traffic-one/')) return null;
+    exact.push(normalized);
+  }
+  return [...new Set(exact)].sort();
+}
+
+function maintenanceContractPreflight(
+  cwd: string,
+  state: Rec,
+  runId: string,
+  roleInput: string,
+  allowedFiles: unknown,
+): MaintenanceContractPreflight {
+  if (!runId || !isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)) {
+    return { required: false, bootstrap: null, error: null };
+  }
+  const role = bootstrapRole(roleInput);
+  const existing = readActiveRunBootstrap(cwd, runId, role);
+  const requested = exactMaintenancePaths(allowedFiles);
+  if (!requested) {
+    return {
+      required: true,
+      bootstrap: null,
+      error: 'OpenCode maintenance delegation requires a nonempty exact-file allowlist; globs and directories cannot authorize a paid fallback.',
+    };
+  }
+  if (existing) {
+    const activeSources = fallbackSourcePaths(existing);
+    if (activeSources && JSON.stringify(activeSources) === JSON.stringify(requested)) {
+      return { required: true, bootstrap: existing, error: null };
+    }
+  }
+  const boundedRole = ['quick-fix', 'senior-frontend', 'senior-backend'].includes(role);
+  if (!boundedRole) {
+    return {
+      required: true,
+      bootstrap: null,
+      error: `OpenCode maintenance delegation for ${role} has no exact active WorkUnit and this role cannot mint an ad-hoc bounded fallback contract.`,
+    };
+  }
+  const policy = readRunModelPolicy(cwd, runId);
+  if (!policy || !policy.roles[role]) {
+    return {
+      required: true,
+      bootstrap: null,
+      error: 'OpenCode maintenance delegation has no immutable parent model policy for this role.',
+    };
+  }
+  const capability = readRunHostCapability(cwd, runId, policy.host);
+  const bootstrap = ensureRunBootstrap(cwd, runId, role, state, {
+    host: policy.host,
+    hostAgentType: capability?.typedSubagents ? role : null,
+    evidenceSource: 'opencode-maintenance-preflight',
+    modelPolicyId: policy.policyId,
+    boundedOutputs: requested,
+    boundedAllowlist: requested,
+    boundedAllowlistExclude: [],
+  });
+  const sources = bootstrap ? fallbackSourcePaths(bootstrap) : null;
+  if (!bootstrap || !sources || JSON.stringify(sources) !== JSON.stringify(requested)) {
+    return {
+      required: true,
+      bootstrap: null,
+      error: 'OpenCode maintenance preflight could not publish the exact bounded WorkUnit before delegation.',
+    };
+  }
+  return { required: true, bootstrap, error: null };
+}
+
+function recordMaintenanceDelegationOutcome(
+  cwd: string,
+  state: Rec,
+  runId: string,
+  role: string,
+  result: DelegateResult,
+  startedAt: number,
+  fallbackAllowed: boolean,
+  publishedBootstrap?: RunBootstrapEnvelopeV1 | null,
+): void {
   if (!runId || !isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)) return;
   try {
     const file = path.join(cwd, T1_DIR, 'runs', runId, 'maintenance.json');
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const canonicalRole = bootstrapRole(role);
+    const bootstrap = publishedBootstrap === undefined
+      ? readActiveRunBootstrap(cwd, runId, canonicalRole)
+      : publishedBootstrap;
+    const boundContract = Boolean(bootstrap);
+    const workUnitContractHash = bootstrap?.workUnit.contractHash;
+    const allowlistHash = bootstrap ? workUnitAllowlistHash(bootstrap) : undefined;
+    const fallbackSourceBaseline = bootstrap && result.ok !== true && fallbackAllowed
+      ? captureMaintenanceFallbackBaseline(cwd, bootstrap)
+      : null;
+    const fallbackBound = boundContract && Boolean(fallbackSourceBaseline);
     const opencodeOutcome = result.ok ? 'success' : (result.action === 'skipped' ? 'skipped' : 'failed');
-    const overallOutcome = result.ok ? 'success' : 'fallback-pending';
-    fs.writeFileSync(file, `${JSON.stringify({
+    const overallOutcome = !boundContract
+      ? 'failed'
+      : result.ok
+      ? 'code-delivered'
+      : fallbackAllowed && fallbackBound
+        ? 'fallback-pending'
+        : 'failed';
+    const terminalOutcome = isMaintenanceTerminal({ overallOutcome });
+    writeJson(file, {
       version: 1,
       kind: 'opencode-delegation',
-      role,
+      role: canonicalRole,
       outcome: opencodeOutcome,
       opencodeOutcome,
       overallOutcome,
-      fallbackAllowed: result.ok !== true,
+      fallbackAllowed: fallbackBound && result.ok !== true && fallbackAllowed,
+      ...(workUnitContractHash ? { workUnitContractHash } : {}),
+      ...(allowlistHash ? { allowlistHash } : {}),
+      ...(fallbackSourceBaseline ? { fallbackSourceBaseline } : {}),
       action: result.action,
       failureKind: result.failureKind ?? null,
       model: result.model ?? null,
-      error: result.error ? String(result.error).slice(0, 500) : null,
+      error: !boundContract
+        ? 'OpenCode maintenance delegation has no valid parent-published WorkUnitContract; fallback is forbidden.'
+        : result.ok !== true && fallbackAllowed && !fallbackSourceBaseline
+          ? 'OpenCode maintenance fallback source pre-image could not be captured completely; fallback is forbidden.'
+        : result.error
+          ? String(result.error).slice(0, 500)
+          : null,
       touched: result.touched,
       startedAt: new Date(startedAt).toISOString(),
       finishedAt: new Date().toISOString(),
-    }, null, 2)}\n`, 'utf8');
+    });
+    writeRunSettlement(cwd, runId, !boundContract
+      ? {
+          status: 'failed',
+          reason: 'OpenCode maintenance delegation has no valid parent-published WorkUnitContract',
+        }
+      : result.ok
+      ? {
+          status: 'code-delivered',
+          workUnitContractHash: workUnitContractHash!,
+          allowlistHash: allowlistHash!,
+          incompleteChecks: ['verification-not-started'],
+        }
+      : !terminalOutcome
+        ? {
+            status: 'active',
+            reason: 'fallback-pending',
+            workUnitContractHash: workUnitContractHash!,
+            allowlistHash: allowlistHash!,
+            fallback: {
+              state: 'pending',
+              workUnitContractHash: workUnitContractHash!,
+              allowlistHash: allowlistHash!,
+            },
+            incompleteChecks: ['fallback-pending'],
+          }
+        : {
+            status: 'failed',
+            reason: result.error || 'OpenCode delegation failed and fallback is not allowed',
+            workUnitContractHash: workUnitContractHash!,
+            allowlistHash: allowlistHash!,
+          });
   } catch {
     // best-effort diagnostics; never change delegation behavior
   }
@@ -1083,13 +1263,46 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
 export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): DelegateResult {
   cwd = resolveProjectRoot(cwd);
   const state = readEffectiveState(cwd);
+  const role = (opts.role || 'opencode').trim() || 'opencode';
+  const stateRunId = typeof state.currentRunId === 'string'
+    ? state.currentRunId.trim()
+    : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
+  const runId = (opts.runId || '').trim() || stateRunId || runStamp();
+  const policy = buildDelegatedDiffPolicy(cwd, runId, role, opts.allowedFiles, opts.expectedAssignmentHash);
+  const startedAt = Date.now();
+  const maintenancePreflight = maintenanceContractPreflight(cwd, state, runId, role, opts.allowedFiles);
+  const maintenanceEarlyResult = (result: DelegateResult): DelegateResult => {
+    const failureKind = result.failureKind ?? classifyFailureKind(result.action, result.error);
+    const enriched: DelegateResult = failureKind ? { ...result, failureKind } : result;
+    recordMaintenanceDelegationOutcome(
+      cwd,
+      state,
+      runId,
+      role,
+      enriched,
+      startedAt,
+      opts.fallbackAllowed !== false,
+      maintenancePreflight.bootstrap,
+    );
+    return enriched;
+  };
+  if (maintenancePreflight.required && !maintenancePreflight.bootstrap) {
+    return maintenanceEarlyResult({
+      ok: false,
+      action: 'failed',
+      digest: null,
+      touched: [],
+      error: maintenancePreflight.error || 'OpenCode maintenance contract preflight failed closed',
+      failureKind: 'diff-rejected',
+    });
+  }
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
   if (openCode?.enabled !== true) {
-    return { ok: false, action: 'skipped', digest: null, touched: [], error: 'OpenCode delegation is not enabled' };
+    return maintenanceEarlyResult({ ok: false, action: 'skipped', digest: null, touched: [], error: 'OpenCode delegation is not enabled' });
   }
   const bin = resolveBin();
   if (!bin) {
-    return { ok: false, action: 'skipped', digest: null, touched: [], error: 'OpenCode CLI is not installed' };
+    return maintenanceEarlyResult({ ok: false, action: 'skipped', digest: null, touched: [], error: 'OpenCode CLI is not installed' });
   }
   // We resolved a real binary — self-heal a stale/missing toolchain stamp so the
   // orchestrator + tier logic stop treating OpenCode as "not installed" on the
@@ -1097,7 +1310,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   reconcileManagedToolStamp(cwd, 'opencode');
   const task = (opts.task || '').trim();
   if (!task) {
-    return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No task provided to delegate' };
+    return maintenanceEarlyResult({ ok: false, action: 'skipped', digest: null, touched: [], error: 'No task provided to delegate' });
   }
   // Sandbox requires a committed HEAD to branch the worktree from. Pin the exact
   // sha once: every worktree, reset, and diff below is relative to it.
@@ -1112,7 +1325,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
     ensureInitialCommit(cwd, { initIfNeeded: state.mode === 'new-project' });
     head = git(cwd, ['rev-parse', '--verify', 'HEAD']);
     if (head.status !== 0) {
-      return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' };
+      return maintenanceEarlyResult({ ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' });
     }
   }
   // Sandbox from the CURRENT WORKING TREE — uncommitted tracked changes AND
@@ -1123,13 +1336,6 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   const baseSha = snapshotWorkingTree(cwd, head.stdout.trim());
 
   const { models, fromChain } = resolveModels(state, opts);
-  const role = (opts.role || 'opencode').trim() || 'opencode';
-  const stateRunId = typeof state.currentRunId === 'string'
-    ? state.currentRunId.trim()
-    : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
-  const runId = (opts.runId || '').trim() || stateRunId || runStamp();
-  const policy = buildDelegatedDiffPolicy(cwd, runId, role, opts.allowedFiles, opts.expectedAssignmentHash);
-  const startedAt = Date.now();
   let markedAttempt = false;
   const markCliAttempt = (): void => {
     if (markedAttempt || !runId || !role) return;
@@ -1164,7 +1370,16 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
         assignmentHash: policy.expectedAssignmentHash,
       });
     }
-    recordMaintenanceDelegationOutcome(cwd, state, runId, role, enriched, startedAt);
+    recordMaintenanceDelegationOutcome(
+      cwd,
+      state,
+      runId,
+      role,
+      enriched,
+      startedAt,
+      opts.fallbackAllowed !== false,
+      maintenancePreflight.bootstrap,
+    );
     return enriched;
   };
 

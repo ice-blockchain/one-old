@@ -16,6 +16,7 @@ import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
 import { modelMatchesAny, modelMatchesHostModels } from '../../shared/model-tiers';
+import { canonicalHost } from '../../shared/model-tiers';
 import { CURSOR_MODEL_FLOOR } from '../../config/model-tiers';
 import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
 import { exhaustedModelsForRole, isApiUsageLimitText, markModelExhaustionTerminal, modelIsExhausted, recordExhaustedModel } from './exhausted-models';
@@ -94,6 +95,12 @@ import {
   runModelPolicyPath,
   type RunModelPolicyV1,
 } from '../../shared/run-model-policy';
+import {
+  boundedMaintenanceSourceScope,
+  ensureRunBootstrap,
+  readActiveRunBootstrap,
+} from '../../shared/run-bootstrap-policy';
+import { readRunHostCapability } from '../../shared/host-capabilities';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (
@@ -119,10 +126,105 @@ export const ARCHITECT_PHASE_INCOMPLETE_FALLBACK = `Architect phase gate: \`{{RO
 
 Missing on disk: {{MISSING}}
 
-The architect must finish the project-memory baseline, \`.traffic-one/runs/{{RUN_ID}}/assignments.json\`, and \`.traffic-one/digests/{{RUN_ID}}/architect.md\` containing \`PLAN_READY\`. Only then retry \`{{ROLE}}\` with the same task. Do not spawn other implementers or patch the coordination artifacts yourself.`;
+The architect must finish the required project-memory baseline, semantic \`.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json\`, and \`.traffic-one/digests/{{RUN_ID}}/architect.md\` containing \`PLAN_READY\`. Traffic One runtime—not the architect—then compiles and atomically publishes the architecture, verification, assignments, and child bootstraps. Only after those hash-valid contracts exist may you retry \`{{ROLE}}\` with the same task. Do not spawn other implementers or patch runtime-owned coordination artifacts yourself.`;
 
 function isPlanBatchGatedRole(role: string): boolean {
   return PLAN_BATCH_GATED_ROLES.has(role);
+}
+
+interface QuickFixScopeInput {
+  present: boolean;
+  valid: boolean;
+  outputs: string[];
+  allowlist: string[];
+  exclude: string[];
+}
+
+function exactQuickFixPaths(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const paths: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') return null;
+    const normalized = item.trim().replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/');
+    if (!normalized
+      || normalized.startsWith('/')
+      || normalized === '.'
+      || normalized.split('/').includes('..')
+      || normalized.includes('\0')
+      || /[*?[\]{}]/.test(normalized)
+      || normalized === '.traffic-one'
+      || normalized.startsWith('.traffic-one/')) return null;
+    paths.push(normalized);
+  }
+  return [...new Set(paths)].sort();
+}
+
+function quickFixScopeFromSpawn(toolInput: Rec, prompt: string): QuickFixScopeInput {
+  const candidates = [
+    toolInput.allowedFiles,
+    toolInput.allowed_files,
+    toolInput.files,
+  ].filter((value) => value !== undefined);
+  const structured = candidates.map(exactQuickFixPaths);
+  if (structured.some((scope) => scope === null)) {
+    return { present: candidates.length > 0, valid: false, outputs: [], allowlist: [], exclude: [] };
+  }
+  const structuredScope = structured[0] || null;
+  if (structuredScope
+    && !structured.every((scope) => JSON.stringify(scope) === JSON.stringify(structuredScope))) {
+    return { present: true, valid: false, outputs: [], allowlist: [], exclude: [] };
+  }
+
+  const markerMatches = [...prompt.matchAll(
+    /^\[t1-bounded-scope:\s*(\{[^\r\n]{1,4096}\})\s*\]$/gm,
+  )];
+  if (markerMatches.length > 1) {
+    return { present: true, valid: false, outputs: [], allowlist: [], exclude: [] };
+  }
+  let markerScope: { outputs: string[]; allowlist: string[]; exclude: string[] } | null = null;
+  if (markerMatches.length === 1) {
+    try {
+      const parsed = JSON.parse(markerMatches[0]?.[1] || '') as Record<string, unknown>;
+      if (!parsed || typeof parsed !== 'object'
+        || Object.keys(parsed).some((key) => !['outputs', 'allowlist', 'exclude'].includes(key))) {
+        throw new Error('invalid marker keys');
+      }
+      const outputs = exactQuickFixPaths(parsed.outputs);
+      const allowlist = parsed.allowlist === undefined
+        ? outputs
+        : exactQuickFixPaths(parsed.allowlist);
+      const exclude = parsed.exclude === undefined
+        ? []
+        : (Array.isArray(parsed.exclude) && parsed.exclude.length === 0
+            ? []
+            : exactQuickFixPaths(parsed.exclude));
+      if (!outputs || !allowlist || !exclude
+        || outputs.some((output) => !allowlist.includes(output) || exclude.includes(output))) {
+        throw new Error('invalid marker scope');
+      }
+      markerScope = { outputs, allowlist, exclude };
+    } catch {
+      return { present: true, valid: false, outputs: [], allowlist: [], exclude: [] };
+    }
+  }
+  if (structuredScope && markerScope
+    && (JSON.stringify(structuredScope) !== JSON.stringify(markerScope.outputs)
+      || JSON.stringify(structuredScope) !== JSON.stringify(markerScope.allowlist))) {
+    return { present: true, valid: false, outputs: [], allowlist: [], exclude: [] };
+  }
+  if (markerScope) {
+    return { present: true, valid: true, ...markerScope };
+  }
+  if (structuredScope) {
+    return {
+      present: true,
+      valid: true,
+      outputs: structuredScope,
+      allowlist: structuredScope,
+      exclude: [],
+    };
+  }
+  return { present: false, valid: false, outputs: [], allowlist: [], exclude: [] };
 }
 
 // A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it on hosts
@@ -807,11 +909,80 @@ export function agentModelGate(ctx: Ctx): HookResult {
       && hasRunIdPlaceholder(toolInput[field]))
     : [];
   const allowSpawn = (result: HookResult): HookResult => {
-    if (placeholderPromptFields.length === 0 || result.kind === 'deny') return result;
+    if (result.kind === 'deny') return result;
     const updatedToolInput: Record<string, unknown> = { ...toolInput };
     for (const field of placeholderPromptFields) {
       updatedToolInput[field] = substituteRunIdPlaceholder(toolInput[field] as string, spawnRunId);
     }
+    let changed = placeholderPromptFields.length > 0;
+    if (subagentTeam && runPolicy) {
+      const rawAgentType = spawnAgentType(toolInput, { includeRoleAlias: false }).trim();
+      const capability = readRunHostCapability(cwd, spawnRunId, ctx.host);
+      if (!capability) {
+        return deny(
+          `traffic-one — spawn blocked: per-run host capability evidence is missing or corrupt for ${ctx.host}. `
+          + 'No child was started. Repair the parent run and retry.',
+        );
+      }
+      const hostAgentType = capability?.typedSubagents && rawAgentType ? rawAgentType : null;
+      const activeRoleBootstrap = readActiveRunBootstrap(cwd, spawnRunId, role);
+      const activeBoundedMaintenance = activeRoleBootstrap
+        && (
+          (role === 'quick-fix' && activeRoleBootstrap.workUnit.unitId === 'quick-fix:bootstrap')
+          || activeRoleBootstrap.workUnit.unitId === `${role}:bounded-maintenance`
+        )
+        ? activeRoleBootstrap
+        : null;
+      const requestedQuickFixScope = role === 'quick-fix'
+        ? quickFixScopeFromSpawn(toolInput, spawnPromptText)
+        : null;
+      const explicitQuickFixScope = requestedQuickFixScope?.present
+        ? (requestedQuickFixScope.valid ? requestedQuickFixScope : null)
+        : null;
+      const boundedMaintenanceOutputs = explicitQuickFixScope?.outputs
+        || (!requestedQuickFixScope?.present && activeBoundedMaintenance
+          ? boundedMaintenanceSourceScope(
+              spawnRunId,
+              role,
+              activeBoundedMaintenance.workUnit.outputs,
+            )
+          : undefined)
+        || null;
+      const envelope = ensureRunBootstrap(cwd, spawnRunId, role, state, {
+        host: canonicalHost(ctx.host),
+        hostAgentType,
+        evidenceSource: roleEvidence.source,
+        modelPolicyId: runPolicy.policyId,
+        ...(boundedMaintenanceOutputs
+          ? {
+              boundedOutputs: boundedMaintenanceOutputs,
+              boundedAllowlist: explicitQuickFixScope?.allowlist
+                || (activeBoundedMaintenance
+                  ? boundedMaintenanceSourceScope(
+                      spawnRunId,
+                      role,
+                      activeBoundedMaintenance.workUnit.allowlist,
+                    )
+                  : undefined)
+                || boundedMaintenanceOutputs,
+              boundedAllowlistExclude: explicitQuickFixScope?.exclude
+                || activeBoundedMaintenance?.workUnit.allowlistExclude
+                || [],
+            }
+          : {}),
+      });
+      if (!envelope) {
+        return deny(
+          `traffic-one — spawn blocked: parent could not resolve and atomically publish the role/rule/skill bootstrap `
+          + `for ${role} in run ${spawnRunId}. No child was started. Repair the parent materialization/policy and retry.`,
+        );
+      }
+      // The immutable envelope is the bootstrap transport shared by all hosts.
+      // Host-specific prompt/agent renderers already inject the role contract;
+      // returning updated tool input here would turn an otherwise plain allow
+      // into a host-dependent context result and is not supported uniformly.
+    }
+    if (!changed) return result;
     return result.kind === 'context'
       ? { ...result, updatedToolInput }
       : context('', { updatedToolInput });
@@ -1132,17 +1303,11 @@ export function agentModelGate(ctx: Ctx): HookResult {
     return deny(block('team-confirmation', { LEVEL: level }));
   }
 
-  // Implementers may not start until the architect phase is complete on disk
-  // (scaffold + memory baseline + assignments + digest with PLAN_READY). Checked
-  // after team approval so earlier gates (team/materialization) keep their prose.
-  // `mode` stays "new-project" for the project's whole life, so in MAINTENANCE
-  // this gate stands down when any assignments manifest exists for scope
-  // fallback (readRunAssignmentsResilient): task-triage's small tier
-  // legitimately routes a feature straight to an implementer with no fresh
-  // architect run (observed 8c: two dead "Couldn't start" spawns per
-  // maintenance feature before the orchestrator inferred the architect).
-  if (isNewProject && isPlanBatchGatedRole(role)
-    && !(isMaintenancePhase(state) && readRunAssignmentsResilient(cwd, spawnRunId))) {
+  // Every active subagent run—greenfield or existing-codebase—must bind
+  // implementers to the current run's semantic architecture input, runtime
+  // compiled contracts, exact assignments, and PLAN_READY digest. A resilient
+  // or sibling manifest is never authority for a v2 run.
+  if (isPlanBatchGatedRole(role)) {
     const incomplete = architectPhaseIncompleteReasons(cwd, state);
     if (incomplete.length > 0) {
       return deny(block('architect-phase-incomplete', {

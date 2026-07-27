@@ -40,6 +40,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'one-mcp-host.cjs': './runners/one-mcp-host/index.js',
   'traffic-one-cleanup.cjs': './runners/traffic-one-cleanup/index.js',
   'run-status.cjs': './runners/run-status/index.js',
+  'qa-evidence-runner.cjs': './runners/qa-evidence/index.js',
   'gitnexus-runner.cjs': './runners/gitnexus/index.js',
   'graphify-runner.cjs': './runners/graphify/index.js',
   'opencode-runner.cjs': './runners/opencode/index.js',

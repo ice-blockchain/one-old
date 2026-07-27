@@ -6,6 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { readJson } from '../fsjson';
+import { effectiveLegacyRunStatus } from '../run-settlement';
+import { frontendArtifactsPresent } from '../capabilities';
 
 type Rec = Record<string, unknown>;
 
@@ -73,7 +75,8 @@ function includesAny(text: string, patterns: readonly RegExp[]): boolean {
 
 function detectFrontendFromText(text: string): string | null {
   if (/\b(next\.?js|nextjs)\b/.test(text)) return 'nextjs';
-  if (/\bvue\b|\bnuxt\b/.test(text)) return 'vue';
+  if (/\bnuxt(?:\.?js)?\b/.test(text)) return 'nuxt';
+  if (/\bvue\b/.test(text)) return 'vue';
   if (/\bsvelte\b|\bsveltekit\b/.test(text)) return 'svelte';
   if (/\bangular\b/.test(text)) return 'angular';
   if (/\bastro\b/.test(text)) return 'astro';
@@ -147,10 +150,30 @@ export interface StackDetection {
   mobile?: { enabled: boolean; framework: string; source: string };
 }
 
+function classifyDetectedSurfaces(out: StackDetection): void {
+  const hasWebUi = Boolean(out.frontend && out.frontend !== 'none');
+  const hasNativeUi = Boolean(out.mobile?.enabled && out.mobile.framework !== 'none');
+  const hasBackend = Boolean(out.backend && out.backend !== 'none');
+  if (hasWebUi && out.frontend === 'react-vite' && out.backend === 'supabase' && !hasNativeUi) {
+    out.stack = 'default';
+  } else if ((hasWebUi || hasNativeUi) && hasBackend) {
+    out.stack = 'custom-stack';
+  } else if (hasWebUi || hasNativeUi) {
+    out.stack = 'custom-frontend';
+  } else if (hasBackend) {
+    out.stack = 'custom-backend';
+  }
+}
+
 export function detectStackFromCodebase(cwd: string): StackDetection {
   const out: StackDetection = { stack: null, backend: null, frontend: null, realtime: null, evidence: [] };
 
   const deps = dependenciesFromPackage(loadPackageJson(cwd));
+  const composer = readJson<Rec>(path.join(cwd, 'composer.json'), {});
+  const composerDeps = {
+    ...(composer.require && typeof composer.require === 'object' ? composer.require as Rec : {}),
+    ...(composer['require-dev'] && typeof composer['require-dev'] === 'object' ? composer['require-dev'] as Rec : {}),
+  };
   if (detectGoBackendArtifacts(cwd)) {
     out.stack = 'custom-backend';
     out.backend = 'go';
@@ -158,13 +181,60 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
     out.evidence.push('Go backend artifacts detected → apply Go backend skills');
   }
 
-  if (Object.keys(deps).length === 0) return out;
+  if (fs.existsSync(path.join(cwd, 'pubspec.yaml'))) {
+    out.stack = 'custom-frontend';
+    out.frontend = 'none';
+    out.mobile = { enabled: true, framework: 'flutter', source: 'explicit' };
+    out.evidence.push('Flutter pubspec detected');
+  } else if (
+    fs.existsSync(path.join(cwd, 'Package.swift'))
+    || (() => {
+      try {
+        return fs.readdirSync(cwd, { withFileTypes: true }).some((entry) => (
+          entry.name.endsWith('.xcodeproj') || entry.name.endsWith('.xcworkspace')
+        ));
+      } catch {
+        return false;
+      }
+    })()
+  ) {
+    out.stack = 'custom-frontend';
+    out.frontend = 'none';
+    out.mobile = { enabled: true, framework: 'swift-native', source: 'explicit' };
+    out.evidence.push('Swift/Xcode project detected');
+  } else if (
+    fs.existsSync(path.join(cwd, 'settings.gradle'))
+    || fs.existsSync(path.join(cwd, 'settings.gradle.kts'))
+    || fs.existsSync(path.join(cwd, 'app', 'build.gradle'))
+    || fs.existsSync(path.join(cwd, 'app', 'build.gradle.kts'))
+  ) {
+    out.stack = 'custom-frontend';
+    out.frontend = 'none';
+    out.mobile = { enabled: true, framework: 'kotlin-android', source: 'explicit' };
+    out.evidence.push('Android/Gradle project detected');
+  }
+
+  if (composerDeps['laravel/framework']) {
+    out.stack = 'custom-backend';
+    out.backend = 'laravel';
+    const hasLaravelUi = fs.existsSync(path.join(cwd, 'resources', 'views'))
+      || fs.existsSync(path.join(cwd, 'resources', 'js'))
+      || Boolean(composerDeps['inertiajs/inertia-laravel']);
+    out.frontend = hasLaravelUi ? 'other' : 'none';
+    out.evidence.push(hasLaravelUi ? 'Laravel UI artifacts detected' : 'Laravel API-only project detected');
+  }
+
+  if (Object.keys(deps).length === 0) {
+    classifyDetectedSurfaces(out);
+    return out;
+  }
 
   const isNative = Boolean(deps.expo || deps['react-native']);
   const isReact = Boolean(deps.react);
   const frameworkDetections = [
     { frontend: 'nextjs', matches: Boolean(deps.next), evidence: 'next in deps → apply custom-frontend stack + Next.js provider-first recommendations' },
-    { frontend: 'vue', matches: Boolean(deps.vue || deps.nuxt || deps['@vitejs/plugin-vue']), evidence: 'vue/nuxt in deps → apply custom-frontend stack + Vue-native patterns' },
+    { frontend: 'nuxt', matches: Boolean(deps.nuxt), evidence: 'nuxt in deps → apply custom-frontend stack + Nuxt patterns' },
+    { frontend: 'vue', matches: Boolean(deps.vue || deps['@vitejs/plugin-vue']), evidence: 'vue in deps → apply custom-frontend stack + Vue-native patterns' },
     { frontend: 'svelte', matches: Boolean(deps.svelte || deps['@sveltejs/kit']), evidence: 'svelte/sveltekit in deps → apply custom-frontend stack + Svelte-native patterns' },
     { frontend: 'angular', matches: Boolean(deps['@angular/core'] || deps['@angular/cli']), evidence: 'angular in deps → apply custom-frontend stack + Angular-native patterns' },
     { frontend: 'astro', matches: Boolean(deps.astro), evidence: 'astro in deps → apply custom-frontend stack + Astro-native patterns' },
@@ -204,7 +274,7 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
     out.evidence.push('firebase detected');
   }
 
-  if (!out.backend && out.stack === 'custom-backend' && out.frontend === 'react-vite') {
+  if (!out.backend && out.frontend === 'react-vite') {
     out.backend = 'none';
   }
 
@@ -213,6 +283,7 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
     out.evidence.push('websocket lib detected');
   }
 
+  classifyDetectedSurfaces(out);
   return out;
 }
 
@@ -229,15 +300,36 @@ export function detectGoBackendArtifacts(cwd: string): boolean {
 export function reconcileStackFromArtifacts(cwd: string, state: unknown): boolean {
   const s = state && typeof state === 'object' ? (state as Rec) : null;
   if (!s) return false;
-  if (!detectGoBackendArtifacts(cwd)) return false;
-  const staleSupabase = s.stack === 'default' || s.backend === 'supabase';
-  if (!staleSupabase && s.backend === 'go' && s.stack === 'custom-backend') return false;
-  s.stack = 'custom-backend';
-  if (!s.frontend || s.frontend === 'none') s.frontend = 'react-vite';
-  s.backend = 'go';
+  const hasGo = detectGoBackendArtifacts(cwd);
+  const legacyImplicitFrontend = s.stack === 'custom-backend' && s.frontend === 'react-vite'
+    && !frontendArtifactsPresent(cwd);
+  const runId = typeof s.currentRunId === 'string' ? s.currentRunId.trim() : '';
+  const runLedger = runId
+    ? readJson<Rec>(path.join(cwd, '.traffic-one', 'runs', runId, 'run.json'), {})
+    : {};
+  const effectiveRunStatus = effectiveLegacyRunStatus(runLedger);
+  const activeRun = runId && (effectiveRunStatus === 'planned' || effectiveRunStatus === 'active');
+  if (!hasGo && (!legacyImplicitFrontend || activeRun)) return false;
+
+  if (hasGo) {
+    const staleSupabase = s.stack === 'default' || s.backend === 'supabase';
+    if (!staleSupabase && s.backend === 'go' && s.stack === 'custom-backend' && !legacyImplicitFrontend) return false;
+    s.backend = 'go';
+    s.stack = frontendArtifactsPresent(cwd) ? 'custom-stack' : 'custom-backend';
+  }
+  if (legacyImplicitFrontend && !activeRun) s.frontend = 'none';
+
   const evidence = Array.isArray(s.evidence) ? s.evidence.filter((item): item is string => typeof item === 'string') : [];
-  const note = 'Go backend artifacts detected after scaffold → reconciled state to custom-backend/go';
-  if (!evidence.includes(note)) s.evidence = [...evidence, note];
+  const notes = [...evidence];
+  if (hasGo) {
+    const note = `Go backend artifacts detected after scaffold → reconciled state to ${String(s.stack)}/go`;
+    if (!notes.includes(note)) notes.push(note);
+  }
+  if (legacyImplicitFrontend && !activeRun) {
+    const note = 'Legacy custom-backend React fallback removed because no frontend artifacts exist';
+    if (!notes.includes(note)) notes.push(note);
+  }
+  s.evidence = notes;
   return true;
 }
 
@@ -270,7 +362,7 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
     /\bcrud\b/, /\bdatabase\b/, /\bdb\b/, /\bbackend\b/, /\bapi\b/,
     /\buploads?\b/, /\bfiles?\b/, /\brealtime\b/, /\breal[- ]time\b/,
     /\bdashboard\b/, /\badmin\b/, /\bpayments?\b/, /\bmarketplace\b/,
-    /\bsaas\b/, /\bmvp\b/, /\bplatform\b/, /\bapp\b/,
+    /\bsaas\b/, /\bmvp\b/, /\bplatform\b/,
   ]);
   const explicitCustomFrontend = Boolean(frontend && frontend !== 'react-vite');
   const explicitCustomBackend = Boolean(backend && backend !== 'supabase' && backend !== 'none');
@@ -294,8 +386,9 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
       /\bscreens?\b/, /\bresponsive\b/, /\bdesign\b/, /\bcomponents?\b/,
     ]);
 
-  let resolvedFrontend = frontend || (apiOnlyBackend ? 'none' : 'react-vite');
-  let resolvedBackend = backend || (backendNeed || mobile.enabled ? 'supabase' : 'none');
+  let resolvedFrontend = frontend
+    || (apiOnlyBackend ? 'none' : (backend === 'laravel' ? 'other' : 'react-vite'));
+  let resolvedBackend = backend || (backendNeed ? 'supabase' : 'none');
   let stack: string;
 
   if (wantsMinimal && !backendNeed && !frontend && !mobile.enabled) {
@@ -305,18 +398,18 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
   } else if (mobile.enabled && !frontend) {
     stack = explicitCustomBackend ? 'custom-stack' : 'custom-frontend';
     resolvedFrontend = mobile.framework === 'ionic-capacitor' ? 'react-vite' : 'none';
-    resolvedBackend = resolvedBackend === 'none' ? 'supabase' : resolvedBackend;
   } else if (explicitCustomFrontend && explicitCustomBackend) {
     stack = 'custom-stack';
   } else if (explicitCustomFrontend) {
     stack = 'custom-frontend';
-    resolvedBackend = resolvedBackend === 'none' ? 'supabase' : resolvedBackend;
-  } else if (explicitCustomBackend || noBackend) {
-    stack = 'custom-backend';
+  } else if (explicitCustomBackend) {
+    stack = resolvedFrontend === 'none' ? 'custom-backend' : 'custom-stack';
+  } else if (noBackend) {
+    stack = resolvedFrontend === 'none' ? 'minimal' : 'custom-frontend';
   } else if (backendNeed) {
     stack = 'default';
   } else if (frontend === 'react-vite') {
-    stack = resolvedBackend === 'none' ? 'custom-backend' : 'default';
+    stack = resolvedBackend === 'none' ? 'custom-frontend' : 'default';
   } else {
     stack = 'minimal';
     resolvedFrontend = 'none';

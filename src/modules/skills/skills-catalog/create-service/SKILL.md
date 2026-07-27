@@ -1,103 +1,34 @@
 ---
 name: create-service
 description: >
-  Use PROACTIVELY
-  whenever the user asks to add an API call, create a service, fetch data from
-  an endpoint, connect to a backend, or wire up HTTP requests.
-  Triggers: "add an API call", "create a service for", "fetch [resource] from the API",
-  "connect to the [name] endpoint", "call the API to", "I need to GET/POST/PUT/DELETE".
+  Create or change a web-facing data service, API client, repository, composable,
+  or server action under the runtime-compiled architecture. Trigger on API call,
+  endpoint integration, data fetching, mutation, or backend connection for a
+  web UI.
 ---
 
-# Skill: Create Service
+# Create Service
 
-Confirm the service function and hook before creating any files.
+1. Read the active bootstrap envelope, capability profile,
+   `WorkUnitContractV1`, and compiled architecture.
+2. Use only the compiled service/feature output and allowlist. If no suitable
+   output exists, request re-planning; never default to `apps/web`,
+   `src/services`, or `packages/api-client`.
+3. Match the framework boundary already present: client/server module for Next,
+   composable/server route for Nuxt, request/action layer for Laravel
+   Blade/Inertia, or the established client pattern for Vite/custom web.
+4. Match the detected backend and existing transport. Reuse its HTTP client,
+   schema validator, query/cache layer, auth propagation, error model, and
+   cancellation conventions instead of adding a second stack.
+5. Keep secrets and privileged credentials server-side. Validate untrusted
+   responses at the boundary and return a typed domain result.
+6. Make timeout, retry, pagination, idempotency, empty/error, and offline
+   behavior explicit where the operation needs them.
+7. For Supabase, reuse the project client factory; never construct a privileged
+   client at browser module load or expose a service-role key. Use the existing
+   runtime add-on approval gate before enabling paid/optional capabilities.
+8. Add deterministic service tests with mocked transport and failure paths.
 
-## Step 1 — Identify the backend
-Read `.traffic-one/.one.json` → `state.backend`. Drives the scaffold:
-- `supabase` / `our-fork` → use `getSupabase()` from `packages/api-client/src/supabase.ts` per `rules/frontend/react/supabase-client.md`. **Never** call `createClient` at module top level. **Never** assume `getSupabase()` returns non-null.
-- `external-api` / `self-hosted` / `managed` / `other` → use the axios instance + RTK Query baseQuery from `packages/api-client`.
-
-## Step 2 — Confirm the file layout
-
-State the path before writing:
-- App-local: `apps/web/src/services/[domain].ts` or `apps/web/src/features/[name]/services/[domain].ts`
-- Cross-app: `packages/api-client/src/[domain].ts`
-
-Plus the typed return value and the RTK Query hook (or React Query hook if non-RTK) that will wrap it.
-
-## Step 3 — Add-on gate (Supabase only)
-
-If using a Supabase feature that needs an add-on, check `.traffic-one/.one.json` → `supabaseAddons[<name>]` via the plugin's `requireAddon` gate (`scripts/shared/state/normalize.js` in the installed plugin). Statuses:
-
-| Status | Action |
-|---|---|
-| `approved` | Proceed silently. |
-| `pending` (default for new projects) | Ask the user once — see prompt template below — then activate per `rules/modes/new-project.md` add-on table. On success write `state.supabaseAddons[<name>] = "approved"`. |
-| `skipped` | Fall back to a non-add-on path or ask if they've changed their mind. Do NOT silently activate. |
-
-Add-ons that map to features:
-- `storage` — `supabase.storage.from(...)`, file uploads
-- `auth` — third-party providers (Google / GitHub / Apple / etc.); base email auth needs no gate
-- `realtime` — channels, presence, broadcast (active by default; gate is for RLS pub on a table)
-- `vector` — pgvector embeddings (`create extension vector`)
-- `pg_cron` — scheduled functions
-- `pg_net` — outbound HTTP from Postgres
-- `edge_functions` — auto-deployed via `runPostFunctionEdit` hook; ask only when user first edits one
-
-Gate prompt template:
-> "This needs Supabase **<add-on>**. To enable I'll <activation>. OK to proceed? (yes / no / skip for now)"
-
-## Step 4 — Confirm and write
-
-Ask: "Should I go ahead?" — wait for yes before writing files.
-
-## Service template (Supabase)
-
-```ts
-// apps/web/src/services/posts.ts
-import { getSupabase } from "@app/api-client";
-import { z } from "zod";
-
-const PostSchema = z.object({
-  id: z.string().uuid(),
-  title: z.string(),
-  body: z.string(),
-  created_at: z.string(),
-});
-export type Post = z.infer<typeof PostSchema>;
-
-export async function listPosts(): Promise<Post[]> {
-  const supabase = getSupabase();
-  if (!supabase) throw new Error("Supabase not configured — see EnvBanner");
-  const { data, error } = await supabase.from("posts").select("*").order("created_at", { ascending: false });
-  if (error) throw error;
-  return z.array(PostSchema).parse(data);
-}
-```
-
-Components: handle the no-client case with the `<ConfigurePromptCard />` (see `rules/frontend/react/supabase-client.md`); throwing in the service is OK because the component should call this through React Query / RTK Query and handle the error state.
-The setup prompt/card/banner shown for this state follows the `https://traffic.io/` setup-link contract (exact-href regression + repair existing link) in `rules/frontend/ui-quality.md` — never link directly to the Supabase dashboard.
-
-## Service template (axios + RTK Query)
-
-```ts
-// packages/api-client/src/posts.ts
-import { apiClient } from "./instance";
-import { z } from "zod";
-
-const PostSchema = z.object({ id: z.string(), title: z.string() });
-export type Post = z.infer<typeof PostSchema>;
-
-export async function listPosts(): Promise<Post[]> {
-  const { data } = await apiClient.get("/posts");
-  return z.array(PostSchema).parse(data);
-}
-```
-
-Wrap in an RTK Query endpoint or expose a service-only async function — match the existing pattern in the project.
-
-## Don't
-- Never call `createClient` at module load.
-- Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser; it has no `VITE_*` prefix for a reason.
-- Never silently enable a Supabase add-on that's marked `pending` — the user pays for some of these.
-- Never mix axios + Supabase in the same service file; one backend per service.
+Do not ask for a redundant confirmation when the user already requested the
+change. Run the relevant unit/integration checks; browser and Lighthouse work
+is governed only by `VerificationContractV2`.

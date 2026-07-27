@@ -398,7 +398,7 @@ test('finalize derives the stack from the seeded original prompt (not minimal)',
   });
 });
 
-test('finalize persists 16b React + Go prompt as custom-backend/go immediately', () => {
+test('finalize persists an explicit React + Go prompt as a custom full stack immediately', () => {
   withProject(null, (cwd) => {
     const prompt = 'create a modern learning platform in react with go as backend with courses for web development. use latest tech, make it responsive. no admin area for now.';
     writeState(cwd, { mode: 'new-project', originalPrompt: prompt });
@@ -410,7 +410,7 @@ test('finalize persists 16b React + Go prompt as custom-backend/go immediately',
     assert.equal(computeOnboarding(cwd).step, 'finalize');
     assert.ok(applyAnswer(cwd, 'finalize', null).ok);
     const s = readState(cwd);
-    assert.equal(s.stack, 'custom-backend');
+    assert.equal(s.stack, 'custom-stack');
     assert.equal(s.frontend, 'react-vite');
     assert.equal(s.backend, 'go');
   });

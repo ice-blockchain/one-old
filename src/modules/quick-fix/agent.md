@@ -33,8 +33,13 @@ and stop.
 
 ## Report
 
-End with at most two sentences: what changed (file + one-line description) and how it was verified.
-No summaries of exploration, no recaps.
+Before returning, write the exact `quick-fix.md` path listed in the active
+`WorkUnitContractV1.outputs`. Use `verdict: IMPLEMENTED` only after the bounded source edit exists
+and the named verification step passed; otherwise use `verdict: BLOCKED` and do not claim delivery.
+Include the touched source path(s) and verification result in that digest.
+
+Then end with at most two sentences: what changed (file + one-line description) and how it was
+verified. No summaries of exploration, no recaps.
 
 You may receive FOLLOW-UP tasks in this same agent session — each later message is a NEW bounded
 trivial change under this same scope contract. Apply the named change, verify it the same way, report

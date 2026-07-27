@@ -9,6 +9,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import {
+  buildRuntimeAssignments,
+  capabilityProfileForRun,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+  validateArchitectureInput,
+  type CompiledArchitectureV1,
+} from '../../shared/architecture-contract';
+import { profileHasWebUi } from '../../shared/capabilities';
 import { isKnownStack } from '../../shared/config';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
@@ -19,7 +30,43 @@ import { openCodeDelegationActive } from '../../shared/performance';
 import { OPENCODE_PLAN_MIN_UNITS, parsePlanDelegationUnits, planDelegationUnitCount } from '../../shared/opencode-roles';
 import { openCodeQueuePolicyViolations, type OpenCodeQueuePolicyOptions } from '../../shared/opencode-queue';
 import { obj } from '../../shared/obj';
-import { activeAgentRole, isMaterialized, legacyStatePath, readRunAssignmentsResilient, resolveRunAgentContext, stackFingerprint, statePath } from '../../shared/state';
+import { readQaReportV2 } from '../../shared/qa-report-v2';
+import {
+  activateRunV2RollbackBarrier,
+  writeRunSettlement,
+} from '../../shared/run-settlement';
+import {
+  canPublishRunPolicyBootstraps,
+  ensureRunPolicyBootstraps,
+  readRunModelPolicy,
+} from '../../shared/run-model-policy';
+import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
+import { matchesScope, type AssignedScope } from '../../shared/scope';
+import {
+  activeAgentRole,
+  isMaterialized,
+  legacyStatePath,
+  readRunAssignmentsResilient,
+  resolveRunAgentContext,
+  stackFingerprint,
+  statePath,
+} from '../../shared/state';
+import {
+  buildVerificationContract,
+  changedPathsFromBaseline,
+  publishVerificationContract,
+  readVerificationContract,
+  type LighthouseThresholdsV1,
+  type UiImpact,
+} from '../../shared/verification-contract';
+import { readVerificationPlanIntent } from '../../shared/verification-plan-intent';
+import {
+  analyzeProjectStructure,
+  analyzeStructureText,
+  analyzeStructureTextAgainstContract,
+  invalidateStructureCache,
+  writeStructureReport,
+} from './react-structure';
 
 type Rec = Record<string, unknown>;
 type Vars = Record<string, string | number | null | undefined>;
@@ -27,8 +74,16 @@ type Block = (name: string, fallback: string, vars?: Vars) => string;
 
 const PLAN_FILE_RE = /(^|\/)\.traffic-one\/plan\.md$/;
 const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json$/;
-const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/architect\.md$/;
-const FRONTEND_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/frontend\.md$/;
+const ARCHITECTURE_INPUT_RE = /(^|\/)\.traffic-one\/runs\/([^/]+)\/architecture-input-v1\.json$/;
+const RUN_RUNTIME_SIDECAR_RE = /^\.traffic-one\/runs\/([^/]+)\/(.+)$/;
+const RUN_DIGEST_ARTIFACT_RE =
+  /^\.traffic-one\/digests\/([^/]+)\/(?:senior-)?(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
+const QA_REPORT_ARTIFACT_RE = /^\.traffic-one\/reports\/qa\/([^/]+)\/report-v2\.json$/;
+const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/architect\.md$/;
+const FRONTEND_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?frontend\.md$/;
+const IMPLEMENTER_DIGEST_RE =
+  /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?(?:frontend|backend)\.md$/;
+const REVIEWER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?reviewer\.md$/;
 const TESTER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?tester\.md$/;
 // Collapsed-source delivery guard. A single source line packing an entire
 // component/route (observed 16c: apps/web/src/App.tsx held the whole app —
@@ -138,11 +193,39 @@ function qaReportVerifiedBuild(
   }
 }
 
-function collapsedProductSourceFile(projectRoot: string): string | null {
-  const stack = ['apps', 'packages'].map((dir) => path.join(projectRoot, dir));
+interface CollapseScanResult {
+  file: string | null;
+  incomplete: boolean;
+  scanned: number;
+}
+
+function collapsedProductSourceFile(projectRoot: string, state: Rec): CollapseScanResult {
+  const profile = capabilityProfileForRun(projectRoot, state);
+  const capabilityRoots = [
+    ...profile.sourceRoots,
+    ...profile.layerRoots.pages,
+    ...profile.layerRoots.components,
+    ...profile.layerRoots.features,
+    ...profile.layerRoots.lib,
+    ...profile.entrypoints.map((entrypoint) => path.dirname(entrypoint)),
+    ...(profile.profileId === 'server-rendered' ? ['resources/css'] : []),
+  ];
+  const root = path.resolve(projectRoot);
+  const stack = [...new Set([...capabilityRoots, 'apps', 'packages'])]
+    .map((dir) => path.resolve(projectRoot, dir))
+    .filter((dir) => dir === root || dir.startsWith(`${root}${path.sep}`));
+  const visited = new Set<string>();
   let scanned = 0;
-  while (stack.length > 0 && scanned < COLLAPSE_MAX_FILES) {
+  while (stack.length > 0) {
     const dir = stack.pop()!;
+    let realDir: string;
+    try {
+      realDir = fs.realpathSync(dir);
+    } catch {
+      continue;
+    }
+    if (visited.has(realDir)) continue;
+    visited.add(realDir);
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -158,7 +241,9 @@ function collapsedProductSourceFile(projectRoot: string): string | null {
         continue;
       }
       if (!entry.isFile() || !COLLAPSE_SOURCE_RE.test(entry.name)) continue;
-      if (++scanned > COLLAPSE_MAX_FILES) break;
+      if (++scanned > COLLAPSE_MAX_FILES) {
+        return { file: null, incomplete: true, scanned };
+      }
       let text: string;
       try {
         text = fs.readFileSync(full, 'utf8');
@@ -173,23 +258,18 @@ function collapsedProductSourceFile(projectRoot: string): string | null {
         const jsxClose = (line.match(/<\//g) || []).length;
         // Real collapse packs many statements or JSX closings onto one line; a
         // single long string/URI/data literal trips neither.
-        if (statements >= 3 || jsxClose >= 2) return `${rel}:${i + 1}`;
+        if (statements >= 3 || jsxClose >= 2) {
+          return { file: `${rel}:${i + 1}`, incomplete: false, scanned };
+        }
       }
     }
   }
-  return null;
+  return { file: null, incomplete: false, scanned };
 }
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
 const ROOT_MONOREPO_FLAT_RE = /^tsconfig(?!\.base\.json$)(\.[a-z0-9-]+)?\.json$/;
 const T1_MEMORY_DIR = '.traffic' + '-one';
-const CANONICAL_TAILWIND_GLOBALS_PATH = 'packages/tailwind-config/src/globals.css';
-const TAILWIND_CONFIG_BASELINE_PATHS = [
-  CANONICAL_TAILWIND_GLOBALS_PATH,
-  'packages/tailwind-config/globals.css',
-  'packages/tailwind-config/index.ts',
-  'packages/tailwind-config/tailwind.config.ts',
-];
 
 // The OpenCode plan-queue gate is a TOKEN-OPTIMIZATION, not a correctness gate: it
 // wants the architect to list bounded units for the free OpenCode batch. On
@@ -210,16 +290,6 @@ function existsAny(projectRoot: string, relPaths: string[]): boolean {
   return relPaths.some((relPath) => exists(projectRoot, relPath));
 }
 
-function hasAnyAppPackage(projectRoot: string): boolean {
-  const appsDir = path.join(projectRoot, 'apps');
-  try {
-    return fs.readdirSync(appsDir, { withFileTypes: true })
-      .some((entry) => entry.isDirectory() && fs.existsSync(path.join(appsDir, entry.name, 'package.json')));
-  } catch {
-    return false;
-  }
-}
-
 function packageJsonMatchesWorkspaceRoot(projectRoot: string, content: string): boolean {
   if (packageJsonDeclaresWorkspace(content)) return true;
   if (!existsAny(projectRoot, ['pnpm-workspace.yaml', 'pnpm-workspace.yml'])) return false;
@@ -229,84 +299,6 @@ function packageJsonMatchesWorkspaceRoot(projectRoot: string, content: string): 
     return pkg?.private === true && hasPnpmPackageManager;
   } catch {
     return true;
-  }
-}
-
-function rootPackageJsonMatchesWorkspaceRoot(projectRoot: string): boolean {
-  try {
-    const content = fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8');
-    return packageJsonMatchesWorkspaceRoot(projectRoot, content);
-  } catch {
-    return false;
-  }
-}
-
-function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
-  if (!stateRequiresNewProjectMonorepo(state)) return [];
-  const missing: string[] = [];
-  if (!existsAny(projectRoot, ['pnpm-workspace.yaml', 'pnpm-workspace.yml'])) missing.push('pnpm-workspace.yaml');
-  if (!exists(projectRoot, 'turbo.json')) missing.push('turbo.json');
-  if (!exists(projectRoot, 'tsconfig.base.json')
-    && !exists(projectRoot, 'packages/tsconfig/base.json')) {
-    missing.push('tsconfig.base.json (or packages/tsconfig/base.json)');
-  }
-  if (!rootPackageJsonMatchesWorkspaceRoot(projectRoot)) {
-    missing.push('package.json (private + pnpm packageManager + workspace declaration)');
-  }
-  if (!hasAnyAppPackage(projectRoot)) missing.push('apps/<name>/package.json');
-  if (!exists(projectRoot, 'packages/ui/package.json')) missing.push('packages/ui/package.json');
-  // The UI barrel legitimately becomes index.tsx once components land in it.
-  // Accepting only index.ts made the architect's own digest unwritable AFTER a
-  // sibling role upgraded the barrel: the completion gate re-validated the
-  // original scaffold shape and refused every `PLAN_READY`-bearing rewrite
-  // (observed 12c: an ownership-transfer bookkeeping update had to be skipped).
-  if (!existsAny(projectRoot, ['packages/ui/src/index.ts', 'packages/ui/src/index.tsx'])) {
-    missing.push('packages/ui/src/index.ts (or index.tsx)');
-  }
-  if (!exists(projectRoot, 'packages/tailwind-config/package.json')) missing.push('packages/tailwind-config/package.json');
-  if (!existsAny(projectRoot, TAILWIND_CONFIG_BASELINE_PATHS)) {
-    missing.push(CANONICAL_TAILWIND_GLOBALS_PATH);
-  }
-  if (!exists(projectRoot, 'packages/i18n/package.json')) missing.push('packages/i18n/package.json');
-  if (!exists(projectRoot, 'packages/i18n/src/index.ts')) missing.push('packages/i18n/src/index.ts');
-  // Formatting is a delivery gate. Without a formatter config + a root
-  // `format:check` script the generated code ships collapsed/minified and still
-  // passes lint (observed 10c: every page component landed as one multi-
-  // thousand-character line — ESLint carried no formatting rule, prettier was
-  // configured nowhere, and no mechanical gate ran `format:check`).
-  if (!hasPrettierConfig(projectRoot)) {
-    missing.push('.prettierrc (or prettier.config.*, or a "prettier" key in root package.json)');
-  }
-  if (!rootPackageJsonScript(projectRoot, 'format:check')) {
-    missing.push('package.json "format:check" script (e.g. "prettier --check .") plus the prettier devDependency and a .prettierignore covering build output AND the generated `.traffic-one/` tree (its prose/metadata is not product source and must not fail the gate)');
-  }
-  return missing;
-}
-
-const PRETTIER_CONFIG_PATHS = [
-  '.prettierrc', '.prettierrc.json', '.prettierrc.json5', '.prettierrc.yaml', '.prettierrc.yml',
-  '.prettierrc.js', '.prettierrc.cjs', '.prettierrc.mjs', '.prettierrc.toml',
-  'prettier.config.js', 'prettier.config.cjs', 'prettier.config.mjs',
-];
-
-function hasPrettierConfig(projectRoot: string): boolean {
-  if (existsAny(projectRoot, PRETTIER_CONFIG_PATHS)) return true;
-  try {
-    const parsed = obj(JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')));
-    return Boolean(parsed && parsed.prettier != null);
-  } catch {
-    return false;
-  }
-}
-
-function rootPackageJsonScript(projectRoot: string, name: string): boolean {
-  try {
-    const parsed = obj(JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')));
-    const scripts = obj(parsed?.scripts);
-    const value = scripts?.[name];
-    return typeof value === 'string' && value.trim().length > 0;
-  } catch {
-    return false;
   }
 }
 
@@ -423,61 +415,247 @@ function planOnDiskOpenCodeQueuePolicyErrors(
   }
 }
 
-function assignmentsUsesCanonicalShape(content: string): boolean {
+function architectureInputErrors(content: string): string[] {
   try {
-    const parsed = JSON.parse(content) as unknown;
-    return Array.isArray(obj(parsed)?.assignments);
+    return validateArchitectureInput(JSON.parse(content)).errors;
   } catch {
-    return false;
+    return ['architecture input must be valid JSON'];
   }
 }
 
-function assignmentRoleErrors(content: string): string[] {
-  const allowed = new Set(['senior-frontend', 'senior-backend']);
-  try {
-    const parsed = obj(JSON.parse(content) as unknown);
-    const assignments = Array.isArray(parsed?.assignments) ? parsed.assignments : [];
-    const roles = assignments
-      .map((entry) => obj(entry)?.role)
-      .filter((role): role is string => typeof role === 'string' && role.trim().length > 0);
-    const invalid = roles.filter((role) => !allowed.has(role));
-    return invalid.length ? [`Assignments manifest may include only senior-frontend and senior-backend entries in this version; remove: ${[...new Set(invalid)].join(', ')}`] : [];
-  } catch {
-    return [];
+function assignmentScopesForRole(
+  projectRoot: string,
+  runId: string,
+  role: string,
+): AssignedScope[] {
+  const runtime = readRuntimeAssignments(projectRoot, runId);
+  if (runtime) {
+    return runtime.assignments
+      .filter((assignment) => assignment.role === role)
+      .map((assignment) => assignment.scope);
   }
+  // Once a compiled v2 sidecar exists, missing/corrupt runtime assignments are
+  // a hard absence. Never borrow a sibling/legacy manifest to widen the scan.
+  if (readCompiledArchitecture(projectRoot, runId)) return [];
+  const manifest = readRunAssignmentsResilient(projectRoot, runId);
+  if (!manifest) return [];
+  return manifest.assignments
+    .filter((assignment) => assignment.role === role)
+    .map((assignment) => assignment.scope);
+}
+
+function roleContract(
+  contract: CompiledArchitectureV1,
+  role: string,
+): CompiledArchitectureV1 {
+  const modules = contract.modules.filter((module) => module.ownerRole === role);
+  const moduleOutputs = new Set(modules.map((module) => module.output));
+  const entrypoints = role === 'senior-frontend' ? contract.entrypoints : [];
+  return {
+    ...contract,
+    entrypoints,
+    modules,
+    routes: contract.routes.filter((route) => route.redirect || moduleOutputs.has(route.moduleOutput)),
+    allowedOutputs: [...new Set([...entrypoints, ...modules.map((module) => module.output)])],
+  };
+}
+
+function runFullStructureScan(
+  projectRoot: string,
+  runId: string,
+  contract: CompiledArchitectureV1,
+  role?: string,
+): ReturnType<typeof analyzeProjectStructure> {
+  const scopedContract = role ? roleContract(contract, role) : contract;
+  const scopes = role ? assignmentScopesForRole(projectRoot, runId, role) : [];
+  // Multiple same-role work units are allowed. Their union is represented as a
+  // pattern list here; exact per-unit coverage was already checked at PLAN_READY.
+  const allowlist = scopes.flatMap((scope) => scope.include);
+  const report = analyzeProjectStructure(projectRoot, scopedContract, {
+    allowlist: role && allowlist.length > 0 ? allowlist : undefined,
+  });
+  writeStructureReport(projectRoot, runId, report);
+  return report;
+}
+
+function verificationImpactRank(value: UiImpact): number {
+  return {
+    none: 0,
+    nonvisual: 1,
+    behavioral: 2,
+    visual: 3,
+    'native-ui': 4,
+  }[value];
+}
+
+function thresholdsWeakened(
+  before: LighthouseThresholdsV1 | undefined,
+  after: LighthouseThresholdsV1 | undefined,
+): boolean {
+  if (!before) return false;
+  for (const [key, previous] of Object.entries(before)) {
+    const next = after?.[key as keyof LighthouseThresholdsV1];
+    if (typeof next !== 'number') return true;
+    if (key.endsWith('Min') ? next < previous : next > previous) return true;
+  }
+  return false;
+}
+
+function allImplementationRolesDelivered(
+  projectRoot: string,
+  runId: string,
+  proposedDigestPath: string,
+): boolean {
+  const assignments = readRuntimeAssignments(projectRoot, runId);
+  if (!assignments) return false;
+  const roles = assignments.assignments
+    .map((assignment) => assignment.role)
+    .filter((role) => role === 'senior-frontend' || role === 'senior-backend');
+  return roles.every((role) => {
+    const suffix = role.replace(/^senior-/, '');
+    const rel = `.traffic-one/digests/${runId}/${suffix}.md`;
+    if (rel === proposedDigestPath) return true;
+    try {
+      return /\bIMPLEMENTED\b/.test(fs.readFileSync(path.join(projectRoot, rel), 'utf8'));
+    } catch {
+      return false;
+    }
+  });
+}
+
+function refreshVerificationAfterImplementation(
+  projectRoot: string,
+  runId: string,
+  state: Rec,
+): { error: string | null; changed: boolean } {
+  const architecture = readCompiledArchitecture(projectRoot, runId);
+  if (!architecture) return { error: 'CompiledArchitectureV1 is missing or invalid', changed: false };
+  try {
+    const previous = readVerificationContract(projectRoot, runId);
+    if (!previous) {
+      return { error: 'the current VerificationContractV2 is missing or invalid', changed: false };
+    }
+    const currentDiff = changedPathsFromBaseline(projectRoot, architecture);
+    if (!currentDiff.complete) {
+      return {
+        error: `STRUCT_SCAN_INCOMPLETE: ${currentDiff.reason || 'baseline diff is incomplete'}`,
+        changed: false,
+      };
+    }
+    const authorizedPaths = new Set(previous.changedPaths);
+    const unauthorized = currentDiff.paths.filter((entry) => !authorizedPaths.has(entry));
+    if (unauthorized.length > 0) {
+      return {
+        error: `changed paths outside the frozen verification/WorkUnit authority: ${unauthorized.slice(0, 20).join(', ')}`,
+        changed: false,
+      };
+    }
+    const verification = buildVerificationContract(
+      projectRoot,
+      runId,
+      state,
+      architecture,
+      readVerificationPlanIntent(projectRoot),
+    );
+    if (!verification.scanComplete) {
+      return {
+        error: `STRUCT_SCAN_INCOMPLETE: ${verification.scanReason || 'baseline diff is incomplete'}`,
+        changed: false,
+      };
+    }
+    if (verificationImpactRank(verification.uiImpact) < verificationImpactRank(previous.uiImpact)
+      || (previous.browserRequired && !verification.browserRequired)
+      || previous.requiredScreenshotWidths.some((width) => !verification.requiredScreenshotWidths.includes(width))
+      || (previous.performance.required && !verification.performance.required)
+      || thresholdsWeakened(
+        previous.performance.explicitThresholds,
+        verification.performance.explicitThresholds,
+      )
+      || thresholdsWeakened(
+        previous.performance.advisoryThresholds,
+        verification.performance.advisoryThresholds,
+      )) {
+      return {
+        error: 'the refreshed plan/diff would weaken an already-published verification requirement',
+        changed: false,
+      };
+    }
+    if (verification.contractHash === previous.contractHash) {
+      return { error: null, changed: false };
+    }
+    const assignments = buildRuntimeAssignments(architecture, verification.contractHash);
+    const modelPolicy = readRunModelPolicy(projectRoot, runId);
+    if (obj(state.team)?.mode === 'subagents' && !modelPolicy) {
+      return { error: 'immutable model-policy.json is missing or invalid', changed: false };
+    }
+    if (modelPolicy && !canPublishRunPolicyBootstraps(
+      projectRoot,
+      modelPolicy,
+      state,
+      { architecture, verification, assignments },
+    )) {
+      return {
+        error: 'refreshed role/rule/skill materials or WorkUnitContract preflight failed',
+        changed: false,
+      };
+    }
+    publishVerificationContract(projectRoot, verification);
+    publishRuntimeAssignments(projectRoot, architecture, verification.contractHash);
+    if (modelPolicy && !ensureRunPolicyBootstraps(projectRoot, modelPolicy, state)) {
+      return {
+        error: 'refreshed bootstrap publication failed after a successful preflight',
+        changed: true,
+      };
+    }
+    return { error: null, changed: true };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      changed: false,
+    };
+  }
+}
+
+function missingArchitectureContract(projectRoot: string, state: Rec): string[] {
+  if (!requiresRunContracts(state)) return [];
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (!runId) return ['.traffic-one/runs/<runId>/architecture-input-v1.json (currentRunId missing)'];
+  const inputRel = `.traffic-one/runs/${runId}/architecture-input-v1.json`;
+  if (!exists(projectRoot, inputRel)) return [inputRel];
+  const compiledRel = `.traffic-one/runs/${runId}/architecture-v1.json`;
+  if (architectPlanReadyOnDisk(projectRoot, state) && !readCompiledArchitecture(projectRoot, runId)) return [compiledRel];
+  const verificationRel = `.traffic-one/runs/${runId}/verification-v2.json`;
+  if (architectPlanReadyOnDisk(projectRoot, state) && !readVerificationContract(projectRoot, runId)) return [verificationRel];
+  const assignmentsRel = `.traffic-one/runs/${runId}/assignments.json`;
+  if (architectPlanReadyOnDisk(projectRoot, state) && !readRuntimeAssignments(projectRoot, runId)) {
+    return [`${assignmentsRel} (runtime-owned hash-valid manifest required)`];
+  }
+  return [];
 }
 
 function missingAssignmentsManifest(projectRoot: string, state: Rec): string[] {
-  if (state.mode !== 'new-project') return [];
+  if (!requiresRunContracts(state)) return [];
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (!runId) return ['.traffic-one/runs/<runId>/assignments.json (currentRunId missing)'];
   const relPath = `.traffic-one/runs/${runId}/assignments.json`;
-  if (!exists(projectRoot, relPath)) return [relPath];
-  try {
-    const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf8');
-    if (!assignmentsUsesCanonicalShape(content)) {
-      return [`${relPath} (canonical top-level assignments array required)`];
-    }
-    const roleErrors = assignmentRoleErrors(content);
-    if (roleErrors.length > 0) return roleErrors.map((err) => `${relPath} (${err})`);
-  } catch {
-    return [`${relPath} (unreadable)`];
+  if (!readRuntimeAssignments(projectRoot, runId)) {
+    return [`${relPath} (runtime-owned hash-valid manifest required)`];
   }
   return [];
 }
 
 function missingArchitectDigest(projectRoot: string, state: Rec): string[] {
-  if (state.mode !== 'new-project') return [];
+  if (!requiresRunContracts(state)) return [];
   if (architectPlanReadyOnDisk(projectRoot, state)) return [];
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '<runId>';
   return [`.traffic-one/digests/${runId}/architect.md (must contain PLAN_READY)`];
 }
 
 export function architectPhaseIncompleteReasons(projectRoot: string, state: Rec): string[] {
-  if (state.mode !== 'new-project') return [];
+  if (!requiresRunContracts(state)) return [];
   return [
-    ...missingArchitectScaffold(projectRoot, state),
-    ...missingProjectMemoryBaseline(projectRoot, state),
+    ...(state.mode === 'new-project' ? missingProjectMemoryBaseline(projectRoot, state) : []),
+    ...missingArchitectureContract(projectRoot, state),
     ...missingAssignmentsManifest(projectRoot, state),
     ...missingArchitectDigest(projectRoot, state),
   ];
@@ -502,25 +680,47 @@ function assignmentWriterRole(projectRoot: string, state: Rec, rawData: unknown,
   return (ctx && typeof ctx.role === 'string' ? ctx.role : null) || activeAgentRole(state);
 }
 
-function isEmptyBarrelContent(content: string): boolean {
-  const stripped = content
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n\r]*/g, '')
-    .trim();
-  return stripped === '' || stripped === 'export {}' || stripped === 'export {};';
+const ARCHITECT_MEMORY_RE =
+  /^\.traffic-one\/(?:plan|product|stack|coding|security|known-issues|deployment|environment-setup|agent-log|api|database)\.md$/;
+
+function architectMayWrite(filePath: string, runId: string): boolean {
+  if (ARCHITECT_MEMORY_RE.test(filePath)
+    || filePath === '.traffic-one/.agentignore'
+    || filePath === '.traffic-one/schema.sql') return true;
+  if (!runId) return false;
+  if (filePath === `.traffic-one/decisions/${runId}-architecture.md`) return true;
+  return filePath === `.traffic-one/runs/${runId}/architecture-input-v1.json`
+    || filePath === `.traffic-one/digests/${runId}/architect.md`;
 }
 
-function isArchitectPackageBarrelTarget(filePath: string): boolean {
-  return /^packages\/[^/]+\/src\/index\.ts$/.test(filePath);
+function requiresRunContracts(state: Rec): boolean {
+  if (state.mode === 'new-project') return true;
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  return Boolean(runId && obj(state.team)?.mode === 'subagents');
 }
 
-function isArchitectTailwindGlobalsTarget(filePath: string): boolean {
-  return filePath === CANONICAL_TAILWIND_GLOBALS_PATH || filePath === 'packages/tailwind-config/globals.css';
+function runtimeOwnedRunSidecar(filePath: string): boolean {
+  const matched = RUN_RUNTIME_SIDECAR_RE.exec(filePath);
+  return Boolean(matched && matched[2] !== 'architecture-input-v1.json');
 }
 
-function isArchitectBaselineFeatureWrite(filePath: string, content: string): boolean {
-  if (isArchitectTailwindGlobalsTarget(filePath)) return true;
-  return isArchitectPackageBarrelTarget(filePath) && isEmptyBarrelContent(content);
+function artifactContract(filePath: string, currentRunId: string): {
+  runId: string;
+  role: string;
+} | null {
+  const digest = RUN_DIGEST_ARTIFACT_RE.exec(filePath);
+  if (digest) {
+    return {
+      runId: digest[1] || '',
+      role: `senior-${digest[2] || ''}`,
+    };
+  }
+  const report = QA_REPORT_ARTIFACT_RE.exec(filePath);
+  if (report) return { runId: report[1] || '', role: 'senior-tester' };
+  if (filePath === '.traffic-one/deployments.jsonl' && currentRunId) {
+    return { runId: currentRunId, role: 'senior-shipper' };
+  }
+  return null;
 }
 
 function usesMainAgentTeam(state: Rec): boolean {
@@ -543,8 +743,71 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   const { filePath, content, projectRoot, state, writingFeatureSource, rawData, block, host } = args;
   const violations: string[] = [];
   const currentHost = canonicalHost(host);
+  const currentRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  const writerRole = assignmentWriterRole(projectRoot, state, rawData, host);
 
   const requiresMonorepoScaffold = stateRequiresNewProjectMonorepo(state);
+  const architectureInputTarget = ARCHITECTURE_INPUT_RE.exec(filePath);
+
+  if (ASSIGNMENTS_FILE_RE.test(filePath)) {
+    violations.push(block('runtime-assignments-owner-gate',
+      'Runtime contract gate: `.traffic-one/runs/<runId>/assignments.json` is generated atomically from CompiledArchitectureV1 and VerificationContractV2. Agents and the parent may not create, edit, widen, or replace it; change ArchitectureInputV1 and re-run PLAN_READY compilation instead.'));
+  }
+
+  if (runtimeOwnedRunSidecar(filePath) && !ASSIGNMENTS_FILE_RE.test(filePath)) {
+    violations.push(block('runtime-sidecar-owner-gate',
+      `Runtime sidecar gate: \`${filePath}\` is generated and atomically published by Traffic One runtime. Agents, children, and the parent may read it but may not create, edit, delete, widen, replace, or repair it through Write/Edit/apply_patch/shell. Change the semantic ArchitectureInputV1 or invoke the owning runtime transition instead.`,
+      { TARGET: filePath }));
+  }
+
+  const childArtifact = artifactContract(filePath, currentRunId);
+  if (obj(state.team)?.mode === 'subagents' && childArtifact) {
+    const bootstrap = writerRole === childArtifact.role
+      ? readActiveRunBootstrap(projectRoot, childArtifact.runId, childArtifact.role)
+      : null;
+    const scope = bootstrap
+      ? {
+          include: bootstrap.workUnit.allowlist,
+          exclude: bootstrap.workUnit.allowlistExclude,
+        }
+      : null;
+    if (childArtifact.runId !== currentRunId
+      || !bootstrap
+      || !bootstrap.workUnit.outputs.includes(filePath)
+      || !scope
+      || !matchesScope(filePath, scope)) {
+      violations.push(block('run-artifact-work-unit-gate',
+        `Run artifact gate: \`${filePath}\` may be written only by the parent-bound \`${childArtifact.role}\` child whose current, hash-valid WorkUnitContract names this exact output. Active role is \`${writerRole || 'unresolved'}\`; no digest, QA report, or deployment claim may self-authorize or borrow another run's bootstrap.`,
+        {
+          TARGET: filePath,
+          ROLE: writerRole || 'unresolved',
+          EXPECTED_ROLE: childArtifact.role,
+        }));
+    }
+  }
+
+  if (writerRole === 'senior-architect'
+    && filePath
+    && !ASSIGNMENTS_FILE_RE.test(filePath)
+    && !architectMayWrite(filePath, currentRunId)) {
+    violations.push(block('architect-planning-allowlist-gate',
+      `Architect scope gate: \`senior-architect\` may write only the semantic plan/project-memory files, \`.traffic-one/runs/${currentRunId || '<runId>'}/architecture-input-v1.json\`, and its architect digest. \`${filePath}\` is runtime- or implementer-owned. Do not scaffold packages, workspace/config/source files, barrels, Tailwind assets, tests, or assignments; emit semantic ArchitectureInputV1 and let runtime compile the work units.`,
+      { TARGET: filePath }));
+  }
+
+  if (architectureInputTarget) {
+    if (writerRole && writerRole !== 'senior-architect') {
+      violations.push(block('architecture-input-owner-gate',
+        `Architecture input gate: only the parent-bound \`senior-architect\` planning role may write ArchitectureInputV1; active role is \`${writerRole}\`.`,
+        { ROLE: writerRole }));
+    }
+    const errors = architectureInputErrors(content);
+    if (errors.length > 0) {
+      violations.push(block('architecture-input-gate',
+        `Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: ${errors.join('; ')}.`,
+        { ERRORS: errors.join('; ') }));
+    }
+  }
 
   if (requiresMonorepoScaffold && filePath === 'package.json' && !packageJsonMatchesWorkspaceRoot(projectRoot, content)) {
     violations.push(block('monorepo-package-json',
@@ -561,13 +824,44 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       'New-project monorepo gate: root-level TypeScript config files (`tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, etc.) are not allowed for this stack. Complete the architect phase and scaffold the Turborepo workspace (`pnpm-workspace.yaml`, `apps/web/`, `packages/*`, `tsconfig.base.json`) instead of creating a flat root Vite layout.'));
   }
 
-  if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content)) {
-    const missing = missingArchitectScaffold(projectRoot, state);
-    if (missing.length > 0) {
-      violations.push(block('architect-scaffold-gate',
-        `Architect completion gate: do not write \`PLAN_READY\` until the required Traffic One workspace scaffold exists. Missing: ${missing.join(', ')}. Write the missing baseline files, then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
-        { MISSING: missing.join(', ') }));
+  // Hot structural path: analyze only the touched file against the immutable
+  // compiled contract and current work-unit allowlist. Numeric limits remain
+  // warnings; robust responsibility/route/assignment findings deny immediately.
+  if (writingFeatureSource && /\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|php)$/i.test(filePath)) {
+    const profile = capabilityProfileForRun(projectRoot, state);
+    if (profileHasWebUi(profile)) {
+      invalidateStructureCache(path.join(projectRoot, filePath));
+      const architecture = currentRunId
+        ? readCompiledArchitecture(projectRoot, currentRunId)
+        : null;
+      const scopedArchitecture = architecture && writerRole
+        ? roleContract(architecture, writerRole)
+        : architecture;
+      const scopes = architecture && writerRole
+        ? assignmentScopesForRole(projectRoot, currentRunId, writerRole)
+        : [];
+      const allowlist = scopes.flatMap((scope) => scope.include);
+      const findings = (scopedArchitecture
+        ? analyzeStructureTextAgainstContract(
+            filePath,
+            content,
+            scopedArchitecture,
+            writerRole ? { allowlist } : {},
+          )
+        : analyzeStructureText(filePath, content, profile, []))
+        .filter((finding) => finding.severity === 'error');
+      if (findings.length > 0) {
+        const summary = findings.map((finding) => `${finding.id} (${finding.file}${finding.line ? `:${finding.line}` : ''})`).join(', ');
+        violations.push(block('frontend-structure-hot-gate',
+          `Structural gate: ${summary}. Entrypoints may only bootstrap the app; route pages must be separate compiled modules. Formatting the same monolith across more lines does not satisfy this gate.`,
+          { FINDINGS: summary }));
+      }
     }
+  }
+
+  const architectDigest = ARCHITECT_DIGEST_RE.exec(filePath);
+  if (architectDigest && /\bPLAN_READY\b/.test(content)) {
+    const runId = architectDigest[2] || '';
     const missingMemory = missingProjectMemoryBaseline(projectRoot, state);
     if (missingMemory.length > 0) {
       violations.push(block('architect-memory-baseline-gate',
@@ -582,6 +876,97 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       violations.push(block('architect-opencode-self-delegation-gate',
         'Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the current host.'));
     }
+    const modelPolicy = readRunModelPolicy(projectRoot, runId);
+    const subagentMode = obj(state.team)?.mode === 'subagents';
+    if (subagentMode && !modelPolicy) {
+      violations.push(block('bootstrap-publication-gate',
+        'Bootstrap gate: immutable parent model-policy.json is missing or corrupt. No architecture assignments or implementation bootstrap may be published until parent preflight creates it.',
+        { ERROR: 'model policy missing' }));
+    }
+    const inputExists = Boolean(runId) && exists(projectRoot, `.traffic-one/runs/${runId}/architecture-input-v1.json`);
+    if (violations.length === 0 && (state.mode === 'new-project' || inputExists)) {
+      try {
+        const compiled = compileArchitectureForRun(projectRoot, runId, state);
+        const verification = buildVerificationContract(
+          projectRoot,
+          runId,
+          state,
+          compiled,
+          readVerificationPlanIntent(projectRoot),
+        );
+        if (!verification.scanComplete) {
+          violations.push(block('verification-contract-scan-gate',
+            `Verification contract gate: STRUCT_SCAN_INCOMPLETE (${verification.scanReason || 'unknown reason'}). Runtime could not derive the complete diff from the immutable baseline, so \`PLAN_READY\` is forbidden.`,
+            { ERROR: verification.scanReason || 'scan incomplete' }));
+        } else {
+          const candidateAssignments = buildRuntimeAssignments(
+            compiled,
+            verification.contractHash,
+          );
+          const queuePolicyErrors = openCodeDelegationActive(state, host)
+            && !planOnDiskMissingOpenCodeBlock(projectRoot)
+            ? planOnDiskOpenCodeQueuePolicyErrors(projectRoot, {
+                assignments: candidateAssignments.assignments,
+              })
+            : [];
+          if (queuePolicyErrors.length > 0) {
+            violations.push(block('architect-opencode-queue-policy-gate',
+              `Architect completion gate: OpenCode queue metadata is unsafe: ${queuePolicyErrors.join('; ')}. Change the semantic plan/ArchitectureInputV1 so runtime-generated exact outputs and queue files agree before emitting \`PLAN_READY\`.`,
+              { ERRORS: queuePolicyErrors.join('; ') }));
+          } else if (modelPolicy && !canPublishRunPolicyBootstraps(
+            projectRoot,
+            modelPolicy,
+            state,
+            {
+              architecture: compiled,
+              verification,
+              assignments: candidateAssignments,
+            },
+          )) {
+            violations.push(block('bootstrap-publication-gate',
+              'Bootstrap gate: canonical role/rule/skill materials or a candidate WorkUnitContract could not be resolved before publication. No assignments or child envelope were published; repair the parent policy/materialization and retry PLAN_READY.',
+              { ERROR: 'bootstrap preflight failed' }));
+          } else {
+            // This atomic legacy projection MUST precede verification-v2.json.
+            // If the process dies on the next instruction, runtime 1.0.19 sees
+            // blocked while the current runtime recovers canonical `active`.
+            const rollbackBarrier = activateRunV2RollbackBarrier(projectRoot, runId);
+            if (!rollbackBarrier) {
+              violations.push(block('architecture-contract-gate',
+                `Architecture contract gate: the runtime could not atomically activate the V2 rollback barrier for run \`${runId}\`. No V2 verification contract or implementation bootstrap was published.`,
+                { ERROR: 'V2 rollback barrier activation failed' }));
+            } else {
+              publishVerificationContract(projectRoot, verification);
+              const assignments = publishRuntimeAssignments(
+                projectRoot,
+                compiled,
+                verification.contractHash,
+              );
+              const settlement = writeRunSettlement(projectRoot, runId, {
+                status: 'active',
+                incompleteChecks: ['verification-not-started'],
+              });
+              if (!settlement) {
+                violations.push(block('architecture-contract-gate',
+                  `Architecture contract gate: the V2 rollback barrier is active, but the canonical run settlement could not be published for run \`${runId}\`. The run remains fail-closed and no implementer may spawn.`,
+                  { ERROR: 'canonical V2 settlement publication failed' }));
+              } else if (modelPolicy) {
+                if (!ensureRunPolicyBootstraps(projectRoot, modelPolicy, state)) {
+                  violations.push(block('bootstrap-publication-gate',
+                    `Bootstrap gate: the parent could not atomically publish role/rule/skill and work-unit envelopes against architecture=${compiled.contractHash}, verification=${verification.contractHash}, and assignments=${assignments.assignmentsHash}. No implementer may spawn until the immutable envelopes are published.`,
+                    { ERROR: 'bootstrap publication failed' }));
+                }
+              }
+            }
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        violations.push(block('architecture-contract-gate',
+          `Architecture contract gate: do not emit \`PLAN_READY\` until \`.traffic-one/runs/${runId || '<runId>'}/architecture-input-v1.json\` is valid and runtime compilation succeeds. ${message}. The architect may change only semantic routes/modules/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.`,
+          { ERROR: message }));
+      }
+    }
   }
 
   // Frontend completion gate: an `IMPLEMENTED` digest must not ship collapsed
@@ -589,12 +974,89 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   // App.tsx, so nothing else stops it before the tester's format:check — and a
   // run interrupted before Phase 3 delivers a monolithic collapsed app with
   // empty scaffolded module dirs (observed 16c).
-  if (FRONTEND_DIGEST_RE.test(filePath) && /\bIMPLEMENTED\b/.test(content)) {
-    const collapsed = collapsedProductSourceFile(projectRoot);
-    if (collapsed) {
+  const frontendDigest = FRONTEND_DIGEST_RE.exec(filePath);
+  if (frontendDigest && /\bIMPLEMENTED\b/.test(content)) {
+    const collapsed = collapsedProductSourceFile(projectRoot, state);
+    if (collapsed.incomplete) {
+      violations.push(block('frontend-structure-scan-incomplete',
+        `Frontend completion gate: STRUCT_SCAN_INCOMPLETE after ${collapsed.scanned} product source files. A truncated scan is never a pass; narrow generated/output roots or split the project contract before re-emitting \`IMPLEMENTED\`.`,
+        { SCANNED: collapsed.scanned }));
+    }
+    if (collapsed.file) {
       violations.push(block('frontend-collapse-gate',
-        `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed}\` packs an entire component/route onto a single line (over ${COLLAPSE_LINE_CHARS} chars) — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
-        { FILE: collapsed }));
+        `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed.file}\` packs an entire component/route onto a single line (over ${COLLAPSE_LINE_CHARS} chars) — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
+        { FILE: collapsed.file }));
+    }
+    const runId = frontendDigest[2] || '';
+    const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
+    if (architecture) {
+      if (!readRuntimeAssignments(projectRoot, runId)) {
+        violations.push(block('frontend-structure-completion-gate',
+          'Frontend completion gate: STRUCT_ASSIGNMENT_ALLOWLIST_GAP — current-run assignments are missing, stale, or hash-invalid. A complete structural scan cannot prove that this worker stayed within its runtime-owned WorkUnitContract; recompile the run before writing `IMPLEMENTED`.',
+          { FINDINGS: 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP' }));
+      } else {
+        const report = runFullStructureScan(projectRoot, runId, architecture, 'senior-frontend');
+        const errors = report.findings.filter((finding) => finding.severity === 'error');
+        if (errors.length > 0) {
+          const summary = errors.map((finding) => `${finding.id}:${finding.file}`).join(', ');
+          violations.push(block('frontend-structure-completion-gate',
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Numeric LOC/function-count/component-count findings remain warnings during this rollout.`,
+            { FINDINGS: summary }));
+        }
+      }
+    }
+  }
+
+  // PLAN_READY is necessarily compiled before implementation exists. Refresh
+  // the runtime-owned verification contract at the first terminal implementer
+  // handoff so uiImpact, tablet risk, changed routes, and performance evidence
+  // come from the real immutable-baseline diff. Candidate assignments and every
+  // bootstrap are preflighted against the new hash before publication.
+  const implementedDigest = IMPLEMENTER_DIGEST_RE.exec(filePath);
+  if (implementedDigest
+    && implementedDigest[2] === currentRunId
+    && /\bIMPLEMENTED\b/.test(content)
+    && violations.length === 0) {
+    const runId = implementedDigest[2] || '';
+    if (allImplementationRolesDelivered(projectRoot, runId, filePath)) {
+      const refresh = refreshVerificationAfterImplementation(projectRoot, runId, state);
+      if (refresh.error) {
+        violations.push(block('verification-contract-refresh-gate',
+          `Verification refresh gate: \`IMPLEMENTED\` is forbidden because runtime could not rederive and atomically republish VerificationContractV2 from the immutable baseline (${refresh.error}). No stale nonvisual/behavioral classification may reach QA; repair the semantic plan/runtime prerequisite and retry the same digest.`,
+          { ERROR: refresh.error }));
+      }
+    }
+  }
+
+  const reviewerDigest = REVIEWER_DIGEST_RE.exec(filePath);
+  if (reviewerDigest && /\bAPPROVED\b/.test(content) && !/\bCHANGES_REQUESTED\b/.test(content)) {
+    const runId = reviewerDigest[2] || '';
+    const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
+    if (architecture) {
+      if (!readRuntimeAssignments(projectRoot, runId)) {
+        violations.push(block('reviewer-structure-gate',
+          'Reviewer gate: `APPROVED` is forbidden with STRUCT_ASSIGNMENT_ALLOWLIST_GAP. Current-run assignments are missing, stale, or hash-invalid, so the complete structural scan cannot establish WorkUnit coverage.',
+          { FINDINGS: 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP' }));
+      } else {
+        const report = runFullStructureScan(projectRoot, runId, architecture);
+        const errors = report.findings.filter((finding) => finding.severity === 'error');
+        if (errors.length > 0) {
+          const summary = errors.map((finding) => `${finding.id}:${finding.file}`).join(', ');
+          violations.push(block('reviewer-structure-gate',
+            `Reviewer gate: \`APPROVED\` is forbidden while the complete runtime structure report contains errors (${summary}). Review the compiled architecture and request fixes.`,
+            { FINDINGS: summary }));
+        }
+      }
+    }
+    if (runId === currentRunId && violations.length === 0) {
+      const refresh = refreshVerificationAfterImplementation(projectRoot, runId, state);
+      if (refresh.error || refresh.changed) {
+        const reason = refresh.error
+          || 'runtime raised VerificationContractV2 from the final implementation diff; the current review bootstrap predates that contract';
+        violations.push(block('verification-contract-refresh-gate',
+          `Verification refresh gate: \`APPROVED\` is forbidden because ${reason}. Re-read the newly published bootstrap/verification hash and repeat the review under the final risk contract.`,
+          { ERROR: reason }));
+      }
     }
   }
 
@@ -609,6 +1071,27 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   // an actionable deny at the moment the stale verdict is written.
   const testerDigest = TESTER_DIGEST_RE.exec(filePath);
   if (testerDigest && /\bTESTS_GREEN\b/.test(content)) {
+    const runId = testerDigest[2] || '';
+    if (runId === currentRunId && violations.length === 0) {
+      const refresh = refreshVerificationAfterImplementation(projectRoot, runId, state);
+      if (refresh.error || refresh.changed) {
+        const reason = refresh.error
+          || 'runtime raised VerificationContractV2 from the final implementation diff; the current QA report/bootstrap predates that contract';
+        violations.push(block('verification-contract-refresh-gate',
+          `Verification refresh gate: \`TESTS_GREEN\` is forbidden because ${reason}. Re-read the newly published verification hash, regenerate risk-proportional evidence, and retry the tester verdict.`,
+          { ERROR: reason }));
+      }
+    }
+    const verification = runId ? readVerificationContract(projectRoot, runId) : null;
+    if (verification) {
+      const result = readQaReportV2(projectRoot, runId);
+      if (!result.ok) {
+        violations.push(block('tester-qa-v2-gate',
+          `Tester completion gate: VerificationContractV2 rejected this verdict (${result.code}: ${result.message}). Produce fresh risk-proportional evidence for uiImpact=${verification.uiImpact}; a blocked environment is not \`TESTS_GREEN\`.`,
+          { ERROR: `${result.code}: ${result.message}` }));
+      }
+    }
+    if (!verification) {
     const staleQa = qaReportOlderThanImplementation(projectRoot, testerDigest[2] || '');
     if (staleQa) {
       violations.push(block('tester-stale-qa-gate',
@@ -631,29 +1114,6 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
           { EXPECTED: expectedBuilds.join(', '), OBSERVED: observed.value }));
       }
     }
-  }
-
-  // Queue-policy validation runs whenever a delegate block is present and OpenCode
-  // is active — new-project builds AND complex maintenance builds the architect
-  // was spawned for (which emit the same block). The require-block gate above stays
-  // new-project-only; we never force a maintenance plan to contain a queue.
-  if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content) && openCodeDelegationActive(state, host) && !planOnDiskMissingOpenCodeBlock(projectRoot)) {
-    // Cross-check the queue against the architect's OWN assignments manifest here,
-    // where both artifacts exist and are still architect-owned: a unit whose files
-    // belong to another role is a contradiction the runtime only catches after
-    // paying for the delegation (17c: `seo-public-assets` → `.env.example`).
-    const scopeManifest = readRunAssignmentsResilient(
-      projectRoot,
-      typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '',
-    );
-    const policyErrors = planOnDiskOpenCodeQueuePolicyErrors(
-      projectRoot,
-      scopeManifest ? { assignments: scopeManifest.assignments } : {},
-    );
-    if (policyErrors.length > 0) {
-      violations.push(block('architect-opencode-queue-policy-gate',
-        `Architect completion gate: OpenCode queue metadata is unsafe: ${policyErrors.join('; ')}. Add stable unique ids, exact files allowlists, and depends edges for overlapping areas before emitting \`PLAN_READY\`.`,
-        { ERRORS: policyErrors.join('; ') }));
     }
   }
 
@@ -673,26 +1133,6 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       violations.push(block('plan-opencode-queue-policy-gate',
         `Plan gate: OpenCode queue metadata is unsafe: ${policyErrors.join('; ')}. Add stable unique ids, exact files allowlists, and depends edges for overlapping areas.`,
         { ERRORS: policyErrors.join('; ') }));
-    }
-  }
-
-  if (ASSIGNMENTS_FILE_RE.test(filePath) && state.mode === 'new-project' && !assignmentsUsesCanonicalShape(content)) {
-    violations.push(block('assignments-shape-gate',
-      'Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. Rewrite it as `{ "version": 1, "runId": "<currentRunId>", "assignments": [{ "role": "senior-frontend", "scope": { "include": ["apps/web/**", "packages/ui/**", "packages/i18n/**", "packages/tailwind-config/**"], "exclude": [] } }, { "role": "senior-backend", "scope": { "include": ["supabase/**", "packages/api-client/**"], "exclude": [] } }] }` and adjust paths to the real Module map.'));
-  }
-
-  if (ASSIGNMENTS_FILE_RE.test(filePath) && state.mode === 'new-project' && assignmentsUsesCanonicalShape(content)) {
-    const roleErrors = assignmentRoleErrors(content);
-    if (roleErrors.length > 0) {
-      violations.push(block('assignments-roles-gate',
-        roleErrors.join('; '),
-        { ERRORS: roleErrors.join('; ') }));
-    }
-    const writerRole = assignmentWriterRole(projectRoot, state, rawData, host);
-    if (writerRole && writerRole !== 'senior-architect' && architectPlanReadyOnDisk(projectRoot, state)) {
-      violations.push(block('assignments-owner-gate',
-        `Assignments gate: \`.traffic-one/runs/<runId>/assignments.json\` is architect/orchestrator-owned and must not be changed by \`${writerRole}\` after \`PLAN_READY\`. Surface the needed scope change in the role digest instead.`,
-        { ROLE: writerRole }));
     }
   }
 
@@ -722,12 +1162,8 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   const planMissing = !fs.existsSync(path.join(projectRoot, '.traffic-one', 'plan.md'));
   const writingPlan = PLAN_FILE_RE.test(filePath);
   const writingDoc = ADR_OR_DOC_RE.test(filePath);
-  const writerRole = assignmentWriterRole(projectRoot, state, rawData, host);
-
   if (isNewProject && planMissing && writingFeatureSource && !writingPlan && !writingDoc
-    // The architect's own baseline scaffold (empty barrels, Tailwind globals) is
-    // legitimate pre-plan work — architect-pre-ready-feature below governs it.
-    && !(writerRole === 'senior-architect' && filePath && isArchitectBaselineFeatureWrite(filePath, content))) {
+  ) {
     if (usesMainAgentTeam(state)) {
       violations.push(block('plan-main-agent-gate',
         'Plan gate: .traffic-one/plan.md is missing on a new project in Low/main-agent mode. Do NOT call `run_subagent`, `Task`, `spawn_agent`, `task`, or another subagent tool. You are the architect in this thread: write `.traffic-one/plan.md` and required `.traffic-one/` project memory before root config, workspace scaffold, or feature-source writes; then resume the same ordered phases. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
@@ -735,21 +1171,11 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       // Never tell the architect to "run the senior-architect subagent" (B8) —
       // it IS that subagent. Tell it to write the plan itself.
       violations.push(block('plan-architect-self-gate',
-        'Plan gate: .traffic-one/plan.md is missing on this new project. You ARE the `senior-architect` for this run — write `.traffic-one/plan.md` (and the `.traffic-one/` project-memory baseline) BEFORE any feature-source file; do not spawn another architect. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README, empty `packages/*/src/index.ts` barrels, and the shared Tailwind globals baseline.'));
+        'Plan gate: .traffic-one/plan.md is missing on this new project. You ARE the `senior-architect` for this run — write `.traffic-one/plan.md`, project memory, and semantic ArchitectureInputV1; do not spawn another architect and do not scaffold implementation files.'));
     } else {
       violations.push(block('plan-gate',
         'Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
     }
-  }
-
-  if (isNewProject
-    && writingFeatureSource
-    && writerRole === 'senior-architect'
-    && !architectPlanReadyOnDisk(projectRoot, state)
-    && !(filePath && isArchitectBaselineFeatureWrite(filePath, content))) {
-    violations.push(block('architect-pre-ready-feature',
-      'Architect scope gate: `senior-architect` may write only workspace scaffold, the shared Tailwind globals baseline, and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files.',
-      { TARGET: filePath }));
   }
 
   return violations;

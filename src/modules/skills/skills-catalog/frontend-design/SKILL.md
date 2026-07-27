@@ -56,7 +56,8 @@ Before coding, settle or infer:
 - responsive behavior
 - state coverage
 - one thing the user should remember
-- page-speed budget for the first screen: media weight, font choices, motion cost, dependency splits, and Lighthouse mobile Performance optimized toward 100
+- page-speed budget for the first screen: media weight, font choices, motion
+  cost, dependency splits, and any explicit compiled performance thresholds
 
 Possible directions:
 
@@ -211,5 +212,7 @@ Before delivering:
 - the implementation is production-grade, not just visually interesting
 - missing backend/env config still leaves a credible app surface, with at most
   one repeated setup banner pattern per page
-- page-level web output optimizes Lighthouse mobile Performance on a built preview when runnable, with 100 as ideal; if not runnable, page speed is reported as unverified with concrete risks
-- screenshot or Storybook verification covers the important breakpoints and states, or the final response explains why it could not be run
+- page-level web output meets explicit performance thresholds when the compiled
+  contract requires Lighthouse; otherwise performance observations are advisory
+- screenshot or Storybook verification covers only the widths/states required
+  by the compiled verification contract, or the run is `blocked-environment`

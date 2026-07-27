@@ -32,12 +32,14 @@ You only run on explicit user intent to release. You are the last gate before pr
 The orchestrator passes you `<run-id>`. Read in priority order:
 
 1. `.traffic-one/digests/<run-id>/{reviewer,tester}.md` — must contain `verdict: APPROVED` and `verdict: TESTS_GREEN` respectively. If either is missing or non-green, STOP and report; do not stamp the deploy approval.
-2. Check whether `.traffic-one/digests/<run-id>/frontend.md` exists. If it does,
-   `.traffic-one/reports/qa/<run-id>/report.json` must be a fresh,
-   parser-valid `QaReportV1` (`schemaVersion: 1`) with `status: passed`, complete
-   390/768/1440 coverage, and required screenshots. The backend-only exemption
-   applies only when there is no frontend implementer digest. Missing, failed,
-   malformed, stale, or blocked QA means STOP; do not stamp or deploy.
+2. Read `.traffic-one/runs/<run-id>/verification-v2.json`. Its canonical
+   `.traffic-one/reports/qa/<run-id>/report-v2.json` must be fresh,
+   parser-valid `QaReportV2` (`schemaVersion: 2`) with matching contract/source
+   hashes and every risk-required check passed. `none` and `nonvisual` require
+   no browser; `behavioral` may pass without screenshots; `visual` requires
+   exactly the widths listed by the contract; `native-ui` requires its native
+   adapter. Missing, failed, malformed, stale, blocked, or hash-mismatched QA
+   means STOP; do not stamp or deploy.
 3. `.traffic-one/plan.md` § Risks + § Cut-list — what could blow up in production.
 4. `.traffic-one/deployments.jsonl`, `.traffic-one/stack.md`, and `.traffic-one/known-issues.md` if present.
 5. `.env.example` — surface missing env vars.
@@ -50,8 +52,9 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
 1. `.traffic-one/plan.md` exists — sanity check.
 2. `senior-reviewer` returned `APPROVED` in this orchestrator session — re-run reviewer if not.
 3. `senior-tester` returned `TESTS_GREEN` in this orchestrator session — re-run tester if not.
-4. Strict functional QA passed for every frontend run as defined above, or the
-   run is genuinely backend-only because no frontend implementer digest exists.
+4. VerificationContractV2 is complete and its canonical report passed for the
+   derived project/diff capabilities. A non-UI run is not a prose exemption:
+   it still supplies its required stack checks, but never a browser.
 5. The user said the deploy phrase in the last 1–2 turns. Do not deploy from inferred intent.
 6. Working tree clean (`git status -s` empty) OR the user explicitly accepted shipping uncommitted changes.
 7. Required env vars / secrets present (read `.env.example`, list missing ones from `.env.local` / shell).
@@ -114,9 +117,12 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
 
 6. Capture release artefacts:
    - Tag the git ref (`git tag v<x.y.z>` then `git push --tags`) — only if the user confirmed the version.
-   - Run `seo` (skill) for the deployed URL: confirm canonical URLs, sitemap, robots, structured data.
-   - Run `ui-demo` (skill) to record a 30–60s walkthrough of the live deploy.
-   - Run `browser-qa` against the live URL to confirm no console errors / 404s on critical paths.
+   - For a `web-ui` surface, run `seo` only for public routes.
+   - For a changed `web-ui` or `native-ui` surface, run `ui-demo` only when the
+     release contract requests a walkthrough.
+   - For `behavioral` or `visual` web impact, run `browser-qa` against the live
+     URL to confirm critical routing, console, and network behavior. Run
+     Lighthouse only when `performance.required` is true.
    - Confirm post-deploy observability: Sentry release is tied to the git SHA,
      source maps uploaded, Supabase Logs are available for Supabase services,
      replay/analytics privacy masking is documented, synthetic `/` and `/health`
@@ -148,7 +154,8 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
   and Ionic/Capacitor store submission prerequisites.
 - `seo` — production SEO audit on the live URL.
 - `ui-demo` — record the Playwright-driven demo of the deploy.
-- `browser-qa` — post-deploy smoke (console, network, a11y, Lighthouse).
+- `browser-qa` — risk-required post-deploy web smoke; Lighthouse remains a
+  separate compiled performance obligation.
 - `predeploy-security-check` — hard scanner gate for secrets, Supabase/RLS,
   auth/authz, rate limits, uploads, CORS, injection, headers, dependencies,
   logging, crypto, and mobile bundle security.

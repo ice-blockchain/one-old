@@ -95,7 +95,8 @@ test('buildOrchestrationDirective: Kilo uses general with the senior-architect r
     assert.match(d, /real subagent/i);
     assert.match(d, /read `.kilo\/agents\/senior-architect\.md` before acting/i);
     assert.match(d, /apps\/web/i);
-    assert.match(d, /root `tsconfig/i);
+    assert.match(d, /profile=vite-react/);
+    assert.match(d, /playwright/i);
   });
 });
 
@@ -165,5 +166,71 @@ test('shouldEmitArchitectCompletionReminder: false once architect phase is compl
     fs.writeFileSync(path.join(t1, 'plan.md'), '# plan', 'utf8');
     writeArchitectPhaseComplete(dir, 'R', SUBAGENTS_STATE);
     assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'kilo'), false);
+  });
+});
+
+test('backend-only OpenCode directive selects backend role and stack-native QA without React leakage', () => {
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    const state = {
+      ...subagentsState(),
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { framework: 'none' },
+    };
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state));
+    const directive = buildOrchestrationDirective(dir, 'opencode', state);
+    assert.match(directive, /profile=backend-only/);
+    assert.match(directive, /framework=go/);
+    assert.match(directive, /spawn only `senior-backend`/);
+    assert.doesNotMatch(directive, /spawn (?:only )?`senior-frontend`/);
+    assert.match(directive, /no UI surface/i);
+    assert.doesNotMatch(directive, /React\/Vite|Turborepo|apps\/web/);
+  });
+});
+
+test('native Kilo directive selects only frontend role and native emulator QA', () => {
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, 'Package.swift'), '// swift-tools-version: 6.0\n');
+    const state = {
+      ...subagentsState(),
+      stack: 'custom-frontend',
+      frontend: 'none',
+      backend: 'none',
+      mobile: { enabled: true, framework: 'swift-native' },
+    };
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state));
+    const directive = buildOrchestrationDirective(dir, 'kilo', state);
+    assert.match(directive, /profile=swift-native/);
+    assert.match(directive, /spawn only `senior-frontend`/);
+    assert.doesNotMatch(directive, /spawn (?:only )?`senior-backend`/);
+    assert.match(directive, /xcode-simulator/);
+    assert.match(directive, /do not use browser QA/i);
+  });
+});
+
+test('custom Next OpenCode directive preserves the detected framework roots', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0', react: '19.0.0' },
+    }));
+    const state = {
+      ...subagentsState(),
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    };
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state));
+    const directive = buildOrchestrationDirective(dir, 'opencode', state);
+    assert.match(directive, /profile=next-app/);
+    assert.match(directive, /framework=nextjs/);
+    assert.match(directive, /source roots=app, src\/app/);
+    assert.doesNotMatch(directive, /React\/Vite|Turborepo|apps\/web/);
   });
 });

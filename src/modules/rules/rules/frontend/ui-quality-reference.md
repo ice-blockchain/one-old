@@ -41,13 +41,11 @@ Don't converge on a single safe formula. Each project deserves a distinct finger
 - Design mobile first for generic mobile requests and for any surface where the
   user is likely to act from a phone.
 - **Mobile navigation must be designed for touch, not auto-shrunk from desktop.**
-  For responsive web/Ionic work, integrate a hamburger / drawer menu by default
-  unless the user explicitly opts out. Use shadcn's `Sheet` primitive
-  (`npx shadcn@latest add sheet`) for the mobile menu. For React Native, use the
-  React Native Reusables `Sheet` / `Drawer` primitive on native (`npx @react-native-reusables/cli@latest add sheet`).
-  Keep top-level nav visible on desktop (`md:flex`) and collapse to the Sheet on
-  mobile (`md:hidden`). Bottom tab bars are an alternative for app-shell flows
-  with ≤5 destinations; do not use both at once.
+  Use the detected design system's drawer/sheet/navigation primitive. The
+  React profile may select shadcn `Sheet`; React Native may select RNR; Nuxt,
+  Laravel, Swift, Kotlin, Flutter, and custom profiles keep their native
+  primitives. Bottom tabs are an alternative for app-shell flows with at most
+  five destinations; do not use both patterns at once.
 - Important content and the primary action must appear before excessive mobile
   scrolling. Fixed bottom actions must respect safe areas and keyboards.
 - Text must fit inside controls and containers at desktop and mobile sizes.
@@ -55,17 +53,18 @@ Don't converge on a single safe formula. Each project deserves a distinct finger
 - Every meaningful UI state must be intentionally styled and localized:
   loading, empty, error, disabled, selected, stale, offline, reconnecting, and
   permission-denied where applicable.
-- Visual-heavy work must include screenshot or Storybook verification at
-  mobile, tablet, and desktop breakpoints before delivery.
+- Visual-impact work must include every screenshot width listed by
+  VerificationContractV2. Tablet is included only when the contract detects
+  breakpoint/tablet risk.
 
 ## Animation and interactivity
 
 UI without motion feels static and AI-generated. Use motion to clarify
 causality and make the surface feel responsive — not to decorate.
 
-- **Default motion library:** `framer-motion` on web/Ionic (already in the
-  forced stack) and `react-native-reanimated` on Expo. `tailwindcss-animate`
-  covers shadcn primitive transitions out of the box.
+- **Motion library:** reuse the active framework's existing motion/transition
+  system. React profiles may select framer-motion or
+  react-native-reanimated; do not impose them on other frameworks.
 - **Where motion is required, not optional:** menu open/close (`Sheet`,
   `Dialog`, `DropdownMenu`, `Popover`), tab switches, route transitions,
   optimistic state changes, list item enter/exit, and loading-state shifts.

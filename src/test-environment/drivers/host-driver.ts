@@ -112,7 +112,7 @@ function runCommand(cfg: HostCommandConfig, ctx: HostRunContext): Promise<HostRu
     try {
       child = spawn(cfg.bin, argv, {
         cwd: ctx.cwd,
-        env: hostSubprocessEnv(ctx.env),
+        env: hostSubprocessEnv({ ...ctx.env, ...(cfg.e2eEnv ?? {}) }),
         stdio: ['pipe', outFd, errFd],
       });
     } catch (e) {

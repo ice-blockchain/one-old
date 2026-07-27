@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { AGENT_ROLE_BASE_RULES, STACKS, composeRuleManifest, roleScopedRules, templatePath } from '../index';
 
@@ -65,9 +67,76 @@ test('roleScopedRules scopes per role and returns null for unknown roles', () =>
   const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' } };
   const fe = roleScopedRules('senior-frontend', state);
   assert.ok(fe && fe.includes('rules/frontend/i18n.md'));
+  assert.ok(fe && fe.includes('rules/core.md'));
   const be = roleScopedRules('senior-backend', state);
   assert.ok(be && be.includes('rules/backend/postgres.md'));
+  assert.ok(be && !be.includes('rules/core.md'));
   assert.equal(roleScopedRules('bogus', state), null);
+});
+
+test('API-only roles never inherit TypeScript or frontend rules from universal role bases', () => {
+  const state = {
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    mobile: { framework: 'none' },
+  };
+  for (const role of ['senior-architect', 'senior-backend', 'senior-reviewer', 'senior-tester']) {
+    const rules = roleScopedRules(role, state) || [];
+    assert.ok(!rules.includes('rules/core.md'), `${role} leaked TypeScript core`);
+    assert.ok(!rules.some((rule) => rule.startsWith('rules/frontend/')), `${role} leaked frontend rules`);
+  }
+  assert.ok(roleScopedRules('senior-backend', state)?.includes('rules/backend/golang.md'));
+  assert.ok(!roleScopedRules('senior-backend', state)?.includes('rules/backend/postgres.md'));
+});
+
+test('stateless language backends get Postgres rules only with provider or data evidence', () => {
+  for (const backend of ['node', 'python', 'go', 'laravel', 'rust']) {
+    const manifest = composeRuleManifest({
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend,
+      mobile: { framework: 'none' },
+    });
+    assert.equal(
+      manifest.optional.includes('rules/backend/postgres.md'),
+      false,
+      `${backend} must not imply Postgres`,
+    );
+  }
+  assert.ok(composeRuleManifest({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    capabilitySurfaces: ['api', 'data'],
+  }).optional.includes('rules/backend/postgres.md'));
+  assert.ok(composeRuleManifest({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'python',
+    databaseProvider: 'postgresql',
+  }).optional.includes('rules/backend/postgres.md'));
+});
+
+test('common rules stay stack-native and defer classification to runtime contracts', () => {
+  const common = path.resolve(__dirname, '../../../modules/rules/rules/common');
+  const clean = fs.readFileSync(path.join(common, 'clean-code.md'), 'utf8');
+  assert.doesNotMatch(clean, /`const` by default|`camelCase` vars|800 hard cap|~50 lines max/);
+  assert.match(clean, /numeric LOC, function-size,[\s\S]*top-level-function-count,[\s\S]*advisory[\s\S]*`WARN`/);
+  assert.match(clean, /false-positive[\s\S]*below 1%/);
+
+  const tooling = fs.readFileSync(path.join(common, 'quality-tooling.md'), 'utf8');
+  assert.match(tooling, /JavaScript\/TypeScript only/);
+  assert.match(tooling, /Go:[\s\S]*go test/);
+  assert.match(tooling, /Python:[\s\S]*pytest/);
+  assert.match(tooling, /Do not create `package\.json` scripts[\s\S]*non-JS projects/);
+
+  const routing = fs.readFileSync(path.join(common, 'project-routing.md'), 'utf8');
+  assert.match(routing, /capability-v1\.json/);
+  assert.match(routing, /baseline sidecars/);
+  assert.doesNotMatch(routing, /fewer than 5|@supabase\/supabase-js|State Supabase as the selected default/);
+  assert.match(routing, /Go services, Python scripts\/CLIs\/workers, Laravel API-only projects/);
+  assert.match(routing, /cannot reclassify those projects/);
 });
 
 test('onboarding-only rules drop out of maintenance-phase manifests', () => {

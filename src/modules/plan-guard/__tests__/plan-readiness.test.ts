@@ -1,11 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'child_process';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { planReadinessViolations, architectPhaseIncompleteReasons, isArchitectPhaseComplete } from '../plan-readiness';
 import { writeArchitectPhaseComplete } from './architect-phase-fixtures';
+import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+  readRuntimeAssignments,
+} from '../../../shared/architecture-contract';
+import {
+  compileVerificationContract,
+  readVerificationContract,
+} from '../../../shared/verification-contract';
+import { ensureRunBootstrap } from '../../../shared/run-bootstrap-policy';
+import { effectiveLegacyRunStatus } from '../../../shared/run-settlement';
 
 const names = (name: string): string => name;
 
@@ -104,6 +117,32 @@ function writeRequiredMemory(dir: string, state: Record<string, unknown> = DEFAU
   if (state.stack !== 'default' || state.frontend !== 'react-vite' || state.backend !== 'supabase') {
     fs.writeFileSync(path.join(t1, 'decisions', '0001-stack.md'), '# Stack decision\nUse the requested non-default stack.', 'utf8');
   }
+}
+
+function writeArchitectureInputAndAssignments(
+  dir: string,
+  runId = 'R',
+  state: Record<string, unknown> = DEFAULT_STATE,
+): void {
+  writeArchitectureInputOnly(dir, runId);
+  const architecture = compileArchitectureForRun(dir, runId, state);
+  const verification = compileVerificationContract(dir, runId, state, architecture, {
+    changedPaths: [],
+  });
+  publishRuntimeAssignments(dir, architecture, verification.contractHash);
+}
+
+function writeArchitectureInputOnly(dir: string, runId = 'R'): void {
+  const inputPath = architectureInputPath(dir, runId);
+  fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+  fs.writeFileSync(inputPath, JSON.stringify({
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [
+      { id: 'app-shell', name: 'App', kind: 'app-shell' },
+      { id: 'home', name: 'Home', kind: 'page' },
+    ],
+  }), 'utf8');
 }
 
 const DEFAULT_STATE = {
@@ -235,7 +274,7 @@ test('plan-architect-self-gate: the architect is told to write the plan itself, 
   });
 });
 
-test('plan gates: architect baseline scaffold writes never trip the plan-missing gate (B8)', () => {
+test('architect planning allowlist denies package and Tailwind scaffold writes', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -252,8 +291,8 @@ test('plan gates: architect baseline scaffold writes never trip the plan-missing
         filePath, content, projectRoot: dir,
         state, writingFeatureSource: true, block: names,
       });
-      assert.ok(!v.includes('plan-gate') && !v.includes('plan-architect-self-gate'), `${filePath}: ${v.join(', ')}`);
-      assert.ok(!v.includes('architect-pre-ready-feature'), `${filePath}: ${v.join(', ')}`);
+      assert.ok(v.includes('architect-planning-allowlist-gate'), `${filePath}: ${v.join(', ')}`);
+      assert.ok(!v.includes('plan-gate'), `${filePath}: ${v.join(', ')}`);
     }
   });
 });
@@ -269,7 +308,7 @@ test('plan-gate: legacy architecture.md does not satisfy readiness', () => {
   });
 });
 
-test('architect completion gate: PLAN_READY requires the baseline monorepo scaffold', () => {
+test('architect completion gate requires semantic input and memory, never an agent scaffold', () => {
   withProject((dir) => {
     const state = { ...DEFAULT_STATE, onboardingComplete: true };
     const v = planReadinessViolations({
@@ -280,8 +319,21 @@ test('architect completion gate: PLAN_READY requires the baseline monorepo scaff
       writingFeatureSource: false,
       block: names,
     });
-    assert.ok(v.includes('architect-scaffold-gate'));
+    assert.ok(!v.includes('architect-scaffold-gate'));
     assert.ok(v.includes('architect-memory-baseline-gate'));
+    assert.ok(!v.includes('architecture-contract-gate'),
+      'runtime compilation starts only after earlier PLAN_READY prerequisites pass');
+
+    writeRequiredMemory(dir, state);
+    const missingInput = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(missingInput.includes('architecture-contract-gate'));
 
     const nonTerminal = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
@@ -295,10 +347,49 @@ test('architect completion gate: PLAN_READY requires the baseline monorepo scaff
   });
 });
 
-test('architect completion gate: PLAN_READY requires formatter config + format:check script', () => {
+test('a rejected PLAN_READY prerequisite publishes no assignments or implementation bootstrap', () => {
+  withProject((dir) => {
+    writeArchitectureInputOnly(dir);
+    const missingMemory = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(missingMemory.includes('architect-memory-baseline-gate'));
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'bootstrap', 'senior-frontend', 'active.json')), false);
+
+    writeRequiredMemory(dir);
+    writePlan(dir);
+    const queueState = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    const missingQueue = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: queueState,
+      writingFeatureSource: false,
+      host: 'claude',
+      block: names,
+    });
+    assert.ok(missingQueue.includes('architect-opencode-queue-gate'));
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'bootstrap', 'senior-frontend', 'active.json')), false);
+  });
+});
+
+test('architect completion gate does not require agent-authored formatter scaffold', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir);
+    writeArchitectureInputAndAssignments(dir);
     // strip only the formatting pieces (observed 10c: collapsed one-line code
     // shipped because nothing forced a formatter into the scaffold)
     fs.rmSync(path.join(dir, '.prettierrc'));
@@ -313,7 +404,7 @@ test('architect completion gate: PLAN_READY requires formatter config + format:c
       writingFeatureSource: false,
       block: names,
     };
-    assert.ok(planReadinessViolations(gateArgs).includes('architect-scaffold-gate'));
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
 
     // a "prettier" key in package.json + the script satisfies both requirements
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
@@ -321,14 +412,14 @@ test('architect completion gate: PLAN_READY requires formatter config + format:c
       prettier: { printWidth: 100 },
       scripts: { 'format:check': 'prettier --check .' },
     }), 'utf8');
-    assert.ok(!planReadinessViolations(gateArgs).includes('architect-scaffold-gate'));
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
   });
 });
 
-test('architect completion gate: PLAN_READY is allowed once scaffold files exist', () => {
+test('architect completion gate compiles and publishes runtime assignments without physical scaffold files', () => {
   withProject((dir) => {
-    writeRequiredScaffold(dir);
     writeRequiredMemory(dir);
+    writeArchitectureInputAndAssignments(dir);
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
       content: 'verdict: PLAN_READY\n',
@@ -338,6 +429,146 @@ test('architect completion gate: PLAN_READY is allowed once scaffold files exist
       block: names,
     });
     assert.deepEqual(v, []);
+    const assignments = readRuntimeAssignments(dir, 'R');
+    assert.ok(assignments);
+    assert.ok(assignments.assignments.some((entry) => (
+      entry.role === 'senior-frontend'
+      && entry.scope.include.includes('apps/web/package.json')
+    )));
+    const runDir = path.join(dir, '.traffic-one', 'runs', 'R');
+    const ledger = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8'));
+    assert.equal(ledger.status, 'failed');
+    assert.equal(ledger.outcome, 'agent-failed');
+    assert.equal(effectiveLegacyRunStatus(ledger, '1.0.19'), 'failed');
+    assert.equal(effectiveLegacyRunStatus(ledger, '1.0.20'), 'active');
+    assert.ok(fs.existsSync(path.join(runDir, 'verification-v2.json')));
+    assert.ok(fs.existsSync(path.join(runDir, 'settlement-v2.json')));
+  });
+});
+
+test('PLAN_READY rejects malformed strict verification intent without publishing runtime contracts', () => {
+  withProject((dir) => {
+    writeRequiredMemory(dir);
+    writeArchitectureInputOnly(dir);
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '# Plan',
+      '<!-- traffic-one-verification:start -->',
+      '{"schemaVersion":1,"redesign":"yes"}',
+      '<!-- traffic-one-verification:end -->',
+      '',
+    ].join('\n'));
+
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+
+    assert.ok(violations.includes('architecture-contract-gate'));
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(readVerificationContract(dir, 'R'), null);
+  });
+});
+
+test('PLAN_READY consumes strict verification intent and IMPLEMENTED refreshes uiImpact from the real diff', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+      currentRunId: 'R',
+      team: { mode: 'main-agent' },
+    };
+    for (const rel of ['apps/web/src/pages', 'apps/web/src/components', 'apps/web/src/features']) {
+      fs.mkdirSync(path.join(dir, rel), { recursive: true });
+    }
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: { react: '19', 'react-dom': '19', 'react-router-dom': '7', vite: '7' },
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/main.tsx'),
+      "import { createRoot } from 'react-dom/client';\nimport { App } from './App';\ncreateRoot(document.getElementById('root')!).render(<App />);\n",
+    );
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/App.tsx'),
+      "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\nimport { Home } from './pages/Home';\nconst router = createBrowserRouter([{ path: '/', element: <Home /> }]);\nexport function App(){ return <RouterProvider router={router} />; }\n",
+    );
+    const page = path.join(dir, 'apps/web/src/pages/Home.tsx');
+    fs.writeFileSync(page, 'export function Home(){ return <main>Home</main>; }\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+
+    writeRequiredMemory(dir, state);
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '# Plan',
+      '<!-- traffic-one-verification:start -->',
+      '{"schemaVersion":1,"redesign":true,"explicitLighthouse":{"performanceMin":95,"seoMin":95}}',
+      '<!-- traffic-one-verification:end -->',
+      '',
+    ].join('\n'));
+    writeArchitectureInputOnly(dir, 'R');
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
+
+    const ready = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(ready, []);
+    const planned = readVerificationContract(dir, 'R');
+    assert.equal(planned?.performance.required, true);
+    assert.equal(planned?.performance.reason, 'explicit');
+    assert.deepEqual(planned?.performance.explicitThresholds, {
+      performanceMin: 95,
+      seoMin: 95,
+    });
+    assert.equal(planned?.uiImpact, 'nonvisual');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R', 'architect.md'), 'verdict: PLAN_READY\n');
+
+    fs.writeFileSync(page, 'export function Home(){ return <main className="wide">Updated</main>; }\n');
+    const implemented = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(implemented, []);
+    const refreshed = readVerificationContract(dir, 'R');
+    assert.equal(refreshed?.uiImpact, 'visual');
+    assert.deepEqual(refreshed?.requiredScreenshotWidths, [390, 1440]);
+    assert.deepEqual(refreshed?.performance.explicitThresholds, {
+      performanceMin: 95,
+      seoMin: 95,
+    });
+    assert.notEqual(refreshed?.contractHash, planned?.contractHash);
+    assert.equal(readRuntimeAssignments(dir, 'R')?.verificationHash, refreshed?.contractHash);
+
+    fs.writeFileSync(path.join(dir, 'apps/web/src/rogue.ts'), 'export const rogue = true;\n');
+    const review = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/reviewer.md',
+      content: 'verdict: APPROVED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(review.includes('verification-contract-refresh-gate'),
+      'an unplanned source path must require replanning before review');
   });
 });
 
@@ -366,6 +597,44 @@ test('frontend completion gate: IMPLEMENTED is denied while product source is co
       '',
     ].join('\n'), 'utf8');
     assert.deepEqual(planReadinessViolations(gateArgs), []);
+  });
+});
+
+test('frontend completion gate scans capability roots and still blocks collapsed CSS/SCSS', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'frontend/src/styles'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'frontend/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    fs.writeFileSync(path.join(dir, 'frontend/src/main.tsx'), 'export {};\n');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\nTouched: frontend/src/styles/app.css\n',
+      projectRoot: dir,
+      state: {
+        ...DEFAULT_STATE,
+        stack: 'custom-frontend',
+        frontend: 'none',
+        backend: 'none',
+        onboardingComplete: true,
+      },
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    const collapsedCss = `.app{${'color:red;background:black;border:0;'.repeat(20)}}`;
+    assert.ok(collapsedCss.length > 500);
+    fs.writeFileSync(path.join(dir, 'frontend/src/styles/app.css'), `${collapsedCss}\n`);
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-collapse-gate'));
+
+    fs.writeFileSync(path.join(dir, 'frontend/src/styles/app.css'), '.app {\n  color: red;\n}\n');
+    const collapsedScss = `.panel{${'$gap:1rem;margin:$gap;padding:$gap;'.repeat(20)}}`;
+    assert.ok(collapsedScss.length > 500);
+    fs.writeFileSync(path.join(dir, 'frontend/src/styles/app.scss'), `${collapsedScss}\n`);
+    assert.ok(planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: IMPLEMENTED\nTouched: frontend/src/styles/app.scss\n',
+    }).includes('frontend-collapse-gate'));
   });
 });
 
@@ -490,6 +759,7 @@ test('architect completion gate: an upgraded packages/ui/src/index.tsx barrel st
   withProject((dir) => {
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir);
+    writeArchitectureInputAndAssignments(dir);
     // A sibling role legitimately upgrades the empty barrel to .tsx once
     // components land in it (observed 12c: after the swap, every PLAN_READY-
     // bearing architect digest rewrite — including pure ownership-transfer
@@ -512,6 +782,7 @@ test('architect completion gate: PLAN_READY accepts pnpm-workspace.yaml plus roo
   withProject((dir) => {
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir);
+    writeArchitectureInputAndAssignments(dir);
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
       name: 'devlearn',
       private: true,
@@ -534,6 +805,7 @@ test('architect completion gate: PLAN_READY accepts pnpm-workspace.yaml plus roo
 test('architect memory baseline gate: PLAN_READY requires project memory for every new project', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);
+    writeArchitectureInputAndAssignments(dir);
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
       content: 'verdict: PLAN_READY\n',
@@ -548,9 +820,16 @@ test('architect memory baseline gate: PLAN_READY requires project memory for eve
 
 test('architect memory baseline gate: no-backend projects require N/A reasons for backend docs', () => {
   withProject((dir) => {
-    const state = { ...DEFAULT_STATE, stack: 'custom-backend', backend: 'none', onboardingComplete: true };
+    const state = {
+      ...DEFAULT_STATE,
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      onboardingComplete: true,
+    };
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir, state);
+    writeArchitectureInputAndAssignments(dir, 'R', state);
     fs.writeFileSync(path.join(dir, '.traffic-one', 'api.md'), '# API\n', 'utf8');
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
@@ -819,7 +1098,7 @@ test('plan-opencode-queue-policy-gate: rejects testable unit without exact test/
   });
 });
 
-test('assignments-shape-gate: rejects non-canonical roles-object assignments.json', () => {
+test('runtime assignments owner gate rejects non-canonical direct writes', () => {
   withProject((dir) => {
     const v = planReadinessViolations({
       filePath: '.traffic-one/runs/R/assignments.json',
@@ -829,11 +1108,11 @@ test('assignments-shape-gate: rejects non-canonical roles-object assignments.jso
       writingFeatureSource: false,
       block: names,
     });
-    assert.deepEqual(v, ['assignments-shape-gate']);
+    assert.deepEqual(v, ['runtime-assignments-owner-gate']);
   });
 });
 
-test('assignments-roles-gate: assignments manifest is limited to implementer roles', () => {
+test('runtime assignments owner gate rejects even plausible agent-authored manifests', () => {
   withProject((dir) => {
     const v = planReadinessViolations({
       filePath: '.traffic-one/runs/R/assignments.json',
@@ -850,11 +1129,11 @@ test('assignments-roles-gate: assignments manifest is limited to implementer rol
       writingFeatureSource: false,
       block: names,
     });
-    assert.deepEqual(v, ['assignments-roles-gate']);
+    assert.deepEqual(v, ['runtime-assignments-owner-gate']);
   });
 });
 
-test('assignments-owner-gate: tester cannot rewrite assignments after PLAN_READY', () => {
+test('runtime assignments owner gate rejects tester rewrites after PLAN_READY', () => {
   withProject((dir) => {
     fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R', 'architect.md'), 'verdict: PLAN_READY\n', 'utf8');
@@ -873,7 +1152,129 @@ test('assignments-owner-gate: tester cannot rewrite assignments after PLAN_READY
       writingFeatureSource: false,
       block: names,
     });
-    assert.deepEqual(v, ['assignments-owner-gate']);
+    assert.deepEqual(v, ['runtime-assignments-owner-gate']);
+  });
+});
+
+test('runtime-owned run sidecars are read-only while ArchitectureInput stays architect-owned', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      currentRunId: 'R',
+      team: { mode: 'subagents' },
+      activeAgentRole: 'senior-architect',
+    };
+    for (const target of [
+      '.traffic-one/runs/R/capability-v1.json',
+      '.traffic-one/runs/R/baseline-v1.json',
+      '.traffic-one/runs/R/architecture-v1.json',
+      '.traffic-one/runs/R/verification-v2.json',
+      '.traffic-one/runs/R/model-policy.json',
+      '.traffic-one/runs/R/bootstrap/senior-architect/active.json',
+      '.traffic-one/runs/R/settlement-v2.json',
+      '.traffic-one/runs/R/claims.json',
+      '.traffic-one/runs/R/qa-acceptance-v1.json',
+    ]) {
+      const violations = planReadinessViolations({
+        filePath: target,
+        content: '{}',
+        projectRoot: dir,
+        state,
+        writingFeatureSource: false,
+        block: names,
+      });
+      assert.ok(violations.includes('runtime-sidecar-owner-gate'), target);
+    }
+    const semanticInput = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: JSON.stringify({
+        schemaVersion: 1,
+        routes: [],
+        modules: [{ id: 'service', name: 'Service', kind: 'service' }],
+      }),
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!semanticInput.includes('runtime-sidecar-owner-gate'));
+  });
+});
+
+test('digests and QA reports require the exact active child WorkUnitContract', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      currentRunId: 'R',
+      team: { mode: 'subagents' },
+      activeAgentRole: 'senior-frontend',
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    const options = {
+      host: 'codex' as const,
+      hostAgentType: null,
+      modelPolicyId: 'policy-artifacts',
+    };
+    assert.ok(ensureRunBootstrap(dir, 'R', 'senior-frontend', state, options));
+    const frontend = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'IMPLEMENTED',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!frontend.includes('run-artifact-work-unit-gate'));
+
+    const wrongRole = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/tester.md',
+      content: 'TESTS_GREEN',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(wrongRole.includes('run-artifact-work-unit-gate'));
+
+    const testerState = { ...state, activeAgentRole: 'senior-tester' };
+    assert.ok(ensureRunBootstrap(dir, 'R', 'senior-tester', testerState, options));
+    const report = planReadinessViolations({
+      filePath: '.traffic-one/reports/qa/R/report-v2.json',
+      content: '{}',
+      projectRoot: dir,
+      state: testerState,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!report.includes('run-artifact-work-unit-gate'));
+  });
+});
+
+test('architect decision scope is exact to the current run', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    const exact = planReadinessViolations({
+      filePath: '.traffic-one/decisions/R-architecture.md',
+      content: '# Decision',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!exact.includes('architect-planning-allowlist-gate'));
+    const broadSibling = planReadinessViolations({
+      filePath: '.traffic-one/decisions/unrelated.md',
+      content: '# Decision',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(broadSibling.includes('architect-planning-allowlist-gate'));
   });
 });
 
@@ -886,6 +1287,25 @@ test('architectPhaseIncompleteReasons: flags partial baseline after plan exists'
     assert.ok(missing.some((m) => m.includes('assignments.json')));
     assert.ok(missing.some((m) => m.includes('architect.md')));
     assert.equal(isArchitectPhaseComplete(dir, { ...DEFAULT_STATE, currentRunId: 'R' }), false);
+  });
+});
+
+test('existing-codebase subagent runs require current-run architecture contracts', () => {
+  withProject((dir) => {
+    const active = {
+      ...DEFAULT_STATE,
+      mode: 'existing-codebase',
+      currentRunId: 'R',
+      team: { mode: 'subagents' },
+    };
+    const missing = architectPhaseIncompleteReasons(dir, active);
+    assert.ok(missing.some((entry) => entry.includes('architecture-input-v1.json')));
+    assert.ok(missing.some((entry) => entry.includes('assignments.json')));
+    assert.ok(missing.some((entry) => entry.includes('architect.md')));
+    assert.deepEqual(architectPhaseIncompleteReasons(dir, {
+      ...active,
+      team: { mode: 'main-agent' },
+    }), []);
   });
 });
 
@@ -905,15 +1325,7 @@ test('isArchitectPhaseComplete: ignores PLAN_READY from a stale run id', () => {
     writePlan(dir);
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir, state);
-    fs.mkdirSync(path.join(dir, '.traffic-one', 'runs', 'R2'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', 'R2', 'assignments.json'), JSON.stringify({
-      version: 1,
-      runId: 'R2',
-      assignments: [
-        { role: 'senior-frontend', scope: { include: ['apps/web/**', 'packages/ui/**', 'packages/i18n/**', 'packages/tailwind-config/**'] } },
-        { role: 'senior-backend', scope: { include: ['supabase/**', 'packages/api-client/**'] } },
-      ],
-    }), 'utf8');
+    writeArchitectureInputAndAssignments(dir, 'R2', state);
     fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R1'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R1', 'architect.md'), 'verdict: PLAN_READY\n', 'utf8');
 
@@ -923,7 +1335,7 @@ test('isArchitectPhaseComplete: ignores PLAN_READY from a stale run id', () => {
   });
 });
 
-test('architect-pre-ready-feature: denies senior-architect app implementation before PLAN_READY', () => {
+test('architect planning allowlist denies app implementation before PLAN_READY', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -944,11 +1356,11 @@ test('architect-pre-ready-feature: denies senior-architect app implementation be
       writingFeatureSource: true,
       block: names,
     });
-    assert.deepEqual(v, ['architect-pre-ready-feature']);
+    assert.deepEqual(v, ['architect-planning-allowlist-gate']);
   });
 });
 
-test('architect-pre-ready-feature: allows senior-architect Tailwind globals baseline before PLAN_READY', () => {
+test('architect planning allowlist denies Tailwind globals before PLAN_READY', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -969,11 +1381,11 @@ test('architect-pre-ready-feature: allows senior-architect Tailwind globals base
       writingFeatureSource: true,
       block: names,
     });
-    assert.deepEqual(v, []);
+    assert.deepEqual(v, ['architect-planning-allowlist-gate']);
   });
 });
 
-test('missingArchitectScaffold: accepts packages/tsconfig/base.json instead of root tsconfig.base.json', () => {
+test('architect phase completeness has no formatter or tsconfig scaffold requirement', () => {
   withProject((dir) => {
     writeStateFile(dir, DEFAULT_STATE);
     writeRequiredScaffold(dir);

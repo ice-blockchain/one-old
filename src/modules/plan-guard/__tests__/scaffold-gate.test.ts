@@ -73,7 +73,7 @@ test('scaffold gate: create-next-app on a React/Vite new project is denied (off-
     writePlan(cwd); // even with a plan, Next.js is off-stack
     const r = scaffoldGate(ctxFor(cwd, 'npx create-next-app@latest learning-platform --typescript'));
     assert.equal(r.kind, 'deny');
-    if (r.kind === 'deny') assert.ok(/React\/Vite|apps\/web/.test(r.reason));
+    if (r.kind === 'deny') assert.match(r.reason, /profile=vite-react|framework=react-vite/);
   });
 });
 
@@ -140,5 +140,34 @@ test('scaffold gate: NON-windsurf hosts are untouched (create-next-app noops)', 
     for (const host of ['claude', 'cursor', 'codex', 'opencode'] as const) {
       assert.equal(scaffoldGate(ctxFor(cwd, 'npx create-next-app@latest app', host)).kind, 'noop', `host ${host} must noop`);
     }
+  });
+});
+
+test('scaffold gate: backend-only profile gets backend capability prose without frontend defaults', () => {
+  withProject({
+    mode: 'new-project',
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    mobile: { framework: 'none' },
+    onboardingComplete: true,
+  }, (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    const result = scaffoldGate(ctxFor(cwd, 'npx create-next-app@latest accidental-ui'));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /profile=backend-only/);
+      assert.match(result.reason, /framework=go/);
+      assert.doesNotMatch(result.reason, /React\/Vite|Turborepo|apps\/web/);
+    }
+  });
+});
+
+test('scaffold gate: absolute project command from plugin cwd is evaluated under the target project', () => {
+  withProject(NEW_REACT_VITE, (project) => {
+    const command = `cd "${project}" && npm create vite@latest apps/web -- --template react-ts`;
+    const result = scaffoldGate(ctxFor(process.cwd(), command));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /senior-architect|plan\.md/);
   });
 });

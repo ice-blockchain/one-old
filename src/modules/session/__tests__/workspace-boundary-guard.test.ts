@@ -117,6 +117,49 @@ test('fails closed when a non-empty apply_patch payload cannot be parsed', () =>
   });
 });
 
+test('fails closed for unresolved shell write targets even without a host workspace boundary', () => {
+  withSiblingWorkspaces((_root, ws6b) => {
+    for (const command of [
+      'touch "$UNKNOWN_ROOT/file.ts"',
+      'printf x > "${UNKNOWN_ROOT}/file.ts"',
+      'cp source.ts "$UNKNOWN_ROOT/file.ts"',
+    ]) {
+      const result = workspaceBoundaryGuard(ctxFor(ws6b, undefined, 'Bash', { command }));
+      assert.equal(result.kind, 'deny', command);
+      if (result.kind === 'deny') {
+        assert.match(result.reason, /unresolved environment or command expansion/i, command);
+      }
+    }
+  });
+});
+
+test('does not treat ordinary read-only shell variables as unresolved write targets', () => {
+  withSiblingWorkspaces((_root, ws6b) => {
+    for (const command of [
+      'rg "$PATTERN" .',
+      'go test "$PACKAGE"',
+      'cat "$INPUT_FILE"',
+    ]) {
+      assert.equal(workspaceBoundaryGuard(ctxFor(ws6b, ws6b, 'Bash', { command })).kind, 'noop', command);
+    }
+  });
+});
+
+test('allows stderr redirection to the operating-system discard sink', () => {
+  withSiblingWorkspaces((_root, ws6b) => {
+    for (const command of [
+      'rg "needle" . 2>/dev/null',
+      'npm test 2> /dev/null',
+    ]) {
+      assert.equal(
+        workspaceBoundaryGuard(ctxFor(ws6b, ws6b, 'Bash', { command })).kind,
+        'noop',
+        command,
+      );
+    }
+  });
+});
+
 test('denies search paths outside the active workspace but allows implicit workspace search', () => {
   withSiblingWorkspaces((_root, ws6b, ws5b) => {
     assert.equal(workspaceBoundaryGuard(ctxFor(ws6b, ws6b, 'Grep', { pattern: 'name' })).kind, 'noop');

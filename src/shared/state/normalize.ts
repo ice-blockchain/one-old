@@ -28,6 +28,7 @@ import { stateTimestamp, stateVersion } from './io';
 import { hasLocalPreferenceFields, splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
 import { initializeToolchainState } from './toolchain';
 import { preserveCurrentRunId, preserveOneMcpReportId, withProjectStateLock } from './project-state-lock';
+import { defaultStateForStack } from '../capabilities';
 
 function defaultMobileState(): Rec {
   return { enabled: false, framework: 'none', source: 'none' };
@@ -182,7 +183,7 @@ export function normalizeState(state: unknown, defaultMode?: string): boolean {
   if (!s.confirmedAt) { s.confirmedAt = stateTimestamp(); changed = true; }
   if (!s.realtime) { s.realtime = 'none'; changed = true; }
   if (!s.frontend) {
-    s.frontend = s.stack === 'default' || s.stack === 'custom-backend' ? 'react-vite' : 'none';
+    s.frontend = defaultStateForStack(s.stack).frontend;
     changed = true;
   }
   if (!s.backend) { s.backend = s.stack === 'minimal' ? 'none' : 'supabase'; changed = true; }

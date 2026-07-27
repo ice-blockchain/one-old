@@ -13,6 +13,7 @@ import { firstEmitThisSession } from '../../shared/once';
 import { hookSessionIdentity, isWebState, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { logToolUse } from '../../shared/token-logger';
+import { readVerificationContract } from '../../shared/verification-contract';
 
 const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
 const LIGHTHOUSE_COMMAND_RE = /\blighthouse-runner\.(?:cjs|mjs)\b/;
@@ -131,19 +132,26 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
     }
   }
   if (!BUILD_COMMAND_RE.test(command)) return noop();
-  if (!isWebState(readEffectiveState(cwd))) return noop();
+  const state = readEffectiveState(cwd);
+  if (!isWebState(state)) return noop();
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  const contract = runId ? readVerificationContract(cwd, runId) : null;
+  // Lighthouse is a separate, risk-derived performance contract. A normal web
+  // build must not manufacture a Lighthouse obligation when the runtime did
+  // not compile one for this run.
+  if (!contract?.performance.required) return noop();
   // Iterative implement-verify loops run `npm run build` many times; the full
   // advisory injects once per session, later builds get a one-line reminder.
   if (!firstEmitThisSession(cwd, 'pagespeed-advisory', hookSessionIdentity(ctx.input.raw).sessionId)) {
     return context(
-      '[traffic-one] Lighthouse mobile gate still pending — run: node ~/.traffic-one/bin/lighthouse-runner.cjs --route / (the runner ships with the PLUGIN, not the repo).',
+      '[traffic-one] The run performance contract still requires Lighthouse evidence — run: node ~/.traffic-one/bin/lighthouse-runner.cjs --route / (the runner ships with the PLUGIN, not the repo).',
       { systemMessage: 'traffic-one page-speed gate pending after build' },
     );
   }
   return context(
     [
       '[traffic-one] A production build just ran for a web stack.',
-      'Before final delivery for generated/changed React or Ionic routes, run the Lighthouse mobile gate:',
+      'This run has a runtime-compiled performance requirement. Before final delivery, run the Lighthouse mobile gate:',
       '',
       '  node ~/.traffic-one/bin/lighthouse-runner.cjs --route /',
       '  node ~/.traffic-one/bin/lighthouse-runner.cjs --url https://staging.example.com --skip-preview',

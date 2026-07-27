@@ -139,21 +139,21 @@ Architect phase gate: `{{ROLE}}` cannot start yet — spawn `senior-architect` f
 
 Missing on disk: {{MISSING}}
 
-The architect must finish the project-memory baseline, `.traffic-one/runs/{{RUN_ID}}/assignments.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` containing `PLAN_READY`. Only then retry `{{ROLE}}` with the same task. Do not spawn other implementers or patch the coordination artifacts yourself.
+The architect must finish the project-memory baseline, semantic `.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` containing `PLAN_READY`. Runtime then compiles architecture/verification, generates assignments, and publishes work-unit bootstraps. Only after that succeeds may you retry `{{ROLE}}` with the same task. Do not spawn other implementers or patch runtime-owned coordination artifacts yourself.
 <!-- T1BLOCK:END architect-phase-incomplete -->
 
 <!-- T1BLOCK:BEGIN opencode-plan-batch-required -->
 OpenCode plan-batch gate: do NOT spawn `{{ROLE}}` yet. The architect queued Step-0 OpenCode work in `.traffic-one/plan.md`, and the `opencode_delegate_from_plan` batch has not finished for queued role(s): {{QUEUED_ROLES}}.
 
-Do NOT retry Task/spawn_agent for `senior-frontend` or `senior-backend` in this turn — run OpenCode Step 0 first instead.
+Do NOT retry Task/spawn_agent for any queued or capability-eligible implementer in this turn — run OpenCode Step 0 first instead.
 
-Run the batch FIRST, before any frontend/backend implementer starts:
+Run the batch FIRST, before any capability-eligible implementer starts:
 1. Call the `opencode_delegate_from_plan` tool (MCP server `opencode-worker`) with:
    - `runId`: `{{RUN_ID}}`
    - `projectRoot`: `{{PROJECT_ROOT}}`
    Do NOT pass `model` unless the project explicitly pinned one; OpenCode selects its own free model by default.
 2. If it returns `running:true`, call `opencode_delegate_from_plan` AGAIN with the SAME arguments. Repeat until the terminal `{ total, delegated, units }` result appears — do NOT use any shell fallback while `running:true`.
-3. Only after the terminal result, spawn `senior-frontend` and `senior-backend` in parallel in the NEXT assistant message. Pass each implementer the batch `units` summary, including `touched` files and any unit whose `action !== "delegated"` so the paid role finishes only what OpenCode skipped/failed/no-changed.
+3. Only after the terminal result, spawn exactly the implementation roles present in the compiled capability profile and assignments manifest in the NEXT assistant message. Run multiple eligible roles in parallel; never invent a missing frontend/backend sibling. Pass each implementer the batch `units` summary, including `touched` files and any unit whose `action !== "delegated"` so the paid role finishes only what OpenCode skipped/failed/no-changed.
 4. Fail-open: if the batch returns a terminal failure (`ok:false`, `action: "abandoned"`, or every unit failed/skipped/no-changes) OR the MCP tool is unavailable, proceed with paid implementer spawns — do NOT block the build on OpenCode.
 Fallback (MCP unavailable ONLY — never while `running:true`): `node ~/.traffic-one/bin/opencode-runner.cjs --run-id "{{RUN_ID}}" --from-plan` from `{{PROJECT_ROOT}}`.
 
@@ -190,5 +190,5 @@ Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` Cursor subagent, 
 <!-- T1BLOCK:END agent-reuse-await-cursor-id -->
 
 <!-- T1BLOCK:BEGIN agent-reuse-await-codex-meta -->
-Agent-reuse gate: run {{RUN_ID}} has a fresh Codex `{{ROLE}}` registry row for child `{{AGENT_ID}}`, but Traffic One cannot verify that child's role from line-zero `session_meta` ({{REASON}}). Do not route `followup_task`/`send_message` to this unverified id and do not start a duplicate. Retry after the child rollout is flushed. If the child is genuinely unusable, use `{{MARKER}}` with the concrete failure reason to retire it and spawn a replacement using the exact task-name contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`). Current Codex child rollouts encrypt spawn-message content, so prompt prose cannot substitute for `task_name` plus line-zero `session_meta` identity.
+Agent-reuse gate: run {{RUN_ID}} has a fresh Codex `{{ROLE}}` registry row for child `{{AGENT_ID}}`, but Traffic One cannot verify that child's role from line-zero `session_meta` ({{REASON}}). Do not route `followup_task`/`send_message` to this unverified id and do not start a duplicate. Retry after the child rollout is flushed. If the child is genuinely unusable, use `{{MARKER}}` with the concrete failure reason to retire it and spawn a replacement using the exact task-name contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`). Current Codex child rollouts encrypt spawn-message content, so prompt prose cannot substitute for `task_name` plus line-zero `session_meta` identity.
 <!-- T1BLOCK:END agent-reuse-await-codex-meta -->

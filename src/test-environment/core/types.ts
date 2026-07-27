@@ -3,6 +3,8 @@
 // MAINTAINER tool: it is never compiled into dist (see tsconfig.build.json
 // exclude) and never shipped. It is run via `tsx src/test-environment/run.ts`.
 
+import type { HostModelObservation } from '../../shared/host-capabilities';
+
 export type HostId = 'claude' | 'codex' | 'cursor' | 'opencode' | 'copilot' | 'windsurf' | 'kilo';
 export type VerdictHost = HostId | 'none';
 
@@ -44,6 +46,9 @@ export type FixtureKind =
 // so "onboarding is pre-completed" without ever popping the wizard.
 export interface PreSeed {
   mode: ProjectMode;
+  // Optional deterministic run identity for live enforcement probes. Ordinary
+  // business cases leave this unset and let the runtime mint the run.
+  currentRunId?: string;
   stack?: string; // e.g. 'default' | 'custom-frontend' | 'minimal'
   frontend?: string; // 'react-vite' | 'none' | 'vue' | ...
   backend?: string; // 'supabase' | 'node' | 'none' | ...
@@ -102,6 +107,16 @@ export interface HostCommandConfig {
   // plugin's model-tiers table may be stale for this host (e.g. 'auto' for
   // Cursor) so e2e tests plugin BEHAVIOR, not a specific model slug.
   testModel?: string;
+  // Test-only, complete tier catalog written to the case-local One MCP sidecar.
+  // This never changes the production registry. A live host preflight must
+  // prove every slug before the case may invoke the CLI.
+  testModelByTier?: Readonly<Record<'highest' | 'balanced' | 'cheapest', string>>;
+  // Populated only by a live harness preflight. Cases report this as an
+  // environment block and do not invoke the host; strict mode remains non-green.
+  e2eBlockedReason?: string;
+  // Per-run host environment owned by the harness. Codex uses this only for
+  // its disposable CODEX_HOME; it is never read from release/plugin config.
+  e2eEnv?: NodeJS.ProcessEnv;
   // Some desktop-only hosts have deterministic adapter/onboarding coverage but
   // no supported unattended CLI entrypoint. Keep them in the seven-host matrix
   // while making an explicit E2E request skip cleanly instead of inventing flags.
@@ -123,9 +138,12 @@ export interface RootTestConfig {
   // ~/traffic-one-test-runs. All runs are kept; clear them manually.
   runsRoot: string;
   isolateStateHome: boolean;
-  strict: boolean; // SKIP/INCONCLUSIVE count as failure; declared UNSUPPORTED capability does not
+  strict: boolean; // SKIP/INCONCLUSIVE/UNSUPPORTED all block a certification claim
   dryRun: boolean;
   caseFilter?: string[]; // explicit case ids
+  // External evidence for hosts classified as contract+manual-e2e. The CLI
+  // accepts only an absolute directory and reads <host>-manual-e2e.json.
+  manualCertDir?: string;
   hosts: Record<HostId, HostCommandConfig>;
   envOverrides: Record<string, string>;
 }
@@ -141,7 +159,47 @@ export interface AssertionResult {
   actual?: unknown;
 }
 
-export type HostRunStatus = 'COMPLETED' | 'TIMEOUT' | 'ERROR' | 'SKIPPED' | 'NOT_RUN';
+export type HostRunStatus =
+  | 'COMPLETED'
+  | 'TIMEOUT'
+  | 'ERROR'
+  | 'BLOCKED_ENVIRONMENT'
+  | 'SKIPPED'
+  | 'NOT_RUN';
+
+export type HostCapabilityEvidenceStatus =
+  | 'OBSERVED'
+  | 'NO_RUN'
+  | 'NOT_RUN'
+  | 'MISSING'
+  | 'INVALID';
+
+/**
+ * Reporting projection of the per-run HostCapabilityV1 sidecar. Contract
+ * fields are expectations from the static registry; only the observed fields
+ * are evidence about the host version that actually ran.
+ */
+export interface HostCapabilityReport {
+  evidenceStatus: HostCapabilityEvidenceStatus;
+  runId: string | null;
+  contractExpectedPrevention: 'pre-tool' | 'completion-only';
+  contractPrimaryBlockingPoint: string;
+  contractRequiredBlockingPoints: string[];
+  modelObservation: HostModelObservation;
+  authoritativeModelObserved: boolean;
+  observedPrevention: 'pre-tool' | 'completion-only' | 'unknown';
+  observedBlockingPoint: string | null;
+  observedEnforcementPoints: string[];
+  observedDeniedEnforcementPoints: string[];
+  primaryBlockingPointObserved: boolean;
+  primaryBlockingPointDenied: boolean;
+  requiredBlockingPointsObserved: boolean;
+  capabilityHash: string | null;
+  evidenceHash: string | null;
+  hostVersion: string | null;
+  preventionCertified: boolean;
+  detail: string;
+}
 
 export interface HostRunResult {
   status: HostRunStatus;
@@ -151,6 +209,7 @@ export interface HostRunResult {
   stderrPath?: string;
   command?: string;
   skippedReason?: string;
+  hostCapability?: HostCapabilityReport;
 }
 
 export interface CaseRunResult {

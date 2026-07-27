@@ -75,5 +75,6 @@ pnpm typecheck
 pnpm build
 ```
 
-For page-level work, smoke the built preview and run the Traffic One Lighthouse
-runner when available.
+For `behavioral` or `visual` page work, smoke the built preview with the local
+Playwright adapter. Run the Traffic One Lighthouse runner only when the
+compiled performance contract requires it.

@@ -31,6 +31,7 @@ import { modelChoiceReplyPending } from './model-choice';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import { settleCorrelatedCursorRetryOnStart } from './cursor-failures';
 import { canonicalHost } from '../../shared/model-tiers';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 
 function evidenceTier(evidence: RoleEvidence): number {
   if (evidence.source.startsWith('codex-session-meta-') || evidence.source.startsWith('host-')) return 1;
@@ -66,6 +67,10 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // and use it for every state read/write below; otherwise a start event can
   // split the run across nested `.traffic-one` trees.
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  // SubagentStart is lifecycle-only and has no target path. The plugin source
+  // and installed plugin trees are not Traffic One projects, so do not record a
+  // parent session or require a model policy there.
+  if (isNonProjectRoot(cwd)) return noop();
   if (pluginUseDeclined(cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
@@ -206,7 +211,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       'Traffic One could not bind this child thread to a senior role, so no per-run role claim was created. '
       + 'Do not write files from this child until the parent/orchestrator repairs the spawn. '
       + 'Parent/orchestrator: stop or replace this child and retry the same role. On Codex use the exact canonical '
-      + '`task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, '
+      + '`task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, '
       + '`senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and '
       + '`fork_turns: "none"`. If the exposed spawn tool has NO task_name field, the FIRST line of the spawn '
       + 'message must carry the literal role marker `[t1-role: senior-<role>]` (with the actual role substituted) — '

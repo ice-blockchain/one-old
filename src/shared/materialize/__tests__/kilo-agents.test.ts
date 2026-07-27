@@ -7,6 +7,13 @@ import * as path from 'path';
 import { KILO_HOST_AGENTS_REL } from '../../../config/kilo-host';
 import { KILO_AGENT_MARKER, writeKiloAgentFiles } from '../kilo-agents';
 
+const FULL_STATE = {
+  stack: 'default',
+  frontend: 'react-vite',
+  backend: 'supabase',
+  mobile: { framework: 'none' },
+};
+
 function withPlugin(fn: (project: string) => void): void {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-agents-'));
   const plugin = path.join(base, 'plugin');
@@ -29,7 +36,7 @@ function withPlugin(fn: (project: string) => void): void {
 
 test('writeKiloAgentFiles writes model-agnostic role contracts without local preferences', () => {
   withPlugin((project) => {
-    const written = writeKiloAgentFiles(project, {});
+    const written = writeKiloAgentFiles(project, FULL_STATE);
     assert.ok(written >= 6);
     const architect = fs.readFileSync(path.join(project, KILO_HOST_AGENTS_REL, 'senior-architect.md'), 'utf8');
     assert.ok(architect.includes(KILO_AGENT_MARKER));
@@ -48,10 +55,10 @@ test('writeKiloAgentFiles preserves a user-authored role and cleans only generat
     fs.mkdirSync(dir, { recursive: true });
     const custom = path.join(dir, 'senior-architect.md');
     fs.writeFileSync(custom, '---\ndescription: custom\n---\nuser agent\n', 'utf8');
-    writeKiloAgentFiles(project, {});
+    writeKiloAgentFiles(project, FULL_STATE);
     assert.equal(fs.readFileSync(custom, 'utf8'), '---\ndescription: custom\n---\nuser agent\n');
     assert.equal(fs.existsSync(path.join(dir, 'senior-frontend.md')), true);
-    writeKiloAgentFiles(project, { team: { mode: 'main-agent' }, performance: { level: 'low' } });
+    writeKiloAgentFiles(project, { ...FULL_STATE, team: { mode: 'main-agent' }, performance: { level: 'low' } });
     assert.equal(fs.existsSync(path.join(dir, 'senior-frontend.md')), true);
     assert.equal(fs.existsSync(custom), true);
   });

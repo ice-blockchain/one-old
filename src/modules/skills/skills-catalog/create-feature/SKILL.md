@@ -1,41 +1,32 @@
 ---
 name: create-feature
 description: >
-  Use PROACTIVELY
-  whenever the user asks to create, add, build, or scaffold a feature, module,
-  domain, or slice of functionality.
-  Triggers: "create a feature", "add a [name] feature",
-  "build the [name] module", "scaffold [name] functionality", "I need [name] with CRUD",
-  "add [name] with list and detail".
+  Create or change a web feature/module under the runtime-compiled
+  architecture. Trigger on feature, module, domain slice, CRUD flow, list/detail
+  flow, or a coordinated set of web UI behavior.
 ---
 
-# Skill: Create Feature
+# Create Feature
 
-Confirm the feature slice structure before creating any files.
+1. Read the active bootstrap envelope, `WorkUnitContractV1`,
+   `architecture-v1.json`, and `verification-v2.json`.
+2. Match the requested behavior to the compiled semantic module and route
+   outputs. If they are absent, request re-planning; never invent a root or
+   widen the allowlist.
+3. Follow the detected framework and existing project convention. A Vite
+   feature folder is not a Next, Nuxt, Blade, or Inertia convention.
+4. Keep entrypoints and router shells thin. Put route targets, feature logic,
+   reusable components, and data access in their compiled layers.
+5. Give each module one product responsibility and keep public contracts
+   explicit. Do not introduce a parallel state, form, translation, styling, or
+   data-fetching system.
+6. Cover reachable loading, empty, error, degraded/offline, permission,
+   pending/optimistic, focus, and reduced-motion states.
+7. Preserve route-level splitting. Lazy-load heavy feature-only dependencies
+   and contain third-party scripts and media outside the critical path.
+8. Add focused unit/component/integration tests in allowlisted test outputs.
 
-1. State the feature name and folder: `src/features/[name]/`
-2. List the files that will be created: types.ts, services/, hooks/, components/, index.ts
-3. State what API endpoints will be called
-4. Ask for preferred competitor sites / design references if missing, and offer to analyze 2–3 competitors yourself before design starts
-5. State the feature design brief: user goal, primary workflow, primary action, visual direction, density, and first-screen hierarchy
-6. State the interactivity and motion plan for the feature: navigation/menu transitions, filters, list/detail changes, form feedback, optimistic actions, loading shifts, and reduced-motion behavior
-7. State responsive behavior for list/detail/form states on mobile, tablet, and desktop
-8. State UI state coverage: loading, empty, error, stale/offline, disabled, optimistic/pending, and permission-denied where applicable
-9. State the feature i18n namespace/key pattern and catalog location in `packages/i18n`
-10. State how feature components consume translations with `useTranslation`, `t`, or `<Trans>`
-11. State the page-speed impact plan for every route/surface the feature touches: lazy boundaries, heavy dependency split points, media handling, below-the-fold deferral, and third-party script containment
-12. State the SEO impact plan for every public route the feature touches (`noindex` for private) — see `rules/common/seo.md`
-13. State the visual QA plan: screenshots, Storybook states, interaction checks, and anti-AI-slop checks
-14. State the Lighthouse-mobile QA plan for page-level feature output on a built preview — see the `browser-qa` skill
-
-Scaffold rules — follow the shared sources, do NOT restate them here:
-- UI quality, design brief, anti-AI-slop, token/shadcn mandate, setup-banner + `https://traffic.io/` setup-link contract (exact-href regression + repair existing link), and required states: `rules/frontend/ui-quality.md`.
-- i18n (module detection, `<Trans>` vs `t()`, hardcoded-string exceptions): the `i18n-text` skill.
-- Public-route SEO metadata and `noindex` for private routes: `rules/common/seo.md` and the `seo` skill.
-- Page-speed / Lighthouse-mobile verification on a built preview: the `browser-qa` skill.
-
-Feature-specific scaffold notes:
-- Missing backend/env config may show one shared setup banner at the app level, but the feature still needs a product-specific demo, seeded, empty, error, or degraded state — never a first screen made only of inactive controls and blank panels.
-- Preserve server state ownership in RTK Query/Redux; do not duplicate data into component state for presentation convenience.
-- Keep feature-only heavy UI and dependencies out of root app imports; dynamic-import route-specific charts, maps, 3D, video, editors, and analytics widgets.
-- Optimize and reserve dimensions for feature media, and defer below-the-fold content that is not needed for the first interaction.
+Before handoff, run the touched-file structural check and relevant stack checks.
+Follow `VerificationContractV2`: browser behavior only for `behavioral` or
+`visual`, screenshots only for the listed visual widths, and Lighthouse only
+when the performance contract requires it.

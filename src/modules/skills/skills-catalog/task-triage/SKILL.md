@@ -53,6 +53,11 @@ Only `senior-architect` authors that file, in complex-tier runs.
 - **Subagents mode:** delegate to a `quick-fix` worker — a dedicated cheap maintenance role with its
   own agent definition.
   - Spawn with `subagent_type: "quick-fix"` (or open the prompt with `You are acting as Traffic One quick-fix`).
+    On Codex, use the structured call exactly: `task_name: "quick_fix"`,
+    `fork_turns: "none"`, and the runtime-supplied `model`. Do not use the
+    default/full-history fork, a generic worker task name, or a locally guessed
+    fallback model; if the exact policy model is absent from the spawn surface,
+    stop and report the host environment as unavailable for this worker.
   - **Model param:** pass the exact cheapest model supplied by the current runtime maintenance-triage
     directive. That value comes from this user's local host snapshot; never infer it from a bundled
     catalog or persist it in project files. The spawn gate enforces this pin in **every** mode

@@ -1,11 +1,20 @@
 ---
-description: "Apply when executing new-project scaffolding: the detailed 12-step setup checklist (workspace, memory, packages, Supabase, design/SEO gates, CI, deployment, docs, code graph)."
+description: "Read on demand only for the default stack when CompiledArchitectureV1 profileId=vite-react: detailed workspace, Supabase, UI, CI, deployment, docs, and code-graph setup."
 ---
 
-# New Project — Setup Checklist (full detail)
+# Default Vite React — Setup Checklist (full detail)
 
-Read-on-demand slice of `rules/modes/new-project.md`. Do the steps in order;
-do not skip. The spine carries the step index — this file is the detail.
+Read-on-demand resource routed by
+`rules/modes/new-project-vite-react.md`. Apply it only when runtime selected the
+default stack (or its legacy `react-realtime-monorepo` alias) and the immutable
+compiled profile is `vite-react`. Never apply
+this checklist to Next.js, Nuxt, Laravel, backend-only, native, or another
+custom profile. Do the steps in order; do not skip.
+
+This is an implementation-role checklist. The architect never executes it.
+Create only scaffold/config/source/test outputs present in the active
+`WorkUnitContractV1`; another role's output and every runtime-owned contract,
+assignment, baseline, hash, or bootstrap remain read-only.
 
 1. **Workspace skeleton**
    - First write the root `package.json`, with `"private": true`, a
@@ -25,7 +34,9 @@ do not skip. The spine carries the step index — this file is the detail.
      `mkdir`, redirection, heredocs, `tee`, `cp`, `mv`, or scripted writes.
 
 2. **Project memory baseline**
-   - Create `.traffic-one/` before feature work and invoke `project-memory`.
+   - Verify the architect's `.traffic-one/` project-memory baseline before
+     feature work. If it is incomplete, stop and return a planning blocker;
+     never fill it from an implementation work unit.
    - Confirm root `.traffic-one/.one.json` exists with the full Traffic One state
      schema. `.traffic-one/` is memory; `.traffic-one/.one.json` is stack/state.
    - Write the full `.traffic-one/` memory-baseline file inventory — the
@@ -89,16 +100,15 @@ do not skip. The spine carries the step index — this file is the detail.
    - Do not store service-role keys or other secrets in frontend env vars.
 
 5. **Mandatory frontend design gate**
-   - Invoke `frontend-design` and apply `rules/frontend/ui-quality.md` plus
-     `rules/frontend/typography.md` before writing any generated app, site,
-     page, screen, or feature UI. React web also applies
-     `rules/frontend/react/design-quality.md`; Expo/RN applies the native UI
-     rules together with the shared UI-quality gate. This applies to every
-     frontend stack, including explicit Next.js or fallback/minimal projects
-     when they have a UI.
+   - Invoke `frontend-design` and apply `rules/frontend/ui-quality.md`,
+     `rules/frontend/typography.md`, and
+     `rules/frontend/react/design-quality.md` before writing UI assigned by
+     this `vite-react` work unit. Other profiles use their own selected rules;
+     this checklist never supplies a fallback.
    - If the user did not provide references, pick and state 2–3 real
      best-in-class products in the same domain before implementation. Record a
-     compact design brief in `.traffic-one/plan.md` or the architecture docs:
+     compact design brief in the frontend digest; do not edit the architect's
+     plan or runtime-owned contracts:
      target user, primary action, first-screen hierarchy, chosen references,
      visual direction, token plan, motion/interactivity plan, responsive
      behavior, state coverage, and screenshot acceptance checks.

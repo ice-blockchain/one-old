@@ -34,6 +34,8 @@ external messages behind explicit current-turn approval.
 
 ### Web SEO and metadata
 
+Apply this section only when the capability profile includes `web-ui`.
+
 - This baseline is generated or reconciled during normal website work through
   the `seo` skill and `rules/common/seo.md`; the launch checklist verifies it
   rather than discovering it for the first time.
@@ -46,9 +48,9 @@ external messages behind explicit current-turn approval.
 - `robots.txt` and `sitemap.xml` reflect intended public routes. SPA critical
   public pages need prerendering or equivalent host support before claiming SEO
   parity.
-- Lighthouse Performance on mobile is >= 90 for launch routes. Core Web Vitals
-  targets are LCP <= 2.5s, INP <= 200ms, and CLS <= 0.1 at p75. If CrUX/RUM
-  field data is unavailable, mark it `UNVERIFIED`.
+- Enforce Lighthouse or Core Web Vitals thresholds only when they are explicit
+  in the compiled performance contract. Otherwise record them as advisory. If
+  CrUX/RUM field data is unavailable, mark field performance `UNVERIFIED`.
 
 ### Analytics and monitoring
 

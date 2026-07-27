@@ -8,8 +8,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { opencodeUnitTimeoutMs } from '../config/opencode-timeouts';
+import { writeJson } from './fsjson';
 import type { PlanDelegationUnit } from './opencode-roles';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from './scope';
+import { withProjectStateLock } from './state/project-state-lock';
 
 const T1_DIR = '.traffic' + '-one';
 const UNIT_ID_RE = /^[a-zA-Z0-9._-]+$/;
@@ -190,8 +192,7 @@ export function writeOpenCodeQueue(cwd: string, queue: OpenCodeQueue): void {
   if (!queue.runId) return;
   try {
     const file = path.join(runDir(cwd, queue.runId), 'opencode-queue.json');
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(queue, null, 2)}\n`, 'utf8');
+    writeJson(file, queue);
   } catch {
     // best-effort diagnostics; never block delegation
   }
@@ -226,31 +227,32 @@ export function readOpenCodeQueue(cwd: string, runId: string): OpenCodeQueue | n
 export function recordOpenCodeUnitStatus(cwd: string, runId: string, entry: Omit<OpenCodeUnitStatusEntry, 'updatedAt'> & { updatedAt?: string }): void {
   if (!runId || !entry.id || !entry.role) return;
   try {
-    const file = path.join(runDir(cwd, runId), 'opencode-units.json');
-    const statuses = readStatuses(cwd, runId);
-    const next: OpenCodeUnitStatusEntry = { ...entry, updatedAt: entry.updatedAt || new Date().toISOString() };
-    const idx = statuses.findIndex((s) => s.id === next.id);
-    const attempt = {
-      status: next.status,
-      action: next.action,
-      model: next.model ?? null,
-      failureKind: next.failureKind ?? null,
-      error: next.error ?? null,
-      touched: next.touched,
-      updatedAt: next.updatedAt,
-    };
-    if (idx >= 0) {
-      const prior = statuses[idx] as OpenCodeUnitStatusEntry;
-      const attempts = [...(Array.isArray(prior.attempts) ? prior.attempts : []), attempt];
-      const keepPriorSummary = statusPrecedence(prior.status) > statusPrecedence(next.status);
-      statuses[idx] = keepPriorSummary
-        ? { ...prior, attempts, updatedAt: next.updatedAt }
-        : { ...prior, ...next, attempts };
-    } else {
-      statuses.push({ ...next, attempts: [attempt] });
-    }
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(statuses, null, 2)}\n`, 'utf8');
+    withProjectStateLock(cwd, () => {
+      const file = path.join(runDir(cwd, runId), 'opencode-units.json');
+      const statuses = readStatuses(cwd, runId);
+      const next: OpenCodeUnitStatusEntry = { ...entry, updatedAt: entry.updatedAt || new Date().toISOString() };
+      const idx = statuses.findIndex((s) => s.id === next.id);
+      const attempt = {
+        status: next.status,
+        action: next.action,
+        model: next.model ?? null,
+        failureKind: next.failureKind ?? null,
+        error: next.error ?? null,
+        touched: next.touched,
+        updatedAt: next.updatedAt,
+      };
+      if (idx >= 0) {
+        const prior = statuses[idx] as OpenCodeUnitStatusEntry;
+        const attempts = [...(Array.isArray(prior.attempts) ? prior.attempts : []), attempt];
+        const keepPriorSummary = statusPrecedence(prior.status) > statusPrecedence(next.status);
+        statuses[idx] = keepPriorSummary
+          ? { ...prior, attempts, updatedAt: next.updatedAt }
+          : { ...prior, ...next, attempts };
+      } else {
+        statuses.push({ ...next, attempts: [attempt] });
+      }
+      writeJson(file, statuses);
+    });
   } catch {
     // best-effort diagnostics; never block delegation
   }
@@ -264,34 +266,35 @@ export function recordOpenCodeFallback(
 ): void {
   if (!runId || !role) return;
   try {
-    const file = path.join(runDir(cwd, runId), 'opencode-units.json');
-    const statuses = readStatuses(cwd, runId);
-    if (statuses.length === 0) return;
-    const normalizedRole = normalizeOpenCodeRole(role);
-    const recordedAt = new Date().toISOString();
-    let changed = false;
-    const next = statuses.map((status) => {
-      if (status.role !== normalizedRole || status.status === 'delegated') return status;
-      changed = true;
-      const nextStatus = statusPrecedence(status.status) < statusPrecedence('fallback_required')
-        ? 'fallback_required'
-        : status.status;
-      return {
-        ...status,
-        status: nextStatus,
-        fallback: {
-          status: fallback.status,
-          role,
-          agentId: fallback.agentId ?? status.fallback?.agentId ?? null,
-          digest: fallback.digest ?? status.fallback?.digest ?? null,
-          recordedAt,
-        },
-        updatedAt: recordedAt,
-      } satisfies OpenCodeUnitStatusEntry;
+    withProjectStateLock(cwd, () => {
+      const file = path.join(runDir(cwd, runId), 'opencode-units.json');
+      const statuses = readStatuses(cwd, runId);
+      if (statuses.length === 0) return;
+      const normalizedRole = normalizeOpenCodeRole(role);
+      const recordedAt = new Date().toISOString();
+      let changed = false;
+      const next = statuses.map((status) => {
+        if (status.role !== normalizedRole || status.status === 'delegated') return status;
+        changed = true;
+        const nextStatus = statusPrecedence(status.status) < statusPrecedence('fallback_required')
+          ? 'fallback_required'
+          : status.status;
+        return {
+          ...status,
+          status: nextStatus,
+          fallback: {
+            status: fallback.status,
+            role,
+            agentId: fallback.agentId ?? status.fallback?.agentId ?? null,
+            digest: fallback.digest ?? status.fallback?.digest ?? null,
+            recordedAt,
+          },
+          updatedAt: recordedAt,
+        } satisfies OpenCodeUnitStatusEntry;
+      });
+      if (!changed) return;
+      writeJson(file, next);
     });
-    if (!changed) return;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
   } catch {
     // best-effort diagnostics; never block fallback
   }

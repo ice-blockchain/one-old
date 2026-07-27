@@ -276,6 +276,51 @@ test('Flow 1: an onboarded existing project with local prefs gets the packed rul
   });
 });
 
+test('parent SessionStart safely migrates legacy custom-backend React defaults only when no frontend artifacts exist', () => {
+  withProject(existingState({
+    stack: 'custom-backend',
+    frontend: 'react-vite',
+  }), (cwd) => {
+    writeLocalPrefs();
+    assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(state.frontend, 'none');
+  });
+});
+
+test('parent SessionStart never migrates an active run or an ambiguous legacy custom-backend project', () => {
+  withProject(existingState({
+    stack: 'custom-backend',
+    frontend: 'react-vite',
+    currentRunId: 'active-legacy',
+  }), (cwd) => {
+    writeLocalPrefs();
+    const runDir = path.join(cwd, '.traffic-one', 'runs', 'active-legacy');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify({
+      version: 1,
+      runId: 'active-legacy',
+      status: 'active',
+    }));
+    assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(state.frontend, 'react-vite');
+  });
+
+  withProject(existingState({
+    stack: 'custom-backend',
+    frontend: 'react-vite',
+  }), (cwd) => {
+    writeLocalPrefs();
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { next: '15.0.0', react: '19.0.0' },
+    }));
+    assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(state.frontend, 'react-vite');
+  });
+});
+
 test('maintenance SessionStart does not mint a run before a runtime-only prompt is classified', () => {
   withProject(existingState(), (cwd) => {
     writeLocalPrefs({ team: { mode: 'subagents', source: 'prompted', approved: true } });

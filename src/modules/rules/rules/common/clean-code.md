@@ -14,33 +14,54 @@ and `frontend/<flavour>/core.md`.
 - **Readability first** — self-documenting names beat comments.
 
 ## Immutability
-- Return new objects/arrays; never mutate inputs.
-- `const` by default. Pure functions where possible; isolate side effects.
+- Do not mutate caller-owned inputs or shared state unless the active
+  language/framework contract explicitly requires it.
+- Prefer immutable values and pure transformations where they are idiomatic;
+  isolate unavoidable side effects at named boundaries.
+- Follow the active language's value/reference and ownership model. For
+  example, JS/TS may prefer `const`, Rust uses ownership/borrowing, Swift uses
+  `let`, and Go/Python/PHP follow their own established project conventions.
+  None of those spellings is a universal rule.
 
 ## Naming
-- `camelCase` vars/functions, `PascalCase` types/components, `UPPER_SNAKE_CASE` constants.
-- Booleans start with `is` / `has` / `should` / `can`.
-- Names describe intent (`fetchUser`), not implementation (`getUserFromDb`).
+- Follow the repository formatter/linter and the active language/framework
+  naming convention. Do not impose JS/TS casing on Go, Python, Rust, Swift,
+  Kotlin, PHP, SQL, shell, or configuration files.
+- Name predicates according to the stack's idiom (`is` / `has` / `should` /
+  `can` are examples where that idiom uses them, not cross-language mandates).
+- Names describe domain intent (for example, “fetch a user”), not storage
+  mechanics (for example, “read a row from the database”).
 - Avoid abbreviations except universal ones (`id`, `url`, `db`).
 
 ## File & function size
-- Files 200–400 lines (800 hard cap). Many small files > few large.
-- Functions one responsibility, ~50 lines max. Extract helpers above that.
-- Early returns over nested conditionals. No magic numbers.
+- Keep modules cohesive and functions focused. Split them when they combine
+  unrelated routes, screens, commands, jobs, or domain responsibilities.
+- During the current one-version rollout, numeric LOC, function-size,
+  top-level-function-count, and component-per-file thresholds are advisory
+  `WARN` signals only. They are not standalone blockers until fixture
+  validation demonstrates a false-positive rate below 1%.
+- Runtime structural findings remain blocking independently of LOC:
+  entrypoints containing inline UI/routes, multiple pages in one module,
+  route/contract mismatches, allowlist gaps, and incomplete scans.
+- Prefer the active language's clear control-flow idioms. Avoid unexplained
+  literals; use named values or domain types where that improves meaning.
 
 ## Formatting
-- Write formatted source: ONE statement per line, multi-line JSX/markup, and
-  the project formatter's line width. Never collapse a function body or a JSX
-  tree onto a single line — collapsed/minified source is a defect even when
-  lint and typecheck pass, and it survives review because nobody can read it. A
-  source line packing multiple statements or a whole component (hundreds of
-  characters) is collapse; keep hand-written lines near the formatter width.
-  Delivery gates deny a completion digest while product source stays collapsed.
+- Preserve the active stack's formatter output and readable line structure.
+  Use multi-line JSX, HTML, templates, or DSL forms where their formatter and
+  project conventions require it. Never collapse a function, declaration, or
+  UI tree onto a single line — collapsed/minified source is a defect even when
+  its formatter, linter, compiler, or tests pass. A source line packing
+  multiple statements or a whole component (hundreds of characters) is
+  collapse; keep hand-written lines near the stack formatter's width. Delivery
+  gates deny a completion digest while product source stays collapsed.
 - Multi-line edits are safe: anchor patches on the surrounding context lines
   instead of flattening code to make a patch "simpler".
 
 ## Code smells to avoid
-- Deep nesting (>3 levels) — extract or early-return.
-- Long parameter lists (>4) — pass an options object.
+- Excessive nesting — extract a cohesive helper or use the language's
+  guard/early-return/result idiom.
+- Long, ambiguous parameter lists — use the stack's idiomatic request,
+  options, struct, data class, or typed configuration object.
 - Duplicated conditionals — extract a predicate.
 - Dead code, commented-out code, unused imports — delete.

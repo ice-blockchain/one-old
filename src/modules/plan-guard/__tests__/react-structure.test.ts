@@ -1,0 +1,767 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { performance } from 'node:perf_hooks';
+
+import {
+  compileArchitecture,
+  validateArchitectureInput,
+  type ArchitectureInputV1,
+  type CompiledArchitectureV1,
+} from '../../../shared/architecture-contract';
+import {
+  analyzeProjectStructure,
+  analyzeStructureText,
+  analyzeStructureTextAgainstContract,
+} from '../react-structure';
+
+function withProject(fn: (cwd: string) => void): void {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-structure-'));
+  try { fn(cwd); } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+}
+
+const STATE = {
+  mode: 'new-project',
+  stack: 'default',
+  frontend: 'react-vite',
+  backend: 'none',
+  mobile: { framework: 'none' },
+};
+
+const INPUT: ArchitectureInputV1 = {
+  schemaVersion: 1,
+  routes: [
+    { id: 'home-route', path: '/', moduleId: 'home' },
+    { id: 'news-route', path: '/news', moduleId: 'news' },
+  ],
+  modules: [
+    { id: 'app-shell', name: 'App', kind: 'app-shell' },
+    { id: 'home', name: 'Home', kind: 'page' },
+    { id: 'news', name: 'News', kind: 'page' },
+  ],
+};
+
+function prepare(cwd: string, input: ArchitectureInputV1 = INPUT): CompiledArchitectureV1 {
+  for (const dir of [
+    'apps/web/src/pages',
+    'apps/web/src/components',
+    'apps/web/src/features',
+    'apps/web/src/lib',
+    'packages/ui/src',
+  ]) fs.mkdirSync(path.join(cwd, dir), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+    dependencies: { react: '19.0.0', vite: '7.0.0', 'react-router-dom': '7.0.0' },
+  }));
+  return compileArchitecture(cwd, 'R', STATE, input);
+}
+
+function ids(report: ReturnType<typeof analyzeProjectStructure>): string[] {
+  return [...new Set(report.findings.filter((finding) => finding.severity === 'error').map((finding) => finding.id))].sort();
+}
+
+function prepareLaravel(
+  cwd: string,
+  inertia = false,
+  input: ArchitectureInputV1 = INPUT,
+): CompiledArchitectureV1 {
+  fs.mkdirSync(path.join(cwd, 'routes'), { recursive: true });
+  if (inertia) {
+    fs.mkdirSync(path.join(cwd, 'resources/js/Pages'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'resources/js/app.tsx'), 'export {};\n');
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: {
+        'laravel/framework': '^12.0',
+        'inertiajs/inertia-laravel': '^2.0',
+      },
+    }));
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { '@inertiajs/react': '^2.0', react: '^19.0' },
+    }));
+  } else {
+    fs.mkdirSync(path.join(cwd, 'resources/views'), { recursive: true });
+    // A non-default Blade view is deliberate UI evidence; welcome.blade.php
+    // alone remains Laravel's API/default-scaffold profile.
+    fs.writeFileSync(path.join(cwd, 'resources/views/dashboard.blade.php'), '<h1>Dashboard</h1>\n');
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+  }
+  return compileArchitecture(cwd, 'R', {
+    mode: 'existing-codebase',
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'laravel',
+    mobile: { framework: 'none' },
+  }, input);
+}
+
+function writeLaravelModules(cwd: string, contract: CompiledArchitectureV1): void {
+  for (const module of contract.modules) {
+    fs.mkdirSync(path.dirname(path.join(cwd, module.output)), { recursive: true });
+    const content = module.output.endsWith('.blade.php')
+      ? `<main>${module.name}</main>\n`
+      : module.output.endsWith('.vue')
+        ? `<template><main>${module.name}</main></template>\n`
+        : module.kind === 'app-shell'
+          ? 'export {};\n'
+          : `export default function ${module.name}(){return <main>${module.name}</main>}\n`;
+    fs.writeFileSync(path.join(cwd, module.output), content);
+  }
+}
+
+test('pretty and minified 600-line entrypoint monoliths produce identical blocking IDs', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const functions = [
+      'function Home(){return <main>Home</main>}',
+      'function News(){return <main>News</main>}',
+      'function Catalog(){return <main>Catalog</main>}',
+      'function Learning(){return <main>Learning</main>}',
+    ];
+    const router = 'const router=createBrowserRouter([{path:"/",element:<Home/>},{path:"/news",element:<News/>},{path:"/catalog",element:<Catalog/>},{path:"/learning",element:<Learning/>}]);';
+    const minified = `${functions.join('')}${router}createRoot(document.getElementById("root")).render(<RouterProvider router={router}/>);`;
+    const pretty = `${functions.map((fn) => fn.replace(/\{/g, '{\n').replace(/\}/g, '\n}')).join('\n')}\n${router
+      .replace(/\},/g, '},\n')
+      .replace(/\];/g, '\n];')}\n${'// filler\n'.repeat(610)}`;
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), minified);
+    const minifiedIds = ids(analyzeProjectStructure(cwd, contract));
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), pretty);
+    const prettyIds = ids(analyzeProjectStructure(cwd, contract));
+    assert.deepEqual(prettyIds, minifiedIds);
+    assert.ok(prettyIds.includes('STRUCT_ENTRYPOINT_COMPONENT'));
+    assert.ok(prettyIds.includes('STRUCT_MULTI_PAGE_MODULE'));
+  });
+});
+
+test('pretty and minified inline JSX route elements block an entrypoint without component declarations', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const variants = [
+      [
+        'const router = createBrowserRouter([',
+        '  { path: "/", element: <main>Home</main> },',
+        '  { path: "/settings", element: <main>Settings</main> },',
+        ']);',
+        'createRoot(document.body).render(<RouterProvider router={router} />);',
+      ].join('\n'),
+      'const router=createBrowserRouter([{path:"/",element:<main>Home</main>},{path:"/settings",element:<main>Settings</main>}]);createRoot(document.body).render(<RouterProvider router={router}/>);',
+    ];
+    const findings = variants.map((source) => (
+      analyzeStructureText('apps/web/src/main.tsx', source, contract.profile)
+        .filter((finding) => finding.severity === 'error')
+        .map((finding) => finding.id)
+        .sort()
+    ));
+    assert.deepEqual(findings[0], findings[1]);
+    assert.deepEqual(findings[0], [
+      'STRUCT_ENTRYPOINT_COMPONENT',
+      'STRUCT_MULTI_PAGE_MODULE',
+    ]);
+  });
+});
+
+test('pretty and minified direct or anonymous entrypoint JSX is blocking', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'app-shell', name: 'App', kind: 'app-shell' }],
+    });
+    const variants = [
+      [
+        'import { createRoot } from "react-dom/client";',
+        'createRoot(document.body).render(',
+        '  <main>',
+        '    <h1>Inline application</h1>',
+        '  </main>,',
+        ');',
+      ].join('\n'),
+      'import{createRoot}from"react-dom/client";createRoot(document.body).render(<main><h1>Inline application</h1></main>);',
+      [
+        'export default () => (',
+        '  <main>',
+        '    <h1>Anonymous application</h1>',
+        '  </main>',
+        ');',
+      ].join('\n'),
+      'export default()=><main><h1>Anonymous application</h1></main>;',
+      'React.createElement("main", null, "Inline application");',
+    ];
+    for (const source of variants) {
+      const blocking = analyzeStructureText(
+        'apps/web/src/main.tsx',
+        source,
+        contract.profile,
+      ).filter((finding) => finding.severity === 'error');
+      assert.deepEqual(
+        blocking.map((finding) => finding.id),
+        ['STRUCT_ENTRYPOINT_COMPONENT'],
+        source,
+      );
+    }
+  });
+});
+
+test('route-module matching is route-specific and ignores unused imports in the same or another module', () => {
+  const mismatchMessages: string[][] = [];
+  for (const minified of [false, true]) {
+    withProject((cwd) => {
+      const contract = prepare(cwd);
+      fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), [
+        'import { createRoot } from "react-dom/client";',
+        'import { App } from "./App";',
+        'createRoot(document.body).render(<App />);',
+      ].join(minified ? '' : '\n'));
+      const appLines = [
+        'import { createBrowserRouter, RouterProvider } from "react-router-dom";',
+        'import { Home } from "./pages/Home";',
+        'import { WrongHome } from "./components/WrongHome";',
+        'import { News } from "./pages/News";',
+        'const router = createBrowserRouter([{ path: "/", element: <WrongHome /> }, { path: "/news", element: <News /> }]);',
+        'export function App() { return <RouterProvider router={router} />; }',
+      ];
+      fs.writeFileSync(path.join(cwd, 'apps/web/src/App.tsx'), appLines.join(minified ? '' : '\n'));
+      fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'),
+        'export function Home(){return <main>Home</main>}\n');
+      fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/News.tsx'),
+        'export function News(){return <main>News</main>}\n');
+      fs.writeFileSync(path.join(cwd, 'apps/web/src/components/WrongHome.tsx'),
+        'export function WrongHome(){return <main>Wrong home</main>}\n');
+      fs.writeFileSync(path.join(cwd, 'apps/web/src/lib/Decoy.ts'),
+        'import { Home } from "../pages/Home"; export const decoy = Home;\n');
+
+      const mismatches = analyzeProjectStructure(cwd, contract).findings
+        .filter((finding) => finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH')
+        .map((finding) => finding.message)
+        .sort();
+      mismatchMessages.push(mismatches);
+      assert.deepEqual(mismatches, [
+        'Route / does not demonstrably use its compiled module apps/web/src/pages/Home.tsx.',
+      ]);
+    });
+  }
+  assert.deepEqual(mismatchMessages[0], mismatchMessages[1]);
+});
+
+test('hot contract analysis blocks an unplanned route and a route wired to the wrong module', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const findings = analyzeStructureTextAgainstContract(
+      'apps/web/src/App.tsx',
+      [
+        'import { createBrowserRouter } from "react-router-dom";',
+        'import { WrongHome } from "./components/WrongHome";',
+        'import { News } from "./pages/News";',
+        'export const router = createBrowserRouter([',
+        '  { path: "/", element: <WrongHome /> },',
+        '  { path: "/news", element: <News /> },',
+        '  { path: "/admin", element: <News /> },',
+        ']);',
+      ].join('\n'),
+      contract,
+      { allowlist: contract.allowedOutputs },
+    );
+    const mismatches = findings.filter((finding) => (
+      finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH'
+    ));
+    assert.equal(mismatches.length, 2);
+    assert.ok(mismatches.some((finding) => finding.message.includes('compiled module')));
+    assert.ok(mismatches.some((finding) => finding.message.includes('not present')));
+    assert.equal(findings.some((finding) => (
+      finding.id === 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP'
+    )), false);
+  });
+});
+
+test('hot contract analysis fails when the work-unit allowlist cannot create planned outputs', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const findings = analyzeStructureTextAgainstContract(
+      'apps/web/src/main.tsx',
+      'import { App } from "./App";\ncreateRoot(document.body).render(<App />);\n',
+      contract,
+      { allowlist: ['apps/web/src/main.tsx'] },
+    );
+    assert.ok(findings.some((finding) => (
+      finding.id === 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP'
+      && finding.file === 'apps/web/src/pages/Home.tsx'
+    )));
+  });
+});
+
+test('thin entrypoint with separate App/pages/components/features passes', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'),
+      'import { createRoot } from "react-dom/client";\nimport { App } from "./App";\ncreateRoot(document.getElementById("root")!).render(<App />);\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/App.tsx'), [
+      'import { createBrowserRouter, RouterProvider } from "react-router-dom";',
+      'import { Home } from "./pages/Home";',
+      'import { News } from "./pages/News";',
+      'const router = createBrowserRouter([{ path: "/", element: <Home /> }, { path: "/news", element: <News /> }]);',
+      'export function App() { return <RouterProvider router={router} />; }',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'), 'export function Home(){return <main>Home</main>}\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/News.tsx'), 'export function News(){return <main>News</main>}\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/components/SiteNav.tsx'),
+      'export function SiteNav(){return <nav>Site navigation</nav>}\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/features/Search.tsx'),
+      'export function SearchFeature(){return <section>Search</section>}\n');
+    const report = analyzeProjectStructure(cwd, contract, {
+      allowlist: [...contract.allowedOutputs, 'apps/web/**'],
+    });
+    assert.equal(report.complete, true);
+    assert.equal(report.filesScanned, 6);
+    assert.deepEqual(report.findings.filter((finding) => finding.severity === 'error'), []);
+  });
+});
+
+test('comments, JSX strings, config, tests, and stories do not create structural false positives', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'app-shell', name: 'App', kind: 'app-shell' }],
+    });
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'),
+      'import { createRoot } from "react-dom/client";\nimport { App } from "./App";\nconst fake="<Route element={<Fake/>}><main>not code</main>";\n// function Fake(){return <div/>}\ncreateRoot(document.body).render(<App/>);\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/App.tsx'), 'export function App(){return <main/>}\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/App.test.tsx'),
+      'function Home(){return <div/>} function News(){return <div/>}\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/App.stories.tsx'),
+      'function Home(){return <div/>} function News(){return <div/>}\n');
+    assert.deepEqual(
+      analyzeProjectStructure(cwd, contract).findings.filter((finding) => finding.severity === 'error'),
+      [],
+    );
+  });
+});
+
+test('controlled shadcn/compound exception suppresses only numeric warnings', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      ...INPUT,
+      exceptions: [{
+        ruleId: 'STRUCT_COMPONENTS_PER_FILE',
+        glob: 'packages/ui/src/Accordion*.tsx',
+        reason: 'Accordion is a same-prefix compound primitive family.',
+      }],
+    });
+    fs.writeFileSync(path.join(cwd, 'packages/ui/src/Accordion.tsx'),
+      'export function Accordion(){return <div/>}\nexport function AccordionItem(){return <div/>}\n');
+    const local = analyzeStructureText(
+      'packages/ui/src/Accordion.tsx',
+      fs.readFileSync(path.join(cwd, 'packages/ui/src/Accordion.tsx'), 'utf8'),
+      contract.profile,
+      contract.exceptions,
+    );
+    assert.deepEqual(local, []);
+
+    const hardFindings = analyzeStructureText(
+      'packages/ui/src/Accordion.tsx',
+      [
+        'function Home(){return <main>Home</main>}',
+        'function News(){return <main>News</main>}',
+        'const router=createBrowserRouter([{path:"/",element:<Home/>},{path:"/news",element:<News/>}]);',
+      ].join('\n'),
+      contract.profile,
+      contract.exceptions,
+    );
+    assert.equal(hardFindings.some((finding) => finding.id === 'STRUCT_COMPONENTS_PER_FILE'), false);
+    assert.ok(hardFindings.some((finding) => (
+      finding.id === 'STRUCT_MULTI_PAGE_MODULE' && finding.severity === 'error'
+    )));
+
+    for (const ruleId of [
+      'STRUCT_ENTRYPOINT_COMPONENT',
+      'STRUCT_MULTI_PAGE_MODULE',
+      'STRUCT_ROUTE_MODULE_MISMATCH',
+      'STRUCT_ASSIGNMENT_ALLOWLIST_GAP',
+      'STRUCT_SCAN_INCOMPLETE',
+    ]) {
+      const validation = validateArchitectureInput({
+        ...INPUT,
+        exceptions: [{
+          ruleId,
+          glob: 'packages/ui/src/Accordion.tsx',
+          reason: 'Attempt to waive a hard structural finding.',
+        }],
+      });
+      assert.equal(validation.ok, false, ruleId);
+      assert.ok(
+        validation.errors.some((error) => error.includes(`${ruleId}: rule is not exception-eligible`)),
+        `${ruleId}: ${validation.errors.join('; ')}`,
+      );
+    }
+  });
+});
+
+test('scanner limit is fail-closed and planned output gaps are blocking', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), 'export {};\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/extra.ts'), 'export {};\n');
+    const report = analyzeProjectStructure(cwd, contract, {
+      maxFiles: 1,
+      allowlist: ['apps/web/src/main.tsx'],
+    });
+    assert.equal(report.complete, false);
+    const findingIds = ids(report);
+    assert.ok(findingIds.includes('STRUCT_SCAN_INCOMPLETE'));
+    assert.ok(findingIds.includes('STRUCT_ASSIGNMENT_ALLOWLIST_GAP'));
+  });
+});
+
+test('source-tree symbolic links make the structural scan incomplete', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.mkdirSync(path.join(cwd, 'external-source'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'external-source/Evil.tsx'), [
+      'function Home(){return <main>Home</main>}',
+      'function News(){return <main>News</main>}',
+      'createBrowserRouter([{path:"/",element:<Home/>},{path:"/news",element:<News/>}]);',
+    ].join('\n'));
+    fs.symlinkSync(
+      path.join(cwd, 'external-source'),
+      path.join(cwd, 'apps/web/src/linked'),
+      'dir',
+    );
+
+    const report = analyzeProjectStructure(cwd, contract);
+    assert.equal(report.complete, false);
+    assert.ok(ids(report).includes('STRUCT_SCAN_INCOMPLETE'));
+    assert.match(
+      report.findings.find((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE')?.message || '',
+      /symbolic link.*apps\/web\/src\/linked/i,
+    );
+  });
+});
+
+test('missing or escaped compiled source roots fail closed instead of producing a partial pass', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const missing = analyzeProjectStructure(cwd, {
+      ...contract,
+      sourceRoots: ['missing-src'],
+    });
+    assert.equal(missing.complete, false);
+    assert.ok(ids(missing).includes('STRUCT_SCAN_INCOMPLETE'));
+    assert.match(
+      missing.findings.find((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE')?.message || '',
+      /cannot resolve source root missing-src/,
+    );
+
+    const escaped = analyzeProjectStructure(cwd, {
+      ...contract,
+      sourceRoots: ['../outside'],
+    });
+    assert.equal(escaped.complete, false);
+    assert.ok(ids(escaped).includes('STRUCT_SCAN_INCOMPLETE'));
+    assert.match(
+      escaped.findings.find((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE')?.message || '',
+      /source root escapes project boundary/,
+    );
+  });
+});
+
+test('Next App/Pages and Nuxt framework entrypoints pass when pages are separate', () => {
+  const fixtures = [
+    {
+      prepare(cwd: string): void {
+        fs.mkdirSync(path.join(cwd, 'apps/web/app'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+          dependencies: { next: '16.0.0', react: '19.0.0' },
+        }));
+      },
+      profile: 'next-app',
+    },
+    {
+      prepare(cwd: string): void {
+        fs.mkdirSync(path.join(cwd, 'apps/web/pages'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+          dependencies: { next: '16.0.0', react: '19.0.0' },
+        }));
+      },
+      profile: 'next-pages',
+    },
+    {
+      prepare(cwd: string): void {
+        fs.mkdirSync(path.join(cwd, 'apps/web/ui/app/pages'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+          dependencies: { nuxt: '4.0.0', vue: '3.0.0' },
+        }));
+        fs.writeFileSync(path.join(cwd, 'apps/web/nuxt.config.ts'),
+          "export default defineNuxtConfig({ srcDir: './ui' });\n");
+      },
+      profile: 'nuxt',
+    },
+  ] as const;
+
+  for (const fixture of fixtures) {
+    withProject((cwd) => {
+      fixture.prepare(cwd);
+      const contract = compileArchitecture(cwd, 'R', {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: 'none',
+        backend: 'none',
+        mobile: { framework: 'none' },
+      }, INPUT);
+      assert.equal(contract.profile.profileId, fixture.profile);
+      for (const module of contract.modules) {
+        fs.mkdirSync(path.dirname(path.join(cwd, module.output)), { recursive: true });
+        const content = module.output.endsWith('.vue')
+          ? `<template><main>${module.name}</main></template>\n`
+          : module.kind === 'app-shell'
+            ? `export default function RootLayout({children}:{children:React.ReactNode}){return <html><body>{children}</body></html>}\n`
+            : `export default function ${module.name}(){return <main>${module.name}</main>}\n`;
+        fs.writeFileSync(path.join(cwd, module.output), content);
+      }
+      const report = analyzeProjectStructure(cwd, contract);
+      assert.equal(report.complete, true);
+      assert.deepEqual(
+        report.findings.filter((finding) => finding.severity === 'error'),
+        [],
+        `${fixture.profile}: ${JSON.stringify(report.findings)}`,
+      );
+    });
+  }
+});
+
+test('Svelte custom roots pass without a false central-router mismatch', () => {
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'frontend/src/pages'), { recursive: true });
+    fs.mkdirSync(path.join(cwd, 'frontend/src/components'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'frontend/package.json'), JSON.stringify({
+      dependencies: { svelte: '5.0.0', vite: '7.0.0' },
+    }));
+    const contract = compileArchitecture(cwd, 'R', {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'none',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, INPUT);
+    assert.equal(contract.profile.profileId, 'svelte');
+    for (const module of contract.modules) {
+      fs.mkdirSync(path.dirname(path.join(cwd, module.output)), { recursive: true });
+      fs.writeFileSync(
+        path.join(cwd, module.output),
+        module.kind === 'app-shell'
+          ? '<main><slot /></main>\n'
+          : `<main>${module.name}</main>\n`,
+      );
+    }
+    const report = analyzeProjectStructure(cwd, contract);
+    assert.equal(report.complete, true);
+    assert.deepEqual(
+      report.findings.filter((finding) => finding.severity === 'error'),
+      [],
+      JSON.stringify(report.findings),
+    );
+  });
+});
+
+test('Laravel Blade routes use framework-native Route::view and view() evidence', () => {
+  const routeFiles = [
+    [
+      '<?php',
+      "Route::view('/', 'home');",
+      "Route::get('/news', fn () => view('news'));",
+    ].join('\n'),
+    [
+      '<?php',
+      "Route::get('/', function () {",
+      "    return view('home');",
+      '});',
+      "Route::view('news', 'news');",
+    ].join('\n'),
+    [
+      '<?php',
+      "Route::view(uri: '/', view: 'home');",
+      "Route::get(uri: '/news', action: fn () => view(view: 'news'));",
+    ].join('\n'),
+  ];
+  for (const routes of routeFiles) {
+    withProject((cwd) => {
+      const contract = prepareLaravel(cwd);
+      assert.equal(contract.profile.router, 'laravel-router');
+      assert.ok(contract.profile.sourceRoots.includes('resources/js'),
+        'resources/js remains an alternative source root, not client-router evidence');
+      writeLaravelModules(cwd, contract);
+      fs.writeFileSync(path.join(cwd, 'routes/web.php'), `${routes}\n`);
+
+      const report = analyzeProjectStructure(cwd, contract);
+      assert.equal(report.complete, true);
+      assert.deepEqual(
+        report.findings.filter((finding) => finding.severity === 'error'),
+        [],
+        JSON.stringify(report.findings),
+      );
+    });
+  }
+});
+
+test('Laravel direct render evidence fails closed when the route names the wrong Blade module', () => {
+  withProject((cwd) => {
+    const contract = prepareLaravel(cwd);
+    writeLaravelModules(cwd, contract);
+    fs.writeFileSync(path.join(cwd, 'routes/web.php'), [
+      '<?php',
+      "Route::view('/', 'home');",
+      "Route::get('/news', fn () => view('home'));",
+      '',
+    ].join('\n'));
+
+    const mismatches = analyzeProjectStructure(cwd, contract).findings
+      .filter((finding) => finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH')
+      .map((finding) => finding.message);
+    assert.deepEqual(mismatches, [
+      'Route /news does not demonstrably use its compiled module resources/views/news.blade.php.',
+    ]);
+  });
+});
+
+test('Laravel dot-notation views resolve to nested compiled Blade files', () => {
+  withProject((cwd) => {
+    const contract = prepareLaravel(cwd, false, {
+      schemaVersion: 1,
+      routes: [{ id: 'admin-news-route', path: '/admin/news', moduleId: 'admin-news' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'admin-news', name: 'Admin News', kind: 'page' },
+      ],
+    });
+    const page = contract.modules.find((module) => module.id === 'admin-news');
+    assert.equal(page?.output, 'resources/views/admin/news.blade.php');
+    writeLaravelModules(cwd, contract);
+    fs.writeFileSync(path.join(cwd, 'routes/web.php'), [
+      '<?php',
+      "Route::view('/admin/news', 'admin.news');",
+      '',
+    ].join('\n'));
+    assert.deepEqual(
+      analyzeProjectStructure(cwd, contract).findings
+        .filter((finding) => finding.severity === 'error'),
+      [],
+    );
+  });
+});
+
+test('Laravel Inertia routes recognize Route::inertia, Inertia::render, and inertia()', () => {
+  const routeFiles = [
+    [
+      '<?php',
+      "Route::get('/', fn () => Inertia::render('Home'));",
+      "Route::inertia('/news', 'News');",
+    ].join('\n'),
+    [
+      '<?php',
+      "Route::get('/', fn () => inertia('Home'));",
+      "Route::get('/news', function () {",
+      "    return Inertia::render('News');",
+      '});',
+    ].join('\n'),
+    [
+      '<?php',
+      "Route::inertia(uri: '/', component: 'Home');",
+      "Route::get(uri: '/news', action: fn () => Inertia::render(component: 'News'));",
+    ].join('\n'),
+  ];
+  for (const routes of routeFiles) {
+    withProject((cwd) => {
+      const contract = prepareLaravel(cwd, true);
+      assert.equal(contract.profile.router, 'inertia-react-router');
+      writeLaravelModules(cwd, contract);
+      fs.writeFileSync(path.join(cwd, 'routes/web.php'), `${routes}\n`);
+      assert.deepEqual(
+        analyzeProjectStructure(cwd, contract).findings
+          .filter((finding) => finding.severity === 'error'),
+        [],
+      );
+    });
+  }
+});
+
+test('Laravel controller routes defer target resolution to compiled page existence', () => {
+  withProject((cwd) => {
+    const contract = prepareLaravel(cwd);
+    writeLaravelModules(cwd, contract);
+    fs.writeFileSync(path.join(cwd, 'routes/web.php'), [
+      '<?php',
+      "Route::get('/', [HomeController::class, 'index']);",
+      'Route::controller(NewsController::class)->group(function () {',
+      "    Route::get('/news', 'index');",
+      '});',
+      '',
+    ].join('\n'));
+
+    const complete = analyzeProjectStructure(cwd, contract);
+    assert.deepEqual(
+      complete.findings.filter((finding) => finding.severity === 'error'),
+      [],
+    );
+
+    const news = contract.modules.find((module) => module.id === 'news');
+    assert.ok(news);
+    fs.rmSync(path.join(cwd, news.output));
+    const missing = analyzeProjectStructure(cwd, contract);
+    assert.ok(missing.findings.some((finding) => (
+      finding.id === 'STRUCT_MISSING_PLANNED_MODULE'
+      && finding.file === news.output
+    )));
+    assert.equal(missing.findings.some((finding) => (
+      finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH'
+      && finding.file === news.output
+    )), false, 'missing module has one canonical blocking finding');
+  });
+});
+
+test('hot single-file structural analysis remains below the 150 ms p95 budget', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const source = [
+      'import { Card } from "./components/Card";',
+      'export function Dashboard() {',
+      '  return <main><Card /></main>;',
+      '}',
+      '',
+    ].join('\n');
+    for (let warmup = 0; warmup < 20; warmup += 1) {
+      analyzeStructureText('apps/web/src/pages/Dashboard.tsx', source, contract.profile);
+    }
+    const durations: number[] = [];
+    for (let sample = 0; sample < 250; sample += 1) {
+      const started = performance.now();
+      analyzeStructureText('apps/web/src/pages/Dashboard.tsx', source, contract.profile);
+      durations.push(performance.now() - started);
+    }
+    durations.sort((a, b) => a - b);
+    const p95 = durations[Math.floor(durations.length * 0.95)]!;
+    assert.ok(p95 < 150, `hot structural p95 ${p95.toFixed(2)} ms exceeds 150 ms`);
+  });
+});
+
+test('top-level function count is advisory during rollout', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const source = Array.from(
+      { length: 13 },
+      (_, index) => `export function helper${index}(){ return ${index}; }`,
+    ).join('\n');
+    const findings = analyzeStructureText(
+      'apps/web/src/lib/helpers.ts',
+      source,
+      contract.profile,
+    );
+    assert.deepEqual(findings, [{
+      id: 'STRUCT_FUNCTION_COUNT',
+      severity: 'warning',
+      file: 'apps/web/src/lib/helpers.ts',
+      message: 'Module declares 13 top-level functions; the 12-function threshold is advisory during rollout.',
+    }]);
+  });
+});

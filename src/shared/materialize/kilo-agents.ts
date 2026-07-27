@@ -13,6 +13,8 @@ import * as path from 'path';
 
 import { KILO_HOST_AGENTS_REL } from '../../config/kilo-host';
 import { TEAM_ROLES } from '../../config/onboarding';
+import { eligibleRolesForProfile } from '../capabilities';
+import { capabilityProfileForRun } from '../architecture-contract';
 import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
 import { roleAgentBody } from '../skill-filters';
@@ -91,16 +93,18 @@ function agentFile(role: string, label: string, blurb: string): string {
   return lines.join('\n');
 }
 
-export function writeKiloAgentFiles(cwd: string, _state: Rec): number {
+export function writeKiloAgentFiles(cwd: string, state: Rec): number {
   const dir = path.join(cwd, KILO_HOST_AGENTS_REL);
-  const keep = new Set(TEAM_ROLES.map((member) => member.role));
+  const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
+  const members = TEAM_ROLES.filter((member) => eligible.has(member.role));
+  const keep = new Set(members.map((member) => member.role));
   let written = cleanupGeneratedAgents(dir, keep);
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch {
     return written;
   }
-  for (const member of TEAM_ROLES) {
+  for (const member of members) {
     const target = path.join(dir, `${member.role}.md`);
     if (fs.existsSync(target) && !isGeneratedKiloAgent(target)) continue;
     try {

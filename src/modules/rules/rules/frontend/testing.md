@@ -20,20 +20,21 @@ Three test layers, each with a distinct job. Framework-specific testing helpers
 
 | Layer | Tool | Scope |
 |-------|------|-------|
-| Unit | vitest (web); jest on React Native/Expo | pure functions, reducers, selectors, codecs |
-| Integration | vitest + UI-framework testing lib + msw (jest on native) | components rendered with a real state container + mocked network |
+| Unit | stack-native test runner | pure functions, reducers, selectors, codecs |
+| Integration | stack-native UI test tooling | components rendered with real app state + mocked network |
 | E2E | @playwright/test | full app in a real browser, real navigations, mocked back-end at the network edge |
 
-Web stacks (react-vite, Next.js) standardize on Vitest. The jest specifics in
-`frontend/react/testing.md` apply to Jest-based projects only (native, or an
-existing codebase already on Jest).
+Preserve the project's runner: Vitest/Jest for JavaScript frameworks, PHPUnit
+for Laravel, and the native platform runner for native UI. The Jest specifics
+in `frontend/react/testing.md` apply only to Jest-based projects.
 
 ## What to test
 
 - Every component handling user interaction → integration test.
 - Every reducer / selector / pure utility → unit test.
 - Every domain-mapping or service helper → unit test, no network.
-- Every user-facing journey (login, place bet, view results) → at least one Playwright test.
+- Every changed `behavioral` or `visual` user journey → at least one Playwright
+  path unless the runtime selects a native simulator/emulator adapter.
 
 ## What NOT to test
 
@@ -68,11 +69,23 @@ existing codebase already on Jest).
 - Stub the back-end via `route.fulfill()` for deterministic flows; reserve real back-end for a small smoke suite.
 - `trace: "on-first-retry"`. Screenshot on failure.
 - `@axe-core/playwright` for a11y assertions on every page-level spec.
-- Page-speed verification uses Lighthouse against the built preview with mobile emulation; use `node ~/.traffic-one/bin/lighthouse-runner.cjs` where available, then use findings to optimize the score as much as practical, with 100 as the ideal.
-- Re-use fresh reports: before re-running an audit, check `.traffic-one/reports/lighthouse/` for a report on the same route NEWER than the last code change — read its JSON instead of re-auditing (an audit costs 1–2 min; a read costs nothing). Re-run only when the report is stale or the route changed.
+- Do not require a browser for `none` or `nonvisual` impact. Use local headless
+  Playwright for `behavioral`/`visual`, checking actions, routes, hydration,
+  console errors, and network errors. The interactive browser plugin is
+  optional diagnosis, never canonical evidence.
+- Run Lighthouse only when `VerificationContractV2.performance.required` is
+  true or the user explicitly asks for it.
+- Produce canonical browser evidence with
+  `node ~/.traffic-one/bin/qa-evidence-runner.cjs browser --run-id "$RUN_ID" --build-dir <output-root> --scenario-file ".traffic-one/reports/qa/$RUN_ID/scenario-v1.json"`.
+  The scenario must exercise an interactive action. Do not hand-author
+  `report-v2.json` booleans.
+- Required Lighthouse runs inside that same command against its runner-owned
+  live origin/port. Never reuse a report from another listener or run.
 - Report the audited route, build mode, Lighthouse Performance score, LCP, CLS, INP/TBT where available, and the top blocking opportunities.
 - If Lighthouse cannot run in the environment, mark page speed unverified and list the likely risks; do not imply the page-speed standard was verified.
-- Visual-heavy work gets screenshots at key breakpoints: 320, 375, 768, 1024, 1440, and 1920 px where practical.
+- `behavioral` work needs no success screenshots; capture one on failure.
+  `visual` work requires screenshots at 390 and 1440 for changed routes, plus
+  768 only when the contract detects tablet/breakpoint risk.
 - Verify responsive layouts have no horizontal overflow and touch targets still work at mobile widths.
 - Cover Chrome, Firefox, and Safari/WebKit for scrolling, motion, and fallback behavior on critical journeys.
 - Verify reduced-motion behavior when the UI includes animation.

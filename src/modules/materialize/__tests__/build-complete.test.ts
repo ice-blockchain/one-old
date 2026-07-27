@@ -235,7 +235,8 @@ test('no flip for stale shared Lighthouse output from an earlier run', () => {
 test('flips to maintenance when the build reached verification and every guard holds; idempotent', () => {
   const dir = mkproject({ files: 30, digest: true, verified: true });
   // A stale build-time claim (past the freshness window, so it does not block the
-  // flip) must be swept to released by the flip.
+  // flip) must be swept by the canonical terminal settlement before maintenance is
+  // projected.
   const claimFile = path.join(dir, '.traffic-one', 'runs', '123', 'sess-old.json');
   fs.mkdirSync(path.dirname(claimFile), { recursive: true });
   fs.writeFileSync(claimFile, JSON.stringify({
@@ -249,7 +250,7 @@ test('flips to maintenance when the build reached verification and every guard h
   assert.equal((state.lifecycle as Record<string, unknown>).source, 'heuristic');
   const released = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
   assert.equal(released.status, 'released');
-  assert.equal(released.releasedReason, 'maintenance-flip');
+  assert.equal(released.releasedReason, 'terminal-verified-evidence');
   // second call: already maintenance → no-op
   assert.equal(run(dir), false);
 });
@@ -606,10 +607,10 @@ test('no flip with tester TESTS_FAILING even when reviewer is APPROVED', () => {
   assert.equal(run(dir), false);
 });
 
-test('flips on a terminal shipper digest alone (shipper runs only post-deploy)', () => {
+test('a shipper digest alone cannot fabricate verified settlement', () => {
   const dir = mkproject({ files: 30, shipper: true });
-  assert.equal(run(dir), true);
-  assert.equal(projectPhase(readState(dir), 'new-project'), 'maintenance');
+  assert.equal(run(dir), false);
+  assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
 });
 
 test('a failed shipper digest is unresolved and never advertises terminal settlement', () => {

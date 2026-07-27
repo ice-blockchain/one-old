@@ -32,3 +32,13 @@ test('case auth is pinned off despite ambient auth and on uses the isolated dead
     else process.env.TRAFFIC_ONE_AUTH = ambientAuth;
   }
 });
+
+test('Codex E2E pins its model sidecar and sync disable inside the case folder', () => {
+  const caseFolder = path.join(os.tmpdir(), 't1-env-codex-models');
+  const env = buildCaseEnv(defaultConfig(), caseFolder, '', 'codex');
+  assert.equal(
+    env.TRAFFIC_ONE_MCP_CACHE_PATH,
+    path.join(caseFolder, 'state', 'one-mcp.json'),
+  );
+  assert.equal(env.TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC, '1');
+});

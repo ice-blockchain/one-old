@@ -42,6 +42,7 @@ import {
 } from '../codex-hook-trust';
 import { buildFindings } from '../findings';
 import { selectDoctorProjectCwd } from '../index';
+import { createPaidFallbackCompletion } from '../../../shared/maintenance-fallback-proof';
 
 function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `t1-doctor-${prefix}-`));
@@ -171,6 +172,76 @@ test('probeProject reads + normalizes the state file', () => {
     assert.ok(p.localPreferencesPath);
   } finally {
     if (savedPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = savedPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('probeProject reports legacy custom-backend migration conservatively without writing state', () => {
+  const safe = tmp('legacy-safe');
+  const ambiguous = tmp('legacy-ambiguous');
+  try {
+    for (const dir of [safe, ambiguous]) {
+      fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+        mode: 'existing-codebase',
+        stack: 'custom-backend',
+        frontend: 'react-vite',
+        backend: 'other',
+      }));
+    }
+    fs.writeFileSync(path.join(ambiguous, 'package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0' },
+    }));
+    assert.equal(probeProject(safe).legacyCapabilityMigration.status, 'auto-correctable');
+    assert.equal(probeProject(ambiguous).legacyCapabilityMigration.status, 'ambiguous');
+    const onDisk = JSON.parse(fs.readFileSync(path.join(safe, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(onDisk.frontend, 'react-vite', 'doctor remains read-only');
+  } finally {
+    fs.rmSync(safe, { recursive: true, force: true });
+    fs.rmSync(ambiguous, { recursive: true, force: true });
+  }
+});
+
+test('probeProject evaluates fallback-paid terminality from the complete runtime proof', () => {
+  const dir = tmp('paid-fallback-proof');
+  try {
+    const runId = 'paid';
+    const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'existing-codebase',
+      currentRunId: runId,
+    }));
+    const marker = {
+      version: 1,
+      role: 'quick-fix',
+      outcome: 'fallback-paid',
+      overallOutcome: 'fallback-paid',
+      workUnitContractHash: '1'.repeat(64),
+      allowlistHash: '2'.repeat(64),
+    };
+    fs.writeFileSync(path.join(runDir, 'maintenance.json'), JSON.stringify(marker));
+    assert.equal(probeProject(dir).runState.maintenanceTerminalOrFallbackPending, false);
+
+    const fallbackCompletion = createPaidFallbackCompletion({
+      role: 'quick-fix',
+      envelopeHash: '3'.repeat(64),
+      workUnitContractHash: marker.workUnitContractHash,
+      allowlistHash: marker.allowlistHash,
+      digestPath: '.traffic-one/digests/paid/quick-fix.md',
+      digestHash: '4'.repeat(64),
+      sourceBaselineHash: '5'.repeat(64),
+      sourceResultHash: '6'.repeat(64),
+      runBaselineHash: '7'.repeat(64),
+      changedPaths: ['src/value.ts'],
+      completedAt: '2026-07-27T00:00:00.000Z',
+    });
+    fs.writeFileSync(path.join(runDir, 'maintenance.json'), JSON.stringify({
+      ...marker,
+      fallbackCompletion,
+    }));
+    assert.equal(probeProject(dir).runState.maintenanceTerminalOrFallbackPending, true);
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -511,6 +582,7 @@ function baseProject(over: Partial<ProjectProbe> = {}): ProjectProbe {
     runState: runState(),
     nestedTrafficOneRoots: [],
     openCodeCli: 'managed',
+    legacyCapabilityMigration: { status: 'not-applicable', message: null },
     ...over,
   };
 }
@@ -721,6 +793,24 @@ test('buildFindings: legacy state shape + local prefs in project state', () => {
   const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject({ state: { projectMode: 'new-project', team: {} } }) });
   assert.ok(f.some((x) => x.code === 'LEGACY_TRAFFIC_ONE_STATE'));
   assert.ok(f.some((x) => x.code === 'LOCAL_PREFERENCES_IN_PROJECT_STATE'));
+});
+
+test('buildFindings distinguishes safe and ambiguous legacy capability migrations', () => {
+  const safe = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      legacyCapabilityMigration: { status: 'auto-correctable', message: 'no frontend artifacts were detected' },
+    }),
+  });
+  assert.equal(safe.find((item) => item.code === 'LEGACY_CUSTOM_BACKEND_SAFE_MIGRATION')?.severity, 'info');
+
+  const ambiguous = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      legacyCapabilityMigration: { status: 'ambiguous', message: 'active run preserves its original capability profile' },
+    }),
+  });
+  assert.equal(ambiguous.find((item) => item.code === 'LEGACY_CUSTOM_BACKEND_AMBIGUOUS')?.severity, 'fix-needed');
 });
 
 test('buildFindings: gitnexus crash-risk + node-too-old-no-nvm', () => {

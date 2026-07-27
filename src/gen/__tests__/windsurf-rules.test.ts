@@ -31,8 +31,11 @@ test('generatedWindsurfRules emits Cascade rules with documented triggers and si
 
     const setupParts = docs.filter((doc) => doc.relPath.includes('mode-new-project-setup-'));
     assert.ok(setupParts.length >= 2, 'large setup rule is split into multiple Windsurf rule files');
+    const defaultVite = docs.find((doc) => doc.relPath.includes('mode-new-project-vite-react'))?.content;
+    assert.ok(defaultVite?.startsWith('---\ntrigger: model_decision\n'));
+    assert.ok(defaultVite?.includes('profileId=vite-react'));
 
-    const architect = docs.find((doc) => doc.relPath.includes('00-agent-senior-architect-'))?.content;
+    const architect = docs.find((doc) => doc.relPath.includes('00-agent-senior-architect'))?.content;
     assert.ok(architect?.startsWith('---\ntrigger: model_decision\n'));
     assert.ok(architect?.includes('Mirrored Traffic One role context'));
 

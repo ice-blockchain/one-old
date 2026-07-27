@@ -42,8 +42,8 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
   try {
     runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const docs = generatedCursorRules(dir);
-    // 79 rule templates (incl. 3 on-demand slices) + 7 agents.
-    assert.equal(docs.length, 86);
+    // 80 rule templates (incl. the profile gateway + 3 on-demand slices) + 7 agents.
+    assert.equal(docs.length, 87);
     const byPath = new Map(docs.map((d) => [d.relPath, d.content]));
 
     // common/auth-gate.md -> auth-required.mdc (special slug, always-on kernel).
@@ -74,6 +74,9 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
     ]);
     const stackRec = byPath.get(path.join('.cursor', 'rules', 'common-stack-recommendations.mdc'));
     assert.ok(stackRec?.includes('alwaysApply: false'));
+    const defaultVite = byPath.get(path.join('.cursor', 'rules', 'mode-new-project-vite-react.mdc'));
+    assert.ok(defaultVite?.includes('alwaysApply: false'));
+    assert.ok(defaultVite?.includes('profileId=vite-react'));
 
     // Cursor requires .mdc frontmatter to be the first bytes. The generated
     // marker lives below the frontmatter so Cursor does not reject the file.

@@ -1,11 +1,19 @@
 ---
-description: "Apply when scaffolding a new Traffic One monorepo and you need the full target tree: workspace layout, package boundaries, and the turbo pipeline."
+description: "Read on demand only for the default stack when CompiledArchitectureV1 profileId=vite-react: target pnpm/Turborepo tree and package boundaries."
 ---
 
-# New Project — Target Architecture
+# Default Vite React — Target Architecture
 
-Read-on-demand slice of `rules/modes/new-project.md`: the full target monorepo
-tree and package boundaries the setup checklist scaffolds.
+Read-on-demand resource routed by
+`rules/modes/new-project-vite-react.md`: the full target monorepo tree and
+package boundaries for the default `vite-react` profile (including the legacy
+`react-realtime-monorepo` alias). It is not a fallback architecture. Never
+apply it to Next.js, Nuxt, Laravel, backend-only, native, or another custom
+profile.
+
+Runtime maps semantic `ArchitectureInputV1` into this profile's concrete
+outputs. Eligible implementers create only the subset assigned by their
+`WorkUnitContractV1`; the architect never creates any file in this tree.
 
 ```
 <repo-root>/

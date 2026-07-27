@@ -193,6 +193,9 @@ export function makeOpenCodeAdapter(): HostAdapter {
       const data = asRecord(parseJson<Record<string, unknown>>(raw.stdin, {}));
       const event = SUB_TO_EVENT[sub] ?? normalizeEvent(data.event ?? data.hook_event_name ?? data.hookEventName);
       const tool = event === 'PreToolUse' || event === 'PostToolUse' ? makeTool(data) : undefined;
+      const normalizedToolInput = tool
+        ? nestedInputRecord(data, nestedToolRecord(data))
+        : {};
       const prompt = firstString(
         data.prompt, data.message, data.text,
         asRecord(data.input).prompt, asRecord(data.input).message,
@@ -202,8 +205,16 @@ export function makeOpenCodeAdapter(): HostAdapter {
       return {
         event,
         host: 'opencode',
+        ...(sub === 'before-tool-use' ? { hostHookPoint: 'tool.execute.before' } : {}),
         ...cwd,
-        raw: data,
+        // Runtime gates occasionally need lossless edit evidence
+        // (`old_string`, ordered `edits`, replace_all), not just the canonical
+        // tool's synthesized new content. Normalize the documented
+        // `output.args` wrapper into the same raw aliases every other host
+        // exposes so structural Edit reconstruction sees the complete payload.
+        raw: tool
+          ? { ...data, tool_input: normalizedToolInput, toolInput: normalizedToolInput }
+          : data,
         ...(tool ? { tool } : {}),
         ...(prompt ? { prompt } : {}),
       };

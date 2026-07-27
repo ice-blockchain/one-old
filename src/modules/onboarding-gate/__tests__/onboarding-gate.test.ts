@@ -248,6 +248,35 @@ test('noop inside the plugin authoring root', () => {
   assert.equal(onboardingGate(ctx(process.cwd(), 'Write', 'file-write', { file_path: 'x.ts', content: 'x' })).kind, 'noop');
 });
 
+test('plugin authoring cwd does not stand down for an absolute target in an incomplete real project', () => {
+  withProject({
+    mode: 'new-project',
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    mobile: { framework: 'none' },
+    onboardingComplete: false,
+  }, (project) => {
+    const authoring = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-authoring-target-'));
+    try {
+      fs.mkdirSync(path.join(authoring, 'src', 'gen'), { recursive: true });
+      fs.writeFileSync(path.join(authoring, 'src', 'gen', 'index.ts'), 'export {};\n');
+      fs.writeFileSync(path.join(authoring, 'package.json'), JSON.stringify({ name: 'traffic-one' }));
+      const result = onboardingGate(ctx(authoring, 'Write', 'file-write', {
+        file_path: path.join(project, 'src', 'server.go'),
+        content: 'package main\n',
+      }));
+      assert.equal(result.kind, 'deny');
+      const command = `cd "${project}" && touch src/worker.go`;
+      const shellResult = onboardingGate(ctx(authoring, 'Bash', 'shell', { command }));
+      assert.equal(shellResult.kind, 'deny');
+      assert.equal(fs.existsSync(path.join(authoring, '.traffic-one')), false);
+    } finally {
+      fs.rmSync(authoring, { recursive: true, force: true });
+    }
+  });
+});
+
 test('noop when the session cwd is $HOME or the machine state dir — home is never onboarded as a project', () => {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-home-')));
   const home = path.join(base, 'home');
@@ -670,6 +699,57 @@ test('Cursor: capture cannot repair or replace a corrupt create-once run policy'
     ));
     assert.equal(capture.kind, 'deny');
     if (capture.kind === 'deny') assert.match(capture.reason, /model policy unavailable/);
+  });
+});
+
+test('Cursor: a saved model policy with an unavailable bootstrap reports repair, not repeated onboarding', () => {
+  withProject(completeNewProject(), (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    fs.rmSync(path.join(cwd, 'CLAUDE.md'));
+    fs.symlinkSync('AGENTS.md', path.join(cwd, 'CLAUDE.md'));
+    assert.equal(captureCursorModels(cwd, [
+      'claude-fable-5-thinking-high',
+      'gpt-5.6-terra-medium',
+      'composer-2.5-fast',
+    ], 'pro'), true);
+
+    const first = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: 'pwd' },
+      'cursor-parent-bootstrap',
+      '/x/transcript.jsonl',
+    ));
+    assert.notEqual(first.kind, 'deny');
+    const state = JSON.parse(
+      fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'),
+    ) as { currentRunId?: string };
+    assert.ok(state.currentRunId);
+    const runDir = path.join(cwd, '.traffic-one', 'runs', state.currentRunId!);
+    const baselinePath = path.join(runDir, 'baseline-v1.json');
+    assert.equal(fs.existsSync(baselinePath), true);
+
+    fs.rmSync(path.join(runDir, 'capability-v1.json'));
+    fs.rmSync(baselinePath);
+    fs.writeFileSync(baselinePath, '{}\n', 'utf8');
+
+    const blocked = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: 'pwd' },
+      'cursor-parent-bootstrap',
+      '/x/transcript.jsonl',
+    ));
+    assert.equal(blocked.kind, 'deny');
+    if (blocked.kind === 'deny') {
+      assert.match(blocked.reason, /run bootstrap unavailable/);
+      assert.match(blocked.reason, /Performance and immutable model policy are already saved/);
+      assert.match(blocked.reason, /Do not redo onboarding/);
+      assert.doesNotMatch(blocked.reason, /Reopen Performance/);
+    }
   });
 });
 

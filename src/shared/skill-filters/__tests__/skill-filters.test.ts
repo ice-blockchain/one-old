@@ -18,6 +18,23 @@ test('activeSkillsFor(default state) unions common + react-vite + supabase', () 
   assert.ok(s.has('create-component')); // react-vite
   assert.ok(s.has('postgres-patterns')); // supabase
   assert.ok(!s.has('django-patterns'));
+  assert.equal(s.has('security-scan'), false, 'host-scoped skills require an explicit host');
+  assert.equal(s.has('model-tier-sync'), false, 'maintainer-only skills are unavailable in projects');
+});
+
+test('host-scoped skills activate only on their declared host', () => {
+  const state = {
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    mobile: { framework: 'none' },
+    onboardingComplete: true,
+  };
+  assert.equal(activeSkillsFor(state, 'claude').has('security-scan'), true);
+  for (const host of ['codex', 'cursor', 'opencode', 'kilo', 'copilot', 'windsurf'] as const) {
+    assert.equal(activeSkillsFor(state, host).has('security-scan'), false, host);
+  }
+  assert.equal(activeSkillsFor(state, 'claude').has('model-tier-sync'), false);
 });
 
 test('activeSkillsFor: pre-onboarding new project → no skills (bootstrap set is empty)', () => {
@@ -30,6 +47,43 @@ test('activeSkillsFor accepts a stack string (legacy alias)', () => {
   const s = activeSkillsFor('default');
   assert.ok(s.has('create-component'));
   assert.ok(s.has('postgres-patterns'));
+});
+
+test('stateless Go/Python state does not inherit Postgres or API-only skills', () => {
+  const go = activeSkillsFor({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    onboardingComplete: true,
+    mobile: { framework: 'none' },
+  });
+  assert.equal(go.has('golang-patterns'), true);
+  assert.equal(go.has('postgres-patterns'), false);
+  assert.equal(go.has('database-migrations'), false);
+  assert.equal(go.has('app-launch-checklist'), false);
+
+  const python = activeSkillsFor({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'python',
+    onboardingComplete: true,
+    capabilitySurfaces: ['cli'],
+    mobile: { framework: 'none' },
+  });
+  assert.equal(python.has('python-patterns'), true);
+  assert.equal(python.has('api-design'), false);
+  assert.equal(python.has('postgres-patterns'), false);
+
+  const pythonData = activeSkillsFor({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'python',
+    onboardingComplete: true,
+    capabilitySurfaces: ['cli', 'data'],
+    mobile: { framework: 'none' },
+  });
+  assert.equal(pythonData.has('postgres-patterns'), true);
+  assert.equal(pythonData.has('database-migrations'), true);
 });
 
 test('pruneSkillsDirective lists active + flags wrong-stack skills', () => {

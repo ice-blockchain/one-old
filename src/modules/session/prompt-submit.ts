@@ -38,6 +38,8 @@ import { recordPendingModelChoiceReply } from '../agent-model/choice-reply';
 import { runSessionStartAuthed } from './session-start';
 import { ensureOpenCodeDelegationReady } from './session-start-lib';
 import * as fs from 'fs';
+import { finalizePaidMaintenanceFallback } from '../../shared/maintenance-fallback';
+import { reconcileRunSettlement } from '../../shared/run-settlement';
 
 type Rec = Record<string, unknown>;
 
@@ -146,6 +148,11 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return runSessionStartAuthed(ctx);
+  const settlementRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (settlementRunId && !isSubagentThread(raw)) {
+    const fallback = finalizePaidMaintenanceFallback(cwd, settlementRunId);
+    if (fallback.status !== 'completed') reconcileRunSettlement(cwd, settlementRunId);
+  }
 
   const stack = (state.stack as string) || (state.mode as string) || 'unknown';
   const normalizedState = JSON.parse(JSON.stringify(state)) as Rec;

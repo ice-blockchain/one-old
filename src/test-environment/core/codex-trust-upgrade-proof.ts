@@ -1,10 +1,9 @@
 // A real Codex hook-trust upgrade proof for the release harness.
 //
-// This is deliberately separate from the generic Codex E2E command matrix:
-// that matrix uses --dangerously-bypass-hook-trust because its marketplace id
-// is content-addressed and therefore new on every run. Here the plugin identity
-// stays fixed, v1 trust is written through Codex's config API (the same shape
-// used by the UI), and v2 must inherit that trust without any bypass flag.
+// This is deliberately separate from the generic Codex E2E command matrix.
+// Both paths avoid a trust bypass: the matrix approves the exact
+// content-addressed staged ABI inside a disposable home, while this proof keeps
+// the plugin identity fixed and requires v2 to inherit v1 trust unchanged.
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';

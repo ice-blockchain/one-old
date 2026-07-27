@@ -22,6 +22,7 @@
 import { execFileSync } from 'child_process';
 
 import { maintenanceTriageDirective } from '../../modules/session/triage-directive';
+import { capabilityProfileForRun } from '../../shared/architecture-contract';
 import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
 import { buildPreSpawnOpenCodeDirective } from '../../shared/opencode-plan-directive';
 import { AGENT_ROLES } from '../../config/performance';
@@ -194,10 +195,22 @@ export function preSpawnRunIdDirective(cwd: string, host: string = detectHost())
         ].join('\n');
       }
     }
-    const policy = existingPolicy || ensureRunModelPolicy(
+    // Always run the parent bootstrap preflight. A valid immutable policy does
+    // not prove that its capability baseline and architect envelope were
+    // published; short-circuiting on `existingPolicy` previously let setup
+    // claim completion before the first real tool call failed.
+    const policy = ensureRunModelPolicy(
       cwd, runId, host, state, { ...process.env, TRAFFIC_ONE_HOST: host },
     );
     if (!policy) {
+      const frozenPolicy = readRunModelPolicy(cwd, runId);
+      if (frozenPolicy) {
+        return [
+          'TRAFFIC_ONE_BOOTSTRAP_BLOCKED',
+          `Run ${runId} already has a valid immutable model policy and saved Performance choice, but Traffic One could not publish or validate its capability baseline and parent bootstrap.`,
+          'Do not spawn a child and do not redo onboarding. Update or repair Traffic One, then retry setup completion with the same run.',
+        ].join('\n');
+      }
       return [
         'TRAFFIC_ONE_MODEL_POLICY_BLOCKED',
         'Traffic One could not freeze the acknowledged Performance/model catalog for this run.',
@@ -226,6 +239,12 @@ export function preSpawnRunIdDirective(cwd: string, host: string = detectHost())
   }
 }
 
+export function preSpawnRunIdBlocksSetup(directive: string): boolean {
+  return directive.startsWith('TRAFFIC_ONE_MODEL_POLICY_BLOCKED')
+    || directive.startsWith('TRAFFIC_ONE_CURSOR_MODELS_REQUIRED')
+    || directive.startsWith('TRAFFIC_ONE_BOOTSTRAP_BLOCKED');
+}
+
 // Windsurf/Devin-only PRE-SPAWN architect directive, emitted at SETUP_COMPLETE. Devin Local's
 // SWE-tier agent otherwise jumps straight to an off-stack scaffolder (create-next-app) instead of
 // spawning the architect. Other hosts get this flow from AGENTS.md read-routing; Windsurf gets no
@@ -237,21 +256,32 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
   try {
     const state = readEffectiveState(cwd) as Record<string, unknown>;
     if (!state || state.mode !== 'new-project') return '';
-    const stack = typeof state.stack === 'string' ? state.stack : 'default';
-    const frontend = typeof state.frontend === 'string' ? state.frontend : 'react-vite';
+    const profile = capabilityProfileForRun(cwd, state);
+    const implementers = profile.roles.filter((role) => role === 'senior-frontend' || role === 'senior-backend');
+    const implementerStep = implementers.length === 2
+      ? `spawn ${implementers.map((role) => `\`${role}\``).join(' and ')} in parallel`
+      : implementers.length === 1
+        ? `spawn only \`${implementers[0]}\` (do not invent the ineligible sibling role)`
+        : 'do not invent a frontend/backend implementer; continue with verifier roles';
+    const qa = profile.surfaces.includes('native-ui')
+      ? `use native QA (${profile.qaAdapters.join(', ') || 'simulator/emulator'}), never browser QA`
+      : profile.surfaces.includes('web-ui')
+        ? `derive uiImpact and use ${profile.qaAdapters.join(', ') || 'Playwright'} only for behavioral/visual UI risk`
+        : 'run stack-native build/test/lint checks; do not assign browser, screenshot, design, or frontend QA';
     return [
       '[traffic-one] Windsurf build flow — do this FIRST, before writing or scaffolding anything:',
-      `1. This project's stack is \`${stack}\` (frontend \`${frontend}\`). Build ONLY on that stack — do NOT run`,
-      '   `create-next-app` / `create-react-app`; the React/Vite app lives under `apps/web` (Vite), per the plan.',
+      `1. Runtime capability contract: profile \`${profile.profileId}\`; framework \`${profile.framework}\`;`,
+      `   surfaces \`${profile.surfaces.join(', ') || 'none'}\`; source roots \`${profile.sourceRoots.join(', ') || 'none'}\`;`,
+      `   skill buckets \`${profile.skillBuckets.join(', ') || 'universal only'}\`. Build ONLY on that contract; do not substitute an unrelated stack, QA adapter, or implementation role.`,
       '2. Spawn the architect FIRST with `run_subagent` profile `subagent_general` (custom profiles materialized',
       '   during onboarding are not registered until a new Devin session). The task MUST start with',
       '   `[t1-role: senior-<role>]` (substitute the spawned role; architect here), then tell the child to read `.devin/agents/senior-architect/AGENT.md`.',
       '   It writes',
-      '   `.traffic-one/plan.md` (PLAN_READY) + the `apps/web` monorepo scaffold. Development is BLOCKED until',
+      '   `.traffic-one/plan.md` (PLAN_READY), the runtime architecture input, and only the scaffold outputs allowed by the compiled contract. Development is BLOCKED until',
       '   `.traffic-one/plan.md` exists (the scaffolder + plan gates deny premature/off-stack commands).',
-      '3. After PLAN_READY, spawn every role via `subagent_general`, with its `[t1-role: senior-…]` marker first',
+      `3. After PLAN_READY, ${implementerStep} via \`subagent_general\`, with each \`[t1-role: senior-…]\` marker first`,
       '   and an instruction to read the matching `.devin/agents/<role>/AGENT.md` contract,',
-      '   then `senior-reviewer` + `senior-tester`. Build ON the plan the architect produced.',
+      `   then \`senior-reviewer\` + \`senior-tester\`. QA: ${qa}. Build ON the compiled plan the architect produced.`,
     ].join('\n');
   } catch {
     return '';
@@ -750,8 +780,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     const runIdDirective = preSpawnRunIdDirective(cwd, host);
     if (runIdDirective) {
       process.stdout.write(`\n${runIdDirective}\n`);
-      if (runIdDirective.startsWith('TRAFFIC_ONE_MODEL_POLICY_BLOCKED')
-        || runIdDirective.startsWith('TRAFFIC_ONE_CURSOR_MODELS_REQUIRED')) process.exit(2);
+      if (preSpawnRunIdBlocksSetup(runIdDirective)) process.exit(2);
     }
     const orchestrationDirective = preSpawnOrchestrationDirective(cwd, host);
     if (orchestrationDirective) {

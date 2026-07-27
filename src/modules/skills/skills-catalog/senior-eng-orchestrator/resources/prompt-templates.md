@@ -9,8 +9,8 @@
 
 
 These are the canonical templates the orchestrator uses when spawning each
-subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
-`<run-id>`, etc.) is the orchestrator's job; the templates stay lean so the
+subagent via `Task`. Substituting placeholders (`<user-request>`, `<run-id>`,
+etc.) is the orchestrator's job; the templates stay lean so the
 subagent's context stays clean. The `<run-id>` substitution rules are below.
 
 On Codex, structured task identity is mandatory. Use the exact underscore-form
@@ -118,7 +118,9 @@ Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit strin
 
 > <user-request quoted verbatim>
 
-Read .traffic-one/.one.json plus existing project memory:
+Read .traffic-one/.one.json,
+.traffic-one/runs/<run-id>/capability-v1.json, and
+.traffic-one/runs/<run-id>/baseline-v1.json plus existing project memory:
 .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/*.md,
 .traffic-one/known-issues.md, and .traffic-one/agent-log.md when present.
 Also read the codebase-graph artefact at the active provider's location (per
@@ -127,7 +129,7 @@ rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` when codeGraphProvide
 missing.
 
 Produce .traffic-one/plan.md (≤250 lines, sections: Goal, Stack & rationale,
-Module map, Public contracts, Risks, Cut-list, plus OpenCode delegation queue only
+Module map, Routes, Public contracts, Risks, Cut-list, plus OpenCode delegation queue only
 when delegation is active on a non-OpenCode/Kilo host). Cite skills by name; do not
 inline their content.
 
@@ -154,36 +156,46 @@ senior-architect role instructions for the exact format.
 
 For `mode: new-project`, run `project-memory` and
 `auto-documentation-generator` after the plan even when the user did not ask for
-memory/docs. Also invoke `seo` for generated websites/public web routes and
-include the route metadata contract in the plan. Include the frontend i18n
-contract (`packages/i18n` for new frontend stacks, existing catalog/provider
-extension for existing projects, `<Trans>` for rich copy) and the Supabase/env
-setup CTA contract (`https://traffic.io/` plus href regression) when those
-surfaces apply. Create/update the
-`.traffic-one/` memory baseline and canonical docs needed for the scaffold. For
+memory/docs. Only when the runtime capability profile contains `web-ui`, invoke
+`seo` for generated websites/public web routes and include the route metadata
+contract. Include the profile-selected i18n contract and the Supabase/env setup
+CTA contract (`https://traffic.io/` plus href regression) only when those exact
+surfaces exist. Create/update only the `.traffic-one/` memory baseline. For
 `mode: existing-codebase` or `existing-with-supabase`, run them before normal feature work,
-plus the SEO and i18n baseline reconciliation, to create missing memory/docs,
-update existing files in place, fill missing web metadata, and extend any
-existing translation catalogs instead of creating parallel systems.
+and apply SEO/i18n reconciliation only when the runtime profile contains the
+matching web UI/catalog surface. Create missing memory/docs and update existing
+files in place without inventing web metadata or translation systems for API,
+CLI, worker, data-only, or native-only profiles.
 
-Also write the assignments manifest to .traffic-one/runs/<run-id>/assignments.json LAST: its TOP-LEVEL
-key MUST be `assignments`, an ARRAY (never a `roles` object), and every entry MUST use
-`{ "role": "senior-...", "scope": { "include": ["..."], "exclude": [] } }` with no
-`ownedPaths`/`readOnlyPaths` aliases. Use the canonical JSON shape in the senior-architect
-instructions exactly; the plan gate rejects any other shape before the file reaches disk. One entry
-per implementer role (`senior-frontend`, `senior-backend`) with a DISJOINT set of owned path
-patterns (`scope.include` + optional `scope.exclude`), derived from the project's REAL
-directories — not guessed names. Root manifests (`package.json`, workspace/tool configs)
-must land in exactly one implementer's scope — frontend for web builds, backend when no
-frontend role runs — or parallel writers collide on the fallback lock. Do NOT include `senior-architect` in this manifest: the
-architect may create empty scaffold barrels/packages, but those files must remain writable by
-the implementer that fills them. Shared package barrels such as `packages/ui/src/index.ts`,
-`packages/i18n/src/index.ts`, and `packages/types/src/index.ts` belong to the implementer that
-exports real code/types from them; do not exclude them from that role if the role prompt asks it
-to fill/export those contracts. This is the machine-readable Module map; the run-team gate uses
-it so the parallel implementers never collide. See "Assignments manifest" in your role
-instructions for the schema and guarantees. Complete scaffold + memory + plan + ADRs first,
-then write this manifest immediately before the architect digest / PLAN_READY.
+Write semantic ArchitectureInputV1 to
+.traffic-one/runs/<run-id>/architecture-input-v1.json: route ids/paths and
+module ids, semantic modules (`app-shell`, `page`, `component`, `feature`,
+`service`, `store`, or `test`), and only narrowly justified exception requests.
+Do not include profile ids, roots, entrypoints, output paths, owner roles,
+assignments, scanner limits, baseline data, QA impact, or hashes.
+
+If the request is a redesign, an important visual change, has material
+performance risk, or specifies Lighthouse thresholds, add exactly one strict
+block to `.traffic-one/plan.md`:
+<!-- traffic-one-verification:start -->
+{"schemaVersion":1,"redesign":true,"performanceRisk":true,"explicitLighthouse":{"performanceMin":95}}
+<!-- traffic-one-verification:end -->
+Keep only applicable fields. Exact user thresholds belong in
+`explicitLighthouse`; optional non-exact targets belong in
+`advisoryLighthouse`. Include `seoMin` only when explicitly required. Omit the
+block when none applies. `agentRaisedImpact` may request `behavioral`/`visual`
+for web or `native-ui` for native, but runtime accepts it only when stricter
+than the mechanically derived result. Never put paths, baseline, scan controls,
+screenshots, or browser requirements in this block; runtime derives them and
+the plan can only raise verification.
+
+Do not create package/workspace/config/source/test files, Tailwind assets,
+barrels, or assignments. Do not create or edit architecture-v1.json,
+verification-v2.json, assignments.json, model policy, or bootstrap envelopes.
+When the architect digest writes PLAN_READY, runtime compiles and hashes those
+contracts, generates disjoint assignments, and atomically publishes each
+eligible WorkUnitContractV1/bootstrap. If compilation denies, change only the
+semantic plan/input and retry.
 
 On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md
@@ -195,58 +207,55 @@ only.
 
 Before emitting PLAN_READY, verify project-local context is materialized. If
 `.traffic-one/manifest.json`, `.traffic-one/rules`, `.traffic-one/skills`,
-root `AGENTS.md`, or root `CLAUDE.md` is missing, run:
-  node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','hook-runtime.cjs'))" materialize-project
-from the project root, then verify those paths again. If materialization fails,
-report the blocker instead of emitting PLAN_READY.
+root `AGENTS.md`, or root `CLAUDE.md` is missing, report the runtime
+materialization blocker instead of creating or repairing runtime-owned files.
 
 Token budget: ~8k for reads, ~3k for writes. End your reply with the literal
 token PLAN_READY on its own line.
 ```
 
-## Phase 2 — Frontend (parallel with Backend)
+## Phase 2 — Frontend/UI implementer (when eligible)
 
 ```
 Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The architect digest is at:
   .traffic-one/digests/<run-id>/architect.md
 
 Read in priority order:
-  1. .traffic-one/digests/<run-id>/architect.md
-  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/coding.md,
+  1. .traffic-one/runs/<run-id>/bootstrap/senior-frontend/active.json. Verify
+     its envelope/work-unit/architecture/verification hashes and obey its
+     outputs, allowlist, excluded paths, resolved rules, and skills.
+  2. .traffic-one/digests/<run-id>/architect.md
+  3. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/coding.md,
      .traffic-one/known-issues.md if present
-  3. .traffic-one/plan.md § Frontend + § Module map (only your scope)
-  4. Codebase-graph artefact at active provider's location (per
+  4. .traffic-one/plan.md § Routes + § Public contracts + § Module map (only your work unit)
+  5. Codebase-graph artefact at active provider's location (per
      rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` for gitnexus,
-     `.traffic-one/graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/src/`,
-     `packages/ui*` nodes.
-  5. Specific source files only when 1–4 don't answer the question.
+     `.traffic-one/graphify-out/GRAPH_REPORT.md` for graphify. Scope it to the
+     compiled allowlist.
+  6. Specific source files only when 1–5 don't answer the question.
 
-Your owned write paths for this run are:
-  <FRONTEND_OWNED_PATHS>
-Write ONLY inside these paths — this is your entry in
-.traffic-one/runs/<run-id>/assignments.json. Everything else belongs to another role and the
-run-team gate will block out-of-scope writes. If you believe you must write outside your
-scope, stop and surface it in your digest rather than widening it.
+Create any scaffold/package/config/barrel outputs assigned to this work unit,
+then implement its modules. Write ONLY inside the work unit's outputs and
+allowlist. If a required output is missing, stop and surface a replan request in
+your digest; never edit assignments or widen the bootstrap.
 
-Implement only the frontend layer of the plan. The other implementer
-(senior-backend) is running in parallel — assume their public contract from
-the plan; do not invent it. Surface contract gaps in your digest's
-"Open questions / blockers" section.
+Implement only the frontend/native-UI layer assigned by the work unit. If the
+assignments manifest also contains an independent `senior-backend` work unit,
+that sibling may run in parallel; assume only its compiled public contract.
+When no backend work unit exists, do not wait for or refer to one. Surface
+contract gaps in your digest's "Open questions / blockers" section.
 
-For generated websites or changed public web routes, apply `rules/common/seo.md`
+Only when the work unit contains public web routes, apply `rules/common/seo.md`
 before finishing: route-aware metadata, JSON-LD, robots/sitemap,
 favicon/PWA/OG assets, site-url env docs, private/admin noindex, and metadata
 regression coverage for every created or changed public route.
 
-Before writing UI, apply `rules/frontend/i18n.md` even when the user did not
-mention translations. Detect `packages/i18n`, `src/i18n*`, `locales/`,
-`public/locales/`, `messages/`, `i18next`, `react-i18next`, and provider
-wrappers. Extend the existing catalog/provider shape or use `packages/i18n` for
-new Traffic One frontend projects. Add source-language entries for every key,
-and prefer `<Trans>` for rich copy with links, React elements, emphasis, line
-breaks, or rich interpolation.
+Apply `rules/frontend/i18n.md` only when the runtime-selected rules/skills and
+work unit include a web i18n surface. Extend the selected catalog/provider; for
+React rich copy prefer `<Trans>`. Native UI follows its native localization
+contract instead.
 
-For Supabase-backed web/Ionic apps or any missing-env surface, apply
+Only for a Supabase-backed web/Ionic work unit with a changed missing-env surface, apply
 `rules/frontend/react/supabase-client.md` before finishing. Create or repair the
 shared EnvBanner/SupabaseConfigAlert/ConfigurePromptCard setup CTA so every
 website-facing missing-config link points to `https://traffic.io/`, and add or
@@ -258,10 +267,11 @@ render the actual workflow in demo/degraded mode until live data is configured.
 Do not invent a backend contract beyond the plan; make fixtures conform to the
 planned public contract and surface any contract gaps in your digest.
 
-Do not add `@ts-nocheck`, `@ts-ignore`, or an equivalent broad type-check
-suppression. Convert repository/API results into explicit domain types. A
-successful live response must drive every affected rendered surface; fixtures
-are permitted only for absent configuration, empty results, or handled errors.
+Do not add `@ts-nocheck`, `@ts-ignore`, or the selected stack's equivalent broad
+type/static-analysis suppression. Convert repository/API results into explicit
+domain types where the language supports them. A successful live response must
+drive every affected rendered surface; fixtures are permitted only for absent
+configuration, empty results, or handled errors.
 
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/frontend.md
@@ -276,34 +286,36 @@ End your reply with a one-line status of what you produced and what's
 pending.
 ```
 
-## Phase 2 — Backend (parallel with Frontend)
+## Phase 2 — Backend implementer (when eligible)
 
 ```
 Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The architect digest is at:
   .traffic-one/digests/<run-id>/architect.md
 
 Read in priority order:
-  1. .traffic-one/digests/<run-id>/architect.md
-  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/security.md,
+  1. .traffic-one/runs/<run-id>/bootstrap/senior-backend/active.json. Verify
+     its envelope/work-unit/architecture/verification hashes and obey its
+     outputs, allowlist, excluded paths, resolved rules, and skills.
+  2. .traffic-one/digests/<run-id>/architect.md
+  3. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/security.md,
      .traffic-one/schema.sql, .traffic-one/known-issues.md if present
-  3. .traffic-one/plan.md § Backend + § Public contracts
-  4. Codebase-graph artefact at active provider's location (per
+  4. .traffic-one/plan.md § Routes + § Public contracts
+  5. Codebase-graph artefact at active provider's location (per
      rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` for gitnexus,
-     `.traffic-one/graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/server/`,
-     `packages/api*`, `services/*`, `supabase/` nodes.
-  5. Specific source / migration files only when 1–4 don't answer the question.
+     `.traffic-one/graphify-out/GRAPH_REPORT.md` for graphify. Scope it to the
+     compiled allowlist.
+  6. Specific source / migration files only when 1–5 don't answer the question.
 
-Your owned write paths for this run are:
-  <BACKEND_OWNED_PATHS>
-Write ONLY inside these paths — this is your entry in
-.traffic-one/runs/<run-id>/assignments.json. Everything else belongs to another role and the
-run-team gate will block out-of-scope writes. If you believe you must write outside your
-scope, stop and surface it in your digest rather than widening it.
+Create any scaffold/package/config outputs assigned to this work unit, then
+implement its modules. Write ONLY inside the work unit's outputs and allowlist.
+If a required output is missing, stop and surface a replan request in your
+digest; never edit assignments or widen the bootstrap.
 
-Implement only the backend layer of the plan. The other implementer
-(senior-frontend) is running in parallel — assume their public contract from
-the plan; do not invent it. If you change a public contract, write the new
-signature in your digest's "Public contracts (delta only)" section.
+Implement only the backend layer of the plan. If the assignments manifest also
+contains an independent `senior-frontend` work unit, that sibling may run in
+parallel; assume only its compiled public contract. When no frontend work unit
+exists, do not wait for or refer to one. If you change a public contract, write
+the new signature in your digest's "Public contracts (delta only)" section.
 After migrations, refresh .traffic-one/schema.sql and note the schema refresh in
 your backend digest.
 
@@ -322,12 +334,13 @@ End your reply with a one-line status of what you produced.
 ## Phase 3 — Reviewer (parallel with Tester)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The implementer digests are at:
-  .traffic-one/digests/<run-id>/frontend.md
-  .traffic-one/digests/<run-id>/backend.md
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The capability-eligible implementer digests for this run are:
+  <IMPLEMENTER_DIGEST_PATHS>
 
 Read in priority order:
-  1. Both implementer digests above.
+  1. Every implementer digest listed above. The orchestrator derives this list
+     from immutable work units/assignments; do not require a missing
+     frontend/backend sibling that was not eligible.
   2. .traffic-one/coding.md, .traffic-one/security.md,
      .traffic-one/known-issues.md, and .traffic-one/.agentignore if present.
   3. `git diff --name-only HEAD`, then `git diff HEAD <file>` ONLY for files
@@ -364,12 +377,13 @@ Token budget: ~6k. Don't full-scroll files; read targeted line ranges.
 ## Phase 3 — Tester (parallel with Reviewer)
 
 ```
-Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The implementer digests are at:
-  .traffic-one/digests/<run-id>/frontend.md
-  .traffic-one/digests/<run-id>/backend.md
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and verify every run-id in the paths below equals it. If a path still shows the literal `<run-id>`, substitute that exact value. The capability-eligible implementer digests for this run are:
+  <IMPLEMENTER_DIGEST_PATHS>
 
 Read in priority order:
-  1. Both implementer digests above.
+  1. Every implementer digest listed above. The orchestrator derives this list
+     from immutable work units/assignments; do not require a missing
+     frontend/backend sibling that was not eligible.
   2. .traffic-one/product.md, .traffic-one/known-issues.md, and
      .traffic-one/schema.sql if present.
   3. .traffic-one/plan.md § Public contracts.
@@ -385,43 +399,36 @@ Add or update tests for the changed surface. Run them. Verdict format:
     1. <test name> — <file:line> — <error excerpt>.
     2. …
 
-`TESTS_GREEN` is legal only when the mechanical tests pass AND either:
-  - this run has a frontend implementer digest and its canonical
-    .traffic-one/reports/qa/<run-id>/report.json is a fresh, parser-valid
-    QaReportV1 with overall status `passed`; or
-  - this run has no frontend implementer digest and is genuinely backend-only.
-Frontend runs never use a prose "not applicable" escape. Screenshots alone,
-arbitrary JSON, and Lighthouse reports are not functional QA evidence.
+Read `.traffic-one/runs/<run-id>/verification-v2.json` before testing.
+`TESTS_GREEN` is legal only when the mechanical tests pass and the canonical
+`.traffic-one/reports/qa/<run-id>/report-v2.json` is a fresh, parser-valid
+`QaReportV2` (`schemaVersion: 2`) with the exact run, contract, and source
+hashes. Screenshots alone, arbitrary JSON, and Lighthouse reports are not
+functional QA evidence.
 
-For a frontend run, prove fresh build metadata, start the app/preview, and run
-every key route at widths 390, 768, and 1440. Record console-error count,
-document overflow, element overflow, primary-action reachability (or explicit
-N/A), and a passing/failing status for every viewport. Mobile and desktop
-entries require existing screenshot paths inside this run's QA directory.
-Write the canonical QaReportV1 to the exact report.json path above with
-`schemaVersion: 1`, the exact run id, canonical ISO-UTC `generatedAt` in the
-exact form `YYYY-MM-DDTHH:MM:SSZ` or `YYYY-MM-DDTHH:MM:SS.sssZ` (emit
-`new Date().toISOString()` verbatim — never a locale string or numeric offset),
-producer `senior-tester`, and `routes: [{ route, viewports }]`. Every route contains each
-width exactly once. Each viewport has `width`, an allowed `status`, nonnegative
-integer `consoleErrorCount`, boolean `documentOverflow`, boolean
-`elementOverflow`, `primaryAction: { status, reason? }` (`reachable`,
-`unreachable`, or reasoned `not-applicable`), and `screenshotPath` where
-required. A strict pass has every viewport passed with zero errors, no
-overflow, and a reachable or reasoned-N/A primary action.
+Follow `uiImpact` without inventing a frontend/backend exemption:
+- `none`: relevant stack build/test/lint only; no browser or screenshots.
+- `nonvisual`: unit/component checks and axe only when a DOM fixture exists; no
+  required browser E2E.
+- `behavioral`: local headless Playwright on the built app; assert DOM,
+  actions, routing, hydration, console, and network. Screenshots are optional.
+- `visual`: all behavioral checks plus fresh screenshots at every
+  `requiredScreenshotWidths` value (normally 390 and 1440; 768 only when the
+  contract detected tablet risk).
+- `native-ui`: use the selected simulator/emulator adapter, never a browser.
 
-If the browser/tool is genuinely unavailable after all other checks complete,
-write `blocked:browser-unavailable`; sandbox policy, usage limits, and bounded
-timeouts use `blocked:sandbox`, `blocked:usage-limit`, and `blocked:timeout`
-respectively. Include the bounded blocker code and safe error summary required
-by `blocker: { code, summary }` in QaReportV1. Every blocked status requires
-`TESTS_FAILING`; never convert it to green. The parent may bridge only
-`blocked:browser-unavailable`, and only when every non-browser check passed. If
-the unavailable browser makes screenshots impossible, keep the full matrix and
-do not invent paths; screenshot validation remains fail-closed while the parsed
-status/blocker identifies the bridge candidate. If continued after that bridge,
-validate the parent-browser report, screenshot paths, run id, freshness, and
-full matrix, then update tester.md and re-emit your verdict.
+For behavioral/visual QA, build current source, start the built app on a free
+strict port owned by this run, and record run/source/build hashes, PID, port,
+start time, URL, expected fingerprint, and the fingerprint observed over HTTP.
+Reject a stale server, reused port, foreign fingerprint, or artifact older than
+the server. Write route evidence for every changed route and prove its planned
+final path rather than accepting a fallback shell or redirect.
+
+If a required browser/native runtime is genuinely unavailable after all other
+checks complete, set report status `blocked-environment` with a bounded safe
+reason and return `TESTS_FAILING`; never convert it to green. A browser cannot
+block `none` or `nonvisual`. The interactive browser plugin is optional
+diagnosis and never substitutes for the canonical local Playwright report.
 
 For generated websites or changed web routes, include metadata regression
 coverage for every created or changed public route's title, description,
@@ -488,12 +495,14 @@ Read in priority order:
      and .traffic-one/known-issues.md if present.
   4. .env.example to surface missing env vars.
 
-Before any stamp or deploy, also require strict functional QA: when this run
-has a frontend implementer digest,
-.traffic-one/reports/qa/<run-id>/report.json must be a fresh, parser-valid
-QaReportV1 with status `passed`. Only a run with no frontend implementer digest
-is backend-only. If QA is missing, failed, or blocked, STOP; do not stamp,
-deploy, or advertise shipping.
+Before any stamp or deploy, read
+`.traffic-one/runs/<run-id>/verification-v2.json` and require its canonical
+`.traffic-one/reports/qa/<run-id>/report-v2.json` to be a fresh, parser-valid
+`QaReportV2` with matching run/contract/source hashes and every derived
+requirement passed. `none/nonvisual` require no browser, `behavioral` requires
+functional Playwright but no screenshot, `visual` requires the listed widths,
+and `native-ui` requires its native adapter. If QA is missing, failed, blocked,
+stale, or hash-mismatched, STOP; do not stamp, deploy, or advertise shipping.
 
 Run `predeploy-security-check --strict --stamp`, then run the `verification-loop`
 Production-Readiness Score. If the score has hard blockers or is below 80/100

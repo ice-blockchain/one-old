@@ -48,6 +48,7 @@ import {
   pruneExpiredPendingClaims,
   readEffectiveState,
   resolveRunAgentContext,
+  runReachedTerminalVerdict,
   type RunAgentContext,
   scrubProjectStateLocalPrefs,
   stackFingerprint,
@@ -73,6 +74,10 @@ import { sessionPerformanceContext } from '../../shared/session-performance-cont
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
 import { detectHostPlan } from '../../shared/host-plan';
 import { canonicalHost } from '../../shared/model-tiers';
+import { finalizePaidMaintenanceFallback } from '../../shared/maintenance-fallback';
+import { reconcileRunSettlement } from '../../shared/run-settlement';
+import { legacyCustomBackendMigration } from '../../shared/architecture-contract';
+import { capabilityStateForRun } from '../../shared/architecture-contract';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
@@ -154,6 +159,7 @@ function sessionProjectRoot(ctx: Ctx): string {
 // SessionStart path and the legacy run-agent fast path.
 function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext, root: string): HookResult {
   const cwd = sessionProjectRoot(ctx);
+  const capabilityState = capabilityStateForRun(cwd, state);
   const role = typeof agentContext.role === 'string' ? agentContext.role : '';
   const runId = String(agentContext.runId ?? '');
   const spawnIndex = agentContext.spawnIndex || 0;
@@ -164,15 +170,15 @@ function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext
     return context(body);
   }
 
-  const ruleSet = role ? roleScopedRules(role, state) : null;
-  const rules = ruleSet || stackSpecForState(state).mandatory;
-  copyActiveSkills(state);
+  const ruleSet = role ? roleScopedRules(role, capabilityState) : null;
+  const rules = ruleSet || stackSpecForState(capabilityState).mandatory;
+  copyActiveSkills(capabilityState, ctx.host);
   // Role-scoped skills (from the role's agent-doc frontmatter) when the role is
   // known — a senior-frontend spawn lists only frontend skills, not the whole
   // stack catalog plus a 30-name wrong-stack dump.
   const skillDirective = role
-    ? roleSkillsDirective(state, role, listAllSkills())
-    : pruneSkillsDirective(state, listAllSkills());
+    ? roleSkillsDirective(capabilityState, role, listAllSkills(), ctx.host)
+    : pruneSkillsDirective(capabilityState, listAllSkills(), ctx.host);
   const { body } = packRuleIndex(root, rules);
   const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
   const roleLabel = role || 'subagent';
@@ -219,8 +225,9 @@ export function runSubagentSessionStart(ctx: Ctx): HookResult {
   // Role/claim not resolved yet — still never onboard. Hand over whatever rules are
   // materialized; if none yet, stay silent and let the parent's materialization land.
   if (hasMaterializedProjectAssets(cwd, state)) {
-    copyActiveSkills(state);
-    const { body } = packRuleIndex(root, stackSpecForState(state).mandatory);
+    const capabilityState = capabilityStateForRun(cwd, state);
+    copyActiveSkills(capabilityState, ctx.host);
+    const { body } = packRuleIndex(root, stackSpecForState(capabilityState).mandatory);
     return context('═══ traffic-one — subagent ═══\n'
       + '[subagent] Rules already materialized to .traffic-one/rules/; read role-scoped rules on demand.\n'
       + body);
@@ -314,6 +321,23 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const raw = ctx.input.raw;
 
   const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
+  const legacyMigration = legacyCustomBackendMigration(cwd, state);
+  if (legacyMigration.changed) {
+    Object.assign(state, legacyMigration.state);
+    writeState(cwd, state);
+  }
+  const settlementRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  // Reconcile only unresolved work. A completed legacy ledger predates the V2
+  // evidence sidecars; reopening it as `validating` during a read-only session
+  // start would resume/upgrade historical work instead of preserving backward
+  // compatibility. New prompt-boundary work receives a fresh strict run.
+  if (settlementRunId) {
+    const fallback = finalizePaidMaintenanceFallback(cwd, settlementRunId);
+    if (fallback.status !== 'completed'
+      && !runReachedTerminalVerdict(cwd, settlementRunId)) {
+      reconcileRunSettlement(cwd, settlementRunId);
+    }
+  }
 
   // Multi-project safety: reset to the 3-skill baseline before copying THIS
   // project's set. Digest retention sweep. Best-effort session materialization.
@@ -378,12 +402,13 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
       });
     }
 
-    const spec = stackSpecForState(state);
+    const capabilityState = capabilityStateForRun(cwd, state);
+    const spec = stackSpecForState(capabilityState);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
 
-    const copied = copyActiveSkills(state);
-    const skillDirective = pruneSkillsDirective(state, listAllSkills());
+    const copied = copyActiveSkills(capabilityState, ctx.host);
+    const skillDirective = pruneSkillsDirective(capabilityState, listAllSkills(), ctx.host);
     stampMaterialization(cwd, state);
     // The materialized project AGENTS.md/CLAUDE.md (just re-stamped) carries the
     // same Active Rule Index and is auto-loaded by every host — re-listing the
@@ -480,17 +505,18 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     });
     normalizeState(state, mode);
 
-    const spec = stackSpecForState(state);
+    const capabilityState = capabilityStateForRun(cwd, state);
+    const spec = stackSpecForState(capabilityState);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
     const { body } = packBundle(root, modeMandatory, spec.optional);
 
-    const copied = copyActiveSkills(state);
+    const copied = copyActiveSkills(capabilityState, ctx.host);
     const allSkills = listAllSkills();
     stampMaterialization(cwd, state);
     ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the graph for a freshly auto-detected existing project
     writeState(cwd, state);
-    const skillDirective = pruneSkillsDirective(state, allSkills);
+    const skillDirective = pruneSkillsDirective(capabilityState, allSkills, ctx.host);
 
     const banner = autoDetectedAnnouncement(detected as never);
     let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;

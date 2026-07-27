@@ -13,6 +13,13 @@ import {
   type RunAgentContext,
 } from '../../../shared/state';
 import { recordMainOnboardingSession } from '../../../shared/onboarding-server/onboarding-session';
+import { ensureRunBootstrap } from '../../../shared/run-bootstrap-policy';
+import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+} from '../../../shared/architecture-contract';
+import { compileVerificationContract } from '../../../shared/verification-contract';
 
 const STACK = 'default|react-vite|supabase|none';
 const RUN = 'run-1';
@@ -60,6 +67,24 @@ function writeManifest(dir: string, assignments: unknown[], runId = RUN): void {
   const file = manifestFile(dir, runId);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ version: 1, runId, assignments }), 'utf8');
+}
+
+function writeRuntimeContracts(dir: string, state: Record<string, unknown>, runId = RUN): void {
+  const inputPath = architectureInputPath(dir, runId);
+  fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+  fs.writeFileSync(inputPath, JSON.stringify({
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [
+      { id: 'app-shell', name: 'App', kind: 'app-shell' },
+      { id: 'home', name: 'Home', kind: 'page' },
+    ],
+  }));
+  const architecture = compileArchitectureForRun(dir, runId, state);
+  const verification = compileVerificationContract(dir, runId, state, architecture, {
+    changedPaths: [],
+  });
+  publishRuntimeAssignments(dir, architecture, verification.contractHash);
 }
 function seedFallbackClaim(dir: string, target: string, holder: string, createdAt: string): void {
   const file = path.join(claimsDir(dir), `${safeKey(target)}.json`);
@@ -119,6 +144,29 @@ test('manifest mode: writing inside another role\'s scope is a scope conflict', 
     assert.ok(reason && reason.includes('assigned scope'));
     assert.ok(reason && reason.includes('src/app/api/route.ts'));
     assert.ok(reason && reason.includes('senior-backend'));
+  });
+});
+
+test('compiled v2 scope ignores stray-run manifests and fails closed when current assignments are tampered', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    writeRuntimeContracts(dir, state);
+    writeManifest(dir, [
+      { role: 'senior-frontend', scope: { include: ['apps/web/**'] } },
+    ], 'stray-run');
+
+    assert.equal(gate(dir, state, 'apps/web/src/pages/Home.tsx', rawFor(THREAD)), null);
+    const outside = gate(dir, state, 'apps/web/src/pages/Other.tsx', rawFor(THREAD));
+    assert.ok(outside && outside.includes('STRUCT_ASSIGNMENT_ALLOWLIST_GAP'));
+
+    const currentPath = manifestFile(dir);
+    const tampered = JSON.parse(fs.readFileSync(currentPath, 'utf8')) as Record<string, unknown>;
+    const assignments = tampered.assignments as Array<Record<string, unknown>>;
+    (assignments[0]!.scope as Record<string, unknown>).include = ['apps/web/**'];
+    fs.writeFileSync(currentPath, JSON.stringify(tampered));
+    const invalid = gate(dir, state, 'apps/web/src/pages/Home.tsx', rawFor(THREAD));
+    assert.ok(invalid && invalid.includes('missing, stale, or tampered'));
   });
 });
 
@@ -306,16 +354,18 @@ test('shell-command feature write is denied (cannot verify ownership)', () => {
   });
 });
 
-test('architect may create empty package barrel scaffold before assignments exist', () => {
+test('architect cannot create empty package barrel scaffold before runtime assignments exist', () => {
   withDir((dir) => {
     const state = baseState();
     assert.ok(claimThreadRole(dir, state, THREAD, 'senior-architect', { parentSessionId: 'orchestrator' }));
-    assert.equal(gate(dir, state, 'packages/ui/src/index.ts', rawFor(THREAD), {
+    const ui = gate(dir, state, 'packages/ui/src/index.ts', rawFor(THREAD), {
       content: '// @app/ui scaffold\nexport {};\n',
-    }), null);
-    assert.equal(gate(dir, state, 'packages/i18n/src/index.ts', rawFor(THREAD), {
+    });
+    const i18n = gate(dir, state, 'packages/i18n/src/index.ts', rawFor(THREAD), {
       content: '/* filled by senior-frontend */\n',
-    }), null);
+    });
+    assert.ok(ui && ui.includes('does not own'));
+    assert.ok(i18n && i18n.includes('does not own'));
   });
 });
 
@@ -331,7 +381,7 @@ test('architect empty-barrel exception does not allow package implementation sou
   });
 });
 
-test('manifest mode: invalid architect scaffold reservation does not block implementer package barrels', () => {
+test('manifest mode: an architect scaffold reservation conflicts and cannot be ignored', () => {
   withDir((dir) => {
     const state = baseState();
     assert.ok(claimThreadRole(dir, state, THREAD, 'senior-backend', { parentSessionId: 'orchestrator' }));
@@ -339,7 +389,9 @@ test('manifest mode: invalid architect scaffold reservation does not block imple
       { role: 'senior-architect', scope: { include: ['packages/types/src/index.ts'] } },
       { role: 'senior-backend', scope: { include: ['packages/types/'], exclude: ['packages/types/src/index.ts'] } },
     ]);
-    assert.equal(gate(dir, state, 'packages/types/src/index.ts', rawFor(THREAD)), null);
+    const reason = gate(dir, state, 'packages/types/src/index.ts', rawFor(THREAD));
+    assert.ok(reason && reason.includes('senior-architect'));
+    assert.ok(reason && reason.includes('assigned scope'));
   });
 });
 
@@ -351,17 +403,19 @@ test('not a subagent session in a subagents project is denied (building phase)',
   });
 });
 
-test('maintenance phase: run-team stands down so the quick-fix worker can write', () => {
+test('maintenance phase fails closed for an unattributed write without a bounded contract', () => {
   withDir((dir) => {
     // existing-codebase infers maintenance (also covers a new-project flipped to it).
     // The host where this bit users keeps every run-claim `pending`, so the worker's
     // write resolves to no context → would deny run-team-not-subagent in a build.
     const state = baseState({ mode: 'existing-codebase' });
-    assert.equal(gate(dir, state, 'src/app/(public)/news/page.tsx', {}), null);
+    const first = gate(dir, state, 'src/app/(public)/news/page.tsx', {});
+    assert.ok(first && first.includes('maintenance writes fail closed'));
     // Even a stale BUILD manifest that scopes the path to another role must not block
     // a maintenance edit (the quick-fix worker is never in that manifest).
     writeManifest(dir, FE_BE_MANIFEST);
-    assert.equal(gate(dir, state, 'src/app/api/route.ts', rawFor(THREAD)), null);
+    const second = gate(dir, state, 'src/app/api/route.ts', rawFor(THREAD));
+    assert.ok(second && second.includes('maintenance writes fail closed'));
   });
 });
 
@@ -374,14 +428,31 @@ test('legacy mode (no manifest): a path owned by the active role is allowed', ()
   });
 });
 
-test('legacy mode (no manifest): the quick-fix maintenance worker may write both FE- and BE-owned paths', () => {
+test('quick-fix writes require the exact parent-bounded bootstrap scope', () => {
   withDir((dir) => {
-    const state = baseState({ frontend: 'nextjs', materializedStack: 'default|nextjs|supabase|none' });
+    const state = baseState({
+      mode: 'existing-codebase',
+      frontend: 'nextjs',
+      materializedStack: 'default|nextjs|supabase|none',
+    });
     assert.ok(claimThreadRole(dir, state, THREAD, 'quick-fix', { parentSessionId: 'orchestrator' }));
-    // Regression: these used to hit run-team-wrong-role because the ownership
-    // oracle only knew senior-frontend / senior-backend.
+    const absent = gate(dir, state, 'src/components/Button.tsx', rawFor(THREAD));
+    assert.ok(absent && absent.includes('no valid parent-published WorkUnitContract'));
+    const bootstrap = ensureRunBootstrap(dir, RUN, 'quick-fix', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'test-parent-maintenance',
+      modelPolicyId: 'test-policy',
+      boundedOutputs: [
+        'src/components/Button.tsx',
+        'src/app/api/join/route.ts',
+      ],
+    });
+    assert.ok(bootstrap);
     assert.equal(gate(dir, state, 'src/components/Button.tsx', rawFor(THREAD)), null);
     assert.equal(gate(dir, state, 'src/app/api/join/route.ts', rawFor(THREAD)), null);
+    const outside = gate(dir, state, 'src/components/Other.tsx', rawFor(THREAD));
+    assert.ok(outside && outside.includes('no valid parent-published WorkUnitContract'));
   });
 });
 

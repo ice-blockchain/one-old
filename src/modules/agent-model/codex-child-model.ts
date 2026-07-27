@@ -1,7 +1,6 @@
 import { asString } from '../../adapters/coerce';
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { resolveProjectRoot } from '../../shared/hook-paths';
 import { obj } from '../../shared/obj';
 import {
   claimThreadRole,
@@ -19,6 +18,9 @@ import {
 } from '../../shared/state';
 import { canonicalHost } from '../../shared/model-tiers';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
+import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
+import { ensureRunHostCapability } from '../../shared/host-capabilities';
+import { resolveToolScope } from '../../shared/tool-scope';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 
 function unique(values: Array<string | null | undefined>): string[] {
@@ -29,7 +31,13 @@ function unique(values: Array<string | null | undefined>): string[] {
 // model but cannot deny execution; every child tool reaches this guard before
 // the normal auth/onboarding/model pipelines.
 export function codexChildModelGate(ctx: Ctx): HookResult {
-  const cwd = resolveProjectRoot(ctx.cwd, ctx.input.tool?.filePath, { ceiling: ctx.input.workspaceRoot });
+  // Stand down before any project-state/model-policy read. This is what keeps a
+  // read-only child inside the Traffic One source repo from becoming inert.
+  // resolveToolScope also inspects explicit targets/workdirs/commands, so a call that
+  // starts here but targets a real project does not inherit this exemption.
+  const scope = resolveToolScope(ctx);
+  if (scope.standsDown) return noop();
+  const cwd = scope.projectRoot;
   const raw = obj(ctx.input.raw) || {};
   const payload = obj(raw.payload) || {};
   const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
@@ -53,6 +61,25 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       return deny(
         `traffic-one — child blocked: immutable model-policy.json is missing, corrupt, or belongs to another host for run ${runId || '(missing)'}. `
         + 'Only the parent may create the run and freeze the policy; stop this child and repair/respawn it from the parent.',
+      );
+    }
+    const claimedRole = typeof claimed?.role === 'string' ? claimed.role : '';
+    if (!claimedRole) {
+      return deny(
+        'traffic-one — child blocked: no parent-resolved trafficOneRole is bound to this child. '
+        + 'Stop it and respawn from the parent after the role bootstrap is published.',
+      );
+    }
+    const bootstrap = readActiveRunBootstrap(cwd, runId, claimedRole);
+    if (
+      !bootstrap
+      || bootstrap.modelPolicyId !== policy.policyId
+      || bootstrap.host !== activeHost
+      || bootstrap.trafficOneRole !== claimedRole
+    ) {
+      return deny(
+        `traffic-one — child blocked: the parent role/rule/skill bootstrap for ${claimedRole} is missing, `
+        + 'corrupt, or does not match model-policy.json. This child has zero tool access; repair and respawn it.',
       );
     }
     return noop();
@@ -174,6 +201,21 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     );
   }
 
+  const policy = readRunModelPolicy(cwd, runId);
+  const bootstrap = readActiveRunBootstrap(cwd, runId, role);
+  if (
+    !policy
+    || !bootstrap
+    || bootstrap.modelPolicyId !== policy.policyId
+    || bootstrap.host !== 'codex'
+    || bootstrap.trafficOneRole !== role
+  ) {
+    return deny(
+      `traffic-one — Codex child blocked: parent bootstrap for ${role} is missing, corrupt, or does not match `
+      + 'the immutable run policy. This child may not read/search/write; the parent must repair and respawn it.',
+    );
+  }
+
   // Create the role claim/reuse row only after the actual hook model has passed
   // the immutable policy. Requested spawn input is never authoritative.
   const claimed = claimThreadRole(cwd, state, childId, role, {
@@ -185,6 +227,17 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
   });
   if (!claimed) {
     return deny('traffic-one — Codex child blocked: model verification passed but the verified role claim could not be persisted atomically. Retry this tool once; if it repeats, replace the child from the parent.');
+  }
+  if (!ensureRunHostCapability(cwd, runId, 'codex', {
+    point: 'first-tool-model-check',
+    event: 'PreToolUse',
+    source: 'verified-child-model-gate',
+    sessionId: childId,
+  })) {
+    return deny(
+      'traffic-one — Codex child blocked: the verified first-tool model check could not be recorded in the '
+      + 'runtime-owned HostCapabilityV1 ledger. Stop this child and repair the run from the parent.',
+    );
   }
   return noop();
 }

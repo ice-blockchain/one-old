@@ -47,6 +47,23 @@ test('opencode: parses documented tool hook payload shape', () => {
   assert.equal(patched.tool?.rawName, 'apply_patch');
   assert.equal(patched.tool?.class, 'file-edit');
   assert.equal(patched.tool?.patchText, '*** Begin Patch');
+
+  const editArgs = {
+    file_path: 'src/App.tsx',
+    old_string: 'const title = "old";',
+    new_string: 'const title = "new";',
+    replace_all: false,
+  };
+  const edited = opencode.parse(inv('before-tool-use', {
+    event: 'tool.execute.before',
+    cwd: '/repo',
+    tool: 'edit',
+    output: { args: editArgs },
+  }));
+  assert.equal(edited.tool?.class, 'file-edit');
+  assert.equal(edited.tool?.filePath, 'src/App.tsx');
+  assert.deepEqual((edited.raw as Record<string, unknown>).tool_input, editArgs);
+  assert.deepEqual((edited.raw as Record<string, unknown>).toolInput, editArgs);
 });
 
 test('opencode: canonicalizes camel/snake/diff apply_patch variants', () => {

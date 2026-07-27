@@ -14,6 +14,7 @@ import {
   reconcileStaleRunningUnits,
   recordOpenCodeFallback,
   recordOpenCodeUnitStatus,
+  writeOpenCodeQueue,
 } from '../opencode-queue';
 import { parsePlanDelegationUnits } from '../opencode-roles';
 
@@ -35,8 +36,7 @@ test('readOpenCodeQueue + readOpenCodeUnitStatuses round-trip queue and status f
       '<!-- opencode-delegate:end -->',
     ].join('\n'));
     const queue = buildOpenCodeQueue(cwd, runId, units);
-    fs.mkdirSync(path.join(cwd, '.traffic-one', 'runs', runId), { recursive: true });
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-queue.json'), `${JSON.stringify(queue, null, 2)}\n`, 'utf8');
+    writeOpenCodeQueue(cwd, queue);
     recordOpenCodeUnitStatus(cwd, runId, {
       id: 'ui-card',
       role: 'frontend',
@@ -51,6 +51,11 @@ test('readOpenCodeQueue + readOpenCodeUnitStatuses round-trip queue and status f
     assert.equal(statuses.length, 1);
     assert.equal(statuses[0]?.status, 'running');
     assert.equal(hasRunningOpenCodeUnits(cwd, runId), true);
+    assert.deepEqual(
+      fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId))
+        .filter((name) => name.endsWith('.tmp') || name.endsWith('.lock')),
+      [],
+    );
   });
 });
 

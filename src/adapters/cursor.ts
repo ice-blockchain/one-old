@@ -191,9 +191,21 @@ export function makeCursorAdapter(): HostAdapter {
       // keeps the ceiling unset (→ safe unbounded fallback) rather than wrong if a
       // future/edge payload ever sends a relative root.
       const wsCeiling = wsRoot && path.isAbsolute(wsRoot) ? wsRoot : undefined;
+      const hostHookPoint = sub === 'before-tool-use'
+        ? 'preToolUse'
+        : sub === 'before-shell-execution'
+          ? 'beforeShellExecution'
+          : sub === 'before-read-file'
+            ? 'beforeReadFile'
+            : sub === 'before-mcp-execution'
+              ? 'beforeMCPExecution'
+          : sub === 'after-file-edit'
+            ? 'afterFileEdit'
+            : undefined;
       return {
         event: mapping.event,
         host: 'cursor',
+        ...(hostHookPoint ? { hostHookPoint } : {}),
         // Cursor provides `workspace_roots`, not `cwd`; consult it before falling
         // back to its event-dependent process.cwd() (plugin dir for most plugin
         // hooks, workspace for Stop/SubagentStop).

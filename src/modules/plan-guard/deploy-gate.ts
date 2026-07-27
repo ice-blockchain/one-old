@@ -12,6 +12,7 @@ import type { Ctx, HookResult } from '../../core/types';
 import { computeProjectFingerprint } from '../../runners/security-check';
 import { readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { resolveToolScope } from '../../shared/tool-scope';
 
 type Rec = Record<string, unknown>;
 
@@ -59,12 +60,15 @@ export function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
 }
 
 export function deployGate(ctx: Ctx): HookResult {
-  if (pluginUseDeclined(ctx.cwd)) return noop();
+  const scope = resolveToolScope(ctx);
+  if (scope.standsDown) return noop();
+  const projectRoot = scope.projectRoot;
+  if (pluginUseDeclined(projectRoot)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!DEPLOY_RE.test(command)) return noop();
 
-  const state = readEffectiveState(ctx.cwd);
+  const state = readEffectiveState(projectRoot);
   const approvedAt = typeof state.lastShipperApprovalAt === 'string' ? Date.parse(state.lastShipperApprovalAt) : 0;
   const fresh = approvedAt > 0 && (Date.now() - approvedAt) < SHIPPER_APPROVAL_WINDOW_MS;
   if (!fresh) {
@@ -74,7 +78,7 @@ export function deployGate(ctx: Ctx): HookResult {
       + 'user confirmed). The stamp grants a 10-minute deploy window.');
   }
 
-  const securityCheck = checkSecurityDeployStamp(state, ctx.cwd);
+  const securityCheck = checkSecurityDeployStamp(state, projectRoot);
   if (!securityCheck.ok) return deny(securityCheck.reason ?? 'Deploy gate: security check failed.');
 
   return noop();

@@ -24,14 +24,15 @@ import * as path from 'path';
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
+import { capabilityProfileForRun } from '../../shared/architecture-contract';
 import { detectMode } from '../../shared/detection';
-import { resolveProjectRoot } from '../../shared/hook-paths';
 import { canonicalHost } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { resolveToolScope } from '../../shared/tool-scope';
 import { allowsNextjs } from './forbidden';
 import { makePlanBlock } from './plan-static';
 
@@ -60,40 +61,49 @@ function usesMainAgentTeam(state: Record<string, unknown>): boolean {
 export function scaffoldGate(ctx: Ctx): HookResult {
   // Windsurf/Devin only — never touch other hosts.
   if (canonicalHost(ctx.host) !== 'windsurf') return noop();
-  if (pluginUseDeclined(ctx.cwd)) return noop();
-  // Never police scaffolding inside the plugin authoring repo.
-  if (isNonProjectRoot(ctx.cwd)) return noop();
+  const scope = resolveToolScope(ctx);
+  if (scope.standsDown) return noop();
+  const root = scope.projectRoot;
+  if (pluginUseDeclined(root)) return noop();
+  // Never police scaffolding confined to the plugin authoring repo.
+  if (isNonProjectRoot(root)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!SCAFFOLD_RE.test(command)) return noop();
 
-  // Resolve UP to the workspace root that holds onboarding/plan state, so a
-  // scaffolder run from (or targeting) a sub-package still finds the real plan.md.
-  const root = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
   const state = readEffectiveState(root);
   const mode = (state.mode as string) || detectMode(root);
   // Only govern the new-project build flow; existing codebases keep their tooling.
   if (mode !== 'new-project') return noop();
 
-  // (A) On-stack enforcement: never scaffold Next.js / CRA on a React/Vite project.
+  // (A) On-stack enforcement: compare the requested scaffolder with the
+  // runtime-derived framework instead of assuming every project is React/Vite.
   if ((NEXT_SCAFFOLD_RE.test(command) && !allowsNextjs(state, root)) || CRA_SCAFFOLD_RE.test(command)) {
+    const profile = capabilityProfileForRun(root, state);
+    const profileSummary = `profile=${profile.profileId}; framework=${profile.framework}; surfaces=${profile.surfaces.join(', ') || 'none'}; roots=${profile.sourceRoots.join(', ') || 'none'}`;
     return deny(block('scaffold-stack-gate',
-      "Stack gate: this project's stack is React/Vite (Traffic One does not use Next.js or create-react-app). "
-      + 'Scaffold the app under `apps/web` with Vite per `.traffic-one/plan.md` and `rules/modes/new-project.md` '
-      + '— do not run create-next-app / create-react-app. See rules/core.md for the approved stack.'));
+      `Stack gate: this scaffolder conflicts with the runtime-derived capability contract (${profileSummary}). `
+      + 'Use `.traffic-one/plan.md` and `CompiledArchitectureV1` outputs for the detected framework and roots. '
+      + 'If the requested stack differs, replan and correct capability evidence before scaffolding.',
+      { PROFILE_SUMMARY: profileSummary }));
   }
 
   // (B) Architect-first: no app scaffolding before the architect writes plan.md.
   if (!planExists(root)) {
+    const profile = capabilityProfileForRun(root, state);
+    const profileSummary = `profile=${profile.profileId}; framework=${profile.framework}; surfaces=${profile.surfaces.join(', ') || 'none'}; roots=${profile.sourceRoots.join(', ') || 'none'}; roles=${profile.roles.join(', ')}; QA=${profile.qaAdapters.join(', ') || 'stack-native build/test/lint'}`;
     if (usesMainAgentTeam(state)) {
       return deny(block('scaffold-main-agent-plan-gate',
-        'Plan gate: `.traffic-one/plan.md` is missing and this project is in Low/main-agent mode. Do NOT call `run_subagent` or another subagent tool. You are the architect in this thread: write the plan and required `.traffic-one/` project memory before root config or workspace scaffolding, then continue with the same ordered phases. Do not run `create-*` app scaffolders before the plan exists.'));
+        'Plan gate: `.traffic-one/plan.md` is missing and this project is in Low/main-agent mode. Do NOT call `run_subagent` or another subagent tool. You are the architect in this thread: write the plan and required `.traffic-one/` project memory before root config or workspace scaffolding, then continue with the same ordered phases. Do not run `create-*` app scaffolders before the plan exists. '
+        + `Follow the runtime capability contract, not a frontend default: ${profileSummary}.`,
+        { PROFILE_SUMMARY: profileSummary }));
     }
     return deny(block('scaffold-plan-gate',
       'Plan gate: run the `senior-architect` subagent FIRST to produce `.traffic-one/plan.md` before scaffolding a '
-      + 'new project. On Windsurf/Devin spawn it with `run_subagent` (profile `senior-architect`); it writes the '
-      + '`apps/web` Turborepo monorepo scaffold per the plan. Do not run `create-*` app scaffolders — build on the '
-      + 'plan the architect produces.'));
+      + 'new project. On Windsurf/Devin spawn it with `run_subagent` (profile `senior-architect`); the runtime derives '
+      + 'the actual framework, roots, and allowed outputs before implementation. Do not run `create-*` app scaffolders '
+      + `or invent layout conventions before the compiled plan exists. Runtime contract: ${profileSummary}.`,
+      { PROFILE_SUMMARY: profileSummary }));
   }
 
   return noop();

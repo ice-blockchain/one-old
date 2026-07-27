@@ -26,8 +26,10 @@ function normalizeHookTargetPath(cwd: string, filePath: unknown): string {
 
 export function stateRequiresNewProjectMonorepo(state: Rec): boolean {
   if (!state || state.mode !== 'new-project' || isNativeState(state)) return false;
-  if (state.stack === 'default' || state.stack === 'react-realtime-monorepo') return true;
-  return state.frontend === 'react-vite' && state.backend !== 'none';
+  // The pnpm/Turborepo layout is a named profile contract, not a fallback for
+  // every React-labelled or backend-backed project. Custom profiles keep the
+  // roots compiled by the capability registry.
+  return state.stack === 'default' || state.stack === 'react-realtime-monorepo';
 }
 
 // Walk up from the tool's target file to the nearest dir (within cwd) that has a

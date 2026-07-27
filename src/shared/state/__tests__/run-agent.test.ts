@@ -59,6 +59,10 @@ import { currentHostModelTarget } from '../../current-model-tiers';
 import { ensureRunModelPolicy } from '../../run-model-policy';
 import { stackFingerprint } from '../materialization';
 import { observeCodexChildModel } from '../codex-model-observation';
+import {
+  activateRunV2RollbackBarrier,
+  effectiveLegacyRunStatus,
+} from '../../run-settlement';
 
 function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
   const d = path.join(dir, '.traffic-one', 'digests', runId);
@@ -927,6 +931,63 @@ test('run ledger transitions are validated, terminal writes are idempotent, and 
     assert.deepEqual(
       (shipped!.transitionHistory as Array<Record<string, unknown>>).map((entry) => entry.to),
       ['active', 'blocked', 'active', 'completed', 'completed'],
+    );
+  });
+});
+
+test('current V2 ledger writes preserve the irreversible raw rollback projection', () => {
+  withPrefs((dir) => {
+    const runId = 'v2-raw-projection';
+    assert.ok(transitionRunStatus(dir, runId, { status: 'active', kind: 'orchestration' }));
+    assert.ok(activateRunV2RollbackBarrier(dir, runId));
+
+    // Exercise the ordinary metadata writer after activation. Its atomic write
+    // must itself remain legacy-failed; correctness cannot depend on the later
+    // settlement reconciliation rewriting a transient raw `active` ledger.
+    const canonical = ensureRunLedger(dir, runId, { kind: 'orchestration' });
+    assert.equal(canonical?.status, 'active');
+    const raw = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'run.json'),
+      'utf8',
+    ));
+    assert.equal(raw.status, 'failed');
+    assert.equal(raw.outcome, 'agent-failed');
+    assert.equal(effectiveLegacyRunStatus(raw, '1.0.19'), 'failed');
+    assert.equal(effectiveLegacyRunStatus(raw, '1.0.20'), 'active');
+  });
+});
+
+test('verified settlement releases terminal role claims atomically and direct completion fails closed while claims are active', () => {
+  withPrefs((dir) => {
+    const runId = 'run-active-claim-settlement';
+    assert.ok(transitionRunStatus(dir, runId, { status: 'active', kind: 'orchestration' }));
+    writeDigest(dir, runId, 'backend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    const pendingDir = path.join(dir, '.traffic-one', 'runs', runId, 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(path.join(pendingDir, 'tester-claim.json'), JSON.stringify({
+      version: 1,
+      runId,
+      claimId: 'tester-claim',
+      role: 'senior-tester',
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    }));
+
+    assert.equal(
+      transitionRunStatus(dir, runId, { status: 'completed', outcome: 'verified' }),
+      null,
+      'a generic ledger transition may not bypass an active claim',
+    );
+    const settled = settleTerminalRunLedger(dir, runId);
+    assert.equal(settled?.status, 'completed');
+    assert.equal(settled?.outcome, 'verified');
+    assert.equal(fs.existsSync(path.join(pendingDir, 'tester-claim.json')), false);
+    assert.equal(
+      fs.existsSync(path.join(dir, '.traffic-one', 'runs', runId, 'settlement-v2.json')),
+      false,
+      'a V1 compatibility run is not silently promoted into a canonical V2 settlement',
     );
   });
 });
@@ -1864,6 +1925,33 @@ test('ensureCurrentRunId adopts a recent runs/ ledger when currentRunId was blan
     );
     const rePersisted = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
     assert.equal(rePersisted.currentRunId, first, 'the blanked currentRunId is re-persisted to .one.json');
+  });
+});
+
+test('ensureCurrentRunId adopts a rollback-guarded V2 run by its effective status', () => {
+  withPrefs((dir) => {
+    const freshState = () => ({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
+    });
+    const first = ensureCurrentRunId(dir, freshState());
+    assert.ok(activateRunV2RollbackBarrier(dir, first));
+    const runFile = path.join(dir, '.traffic-one', 'runs', first, 'run.json');
+    const raw = JSON.parse(fs.readFileSync(runFile, 'utf8')) as Record<string, unknown>;
+    assert.equal(raw.status, 'failed', 'the old runtime keeps the irreversible projection');
+    assert.equal(effectiveLegacyRunStatus(raw), 'active');
+
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    const blanked = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    delete blanked.currentRunId;
+    fs.writeFileSync(statePath, JSON.stringify(blanked), 'utf8');
+
+    const again = ensureCurrentRunId(dir, freshState());
+    assert.equal(again, first);
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, '.traffic-one', 'runs')).filter((name) => /^\d{13}$/.test(name)),
+      [first],
+      'the physical failed projection must not mint a sibling current run',
+    );
   });
 });
 

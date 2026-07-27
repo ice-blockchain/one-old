@@ -149,11 +149,41 @@ export function cleanupPrevious(cwd: string, previous: Rec, nextRulePaths: Set<s
   return removed;
 }
 
-export function modeRulesForState(root: string, state: Rec): string[] {
+const DEFAULT_VITE_NEW_PROJECT_RULE = 'rules/modes/new-project-vite-react.md';
+const DEFAULT_VITE_NEW_PROJECT_REFERENCES = [
+  'rules/modes/new-project-architecture.md',
+  'rules/modes/new-project-setup.md',
+];
+
+function defaultViteNewProject(state: Rec, profileId?: string): boolean {
+  const effectiveProfile = profileId
+    || (state.frontend === 'react-vite' ? 'vite-react' : '');
+  const defaultStack = state.stack === 'default' || state.stack === 'react-realtime-monorepo';
+  return defaultStack && effectiveProfile === 'vite-react';
+}
+
+function existingRulePaths(root: string, relPaths: readonly string[]): string[] {
+  return relPaths.filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
+}
+
+/**
+ * Blocking mode rules. The new-project spine is universal, while the default
+ * Vite gateway is selected from the immutable runtime capability profile.
+ * Detailed setup/tree documents are references, not always-on policy.
+ */
+export function modeRulesForState(root: string, state: Rec, profileId?: string): string[] {
   const mode = state && typeof state.mode === 'string' ? state.mode : '';
   if (!mode) return [];
   const relPath = `rules/modes/${mode}.md`;
   if (!fs.existsSync(path.join(root, templatePath(relPath)))) return [];
+  if (mode === 'new-project') {
+    return [
+      relPath,
+      ...(defaultViteNewProject(state, profileId) && fs.existsSync(path.join(root, templatePath(DEFAULT_VITE_NEW_PROJECT_RULE)))
+        ? [DEFAULT_VITE_NEW_PROJECT_RULE]
+        : []),
+    ];
+  }
   // Large mode rules are split into on-demand slices named `<mode>-<topic>.md`
   // next to the spine; materialize whatever slices exist so the spine's
   // pointers resolve inside the project.
@@ -167,4 +197,14 @@ export function modeRulesForState(root: string, state: Rec): string[] {
     // best effort — the spine alone still materializes
   }
   return [relPath, ...slices];
+}
+
+/**
+ * Profile-scoped mode references. Keeping this separate prevents backend-only,
+ * native, and custom web projects from inheriting the default web playbook.
+ */
+export function modeReferenceRulesForState(root: string, state: Rec, profileId?: string): string[] {
+  const mode = state && typeof state.mode === 'string' ? state.mode : '';
+  if (mode !== 'new-project' || !defaultViteNewProject(state, profileId)) return [];
+  return existingRulePaths(root, DEFAULT_VITE_NEW_PROJECT_REFERENCES);
 }

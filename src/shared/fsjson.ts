@@ -40,9 +40,8 @@ export function writeJson(filePath: string, value: unknown): void {
   try {
     fs.writeFileSync(tmpPath, payload, 'utf8');
     fs.renameSync(tmpPath, filePath);
-  } catch {
+  } finally {
     try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
-    fs.writeFileSync(filePath, payload, 'utf8');
   }
 }
 

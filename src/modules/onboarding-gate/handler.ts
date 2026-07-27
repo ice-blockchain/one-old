@@ -18,7 +18,7 @@ import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
-import { isOnboardedProjectRoot, resolveProjectRoot } from '../../shared/hook-paths';
+import { isOnboardedProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
@@ -38,8 +38,14 @@ import { canonicalToolName, isModelCaptureCommand, isMutatingPreToolUse, isOnboa
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
-import { cursorRunPolicyMissingTiers, ensureRunModelPolicy, runModelPolicyPath } from '../../shared/run-model-policy';
+import {
+  cursorRunPolicyMissingTiers,
+  ensureRunModelPolicy,
+  readRunModelPolicy,
+  runModelPolicyPath,
+} from '../../shared/run-model-policy';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
+import { resolveToolScope } from '../../shared/tool-scope';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
@@ -60,14 +66,16 @@ export function onboardingGate(ctx: Ctx): HookResult {
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
   const cwd = ctx.cwd;
 
-  if (isNonProjectRoot(cwd)) return noop();
-
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
+  const toolScope = resolveToolScope(ctx);
+  if (toolScope.standsDown) return noop();
   // Monorepo safety: a scaffolder may run from a sub-package cwd or target a
   // sub-package file. Resolve UP to the workspace root that holds onboarding state,
   // so a stray per-package state file can't trip a bogus per-package wizard or hide
-  // that the root is already onboarded. Falls back to cwd for a standalone project.
-  const root = resolveProjectRoot(cwd, filePath, { ceiling: ctx.input.workspaceRoot });
+  // that the root is already onboarded. A hook whose raw cwd is the plugin
+  // source instead resolves against its explicit external file/workdir/command
+  // target, so authoring stand-down never leaks across the boundary.
+  const root = toolScope.projectRoot;
   // The resolver skips authoring roots, but its fallback can still return cwd /
   // a hint dir inside the plugin repo — never gate or materialize there.
   if (isNonProjectRoot(root)) return noop();
@@ -293,6 +301,20 @@ export function onboardingGate(ctx: Ctx): HookResult {
           `traffic-one — Cursor models required: before run ${buildRunId} can be frozen, capture exact picker ids covering `
           + `${missingCursorTiers?.join(', ')} and run `
           + `\`${modelCaptureCommand(root, 'cursor')}\`. Retry this parent tool afterward. No child may start without the immutable snapshot.`,
+        );
+      }
+      const frozenPolicy = readRunModelPolicy(root, buildRunId);
+      if (frozenPolicy?.host !== undefined && frozenPolicy.host !== ctx.host) {
+        return deny(
+          `traffic-one — model policy unavailable: run ${buildRunId} is already frozen for ${frozenPolicy.host}, not ${ctx.host}. `
+          + 'Start a new parent run for this host; do not rebase or replace model-policy.json.',
+        );
+      }
+      if (frozenPolicy) {
+        return deny(
+          `traffic-one — run bootstrap unavailable: Performance and immutable model policy are already saved for run ${buildRunId}, `
+          + 'but the runtime could not publish or validate its capability baseline and parent bootstrap. Do not redo onboarding '
+          + 'or replace model-policy.json. Update or repair Traffic One, then retry this parent tool with the same run.',
         );
       }
       return deny(

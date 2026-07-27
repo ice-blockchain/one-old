@@ -172,7 +172,11 @@ test('beforeShellExecution pipeline lets Cursor repair missing capture, then fre
       'before-shell-execution',
       hookInput(captureCommand(cwd)),
     )).stdout);
-    assert.notEqual(capture.permission, 'deny', 'priority-10 onboarding must not block its own recovery command');
+    assert.notEqual(
+      capture.permission,
+      'deny',
+      `priority-10 onboarding must not block its own recovery command: ${JSON.stringify(capture)}`,
+    );
 
     assert.equal(runModelGate([
       cwd,

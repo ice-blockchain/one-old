@@ -10,6 +10,7 @@ import {
   isTestScopePath,
   roleCanWriteFeatureSource,
   shellAssetImportDest,
+  shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
   subagentMayWriteFeatureSource,
 } from '../feature-source';
@@ -86,6 +87,9 @@ test('commandAppearsToWriteFeatureSource needs both a write primitive and a feat
   assert.equal(commandAppearsToWriteFeatureSource('sed -i s/a/b/ packages/ui/src/x.ts'), true);
   assert.equal(commandAppearsToWriteFeatureSource("find /tmp/project/apps/web/src -name '*.js' -delete"), true);
   assert.equal(commandAppearsToWriteFeatureSource('rm -f apps/web/src/stale.js'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('ln -s /tmp/payload apps/web/src/linked'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('/bin/ln -s /tmp/payload apps/web/src/linked'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('ln /tmp/payload src/linked.ts'), true);
   assert.equal(commandAppearsToWriteFeatureSource('mkdir -p packages/ui/src'), false);
   assert.equal(commandAppearsToWriteFeatureSource('cat apps/web/src/x.ts 2>&1'), false);
   // write primitive but no feature path
@@ -132,6 +136,8 @@ test('shellWriteTargetsStateDir carves out run-state heredocs only', () => {
   assert.equal(shellWriteTargetsStateDir(
     'rm apps/web/src/x.ts && cat > .traffic-one/digests/123/r.md <<EOF\nx\nEOF'), false);
   assert.equal(shellWriteTargetsStateDir(
+    'ln -s /tmp/payload apps/web/src/linked && cat > .traffic-one/digests/123/r.md <<EOF\nx\nEOF'), false);
+  assert.equal(shellWriteTargetsStateDir(
     'sed -i s/a/b/ src/x.ts > .traffic-one/runs/123/log.txt'), false);
   // plan.md is intentionally not carved out
   assert.equal(shellWriteTargetsStateDir('cat > .traffic-one/plan.md <<EOF\nplan\nEOF'), false);
@@ -139,6 +145,19 @@ test('shellWriteTargetsStateDir carves out run-state heredocs only', () => {
   assert.equal(shellWriteTargetsStateDir('cat .traffic-one/digests/123/reviewer.md'), false);
   assert.equal(shellWriteTargetsStateDir(''), false);
   assert.equal(shellWriteTargetsStateDir(undefined), false);
+});
+
+test('shellTrafficOneWriteTargets extracts real state targets but ignores heredoc prose', () => {
+  assert.deepEqual(shellTrafficOneWriteTargets(
+    "cat > .traffic-one/runs/R/architecture-v1.json <<'EOF'\n"
+    + 'Mention .traffic-one/runs/R/claims.json only as prose.\nEOF',
+  ), ['.traffic-one/runs/R/architecture-v1.json']);
+  assert.deepEqual(shellTrafficOneWriteTargets(
+    'python3 -c "open(\'.traffic-one/reports/qa/R/report-v2.json\',\'w\').write(\'{}\')"',
+  ), ['.traffic-one/reports/qa/R/report-v2.json']);
+  assert.deepEqual(shellTrafficOneWriteTargets(
+    'cat .traffic-one/runs/R/architecture-v1.json',
+  ), []);
 });
 
 test('sed -i detection anchors on sed option tokens, not any later "-i" text', () => {

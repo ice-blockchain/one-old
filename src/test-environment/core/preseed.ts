@@ -30,6 +30,7 @@ export function preseed(cwd: string, ps: PreSeed): void {
     confirmed: true,
     onboardingComplete: true,
   };
+  if (ps.currentRunId) state.currentRunId = ps.currentRunId;
   if (ps.stack) state.stack = ps.stack;
   if (ps.frontend) state.frontend = ps.frontend;
   if (ps.backend) state.backend = ps.backend;

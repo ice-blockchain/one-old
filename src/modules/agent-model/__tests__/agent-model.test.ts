@@ -21,6 +21,7 @@ import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { openCodeGlobalAgentName } from '../../../shared/materialize/opencode-assets';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../../shared/run-model-policy';
+import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
 import { codexChildModelGate } from '../codex-child-model';
 import { captureCursorModels, freshCursorModels } from '../../../shared/materialize/cursor-models';
 import { currentHostModelTarget } from '../../../shared/current-model-tiers';
@@ -342,6 +343,76 @@ test('the spawn gate stands down inside the plugin authoring repo', () => {
   }
 });
 
+test('the child model gate stands down before policy reads inside the plugin authoring repo', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoring-child-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    fs.mkdirSync(path.join(dir, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'gen', 'index.ts'), 'export {};\n', 'utf8');
+    resetAuthoringRootCache();
+    const input: HookInput = {
+      event: 'PreToolUse',
+      host: 'codex',
+      cwd: dir,
+      raw: {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Read',
+        session_id: 'root-thread',
+        agent_id: 'child-thread',
+        agent_type: 'senior-frontend',
+      },
+      tool: {
+        class: 'file-read',
+        rawName: 'Read',
+        filePath: path.join(dir, 'src', 'gen', 'index.ts'),
+      },
+    };
+    const ctx = { input, host: 'codex', cwd: dir, now: () => 'x' } as unknown as Ctx;
+    assert.equal(codexChildModelGate(ctx).kind, 'noop');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false);
+  } finally {
+    resetAuthoringRootCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('authoring cwd does not exempt an absolute target in a real project', () => {
+  withMaterialized({ teamApproved: true }, (projectRoot) => {
+    const authoringRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoring-external-target-'));
+    try {
+      fs.writeFileSync(path.join(authoringRoot, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+      fs.mkdirSync(path.join(authoringRoot, 'src', 'gen'), { recursive: true });
+      fs.writeFileSync(path.join(authoringRoot, 'src', 'gen', 'index.ts'), 'export {};\n', 'utf8');
+      resetAuthoringRootCache();
+      const input: HookInput = {
+        event: 'PreToolUse',
+        host: 'claude',
+        cwd: authoringRoot,
+        raw: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Read',
+          session_id: 'parent-session',
+          agent_id: 'child-session',
+          agent_type: 'senior-frontend',
+          tool_input: { file_path: path.join(projectRoot, 'README.md') },
+        },
+        tool: {
+          class: 'file-read',
+          rawName: 'Read',
+          filePath: path.join(projectRoot, 'README.md'),
+        },
+      };
+      const ctx = { input, host: 'claude', cwd: authoringRoot, now: () => 'x' } as unknown as Ctx;
+      const result = codexChildModelGate(ctx);
+      assert.equal(result.kind, 'deny');
+      if (result.kind === 'deny') assert.match(result.reason, /model-policy\.json is missing/i);
+    } finally {
+      resetAuthoringRootCache();
+      fs.rmSync(authoringRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' = 'claude', workspaceRoot?: string): Ctx {
   const input: HookInput = {
     event: 'PreToolUse', host, cwd, workspaceRoot, raw: { tool_name: 'Task', tool_input: toolInput },
@@ -349,6 +420,9 @@ function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude
   };
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
+
+const QUICK_FIX_SCOPE_MARKER =
+  '[t1-bounded-scope: {"outputs":["src/bounded-fix.ts"],"allowlist":["src/bounded-fix.ts"],"exclude":[]}]';
 
 // Queue one bounded OpenCode unit for `role` in plan.md — the OpenCode role gate
 // only forces delegation-first for roles the architect actually QUEUED work for.
@@ -406,7 +480,7 @@ test('a subagent cannot create a missing immutable run model policy', () => {
   });
 });
 
-test('every recognized host child is blocked before its first tool when the parent policy is missing', () => {
+test('every recognized host child needs both the parent policy and a parent-bound trafficOneRole before its first tool', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const childCtx = {
       input: {
@@ -426,7 +500,9 @@ test('every recognized host child is blocked before its first tool when the pare
     assert.equal(readRunModelPolicy(cwd, 'run-test'), null, 'child gate must not create the policy');
 
     freezeRunPolicy(cwd, 'claude');
-    assert.equal(codexChildModelGate(childCtx).kind, 'noop');
+    const unbound = codexChildModelGate(childCtx);
+    assert.equal(unbound.kind, 'deny');
+    if (unbound.kind === 'deny') assert.match(unbound.reason, /no parent-resolved trafficOneRole/i);
   });
 });
 
@@ -1286,7 +1362,11 @@ test('Cursor quick-fix is pinned to the exact captured cheapest Cursor model', (
     // the exact Task-tool slug passes. A fabricated same-family sub-variant is denied before
     // Cursor sees it, because Task requires an id from the captured model list.
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }, 'cursor')).kind, 'deny');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast' }, 'cursor')).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'composer-2.5-fast',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }, 'cursor')).kind, 'noop');
     const invented = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast-high' }, 'cursor'));
     assert.equal(invented.kind, 'deny');
     if (invented.kind === 'deny') assert.ok(invented.reason.includes('Cursor model gate'));
@@ -1300,8 +1380,78 @@ test('quick-fix maintenance worker is pinned to the cheapest model even at high 
     const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'opus' }));
     assert.equal(wrong.kind, 'deny');
     if (wrong.kind === 'deny') assert.ok(wrong.reason.includes('Performance gate'));
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
     assert.equal(ok.kind, 'noop');
+  });
+});
+
+test('quick-fix spawn mints only the exact machine-readable bounded scope', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const broad = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: '[t1-bounded-scope: {"outputs":["src/**"]}]',
+    }));
+    assert.equal(broad.kind, 'deny');
+
+    const exact = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
+    assert.equal(exact.kind, 'noop');
+    const state = readEffectiveState(cwd) as { currentRunId?: string };
+    const envelope = readActiveRunBootstrap(cwd, String(state.currentRunId), 'quick-fix');
+    assert.deepEqual(envelope?.workUnit.outputs, [
+      `.traffic-one/digests/${String(state.currentRunId)}/quick-fix.md`,
+      'src/bounded-fix.ts',
+    ]);
+    assert.deepEqual(envelope?.workUnit.allowlist, [
+      `.traffic-one/digests/${String(state.currentRunId)}/quick-fix.md`,
+      'src/bounded-fix.ts',
+    ]);
+  });
+});
+
+test('paid maintenance frontend spawn reuses the exact active bounded WorkUnit', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.mode = 'existing-codebase';
+    one.lifecycle = { phase: 'maintenance', source: 'test' };
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    freezeRunPolicy(cwd, 'claude');
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' });
+    const policy = readRunModelPolicy(cwd, 'run-test');
+    assert.ok(policy);
+    const bounded = ensureRunBootstrap(cwd, 'run-test', 'senior-frontend', state, {
+      host: 'claude',
+      hostAgentType: 'senior-frontend',
+      evidenceSource: 'opencode-maintenance-preflight',
+      modelPolicyId: policy.policyId,
+      boundedOutputs: ['src/bounded-page.tsx'],
+      boundedAllowlist: ['src/bounded-page.tsx'],
+    });
+    assert.ok(bounded);
+    assert.equal(bounded.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+
+    const allowed = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+      prompt: 'Implement only the parent-published maintenance WorkUnit.',
+    }));
+    assert.equal(allowed.kind, 'noop', allowed.kind === 'deny' ? allowed.reason : undefined);
+    const after = readActiveRunBootstrap(cwd, 'run-test', 'senior-frontend');
+    assert.equal(after?.workUnit.contractHash, bounded.workUnit.contractHash);
+    assert.equal(after?.trafficOneRole, bounded.trafficOneRole);
+    assert.deepEqual(after?.workUnit.outputs, [
+      '.traffic-one/digests/run-test/frontend.md',
+      'src/bounded-page.tsx',
+    ]);
   });
 });
 
@@ -1322,7 +1472,11 @@ test('quick-fix pin is enforced on existing codebases too, and stakes a run clai
     const none = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix' }));
     assert.equal(none.kind, 'deny');
 
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
     assert.equal(ok.kind, 'noop');
     // The allowed spawn staked a pending run claim so the run-team write gate
     // can resolve the worker's role on its first write.
@@ -1345,7 +1499,11 @@ test('team.overrides cannot lift the quick-fix pin', () => {
     // Even with an explicit override to the highest tier, the pin holds.
     const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'opus' }));
     assert.equal(wrong.kind, 'deny');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' })).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    })).kind, 'noop');
   });
 });
 
@@ -1365,7 +1523,11 @@ test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls 
     if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
 
     markOpenCodeRoleAttempted(cwd, 'run-Q', 'quick-fix');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' })).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    })).kind, 'noop');
   });
 });
 
@@ -1383,7 +1545,7 @@ test('architect phase gate: blocks implementers when plan exists but baseline is
   });
 });
 
-test('architect phase gate stands down in MAINTENANCE once a prior assignments manifest exists (8c)', () => {
+test('architect phase gate rejects legacy sibling assignments in a maintenance v2 run', () => {
   withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
     const t1 = path.join(cwd, '.traffic-one');
     fs.writeFileSync(path.join(t1, 'plan.md'), '# partial plan', 'utf8');
@@ -1400,8 +1562,7 @@ test('architect phase gate stands down in MAINTENANCE once a prior assignments m
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') assert.ok(denied.reason.includes('Architect phase gate'));
 
-    // The BUILD run's manifest exists → resilient scope fallback → implementer
-    // spawns first-try (task-triage small tier: no architect for a small feature).
+    // A sibling BUILD manifest is not authority for this fresh run.
     fs.mkdirSync(path.join(t1, 'runs', 'run-build'), { recursive: true });
     fs.writeFileSync(path.join(t1, 'runs', 'run-build', 'assignments.json'), JSON.stringify({
       version: 1,
@@ -1409,8 +1570,9 @@ test('architect phase gate stands down in MAINTENANCE once a prior assignments m
       createdBy: 'senior-architect',
       assignments: [{ role: 'senior-frontend', scope: { include: ['apps/web/**'], exclude: [] } }],
     }), 'utf8');
-    const allowed = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
-    assert.equal(allowed.kind, 'noop', allowed.kind === 'deny' ? allowed.reason : undefined);
+    const stillDenied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(stillDenied.kind, 'deny');
+    if (stillDenied.kind === 'deny') assert.match(stillDenied.reason, /Architect phase gate/);
   });
 });
 
@@ -1559,9 +1721,15 @@ test('opencode role gate: mints currentRunId when absent (existing-codebase) so 
     const minted = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
     assert.ok(minted.length > 0, 'currentRunId should be minted + persisted');
 
-    // Recording the attempt under the minted run id lets the fallback spawn through.
+    // Recording the attempt clears only the OpenCode-first gate. The new run
+    // still lacks its own architecture contracts, so paid spawn remains denied.
     markOpenCodeRoleAttempted(cwd, minted, 'senior-frontend');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+    const missingContracts = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+    }));
+    assert.equal(missingContracts.kind, 'deny');
+    if (missingContracts.kind === 'deny') assert.match(missingContracts.reason, /Architect phase gate/);
   });
 });
 
@@ -1746,7 +1914,7 @@ test('codex: quick-fix requires the exact cheapest model without an early parent
     assert.equal(missing.kind, 'deny');
     const result = agentModelGate(codexSpawnCtx(cwd, {
       task_name: 'quick_fix',
-      message: 'You are acting as Traffic One quick-fix. Apply one bounded maintenance fix.',
+      message: `You are acting as Traffic One quick-fix. Apply one bounded maintenance fix.\n${QUICK_FIX_SCOPE_MARKER}`,
       fork_turns: 'none',
       model: 'gpt-5.6-terra',
     }));

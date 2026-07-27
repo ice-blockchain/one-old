@@ -32,6 +32,21 @@ import {
 } from './codex-model-observation';
 import { readRunModelPolicy } from '../run-model-policy';
 import { isQaBrowserBridgeEligible, readQaReportV1, type QaReportValidationResult } from '../qa-report';
+import { readQaReportV2, type QaV2ValidationResult } from '../qa-report-v2';
+import { isMaintenanceTerminal } from '../maintenance-terminal';
+import {
+  activeRunClaimCount,
+  effectiveLegacyRunOutcome,
+  effectiveLegacyRunStatus,
+  projectRunLedgerForV2Rollback,
+  readRunSettlement,
+  writeRunSettlement,
+  type CanonicalRunStatus,
+} from '../run-settlement';
+import {
+  ensureArchitectureRunSnapshot,
+  readRuntimeAssignments,
+} from '../architecture-contract';
 
 export function runIdNow(): string {
   return Date.now().toString();
@@ -56,6 +71,11 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
     // particular SessionStart calls this on every subagent-enabled project.
     // Actual worker claims and the unresolved-run continue path activate the
     // ledger and upgrade legacy evidence semantics at their action boundary.
+    try {
+      ensureArchitectureRunSnapshot(cwd, existing, source);
+    } catch {
+      // Spawn/PLAN_READY preflight retries fail-closed with a concrete error.
+    }
     return existing;
   }
   // Mint-once: serialize the check-and-mint with every canonical .one.json
@@ -110,6 +130,15 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
   if (minted) {
     ensureRunLedger(cwd, runId, { status: 'planned', kind: 'spawn-gate', stackFingerprint: stackFingerprint(source) });
   }
+  // Freeze runtime-owned capabilities and the immutable baseline as soon as
+  // the run id exists. Bootstrap preflight repeats this fail-closed; this early
+  // capture also covers main-agent runs that never spawn a child.
+  try {
+    ensureArchitectureRunSnapshot(cwd, runId, source);
+  } catch {
+    // Run-id minting remains recoverable. Spawn/PLAN_READY preflight performs
+    // the same capture and refuses progress with a concrete contract error.
+  }
   // Keep the caller's in-memory `state` in sync so a later ensureRunAgentClaim (which
   // reads currentRunId off the SAME state object) reuses THIS id instead of minting a
   // second one. Without this the spawn's run markers (OpenCode attempts, model
@@ -138,10 +167,11 @@ function runLedgerFile(cwd: string, runId: string): string {
   return path.join(runDir(cwd, runId), 'run.json');
 }
 
-// Newest recently-minted planned spawn-gate run under runs/, or '' when none.
-// Used only as the mint fallback when .one.json carries no currentRunId: adopt an
-// in-flight run rather than mint a sibling. Bounded to a fresh window (and never
-// a future id) so an existing project's older run is not resurrected.
+// Newest recently-minted planned spawn-gate run (or rollback-guarded in-flight
+// V2 run) under runs/, or '' when none. Used only as the mint fallback when
+// .one.json carries no currentRunId: adopt an in-flight run rather than mint a
+// sibling. Bounded to a fresh window (and never a future id) so an existing
+// project's older run is not resurrected.
 const RUN_ADOPT_WINDOW_MS = 10 * 60 * 1000;
 function recentAdoptableRunId(cwd: string, nowMs: number = Date.now()): string {
   let best = '';
@@ -154,7 +184,9 @@ function recentAdoptableRunId(cwd: string, nowMs: number = Date.now()): string {
       if (nowMs - val > RUN_ADOPT_WINDOW_MS || val - nowMs > 60_000) continue; // recent, not future
       const ledger = readJson<Rec>(runLedgerFile(cwd, name), null as unknown as Rec);
       if (!ledger || ledger.kind !== 'spawn-gate') continue;
-      if (typeof ledger.status === 'string' && ledger.status !== 'planned') continue;
+      const effectiveStatus = effectiveLegacyRunStatus(ledger);
+      const adoptableV2 = ledger.qaContractVersion === 2 && effectiveStatus === 'active';
+      if (effectiveStatus && effectiveStatus !== 'planned' && !adoptableV2) continue;
       best = name;
       bestVal = val;
     }
@@ -199,6 +231,7 @@ export interface RunLedgerTransitionOptions {
   reason?: string;
   kind?: string;
   stackFingerprint?: string;
+  qaContractVersion?: 1 | 2;
   /** Internal compatibility path for terminal settlement of a pre-ledger run. */
   preserveLegacyQaContract?: boolean;
 }
@@ -286,12 +319,14 @@ function writeRunLedgerTransition(
   const now = stateTimestamp();
   const existing = obj(readJson(runLedgerFile(cwd, id), null)) || {};
   const isNew = Object.keys(existing).length === 0;
-  const currentStatus = isRunLedgerStatus(existing.status) ? existing.status : 'planned';
+  const effectiveStatus = effectiveLegacyRunStatus(existing);
+  const currentStatus = isRunLedgerStatus(effectiveStatus) ? effectiveStatus : 'planned';
   const requestedStatus = isRunLedgerStatus(patch.status) ? patch.status : currentStatus;
   const reason = typeof patch.reason === 'string' ? patch.reason : undefined;
   if (options.requireValidTransition && !runLedgerTransitionAllowed(currentStatus, requestedStatus, reason)) return null;
 
-  const priorOutcome = isRunLedgerOutcome(existing.outcome) ? existing.outcome : undefined;
+  const effectiveOutcome = effectiveLegacyRunOutcome(existing);
+  const priorOutcome = isRunLedgerOutcome(effectiveOutcome) ? effectiveOutcome : undefined;
   const requestedOutcome = isRunLedgerOutcome(patch.outcome)
     ? patch.outcome
     : (requestedStatus === currentStatus ? priorOutcome : undefined);
@@ -319,22 +354,36 @@ function writeRunLedgerTransition(
     });
   }
 
-  const resumesLegacyRun = !isNew && existing.qaContractVersion !== 1 && requestedStatus === 'active';
+  const existingQaContractVersion = existing.qaContractVersion === 2
+    ? 2
+    : existing.qaContractVersion === 1
+      ? 1
+      : undefined;
+  const requestedQaContractVersion = patch.qaContractVersion === 2
+    ? 2
+    : patch.qaContractVersion === 1
+      ? 1
+      : undefined;
+  const resumesLegacyRun = !isNew && existingQaContractVersion === undefined && requestedStatus === 'active';
   const preserveLegacyQaContract = isNew && patch.preserveLegacyQaContract === true;
-  const qaContractVersion = existing.qaContractVersion === 1
-    || patch.qaContractVersion === 1
-    || (isNew && !preserveLegacyQaContract)
-    || resumesLegacyRun
-    ? 1
-    : undefined;
-  const activatesQaContract = qaContractVersion === 1 && (
-    existing.qaContractVersion !== 1
+  const qaContractVersion = existingQaContractVersion === 2 || requestedQaContractVersion === 2
+    ? 2
+    : existingQaContractVersion === 1
+      || requestedQaContractVersion === 1
+      || (isNew && !preserveLegacyQaContract)
+      || resumesLegacyRun
+      ? 1
+      : undefined;
+  const activatesQaContract = qaContractVersion !== undefined && (
+    existingQaContractVersion !== qaContractVersion
     || (requestedStatus === 'active' && currentStatus !== 'active')
   );
   const next: Rec = {
     ...existing,
     ...patch,
-    version: typeof existing.version === 'number' ? existing.version : 1,
+    version: qaContractVersion === 2
+      ? 2
+      : (typeof existing.version === 'number' ? existing.version : 1),
     runId: typeof existing.runId === 'string' && existing.runId ? existing.runId : id,
     status: requestedStatus,
     kind: typeof patch.kind === 'string' && patch.kind
@@ -347,9 +396,9 @@ function writeRunLedgerTransition(
     transitionHistory: history.slice(-RUN_LEDGER_TRANSITION_HISTORY_LIMIT),
     updatedAt: now,
   };
-  if (qaContractVersion === 1) next.qaContractVersion = 1;
+  if (qaContractVersion !== undefined) next.qaContractVersion = qaContractVersion;
   else delete next.qaContractVersion;
-  if (qaContractVersion === 1) {
+  if (qaContractVersion !== undefined) {
     next.qaContractActivatedAt = activatesQaContract
       // Lifecycle timestamps intentionally retain legacy whole-second precision;
       // QA freshness needs milliseconds so evidence created just before a resume
@@ -375,9 +424,22 @@ function writeRunLedgerTransition(
   } else {
     delete next.finishedAt;
   }
+  const canonicalStatus: CanonicalRunStatus = requestedStatus === 'completed'
+    ? 'verified'
+    : requestedStatus;
+  // Never expose a raw resumable status for a V2 run, even for the brief window
+  // between this atomic ledger write and canonical settlement reconciliation.
+  // A process crash at the next instruction must still be rollback-safe.
+  const persisted = qaContractVersion === 2
+    ? projectRunLedgerForV2Rollback(
+        next,
+        canonicalStatus,
+        requestedOutcome,
+      )
+    : next;
   try {
     fs.mkdirSync(runDir(cwd, id), { recursive: true });
-    writeJson(runLedgerFile(cwd, id), next);
+    writeJson(runLedgerFile(cwd, id), persisted);
     return next;
   } catch {
     return null;
@@ -392,7 +454,9 @@ export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): R
   const locked = withRunLedgerLock(cwd, id, () => {
     result = writeRunLedgerTransition(cwd, id, patch, { requireValidTransition: true });
   });
-  return locked ? result : null;
+  if (!locked || !result) return null;
+  syncCanonicalSettlementFromLedger(cwd, id, result, isRunLedgerStatus(patch.status));
+  return result;
 }
 
 // The single status-mutation entry point for orchestration settlement. Replaying
@@ -410,7 +474,63 @@ export function transitionRunStatus(
   const locked = withRunLedgerLock(cwd, id, () => {
     result = writeRunLedgerTransition(cwd, id, options as unknown as Rec, { requireValidTransition: true });
   });
-  return locked ? result : null;
+  if (!locked || !result) return null;
+  const settlement = syncCanonicalSettlementFromLedger(cwd, id, result, true);
+  if (options.status === 'completed' && settlement !== 'verified') return null;
+  return result;
+}
+
+function syncCanonicalSettlementFromLedger(
+  cwd: string,
+  runId: string,
+  ledger: Rec,
+  explicitStatus: boolean,
+): CanonicalRunStatus | null {
+  const ledgerStatus = isRunLedgerStatus(ledger.status) ? ledger.status : 'planned';
+  const previous = readRunSettlement(cwd, runId);
+  let status: CanonicalRunStatus = ledgerStatus === 'completed'
+    ? 'verified'
+    : ledgerStatus === 'failed'
+      ? 'failed'
+      : ledgerStatus === 'blocked'
+        ? 'blocked'
+        : ledgerStatus;
+
+  // Do not silently opt a legacy/V1 ledger into the V2 canonical lifecycle.
+  // Those runs retain their historical verification semantics until an
+  // explicit V2 contract activation. Newly planned Traffic One runs set
+  // qaContractVersion=2 before implementation; existing V2 sidecars continue
+  // to reconcile idempotently.
+  if (ledger.qaContractVersion !== 2 && !previous) return status;
+
+  // A metadata-only legacy-ledger refresh must not regress a richer canonical
+  // lifecycle stage that was already written by the OpenCode runner/verifier.
+  if (!explicitStatus
+    && status === 'active'
+    && (previous?.status === 'code-delivered' || previous?.status === 'validating')) {
+    status = previous.status;
+  }
+
+  let fallback = previous?.fallback;
+  if (fallback?.state === 'pending' && status === 'verified') {
+    fallback = { ...fallback, state: 'completed' };
+  } else if (fallback?.state === 'pending' && (status === 'failed' || status === 'blocked')) {
+    fallback = { ...fallback, state: 'not-allowed' };
+  }
+
+  const incompleteChecks = status === 'verified' || status === 'failed' || status === 'blocked'
+    ? []
+    : previous?.incompleteChecks || [];
+  const outcome = isRunLedgerOutcome(ledger.outcome) ? ledger.outcome : undefined;
+  const settlement = writeRunSettlement(cwd, runId, {
+    status,
+    ...(outcome ? { reason: outcome } : {}),
+    ...(previous?.workUnitContractHash ? { workUnitContractHash: previous.workUnitContractHash } : {}),
+    ...(previous?.allowlistHash ? { allowlistHash: previous.allowlistHash } : {}),
+    ...(fallback ? { fallback } : {}),
+    incompleteChecks,
+  });
+  return settlement?.status || null;
 }
 
 function firstString(...values: unknown[]): string | null {
@@ -3421,6 +3541,10 @@ export interface RunManifest {
   createdBy?: string;
   stackFingerprint?: string;
   assignments: AssignmentEntry[];
+  schemaVersion?: number;
+  architectureHash?: string;
+  verificationHash?: string;
+  assignmentsHash?: string;
 }
 
 function stringArray(value: unknown): string[] {
@@ -3482,6 +3606,7 @@ export function readRunAssignments(cwd: string, runId: unknown): RunManifest | n
   if (typeof runId !== 'string' || !runId) return null;
   const raw = obj(readJson(assignmentsFile(cwd, runId), null));
   if (!raw) return null;
+  if (raw.createdBy === 'traffic-one-runtime' && !readRuntimeAssignments(cwd, runId)) return null;
   const assignments: AssignmentEntry[] = [];
   for (const entry of rawAssignmentEntries(raw)) {
     const e = obj(entry);
@@ -3509,6 +3634,10 @@ export function readRunAssignments(cwd: string, runId: unknown): RunManifest | n
     createdBy: typeof raw.createdBy === 'string' ? raw.createdBy : undefined,
     stackFingerprint: typeof raw.stackFingerprint === 'string' ? raw.stackFingerprint : undefined,
     assignments,
+    schemaVersion: typeof raw.schemaVersion === 'number' ? raw.schemaVersion : undefined,
+    architectureHash: typeof raw.architectureHash === 'string' ? raw.architectureHash : undefined,
+    verificationHash: typeof raw.verificationHash === 'string' ? raw.verificationHash : undefined,
+    assignmentsHash: typeof raw.assignmentsHash === 'string' ? raw.assignmentsHash : undefined,
   };
 }
 
@@ -3524,6 +3653,13 @@ export function readRunAssignments(cwd: string, runId: unknown): RunManifest | n
 export function readRunAssignmentsResilient(cwd: string, preferredRunId: unknown): RunManifest | null {
   const preferred = readRunAssignments(cwd, preferredRunId);
   if (preferred) return preferred;
+  if (typeof preferredRunId === 'string' && preferredRunId) {
+    // A compiled run has exact, runtime-owned assignments. Missing/corrupt
+    // evidence must fail closed rather than borrowing a stale manifest from a
+    // sibling run id.
+    const compiled = path.join(cwd, '.traffic-one', 'runs', preferredRunId, 'architecture-v1.json');
+    if (fs.existsSync(compiled)) return null;
+  }
   let newest: { runId: string; mtime: number } | null = null;
   try {
     const runsBase = path.join(cwd, '.traffic-one', 'runs');
@@ -3670,9 +3806,13 @@ function runQaContractActivatedAtMs(cwd: string, runId: string): number {
   return candidates.length ? Math.max(...candidates) : 0;
 }
 
-function runUsesStrictQaContract(cwd: string, runId: string): boolean {
+function runQaContractVersion(cwd: string, runId: string): 1 | 2 | null {
   const rec = obj(readJson(runLedgerFile(cwd, runId), null));
-  return rec?.qaContractVersion === 1;
+  return rec?.qaContractVersion === 2 ? 2 : rec?.qaContractVersion === 1 ? 1 : null;
+}
+
+function runUsesStrictQaContract(cwd: string, runId: string): boolean {
+  return runQaContractVersion(cwd, runId) !== null;
 }
 
 function canonicalQaReportRaw(cwd: string, runId: string): Rec | null {
@@ -3693,8 +3833,16 @@ function strictQaReportResult(cwd: string, runId: string): QaReportValidationRes
   });
 }
 
+function strictQaReportV2Result(cwd: string, runId: string): QaV2ValidationResult {
+  return readQaReportV2(cwd, runId);
+}
+
 export function runHasExplicitBlockedQaOutcome(cwd: string, runId: unknown): boolean {
   if (typeof runId !== 'string' || !runId) return false;
+  if (runQaContractVersion(cwd, runId) === 2) {
+    const result = strictQaReportV2Result(cwd, runId);
+    return !result.ok && result.code === 'blocked-environment' && result.report !== undefined;
+  }
   if (runUsesStrictQaContract(cwd, runId)) {
     const result = strictQaReportResult(cwd, runId);
     return !result.ok
@@ -3715,6 +3863,10 @@ export function runHasExplicitBlockedQaOutcome(cwd: string, runId: unknown): boo
 export function runHasEnvironmentBlockedQaOutcome(cwd: string, runId: unknown): boolean {
   if (typeof runId !== 'string' || !runId) return false;
   if (!runUsesStrictQaContract(cwd, runId)) return runHasExplicitBlockedQaOutcome(cwd, runId);
+  if (runQaContractVersion(cwd, runId) === 2) {
+    const result = strictQaReportV2Result(cwd, runId);
+    return !result.ok && result.code === 'blocked-environment' && result.report !== undefined;
+  }
   const result = strictQaReportResult(cwd, runId);
   return !result.ok
     && result.report !== undefined
@@ -3747,6 +3899,22 @@ function runHasQaEvidence(cwd: string, runId: string): boolean {
   // An explicit environment/browser blocker always wins, including for a run
   // that otherwise qualifies for the backend-only exemption.
   if (runHasExplicitBlockedQaOutcome(cwd, runId)) return false;
+  // V2 is risk-derived for every surface, including API-only projects. Its
+  // none/nonvisual contracts deliberately avoid a browser but still require
+  // the stack-specific build/test/lint evidence, so backend-only is not an
+  // exemption from the V2 report.
+  if (runQaContractVersion(cwd, runId) === 2) {
+    const result = strictQaReportV2Result(cwd, runId);
+    if (!result.ok) return false;
+    const testerFile = digestFile(cwd, runId, 'tester.md');
+    if (!testerFile) return false;
+    try {
+      return Math.floor(fs.statSync(testerFile).mtimeMs)
+        >= Math.floor(fs.statSync(result.reportPath).mtimeMs);
+    } catch {
+      return false;
+    }
+  }
   // Backend-only is an exact per-run property: the current run has no frontend
   // implementer digest. Project stack detection and prose N/A claims cannot exempt
   // a run after the frontend implementer has emitted its digest.
@@ -3789,9 +3957,11 @@ function runLedgerStatusRecord(cwd: string, runId: string): {
   outcome: RunLedgerOutcome | null;
 } {
   const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+  const status = effectiveLegacyRunStatus(ledger);
+  const outcome = effectiveLegacyRunOutcome(ledger);
   return {
-    status: isRunLedgerStatus(ledger?.status) ? ledger.status : null,
-    outcome: isRunLedgerOutcome(ledger?.outcome) ? ledger.outcome : null,
+    status: isRunLedgerStatus(status) ? status : null,
+    outcome: isRunLedgerOutcome(outcome) ? outcome : null,
   };
 }
 
@@ -3871,8 +4041,18 @@ function runCompletionEvidenceAllows(
   runId: string,
   outcome: RunLedgerOutcome | undefined,
 ): boolean {
-  if (outcome === 'shipped') return shipperDigestCompleted(cwd, runId);
-  if (outcome !== 'verified') return false;
+  if (activeRunClaimCount(cwd, runId) > 0) return false;
+  if (outcome === 'shipped') {
+    if (!shipperDigestCompleted(cwd, runId)) return false;
+    const ledger = runLedgerStatusRecord(cwd, runId);
+    // A verified run may advance to shipped. A direct active→shipped
+    // transition must still prove reviewer, tester, and QA first; the shipper
+    // digest alone cannot manufacture verification.
+    if (ledger.status === 'completed'
+      && (ledger.outcome === 'verified' || ledger.outcome === 'shipped')) return true;
+  } else if (outcome !== 'verified') {
+    return false;
+  }
   const reviewer = readDigest(cwd, runId, 'reviewer.md');
   const tester = readDigest(cwd, runId, 'tester.md');
   return reviewerDigestApprovedForRun(cwd, runId, reviewer)
@@ -3906,7 +4086,9 @@ function runProducedImplementerOutput(cwd: string, runId: string): boolean {
 
 function runHasQaReportFile(cwd: string, runId: string): boolean {
   const memoryDir = '.traffic' + '-one';
-  return fs.existsSync(path.join(cwd, memoryDir, 'reports', 'qa', safePathSegment(runId), 'report.json'));
+  const qaDir = path.join(cwd, memoryDir, 'reports', 'qa', safePathSegment(runId));
+  return fs.existsSync(path.join(qaDir, 'report.json'))
+    || fs.existsSync(path.join(qaDir, 'report-v2.json'));
 }
 
 // Machine-readable current-run classification for prompt-boundary lifecycle
@@ -3941,6 +4123,7 @@ export function settleTerminalRunLedger(
   const ledgerState = runLedgerStatusRecord(cwd, runId);
   if (ledgerState.status === 'completed'
     && (ledgerState.outcome === 'verified' || ledgerState.outcome === 'shipped')) {
+    if (activeRunClaimCount(cwd, runId) > 0) return null;
     if (!expectedOutcome || expectedOutcome === ledgerState.outcome) {
       return transitionRunStatus(cwd, runId, {
         status: 'completed',
@@ -3954,6 +4137,7 @@ export function settleTerminalRunLedger(
   const shipperCompleted = shipperDigestCompleted(cwd, runId);
   if (expectedOutcome === 'shipped' && !shipperCompleted) return null;
   if (shipperCompleted && expectedOutcome !== 'verified') {
+    releaseRunClaims(cwd, runId, 'terminal-shipped-evidence');
     return transitionRunStatus(cwd, runId, {
       status: 'completed',
       outcome: 'shipped',
@@ -3965,6 +4149,7 @@ export function settleTerminalRunLedger(
   const reviewerApproved = reviewerDigestApprovedForRun(cwd, runId, reviewer);
   const testerPassed = testerDigestPassedForRun(cwd, runId, tester);
   if (!reviewerApproved || !testerPassed || !runHasQaEvidence(cwd, runId)) return null;
+  releaseRunClaims(cwd, runId, 'terminal-verified-evidence');
   return transitionRunStatus(cwd, runId, {
     status: 'completed',
     outcome: 'verified',
@@ -4002,10 +4187,7 @@ function maintenanceRunReachedTerminal(cwd: string, runId: string): boolean {
     const parsed = readJson(path.join(runDir(cwd, runId), 'maintenance.json'), null);
     const rec = obj(parsed);
     if (!rec || rec.version !== 1) return false;
-    const overall = typeof rec.overallOutcome === 'string' ? rec.overallOutcome : '';
-    const outcome = overall || (typeof rec.outcome === 'string' ? rec.outcome : '');
-    return outcome === 'success' || outcome === 'completed' || outcome === 'blocked'
-      || outcome === 'failed' || outcome === 'skipped' || outcome === 'fallback-paid';
+    return isMaintenanceTerminal(rec);
   } catch {
     return false;
   }

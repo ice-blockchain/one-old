@@ -23,7 +23,7 @@ test('renderAgents (lean) lists active rules/skills + kernel + read-routing + in
   assert.ok(!out.includes('- .traffic-one/skills/project-memory/SKILL.md'));
   assert.ok(out.includes('## Active Rule Kernel'));
   assert.ok(out.includes('never re-read root `AGENTS.md`'));
-  assert.ok(out.includes('AUTO-RUN the senior role team'));
+  assert.ok(out.includes('AUTO-RUN only the roles eligible'));
   assert.ok(out.includes('run maintenance triage before that greenfield team flow'));
   assert.ok(out.includes('never probe package registries'));
   assert.ok(out.includes('per-user local preferences'));
@@ -36,6 +36,21 @@ test('renderAgents (lean) lists active rules/skills + kernel + read-routing + in
   const occurrences = out.split('- .traffic-one/rules/common/auth-gate.md').length - 1;
   assert.equal(occurrences, 1, 'rule path should appear once in lean mode');
   assert.ok(!out.includes('## Active Rules'), 'lean mode should not emit the redundant top rule list');
+});
+
+test('compact team kernel is capability-driven and never mandates frontend plus backend', () => {
+  const out = renderAgents({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    mobile: { framework: 'none' },
+  }, ['rules/common/auth-gate.md'], ['tdd-workflow', 'verification-loop', 'refactor'], {
+    leanMode: true,
+    mandatoryRules: ['rules/common/auth-gate.md'],
+  });
+  assert.match(out, /runtime-owned capability profile and compiled work units/);
+  assert.match(out, /Never invent a frontend\/backend\/browser\/native role/);
+  assert.doesNotMatch(out, /frontend \+ backend in parallel/);
 });
 
 test('renderAgents (non-lean) keeps the Active Rules list + inlines rule bodies', () => {

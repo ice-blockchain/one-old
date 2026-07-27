@@ -147,7 +147,7 @@ test('rotation releases the settled run\'s claims (terminal sweep)', () => {
     assert.notEqual(state.currentRunId, 'OLD');
     const released = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
     assert.equal(released.status, 'released');
-    assert.equal(released.releasedReason, 'run-rotated');
+    assert.equal(released.releasedReason, 'terminal-verified-evidence');
   } finally {
     cleanup(dir);
   }
@@ -159,6 +159,21 @@ test('rotates when there is no orchestrated run (no assignments) — common main
     maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
     assert.notEqual(state.currentRunId, 'OLD', 'a plain maintenance edit with no orchestrated run still rotates');
     assert.match(String(state.currentRunId), /^\d{13}$/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('Codex child prompt with root session id does not mint a sibling maintenance run', () => {
+  const { dir, state } = setup({});
+  try {
+    const directive = maintenanceTriageDirective(dir, state, PROMPT, {
+      session_id: '019fa11e-ad9b-7123-95e6-e41008289e76',
+      transcript_path: '/tmp/rollout-2026-07-27T04-11-13-019fa120-4089-7261-9067-1cd3f8dfce65.jsonl',
+    }, 'codex');
+    assert.equal(directive, '', 'Codex child UserPromptSubmit never receives parent maintenance routing');
+    assert.equal(state.currentRunId, 'OLD', 'child startup cannot rotate the parent run id');
+    assert.deepEqual(state.spawnIndex, { 'senior-frontend': 1, 'senior-backend': 1 });
   } finally {
     cleanup(dir);
   }

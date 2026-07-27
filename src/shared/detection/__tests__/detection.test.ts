@@ -55,10 +55,12 @@ test('classifyPromptForStack: custom backend WITH ui signals keeps the web front
   const c = classifyPromptForStack('create a golang web app with a dashboard ui');
   assert.equal(c.backend, 'go');
   assert.equal(c.frontend, 'react-vite');
+  assert.equal(c.stack, 'custom-stack');
 
   // explicit react wording is untouched by the API-only branch
   const react = classifyPromptForStack('React frontend and a Go server for the API');
   assert.equal(react.frontend, 'react-vite');
+  assert.equal(react.stack, 'custom-stack');
 });
 
 test('classifyPromptForStack: ambiguous supabase-tier api prompt keeps the web default', () => {
@@ -69,7 +71,7 @@ test('classifyPromptForStack: ambiguous supabase-tier api prompt keeps the web d
   assert.equal(c.stack, 'default');
 });
 
-test('classifyPromptForStack: React with Go as backend → custom-backend/go', () => {
+test('classifyPromptForStack: React with Go as backend → custom-stack/go', () => {
   const prompts = [
     'build a web development academy in react with go as backend',
     'make a React app with backend in Go',
@@ -81,7 +83,7 @@ test('classifyPromptForStack: React with Go as backend → custom-backend/go', (
     const c = classifyPromptForStack(prompt);
     assert.equal(c.frontend, 'react-vite', prompt);
     assert.equal(c.backend, 'go', prompt);
-    assert.equal(c.stack, 'custom-backend', prompt);
+    assert.equal(c.stack, 'custom-stack', prompt);
   }
 });
 
@@ -91,12 +93,21 @@ test('classifyPromptForStack: expo app (no react word) → custom-frontend, RN, 
   assert.equal(c.mobile.framework, 'react-native-expo');
   assert.equal(c.stack, 'custom-frontend');
   assert.equal(c.frontend, 'none');
+  assert.equal(c.backend, 'none');
 });
 
 test('classifyPromptForStack: next.js → custom-frontend/nextjs', () => {
   const c = classifyPromptForStack('a next.js marketing site');
   assert.equal(c.evidence.frontend, 'nextjs');
   assert.equal(c.stack, 'custom-frontend');
+  assert.equal(c.backend, 'none');
+});
+
+test('classifyPromptForStack: React/Vite without a backend is custom-frontend, never custom-backend', () => {
+  const c = classifyPromptForStack('build a React Vite frontend with no backend');
+  assert.equal(c.stack, 'custom-frontend');
+  assert.equal(c.frontend, 'react-vite');
+  assert.equal(c.backend, 'none');
 });
 
 test('dependenciesFromPackage merges deps + devDeps and tolerates junk', () => {
@@ -111,6 +122,20 @@ test('detectStackFromCodebase: react + supabase → default', () => {
     assert.equal(d.stack, 'default');
     assert.equal(d.frontend, 'react-vite');
     assert.equal(d.backend, 'supabase');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('detectStackFromCodebase: React/Vite without backend → custom-frontend', () => {
+  const dir = tmpProject({
+    'package.json': JSON.stringify({ dependencies: { react: '18', vite: '5' } }),
+  });
+  try {
+    const d = detectStackFromCodebase(dir);
+    assert.equal(d.stack, 'custom-frontend');
+    assert.equal(d.frontend, 'react-vite');
+    assert.equal(d.backend, 'none');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -131,7 +156,7 @@ test('detectStackFromCodebase: Supabase project with a stray .go file stays defa
   }
 });
 
-test('detectStackFromCodebase: Go workspace with React package → custom-backend/go', () => {
+test('detectStackFromCodebase: Go workspace with React package → custom-stack/go', () => {
   const dir = tmpProject({
     'package.json': JSON.stringify({ dependencies: { react: '18', vite: '5' } }),
     'go.work': 'go 1.23\nuse ./services/api\n',
@@ -139,7 +164,7 @@ test('detectStackFromCodebase: Go workspace with React package → custom-backen
   });
   try {
     const d = detectStackFromCodebase(dir);
-    assert.equal(d.stack, 'custom-backend');
+    assert.equal(d.stack, 'custom-stack');
     assert.equal(d.frontend, 'react-vite');
     assert.equal(d.backend, 'go');
   } finally {
@@ -147,7 +172,7 @@ test('detectStackFromCodebase: Go workspace with React package → custom-backen
   }
 });
 
-test('detectStackFromCodebase: backend-local Go module with React package → custom-backend/go', () => {
+test('detectStackFromCodebase: backend-local Go module with React package → custom-stack/go', () => {
   const dir = tmpProject({
     'package.json': JSON.stringify({ dependencies: { react: '18', vite: '5' } }),
     'services/api/go.mod': 'module example.com/api\n',
@@ -155,7 +180,7 @@ test('detectStackFromCodebase: backend-local Go module with React package → cu
   });
   try {
     const d = detectStackFromCodebase(dir);
-    assert.equal(d.stack, 'custom-backend');
+    assert.equal(d.stack, 'custom-stack');
     assert.equal(d.frontend, 'react-vite');
     assert.equal(d.backend, 'go');
   } finally {
@@ -171,7 +196,7 @@ test('reconcileStackFromArtifacts repairs stale default/supabase state when Go b
   try {
     const state: Record<string, unknown> = { mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase' };
     assert.equal(reconcileStackFromArtifacts(dir, state), true);
-    assert.equal(state.stack, 'custom-backend');
+    assert.equal(state.stack, 'custom-stack');
     assert.equal(state.frontend, 'react-vite');
     assert.equal(state.backend, 'go');
   } finally {

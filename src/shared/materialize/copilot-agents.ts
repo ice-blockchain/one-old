@@ -6,6 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { TEAM_ROLES } from '../../config/onboarding';
+import { eligibleRolesForProfile } from '../capabilities';
+import { capabilityProfileForRun } from '../architecture-contract';
 import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
 import { roleAgentBody } from '../skill-filters';
@@ -80,16 +82,36 @@ function agentFile(role: string, label: string, blurb: string): string {
   return out.join('\n');
 }
 
-export function writeCopilotAgentFiles(cwd: string, _state: Rec): number {
+function cleanupGeneratedAgents(dir: string, keep: ReadonlySet<string>): number {
+  let removed = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.agent.md')) continue;
+      const role = entry.name.slice(0, -'.agent.md'.length);
+      const file = path.join(dir, entry.name);
+      if (keep.has(role) || !isGeneratedCopilotAgent(file)) continue;
+      fs.rmSync(file, { force: true });
+      removed += 1;
+    }
+  } catch {
+    // best-effort cleanup
+  }
+  return removed;
+}
+
+export function writeCopilotAgentFiles(cwd: string, state: Rec): number {
   const dir = path.join(cwd, COPILOT_AGENTS_REL);
+  const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
+  const members = TEAM_ROLES.filter((member) => eligible.has(member.role));
+  const keep = new Set(members.map((member) => member.role));
+  let written = cleanupGeneratedAgents(dir, keep);
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch {
-    return 0;
+    return written;
   }
 
-  let written = 0;
-  for (const member of TEAM_ROLES) {
+  for (const member of members) {
     const target = path.join(dir, `${member.role}.agent.md`);
     if (fs.existsSync(target) && !isGeneratedCopilotAgent(target)) continue;
     try {

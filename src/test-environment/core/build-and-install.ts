@@ -5,6 +5,7 @@
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import type { HostCommandConfig, HostId, RootTestConfig } from './types';
@@ -17,16 +18,33 @@ import {
   type ArmedRuntimeProof,
   type CodexMarketplaceStage,
 } from './current-dist';
+import {
+  cleanupCodexE2EProfile,
+  codexRunArgsWithE2EProfile,
+  createCodexE2EProfile,
+  verifyCodexE2EProfilePromptInput,
+  type CodexE2EProfile,
+} from './codex-e2e-profile';
+import {
+  cleanupCodexE2EHome,
+  createCodexE2EHome,
+  type CodexE2EHome,
+} from './codex-e2e-home';
 
 export interface CleanupStep {
   host: HostId;
   cmd: string;
   args: string[];
   cwd: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface BuildResult {
   distRoot: string;
+  // Stable content fingerprint captured before the per-run runtime token is
+  // armed. Manual certification records bind to this value.
+  releaseFingerprint: string;
+  // Fingerprint of the temporarily armed runtime used by automated hosts.
   distFingerprint: string;
   runtimeProof: ArmedRuntimeProof | null;
   built: boolean;
@@ -35,22 +53,35 @@ export interface BuildResult {
   perCaseProof: HostId[];
   exempted: HostId[];
   marketplaces: Partial<Record<HostId, CodexMarketplaceStage>>;
+  codexProfiles: Partial<Record<HostId, CodexE2EProfile>>;
+  codexHomes: Partial<Record<HostId, CodexE2EHome>>;
   cleanupSteps: CleanupStep[];
   currentDistFailures: Array<{ host: HostId; detail: string }>;
   currentDistReady: boolean;
   notes: string[];
 }
 
-export type CommandRunner = (cmd: string, args: string[], cwd: string) => { ok: boolean; out: string };
+export type CommandRunner = (
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+) => { ok: boolean; out: string };
 
 export interface BuildAndInstallDeps {
   commandRunner?: CommandRunner;
   distRoot?: string;
   stagesRoot?: string;
+  codexHome?: string;
 }
 
-function run(cmd: string, args: string[], cwd: string): { ok: boolean; out: string } {
-  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: 600_000 });
+function run(cmd: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): { ok: boolean; out: string } {
+  const res = spawnSync(cmd, args, {
+    cwd,
+    env: env ? { ...process.env, ...env } : process.env,
+    encoding: 'utf8',
+    timeout: 600_000,
+  });
   const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
   return { ok: res.status === 0, out };
 }
@@ -94,8 +125,11 @@ export function buildAndInstall(
   const perCaseProof: HostId[] = [];
   const exempted: HostId[] = [];
   const marketplaces: Partial<Record<HostId, CodexMarketplaceStage>> = {};
+  const codexProfiles: Partial<Record<HostId, CodexE2EProfile>> = {};
+  const codexHomes: Partial<Record<HostId, CodexE2EHome>> = {};
   const cleanupSteps: CleanupStep[] = [];
   const currentDistFailures: Array<{ host: HostId; detail: string }> = [];
+  let releaseFingerprint = '';
   let distFingerprint = '';
   let runtimeProof: ArmedRuntimeProof | null = null;
   let built = false;
@@ -114,6 +148,7 @@ export function buildAndInstall(
     notes.push('skipped host update because dist build failed');
     return {
       distRoot,
+      releaseFingerprint,
       distFingerprint,
       runtimeProof,
       built,
@@ -122,6 +157,8 @@ export function buildAndInstall(
       perCaseProof,
       exempted,
       marketplaces,
+      codexProfiles,
+      codexHomes,
       cleanupSteps,
       currentDistFailures,
       currentDistReady: false,
@@ -130,15 +167,23 @@ export function buildAndInstall(
   }
 
   try {
-    runtimeProof = armDistRuntimeProof(distRoot, hostsToInstall);
-    notes.push(`armed unique runtime proof token ${runtimeProof.metadata.token}`);
-    distFingerprint = distTreeFingerprint(distRoot);
-    notes.push(`selected runtime dist fingerprint: sha256:${distFingerprint}`);
+    releaseFingerprint = distTreeFingerprint(distRoot);
+    notes.push(`stable release dist fingerprint: sha256:${releaseFingerprint}`);
+    if (hostsToInstall.length > 0) {
+      runtimeProof = armDistRuntimeProof(distRoot, hostsToInstall);
+      notes.push(`armed unique runtime proof token ${runtimeProof.metadata.token}`);
+      distFingerprint = distTreeFingerprint(distRoot);
+      notes.push(`selected runtime dist fingerprint: sha256:${distFingerprint}`);
+    } else {
+      distFingerprint = releaseFingerprint;
+      notes.push('no automated hosts selected; runtime proof was not armed');
+    }
   } catch (error) {
     const detail = `cannot arm/fingerprint current runtime dist: ${String(error)}`;
     for (const host of hostsToInstall) currentDistFailures.push({ host, detail });
     return {
       distRoot,
+      releaseFingerprint,
       distFingerprint,
       runtimeProof,
       built,
@@ -147,6 +192,8 @@ export function buildAndInstall(
       perCaseProof,
       exempted,
       marketplaces,
+      codexProfiles,
+      codexHomes,
       cleanupSteps,
       currentDistFailures,
       currentDistReady: false,
@@ -224,6 +271,28 @@ export function buildAndInstall(
       continue;
     }
 
+    const ambientCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    let codexHome = deps.codexHome ? path.resolve(deps.codexHome) : '';
+    if (!codexHome && !deps.commandRunner) {
+      try {
+        const isolated = createCodexE2EHome(
+          ambientCodexHome,
+          deps.stagesRoot ?? path.join(config.runsRoot, '.marketplaces'),
+          marketplace,
+        );
+        codexHomes[host] = isolated;
+        codexHome = isolated.path;
+        notes.push(`codex: created isolated CODEX_HOME ${isolated.path}`);
+      } catch (error) {
+        currentDistFailures.push({
+          host,
+          detail: `could not create isolated Codex E2E home: ${String(error)}`,
+        });
+        continue;
+      }
+    }
+    const codexEnv = codexHome ? { CODEX_HOME: codexHome } : undefined;
+
     let allOk = true;
     for (const step of steps) {
       const expanded = expandInstallArgs(step, distRoot, marketplace);
@@ -232,7 +301,7 @@ export function buildAndInstall(
         currentDistFailures.push({ host, detail: `unresolved install token in \`${cfg.bin} ${expanded.join(' ')}\`` });
         break;
       }
-      const r = runCommand(cfg.bin, expanded, REPO_ROOT_PATH);
+      const r = runCommand(cfg.bin, expanded, REPO_ROOT_PATH, codexEnv);
       if (!r.ok) {
         allOk = false;
         const output = r.out.slice(-300).trim();
@@ -243,9 +312,76 @@ export function buildAndInstall(
         break;
       }
       if (expanded[0] === 'plugin' && expanded[1] === 'marketplace' && expanded[2] === 'add') {
-        cleanupSteps.push({ host, cmd: cfg.bin, args: ['plugin', 'marketplace', 'remove', marketplace.name], cwd: REPO_ROOT_PATH });
+        cleanupSteps.push({
+          host,
+          cmd: cfg.bin,
+          args: ['plugin', 'marketplace', 'remove', marketplace.name],
+          cwd: REPO_ROOT_PATH,
+          env: codexEnv,
+        });
       } else if (expanded[0] === 'plugin' && expanded[1] === 'add') {
-        cleanupSteps.unshift({ host, cmd: cfg.bin, args: ['plugin', 'remove', marketplace.pluginSelector], cwd: REPO_ROOT_PATH });
+        cleanupSteps.unshift({
+          host,
+          cmd: cfg.bin,
+          args: ['plugin', 'remove', marketplace.pluginSelector],
+          cwd: REPO_ROOT_PATH,
+          env: codexEnv,
+        });
+      }
+    }
+    if (allOk) {
+      if (!codexHome || !codexEnv) {
+        allOk = false;
+        currentDistFailures.push({
+          host,
+          detail: 'Codex E2E isolation needs an explicit test CODEX_HOME when a custom command runner is used',
+        });
+      }
+    }
+    if (allOk && codexEnv) {
+      let profile: CodexE2EProfile | null = null;
+      try {
+        const configPath = path.join(codexHome, 'config.toml');
+        const configText = fs.readFileSync(configPath, 'utf8');
+        profile = createCodexE2EProfile(codexHome, marketplace, configText);
+        codexProfiles[host] = profile;
+        const preflightArgs = [
+          '--profile-v2',
+          profile.name,
+          'debug',
+          'prompt-input',
+          'traffic-one-e2e exclusivity preflight',
+        ];
+        const preflight = runCommand(cfg.bin, preflightArgs, REPO_ROOT_PATH, codexEnv);
+        if (!preflight.ok) {
+          throw new Error(`\`${cfg.bin} ${preflightArgs.join(' ')}\` failed: ${preflight.out.slice(-1000).trim()}`);
+        }
+        const checked = verifyCodexE2EProfilePromptInput(preflight.out, profile);
+        if (!checked.ok) throw new Error(checked.detail);
+        profile.originalRunArgs = [...cfg.runArgs];
+        const isolatedArgs = codexRunArgsWithE2EProfile(cfg.runArgs, profile.name);
+        const profileArg = isolatedArgs.indexOf('--profile-v2');
+        if (profileArg < 0 || isolatedArgs[profileArg + 1] !== profile.name) {
+          throw new Error('Codex isolated run args did not contain the verified profile pair');
+        }
+        isolatedArgs.splice(profileArg, 2);
+        const profiledConfig = {
+          ...cfg,
+          e2eEnv: { ...(cfg.e2eEnv ?? {}), ...codexEnv },
+          runArgs: isolatedArgs,
+        };
+        profile.runArgsOwner = profiledConfig;
+        // defaultConfig() intentionally reuses the shared host catalog.
+        // Replace this run's map instead of mutating that process-global
+        // catalog, otherwise a prior test/run leaks E2E state forward.
+        config.hosts = { ...config.hosts, [host]: profiledConfig };
+        notes.push('codex: isolated base CODEX_HOME plus profile-v2 preflight proved exclusive current-dist selection');
+      } catch (error) {
+        allOk = false;
+        currentDistFailures.push({
+          host,
+          detail: `Codex E2E profile exclusivity preflight failed: ${String(error)}`,
+        });
       }
     }
     if (allOk) installed.push(host);
@@ -257,6 +393,7 @@ export function buildAndInstall(
 
   return {
     distRoot,
+    releaseFingerprint,
     distFingerprint,
     runtimeProof,
     built,
@@ -265,6 +402,8 @@ export function buildAndInstall(
     perCaseProof,
     exempted,
     marketplaces,
+    codexProfiles,
+    codexHomes,
     cleanupSteps,
     currentDistFailures,
     currentDistReady: currentDistFailures.length === 0,
@@ -348,7 +487,7 @@ export function cleanupBuildInstall(
       failures.push({ host: step.host, detail: `refused unsafe cleanup command: ${step.cmd} ${step.args.join(' ')}` });
       continue;
     }
-    const cleaned = commandRunner(step.cmd, step.args, step.cwd);
+    const cleaned = commandRunner(step.cmd, step.args, step.cwd, step.env);
     if (!cleaned.ok) {
       failures.push({
         host: step.host,
@@ -371,6 +510,24 @@ export function cleanupBuildInstall(
       notes.push(`${host}: removed staging marketplace ${marketplace.root}`);
     } catch (error) {
       failures.push({ host, detail: `could not remove staging marketplace ${marketplace.root}: ${String(error)}` });
+    }
+  }
+  for (const [host, profile] of Object.entries(result.codexProfiles) as Array<[HostId, CodexE2EProfile]>) {
+    const cleaned = cleanupCodexE2EProfile(profile);
+    if (cleaned.ok) {
+      notes.push(`${host}: ${cleaned.detail}`);
+    } else {
+      failures.push({ host, detail: `refused unsafe Codex E2E profile cleanup: ${cleaned.detail}` });
+    }
+  }
+  const cleanupFailureHosts = new Set(failures.map((failure) => failure.host));
+  for (const [host, home] of Object.entries(result.codexHomes) as Array<[HostId, CodexE2EHome]>) {
+    if (cleanupFailureHosts.has(host)) continue;
+    const cleaned = cleanupCodexE2EHome(home);
+    if (cleaned.ok) {
+      notes.push(`${host}: ${cleaned.detail}`);
+    } else {
+      failures.push({ host, detail: `refused unsafe isolated Codex home cleanup: ${cleaned.detail}` });
     }
   }
   if (result.runtimeProof) {

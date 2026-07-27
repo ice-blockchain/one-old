@@ -19,6 +19,8 @@ import {
   OPENCODE_HOST_GLOBAL_CONFIG_DIR_REL,
   OPENCODE_HOST_SKILLS_REL,
 } from '../../config/opencode-host';
+import { eligibleRolesForProfile } from '../capabilities';
+import { capabilityProfileForRun } from '../architecture-contract';
 import { writeTextIfChanged } from '../fs-text';
 import { detectHost } from '../host';
 import { detectHostPlan } from '../host-plan';
@@ -162,6 +164,9 @@ function writeOpenCodeGlobalAgentFiles(cwd: string, state: Rec): number {
     return cleanupGlobalProjectAgents(cwd, new Set());
   }
   if (!lineup || lineup.length === 0) return cleanupGlobalProjectAgents(cwd, new Set());
+  const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
+  lineup = lineup.filter((member) => eligible.has(member.role));
+  if (lineup.length === 0) return cleanupGlobalProjectAgents(cwd, new Set());
 
   const keep = new Set(lineup.map((member) => member.role));
   let written = cleanupGlobalProjectAgents(cwd, keep);

@@ -7,6 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { TEAM_ROLES } from '../../config/onboarding';
+import { eligibleRolesForProfile } from '../capabilities';
+import { capabilityProfileForRun } from '../architecture-contract';
 import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
 import { roleAgentBody } from '../skill-filters';
@@ -109,16 +111,18 @@ function agentFile(role: string, label: string, blurb: string): string {
   return lines.join('\n');
 }
 
-export function writeWindsurfAgentFiles(cwd: string, _state: Rec): number {
+export function writeWindsurfAgentFiles(cwd: string, state: Rec): number {
   const dir = path.join(cwd, WINDSURF_AGENTS_REL);
-  const keep = new Set(TEAM_ROLES.map((member) => member.role));
+  const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
+  const members = TEAM_ROLES.filter((member) => eligible.has(member.role));
+  const keep = new Set(members.map((member) => member.role));
   let written = cleanupGeneratedAgents(dir, keep);
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch {
     return written;
   }
-  for (const member of TEAM_ROLES) {
+  for (const member of members) {
     const roleDir = path.join(dir, member.role);
     const target = path.join(roleDir, 'AGENT.md');
     if (fs.existsSync(target) && !isGeneratedWindsurfAgent(target)) continue;

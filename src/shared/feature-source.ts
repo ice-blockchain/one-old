@@ -104,7 +104,7 @@ export function shellCommandHasWritePrimitive(command: string): boolean {
     // mkdir creates no file content and carries no implementation ownership.
     // Treating it as a source write rejects foreground architect scaffolding in
     // Devin Local. Destructive/copying/content primitives remain gated.
-    || /(?:^|[\s;&|])(?:rm|mv|cp|touch|truncate)\b/.test(command)
+    || /(?:^|[\s;&|])(?:[^\s;&|]*\/)?(?:rm|mv|cp|ln|touch|truncate)\b/.test(command)
     || /(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(command);
 }
 
@@ -127,7 +127,7 @@ export function commandAppearsToWriteBuildArtifact(command: unknown): boolean {
 // target path; this restores the same exemption for Bash by anchoring on the
 // redirect/tee target instead of the command body. Strict on purpose:
 //   - every extracted redirect/tee target must be a run-state path;
-//   - any other write primitive class (rm/mv/cp/touch/truncate, find -delete,
+//   - any other write primitive class (rm/mv/cp/ln/touch/truncate, find -delete,
 //     sed -i, interpreter eval writes) disables the carve-out — a compound
 //     command that also mutates feature source stays gated.
 // `.traffic-one/plan.md` is intentionally NOT carved out: plan writes must go
@@ -165,7 +165,7 @@ export function shellWriteTargetsStateDir(command: unknown): boolean {
   const scanned = stripHeredocBodies(command);
   if (INTERPRETER_EVAL_WRITE_RE.test(scanned)) return false;
   if (sedInPlaceFlag(scanned)) return false;
-  if (/(?:^|[\s;&|])(?:rm|mv|cp|touch|truncate)\b/.test(scanned)) return false;
+  if (/(?:^|[\s;&|])(?:[^\s;&|]*\/)?(?:rm|mv|cp|ln|touch|truncate)\b/.test(scanned)) return false;
   if (/(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(scanned)) return false;
   const targets: string[] = [];
   const redirectRe = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)((?:"[^"]+")|(?:'[^']+')|[^\s;&|<>]+)/g;
@@ -177,6 +177,29 @@ export function shellWriteTargetsStateDir(command: unknown): boolean {
     const target = raw.replace(/^['"]|['"]$/g, '').replace(/\\/g, '/');
     return RUN_STATE_TARGET_RE.test(target);
   });
+}
+
+/**
+ * Exact-ish Traffic One artifact targets named by a mutating shell command.
+ * Heredoc bodies are stripped first so prose inside a digest cannot invent
+ * extra targets. The caller still applies the normal project-root and role
+ * checks; this helper only makes redirect/tee/interpreter/sed/rm/cp paths
+ * visible to the same pre-write gate used by Write/Edit/apply_patch.
+ */
+export function shellTrafficOneWriteTargets(command: unknown): string[] {
+  if (typeof command !== 'string' || !command.trim()) return [];
+  const scanned = stripHeredocBodies(command);
+  if (!shellCommandHasWritePrimitive(scanned)) return [];
+  const targets: string[] = [];
+  const targetRe =
+    /(?:^|[\s"'`=(:,\[])((?:\/[^\s"'`;|&<>,)\]}]*\/)?(?:\.\/)?\.traffic-one\/(?:(?:runs|digests|reports)\/[^\s"'`;|&<>,)\]}]+|deployments\.jsonl))/g;
+  for (let match = targetRe.exec(scanned); match; match = targetRe.exec(scanned)) {
+    const target = (match[1] || '')
+      .replace(/["'`,;]+$/, '')
+      .replace(/\\/g, '/');
+    if (target) targets.push(target);
+  }
+  return [...new Set(targets)];
 }
 
 // Test-scope paths are owned by `senior-tester` regardless of which implementer

@@ -124,3 +124,20 @@ test('writeOpenCodeHostAssets does not mirror skills and removes a stale generat
     assert.equal(fs.existsSync(path.join(project, OPENCODE_HOST_SKILLS_REL)), false);
   });
 });
+
+test('OpenCode lineup excludes frontend for a detected Go API', () => {
+  withPlugin((project) => {
+    fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    const state = {
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'other',
+      mobile: { framework: 'none' },
+      team: { mode: 'subagents', approved: true },
+      performance: { level: 'balanced' },
+    };
+    writeOpenCodeHostAssets(project, state, []);
+    assert.equal(fs.existsSync(openCodeGlobalAgentPath(project, 'senior-backend')), true);
+    assert.equal(fs.existsSync(openCodeGlobalAgentPath(project, 'senior-frontend')), false);
+  });
+});

@@ -26,6 +26,7 @@ import {
   ensureRunLedger,
   hasActiveRunClaims,
   hookSessionIdentity,
+  isSubagentThread,
   isMaintenancePhase,
   lifecycleCompletedAt,
   readState,
@@ -102,7 +103,7 @@ function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string): void {
 // agents instead of minting a greenfield/quick-fix flow. Runtime control remains
 // parent-only and receives no worker directive at all.
 export function unresolvedRunDirective(cwd: string, state: Rec, promptText: string, raw: unknown): string {
-  if (hookSessionIdentity(raw).isSubagent || isRuntimeControlPrompt(promptText)) return '';
+  if (isSubagentThread(raw) || isRuntimeControlPrompt(promptText)) return '';
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (!runId || runVerificationState(cwd, runId) !== 'nonterminal') return '';
   const explicitResume = isExplicitRunResumePrompt(promptText);
@@ -154,7 +155,7 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   // Broader than the onboarding coding-intent gate: a finished app's copy/UI tweaks
   // ("change the hero headline", "shorten the title") must still route through triage.
   if (!isLikelyEditRequest(promptText)) return '';
-  if (hookSessionIdentity(raw).isSubagent) return '';
+  if (isSubagentThread(raw)) return '';
   // Claims from a run that finished BEFORE the lifecycle stamp are settled —
   // only claims newer than the watermark mean an orchestration is in flight.
   //
