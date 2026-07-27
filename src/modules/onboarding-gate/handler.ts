@@ -151,6 +151,18 @@ export function onboardingGate(ctx: Ctx): HookResult {
         // because the same restricted hook cannot pre-create its URL.
         if (prepared.kind !== 'ready') return noop();
         const { server, waitCommand } = prepared;
+        // Another surface already delivered BOTH links in this conversation — the
+        // bootstrap output stamps this same marker and its own text tells the agent
+        // to "Show these links to the user ONCE … do not print the URLs again".
+        // Denying here to demand yet another post is what rendered the setup URL
+        // TWICE in Cursor chat (observed live): the agent posts it per the
+        // ask-first recipe, then this deny orders a second copy while asserting the
+        // link "has still never appeared in the conversation". Every other URL
+        // surface already honours this marker — the generic deny below switches to
+        // a links-shown variant, and the wait runner degrades to a compact line.
+        // Checked BEFORE the once-marker so a conversation that genuinely has no
+        // links still gets its single deny.
+        if (wizardLinksShownWithin(root, server.token, WIZARD_LINKS_SHOWN_TTL_MS, syncSession)) return noop();
         const id = hookSessionIdentity(raw).sessionId;
         if (server.dashboardUrl
           && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {

@@ -406,6 +406,37 @@ test('Cursor first wait deny ORDERS the agent to post the setup link in chat', (
   });
 });
 
+// Live regression (cursor 64798f69): the setup URL appeared TWICE in chat. The
+// bootstrap output stamps the shared links-shown marker and tells the agent to
+// show the links ONCE; the agent did. This branch then denied anyway and ordered
+// a second copy, while asserting the link "has still never appeared". Every other
+// URL surface already honours the marker.
+test('Cursor wait deny is suppressed once the links are already in the conversation', () => {
+  withProject(null, (cwd) => {
+    const url = 'http://127.0.0.1:51500/?t=curwait';
+    const dashboardUrl = 'https://traffic.io/onboarding/agent#p=51500&t=curwait';
+    const localUrl = 'http://127.0.0.1:51500/local?t=curwait';
+    writeServerRecord(cwd, { pid: process.pid, port: 51500, token: 'curwait', url, startedAt: 'x' }, process.env, 'cursor');
+    const wait = onboardingWaitCommand(cwd, 'cursor');
+
+    // The bootstrap surface delivered BOTH links in this conversation.
+    assert.equal(
+      commitWizardLinksShown(cwd, 'curwait', `Setup link: ${dashboardUrl}\n${localUrl}\n`, dashboardUrl, localUrl, 'cursor-main'),
+      true,
+      'the marker only commits for a payload carrying both links',
+    );
+
+    const r = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-main'));
+    assert.equal(r.kind, 'noop', 'the wait must proceed instead of demanding a second post');
+
+    // A DIFFERENT conversation reusing the same server still gets its own links:
+    // the marker is conversation-scoped and the once-marker was never consumed.
+    const other = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-other'));
+    assert.equal(other.kind, 'deny');
+    if (other.kind === 'deny') assert.ok(other.reason.includes(dashboardUrl));
+  });
+});
+
 test('the Cursor wait-link TS fallback stays verbatim with its skill block', () => {
   const block = fs.readFileSync(
     path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8',
