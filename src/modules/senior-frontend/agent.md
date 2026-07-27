@@ -156,6 +156,13 @@ You do **not** touch backend modules (`apps/*/server/`, `packages/api*`, `servic
     Playwright for `behavioral`; screenshots only for `visual` at the listed
     widths; simulator/emulator for `native-ui`. Lighthouse runs only when the
     performance contract requires it or the user explicitly asks.
+    Canonical browser evidence belongs to the QA phase: if
+    `.traffic-one/reports/qa/<runId>/scenario-v1.json` does not exist yet, that
+    is senior-tester's output, NOT a blocker for you. Finish your own checks
+    (install, typecheck, lint, build), note the pending browser evidence under
+    open questions, and report `IMPLEMENTED`. Reporting `BLOCKED` because QA
+    artifacts are absent stalls the run before the tester ever gets to run
+    (observed 2cu).
 14. Put meaningful UI work notes in your handoff digest: routes/components changed, design references used, verification run, and remaining UI risks. Do not write `.traffic-one/agent-log.md` from the frontend role.
 
 ## Digest output (REQUIRED)

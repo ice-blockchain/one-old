@@ -194,8 +194,29 @@ const EXCEPTION_RULES = new Set([
   'STRUCT_COMPONENTS_PER_FILE',
 ]);
 const MODULE_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
-const ROUTE_PATH_RE = /^\/(?:[A-Za-z0-9._~!$&'()*+,;=:@%{}[\]-]+\/?)*$/;
-const SAFE_NAME_RE = /^[A-Za-z][A-Za-z0-9 -]{0,79}$/;
+// `*` (bare) is the router-idiomatic catch-all every SPA needs for its 404.
+// Requiring a leading slash made it undeclarable, and the structural gate then
+// compared the contract path literally against the `path="*"` in code — so the
+// only legal outcome was shipping without a not-found route at all (2cu shipped
+// exactly that, leaving its compiled NotFoundPage module unreachable).
+const ROUTE_PATH_RE = /^(?:\*|\/(?:[A-Za-z0-9._~!$&'()*+,;=:@%{}[\]-]+\/?)*)$/;
+
+/**
+ * One canonical spelling for the catch-all so the compiled contract and the
+ * route table in code always agree: `*`, `/*`, and `/**` are the same route.
+ * Shared with the structural gate — keep the two in sync.
+ */
+export function canonicalRoutePath(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === '*' || trimmed === '/*' || trimmed === '/**') return '*';
+  if (trimmed === '/') return trimmed;
+  return trimmed.replace(/\/+$/, '') || '/';
+}
+// Display-only field: the kebab-case `id` drives paths, so common title
+// punctuation is safe here. Path/markup metacharacters stay excluded
+// (observed 2cl: "Content schema, RLS, and seeds" cost the architect a
+// deny cycle over the comma).
+const SAFE_NAME_RE = /^[A-Za-z][A-Za-z0-9 ,.()&+':-]{0,79}$/;
 
 function sorted(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sorted);
@@ -401,7 +422,11 @@ function moduleOutput(
     return `${sourceRoot}/App${ext}`;
   }
   if (module.kind === 'page') {
-    const segments = route ? routeSegments(route.path) : [kebab(module.name)];
+    // The catch-all has no path segments to derive a file-router location from
+    // (`pages/*/page.tsx` is not a legal filename), so it falls back to the
+    // module name exactly like a page with no route at all.
+    const catchAll = route ? canonicalRoutePath(route.path) === '*' : false;
+    const segments = route && !catchAll ? routeSegments(route.path) : [kebab(module.name)];
     if (profile.profileId === 'next-app') {
       return `${pagesRoot}/${segments.join('/')}${segments.length ? '/' : ''}page.tsx`
         .replace(/\/+/g, '/');
@@ -489,6 +514,10 @@ function workspaceScaffoldOutputs(webRoot: string): CompiledArchitectureOutputV1
     'tsconfig.base.json',
     '.prettierrc',
     '.prettierignore',
+    // `new-project-setup` prescribes this file's contents, but nothing ever
+    // compiled it, so no role could create it (2cu shipped with no .gitignore
+    // at all while stray build output and a 241 MB harness sat untracked).
+    '.gitignore',
   ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const }));
 }
 
@@ -620,7 +649,18 @@ function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitect
   else if (profile.backendFramework === 'kotlin') outputs = ['build.gradle.kts'];
   else if (profile.backendFramework === 'dotnet') outputs = ['Directory.Build.props'];
   else if (['supabase', 'our-fork'].includes(profile.backendFramework)) {
-    outputs = ['supabase/config.toml'];
+    // The database IS the backend on this stack. Compiling only `config.toml`
+    // left schema, RLS, and seed data owned by nobody, so every supabase build
+    // shipped without a data layer: 1cu and 2cu backends both reported "the
+    // immutable allowlist excludes Supabase migrations", and 1cl died in
+    // planning because the architect could not queue a seed unit at all.
+    // Deterministic names keep assignments a closed set (no globs) while
+    // matching the CLI's lexicographic apply order.
+    outputs = [
+      'supabase/config.toml',
+      'supabase/migrations/0001_init.sql',
+      'supabase/seed.sql',
+    ];
   } else if (!profile.surfaces.includes('web-ui')) {
     outputs = ['package.json'];
   }
@@ -629,6 +669,38 @@ function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitect
     ownerRole: 'senior-backend',
     kind: 'scaffold' as const,
   }));
+}
+
+/**
+ * Every workspace package a compiled output lands in needs its own manifest, or
+ * the package is unresolvable: `pnpm-workspace.yaml` globs `packages/*`, and a
+ * package directory without `package.json` is not a workspace member at all.
+ *
+ * Observed 1cu-cursor: supabase service modules compile to
+ * `packages/api-client/src/*.ts` and NO role was ever given
+ * `packages/api-client/package.json` — the frontend's manifests are hardcoded
+ * per profile, the backend's are not. Owned by whoever owns the package's
+ * sources, so parallel roles never share a writable manifest.
+ */
+function workspaceManifestOutputs(
+  scaffoldOutputs: readonly CompiledArchitectureOutputV1[],
+  modules: readonly CompiledArchitectureModuleV1[],
+): CompiledArchitectureOutputV1[] {
+  const owners = new Map<string, string>();
+  const claim = (outputPath: string, ownerRole: string): void => {
+    const pkg = /^(packages\/[^/]+)\//.exec(outputPath)?.[1];
+    if (!pkg || !ownerRole) return;
+    if (!owners.has(pkg)) owners.set(pkg, ownerRole);
+  };
+  // Scaffold outputs first: a profile that already names the manifest keeps its
+  // declared owner, and the entry below is then deduped away.
+  for (const output of scaffoldOutputs) claim(output.path, output.ownerRole);
+  for (const module of modules) claim(module.output, module.ownerRole);
+  const existing = new Set(scaffoldOutputs.map((output) => output.path));
+  return [...owners.entries()]
+    .map(([pkg, ownerRole]) => ({ path: `${pkg}/package.json`, ownerRole, kind: 'scaffold' as const }))
+    .filter((output) => !existing.has(output.path))
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
 function routeRegistrationOutputs(
@@ -684,6 +756,13 @@ function testerOutputs(
     }));
   if (profile.surfaces.includes('web-ui')) {
     outputs.push(
+      // A unit-test runner config the tester OWNS. Without one it has no legal
+      // place to configure a runner and improvises: observed 2cu, the tester
+      // built a parallel harness (its own package.json + lockfile) under
+      // `.traffic-one/reports/qa/<runId>/test-harness/` and installed 241 MB of
+      // node_modules into the plugin's state directory, running the suite
+      // against a config disconnected from the real workspace.
+      { path: 'vitest.config.ts', ownerRole: 'senior-tester', kind: 'test-infra' },
       { path: 'playwright.config.ts', ownerRole: 'senior-tester', kind: 'test-infra' },
       { path: 'tests/e2e/smoke.spec.ts', ownerRole: 'senior-tester', kind: 'test' },
     );
@@ -735,10 +814,15 @@ function unsupportedArchitectureFields(
   allowed: ReadonlySet<string>,
   label: string,
 ): string[] {
+  // Name the accepted keys in the error itself. The architect writes this file
+  // from prose, so semantic-sounding extras get invented (observed 1cu-cursor:
+  // `routes[].access` and `routes[].seo`); an error that only says which key is
+  // wrong costs a whole re-read + retry cycle to find out which are right.
+  const accepted = [...allowed].join(', ');
   return Object.keys(value)
     .filter((key) => !allowed.has(key))
     .sort()
-    .map((key) => `${label} has unsupported field ${key}`);
+    .map((key) => `${label} has unsupported field ${key} (accepted: ${accepted})`);
 }
 
 export function validateArchitectureInput(input: unknown): ArchitectureValidationResult {
@@ -769,10 +853,10 @@ export function validateArchitectureInput(input: unknown): ArchitectureValidatio
     const id = typeof module?.id === 'string' ? module.id.trim() : '';
     const name = typeof module?.name === 'string' ? module.name.trim() : '';
     const kind = typeof module?.kind === 'string' ? module.kind : '';
-    if (!MODULE_ID_RE.test(id)) errors.push(`modules[${index}].id is invalid`);
+    if (!MODULE_ID_RE.test(id)) errors.push(`modules[${index}].id is invalid (expected kebab-case: lowercase letter first, then lowercase letters/digits/hyphens, max 64 chars)`);
     if (moduleIds.has(id)) errors.push(`modules[${index}].id is duplicated`);
     moduleIds.add(id);
-    if (!SAFE_NAME_RE.test(name)) errors.push(`modules[${index}].name is invalid`);
+    if (!SAFE_NAME_RE.test(name)) errors.push(`modules[${index}].name is invalid (expected a letter first, then letters/digits/spaces and , . ( ) & + ' : - punctuation, max 80 chars — no slashes, quotes, or angle brackets)`);
     if (!['app-shell', 'page', 'component', 'feature', 'service', 'store', 'test'].includes(kind)) {
       errors.push(`modules[${index}].kind is invalid`);
     }
@@ -799,10 +883,10 @@ export function validateArchitectureInput(input: unknown): ArchitectureValidatio
     const id = typeof route?.id === 'string' ? route.id.trim() : '';
     const routePath = typeof route?.path === 'string' ? route.path.trim() : '';
     const moduleId = typeof route?.moduleId === 'string' ? route.moduleId.trim() : '';
-    if (!MODULE_ID_RE.test(id)) errors.push(`routes[${index}].id is invalid`);
+    if (!MODULE_ID_RE.test(id)) errors.push(`routes[${index}].id is invalid (expected kebab-case: lowercase letter first, then lowercase letters/digits/hyphens, max 64 chars)`);
     if (routeIds.has(id)) errors.push(`routes[${index}].id is duplicated`);
     routeIds.add(id);
-    if (!ROUTE_PATH_RE.test(routePath)) errors.push(`routes[${index}].path is invalid`);
+    if (!ROUTE_PATH_RE.test(routePath)) errors.push(`routes[${index}].path is invalid (expected a leading-slash path such as \`/\`, \`/courses\`, or \`/courses/:slug\`, or the catch-all \`*\`)`);
     if (route && 'redirect' in route && typeof route.redirect !== 'boolean') {
       errors.push(`routes[${index}].redirect must be a boolean when provided`);
     }
@@ -880,7 +964,30 @@ function gitHead(projectRoot: string): string | null {
 
 const BASELINE_SKIP_RE = /(^|\/)(?:\.git|\.traffic-one|node_modules|dist|build|coverage|out|\.next|\.turbo|generated|__generated__)(?:\/|$)/;
 
-function canonicalTrafficOneContextLink(
+const CONTEXT_ALIAS_PATH = 'CLAUDE.md';
+const CONTEXT_ALIAS_TARGET = 'AGENTS.md';
+
+/**
+ * Identity row for the canonical context alias. Both the immutable baseline and
+ * the verification diff hash it this way, so replacing the alias with a regular
+ * file (or another link) still shows up as a change in either scan.
+ */
+export function contextAliasHash(target: string): string {
+  return sha256(`symbolic-link:${target}`);
+}
+
+/**
+ * The ONE symlink materialization creates in a project root: `CLAUDE.md` →
+ * `AGENTS.md`. Returns the link target when `relativePath` is exactly that
+ * alias, else null.
+ *
+ * Exported because every scan that walks project files has to agree about it.
+ * The immutable baseline accepted the alias while the verification scan failed
+ * closed on it, so the plugin's own materialized artifact denied `PLAN_READY`
+ * with `STRUCT_SCAN_INCOMPLETE` (observed 1cu-cursor; the parent had to replace
+ * the symlink with a copy by hand to get the run moving).
+ */
+export function canonicalTrafficOneContextLink(
   projectRoot: string,
   fullPath: string,
   relativePath: string,
@@ -888,15 +995,15 @@ function canonicalTrafficOneContextLink(
   // Materialization owns exactly this root alias. Keep every other symlink
   // fail-closed: source links, nested aliases, absolute targets, and escapes
   // must never disappear from an immutable non-Git baseline.
-  if (relativePath !== 'CLAUDE.md') return null;
+  if (relativePath !== CONTEXT_ALIAS_PATH) return null;
   let linkTarget: string;
   try {
     linkTarget = fs.readlinkSync(fullPath);
   } catch {
     return null;
   }
-  if (linkTarget !== 'AGENTS.md') return null;
-  const expectedTarget = path.join(path.resolve(projectRoot), 'AGENTS.md');
+  if (linkTarget !== CONTEXT_ALIAS_TARGET) return null;
+  const expectedTarget = path.join(path.resolve(projectRoot), CONTEXT_ALIAS_TARGET);
   const resolvedTarget = path.resolve(path.dirname(fullPath), linkTarget);
   if (resolvedTarget !== expectedTarget) return null;
   try {
@@ -939,7 +1046,7 @@ function fileManifestBaseline(projectRoot: string, roots: string[]): Architectur
           // The target file is hashed independently. This row additionally
           // makes replacing the canonical alias with another filesystem shape
           // visible in the immutable baseline identity.
-          rows.push([rel, sha256(`symbolic-link:${target}`)]);
+          rows.push([rel, contextAliasHash(target)]);
           continue;
         }
         throw new Error(`baseline cannot include symbolic link ${rel}`);
@@ -1213,6 +1320,15 @@ export function compileArchitecture(
   ].filter((output, index, all) => (
     all.findIndex((candidate) => candidate.path === output.path && candidate.ownerRole === output.ownerRole) === index
   ));
+  if (isNewProject) {
+    scaffoldOutputs.push(...workspaceManifestOutputs(scaffoldOutputs, modules));
+    // Non-workspace layouts never reach `workspaceScaffoldOutputs`, so pin the
+    // ignore file to whichever implementer this profile actually runs.
+    if (!scaffoldOutputs.some((output) => output.path === '.gitignore')) {
+      const owner = ['senior-frontend', 'senior-backend'].find((role) => profile.roles.includes(role));
+      if (owner) scaffoldOutputs.push({ path: '.gitignore', ownerRole: owner, kind: 'scaffold' });
+    }
+  }
   const inputHash = contractHash(input);
   const withoutHash = {
     schemaVersion: COMPILED_ARCHITECTURE_SCHEMA_VERSION,
@@ -1243,6 +1359,7 @@ export function compileArchitectureForRun(
   projectRoot: string,
   runId: string,
   state: unknown,
+  options: { persist?: boolean } = {},
 ): CompiledArchitectureV1 {
   const input = readJson<ArchitectureInputV1 | null>(architectureInputPath(projectRoot, runId), null);
   if (!input) throw new Error(`missing ${path.relative(projectRoot, architectureInputPath(projectRoot, runId))}`);
@@ -1263,8 +1380,20 @@ export function compileArchitectureForRun(
     snapshot.profile,
   );
   if (compiled.inputHash !== inputHash) throw new Error('architecture input hash mismatch');
-  writeJson(compiledArchitecturePath(projectRoot, runId), compiled);
+  // persist:false lets the completion gate validate the FULL candidate set
+  // before anything touches disk. A compiled sidecar persisted next to a
+  // DENIED digest flips every on-disk contract check while the role bootstraps
+  // still describe the pre-compile world (observed 2cl: the live architect
+  // lost all tool access mid-flight and had to be respawned).
+  if (options.persist !== false) writeJson(compiledArchitecturePath(projectRoot, runId), compiled);
   return compiled;
+}
+
+export function persistCompiledArchitecture(
+  projectRoot: string,
+  compiled: CompiledArchitectureV1,
+): void {
+  writeJson(compiledArchitecturePath(projectRoot, compiled.runId), compiled);
 }
 
 export function readCompiledArchitecture(

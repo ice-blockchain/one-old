@@ -1385,6 +1385,26 @@ test('delegated diff fails closed when assignments changed while OpenCode was ru
   });
 });
 
+test('delegate rejects a generated/internal allowlist entry before spending a model run', () => {
+  // 1cu-cursor: `.traffic-one/digests/<run>/backend.md` in `allowedFiles` was
+  // only caught by the post-run diff validator, which discards the WHOLE diff —
+  // four delegations, zero files. The runner writes the digest itself.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const r = delegate(dir, {
+      role: 'backend',
+      runId: 'r-unsafe',
+      task: 'implement the api client',
+      allowedFiles: 'packages/api-client/src/AuthAPIService.ts,.traffic-one/digests/r-unsafe/backend.md',
+    });
+    assert.equal(r.action, 'failed');
+    assert.match(r.error || '', /generated\/internal path/);
+    assert.match(r.error || '', /digests\/r-unsafe\/backend\.md/);
+    // no CLI attempt was made at all
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'r-unsafe', 'opencode-attempts', 'backend')), false);
+  });
+});
+
 test('delegateFromPlan enforces the files/area allowlist before applying', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('multi');

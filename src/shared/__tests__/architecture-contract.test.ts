@@ -66,6 +66,22 @@ test('architecture input is semantic and cannot choose roots or output paths', (
   assert.ok(validation.errors.some((error) => error.includes('may not choose output paths')));
 });
 
+test('module display names accept title punctuation and reject path/markup chars', () => {
+  const named = (name: string): ReturnType<typeof validateArchitectureInput> =>
+    validateArchitectureInput({
+      ...INPUT,
+      modules: [...INPUT.modules.slice(0, 2), { id: 'news', name, kind: 'page' }],
+    });
+  // observed 2cl: a comma in a human title cost the architect a deny cycle
+  assert.equal(named('Content schema, RLS, and seeds').ok, true);
+  assert.equal(named("Learner's dashboard (v2): progress & stats").ok, true);
+  for (const bad of ['api/routes', 'a<b>', 'x"quoted"', '`tick`', '1st module', '']) {
+    const validation = named(bad);
+    assert.equal(validation.ok, false, `expected reject: ${bad}`);
+    assert.ok(validation.errors.some((error) => error.includes('modules[2].name is invalid')));
+  }
+});
+
 test('architecture input rejects unknown fields at every semantic schema level', () => {
   const validation = validateArchitectureInput({
     ...INPUT,
@@ -87,11 +103,14 @@ test('architecture input rejects unknown fields at every semantic schema level',
     }],
   });
   assert.equal(validation.ok, false);
-  assert.ok(validation.errors.includes('input has unsupported field profile'));
-  assert.ok(validation.errors.includes('input has unsupported field sourceRoots'));
-  assert.ok(validation.errors.includes('modules[0] has unsupported field customPolicy'));
-  assert.ok(validation.errors.includes('routes[0] has unsupported field output'));
-  assert.ok(validation.errors.includes('exceptions[0] has unsupported field disableAll'));
+  const unsupported = (label: string, key: string): string | undefined =>
+    validation.errors.find((error) => error.startsWith(`${label} has unsupported field ${key} (accepted: `));
+  assert.ok(unsupported('input', 'profile'));
+  assert.ok(unsupported('input', 'sourceRoots'));
+  assert.ok(unsupported('modules[0]', 'customPolicy'));
+  assert.ok(unsupported('exceptions[0]', 'disableAll'));
+  // the error names the fields that ARE accepted, so one retry is enough
+  assert.equal(unsupported('routes[0]', 'output'), 'routes[0] has unsupported field output (accepted: id, path, moduleId, redirect)');
 
   const wrongOptionalTypes = validateArchitectureInput({
     ...INPUT,
@@ -466,6 +485,121 @@ test('Laravel UI routes compile routes/web.php into the page-owner assignment ev
     assert.equal(Boolean(assignments.assignments
       .find((assignment) => assignment.role === 'senior-backend')
       ?.scope.include.includes('routes/web.php')), false);
+  });
+});
+
+test('every workspace package holding a compiled output gets a manifest, owned by that package', () => {
+  // 1cu-cursor: supabase services compile to `packages/api-client/src/*.ts`
+  // while only the FRONTEND packages had hardcoded manifests, so the compiled
+  // backend package could never become a resolvable workspace member.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/pages'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    const inputPath = architectureInputPath(cwd, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      ...INPUT,
+      modules: [
+        ...INPUT.modules,
+        { id: 'auth-api', name: 'AuthAPIService', kind: 'service' },
+      ],
+    }));
+    const architecture = compileArchitectureForRun(cwd, 'R', REACT_STATE);
+    const serviceOutput = architecture.modules.find((module) => module.id === 'auth-api')?.output;
+    assert.equal(serviceOutput, 'packages/api-client/src/AuthAPIService.ts');
+
+    const manifest = architecture.scaffoldOutputs
+      ?.find((output) => output.path === 'packages/api-client/package.json');
+    assert.deepEqual(manifest, {
+      path: 'packages/api-client/package.json',
+      ownerRole: 'senior-backend',
+      kind: 'scaffold',
+    });
+    assert.ok(architecture.allowedOutputs.includes('packages/api-client/package.json'));
+
+    // the frontend packages keep their declared owner — no duplicate entry
+    const uiManifests = (architecture.scaffoldOutputs || [])
+      .filter((output) => output.path === 'packages/ui/package.json');
+    assert.equal(uiManifests.length, 1);
+    assert.equal(uiManifests[0]?.ownerRole, 'senior-frontend');
+
+    const verification = compileVerificationContract(cwd, 'R', REACT_STATE, architecture, { changedPaths: [] });
+    const assignments = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const backendScope = assignments.assignments
+      .find((assignment) => assignment.role === 'senior-backend')?.scope.include || [];
+    assert.ok(backendScope.includes('packages/api-client/package.json'));
+    assert.ok(backendScope.includes('packages/api-client/src/AuthAPIService.ts'));
+    assert.equal(backendScope.includes('packages/ui/package.json'), false);
+  });
+});
+
+test('a supabase backend owns its whole data layer, and every project owns a .gitignore', () => {
+  // 1cu/2cu backends both reported the migrations gap; 1cl never reached
+  // PLAN_READY because the architect could not queue `supabase/seed.sql`.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/pages'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    const inputPath = architectureInputPath(cwd, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify(INPUT));
+    const architecture = compileArchitectureForRun(cwd, 'R', REACT_STATE);
+
+    const verification = compileVerificationContract(cwd, 'R', REACT_STATE, architecture, { changedPaths: [] });
+    const assignments = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const scopeFor = (role: string): string[] => assignments.assignments
+      .find((assignment) => assignment.role === role)?.scope.include || [];
+
+    for (const output of ['supabase/config.toml', 'supabase/migrations/0001_init.sql', 'supabase/seed.sql']) {
+      assert.ok(architecture.allowedOutputs.includes(output), output);
+      assert.ok(scopeFor('senior-backend').includes(output), output);
+    }
+    // one owner only — the frontend must not be able to write the data layer
+    assert.equal(scopeFor('senior-frontend').some((entry) => entry.startsWith('supabase/')), false);
+
+    // 2cu shipped with no .gitignore because nothing compiled it
+    assert.ok(architecture.allowedOutputs.includes('.gitignore'));
+    assert.ok(scopeFor('senior-frontend').includes('.gitignore'));
+    // and the tester gets a workspace runner config instead of improvising one
+    assert.ok(scopeFor('senior-tester').includes('vitest.config.ts'));
+  });
+});
+
+test('the router catch-all is declarable and matches the path routers actually use', () => {
+  // 2cu: `*` was rejected by the input schema, `/*` never matched the
+  // `path="*"` in code, so the app shipped with an unreachable NotFoundPage.
+  assert.equal(validateArchitectureInput({
+    ...INPUT,
+    routes: [...INPUT.routes, { id: 'not-found-route', path: '*', moduleId: 'not-found' }],
+    modules: [...INPUT.modules, { id: 'not-found', name: 'Not found page', kind: 'page' }],
+  }).ok, true);
+
+  const invalid = validateArchitectureInput({
+    ...INPUT,
+    routes: [{ id: 'bad-route', path: 'courses', moduleId: 'home' }],
+  });
+  assert.equal(invalid.ok, false);
+  // the error states the accepted shape instead of only naming the field
+  assert.ok(invalid.errors.some((error) => error.includes('catch-all') && error.includes('leading-slash')));
+
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/pages'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    const compiled = compileArchitecture(cwd, 'R', REACT_STATE, {
+      ...INPUT,
+      routes: [...INPUT.routes, { id: 'not-found-route', path: '*', moduleId: 'not-found' }],
+      modules: [...INPUT.modules, { id: 'not-found', name: 'Not found page', kind: 'page' }],
+    });
+    // no path segments to derive from → falls back to the module name, exactly
+    // like a page with no route (never `pages/*/...`, which is not a filename)
+    const output = compiled.modules.find((module) => module.id === 'not-found')?.output;
+    assert.equal(output, 'apps/web/src/pages/NotFoundPage.tsx');
+    assert.equal(compiled.routes.find((route) => route.id === 'not-found-route')?.path, '*');
   });
 });
 

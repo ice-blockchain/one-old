@@ -398,6 +398,20 @@ function literalStem(pattern: string): string {
   return stem.replace(/\/+$/, '');
 }
 
+/**
+ * Allowlist entries the delegated-diff validator can never accept: generated
+ * output and `.traffic-one/**`. The plan-queue validator has always rejected
+ * these up front; the ad-hoc `opencode_delegate` path did not, so the same
+ * entry was only discovered AFTER the model finished — the whole diff is then
+ * discarded (observed 1cu-cursor: `.traffic-one/digests/<run>/backend.md` in
+ * the allowlist burned four delegations and produced zero files).
+ */
+export function unsafeAllowedFilePatterns(allowedFiles: readonly string[]): string[] {
+  return allowedFiles.filter((allowed) => UNSAFE_ALLOWED_FILE_PATTERNS.some(
+    (pattern) => matchesPattern(allowed, pattern) || matchesPattern(literalStem(allowed) || allowed, pattern),
+  ));
+}
+
 function patternsOverlap(a: string, b: string): boolean {
   if (a === b) return true;
   const aStem = literalStem(a);
@@ -563,7 +577,7 @@ export function openCodeQueuePolicyReport(
       if (allowed === '*' || allowed === '**' || allowed === '**/*') {
         add(`OpenCode unit \`${unit.id}\` uses an overbroad files allowlist \`${allowed}\`; list explicit source paths/areas instead`, unit.id);
       }
-      if (UNSAFE_ALLOWED_FILE_PATTERNS.some((pattern) => matchesPattern(allowed, pattern) || matchesPattern(literalStem(allowed) || allowed, pattern))) {
+      if (unsafeAllowedFilePatterns([allowed]).length > 0) {
         add(`OpenCode unit \`${unit.id}\` allowlist includes generated/internal path \`${allowed}\``, unit.id);
       }
     }
@@ -577,7 +591,13 @@ export function openCodeQueuePolicyReport(
       const outside = unit.allowedFiles.filter((allowed) => !GLOB_META_RE.test(allowed)
         && !roleScopes.some((scope) => matchesScope(allowed, scope)));
       if (outside.length > 0) {
-        add(`OpenCode unit \`${unit.id}\` (role ${unit.role}) lists file(s) outside ${unit.role}'s assignment scope: ${outside.join(', ')}; move them to a unit for the owning role, or widen \`runs/<runId>/assignments.json\``, unit.id);
+        // Remediation must be something the reader is ALLOWED to do: the same
+        // gate that emits this denies the architect any write to assignments.json
+        // ("do not scaffold assignments"), and runtime rehashes it anyway — so
+        // "widen assignments.json" sent the architect down a path that can only
+        // fail (observed 1cu-cursor: it dropped the units instead, halving the
+        // delegation queue). Ownership comes from the module declaration.
+        add(`OpenCode unit \`${unit.id}\` (role ${unit.role}) lists file(s) outside ${unit.role}'s assignment scope: ${outside.join(', ')}; move them into a unit whose role owns them, or drop them from the queue. \`runs/<runId>/assignments.json\` is runtime-owned and compiled from your ArchitectureInputV1 modules — declare the module under the owning role instead of editing that file.`, unit.id);
       }
     }
   }

@@ -56,6 +56,7 @@ import {
   recordOpenCodeUnitStatus,
   reconcileStaleRunningUnits,
   statusFromDelegateAction,
+  unsafeAllowedFilePatterns,
   writeOpenCodeQueue,
   type OpenCodeUnitStatus,
 } from '../../shared/opencode-queue';
@@ -1311,6 +1312,22 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   const task = (opts.task || '').trim();
   if (!task) {
     return maintenanceEarlyResult({ ok: false, action: 'skipped', digest: null, touched: [], error: 'No task provided to delegate' });
+  }
+  // Reject an allowlist the post-run diff validator can never accept BEFORE
+  // paying for a model run. `validateDelegatedDiff` discards the entire diff for
+  // one generated/internal path, so a digest listed in `allowedFiles` cost four
+  // full delegations and returned nothing (1cu-cursor). The runner writes the
+  // handoff digest itself — callers never need it in scope.
+  const unsafeAllowed = unsafeAllowedFilePatterns(policy.allowedPatterns);
+  if (unsafeAllowed.length > 0) {
+    return maintenanceEarlyResult({
+      ok: false,
+      action: 'failed',
+      digest: null,
+      touched: [],
+      error: `allowedFiles contains generated/internal path(s) the delegated diff can never include: ${unsafeAllowed.join(', ')}. Remove them and delegate only product files — the runner writes the handoff digest itself.`,
+      failureKind: 'diff-rejected',
+    });
   }
   // Sandbox requires a committed HEAD to branch the worktree from. Pin the exact
   // sha once: every worktree, reset, and diff below is relative to it.

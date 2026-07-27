@@ -30,7 +30,17 @@ test('service/store files are rejected under src/pages and expo app/', () => {
 
 test('components directly under src/ are rejected (web vs native target)', () => {
   assert.deepEqual(check('src/Button.tsx', ''), ['component-placement']);
-  assert.deepEqual(check('apps/web/src/Card.ts', ''), ['component-placement']);
+  assert.deepEqual(check('apps/web/src/Card.tsx', ''), ['component-placement']);
+  // a `.ts` module needs a real component signal — JSX cannot live in `.ts`
+  assert.deepEqual(check('apps/web/src/Card.ts', 'export const Card = () => React.createElement("div");'), ['component-placement']);
+});
+
+test('a PascalCase .ts module directly in src/ is a service, not a misplaced component', () => {
+  // Both compiled backend shapes land here: supabase → packages/api-client/src,
+  // generic TS backend → services/api/src (1cu-cursor: the run died on the first).
+  assert.deepEqual(check('services/api/src/AuthAPIService.ts', 'export class AuthAPIService {}'), []);
+  assert.deepEqual(check('apps/api/src/CoursesAPIService.ts', 'export const listCourses = async () => [];'), []);
+  assert.deepEqual(check('src/HttpClient.ts', 'export const client = {};'), []);
 });
 
 test('the canonical root component src/App.tsx is exempt from component placement', () => {
@@ -43,6 +53,43 @@ test('the canonical root component src/App.tsx is exempt from component placemen
   assert.deepEqual(check('apps/web/src/AppShell.tsx', ''), ['component-placement']);
   // deeper App.tsx files never matched this rule and still do not
   assert.deepEqual(check('apps/web/src/components/App.tsx', 'export const App = () => null;'), []);
+});
+
+test('workspace packages are exempt from the app component-placement rule', () => {
+  // The deny message points at `packages/ui/*`; an unanchored pattern denied
+  // exactly that destination.
+  assert.deepEqual(check('packages/ui/src/Button.tsx', 'export const Button = () => null;'), []);
+  assert.deepEqual(check('packages/ui-native/src/Card.tsx', 'export const Card = () => null;'), []);
+  // 1cu-cursor: runtime compiled these into senior-backend's assignment scope
+  // and this rule denied every write, ending the run with no backend at all.
+  assert.deepEqual(check('packages/api-client/src/AuthAPIService.ts', 'export class AuthAPIService {}'), []);
+  assert.deepEqual(check('packages/utils/src/HttpClient.ts', ''), []);
+  // nested workspaces resolve the same way
+  assert.deepEqual(check('apps/web/packages/ui/src/Button.tsx', ''), []);
+});
+
+test('compiled runtime output paths never trip a static placement rule', () => {
+  // Regression guard for the whole class: every path shape the architecture
+  // compiler emits as an owned assignment output must be writable by the role
+  // that owns it. A gate that denies a compiled output deadlocks the run — the
+  // owning agent cannot write it and the parent is forbidden from doing so.
+  const compiledOutputs = [
+    'apps/web/src/App.tsx',
+    'apps/web/src/main.tsx',
+    'apps/web/src/pages/HomePage.tsx',
+    'apps/web/src/pages/CourseDetailPage.tsx',
+    'apps/web/src/components/CourseCardComponent.tsx',
+    'apps/web/src/features/courses-catalog-feature/index.ts',
+    'packages/ui/src/index.ts',
+    'packages/i18n/src/index.ts',
+    'packages/api-client/src/AuthAPIService.ts',
+    'packages/api-client/src/CoursesAPIService.ts',
+    'packages/api-client/src/EnrollmentAPIService.ts',
+    'packages/api-client/src/ProgressAPIService.ts',
+  ];
+  for (const output of compiledOutputs) {
+    assert.deepEqual(check(output, 'export const value = 1;'), [], output);
+  }
 });
 
 test('cross-feature imports are flagged', () => {

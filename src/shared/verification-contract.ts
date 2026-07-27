@@ -6,6 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  canonicalTrafficOneContextLink,
+  contextAliasHash,
   stableContractJson,
   type ArchitectureBaselineV1,
   type CompiledArchitectureV1,
@@ -205,6 +207,10 @@ function projectPathInspectionIssue(projectRoot: string, relPath: string): strin
     }
     if (stat.isSymbolicLink()) {
       const symbolic = normalizeRel(path.relative(projectRoot, cursor)) || normalized;
+      // The canonical `CLAUDE.md` → `AGENTS.md` alias is materialization's own
+      // output and is identity-tracked in the immutable baseline. Failing the
+      // scan closed on it meant the plugin blocked its own `PLAN_READY`.
+      if (canonicalTrafficOneContextLink(projectRoot, cursor, symbolic)) continue;
       return `symbolic link makes verification scan incomplete: ${symbolic}`;
     }
   }
@@ -280,6 +286,15 @@ function walkCurrentFiles(projectRoot: string, roots: string[]): ChangedPathSnap
       const rel = normalizeRel(path.relative(projectRoot, absolute));
       if (!rel || SKIP_RE.test(`/${rel}`)) continue;
       if (entry.isSymbolicLink()) {
+        // Same canonical alias exception as the immutable baseline, which keeps
+        // a `symbolic-link:<target>` identity row for it (see fileHash below).
+        if (canonicalTrafficOneContextLink(projectRoot, absolute, rel)) {
+          if (files.length >= VERIFICATION_SCAN_MAX_FILES) {
+            return { paths: files, complete: false, reason: `source scan exceeds ${VERIFICATION_SCAN_MAX_FILES} files` };
+          }
+          files.push(rel);
+          continue;
+        }
         return {
           paths: files,
           complete: false,
@@ -304,7 +319,13 @@ function walkCurrentFiles(projectRoot: string, roots: string[]): ChangedPathSnap
   return { paths: unique(files), complete: true };
 }
 
-function fileHash(filePath: string): string {
+function fileHash(projectRoot: string, relPath: string): string {
+  const filePath = path.join(projectRoot, relPath);
+  // Mirror the immutable baseline's identity row for the canonical context
+  // alias — hashing the LINK TARGET's bytes here would report `CLAUDE.md` as
+  // changed on every single scan.
+  const aliasTarget = canonicalTrafficOneContextLink(projectRoot, filePath, relPath);
+  if (aliasTarget) return contextAliasHash(aliasTarget);
   try { return sha256(fs.readFileSync(filePath).toString('base64')); } catch { return '<deleted>'; }
 }
 
@@ -318,7 +339,7 @@ function changedPathsFromImmutableBaseline(
   const current = walkCurrentFiles(projectRoot, ['.']);
   if (!current.complete) return current;
   const before = new Map((baseline.files || []).map((entry) => [entry.path, entry.hash]));
-  const after = new Map(current.paths.map((file) => [file, fileHash(path.join(projectRoot, file))]));
+  const after = new Map(current.paths.map((file) => [file, fileHash(projectRoot, file)]));
   const changed = new Set<string>();
   for (const [file, hash] of before) {
     if (after.get(file) !== hash) changed.add(file);
@@ -944,7 +965,7 @@ export function currentVerificationSourceHash(
   }
   const rows = contract.changedPaths.map((file) => [
     file,
-    fileHash(path.join(projectRoot, file)),
+    fileHash(projectRoot, file),
   ]);
   return {
     hash: sha256(stableContractJson({

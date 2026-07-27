@@ -1073,7 +1073,18 @@ function latestParentTurnWasUserAborted(text: string): boolean {
       const item = record as Record<string, unknown>;
       const type = typeof item.type === 'string' ? item.type.toLowerCase() : '';
       const status = typeof item.status === 'string' ? item.status.toLowerCase() : '';
-      if (type !== 'turn_ended' && !FAILURE_STATUSES.has(status) && !SUCCESS_STATUSES.has(status)) continue;
+      if (type !== 'turn_ended' && !FAILURE_STATUSES.has(status) && !SUCCESS_STATUSES.has(status)) {
+        // A message record AFTER the newest terminal record means the parent
+        // has since opened another turn, so whatever ended earlier is history.
+        // Walking past it read a stale cancellation as a live one: observed
+        // 2cu-cursor, the user aborted the onboarding turn minutes BEFORE the
+        // architect existed, and every subsequent child's completion followup
+        // was suppressed as `parent-transcript-user-abort` — the orchestrator
+        // never heard that its architect finished and respawned it instead.
+        const role = typeof item.role === 'string' ? item.role.toLowerCase() : '';
+        if (role === 'user' || role === 'assistant') return false;
+        continue;
+      }
       return recordHasStructuredAbort(item);
     } catch {
       // Ignore an incomplete tail line and continue to the latest complete turn.

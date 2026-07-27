@@ -385,6 +385,72 @@ test('a rejected PLAN_READY prerequisite publishes no assignments or implementat
   });
 });
 
+test('completion never denies on queue-vs-assignment scope; static queue errors deny WITHOUT persisting the compile', () => {
+  const QUEUE_STATE = {
+    ...DEFAULT_STATE,
+    onboardingComplete: true,
+    openCode: { enabled: true },
+    toolchain: { opencode: { installedVersion: '1.0.0' } },
+  };
+  const digestArgs = (dir: string) => ({
+    filePath: '.traffic-one/digests/R/architect.md',
+    content: 'verdict: PLAN_READY\n',
+    projectRoot: dir,
+    state: QUEUE_STATE,
+    writingFeatureSource: false,
+    host: 'claude' as const,
+    block: names,
+  });
+  const planWithQueue = (dir: string, rows: string[]): void => {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      'plan',
+      '<!-- opencode-delegate:start -->',
+      ...rows,
+      '<!-- opencode-delegate:end -->',
+      '',
+    ].join('\n'), 'utf8');
+  };
+  // 2cl regression: every queued file is OUTSIDE its role's compiled scope —
+  // the architect has no way to know the compiled allowlist (it is born in
+  // this same call), so scope must not gate PLAN_READY. Step-0 delegation
+  // rejects such units pre-model instead.
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir, QUEUE_STATE);
+    writeArchitectureInputOnly(dir);
+    planWithQueue(dir, [
+      '- id: demo-content | role: frontend | kind: seed-data | files: apps/web/src/lib/never-compiled.ts | task: self-contained demo catalog data module',
+      '- id: locales-en | role: frontend | kind: i18n | files: packages/i18n/src/locales/en/common.json | task: draft english copy catalog',
+      '- id: readme-draft | role: docs | kind: docs | files: README.md | task: project readme draft',
+    ]);
+    const v = planReadinessViolations(digestArgs(dir));
+    assert.ok(!v.includes('architect-opencode-queue-policy-gate'),
+      `scope mismatches must not block PLAN_READY, got: ${v.join(', ')}`);
+    assert.deepEqual(v, []);
+    // full accept: compiled + assignments actually published by the gate
+    assert.ok(readRuntimeAssignments(dir, 'R'));
+    assert.ok(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'architecture-v1.json')));
+  });
+  // static authoring error (duplicate id): still denies — and the denied
+  // completion leaves NO compiled sidecar behind (2cl lockout: a persisted
+  // compile next to a denied digest invalidated the live architect bootstrap)
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir, QUEUE_STATE);
+    writeArchitectureInputOnly(dir);
+    planWithQueue(dir, [
+      '- id: dup-unit | role: frontend | kind: seed-data | files: apps/web/src/lib/a.ts | task: data module a',
+      '- id: dup-unit | role: frontend | kind: seed-data | files: apps/web/src/lib/b.ts | task: data module b',
+      '- id: readme-draft | role: docs | kind: docs | files: README.md | task: project readme draft',
+    ]);
+    const v = planReadinessViolations(digestArgs(dir));
+    assert.ok(v.includes('architect-opencode-queue-policy-gate'));
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'architecture-v1.json')), false);
+  });
+});
+
 test('architect completion gate does not require agent-authored formatter scaffold', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);
@@ -1250,31 +1316,40 @@ test('digests and QA reports require the exact active child WorkUnitContract', (
   });
 });
 
-test('architect decision scope is exact to the current run', () => {
+test('architect records new ADRs freely, but prior decisions stay append-only', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
       currentRunId: 'R',
       activeAgentRole: 'senior-architect',
     };
-    const exact = planReadinessViolations({
-      filePath: '.traffic-one/decisions/R-architecture.md',
+    const decide = (filePath: string): string[] => planReadinessViolations({
+      filePath,
       content: '# Decision',
       projectRoot: dir,
       state,
       writingFeatureSource: false,
       block: names,
     });
-    assert.ok(!exact.includes('architect-planning-allowlist-gate'));
-    const broadSibling = planReadinessViolations({
-      filePath: '.traffic-one/decisions/unrelated.md',
-      content: '# Decision',
-      projectRoot: dir,
-      state,
-      writingFeatureSource: false,
-      block: names,
-    });
-    assert.ok(broadSibling.includes('architect-planning-allowlist-gate'));
+    const gate = 'architect-planning-allowlist-gate';
+
+    assert.ok(!decide('.traffic-one/decisions/R-architecture.md').includes(gate));
+    // 1cu-cursor: the documented ADR shapes (`project-memory` names both) were
+    // denied because only the run-prefixed filename was accepted.
+    assert.ok(!decide('.traffic-one/decisions/README.md').includes(gate));
+    assert.ok(!decide('.traffic-one/decisions/0001-seed-only-course-content.md').includes(gate));
+
+    // an ADR that already exists belongs to whoever recorded it
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'decisions'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'decisions', 'unrelated.md'), '# Earlier decision\n');
+    assert.ok(decide('.traffic-one/decisions/unrelated.md').includes(gate));
+    // …except this run's own records, which stay rewritable
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'decisions', 'R-architecture.md'), '# Mine\n');
+    assert.ok(!decide('.traffic-one/decisions/R-architecture.md').includes(gate));
+
+    // still confined to that directory
+    assert.ok(decide('.traffic-one/decisions/nested/adr.md').includes(gate));
+    assert.ok(decide('.traffic-one/decisions/adr.json').includes(gate));
   });
 });
 

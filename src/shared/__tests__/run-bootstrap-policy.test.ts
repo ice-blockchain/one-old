@@ -14,6 +14,7 @@ import {
 import {
   architectureInputPath,
   compileArchitectureForRun,
+  compiledArchitecturePath,
   createWorkUnitContract,
   publishRuntimeAssignments,
   stableContractJson,
@@ -97,6 +98,40 @@ function rewriteEnvelope(
   fs.writeFileSync(immutable, JSON.stringify(raw));
   fs.writeFileSync(activePath, JSON.stringify(raw));
 }
+
+test('a compiled sidecar persisted without published assignments does not invalidate the live architect bootstrap', () => {
+  withProject((cwd) => {
+    const envelope = ensureRunBootstrap(cwd, 'R', 'senior-architect', STATE, {
+      host: 'claude',
+      hostAgentType: 'senior-architect',
+      evidenceSource: 'parent-policy-preflight',
+      modelPolicyId: 'policy-1',
+    });
+    assert.ok(envelope);
+    assert.deepEqual(readActiveRunBootstrap(cwd, 'R', 'senior-architect'), envelope);
+    // 2cl regression: the completion gate compiled+persisted architecture-v1.json,
+    // then DENIED the digest (no verification/assignments/bootstrap republish).
+    // The live architect's envelope must survive that on-disk state — before the
+    // fix its expected contract hash flipped to the compiled hash and every tool
+    // call was denied.
+    const inputPath = architectureInputPath(cwd, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify(UI_INPUT));
+    compileArchitectureForRun(cwd, 'R', STATE);
+    assert.deepEqual(readActiveRunBootstrap(cwd, 'R', 'senior-architect'), envelope);
+  });
+});
+
+test('compileArchitectureForRun with persist:false keeps the compiled sidecar off disk', () => {
+  withProject((cwd) => {
+    const inputPath = architectureInputPath(cwd, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify(UI_INPUT));
+    const compiled = compileArchitectureForRun(cwd, 'R', STATE, { persist: false });
+    assert.ok(compiled.contractHash);
+    assert.equal(fs.existsSync(compiledArchitecturePath(cwd, 'R')), false);
+  });
+});
 
 test('precompile publishes only a complete architect planning envelope with real hashes', () => {
   withProject((cwd) => {

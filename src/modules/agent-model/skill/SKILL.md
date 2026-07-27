@@ -34,7 +34,7 @@ Traffic One spawn identity gate: this spawn carries conflicting valid Traffic On
 <!-- T1BLOCK:END spawn-role-conflict -->
 
 <!-- T1BLOCK:BEGIN performance-model-param -->
-Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in prompt text or a model-agnostic project agent contract has no effect. On Cursor, use the exact role→model value printed by model-gate; without the parameter the subagent inherits the parent model.{{ALTERNATES}} The runtime lineup comes from the active host snapshot in local Traffic One settings.
+ACTION: re-issue this spawn with `model: "{{EXPECTED}}"`. Nothing crashed — the host renders a declined spawn as an agent failure, but this is the Traffic One Performance gate (level={{LEVEL}}, host={{HOST}}) holding `{{ROLE}}` to the run's frozen model. {{PASSED_NOTE}}The model is set ONLY by this parameter — a model name in prompt text or a model-agnostic project agent contract has no effect. On Cursor, use the exact role→model value printed by model-gate; without the parameter the subagent inherits the parent model.{{ALTERNATES}} The runtime lineup comes from the active host snapshot in local Traffic One settings.
 For Codex, also use the canonical underscore-form `task_name` and `fork_turns: "none"`; the child hook verifies the actual model exactly against the immutable run policy.
 <!-- T1BLOCK:END performance-model-param -->
 

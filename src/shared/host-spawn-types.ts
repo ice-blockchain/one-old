@@ -52,8 +52,10 @@ export function hostSpawnType(host: HostId | string, role: string, cwd = ''): Ho
     case 'cursor':
       // Cursor materializes `.cursor/agents/<role>.md`, and the file name IS the
       // type — but only for a session that already knew about the file. A build
-      // that just onboarded wrote those files mid-session, so the first architect
-      // spawn can hit a type set that predates them.
+      // that just onboarded wrote those files mid-session, so the role-named type
+      // spawn can hit a type set that predates them. Both values stay
+      // acceptable; which one a directive RECOMMENDS depends on whether the
+      // files were just materialized (see `formatCursorSpawnMapLines`).
       return {
         primary: role,
         fallback: 'generalPurpose',

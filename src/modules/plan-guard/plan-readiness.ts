@@ -13,6 +13,7 @@ import {
   buildRuntimeAssignments,
   capabilityProfileForRun,
   compileArchitectureForRun,
+  persistCompiledArchitecture,
   publishRuntimeAssignments,
   readCompiledArchitecture,
   readRuntimeAssignments,
@@ -683,12 +684,41 @@ function assignmentWriterRole(projectRoot: string, state: Rec, rawData: unknown,
 const ARCHITECT_MEMORY_RE =
   /^\.traffic-one\/(?:plan|product|stack|coding|security|known-issues|deployment|environment-setup|agent-log|api|database)\.md$/;
 
-function architectMayWrite(filePath: string, runId: string): boolean {
+// ADRs live in `.traffic-one/decisions/` under whatever name the record needs —
+// `project-memory` prose hands the architect that directory (README + ADR files)
+// and `senior-engineer-team` lists `decisions/*` among the memory it owns, while
+// this gate used to accept exactly ONE filename nothing documented. Observed
+// 1cu-cursor: `decisions/README.md` and `decisions/0001-<slug>.md` were denied
+// three times and the architect gave up on recording the ADR at all — for a
+// non-default stack, `missingPlanArtifacts` then REQUIRES a file the architect
+// was never allowed to write.
+//
+// The run-exactness this replaces still holds where it matters: `decisions/` is
+// APPEND-ONLY across runs (project-memory: "never rewrite prior decisions
+// silently"), so an ADR that already exists may be overwritten only under this
+// run's own prefix. Markdown, one level deep, no traversal.
+const ARCHITECT_DECISION_RE = /^\.traffic-one\/decisions\/[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
+
+function architectMayWriteDecision(projectRoot: string, filePath: string, runId: string): boolean {
+  if (!ARCHITECT_DECISION_RE.test(filePath) || filePath.includes('..')) return false;
+  const name = filePath.slice('.traffic-one/decisions/'.length);
+  if (name === 'README.md') return true;
+  if (runId && (name === `${runId}-architecture.md` || name.startsWith(`${runId}-`))) return true;
+  // A brand-new ADR is a new decision; an existing one belongs to whoever
+  // recorded it. Unreadable project root → treat as existing (fail closed).
+  try {
+    return !fs.existsSync(path.join(projectRoot, filePath));
+  } catch {
+    return false;
+  }
+}
+
+function architectMayWrite(projectRoot: string, filePath: string, runId: string): boolean {
   if (ARCHITECT_MEMORY_RE.test(filePath)
     || filePath === '.traffic-one/.agentignore'
     || filePath === '.traffic-one/schema.sql') return true;
+  if (architectMayWriteDecision(projectRoot, filePath, runId)) return true;
   if (!runId) return false;
-  if (filePath === `.traffic-one/decisions/${runId}-architecture.md`) return true;
   return filePath === `.traffic-one/runs/${runId}/architecture-input-v1.json`
     || filePath === `.traffic-one/digests/${runId}/architect.md`;
 }
@@ -789,9 +819,9 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   if (writerRole === 'senior-architect'
     && filePath
     && !ASSIGNMENTS_FILE_RE.test(filePath)
-    && !architectMayWrite(filePath, currentRunId)) {
+    && !architectMayWrite(projectRoot, filePath, currentRunId)) {
     violations.push(block('architect-planning-allowlist-gate',
-      `Architect scope gate: \`senior-architect\` may write only the semantic plan/project-memory files, \`.traffic-one/runs/${currentRunId || '<runId>'}/architecture-input-v1.json\`, and its architect digest. \`${filePath}\` is runtime- or implementer-owned. Do not scaffold packages, workspace/config/source files, barrels, Tailwind assets, tests, or assignments; emit semantic ArchitectureInputV1 and let runtime compile the work units.`,
+      `Architect scope gate: \`senior-architect\` may write only the semantic plan/project-memory files, NEW ADRs under \`.traffic-one/decisions/<name>.md\` (existing ones are append-only across runs — use the \`${currentRunId || '<runId>'}-\` prefix to rewrite your own), \`.traffic-one/runs/${currentRunId || '<runId>'}/architecture-input-v1.json\`, and its architect digest. \`${filePath}\` is runtime- or implementer-owned. Do not scaffold packages, workspace/config/source files, barrels, Tailwind assets, tests, or assignments; emit semantic ArchitectureInputV1 and let runtime compile the work units.`,
       { TARGET: filePath }));
   }
 
@@ -851,7 +881,15 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         : analyzeStructureText(filePath, content, profile, []))
         .filter((finding) => finding.severity === 'error');
       if (findings.length > 0) {
-        const summary = findings.map((finding) => `${finding.id} (${finding.file}${finding.line ? `:${finding.line}` : ''})`).join(', ');
+        // Carry each finding's own message. Reporting only `ID (file:line)`
+        // withheld the one fact that resolves the deny — which route/module is
+        // wrong and what the compiled contract expects instead — so the writer
+        // guessed: observed 2cu, three of four routes were correct and only the
+        // catch-all failed, but the frontend read the generic prose as "routes
+        // are forbidden here", reported BLOCKED twice, and burned a re-plan.
+        const summary = findings
+          .map((finding) => `${finding.id} (${finding.file}${finding.line ? `:${finding.line}` : ''}): ${finding.message}`)
+          .join(' | ');
         violations.push(block('frontend-structure-hot-gate',
           `Structural gate: ${summary}. Entrypoints may only bootstrap the app; route pages must be separate compiled modules. Formatting the same monolith across more lines does not satisfy this gate.`,
           { FINDINGS: summary }));
@@ -886,7 +924,11 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     const inputExists = Boolean(runId) && exists(projectRoot, `.traffic-one/runs/${runId}/architecture-input-v1.json`);
     if (violations.length === 0 && (state.mode === 'new-project' || inputExists)) {
       try {
-        const compiled = compileArchitectureForRun(projectRoot, runId, state);
+        // Compile in memory only: nothing may reach disk until every
+        // completion check has passed. A persisted architecture-v1.json next
+        // to a DENIED digest invalidates the live architect's bootstrap
+        // envelope and revokes its tools mid-flight (observed 2cl).
+        const compiled = compileArchitectureForRun(projectRoot, runId, state, { persist: false });
         const verification = buildVerificationContract(
           projectRoot,
           runId,
@@ -903,15 +945,23 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
             compiled,
             verification.contractHash,
           );
+          // Static queue checks only (stable ids, depends edges, parseable
+          // files, unit-kind heuristics) — everything the architect can fix
+          // from plan.md alone. The file-vs-assignment scope cross-check runs
+          // at Step-0 delegation instead: delegateFromPlan validates every
+          // unit against the published assignments and rejects out-of-scope
+          // units pre-model (`rejected_policy`, paid fallback). The compiled
+          // allowlist is born in THIS call, so validating the architect's
+          // files against it here demanded paths the architect could only
+          // guess (observed 2cl: all 5 queued units denied, PLAN_READY
+          // unreachable without deleting the queue).
           const queuePolicyErrors = openCodeDelegationActive(state, host)
             && !planOnDiskMissingOpenCodeBlock(projectRoot)
-            ? planOnDiskOpenCodeQueuePolicyErrors(projectRoot, {
-                assignments: candidateAssignments.assignments,
-              })
+            ? planOnDiskOpenCodeQueuePolicyErrors(projectRoot)
             : [];
           if (queuePolicyErrors.length > 0) {
             violations.push(block('architect-opencode-queue-policy-gate',
-              `Architect completion gate: OpenCode queue metadata is unsafe: ${queuePolicyErrors.join('; ')}. Change the semantic plan/ArchitectureInputV1 so runtime-generated exact outputs and queue files agree before emitting \`PLAN_READY\`.`,
+              `Architect completion gate: OpenCode queue metadata is unsafe: ${queuePolicyErrors.join('; ')}. Fix the queue block in \`.traffic-one/plan.md\` (stable unique ids, parseable \`files:\`, explicit \`depends:\` edges for overlaps) and re-emit \`PLAN_READY\`. Do not guess compiled paths: file-vs-assignment scope is enforced at Step-0 delegation, where out-of-scope units are rejected pre-model and fall back to paid implementers.`,
               { ERRORS: queuePolicyErrors.join('; ') }));
           } else if (modelPolicy && !canPublishRunPolicyBootstraps(
             projectRoot,
@@ -936,6 +986,11 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
                 `Architecture contract gate: the runtime could not atomically activate the V2 rollback barrier for run \`${runId}\`. No V2 verification contract or implementation bootstrap was published.`,
                 { ERROR: 'V2 rollback barrier activation failed' }));
             } else {
+              // Accept path: persist the compiled architecture first — the
+              // verification/assignments sidecars published below reference
+              // its contractHash, and ensureRunPolicyBootstraps re-reads it
+              // from disk at the end of this same call.
+              persistCompiledArchitecture(projectRoot, compiled);
               publishVerificationContract(projectRoot, verification);
               const assignments = publishRuntimeAssignments(
                 projectRoot,

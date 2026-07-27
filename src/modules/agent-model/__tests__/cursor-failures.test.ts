@@ -689,6 +689,28 @@ test('Cursor stop emits one followup for a correlated failure and suppresses it 
     assert.equal(observation.outcome, 'api-limit');
     assert.equal(observation.followupEmitted, false, 'the parent transcript abort suppresses continuation');
   });
+
+  // 2cu-cursor: the user aborted the ONBOARDING turn minutes before the
+  // architect was spawned. That record stayed the newest `turn_ended` for the
+  // rest of the session (the parent never closed another turn), so every
+  // child's completion followup was suppressed and the orchestrator respawned
+  // its architect instead of continuing it.
+  withCursorFixture((fixture) => {
+    startSubagent(fixture.cwd, 'senior-backend', 'tool_stop_stale_parent_abort');
+    writeTerminalError(fixture, 'child-stale-parent-abort');
+    writeJsonl(path.join(fixture.parentDir, `${PARENT_ID}.jsonl`), [
+      { type: 'turn_ended', status: 'error', error: 'User aborted request' },
+      { role: 'user', message: { content: [{ type: 'text', text: 'give me the local link' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'Spawning the architect.' }] } },
+    ]);
+    const stopped = cursorFailureReconcileHook(ctxFor(fixture.cwd, 'Stop', {
+      session_id: PARENT_ID,
+    }));
+    assert.notEqual(stopped.kind, 'noop', 'a superseded abort must not suppress the continuation');
+    const observation = listCursorSpawnObservations(fixture.cwd, RUN_ID)[0]!;
+    assert.notEqual(observation.followupSuppressionReason, 'parent-transcript-user-abort');
+    assert.equal(observation.followupEmitted, true);
+  });
 });
 
 test('Cursor lifecycle followup is scoped to the correlated parent and SubagentStop can deliver it', () => {

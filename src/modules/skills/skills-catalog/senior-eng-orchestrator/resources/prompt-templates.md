@@ -144,7 +144,12 @@ mechanical refactors/renames, formatting/codemods) in the machine-readable
 self-contained `- id: … | role: … | kind: … | files: … | task: …` line each;
 add `depends: <earlier-id>` when a later unit overlaps an earlier files/area).
 The `files:` value is an enforced allowlist: list every legitimate source
-path/area the unit may touch, or the runner rejects the diff before apply. If
+path/area the unit may touch, or the runner rejects the diff before apply.
+Derive paths from the modules you declared — runtime compiles per-role
+ownership from them AFTER your `PLAN_READY`, and a unit whose files fall
+outside its role's compiled assignment is rejected at Step-0 delegation
+(pre-model, paid fallback). Scope mismatches never block `PLAN_READY`, so do
+not try to guess the compiled allowlist — declare the owning module instead. If
 the task mentions tests, testability, Vitest, Playwright, specs, or config/deps,
 the allowlist must include the exact test/spec/config/package files it may
 touch; otherwise remove that acceptance and leave verification/config work to

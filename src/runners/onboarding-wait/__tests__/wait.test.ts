@@ -709,8 +709,10 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
     assert.ok(d.includes('model-gate.cjs'), 'step 2 runs the model-gate command (the user-prompt trigger)');
     assert.ok(/prompt|fallback|enable|STOP/i.test(d), 'explains the user must reply before spawning');
 
-    // Non-Cursor hosts print nothing (model-capture is Cursor-specific).
-    assert.equal(preSpawnModelDirective(dir, 'claude'), '', 'claude → no directive');
+    // Codex prints nothing (its spawn contract rides the orchestrator prose);
+    // Claude prints nothing HERE only because no policy is frozen yet for a
+    // claude run — see the dedicated Claude spawn-map test below.
+    assert.equal(preSpawnModelDirective(dir, 'claude'), '', 'claude without frozen policy → no directive');
     assert.equal(preSpawnModelDirective(dir, 'codex'), '', 'codex → no directive');
 
     // A main-agent level (no subagents) → silent.
@@ -722,6 +724,75 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
       ),
     ), 'utf8');
     assert.equal(preSpawnModelDirective(dir, 'cursor'), '', 'low/main-agent level → no directive');
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('preSpawnModelDirective: Claude new-project subagents → per-role spawn map from the frozen policy', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { preSpawnModelDirective, preSpawnRunIdDirective } = await import('../index');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-claude-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'max';
+  try {
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'highest' } },
+        'max',
+      ),
+    ), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Traffic One project context\n', 'utf8');
+    fs.symlinkSync('AGENTS.md', path.join(dir, 'CLAUDE.md'));
+
+    // Before the policy is frozen there is nothing authoritative to print.
+    assert.equal(preSpawnModelDirective(dir, 'claude'), '', 'no frozen policy → no directive');
+
+    // Freeze the policy exactly like real setup completion does (no capture
+    // step on Claude — the policy mints straight away).
+    const runIdDirective = preSpawnRunIdDirective(dir, 'claude');
+    assert.match(runIdDirective, /Build run-id/);
+    const runId = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string;
+    const policy = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'model-policy.json'), 'utf8',
+    )) as { roles: Record<string, { preferredModel: string }> };
+
+    // 2cl regression: the first spawn went out without a `model` param because
+    // nothing the root read carried the concrete per-role map. The directive
+    // must front-load plugin-namespaced subagent_type + the exact policy model.
+    const d = preSpawnModelDirective(dir, 'claude');
+    assert.ok(d.includes(`run \`${runId}\``), 'names the frozen run');
+    assert.ok(d.includes('subagent_type: "traffic-one:senior-architect"'), 'plugin-namespaced agent type');
+    assert.ok(
+      d.includes(`model: "${policy.roles['senior-architect']!.preferredModel}"`),
+      'architect row carries the exact frozen model',
+    );
+    assert.ok(d.includes('senior-frontend') && d.includes('senior-tester'), 'map covers the team roles');
+    assert.match(d, /failed to run agent/, 'explains how the host renders a model-less spawn deny');
+    // The frozen policy — not live prefs — is the authority: the map keeps
+    // printing for this run even if preferences change afterwards.
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(
+        { level: 'low', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'max',
+      ),
+    ), 'utf8');
+    assert.match(preSpawnModelDirective(dir, 'claude'), /spawn map/i, 'frozen policy outlives pref edits');
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
@@ -760,12 +831,18 @@ test('preSpawnModelDirective: with capture, lists exact picker ids including fam
     }), 'utf8');
 
     const d = preSpawnModelDirective(dir, 'cursor');
-    assert.ok(d.includes('senior-architect → subagent_type: "senior-architect", model: claude-fable-5-thinking-high'), 'exact slug in preview');
-    assert.ok(d.includes('senior-shipper → subagent_type: "senior-shipper", model: gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
-    assert.ok(d.includes('senior-tester → subagent_type: "senior-tester", model: gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
+    // This directive is emitted in the session that just materialized
+    // `.cursor/agents/**`, so it recommends Cursor's built-in worker: the
+    // role-named type is not in the type list this session captured and the
+    // spawn comes back "Couldn't start" (1cu, 3cu). The role binds via the
+    // `[t1-role: …]` prompt marker either way.
+    assert.ok(d.includes('senior-architect → subagent_type: "generalPurpose", model: claude-fable-5-thinking-high'), 'exact slug in preview');
+    assert.ok(d.includes('senior-shipper → subagent_type: "generalPurpose", model: gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
+    assert.ok(d.includes('senior-tester → subagent_type: "generalPurpose", model: gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
     assert.ok(!d.includes('model: (after step 2'), 'captured family-anchor id is not replaced by a placeholder');
-    assert.ok(d.includes('`subagent_type: "generalPurpose"`'), 'rejected-enum recovery is front-loaded with the map');
-    assert.ok(d.includes('Never build the role inline because a type was rejected.'));
+    assert.ok(d.includes('Couldn\'t start'), 'the map explains why the built-in type is the recommended one');
+    assert.ok(d.includes('[t1-role: senior-<role>]'), 'the role marker stays mandatory');
+    assert.ok(d.includes('Never build the role inline.'));
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;

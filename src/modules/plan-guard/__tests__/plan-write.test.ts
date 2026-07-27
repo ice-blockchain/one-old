@@ -606,6 +606,42 @@ test('subagents project: denied readiness write does not leave a fallback path c
   });
 });
 
+test('subagents project: architect may record ADRs under .traffic-one/decisions/', () => {
+  // 1cu-cursor: the gate accepted only `decisions/<runId>-architecture.md`,
+  // a name no prose mentions, so the documented ADR files were denied.
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'architect-child', 'senior-architect', { parentSessionId: 'orchestrator' }));
+
+    for (const filePath of [
+      '.traffic-one/decisions/README.md',
+      '.traffic-one/decisions/0001-seed-only-course-content.md',
+      '.traffic-one/decisions/run-1-architecture.md',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+        filePath,
+        content: '# Decision\n\nSeed-only catalog for v1.\n',
+      }, { session_id: 'architect-child' }, 'kilo'));
+      assert.notEqual(r.kind, 'deny', `${filePath}: ${r.kind === 'deny' ? r.reason : ''}`);
+    }
+
+    // still scoped to that directory: no traversal, no nesting, no non-markdown
+    for (const filePath of [
+      '.traffic-one/decisions/nested/adr.md',
+      '.traffic-one/decisions/adr.json',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+        filePath,
+        content: 'x\n',
+      }, { session_id: 'architect-child' }, 'kilo'));
+      assert.equal(r.kind, 'deny', filePath);
+    }
+  });
+});
+
 test('subagents project: architect cannot write Tailwind implementation before PLAN_READY', () => {
   withMaterialized({
     currentRunId: 'run-1',

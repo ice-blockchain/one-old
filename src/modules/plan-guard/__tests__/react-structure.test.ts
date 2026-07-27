@@ -204,6 +204,53 @@ test('pretty and minified direct or anonymous entrypoint JSX is blocking', () =>
   });
 });
 
+test('a declared catch-all route is satisfied by the path="*" routers actually write', () => {
+  // 2cu: the contract could only hold `/*` while every router writes `*`, so a
+  // 404 route was permanently unsatisfiable and the app shipped without one.
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      schemaVersion: 1,
+      routes: [
+        { id: 'home-route', path: '/', moduleId: 'home' },
+        { id: 'not-found-route', path: '*', moduleId: 'not-found' },
+      ],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'not-found', name: 'NotFound', kind: 'page' },
+      ],
+    });
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){return <main>Home</main>}\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/NotFound.tsx'),
+      'export function NotFound(){return <main>404</main>}\n');
+    const routes = [
+      'import { Route, Routes } from "react-router-dom";',
+      'import { Home } from "../pages/Home";',
+      'import { NotFound } from "../pages/NotFound";',
+      'export function AppRoutes() { return <Routes>',
+      '  <Route path="/" element={<Home />} />',
+      '  <Route path="*" element={<NotFound />} />',
+      '</Routes>; }',
+    ].join('\n');
+
+    const findings = analyzeStructureTextAgainstContract(
+      'apps/web/src/components/AppRoutes.tsx',
+      routes,
+      contract,
+    ).filter((finding) => finding.severity === 'error');
+    assert.deepEqual(findings.map((finding) => finding.id), []);
+
+    // pointing the catch-all at the wrong module is still a mismatch
+    const wrong = analyzeStructureTextAgainstContract(
+      'apps/web/src/components/AppRoutes.tsx',
+      routes.replace('element={<NotFound />} />', 'element={<Home />} />'),
+      contract,
+    ).filter((finding) => finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH');
+    assert.equal(wrong.length, 1);
+  });
+});
+
 test('route-module matching is route-specific and ignores unused imports in the same or another module', () => {
   const mismatchMessages: string[][] = [];
   for (const minified of [false, true]) {

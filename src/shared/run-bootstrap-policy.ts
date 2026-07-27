@@ -364,39 +364,53 @@ function workUnitForRole(
       return null;
     }
   }
+  if (role === 'senior-architect') {
+    // The architect's planning contract is hashed to the immutable
+    // capability+baseline snapshot ONLY — never to compiled artifacts. Its
+    // scope does not depend on them, and deriving its hash from
+    // architecture-v1.json made the contract flip the instant a compile
+    // persisted mid-completion: the still-live architect's envelope stopped
+    // matching and every subsequent tool call was denied (observed 2cl — the
+    // digest deny itself revoked the tools needed to fix the digest).
+    const planning = architectPlanningScope(runId);
+    try {
+      return createWorkUnitContract({
+        runId,
+        unitId: `${role}:bootstrap`,
+        trafficOneRole: role,
+        hostAgentType,
+        rules: resolved.rules.map(({ id, contentHash }) => ({ id, contentHash })),
+        skills: resolved.skills.map(({ id, contentHash }) => ({ id, contentHash })),
+        outputs: planning.outputs,
+        allowlist: planning.allowlist,
+        allowlistExclude: [],
+        architectureHash: snapshot.snapshotHash,
+        verificationHash: snapshot.baselineHash,
+      });
+    } catch {
+      return null;
+    }
+  }
   const architecture = runtimeContracts?.architecture || readCompiledArchitecture(cwd, runId);
   const verification = runtimeContracts?.verification || readVerificationContract(cwd, runId);
-  const planning = architectPlanningScope(runId);
   const runtimeAssignments = runtimeContracts?.assignments
     || (architecture && verification ? readRuntimeAssignments(cwd, runId) : null);
   const assignment = runtimeAssignments?.assignments.find((entry) => entry.role === role);
-  const artifacts = role === 'senior-architect'
-    ? []
-    : roleRunArtifacts(runId, role, verification);
-  const allowlist = role === 'senior-architect'
-    ? planning.allowlist
-    : [...new Set([...stringList(assignment?.scope.include), ...artifacts])].sort();
-  const allowlistExclude = role === 'senior-architect'
-    ? []
-    : stringList(assignment?.scope.exclude);
-  const outputs = role === 'senior-architect'
-    ? planning.outputs
-    : [...new Set([...stringList(assignment?.scope.include), ...artifacts])].sort();
+  const artifacts = roleRunArtifacts(runId, role, verification);
+  const allowlist = [...new Set([...stringList(assignment?.scope.include), ...artifacts])].sort();
+  const allowlistExclude = stringList(assignment?.scope.exclude);
+  const outputs = [...new Set([...stringList(assignment?.scope.include), ...artifacts])].sort();
   const requiresAssignment = ['senior-frontend', 'senior-backend', 'senior-tester'].includes(role);
-  if (role !== 'senior-architect' && (
+  if (
     !architecture
     || !verification
     || !runtimeAssignments
     || runtimeAssignments.architectureHash !== architecture.contractHash
     || runtimeAssignments.verificationHash !== verification.contractHash
-  )) return null;
+  ) return null;
   if (requiresAssignment && !assignment) return null;
-  // Before PLAN_READY only the architect has a complete, runtime-owned
-  // planning contract. Reviewer/shipper and implementation roles must not get
-  // empty work units that could be mistaken for authorization.
-  if (!architecture && role !== 'senior-architect') return null;
-  const architectureHash = architecture?.contractHash || snapshot.snapshotHash;
-  const verificationHash = verification?.contractHash || snapshot.baselineHash;
+  const architectureHash = architecture.contractHash;
+  const verificationHash = verification.contractHash;
   try {
     return createWorkUnitContract({
       runId,

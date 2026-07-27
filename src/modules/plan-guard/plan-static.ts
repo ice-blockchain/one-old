@@ -97,7 +97,26 @@ export function planStaticViolations(filePath: string, content: string, isNative
   // (and src-layout RN/Expo) template — index.html → main.tsx → App. Denying it
   // forces a non-standard `src/components/App.tsx` relocation (observed
   // 8c-codex). Every other capitalized module directly in src/ stays gated.
-  if (/(apps\/[^/]+\/)?src\/[A-Z][a-zA-Z]+\.(tsx|ts)$/.test(filePath)
+  //
+  // `packages/**` is exempt too: this is an APP-source placement rule, and a
+  // workspace package root is where the message itself points ("or
+  // packages/ui/*"). Unanchored, the pattern denied both the destination it
+  // recommends (`packages/ui/src/Button.tsx`) and the backend service modules
+  // the RUNTIME compiles into an assignment — observed 1cu-cursor:
+  // `packages/api-client/src/AuthAPIService.ts` was in senior-backend's
+  // compiled `assignments.json` scope and denied 4× by this line, which ended
+  // the run with zero backend files. A gate must never deny a path runtime
+  // itself owns.
+  //
+  // A `.ts` module cannot contain JSX, so a PascalCase `.ts` directly in `src/`
+  // is a service/store/type module far more often than a component — and both
+  // supabase (`packages/api-client/src/AuthAPIService.ts`) and the generic TS
+  // backend (`services/api/src/AuthAPIService.ts`) compile exactly that shape.
+  // Require a real component signal there; `.tsx` stays gated on path alone.
+  const componentSignal = /\.tsx$/.test(filePath) || /(?:React\.)?createElement\s*\(/.test(content);
+  if (componentSignal
+    && !/(?:^|\/)packages\//.test(filePath)
+    && /(apps\/[^/]+\/)?src\/[A-Z][a-zA-Z]+\.(tsx|ts)$/.test(filePath)
     && !/(?:^|\/)src\/App\.(?:tsx|ts)$/.test(filePath)) {
     const target = isNative
       ? 'src/components/, src/features/<name>/components/, or packages/ui-native/*'

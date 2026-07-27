@@ -5,9 +5,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type {
-  ArchitectureExceptionRequestV1,
-  CompiledArchitectureV1,
+import {
+  canonicalRoutePath,
+  type ArchitectureExceptionRequestV1,
+  type CompiledArchitectureV1,
 } from '../../shared/architecture-contract';
 import type { CapabilityProfileV1 } from '../../shared/capabilities';
 import { writeJson } from '../../shared/fsjson';
@@ -1113,10 +1114,10 @@ function withoutModuleExtension(value: string): string {
   return normalizeRel(value).replace(/\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|html)$/, '');
 }
 
-function normalizedRoutePath(value: string): string {
-  if (value === '/') return value;
-  return value.replace(/\/+$/, '') || '/';
-}
+// Shared with the architecture contract so a route declared as `*` (or `/*`)
+// matches the `path="*"` every router uses in code. Comparing the two spellings
+// literally made the catch-all unsatisfiable from both directions.
+const normalizedRoutePath = canonicalRoutePath;
 
 function sourceMatchesModule(
   importerFile: string,

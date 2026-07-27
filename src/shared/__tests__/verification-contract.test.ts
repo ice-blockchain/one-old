@@ -562,6 +562,72 @@ test('Git verification diff fails closed on an untracked symbolic link', () => {
   });
 });
 
+test('the materialized CLAUDE.md → AGENTS.md alias never makes a verification scan incomplete', () => {
+  // 1cu-cursor: the immutable baseline accepted this alias (materialization's
+  // own output) while both verification scans failed closed on it, so the
+  // architect's PLAN_READY was denied with STRUCT_SCAN_INCOMPLETE until the
+  // parent hand-replaced the symlink with a copy.
+  withProject((cwd) => {
+    setupReact(cwd);
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Project agents\n');
+    fs.symlinkSync('AGENTS.md', path.join(cwd, 'CLAUDE.md'));
+    const architecture = compileArchitecture(cwd, 'R', REACT, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'mapping-service', name: 'Mapping', kind: 'service' }],
+    });
+    const contract = compileVerificationContract(cwd, 'R', REACT, architecture, { changedPaths: [] });
+
+    const changed = changedPathsFromBaseline(cwd, architecture);
+    assert.equal(changed.complete, true, changed.reason);
+    // identity-tracked, not content-hashed → not reported as a change
+    assert.equal(changed.paths.includes('CLAUDE.md'), false);
+
+    const source = currentVerificationSourceHash(cwd, contract);
+    assert.equal(source.complete, true, source.reason);
+  });
+
+  // Git baseline path: the alias is an untracked entry in `ls-files --others`,
+  // which is exactly where the segment inspection used to fail closed.
+  withProject((cwd) => {
+    setupReact(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'), 'export const Home = () => <main />;\n');
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Project agents\n');
+    execFileSync('git', ['init', '-q'], { cwd });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd });
+    execFileSync('git', ['add', '.'], { cwd });
+    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd });
+    const architecture = compileArchitecture(cwd, 'R', REACT, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'mapping-service', name: 'Mapping', kind: 'service' }],
+    });
+
+    fs.symlinkSync('AGENTS.md', path.join(cwd, 'CLAUDE.md'));
+    const changed = changedPathsFromBaseline(cwd, architecture);
+    assert.equal(changed.complete, true, changed.reason);
+    assert.equal(changed.paths.includes('CLAUDE.md'), true);
+  });
+
+  // Only the canonical shape is exempt — a CLAUDE.md pointing anywhere else
+  // still fails closed.
+  withProject((cwd) => {
+    setupReact(cwd);
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Project agents\n');
+    fs.writeFileSync(path.join(cwd, 'OTHER.md'), '# Other\n');
+    const architecture = compileArchitecture(cwd, 'R', REACT, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'mapping-service', name: 'Mapping', kind: 'service' }],
+    });
+    fs.symlinkSync('OTHER.md', path.join(cwd, 'CLAUDE.md'));
+    const changed = changedPathsFromBaseline(cwd, architecture);
+    assert.equal(changed.complete, false);
+    assert.match(changed.reason || '', /symbolic link.*CLAUDE\.md/i);
+  });
+});
+
 test('Git verification source identity is project-relative inside a larger worktree and changes on every mutation', () => {
   withProject((worktree) => {
     const cwd = path.join(worktree, 'services', 'traffic-app');

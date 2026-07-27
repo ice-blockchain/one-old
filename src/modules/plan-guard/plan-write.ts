@@ -39,7 +39,7 @@ import { projectRelativeHookPath } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../shared/materialize';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { activeAgentRole, hookSessionIdentity, isNativeState, readEffectiveState, roleForRunSessionId } from '../../shared/state';
+import { activeAgentRole, hookSessionIdentity, isNativeState, readEffectiveState, resolveRunAgentContext, roleForRunSessionId } from '../../shared/state';
 import { capturePlanGuardDebug } from '../../shared/state/claim-capture';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 import {
@@ -496,13 +496,23 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // registry match doubles as the isSubagent signal.
   const denyIdentity = hookSessionIdentity(raw);
   const registryRole = roleForRunSessionId(projectRoot, runId, denyIdentity.sessionId);
+  // On Claude a subagent's hook payload carries the PARENT's session id, while
+  // its claim is keyed by the child's own id, so the two lookups above always
+  // miss and every subagent deny was logged with `role: null` (observed 1cl —
+  // four denies, an architect claim active the whole time, no way to attribute
+  // them). Fall back to the same resolver the gates themselves trust.
+  const resolvedContext = registryRole
+    ? null
+    : resolveRunAgentContext(projectRoot, state, raw, { host: ctx.host });
+  const resolvedRole = registryRole
+    || (typeof resolvedContext?.role === 'string' ? resolvedContext.role : null);
   capturePlanGuardDebug(projectRoot, runId, {
     filePath,
     filePaths: writeTargetPaths,
     host: ctx.host,
     sessionId: denyIdentity.sessionId || null,
-    isSubagent: denyIdentity.isSubagent || Boolean(registryRole),
-    role: activeAgentRole(state) || registryRole,
+    isSubagent: denyIdentity.isSubagent || Boolean(resolvedRole),
+    role: activeAgentRole(state) || resolvedRole,
     violations: violations.map((v) => (v.length > 400 ? `${v.slice(0, 400)}…` : v)),
   });
   return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}`);

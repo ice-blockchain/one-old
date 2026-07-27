@@ -57,6 +57,16 @@ You may change:
 You may not modify feature source, app/bundler config, manifests, schema, or
 migrations. Route implementation defects to the owning implementer.
 
+`.traffic-one/reports/qa/<runId>/**` holds EVIDENCE only. Never build a second
+project in there: no `package.json`, no lockfile, no `node_modules`, no install
+of any kind (observed 2cu — a parallel harness put 241 MB into the plugin's
+state directory and ran the suite against a config disconnected from the real
+workspace, so the results proved nothing about the app). Configure the runner in
+the workspace config you own — `vitest.config.ts` is in your compiled scope. If
+a devDependency is missing, say which one in your digest and let the role that
+owns the manifest add it; a missing dependency is `TESTS_FAILING` with a reason,
+never a reason to build your own tree.
+
 ## Test workflow
 
 1. Map every changed contract to a happy path, failure path, and relevant

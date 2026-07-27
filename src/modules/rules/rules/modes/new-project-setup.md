@@ -70,6 +70,11 @@ assignment, baseline, hash, or bootstrap remain read-only.
    - Keep `.traffic-one/digests/`, `.traffic-one/reports/`,
      `.traffic-one/backups/`, `graphify-out/`, and `.gitnexus/` gitignored
      as local caches; the memory baseline files above are source.
+   - `.prettierignore` must exclude `node_modules`, build output, and the WHOLE
+     `.traffic-one` directory. Narrowing it to `.traffic-one/reports` lets a
+     workspace-wide `prettier --write` rewrite run artifacts owned by other
+     roles — observed 2cu, a formatter run reformatted another role's handoff
+     digest with no gate in the way.
 
 3. **Shared packages first**
    - `packages/tsconfig` and `packages/eslint-config` — used by everything else.

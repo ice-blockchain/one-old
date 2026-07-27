@@ -47,7 +47,7 @@ Architect completion gate: do not write `PLAN_READY` until the required `.traffi
 <!-- T1BLOCK:END architect-memory-baseline-gate -->
 
 <!-- T1BLOCK:BEGIN architect-planning-allowlist-gate -->
-Architect scope gate: `senior-architect` may write only the semantic plan/project-memory files, `.traffic-one/runs/<runId>/architecture-input-v1.json`, and its architect digest. `{{TARGET}}` is runtime- or implementer-owned. Do not scaffold packages, workspace/config/source files, barrels, Tailwind assets, tests, or assignments; emit semantic ArchitectureInputV1 and let runtime compile the work units.
+Architect scope gate: `senior-architect` may write only the semantic plan/project-memory files, NEW ADRs under `.traffic-one/decisions/<name>.md` (existing ones are append-only across runs — use the `<runId>-` prefix to rewrite your own), `.traffic-one/runs/<runId>/architecture-input-v1.json`, and its architect digest. `{{TARGET}}` is runtime- or implementer-owned. Do not scaffold packages, workspace/config/source files, barrels, Tailwind assets, tests, or assignments; emit semantic ArchitectureInputV1 and let runtime compile the work units.
 <!-- T1BLOCK:END architect-planning-allowlist-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-gate -->
@@ -67,7 +67,7 @@ Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md
 <!-- T1BLOCK:END plan-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-policy-gate -->
-Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add stable unique `id` fields, exact `files` allowlists, and `depends` edges for overlapping areas before emitting `PLAN_READY`.
+Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Fix the queue block in `.traffic-one/plan.md` (stable unique ids, parseable `files:`, explicit `depends:` edges for overlaps) and re-emit `PLAN_READY`. Do not guess compiled paths: file-vs-assignment scope is enforced at Step-0 delegation, where out-of-scope units are rejected pre-model and fall back to paid implementers.
 <!-- T1BLOCK:END architect-opencode-queue-policy-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-queue-policy-gate -->
