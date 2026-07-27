@@ -53,6 +53,14 @@ Only `senior-architect` authors that file, in complex-tier runs.
 - **Subagents mode:** delegate to a `quick-fix` worker — a dedicated cheap maintenance role with its
   own agent definition.
   - Spawn with `subagent_type: "quick-fix"` (or open the prompt with `You are acting as Traffic One quick-fix`).
+    `quick-fix` is NOT part of the senior roster, so hosts that build their accepted-type
+    set from materialized role files never offer it — Cursor writes only the six
+    `.cursor/agents/senior-*.md` contracts. If the host rejects `quick-fix` as a type,
+    spawn the built-in generic worker instead (Cursor `generalPurpose`, Claude
+    `general-purpose`, Kilo `general`, Windsurf profile `subagent_general`) and put the
+    `[t1-role: …]` marker naming `quick-fix` on the FIRST prompt line; that marker is
+    what binds the worker to the role and its bounded scope. Never widen this to a
+    senior role and never do the edit in the parent thread.
     On Codex, use the structured call exactly: `task_name: "quick_fix"`,
     `fork_turns: "none"`, and the runtime-supplied `model`. Do not use the
     default/full-history fork, a generic worker task name, or a locally guessed

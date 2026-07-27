@@ -134,6 +134,10 @@ export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: strin
     `  3. Run this command to wait for setup to finish — IN THE BACKGROUND when the shell tool supports it (a foreground run hides its output while it blocks and looks hung). Do read-only orientation meanwhile; when it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request:\n${onboardingWaitCommand(cwd, host, syncSession)}`,
     `- If the user answers NO, run this command — the choice is saved outside the project (no files are added to it) and Traffic One stays silent here until the user explicitly asks for it again:\n${onboardingDeclineCommand(cwd, host)}`,
     '',
+    'Run each command EXACTLY as printed — no pipes, redirection, `&&`, or extra arguments. '
+    + 'The gate allow-lists this runner by its precise argv, so a wrapped or chained form is '
+    + 'denied and you will be sent back here.',
+    '',
     'Do not scaffold, edit files, or start building until the user has answered.',
   ].join('\n');
 }

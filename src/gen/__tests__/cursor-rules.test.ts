@@ -58,7 +58,11 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
     const agentPath = path.join('.cursor', 'rules', '00-agent-senior-architect.mdc');
     assert.ok(byPath.has(agentPath));
     assert.ok(byPath.get(agentPath)?.includes('alwaysApply: false'));
-    assert.ok(byPath.get(agentPath)?.includes('Cursor has no first-class'));
+    // The note must not claim Cursor lacks subagents — Traffic One spawns every
+    // role through `Task`, and the old wording contradicted the orchestrator skill
+    // in every generated role rule.
+    assert.ok(!byPath.get(agentPath)?.includes('Cursor has no first-class'));
+    assert.ok(byPath.get(agentPath)?.includes('subagent_type'));
 
     // Only the small behavioral kernel stays always-on; bulky paths-less rules
     // (stack pitches, onboarding, role-team docs) ship agent-requested.

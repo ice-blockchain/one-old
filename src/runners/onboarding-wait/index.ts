@@ -29,6 +29,7 @@ import { AGENT_ROLES } from '../../config/performance';
 import { detectMode } from '../../shared/detection';
 import { detectHost } from '../../shared/host';
 import { detectHostPlan } from '../../shared/host-plan';
+import { hostSpawnType } from '../../shared/host-spawn-types';
 import { materializeProjectIfNeeded, writeOpenCodeHostAssets } from '../../shared/materialize';
 import { buildCursorSpawnModelMap } from '../../shared/materialize/cursor-spawn-map';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
@@ -339,7 +340,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
       const spawnValue = hasExactCaptured
         ? spawnMap[role]
         : `(after step 2 — exact captured picker id for tier \`${fam}\`; never guess an uncaptured id)`;
-      rows.push(`   - ${role} → ${spawnValue}`);
+      rows.push(`   - ${role} → subagent_type: "${hostSpawnType('cursor', role).primary}", model: ${spawnValue}`);
       const acceptable = rolePolicy?.acceptableModels || currentAcceptableModels(fam, host, planCtx.plan);
       if (!tierFallback.has(fam)) tierFallback.set(fam, acceptable.slice(1)[0] || fam);
     }
@@ -356,8 +357,9 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
         `- Frozen picker snapshot: ${captured.map((model) => `\`${model}\``).join(', ')}.`,
         '- Do NOT capture models again for this run. A plan, One MCP catalog, or Cursor picker change applies only to a new parent run; this policy is never rebased.',
         `- Run \`${gateCmd}\` once. It validates availability against the frozen snapshot and prints the authoritative exact spawn map.`,
-        '- Spawn each role with the exact captured Task `model` below (never an uncaptured family guess):',
+        '- Spawn each role with the `subagent_type` and exact captured Task `model` below (never an uncaptured family guess):',
         ...rows,
+        `- If Cursor rejects a \`subagent_type\` (invalid enum / unknown type), those role files were written after this session captured its type list. Retry that ONE spawn with \`subagent_type: "${hostSpawnType('cursor', 'senior-architect').fallback}"\`, keep \`[t1-role: senior-<role>]\` as the FIRST prompt line, and tell the child to read \`.cursor/agents/<role>.md\`. Never build the role inline because a type was rejected.`,
         '- If the frozen snapshot requires an enable/fallback decision, `fallback` may continue this run on its frozen exact alternate. `enable` requires a new parent run after enabling and capturing the updated picker.',
       ].join('\n');
     }
@@ -368,8 +370,9 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
       `2. Run this command (it checks whether your picked tier models — ${eligibility} — are actually offered):`,
       `   ${gateCmd}`,
       '   If a picked model is NOT offered, STOP — show the user the unavailable-model table in chat and wait for them to reply **fallback** or **enable** before spawning. The model-gate command and spawn gate both fail closed until that reply is recorded. Re-run after they enable a model.',
-      '3. Spawn using the **spawn map** printed by step 2. Project `.cursor/agents` files are model-agnostic; pass each EXACT slug from the map in the Task `model` parameter (preview; step 2 is authoritative):',
+      '3. Spawn using the **spawn map** printed by step 2. Project `.cursor/agents` files are model-agnostic; pass each EXACT slug from the map in the Task `model` parameter, together with the role\'s `subagent_type` (preview; step 2 is authoritative):',
       ...rows,
+      `   If Cursor rejects a \`subagent_type\` (invalid enum / unknown type), those role files were written after this session captured its type list. Retry that ONE spawn with \`subagent_type: "${hostSpawnType('cursor', 'senior-architect').fallback}"\`, keep \`[t1-role: senior-<role>]\` as the FIRST prompt line, and tell the child to read \`.cursor/agents/<role>.md\`. Never build the role inline because a type was rejected.`,
       '   Use only ids present verbatim in the captured picker list. An exact id may equal its family anchor (for example `gpt-5.4-mini`); never invent a suffix or pass an uncaptured family guess.',
       '   Spawn the team only after steps 1–2. Passing the correct `model` per role on the FIRST spawn is what avoids the model-tier deny + retry.',
     ].join('\n');

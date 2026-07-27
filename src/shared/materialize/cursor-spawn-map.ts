@@ -4,6 +4,7 @@
 // and model-gate (spawn map stdout). Project agent contracts stay model-agnostic.
 
 import { AGENT_ROLES } from '../../config/performance';
+import { hostSpawnType } from '../host-spawn-types';
 import { detectHostPlan } from '../host-plan';
 import { currentAcceptableModels } from '../current-model-tiers';
 import { roleModelSelection } from '../performance';
@@ -91,15 +92,20 @@ export function buildCursorSpawnModelMap(cwd: string, state: Rec): Record<string
 export function formatCursorSpawnMapLines(map: Record<string, string>): string[] {
   return Object.keys(map)
     .sort()
-    .map((role) => `   - ${role} → ${map[role]}`);
+    .map((role) => {
+      const spawn = hostSpawnType('cursor', role);
+      return `   - ${role} → subagent_type: "${spawn.primary}", model: ${map[role]}`;
+    });
 }
 
 export function formatCursorSpawnMapBlock(map: Record<string, string>): string {
   const lines = formatCursorSpawnMapLines(map);
   if (!lines.length) return '';
+  const fallback = hostSpawnType('cursor', 'senior-architect').fallback;
   return [
-    'traffic-one model-gate: spawn map — pass these EXACT captured Task `model` params (never an uncaptured family guess):',
+    'traffic-one model-gate: spawn map — pass BOTH values below on every Task spawn. The `model` must be an exact captured id (never an uncaptured family guess):',
     ...lines,
+    `   If Cursor rejects a subagent_type (invalid enum / unknown type), the role files were written after this session captured its type list: retry that one spawn with \`subagent_type: "${fallback}"\`, keep \`[t1-role: senior-<role>]\` as the FIRST prompt line, and tell the child to read \`.cursor/agents/<role>.md\`. Do NOT build the role inline.`,
   ].join('\n');
 }
 

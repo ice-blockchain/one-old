@@ -20,12 +20,18 @@ test('relocateProviderSkills adopts grouped + flat .claude/skills into .traffic-
     fs.writeFileSync(path.join(dir, '.traffic-one', 'skills', 'gitnexus-cli', 'SKILL.md'), '# existing\n', 'utf8');
 
     const relocated = relocateProviderSkills(dir);
-    assert.deepEqual(relocated, ['flat-skill', 'gitnexus-guide']);
+    assert.deepEqual(relocated, ['flat-skill', 'gitnexus-cli.provider', 'gitnexus-guide']);
     assert.ok(fs.existsSync(path.join(dir, '.traffic-one', 'skills', 'gitnexus-guide', 'SKILL.md')));
     assert.equal(fs.readFileSync(path.join(dir, '.traffic-one', 'skills', 'gitnexus-cli', 'SKILL.md'), 'utf8'), '# existing\n', 'existing skill preserved');
-    // the un-relocated duplicate stays under .claude/skills; emptied dirs are swept
-    assert.ok(fs.existsSync(path.join(dir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli', 'SKILL.md')));
-    assert.ok(!fs.existsSync(path.join(dir, '.claude', 'skills', 'flat-skill')));
+    // A name COLLISION keeps the provider's copy under a suffix rather than
+    // clobbering the existing skill OR abandoning it in the host directory.
+    assert.equal(
+      fs.readFileSync(path.join(dir, '.traffic-one', 'skills', 'gitnexus-cli.provider', 'SKILL.md'), 'utf8'),
+      '# gitnexus-cli\n',
+      'colliding provider skill preserved under a suffix',
+    );
+    // Nothing is left behind: the whole host directory is swept.
+    assert.ok(!fs.existsSync(path.join(dir, '.claude')), '.claude fully removed');
 
     // a fully-adopted tree sweeps .claude/skills (and .claude) away
     const clean = fs.mkdtempSync(path.join(os.tmpdir(), 't1-provskills2-'));
@@ -34,6 +40,21 @@ test('relocateProviderSkills adopts grouped + flat .claude/skills into .traffic-
       fs.writeFileSync(path.join(clean, '.claude', 'skills', 'gitnexus', 'gitnexus-x', 'SKILL.md'), '# x\n', 'utf8');
       assert.deepEqual(relocateProviderSkills(clean), ['gitnexus-x']);
       assert.ok(!fs.existsSync(path.join(clean, '.claude')), '.claude removed when emptied');
+
+      // Live regression (cursor/19c, and every project on 15c-19c/20c/windsurf-1c):
+      // the provider re-runs and re-emits the SAME skills. Adoption is already
+      // done, so the second pass used to skip every leaf and leave `.claude/`
+      // behind forever — visible as a stray Claude directory in Cursor/Codex
+      // projects. Re-emitting must be idempotent.
+      fs.mkdirSync(path.join(clean, '.claude', 'skills', 'gitnexus', 'gitnexus-x'), { recursive: true });
+      fs.writeFileSync(path.join(clean, '.claude', 'skills', 'gitnexus', 'gitnexus-x', 'SKILL.md'), '# x\n', 'utf8');
+      assert.deepEqual(relocateProviderSkills(clean), [], 'nothing new to adopt');
+      assert.ok(!fs.existsSync(path.join(clean, '.claude')), '.claude removed on the second run too');
+      assert.equal(
+        fs.readFileSync(path.join(clean, '.traffic-one', 'skills', 'gitnexus-x', 'SKILL.md'), 'utf8'),
+        '# x\n',
+        'the adopted skill is untouched',
+      );
     } finally {
       fs.rmSync(clean, { recursive: true, force: true });
     }

@@ -86,7 +86,7 @@ test('buildCursorSpawnModelMap resolves exact slugs without persisting them in a
     const state = readEffectiveState(dir) as Record<string, unknown>;
     const map = buildCursorSpawnModelMap(dir, state);
     assert.equal(map['senior-architect'], 'claude-fable-5-thinking-high');
-    assert.ok(formatCursorSpawnMapBlock(map).includes('senior-architect → claude-fable-5-thinking-high'));
+    assert.ok(formatCursorSpawnMapBlock(map).includes('senior-architect → subagent_type: "senior-architect", model: claude-fable-5-thinking-high'));
 
     syncCursorSpawnAgentFiles(dir, state);
     const architect = fs.readFileSync(path.join(dir, '.cursor', 'agents', 'senior-architect.md'), 'utf8');
@@ -107,7 +107,7 @@ test('buildCursorSpawnModelMap emits captured family-anchor ids and omits uncapt
     assert.equal(map['senior-tester'], 'gpt-5.4-mini');
     assert.equal(map['senior-shipper'], 'gpt-5.6-terra');
     assert.ok(!Object.values(map).includes('composer-2.5'), 'uncaptured family fallback is omitted');
-    assert.match(formatCursorSpawnMapBlock(map), /EXACT captured Task/);
+    assert.match(formatCursorSpawnMapBlock(map), /exact captured id/);
   });
 });
 

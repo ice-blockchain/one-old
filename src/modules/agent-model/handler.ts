@@ -86,6 +86,8 @@ import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
+import { acceptableSpawnTypes, canonicalHostAgentType, hostSpawnType } from '../../shared/host-spawn-types';
+import { cursorAgentTypeReason } from './cursor-agent-type';
 import {
   cursorRunPolicyMissingTiers,
   ensureRunModelPolicy,
@@ -282,7 +284,23 @@ function spawnAgentType(toolInput: Rec, opts: { includeRoleAlias?: boolean } = {
 }
 
 function isBuiltinSubagent(agentType: string): boolean {
-  return /^(general|explore|scout)$/i.test(agentType.trim());
+  return /^(general|general[-_]?purpose|explore|scout)$/i.test(agentType.trim());
+}
+
+// Cursor's `Task` builds its accepted `subagent_type` set from the agent files it
+// knew about when the session started, so a role materialized during onboarding
+// can be missing from it — the spawn then fails inside Cursor's schema validation,
+// before any hook runs. The supported recovery is the built-in generic worker plus
+// the role marker, so BOTH are legitimate here; anything else is a real misroute.
+function cursorAgentTypeDeny(role: string, agentType: string): HookResult {
+  const spawn = hostSpawnType('cursor', role);
+  return deny(block('cursor-agent-type-required', {
+    ROLE: role,
+    AGENT_TYPE: agentType || 'missing',
+    EXPECTED_AGENT: spawn.primary || role,
+    FALLBACK_AGENT: spawn.fallback || 'generalPurpose',
+    AGENT_PATH: spawn.contractPath || `.cursor/agents/${role}.md`,
+  }, cursorAgentTypeReason(role, agentType, spawn.primary || role, spawn.fallback || 'generalPurpose', spawn.contractPath || `.cursor/agents/${role}.md`)));
 }
 
 function namedOpenCodeAgentDeny(cwd: string, role: string, agentType: string, expected: string): HookResult {
@@ -924,7 +942,17 @@ export function agentModelGate(ctx: Ctx): HookResult {
           + 'No child was started. Repair the parent run and retry.',
         );
       }
-      const hostAgentType = capability?.typedSubagents && rawAgentType ? rawAgentType : null;
+      // A spawn that fell back to the host's built-in generic worker (because this
+      // session's accepted-type set predates the materialized agent files) is the
+      // SAME work unit as the typed spawn. Canonicalize it so both paths resolve
+      // the bootstrap the parent already published for this role.
+      const hostAgentType = canonicalHostAgentType(
+        ctx.host,
+        role,
+        rawAgentType,
+        capability?.typedSubagents === true,
+        cwd,
+      );
       const activeRoleBootstrap = readActiveRunBootstrap(cwd, spawnRunId, role);
       const activeBoundedMaintenance = activeRoleBootstrap
         && (
@@ -1345,6 +1373,17 @@ export function agentModelGate(ctx: Ctx): HookResult {
     }
   }
   if (ctx.host === 'kilo' && agentType.toLowerCase() !== 'general') return kiloGeneralAgentDeny(role, agentType);
+  // Cursor accepts the role's own agent OR the built-in generic worker (the
+  // recovery path when this session's type list predates the materialized agent
+  // files). A type that is neither is a misroute — the child would bind no role.
+  // An ABSENT type stays allowed: some Cursor payloads omit it and the marker is
+  // still authoritative.
+  if (ctx.host === 'cursor' && agentType) {
+    const accepted = acceptableSpawnTypes('cursor', role);
+    if (!accepted.some((value) => value.toLowerCase() === agentType.toLowerCase())) {
+      return cursorAgentTypeDeny(role, agentType);
+    }
+  }
   if (!expected) return allowSpawn(noop());
   if (!modelParamEnforced(ctx.host)) {
     recordSpawnParentSession(cwd, raw);

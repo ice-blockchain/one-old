@@ -97,9 +97,14 @@ function renderAgentRule(agentRel: string, sourceText: string): RuleDocument {
   const description = frontmatterDescription || `${title}. Generated from ${sourceRelative}.`;
   const relPath = path.join('.cursor', 'rules', `00-agent-${baseName}.mdc`);
 
-  const note = '> Mirrored from ' + sourceRelative + ' — Cursor has no first-class '
-    + 'subagents; Cursor attaches this role context on demand from the description. '
-    + 'The orchestrator skill (`senior-eng-orchestrator`) describes how the roles compose.';
+  // Cursor IS a first-class subagent host (Traffic One materializes
+  // `.cursor/agents/<role>.md` per project and spawns each role through `Task`).
+  // The old note claimed the opposite in EVERY generated role rule, contradicting
+  // the orchestrator skill and giving the agent a reason to simulate the team.
+  const note = '> Mirrored from ' + sourceRelative + ' — Cursor also attaches this role '
+    + 'context on demand from the description. Spawning this role as a real subagent '
+    + 'uses `Task` with the `subagent_type` from the model-gate spawn map; the '
+    + 'orchestrator skill (`senior-eng-orchestrator`) describes how the roles compose.';
 
   const contentLines = [
     ...cursorFrontmatter(description, [], false),

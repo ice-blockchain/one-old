@@ -8,11 +8,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import type { Ctx } from '../core/types';
+import { asString } from '../adapters/coerce';
 import { parseApplyPatch, patchOperationPaths, patchTextFromToolInput } from './apply-patch';
 import { isNonProjectRoot } from './authoring-root';
 import { isPathWithin, resolveProjectRoot } from './hook-paths';
 import { obj } from './obj';
-import { commandFromToolInput, normalizedToolName, parsedToolInput } from './tool-classify';
+import { canonicalToolName, commandFromToolInput, isMutatingPreToolUse, normalizedToolName, parsedToolInput } from './tool-classify';
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -22,6 +23,17 @@ export interface ToolScopeTarget {
   path: string;
   directoryHint: boolean;
   source: 'workdir' | 'file-input' | 'patch' | 'command';
+  /**
+   * How strongly the target states intent to WORK on that path, used only to
+   * decide whether it may move the active project root:
+   *   'write'            a recognized write operand (cp/mv/touch/tee/redirect …)
+   *   'transition'       an explicit directory transition (cd, git -C, --prefix …)
+   *   'relative-operand' a literal ./ or ../ operand — fail-closed, since a custom
+   *                      or unrecognized writer is indistinguishable from a reader
+   *   'operand'          a bare ABSOLUTE path somewhere in the command text; the
+   *                      weakest evidence, and the only one a read can produce
+   */
+  evidence?: 'write' | 'transition' | 'relative-operand' | 'operand';
 }
 
 export interface ToolScopeResolution {
@@ -65,7 +77,7 @@ const ARRAY_PATH_FIELDS = ['paths', 'files', 'allowedFiles', 'allowed_files'] as
 const COMMAND_ABSOLUTE_PATH_RE = /(?:^|[\s"'`=(:,\[])(\/(?!\/)[^\s"'`;|&<>,)\]}]+|[A-Za-z]:[\\/][^\s"'`;|&<>,)\]}]+)/g;
 const COMMAND_RELATIVE_PATH_RE = /(?:^|[\s"'`=(:,\[])(\.{1,2}[\\/][^\s"'`;|&<>,)\]}]+)/g;
 const COMMAND_PWD_PATH_RE = /(?:^|[\s"'`=(:,\[])(\$(?:\{PWD\}|PWD(?=[\\/]|$))[^\s"'`;|&<>,)\]}]*)/g;
-const DIRECTORY_COMMAND_RE = /(?:^|[\s;&|"'(])(?:cd|pushd|git\s+-C|npm\s+--prefix|pnpm\s+(?:--dir|-C)|yarn\s+--cwd|bun\s+--cwd)\s+(?:--\s+)?["']?([^\s"';&|]+)/g;
+const DIRECTORY_COMMAND_RE = /(?:^|[\s;&|"'(])(?:cd|pushd|git\s+-C|npm\s+--prefix|pnpm\s+(?:--dir|-C)|yarn\s+--cwd|bun\s+--cwd)(?:\s+|=)(?:--\s+)?["']?([^\s"';&|]+)/g;
 const COPY_MOVE_RE = /(?:^|[\s;&|"'(])(?:cp|mv|install|ln|rsync)\s+(?:-[^\s]+\s+)*(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+("[^"]*"|'[^']*'|[^\s;&|]+)/g;
 const DIRECT_WRITE_RE = /(?:^|[\s;&|"'(])(touch|mkdir|tee|rm|rmdir|unlink|truncate)\s+(?:-[^\s]+\s+)*(?:"([^"]+)"|'([^']+)'|([^\s;&|><]+))/g;
 const WRITE_REDIRECT_RE = /(?:^|[\s])(?:\d*)>>?\s*(?!&)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g;
@@ -134,6 +146,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
       path: normalized,
       directoryHint: true,
       source: 'command',
+      evidence: 'transition',
     });
   }
 
@@ -156,6 +169,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
       path: candidate,
       directoryHint: directoryPaths.has(candidate),
       source: 'command',
+      evidence: 'operand',
     });
   }
   COMMAND_ABSOLUTE_PATH_RE.lastIndex = 0;
@@ -169,6 +183,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
       path: absolute,
       directoryHint: directoryPaths.has(absolute),
       source: 'command',
+      evidence: 'operand',
     });
   }
   // Any literal ./ or ../ operand is relevant scope evidence regardless of the
@@ -183,6 +198,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
       path: candidate,
       directoryHint: directoryPaths.has(candidate),
       source: 'command',
+      evidence: 'relative-operand',
     });
   }
   // `cp`/`mv` are the important two-path exception: the first operand can be a
@@ -199,7 +215,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
     if (parsed.unresolved) {
       if (rawDestination) unresolvedWriteTargets.push(rawDestination);
     } else if (destination && !destination.startsWith('-') && !destination.includes('://')) {
-      targets.push({ path: destination, directoryHint: false, source: 'command' });
+      targets.push({ path: destination, directoryHint: false, source: 'command', evidence: 'write' });
     }
   }
   // Direct shell writers and redirects are the other important relative-path
@@ -222,6 +238,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
         path: candidate,
         directoryHint: commandName === 'mkdir',
         source: 'command',
+        evidence: 'write',
       });
     }
   }
@@ -241,7 +258,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
       && !candidate.includes('://')
       && !isDiscardRedirect(candidate)
     ) {
-      targets.push({ path: candidate, directoryHint: false, source: 'command' });
+      targets.push({ path: candidate, directoryHint: false, source: 'command', evidence: 'write' });
     }
   }
   return {
@@ -307,6 +324,46 @@ function explicitToolTargets(
   return { base, targets, unresolvedWriteTargets: commandScan.unresolvedWriteTargets };
 }
 
+/**
+ * May an external target move the ACTIVE PROJECT ROOT away from the raw cwd?
+ *
+ * Only a call that can CHANGE that target may. Reading, searching, or merely
+ * naming a foreign path is not adoption evidence: a hook whose cwd is the plugin
+ * source used to adopt any project mentioned in a read-only shell operand, and
+ * the onboarding gate then spawned a wizard there and wrote host config files
+ * into that unrelated project — stamped with the INSPECTING session's host
+ * (observed live: an `ls` of a sibling Cursor project from this repo).
+ *
+ * Only the WEAKEST evidence is withheld: a bare absolute path that merely appears
+ * somewhere in the command text ('operand'). Everything the scanner already
+ * treats as intent still re-anchoring exactly as before — an external workdir,
+ * an apply_patch operation, a directory transition, a recognized write operand,
+ * and any literal `./`/`../` operand (kept fail-closed, because a custom or
+ * unrecognized writer is indistinguishable from a reader there).
+ *
+ * Even a bare absolute operand still re-anchors when the plugin's OWN mutation
+ * classifier says the call can write, so `sed -i /abs/path`, package installs,
+ * redirects, command substitution and interpreter eval are unaffected.
+ *
+ * This governs ONLY root selection. `standsDown` still sees every target, so a
+ * write into an external project keeps its full enforcement path.
+ */
+function targetsMayReanchor(ctx: Ctx, externalTargets: readonly ToolScopeTarget[]): boolean {
+  const toolClass = ctx.input.tool?.class;
+  // A read/search tool names its target in a normal path FIELD rather than in
+  // command text, so field-vs-command is not the discriminator here — the tool
+  // class is.
+  const readOnlyTool = toolClass === 'file-read' || toolClass === 'search';
+  const weakestOnly = readOnlyTool || externalTargets.every((target) => (
+    target.source === 'command' && target.evidence === 'operand' && !target.directoryHint
+  ));
+  if (!weakestOnly) return true;
+  const raw = obj(ctx.input.raw) || {};
+  const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
+  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
+  return isMutatingPreToolUse(toolName, toolInput);
+}
+
 function absoluteTarget(base: string, target: ToolScopeTarget): ToolScopeTarget {
   return {
     ...target,
@@ -350,10 +407,16 @@ export function resolveToolScope(ctx: Ctx): ToolScopeResolution {
     && externalTargets.length === 0
     && unresolvedWriteTargets.length === 0;
 
-  const preferred = [...externalTargets].reverse().find((target) => target.source !== 'command')
-    || [...externalTargets].reverse()[0];
+  const preferred = targetsMayReanchor(ctx, externalTargets)
+    ? ([...externalTargets].reverse().find((target) => target.source !== 'command')
+      || [...externalTargets].reverse()[0])
+    : undefined;
   if (!preferred) {
-    const filePath = ctx.input.tool?.filePath;
+    // A foreign path we just refused as adoption evidence must not sneak back in
+    // through the resolver's file-path hint. The hint stays for the ordinary case
+    // (no external target at all), where it is what finds a monorepo sub-package's
+    // enclosing workspace root.
+    const filePath = externalTargets.length > 0 ? undefined : ctx.input.tool?.filePath;
     return {
       rawCwd,
       base,

@@ -228,7 +228,9 @@ test('modelGate runner prints the local spawn map while project agent contracts 
     const approved = captureStdout(() => runModelGate([cwd, '--host=cursor']));
     assert.equal(approved.code, 0);
     assert.match(approved.out, /spawn map/i);
-    assert.match(approved.out, /senior-architect → claude-fable-5-thinking-high/);
+    assert.match(approved.out, /senior-architect → subagent_type: "senior-architect", model: claude-fable-5-thinking-high/);
+    // The rejected-enum recovery must travel with the map, not only in the gate.
+    assert.match(approved.out, /retry that one spawn with `subagent_type: "generalPurpose"`/);
     const architect = fs.readFileSync(path.join(cwd, '.cursor', 'agents', 'senior-architect.md'), 'utf8');
     assert.doesNotMatch(architect, /^model:/m);
     assert.match(architect, /senior-architect/);

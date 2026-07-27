@@ -58,6 +58,16 @@ Traffic One materialized `{{AGENT_PATH}}` as the full role contract. This Kilo T
 Re-issue the same `task` spawn with `subagent_type: "general"`. Keep `[t1-role: {{ROLE}}]` as the FIRST line, immediately tell the child to read `{{AGENT_PATH}}` before acting, and omit `model` so it inherits the user's active Kilo model. Do NOT use `explore`, and do NOT fall back to main-agent mode: `general` is the supported Kilo subagent path for this role.
 <!-- T1BLOCK:END kilo-general-agent-required -->
 
+<!-- T1BLOCK:BEGIN cursor-agent-type-required -->
+Cursor agent gate: `{{ROLE}}` was spawned with subagent_type `{{AGENT_TYPE}}`, which is neither the role's own Cursor agent nor the supported built-in fallback.
+
+Re-issue the same `Task` spawn with `subagent_type: "{{EXPECTED_AGENT}}"` — Traffic One materialized that role contract at `{{AGENT_PATH}}`.
+
+If Cursor REJECTS that value (invalid enum / unknown subagent type), the agent files were written after this session captured its type list. That is NOT a broken spawn tool and NOT a reason to build the role inline: retry once with `subagent_type: "{{FALLBACK_AGENT}}"`, keep `[t1-role: {{ROLE}}]` as the FIRST line of the prompt, and immediately tell the child to read `{{AGENT_PATH}}` before acting. The role marker is what binds the child to its role and its frozen per-role model.
+
+Keep the exact per-role `model` from the spawn map either way. Never send a Traffic One role to a generic worker WITHOUT the role marker, and never simulate the role in the parent thread.
+<!-- T1BLOCK:END cursor-agent-type-required -->
+
 <!-- T1BLOCK:BEGIN absolute-traffic-one-path -->
 Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycle paths outside this project root (`{{PROJECT_ROOT}}`): {{BAD_PATHS}}. Re-issue the same spawn using project-relative paths such as `.traffic-one/digests/<runId>/frontend.md` and `.traffic-one/fix-cycles/<runId>/<role>-fix-1.md`; do not paste absolute paths from another folder or a corrupted root.
 <!-- T1BLOCK:END absolute-traffic-one-path -->

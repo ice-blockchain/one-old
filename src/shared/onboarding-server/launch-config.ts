@@ -84,6 +84,20 @@ export function removeLaunchConfig(cwd: string): void {
     if (!Array.isArray(data.configurations)) return;
     const next = data.configurations.filter((c) => c && c.name !== LAUNCH_ENTRY_NAME);
     if (next.length === data.configurations.length) return;
+    // Our entry was the only one → remove the file rather than leaving an empty
+    // `{"configurations":[]}` husk (and the `.claude/` dir) behind in a project
+    // that may not even be a Claude Code project.
+    const otherKeys = Object.keys(data).filter((key) => key !== 'configurations' && key !== 'version');
+    if (next.length === 0 && otherKeys.length === 0) {
+      fs.rmSync(file, { force: true });
+      try {
+        const dir = path.dirname(file);
+        if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      } catch {
+        // best-effort; a non-empty .claude/ simply stays
+      }
+      return;
+    }
     data.configurations = next;
     fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
   } catch {

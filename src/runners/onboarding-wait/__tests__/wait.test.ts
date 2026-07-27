@@ -760,10 +760,12 @@ test('preSpawnModelDirective: with capture, lists exact picker ids including fam
     }), 'utf8');
 
     const d = preSpawnModelDirective(dir, 'cursor');
-    assert.ok(d.includes('senior-architect → claude-fable-5-thinking-high'), 'exact slug in preview');
-    assert.ok(d.includes('senior-shipper → gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
-    assert.ok(d.includes('senior-tester → gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
-    assert.ok(!d.includes('senior-tester → (after step 2'), 'captured family-anchor id is not replaced by a placeholder');
+    assert.ok(d.includes('senior-architect → subagent_type: "senior-architect", model: claude-fable-5-thinking-high'), 'exact slug in preview');
+    assert.ok(d.includes('senior-shipper → subagent_type: "senior-shipper", model: gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
+    assert.ok(d.includes('senior-tester → subagent_type: "senior-tester", model: gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
+    assert.ok(!d.includes('model: (after step 2'), 'captured family-anchor id is not replaced by a placeholder');
+    assert.ok(d.includes('`subagent_type: "generalPurpose"`'), 'rejected-enum recovery is front-loaded with the map');
+    assert.ok(d.includes('Never build the role inline because a type was rejected.'));
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;

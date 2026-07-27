@@ -268,3 +268,51 @@ test('git -C and option-assignment paths in shell text cannot inherit authoring 
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('a READ that merely names an absolute foreign path does not move the project root', () => {
+  // Live regression: `ls -la <sibling-project>/.claude` issued from this repo made
+  // the onboarding gate adopt that project, spawn a wizard inside it, and write
+  // Claude host files into a Cursor-onboarded project. Reading is not adoption
+  // evidence. standsDown must STAY false — the foreign target is still governed,
+  // it just may not redefine which project is active.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-tool-scope-read-'));
+  const authoring = path.join(base, 'plugin');
+  const project = path.join(base, 'project');
+  const source = path.join(project, 'src', 'server.go');
+  try {
+    makeAuthoringRoot(authoring);
+    makeProject(project);
+    fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+    resetAuthoringRootCache();
+    for (const command of [
+      `ls -la "${path.join(project, '.claude')}"`,
+      `wc -l ${source}`,
+      `cat "${source}"`,
+      `grep -rn foo ${project}`,
+    ]) {
+      const scope = resolveToolScope(ctx(authoring, 'Bash', 'shell', { command }, { command }));
+      assert.equal(scope.projectRoot, authoring, command);
+      assert.equal(scope.standsDown, false, `${command} — the foreign target stays governed`);
+      assert.ok(scope.externalTargets.length > 0, command);
+    }
+    // An explicit read TOOL is the same class.
+    const read = resolveToolScope(ctx(authoring, 'Read', 'file-read', { file_path: source }, { filePath: source }));
+    assert.equal(read.projectRoot, authoring);
+    // …but a WRITE to the very same absolute path still re-anchors.
+    for (const command of [`sed -i.bak s/old/new/ ${source}`, `touch "${source}"`]) {
+      const scope = resolveToolScope(ctx(authoring, 'Bash', 'shell', { command }, { command }));
+      assert.equal(scope.projectRoot, project, command);
+    }
+    const write = resolveToolScope(ctx(
+      authoring,
+      'Write',
+      'file-write',
+      { file_path: source, content: 'x' },
+      { filePath: source },
+    ));
+    assert.equal(write.projectRoot, project);
+  } finally {
+    resetAuthoringRootCache();
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
