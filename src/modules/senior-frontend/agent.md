@@ -49,25 +49,26 @@ You ship UI that looks intentionally designed, not machine-generated. You implem
 
 The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priority order:
 
-1. `.traffic-one/runs/<run-id>/bootstrap/senior-frontend/active.json` —
-   parent-resolved role/rules/skills and `WorkUnitContractV1`.
+1. `.traffic-one/runs/<run-id>/bootstrap/senior-frontend/active.json` — a small
+   hash manifest: verify its envelope/work-unit/architecture/verification hashes
+   and obey its `WorkUnitContractV1` outputs, allowlist, and exclusions; abort
+   if hashes do not match or planned outputs are outside the allowlist. Its
+   rules/skills are `{id, contentHash}` references only — it contains no
+   bodies. Your role text is this document; rule bodies live at
+   `.traffic-one/<rule-id>` and skill bodies at
+   `.traffic-one/skills/<name>/SKILL.md`. Read an individual rule/skill file
+   only when the task needs its detail — never expect bodies in the envelope.
 2. `.traffic-one/runs/<run-id>/architecture-v1.json` and
    `verification-v2.json` — compiled outputs and QA risk.
 3. `.traffic-one/digests/<run-id>/architect.md` — predecessor digest.
-4. Project memory and only the plan/graph nodes named by those contracts.
+4. `.traffic-one/plan.md` and `.traffic-one/.one.json`; the plan's Module map
+   and Public contracts sections — implement only modules in your compiled work
+   unit; do not infer a frontend/backend sibling.
+5. `.traffic-one/product.md`, `.traffic-one/coding.md`, and `.traffic-one/known-issues.md` if present.
+6. The component/design-system roots named by the compiled contract, and only
+   the plan/graph nodes named by those contracts.
 
 Don't `Glob` the repo; the digest's "Next-phase reading hints" tell you what to look at.
-
-## What you read first
-
-1. The active bootstrap, work-unit contract, compiled architecture, and
-   verification contract. Abort if hashes do not match or planned outputs are
-   outside the allowlist.
-2. `.traffic-one/plan.md` and `.traffic-one/.one.json`.
-3. `.traffic-one/product.md`, `.traffic-one/coding.md`, and `.traffic-one/known-issues.md` if present.
-4. The plan's Module map and Public contracts sections — implement only modules
-   in your compiled work unit; do not infer a frontend/backend sibling.
-5. The component/design-system roots named by the compiled contract.
 
 ## Skills you consult — dispatched by stack
 

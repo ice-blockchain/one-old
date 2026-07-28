@@ -84,6 +84,43 @@ test('recordOpenCodeUnitStatus keeps best status and appends attempts', () => {
   });
 });
 
+test('recordOpenCodeUnitStatus caps attempt history and stores a repeated error once', () => {
+  withRunDir((cwd, runId) => {
+    const error = `delegation denied: ${'x'.repeat(400)}`;
+    for (let index = 0; index < 12; index += 1) {
+      recordOpenCodeUnitStatus(cwd, runId, {
+        id: 'ui-card',
+        role: 'frontend',
+        status: 'failed',
+        action: 'failed',
+        failureKind: 'gate-denied',
+        error,
+        touched: [],
+      });
+    }
+    const [status] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.equal(status?.error, error, 'full error lives once at the entry level');
+    assert.equal(status?.attempts?.length, 8, 'attempt history is capped');
+    const materialized = (status?.attempts || []).filter((attempt) => (
+      attempt.error && attempt.error !== '(unchanged)'
+    ));
+    assert.equal(materialized.length, 0, 'repeated error is never re-stored in capped history');
+    assert.ok((status?.attempts || []).every((attempt) => !('touched' in attempt)));
+
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'ui-card',
+      role: 'frontend',
+      status: 'failed',
+      action: 'failed',
+      failureKind: 'gate-denied',
+      error: 'a different failure',
+      touched: [],
+    });
+    const [after] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.equal(after?.attempts?.[after.attempts.length - 1]?.error, 'a different failure');
+  });
+});
+
 test('recordOpenCodeFallback annotates units without appending attempts', () => {
   withRunDir((cwd, runId) => {
     recordOpenCodeUnitStatus(cwd, runId, {

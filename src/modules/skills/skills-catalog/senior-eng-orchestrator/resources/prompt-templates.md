@@ -227,7 +227,10 @@ Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit strin
 Read in priority order:
   1. .traffic-one/runs/<run-id>/bootstrap/senior-frontend/active.json. Verify
      its envelope/work-unit/architecture/verification hashes and obey its
-     outputs, allowlist, excluded paths, resolved rules, and skills.
+     outputs, allowlist, and excluded paths. Its rules/skills are hash
+     references; the bodies are already materialized under .traffic-one/rules/
+     and .traffic-one/skills/ (indexed in AGENTS.md) — do not read the envelope
+     expecting bodies.
   2. .traffic-one/digests/<run-id>/architect.md
   3. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/coding.md,
      .traffic-one/known-issues.md if present
@@ -299,7 +302,10 @@ Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit strin
 Read in priority order:
   1. .traffic-one/runs/<run-id>/bootstrap/senior-backend/active.json. Verify
      its envelope/work-unit/architecture/verification hashes and obey its
-     outputs, allowlist, excluded paths, resolved rules, and skills.
+     outputs, allowlist, and excluded paths. Its rules/skills are hash
+     references; the bodies are already materialized under .traffic-one/rules/
+     and .traffic-one/skills/ (indexed in AGENTS.md) — do not read the envelope
+     expecting bodies.
   2. .traffic-one/digests/<run-id>/architect.md
   3. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/security.md,
      .traffic-one/schema.sql, .traffic-one/known-issues.md if present

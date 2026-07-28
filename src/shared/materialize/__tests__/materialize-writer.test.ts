@@ -5,8 +5,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { HOST_IDS, HOST_PLAN_IDS } from '../../../config/model-tiers';
+import { capabilityProfileForRun, ensureArchitectureRunSnapshot } from '../../architecture-contract';
+import {
+  eligibleRolesForProfile,
+  runtimeCapabilityStateFromProfile,
+} from '../../capabilities';
 import { activeSkillsFor } from '../../skill-filters';
 import { modelTierSnapshot } from '../../model-tiers';
+import { roleScopedRules } from '../../stacks';
 import { GENERATED_MARKER } from '../generated';
 import { cleanupPrevious } from '../cleanup';
 import { hasMaterializedProjectAssets } from '../has-assets';
@@ -573,6 +579,110 @@ test('backend-only, native, Next, and Nuxt new projects never materialize the de
         `${fixture.name}: universal active rule has no default-web mandate`);
     });
   }
+});
+
+const GAP_RULES = [
+  'rules/common/git.md',
+  'rules/common/onboarding.md',
+  'rules/common/stack-recommendations.md',
+] as const;
+
+test('envelope-referenced rules outside the manifest stay materialized in maintenance phase', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+    // Maintenance phase: the manifest index drops the setup-era pair and never
+    // lists the shipper's git.md, but hash-only envelopes still reference all
+    // three — the bodies must survive on disk.
+    const state = {
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+    };
+    materializeProjectAssets(project, state);
+    for (const rel of GAP_RULES) {
+      assert.ok(fs.existsSync(path.join(project, '.traffic-one', rel)), `${rel} materialized`);
+    }
+    // A second run must not sweep them (cleanup idempotence).
+    materializeProjectAssets(project, state);
+    for (const rel of GAP_RULES) {
+      assert.ok(fs.existsSync(path.join(project, '.traffic-one', rel)), `${rel} survives re-run`);
+    }
+  });
+});
+
+test('every envelope-eligible role rule id resolves under .traffic-one after materialization', () => {
+  const states = [
+    {
+      name: 'web',
+      state: {
+        stack: 'default', frontend: 'react-vite', backend: 'supabase',
+        mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      },
+      prepare(): void { /* default web project */ },
+    },
+    {
+      name: 'api',
+      state: {
+        stack: 'custom-backend', frontend: 'none', backend: 'go',
+        mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+      },
+    },
+  ] as const;
+  for (const fixture of states) {
+    withPluginAndProject((project, plugin) => {
+      fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+      fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+      fixture.prepare(project);
+      materializeProjectAssets(project, fixture.state);
+      const profile = capabilityProfileForRun(project, fixture.state);
+      const frozen = runtimeCapabilityStateFromProfile(profile, {});
+      for (const role of [...eligibleRolesForProfile(profile), 'quick-fix']) {
+        for (const rel of roleScopedRules(role, frozen) || []) {
+          assert.ok(
+            fs.existsSync(path.join(project, '.traffic-one', rel)),
+            `${fixture.name}/${role}: ${rel} readable in project`,
+          );
+        }
+      }
+    });
+  }
+});
+
+test('a frozen run snapshot profile keeps its envelope rules materialized when live state diverges', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+    // Freeze a web-ui snapshot for the in-flight run, then materialize with a
+    // live backend-only state carrying that currentRunId: the frozen profile's
+    // frontend rules must still be on disk for the run's live children.
+    const webState = {
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { framework: 'none' }, onboardingComplete: true, mode: 'new-project',
+    };
+    ensureArchitectureRunSnapshot(project, 'RUN1', webState);
+    const liveApiState = {
+      stack: 'custom-backend', frontend: 'none', backend: 'go',
+      mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      currentRunId: 'RUN1',
+    };
+    fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    materializeProjectAssets(project, liveApiState);
+    for (const rel of ['rules/frontend/ui-quality.md', 'rules/frontend/typography.md']) {
+      assert.ok(
+        fs.existsSync(path.join(project, '.traffic-one', rel)),
+        `${rel} kept for the frozen run profile`,
+      );
+    }
+  });
 });
 
 test('non-OpenCode materialization cleans generated legacy OpenCode assets without writing global profiles', () => {

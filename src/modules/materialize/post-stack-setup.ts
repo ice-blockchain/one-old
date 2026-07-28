@@ -34,8 +34,9 @@ import {
   patchTextFromToolInput,
 } from '../../shared/tool-classify';
 import { parseApplyPatch } from '../../shared/apply-patch';
+import { firstEmitThisSession } from '../../shared/once';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
+import { hookSessionIdentity, isMaintenancePhase, readEffectiveState } from '../../shared/state';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { ensureOpenCodeDelegationReady } from '../session/session-start-lib';
@@ -234,7 +235,18 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     if (/\bPLAN_READY\b/.test(content)) {
       const planReadyDirective = buildPostPlanReadyOpenCodeDirective(reportRoot);
       if (planReadyDirective) {
-        return context(planReadyDirective, {
+        // This fires on every PostToolUse write while the batch is pending, so
+        // the ~2 KB recipe would repeat per tool call. Inject it in full once
+        // per session, then a one-line reminder that keeps the load-bearing
+        // fact; the spawn gate (not this directive) is the enforcement.
+        const full = firstEmitThisSession(
+          reportRoot,
+          'opencode-step0-plan-ready',
+          hookSessionIdentity(raw).sessionId,
+        );
+        return context(full
+          ? planReadyDirective
+          : '[traffic-one] PLAN_READY — OpenCode Step 0 is still required before implementer spawns; run the plan batch via `opencode_delegate_from_plan` (full recipe earlier this session).', {
           systemMessage: 'traffic-one — run OpenCode Step 0 before spawning implementers',
         });
       }

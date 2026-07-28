@@ -280,7 +280,15 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   const unresolved = runtimeControl ? '' : unresolvedRunDirective(cwd, normalizedState, promptText, raw);
   const parentOwned = runtimeControl || Boolean(unresolved);
   const openCodeReadiness = parentOwned ? '' : ensureOpenCodeDelegationReady(cwd, normalizedState);
-  const planBatchReminder = parentOwned ? '' : buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
+  // Full pending-batch recipe once per session, then a one-line reminder — this
+  // fires on EVERY prompt while the batch is open. The spawn gate stays the
+  // enforcement; the marker is burned only when a directive actually emitted.
+  const planBatchDirective = parentOwned ? '' : buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
+  const planBatchReminder = planBatchDirective
+    ? (firstEmitThisSession(cwd, 'opencode-plan-batch-pending', sessionId)
+      ? planBatchDirective
+      : '[traffic-one] OpenCode Step 0 still pending — finish the plan batch via `opencode_delegate_from_plan` before implementer spawns (full recipe earlier this session).')
+    : '';
   const triage = unresolved || maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
 
   const prefixOpenCode = [openCodeReadiness, planBatchReminder].filter(Boolean).join('\n');

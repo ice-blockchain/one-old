@@ -51,6 +51,30 @@ test('sweepTrafficOneRetention dry-run preserves current run and durable memory'
   });
 });
 
+test('sweepTrafficOneRetention TTL-sweeps per-run debug logs inside retained runs', () => {
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ currentRunId: '2001' }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'retention.json'), JSON.stringify({ keepRuns: 5, backupKeep: 3, orphanTtlDays: 7 }), 'utf8');
+    const debugDir = path.join(dir, '.traffic-one', 'runs', '2001', 'debug');
+    fs.mkdirSync(debugDir, { recursive: true });
+    const stale = path.join(debugDir, 'claim-capture.jsonl');
+    const fresh = path.join(debugDir, 'plan-guard-deny.jsonl');
+    const sibling = path.join(dir, '.traffic-one', 'runs', '2001', 'run.json');
+    fs.writeFileSync(stale, '{"old":true}\n', 'utf8');
+    fs.writeFileSync(fresh, '{"new":true}\n', 'utf8');
+    fs.writeFileSync(sibling, '{}', 'utf8');
+    const old = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(stale, old / 1000, old / 1000);
+    fs.utimesSync(sibling, old / 1000, old / 1000);
+
+    const applied = sweepTrafficOneRetention(dir, { dryRun: false });
+    assert.ok(applied.removed >= 1);
+    assert.equal(fs.existsSync(stale), false, 'stale run debug log swept despite retained run');
+    assert.equal(fs.existsSync(fresh), true, 'fresh run debug log kept');
+    assert.equal(fs.existsSync(sibling), true, 'non-debug run artifacts untouched by the TTL rule');
+  });
+});
+
 test('sweepTrafficOneRetention lists leaked nested roots only as explicit cleanup candidates', () => {
   withProject((dir) => {
     const memoryDir = '.traffic' + '-one';

@@ -33,8 +33,10 @@ Read only what planning needs, in this order:
    `.traffic-one/runs/<run-id>/baseline-v1.json`. Treat all three as read-only.
 2. Existing `.traffic-one/product.md`, `.traffic-one/stack.md`,
    `.traffic-one/coding.md`, `.traffic-one/security.md`,
-   `.traffic-one/known-issues.md`, `.traffic-one/rules/*.md`, and
-   `.traffic-one/plan.md`.
+   `.traffic-one/known-issues.md`, and `.traffic-one/plan.md`. Do not
+   bulk-read `.traffic-one/rules/*.md` — your bootstrap already names your rule
+   set as hash references; open an individual rule file only when a planning
+   decision depends on its detail.
 3. The active codebase-graph artifact when it exists:
    `.traffic-one/.gitnexus/` for GitNexus or
    `.traffic-one/graphify-out/GRAPH_REPORT.md` for Graphify.

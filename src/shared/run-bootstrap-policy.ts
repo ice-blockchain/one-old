@@ -1,6 +1,9 @@
-// Parent-created role/rule/skill bootstrap envelope. This is written atomically
-// before a child is allowed to spawn and validated again on the child's first
-// tool call. Children may consume it but can never create or replace it.
+// Parent-created bootstrap envelope: a hash manifest + work-unit contract. It is
+// written atomically before a child is allowed to spawn and validated again on
+// the child's first tool call. Children may consume it but can never create or
+// replace it. Role/rule/skill BODIES are not embedded (schemaVersion 2): they
+// live in the installed plugin (re-read from disk on every validation) and are
+// materialized for agents under .traffic-one/rules/** and .traffic-one/skills/**.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -45,17 +48,19 @@ import {
 } from './verification-contract';
 import { sha256 } from './text';
 
-export const RUN_BOOTSTRAP_SCHEMA_VERSION = 1 as const;
-export const RUN_BOOTSTRAP_MAX_PER_ROLE = 32;
-export const RUN_BOOTSTRAP_MAX_PER_RUN = 128;
+export const RUN_BOOTSTRAP_SCHEMA_VERSION = 2 as const;
+// Hash-only envelopes are ~6-15 KB, so a deep history buys nothing; the v1
+// body-carrying caps (32/128) allowed ~25 MB of dead weight per run.
+export const RUN_BOOTSTRAP_MAX_PER_ROLE = 8;
+export const RUN_BOOTSTRAP_MAX_PER_RUN = 32;
 
-export interface BootstrapMaterialV1 {
+export interface BootstrapMaterialRefV2 {
   id: string;
+  /** sha256 of the live plugin file body; the body itself is NOT embedded. */
   contentHash: string;
-  content: string;
 }
 
-export interface RunBootstrapEnvelopeV1 {
+export interface RunBootstrapEnvelopeV2 {
   schemaVersion: typeof RUN_BOOTSTRAP_SCHEMA_VERSION;
   runId: string;
   host: HostModelKey;
@@ -73,9 +78,9 @@ export interface RunBootstrapEnvelopeV1 {
   };
   modelPolicyId: string;
   architectureHash: string;
-  role: BootstrapMaterialV1;
-  rules: BootstrapMaterialV1[];
-  skills: BootstrapMaterialV1[];
+  role: BootstrapMaterialRefV2;
+  rules: BootstrapMaterialRefV2[];
+  skills: BootstrapMaterialRefV2[];
   workUnit: WorkUnitContractV1;
   createdAt: string;
   envelopeHash: string;
@@ -175,8 +180,10 @@ function readFirst(candidates: string[]): string | null {
   return null;
 }
 
-function material(id: string, content: string): BootstrapMaterialV1 {
-  return { id, contentHash: sha256(content), content };
+// Still takes the body read from disk: hashing it here is the fail-closed proof
+// that the material is resolvable at publish time. Only the hash is stored.
+function material(id: string, content: string): BootstrapMaterialRefV2 {
+  return { id, contentHash: sha256(content) };
 }
 
 function ruleContent(relPath: string): string | null {
@@ -211,7 +218,7 @@ function resolvedRoleMaterials(
   state: unknown,
   host: HostModelKey,
   profile?: CapabilityProfileV1,
-): { role: BootstrapMaterialV1; rules: BootstrapMaterialV1[]; skills: BootstrapMaterialV1[] } | null {
+): { role: BootstrapMaterialRefV2; rules: BootstrapMaterialRefV2[]; skills: BootstrapMaterialRefV2[] } | null {
   if (role !== 'quick-fix' && !(profile
     ? eligibleRolesForProfile(profile)
     : new Set<string>()).has(role)) return null;
@@ -222,7 +229,7 @@ function resolvedRoleMaterials(
   if (!roleBody) return null;
   const ruleIds = roleScopedRules(role, capabilityState);
   if (!ruleIds) return null;
-  const rules: BootstrapMaterialV1[] = [];
+  const rules: BootstrapMaterialRefV2[] = [];
   for (const id of ruleIds) {
     const content = ruleContent(id);
     if (!content) return null;
@@ -236,7 +243,7 @@ function resolvedRoleMaterials(
   // permission to inherit every active project skill.
   const skillIds = resolvedRoleSkillIds(active, declared);
   if (!skillIds) return null;
-  const skills: BootstrapMaterialV1[] = [];
+  const skills: BootstrapMaterialRefV2[] = [];
   for (const id of skillIds) {
     const content = skillContent(id);
     if (!content) return null;
@@ -321,12 +328,16 @@ function roleRunArtifacts(
   return outputs;
 }
 
+// NOTE: workUnit bytes and contractHash are byte-identical to schemaVersion-1
+// envelopes for identical inputs — rules/skills were always hashed here as
+// {id, contentHash} pairs. That stability is why maintenance.json fallback
+// markers (fallbackContractMatches) survive the v1→v2 envelope migration.
 function workUnitForRole(
   cwd: string,
   runId: string,
   role: string,
   hostAgentType: string | null,
-  resolved: { rules: BootstrapMaterialV1[]; skills: BootstrapMaterialV1[] },
+  resolved: { rules: BootstrapMaterialRefV2[]; skills: BootstrapMaterialRefV2[] },
   snapshot: ArchitectureRunSnapshotV1,
   options: Pick<
     EnsureRunBootstrapOptions,
@@ -500,9 +511,9 @@ function fallbackContractMatches(
   return workUnit.contractHash === expectedContract && observedAllowlist === expectedAllowlist;
 }
 
-function parseEnvelope(value: unknown, runId: string, role: string): RunBootstrapEnvelopeV1 | null {
+function parseEnvelope(value: unknown, runId: string, role: string): RunBootstrapEnvelopeV2 | null {
   if (!value || typeof value !== 'object') return null;
-  const raw = value as Partial<RunBootstrapEnvelopeV1>;
+  const raw = value as Partial<RunBootstrapEnvelopeV2>;
   if (
     raw.schemaVersion !== RUN_BOOTSTRAP_SCHEMA_VERSION
     || raw.runId !== runId
@@ -529,19 +540,18 @@ function parseEnvelope(value: unknown, runId: string, role: string): RunBootstra
   if (all.some((entry) => (
     !entry
     || typeof entry.id !== 'string'
-    || typeof entry.content !== 'string'
     || typeof entry.contentHash !== 'string'
-    || sha256(entry.content) !== entry.contentHash
+    || !/^[a-f0-9]{64}$/.test(entry.contentHash)
   ))) return null;
   if (!validateWorkUnitContract(raw.workUnit)) return null;
-  return raw as RunBootstrapEnvelopeV1;
+  return raw as RunBootstrapEnvelopeV2;
 }
 
 export function readActiveRunBootstrap(
   cwd: string,
   runId: string,
   role: string,
-): RunBootstrapEnvelopeV1 | null {
+): RunBootstrapEnvelopeV2 | null {
   const raw = readJson<unknown>(activeRunBootstrapPath(cwd, runId, role), null);
   const envelope = parseEnvelope(raw, runId, role);
   if (!envelope) return null;
@@ -551,11 +561,21 @@ export function readActiveRunBootstrap(
     role,
   );
   if (!immutable || immutable.envelopeHash !== envelope.envelopeHash) return null;
-  if (roleAgentBody(role) !== envelope.role.content) return null;
+  // Bodies are validated against the live plugin files by hash — the disk read
+  // still happens on every validation, so a missing or edited plugin file
+  // invalidates the envelope exactly as the v1 byte-for-byte comparison did.
+  const roleBody = roleAgentBody(role);
+  if (!roleBody || sha256(roleBody) !== envelope.role.contentHash) return null;
   if (new Set(envelope.rules.map((entry) => entry.id)).size !== envelope.rules.length
     || new Set(envelope.skills.map((entry) => entry.id)).size !== envelope.skills.length
-    || envelope.rules.some((entry) => ruleContent(entry.id) !== entry.content)
-    || envelope.skills.some((entry) => skillContent(entry.id) !== entry.content)) return null;
+    || envelope.rules.some((entry) => {
+      const content = ruleContent(entry.id);
+      return !content || sha256(content) !== entry.contentHash;
+    })
+    || envelope.skills.some((entry) => {
+      const content = skillContent(entry.id);
+      return !content || sha256(content) !== entry.contentHash;
+    })) return null;
   const snapshot = readArchitectureRunSnapshot(cwd, runId);
   if (!snapshot) return null;
   const resolved = resolvedRoleMaterials(cwd, role, {}, envelope.host, snapshot.profile);
@@ -610,7 +630,7 @@ function activeHashes(cwd: string, runId: string): Set<string> {
   try { roles = fs.readdirSync(root, { withFileTypes: true }); } catch { return active; }
   for (const role of roles) {
     if (!role.isDirectory()) continue;
-    const envelope = readJson<Partial<RunBootstrapEnvelopeV1> | null>(
+    const envelope = readJson<Partial<RunBootstrapEnvelopeV2> | null>(
       path.join(root, role.name, 'active.json'),
       null,
     );
@@ -660,7 +680,7 @@ export function ensureRunBootstrap(
   role: string,
   state: unknown,
   options: EnsureRunBootstrapOptions,
-): RunBootstrapEnvelopeV1 | null {
+): RunBootstrapEnvelopeV2 | null {
   if (!runId.trim() || !role.trim() || !options.modelPolicyId.trim()) return null;
   let snapshot;
   try {
@@ -710,7 +730,7 @@ export function ensureRunBootstrap(
   const envelopeHash = hashEnvelope(canonical);
   const existing = readActiveRunBootstrap(cwd, runId, role);
   if (existing?.envelopeHash === envelopeHash) return existing;
-  const envelope: RunBootstrapEnvelopeV1 = {
+  const envelope: RunBootstrapEnvelopeV2 = {
     ...canonical,
     createdAt: new Date().toISOString(),
     envelopeHash,
@@ -743,36 +763,46 @@ export function repairRunBootstrapForBoundChild(
   role: string,
   state: unknown,
   hostAgentType?: string | null,
-): RunBootstrapEnvelopeV1 | null {
+): RunBootstrapEnvelopeV2 | null {
   if (!runId.trim() || !role.trim()) return null;
   // Only ever fills a HOLE. An existing envelope is authoritative and is never
   // replaced from the child side.
   if (readActiveRunBootstrap(cwd, runId, role)) return null;
   const policy = readRunModelPolicy(cwd, runId);
   if (!policy) return null;
+  // Bounded-maintenance scope recovery: planned roles re-derive their contract
+  // from run immutables, but a bounded child's exact scope exists only in the
+  // envelope being repaired. Recover it from the stale active file's workUnit —
+  // trustworthy regardless of envelope schema because WorkUnitContractV1 is
+  // self-hashing — so a live quick-fix/bounded child survives an envelope-schema
+  // upgrade instead of wedging. This grants nothing new: the scope comes from a
+  // hash-validated contract the parent published.
+  const stale = readJson<{ workUnit?: unknown } | null>(activeRunBootstrapPath(cwd, runId, role), null);
+  const staleUnit = stale?.workUnit;
+  const bounded: Pick<
+    EnsureRunBootstrapOptions,
+    'boundedOutputs' | 'boundedAllowlist' | 'boundedAllowlistExclude'
+  > = {};
+  if (
+    validateWorkUnitContract(staleUnit)
+    && staleUnit.runId === runId
+    && staleUnit.trafficOneRole === role
+    && (role === 'quick-fix' || staleUnit.unitId === `${role}:bounded-maintenance`)
+  ) {
+    bounded.boundedOutputs = boundedMaintenanceSourceScope(runId, role, staleUnit.outputs);
+    bounded.boundedAllowlist = boundedMaintenanceSourceScope(runId, role, staleUnit.allowlist);
+    bounded.boundedAllowlistExclude = staleUnit.allowlistExclude;
+  }
   try {
     return ensureRunBootstrap(cwd, runId, role, state, {
       host: policy.host,
       hostAgentType: hostAgentType || null,
       evidenceSource: 'child-side-repair',
       modelPolicyId: policy.policyId,
+      ...bounded,
     });
   } catch {
     return null;
   }
 }
 
-export function bootstrapPromptHeader(envelope: RunBootstrapEnvelopeV1): string {
-  const relative = `.traffic-one/runs/${envelope.runId}/bootstrap/${safePart(envelope.trafficOneRole)}/active.json`;
-  const fallbackRole = envelope.roleSource === 'plugin-injected-fallback'
-    ? `\n\nROLE CONTRACT (parent-resolved, hash ${envelope.role.contentHash}):\n${envelope.role.content}`
-    : '';
-  return [
-    `[t1-bootstrap: ${envelope.envelopeHash}]`,
-    `Traffic One role: ${envelope.trafficOneRole}`,
-    `Before any project operation, read and obey ${relative}; verify envelopeHash=${envelope.envelopeHash}.`,
-    'The envelope contains the parent-resolved role, rule, and skill bodies with content hashes. It is read-only; do not create, replace, or weaken it.',
-    `Host enforcement evidence: ${envelope.hostCapability.prevention} (${envelope.hostCapability.primaryBlockingPoint} observed=${envelope.hostCapability.primaryBlockingPointObserved}, required coverage complete=${envelope.hostCapability.requiredBlockingPointsObserved}); read the sibling ${envelope.hostCapability.sidecar} sidecar.`,
-    `Work unit contract: ${envelope.workUnit.contractHash}; architecture=${envelope.workUnit.architectureHash}; verification=${envelope.workUnit.verificationHash}.`,
-  ].join('\n') + fallbackRole;
-}

@@ -67,7 +67,7 @@ import { sha256 } from '../../shared/text';
 import {
   ensureRunBootstrap,
   readActiveRunBootstrap,
-  type RunBootstrapEnvelopeV1,
+  type RunBootstrapEnvelopeV2,
 } from '../../shared/run-bootstrap-policy';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
 import { readRunHostCapability } from '../../shared/host-capabilities';
@@ -583,7 +583,7 @@ function bootstrapRole(role: string): string {
 
 interface MaintenanceContractPreflight {
   required: boolean;
-  bootstrap: RunBootstrapEnvelopeV1 | null;
+  bootstrap: RunBootstrapEnvelopeV2 | null;
   error: string | null;
 }
 
@@ -677,7 +677,7 @@ function recordMaintenanceDelegationOutcome(
   result: DelegateResult,
   startedAt: number,
   fallbackAllowed: boolean,
-  publishedBootstrap?: RunBootstrapEnvelopeV1 | null,
+  publishedBootstrap?: RunBootstrapEnvelopeV2 | null,
 ): void {
   if (!runId || !isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)) return;
   try {

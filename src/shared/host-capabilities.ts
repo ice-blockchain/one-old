@@ -179,7 +179,15 @@ export function hostCapability(
   return capability;
 }
 
-const MAX_HOST_CAPABILITY_EVIDENCE = 64;
+// Write-side retention cap: the ~1 KB capability contract was dragging a ~15 KB
+// evidence log behind it. 16 keeps every load-bearing row via the protections
+// below. The parse-side ACCEPT ceiling stays at the historical 64 so a sidecar
+// written by an older runtime still parses (a parse null here can never be
+// repaired — ensureRunHostCapability refuses to replace a published-but-invalid
+// file — so lowering the accept ceiling would hard-wedge existing runs); the
+// next observation rewrite trims it to the retention cap.
+const MAX_HOST_CAPABILITY_EVIDENCE = 16;
+const MAX_HOST_CAPABILITY_EVIDENCE_ACCEPT = 64;
 
 function retainCapabilityEvidence(
   evidence: readonly HostCapabilityEvidenceV1[],
@@ -188,13 +196,19 @@ function retainCapabilityEvidence(
   const protectedIndexes = new Set<number>();
   const latestPoint = new Map<string, number>();
   const latestDeniedPoint = new Map<string, number>();
+  const latestModelGatePoint = new Map<string, number>();
   for (const [index, entry] of evidence.entries()) {
     if (!entry.point) continue;
     latestPoint.set(entry.point, index);
     if (entry.outcome === 'denied') latestDeniedPoint.set(entry.point, index);
+    // e2e host-enforcement certification requires a verified-child-model-gate
+    // row (host-enforcement-evidence.assert.ts); with a small cap it must be
+    // protected explicitly, not incidentally.
+    if (entry.source === 'verified-child-model-gate') latestModelGatePoint.set(entry.point, index);
   }
   for (const index of latestPoint.values()) protectedIndexes.add(index);
   for (const index of latestDeniedPoint.values()) protectedIndexes.add(index);
+  for (const index of latestModelGatePoint.values()) protectedIndexes.add(index);
   for (
     let index = evidence.length - 1;
     index >= 0 && protectedIndexes.size < MAX_HOST_CAPABILITY_EVIDENCE;
@@ -329,7 +343,7 @@ function parseRunHostCapability(
     )
     || !(raw.hostVersion === null || typeof raw.hostVersion === 'string')
     || !Array.isArray(raw.evidence)
-    || raw.evidence.length > MAX_HOST_CAPABILITY_EVIDENCE
+    || raw.evidence.length > MAX_HOST_CAPABILITY_EVIDENCE_ACCEPT
     || !raw.evidence.every((entry) => validEvidence(entry, contract))
     || typeof raw.createdAt !== 'string'
     || typeof raw.updatedAt !== 'string'

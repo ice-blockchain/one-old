@@ -13,7 +13,12 @@ import { pluginRoot } from '../paths';
 import { BOOTSTRAP_SKILLS, PROJECT_UNAVAILABLE_SKILLS } from '../../config/skill-filters';
 import { activeSkillsForProject } from '../skill-filters';
 import { capabilityProfileForRun, capabilityStateForRun } from '../architecture-contract';
-import { stackSpecForState, templatePath } from '../stacks';
+import {
+  capabilityProfileForProject,
+  eligibleRolesForProfile,
+  runtimeCapabilityStateFromProfile,
+} from '../capabilities';
+import { roleScopedRuleUnion, stackSpecForState, templatePath } from '../stacks';
 import { nowIsoNoMs } from '../text';
 import { detectHost } from '../host';
 import {
@@ -90,7 +95,21 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
     ...modeReferenceRulesForState(root, capabilityState, capabilityProfile.profileId),
   ])
     .filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
-  const rules = unique([...mandatoryRules, ...referenceRules]);
+  // Envelope-referenced rules: hash-only bootstrap envelopes carry no bodies,
+  // so every rule id a role envelope can reference must stay readable under
+  // .traffic-one/rules/**. capabilityProfile is already the active run's frozen
+  // snapshot profile when a run is in flight (capabilityProfileForRun); union
+  // in the live project profile so the NEXT run's envelopes are covered too.
+  // Both resolve with frozen state={}, mirroring resolvedRoleMaterials
+  // (run-bootstrap-policy.ts). Bodies for superseded non-current runs may
+  // lapse after a profile change — gate validation is unaffected (it reads the
+  // plugin), only the local copy.
+  const envelopeProfiles = [capabilityProfile, capabilityProfileForProject(cwd, state)];
+  const envelopeRules = unique(envelopeProfiles.flatMap((profile) => roleScopedRuleUnion(
+    [...eligibleRolesForProfile(profile), 'quick-fix'],
+    runtimeCapabilityStateFromProfile(profile, {}),
+  ))).filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
+  const rules = unique([...mandatoryRules, ...referenceRules, ...envelopeRules]);
   const host = detectHost();
   const skills = [...activeSkillsForProject(cwd, state, host)]
     .filter((name) => !BOOTSTRAP_SKILLS.has(name)) // bootstrap skills live in the host skills/ dir, not per-project
@@ -121,7 +140,10 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   // live on disk but are deliberately NOT manifest-tracked (cleanup never sweeps
   // them). List them in the Active Skills index so agents discover them.
   const indexSkills = [...skills, ...extraSkillDirs(skillsRoot, new Set(skills))].sort();
-  const localAgents = renderAgentsWithLocalContext(cwd, capabilityState, rules, indexSkills, { mandatoryRules, referenceRules });
+  const localAgents = renderAgentsWithLocalContext(cwd, capabilityState, rules, indexSkills, {
+    mandatoryRules,
+    referenceRules: unique([...referenceRules, ...envelopeRules]),
+  });
   if (writeRootAgents(cwd, localAgents)) written += 1;
   if (writeRootClaude(cwd)) written += 1;
 

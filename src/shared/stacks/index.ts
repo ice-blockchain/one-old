@@ -31,12 +31,12 @@ const COMMON_REFERENCES = [
   'rules/common/library-catalog.md',
 ];
 
-// Setup-time-only content (~19.5 KB): the onboarding Q&A protocol and the stack
-// pitches matter while a new project is still being set up / built, and never
-// again — a maintenance-phase project carries neither in its materialized set
-// or index. Existing codebases are maintenance from first detection, so they
-// never receive these; cleanupPrevious sweeps them out of already-materialized
-// projects when the build completes.
+// Setup-time-only in the MANIFEST (~19.5 KB): the onboarding Q&A protocol and
+// the stack pitches drop out of the mandatory/optional index once a project
+// reaches maintenance. Both remain architect base rules below, so hash-only
+// bootstrap envelopes still reference them — materialization keeps every
+// envelope-referenced rule body on disk (as reference material) in all phases
+// via roleScopedRuleUnion.
 const ONBOARDING_ONLY_MANDATORY = ['rules/common/onboarding.md'];
 const ONBOARDING_ONLY_REFERENCES = ['rules/common/stack-recommendations.md'];
 
@@ -294,6 +294,15 @@ export function roleScopedRules(role: string, state: unknown): string[] | null {
   if (role === 'senior-reviewer') return unique([...base, ...languageRules, ...frontendRules, ...backendRules]);
   if (role === 'quick-fix') return unique([...base, ...languageRules]);
   return base;
+}
+
+// Union of every rule id any envelope-eligible role can reference. Hash-only
+// bootstrap envelopes (schemaVersion 2) carry no rule bodies, so
+// materialization must keep this whole set on disk under .traffic-one/rules/**
+// for children to read — including ids outside the manifest index (e.g. the
+// shipper's rules/common/git.md and the architect's setup-era pair).
+export function roleScopedRuleUnion(roles: readonly string[], state: unknown): string[] {
+  return unique(roles.flatMap((role) => roleScopedRules(role, state) || []));
 }
 
 export const STACKS = {

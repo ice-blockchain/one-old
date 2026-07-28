@@ -18,6 +18,7 @@ import {
   type TrafficOneHost,
 } from '../host-capabilities';
 import { resetAuthoringRootCache } from '../authoring-root';
+import { sha256 } from '../text';
 import type { Handler, HookInput } from '../../core/types';
 import { OPENCODE_HOOK_TOOL_BEFORE } from '../../config/opencode-host';
 import { KILO_HOOK_TOOL_BEFORE } from '../../config/kilo-host';
@@ -214,7 +215,7 @@ test('bounded evidence retention preserves the deny proof used for certification
     }
     const capability = readRunHostCapability(cwd, 'R', 'opencode');
     assert.ok(capability);
-    assert.equal(capability.evidence.length, 64);
+    assert.equal(capability.evidence.length, 16);
     assert.ok(capability.evidence.some((entry) => (
       entry.point === 'tool.execute.before'
       && entry.outcome === 'denied'
@@ -222,6 +223,91 @@ test('bounded evidence retention preserves the deny proof used for certification
     )));
     assert.equal(capability.primaryBlockingPointDenied, true);
     assert.equal(capability.prevention, 'pre-tool');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('verified-child-model-gate evidence survives bounded retention explicitly', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-host-cap-model-gate-'));
+  try {
+    ensureRunHostCapability(cwd, 'R', 'codex', {
+      point: 'first-tool-model-check',
+      event: 'SubagentStart',
+      source: 'verified-child-model-gate',
+      sessionId: 'child-1',
+    });
+    for (let index = 0; index < 40; index += 1) {
+      ensureRunHostCapability(cwd, 'R', 'codex', {
+        point: 'PreToolUse',
+        event: 'PreToolUse',
+        source: 'host-hook-result',
+        sessionId: `allowed-${index}`,
+      });
+    }
+    const capability = readRunHostCapability(cwd, 'R', 'codex');
+    assert.ok(capability);
+    assert.ok(capability.evidence.length <= 16);
+    // The e2e certification assertion requires this exact row; a small cap must
+    // protect it explicitly, not incidentally.
+    assert.ok(capability.evidence.some((entry) => (
+      entry.point === 'first-tool-model-check'
+      && entry.source === 'verified-child-model-gate'
+    )));
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a legacy sidecar with more evidence than the retention cap still parses and trims on next write', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-host-cap-legacy-'));
+  try {
+    ensureRunHostCapability(cwd, 'R', 'codex', {
+      point: 'PreToolUse',
+      event: 'PreToolUse',
+      source: 'host-hook-result',
+      sessionId: 'seed',
+    });
+    const file = runHostCapabilityPath(cwd, 'R');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> & {
+      evidence: Array<Record<string, unknown>>;
+    };
+    // Rebuild the file the way a pre-split runtime left it: 40 evidence rows
+    // (over the new retention cap of 16, under the accept ceiling of 64).
+    const template = raw.evidence[0]!;
+    raw.evidence = Array.from({ length: 40 }, (_, index) => ({
+      ...template,
+      sessionId: `legacy-${index}`,
+    }));
+    const stable = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(stable);
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, child]) => [key, stable(child)]),
+      );
+    };
+    const { evidenceHash: _oldHash, ...evidenceCanonical } = raw;
+    raw.evidenceHash = sha256(JSON.stringify(stable(evidenceCanonical)));
+    fs.writeFileSync(file, JSON.stringify(raw));
+
+    // An old oversized sidecar must parse — refusing it would permanently wedge
+    // the run (published-but-invalid files are never replaced).
+    const legacy = readRunHostCapability(cwd, 'R', 'codex');
+    assert.ok(legacy);
+    assert.equal(legacy.evidence.length, 40);
+
+    // The next observation rewrite trims it to the retention cap.
+    ensureRunHostCapability(cwd, 'R', 'codex', {
+      point: 'PreToolUse',
+      event: 'PreToolUse',
+      source: 'host-hook-result',
+      sessionId: 'post-upgrade',
+    });
+    const trimmed = readRunHostCapability(cwd, 'R', 'codex');
+    assert.ok(trimmed);
+    assert.ok(trimmed.evidence.length <= 16);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

@@ -238,8 +238,11 @@ greenfield build. Scope every phase to that one feature:
 ### Phase 0 — Detect + run-id
 
 Read `.traffic-one/.one.json`, `.traffic-one/product.md`, `.traffic-one/stack.md`,
-`.traffic-one/rules/*.md`, `.traffic-one/known-issues.md`, and
-`.traffic-one/plan.md` when they exist.
+`.traffic-one/known-issues.md`, and `.traffic-one/plan.md` when they exist. Do
+NOT bulk-read `.traffic-one/rules/*.md` — consult the Active Rule Index in the
+project AGENTS.md for what exists, and open an individual rule file only when
+adjudicating a specific gate, dispute, or decision that names it (role agents
+receive their rule set through their own bootstrap).
 
 - If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan. **Do NOT spawn ANY subagent (architect included) until onboarding is COMPLETE** (`.one.json` has `stack` + `onboardingComplete: true` and materialization has run). Onboarding runs in THIS main thread — you drive the setup wizard here; a subagent cannot (it can't show the wizard, and would get trapped on the "wait for setup" command). Spawning before onboarding is a protocol violation: finish setup in the main thread, THEN spawn the team.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.

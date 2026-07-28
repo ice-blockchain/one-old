@@ -8,9 +8,13 @@ import {
   activeRunBootstrapPath,
   ensureRunBootstrap,
   readActiveRunBootstrap,
+  repairRunBootstrapForBoundChild,
   resolvedRoleSkillIds,
   RUN_BOOTSTRAP_MAX_PER_ROLE,
 } from '../run-bootstrap-policy';
+import { currentHostModelTarget } from '../current-model-tiers';
+import { ensureRunModelPolicy } from '../run-model-policy';
+import { roleAgentBody } from '../skill-filters';
 import {
   architectureInputPath,
   compileArchitectureForRun,
@@ -147,8 +151,12 @@ test('precompile publishes only a complete architect planning envelope with real
     assert.equal(envelope.roleSource, 'plugin-injected-fallback');
     assert.equal(envelope.hostCapability.prevention, 'completion-only');
     assert.equal(envelope.hostCapability.primaryBlockingPointObserved, false);
-    assert.ok(envelope.role.content.includes('# Senior Architect'));
+    assert.equal(envelope.role.contentHash, sha256(roleAgentBody('senior-architect')!));
+    assert.ok(!('content' in envelope.role));
     assert.ok(envelope.rules.length > 0);
+    assert.ok(envelope.rules.every((rule) => (
+      !('content' in rule) && /^[a-f0-9]{64}$/.test(rule.contentHash)
+    )));
     assert.match(envelope.architectureHash, /^[a-f0-9]{64}$/);
     assert.match(envelope.workUnit.verificationHash, /^[a-f0-9]{64}$/);
     assert.ok(envelope.workUnit.outputs.includes('.traffic-one/runs/R/architecture-input-v1.json'));
@@ -409,7 +417,7 @@ test('active bootstrap rejects added policy material even after attacker re-hash
     assert.ok(envelope);
     rewriteEnvelope(cwd, 'R', 'senior-architect', (raw) => {
       const workUnit = raw.workUnit as ReturnType<typeof createWorkUnitContract>;
-      const extra = { id: 'rogue-skill', content: 'rogue', contentHash: sha256('rogue') };
+      const extra = { id: 'rogue-skill', contentHash: sha256('rogue') };
       raw.skills = [...(raw.skills as unknown[]), extra];
       raw.workUnit = createWorkUnitContract({
         runId: workUnit.runId,
@@ -527,8 +535,121 @@ test('tampering invalidates active bootstrap and pruning never evicts the active
 
     const activePath = activeRunBootstrapPath(cwd, 'R', 'senior-architect');
     const raw = JSON.parse(fs.readFileSync(activePath, 'utf8')) as Record<string, unknown>;
-    (raw.role as Record<string, unknown>).content = 'tampered';
+    (raw.role as Record<string, unknown>).contentHash = sha256('tampered');
     fs.writeFileSync(activePath, JSON.stringify(raw));
     assert.equal(readActiveRunBootstrap(cwd, 'R', 'senior-architect'), null);
+  });
+});
+
+test('a schemaVersion-1 body-carrying envelope is rejected and republished as v2 with a stable work-unit contract', () => {
+  withProject((cwd) => {
+    const options = {
+      host: 'codex' as const,
+      hostAgentType: null,
+      evidenceSource: 'spawn-task-name',
+      modelPolicyId: 'policy-v1-migration',
+    };
+    const envelope = ensureRunBootstrap(cwd, 'R', 'senior-architect', STATE, options);
+    assert.ok(envelope);
+    const contractHash = envelope.workUnit.contractHash;
+    rewriteEnvelope(cwd, 'R', 'senior-architect', (raw) => {
+      // Downgrade both copies to the retired body-carrying v1 shape.
+      raw.schemaVersion = 1;
+      raw.role = { ...(raw.role as Record<string, unknown>), content: '# Senior Architect (stale body)' };
+      raw.rules = (raw.rules as Array<Record<string, unknown>>)
+        .map((rule) => ({ ...rule, content: 'stale rule body' }));
+      raw.skills = (raw.skills as Array<Record<string, unknown>>)
+        .map((skill) => ({ ...skill, content: 'stale skill body' }));
+    });
+    assert.equal(readActiveRunBootstrap(cwd, 'R', 'senior-architect'), null);
+    // The republish path reproduces the same work-unit contract, so
+    // maintenance.json fallback markers keyed on contractHash stay valid
+    // across the v1→v2 migration.
+    const republished = ensureRunBootstrap(cwd, 'R', 'senior-architect', STATE, options);
+    assert.ok(republished);
+    assert.equal(republished.schemaVersion, 2);
+    assert.equal(republished.workUnit.contractHash, contractHash);
+    assert.deepEqual(readActiveRunBootstrap(cwd, 'R', 'senior-architect'), republished);
+  });
+});
+
+test('an envelope referencing a rule missing from the plugin fails closed', () => {
+  withProject((cwd) => {
+    const envelope = ensureRunBootstrap(cwd, 'R', 'senior-architect', STATE, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'spawn-task-name',
+      modelPolicyId: 'policy-missing-rule',
+    });
+    assert.ok(envelope);
+    rewriteEnvelope(cwd, 'R', 'senior-architect', (raw) => {
+      const rules = raw.rules as Array<{ id: string; contentHash: string }>;
+      rules[0] = { id: 'rules/common/does-not-exist.md', contentHash: '0'.repeat(64) };
+      const workUnit = raw.workUnit as ReturnType<typeof createWorkUnitContract>;
+      raw.workUnit = createWorkUnitContract({
+        runId: workUnit.runId,
+        unitId: workUnit.unitId,
+        trafficOneRole: workUnit.trafficOneRole,
+        hostAgentType: workUnit.hostAgentType,
+        rules: rules.map(({ id, contentHash }) => ({ id, contentHash })),
+        skills: workUnit.skills,
+        outputs: workUnit.outputs,
+        allowlist: workUnit.allowlist,
+        allowlistExclude: workUnit.allowlistExclude,
+        architectureHash: workUnit.architectureHash,
+        verificationHash: workUnit.verificationHash,
+      });
+    });
+    assert.equal(readActiveRunBootstrap(cwd, 'R', 'senior-architect'), null);
+  });
+});
+
+test('repairRunBootstrapForBoundChild recovers a bounded scope from an invalidated stale envelope', () => {
+  withProject((cwd) => {
+    const env = {
+      ...process.env,
+      TRAFFIC_ONE_HOST: 'codex',
+      TRAFFIC_ONE_USER_PLAN: 'pro',
+      TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'one-mcp.json'),
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
+    };
+    const target = currentHostModelTarget('codex', 'pro', env);
+    const state = {
+      ...STATE,
+      mode: 'existing-codebase',
+      performance: {
+        level: 'balanced',
+        source: 'prompted',
+        target: {
+          plan: 'pro',
+          appliedFingerprint: target.appliedFingerprint,
+          configVersion: target.configVersion,
+        },
+      },
+      team: { mode: 'subagents', approved: true, source: 'prompted' },
+    };
+    const policy = ensureRunModelPolicy(cwd, 'M', 'codex', state, env);
+    assert.ok(policy);
+    const bounded = ensureRunBootstrap(cwd, 'M', 'quick-fix', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-maintenance-preflight',
+      modelPolicyId: policy.policyId,
+      boundedOutputs: ['src/components/Button.tsx'],
+    });
+    assert.ok(bounded);
+    // Simulate a plugin upgrade landing mid-run: the stale envelope no longer
+    // parses, but its self-hashing workUnit still carries the bounded scope.
+    rewriteEnvelope(cwd, 'M', 'quick-fix', (raw) => {
+      raw.schemaVersion = 1;
+      raw.role = { ...(raw.role as Record<string, unknown>), content: 'stale body' };
+    });
+    assert.equal(readActiveRunBootstrap(cwd, 'M', 'quick-fix'), null);
+    const repaired = repairRunBootstrapForBoundChild(cwd, 'M', 'quick-fix', state);
+    assert.ok(repaired);
+    assert.equal(repaired.schemaVersion, 2);
+    assert.equal(repaired.workUnit.contractHash, bounded.workUnit.contractHash);
+    assert.deepEqual(repaired.workUnit.outputs, bounded.workUnit.outputs);
+    assert.deepEqual(readActiveRunBootstrap(cwd, 'M', 'quick-fix'), repaired);
   });
 });

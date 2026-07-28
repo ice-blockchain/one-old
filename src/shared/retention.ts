@@ -208,6 +208,20 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
     }
   }
 
+  // Per-run diagnostic captures (claim-capture.jsonl, plan-guard-deny.jsonl)
+  // live under runs/<id>/debug/ and were previously reclaimed only when the
+  // whole run dir aged out of the keep set — RETAINED runs kept them forever.
+  for (const id of listDirs(path.join(t1, 'runs'))) {
+    if (id === '.once') continue;
+    const runDebug = path.join(t1, 'runs', id, 'debug');
+    for (const name of listFiles(runDebug)) {
+      const target = path.join(runDebug, name);
+      if (ttlMs === 0 || isOlderThan(target, ttlMs, nowMs)) {
+        maybeAction(actions, target, `stale run debug log older than ${policy.orphanTtlDays} days`);
+      }
+    }
+  }
+
   for (const rel of [path.join('reports', 'lighthouse'), 'logs']) {
     const root = path.join(t1, rel);
     for (const name of [...listDirs(root), ...listFiles(root)]) {

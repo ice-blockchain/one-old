@@ -90,16 +90,25 @@ export interface OpenCodeUnitStatusEntry {
     recordedAt: string;
   };
   updatedAt: string;
+  /**
+   * Bounded per-attempt history (last OPENCODE_UNIT_ATTEMPT_CAP). The full
+   * current error/touched live at the entry level; an attempt stores `error`
+   * only when it differs from the previous attempt ('(unchanged)' otherwise)
+   * and never repeats `touched` — a 6-unit run was re-storing the same
+   * multi-hundred-char deny message on every retry.
+   */
   attempts?: Array<{
     status: OpenCodeUnitStatus;
     action?: string;
     model?: string | null;
     failureKind?: string | null;
     error?: string | null;
-    touched?: string[];
     updatedAt: string;
   }>;
 }
+
+const OPENCODE_UNIT_ATTEMPT_CAP = 8;
+const OPENCODE_UNIT_ATTEMPT_ERROR_MAX = 2000;
 
 function safePathSegment(value: string): string {
   return (value || 'run').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'run';
@@ -232,22 +241,36 @@ export function recordOpenCodeUnitStatus(cwd: string, runId: string, entry: Omit
       const statuses = readStatuses(cwd, runId);
       const next: OpenCodeUnitStatusEntry = { ...entry, updatedAt: entry.updatedAt || new Date().toISOString() };
       const idx = statuses.findIndex((s) => s.id === next.id);
+      const priorEntry = idx >= 0 ? statuses[idx] as OpenCodeUnitStatusEntry : null;
+      const priorAttempts = Array.isArray(priorEntry?.attempts) ? priorEntry.attempts : [];
+      const nextError = next.error ?? null;
+      const truncatedError = nextError && nextError.length > OPENCODE_UNIT_ATTEMPT_ERROR_MAX
+        ? `${nextError.slice(0, OPENCODE_UNIT_ATTEMPT_ERROR_MAX)}…`
+        : nextError;
+      // Dedupe against the entry-level error (kept in full) and the last
+      // materialized attempt error, so an identical error repeated across N
+      // retries is stored once, not N times — even after the materialized copy
+      // ages out of the capped history.
+      const lastMaterializedError = [...priorAttempts].reverse()
+        .find((prior) => prior.error && prior.error !== '(unchanged)')?.error ?? null;
+      const repeatedError = Boolean(nextError && (
+        nextError === (priorEntry?.error ?? null)
+        || truncatedError === lastMaterializedError
+      ));
       const attempt = {
         status: next.status,
         action: next.action,
         model: next.model ?? null,
         failureKind: next.failureKind ?? null,
-        error: next.error ?? null,
-        touched: next.touched,
+        error: repeatedError ? '(unchanged)' : truncatedError,
         updatedAt: next.updatedAt,
       };
-      if (idx >= 0) {
-        const prior = statuses[idx] as OpenCodeUnitStatusEntry;
-        const attempts = [...(Array.isArray(prior.attempts) ? prior.attempts : []), attempt];
-        const keepPriorSummary = statusPrecedence(prior.status) > statusPrecedence(next.status);
+      if (priorEntry) {
+        const attempts = [...priorAttempts, attempt].slice(-OPENCODE_UNIT_ATTEMPT_CAP);
+        const keepPriorSummary = statusPrecedence(priorEntry.status) > statusPrecedence(next.status);
         statuses[idx] = keepPriorSummary
-          ? { ...prior, attempts, updatedAt: next.updatedAt }
-          : { ...prior, ...next, attempts };
+          ? { ...priorEntry, attempts, updatedAt: next.updatedAt }
+          : { ...priorEntry, ...next, attempts };
       } else {
         statuses.push({ ...next, attempts: [attempt] });
       }

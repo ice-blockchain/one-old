@@ -28,7 +28,7 @@ import { roleDigestName } from './packing';
 import {
   quickFixDigestPath,
   readActiveRunBootstrap,
-  type RunBootstrapEnvelopeV1,
+  type RunBootstrapEnvelopeV2,
 } from './run-bootstrap-policy';
 import {
   readRunSettlement,
@@ -67,7 +67,7 @@ function canonicalRole(value: unknown): string {
   return role;
 }
 
-export function workUnitAllowlistHash(envelope: RunBootstrapEnvelopeV1): string {
+export function workUnitAllowlistHash(envelope: RunBootstrapEnvelopeV2): string {
   return sha256(JSON.stringify({
     include: envelope.workUnit.allowlist,
     exclude: envelope.workUnit.allowlistExclude,
@@ -88,7 +88,7 @@ function exactSourcePath(value: string): string | null {
 }
 
 export function fallbackSourcePaths(
-  envelope: RunBootstrapEnvelopeV1,
+  envelope: RunBootstrapEnvelopeV2,
 ): string[] | null {
   const source: string[] = [];
   for (const output of envelope.workUnit.outputs) {
@@ -108,7 +108,7 @@ export function fallbackSourcePaths(
 
 export function captureMaintenanceFallbackBaseline(
   projectRoot: string,
-  envelope: RunBootstrapEnvelopeV1,
+  envelope: RunBootstrapEnvelopeV2,
 ): FallbackSourceSnapshotV1 | null {
   const paths = fallbackSourcePaths(envelope);
   return paths ? captureFallbackSourceSnapshot(projectRoot, paths) : null;
