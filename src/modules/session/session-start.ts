@@ -47,7 +47,10 @@ import {
   normalizeState,
   pruneExpiredPendingClaims,
   readEffectiveState,
+  reconcileRunIdentityDrift,
+  recordRunStackDrift,
   resolveRunAgentContext,
+  runIdentityFrozen,
   runReachedTerminalVerdict,
   type RunAgentContext,
   scrubProjectStateLocalPrefs,
@@ -339,6 +342,16 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     }
   }
 
+  // Un-wedge a project whose run identity already drifted away from its claims
+  // (a ledger with no frozen fingerprint, or a sibling run minted beside a live
+  // team). Idempotent and silent when there is nothing to repair, so a project
+  // broken by an earlier runtime heals on its next session with no user action.
+  try {
+    reconcileRunIdentityDrift(cwd, state);
+  } catch {
+    // Never fail SessionStart on a best-effort repair.
+  }
+
   // Multi-project safety: reset to the 3-skill baseline before copying THIS
   // project's set. Digest retention sweep. Best-effort session materialization.
   cleanActiveSkills();
@@ -487,13 +500,25 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
       detected.realtime = detected.realtime || 'none';
       detected.evidence.push('existing codebase detected → apply minimal stack baseline');
     }
+    // A run in flight owns the project's stack identity until it settles.
+    // Detection reads the project's OWN files, so the team building what it was
+    // asked to build moves the fingerprint under itself (an empty dir that
+    // becomes Laravel gains `resources/views`, flipping `frontend: none ->
+    // other`) — and re-stamping it mid-run used to invalidate every live role
+    // claim at once. Mirrors the `activeRun` guard in
+    // shared/detection/reconcileStackFromArtifacts. The drift is recorded on
+    // the ledger; the next run mints with the new identity.
+    const identityFrozen = runIdentityFrozen(cwd, state);
+    if (identityFrozen) recordRunStackDrift(cwd, state, stackFingerprint(detected));
     Object.assign(state, {
       mode,
-      stack: detected.stack,
-      backend: detected.backend || 'other',
-      frontend: detected.frontend || 'none',
-      ...(detected.mobile ? { mobile: detected.mobile } : {}),
-      realtime: detected.realtime || 'none',
+      ...(identityFrozen ? {} : {
+        stack: detected.stack,
+        backend: detected.backend || 'other',
+        frontend: detected.frontend || 'none',
+        ...(detected.mobile ? { mobile: detected.mobile } : {}),
+        realtime: detected.realtime || 'none',
+      }),
       confirmed: true,
       onboardingComplete: true,
       confirmedAt: nowIsoNoMs(),

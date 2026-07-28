@@ -38,6 +38,7 @@ import {
   readRunHostCapability,
   RUN_HOST_CAPABILITY_RELATIVE_FILE,
 } from './host-capabilities';
+import { readRunModelPolicy } from './run-model-policy';
 import {
   readVerificationContract,
   type VerificationContractV2,
@@ -723,6 +724,42 @@ export function ensureRunBootstrap(
   if (!verified || verified.envelopeHash !== envelopeHash) return null;
   pruneBootstrapHistory(cwd, runId);
   return verified;
+}
+
+// Republish a MISSING envelope for a child that is already bound to this run.
+// Every publisher is otherwise a parent-side pre-spawn gate, so a child that
+// outlived a run change was permanently write-dead: bound, in-scope, and denied
+// on every tool call with nothing able to repair it (observed test-laravel — the
+// senior-backend child rebound into a run that had no bootstrap for it).
+//
+// This grants no authority the parent would not have granted. Every input is a
+// run immutable — the architecture snapshot (throws if absent), the frozen
+// capability profile, the compiled work unit — and ensureRunBootstrap re-reads
+// and re-verifies the result before returning, so it either reproduces a valid
+// envelope or returns null and the caller's existing denies stand.
+export function repairRunBootstrapForBoundChild(
+  cwd: string,
+  runId: string,
+  role: string,
+  state: unknown,
+  hostAgentType?: string | null,
+): RunBootstrapEnvelopeV1 | null {
+  if (!runId.trim() || !role.trim()) return null;
+  // Only ever fills a HOLE. An existing envelope is authoritative and is never
+  // replaced from the child side.
+  if (readActiveRunBootstrap(cwd, runId, role)) return null;
+  const policy = readRunModelPolicy(cwd, runId);
+  if (!policy) return null;
+  try {
+    return ensureRunBootstrap(cwd, runId, role, state, {
+      host: policy.host,
+      hostAgentType: hostAgentType || null,
+      evidenceSource: 'child-side-repair',
+      modelPolicyId: policy.policyId,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function bootstrapPromptHeader(envelope: RunBootstrapEnvelopeV1): string {

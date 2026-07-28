@@ -37,6 +37,8 @@ import {
   refreshCursorRunAgentFromTranscriptCache,
   recordCursorSpawnObservation,
   recordRunAgent,
+  explainUnresolvedRunAgent,
+  reconcileRunIdentityDrift,
   releaseRunClaims,
   resolveRunAgentContext,
   roleForRunSessionId,
@@ -57,7 +59,7 @@ import {
 import { resetAuthoringRootCache } from '../../authoring-root';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { ensureRunModelPolicy } from '../../run-model-policy';
-import { stackFingerprint } from '../materialization';
+import { stackFingerprint, UNKNOWN_STACK_FINGERPRINT } from '../materialization';
 import { observeCodexChildModel } from '../codex-model-observation';
 import {
   activateRunV2RollbackBarrier,
@@ -4103,4 +4105,134 @@ test('recordRunAgent preserves every role across concurrent hook processes', asy
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── Run-identity drift ───────────────────────────────────────────────────────
+// Regression cover for the wedge observed in test-laravel: the team scaffolded
+// the app it was asked to build, detection re-ran, the stack fingerprint moved,
+// and every live claim silently stopped resolving.
+
+const T1_DIR = ['.traffic', '-one'].join('');
+
+test('a claim still resolves after the build changes the detected stack', () => {
+  withPrefs((dir) => {
+    const before: Record<string, unknown> = {
+      mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'laravel', mobile: { framework: 'none' },
+    };
+    before.materializedStack = stackFingerprint(before);
+    const runId = ensureCurrentRunId(dir, before);
+    const claim = claimThreadRole(dir, before, 'agent-backend-1', 'senior-backend', {
+      parentSessionId: 'orchestrator',
+    });
+    assert.ok(claim, 'the child binds while the stack is still custom-backend');
+
+    // The backend implementer scaffolds Laravel; detection now reports a UI
+    // surface, so the state re-stamps to a different identity.
+    const after: Record<string, unknown> = {
+      ...before, stack: 'custom-stack', frontend: 'other', backend: 'laravel', mobile: { framework: 'none' },
+    };
+    after.materializedStack = stackFingerprint(after);
+    after.currentRunId = runId;
+    assert.notEqual(stackFingerprint(after), stackFingerprint(before), 'the live fingerprint really moved');
+
+    const resolved = resolveRunAgentContext(dir, after, {
+      agent_id: 'agent-backend-1', agent_type: 'traffic-one:senior-backend', hook_event_name: 'PreToolUse',
+    });
+    assert.ok(resolved, 'the live child stays bound across the stack change');
+    assert.equal(resolved!.role, 'senior-backend');
+  });
+});
+
+test('a claim carrying a foreign frozen identity still cannot leak in', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runId = ensureCurrentRunId(dir, state);
+    claimThreadRole(dir, state, 'agent-x', 'senior-backend', { parentSessionId: 'orchestrator' });
+    const claimFile = path.join(dir, T1_DIR, 'runs', runId, 'agent-x.json');
+    const raw = JSON.parse(fs.readFileSync(claimFile, 'utf8')) as Record<string, unknown>;
+    raw.stackFingerprint = 'some-other|identity|entirely|none';
+    fs.writeFileSync(claimFile, JSON.stringify(raw), 'utf8');
+
+    // No `agent_type`: the host-declared-role self-heal must not fire, so this
+    // exercises the exact-claim path alone. (With a declared type the host IS
+    // the authority on the role and a legitimate rebind is expected.)
+    const resolved = resolveRunAgentContext(dir, { ...state, currentRunId: runId }, {
+      agent_id: 'agent-x', hook_event_name: 'PreToolUse',
+    }, { claimPending: false });
+    assert.equal(resolved, null, 'a foreign frozen identity is still rejected');
+  });
+});
+
+test('ensureCurrentRunId refuses to mint over an unparseable state file', () => {
+  withPrefs((dir) => {
+    const first = ensureCurrentRunId(dir, materializedState());
+    fs.writeFileSync(path.join(dir, T1_DIR, '.one.json'), '{ this is not json', 'utf8');
+
+    const again = ensureCurrentRunId(dir, materializedState());
+    assert.equal(again, first, 'the live run is adopted, not re-minted');
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, T1_DIR, 'runs')).filter((name) => /^\d{13}$/.test(name)),
+      [first],
+      'no sibling run is minted from a corrupt state read',
+    );
+  });
+});
+
+test('a degraded state read never stamps a fabricated run identity', () => {
+  withPrefs((dir) => {
+    // No identity-bearing key at all is an unreadable state, not a minimal project.
+    const runId = ensureCurrentRunId(dir, {});
+    assert.notEqual(runId, '', 'an absent state file still mints normally');
+    const ledger = JSON.parse(
+      fs.readFileSync(path.join(dir, T1_DIR, 'runs', runId, 'run.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.notEqual(ledger.stackFingerprint, 'minimal|none|none|none',
+      'the run must not inherit a plausible-looking identity it never had');
+    assert.notEqual(ledger.stackFingerprint, UNKNOWN_STACK_FINGERPRINT,
+      'nor persist the unknown sentinel');
+  });
+});
+
+test('reconcileRunIdentityDrift elects the evidenced run and settles the sibling', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runsDir = path.join(dir, T1_DIR, 'runs');
+    const evidenced = ensureCurrentRunId(dir, state);
+    claimThreadRole(dir, state, 'agent-a', 'senior-backend', { parentSessionId: 'orchestrator' });
+    fs.writeFileSync(path.join(runsDir, evidenced, 'assignments.json'), '{}', 'utf8');
+    fs.writeFileSync(path.join(runsDir, evidenced, 'architecture-v1.json'), '{}', 'utf8');
+
+    // A sibling run minted beside the working team, also holding a live claim.
+    const sibling = String(Number(evidenced) + 1000);
+    const siblingState = { ...state, currentRunId: sibling };
+    ensureRunLedger(dir, sibling, { status: 'active', kind: 'agent-claim' });
+    claimThreadRole(dir, siblingState, 'agent-b', 'senior-frontend', { parentSessionId: 'orchestrator' });
+
+    const drifted: Record<string, unknown> = { ...state, currentRunId: sibling };
+    assert.equal(reconcileRunIdentityDrift(dir, drifted), true, 'the repair reports that it acted');
+    assert.equal(drifted.currentRunId, evidenced, 'currentRunId re-points at the evidenced run');
+    const loser = JSON.parse(
+      fs.readFileSync(path.join(runsDir, sibling, 'run.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.equal(effectiveLegacyRunStatus(loser), 'failed', 'the superseded sibling is settled');
+  });
+});
+
+test('explainUnresolvedRunAgent names the reason a child failed to bind', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runId = ensureCurrentRunId(dir, state);
+    claimThreadRole(dir, state, 'agent-x', 'senior-backend', { parentSessionId: 'orchestrator' });
+    const claimFile = path.join(dir, T1_DIR, 'runs', runId, 'agent-x.json');
+    const raw = JSON.parse(fs.readFileSync(claimFile, 'utf8')) as Record<string, unknown>;
+    raw.stackFingerprint = 'drifted|identity|here|none';
+    fs.writeFileSync(claimFile, JSON.stringify(raw), 'utf8');
+
+    const diagnosis = explainUnresolvedRunAgent(dir, { ...state, currentRunId: runId }, {
+      agent_id: 'agent-x', agent_type: 'traffic-one:senior-backend', hook_event_name: 'PreToolUse',
+    });
+    assert.equal(diagnosis.reason, 'fingerprint-mismatch');
+    assert.equal(diagnosis.role, 'senior-backend');
+    assert.equal(diagnosis.claimFingerprint, 'drifted|identity|here|none');
+  });
 });

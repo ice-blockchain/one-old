@@ -461,7 +461,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // Run-id write-guard: a stray (e.g. `date` ISO) run-id in a runs/<id> or
   // digests/<id> write path splits run state away from currentRunId. Check the
   // direct target, apply_patch targets, and the shell command.
-  const runIdViolation = runIdPathViolation({ state, relTargets: writeTargetPaths, command: rawCommand, block });
+  const runIdViolation = runIdPathViolation({ state, relTargets: writeTargetPaths, command: rawCommand, block, projectRoot });
   if (runIdViolation) violations.push(runIdViolation);
   const recordFallbackClaims = violations.length === 0;
   const runTeam = runTeamEnforcementViolation({

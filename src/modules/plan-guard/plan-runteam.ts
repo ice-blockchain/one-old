@@ -12,12 +12,13 @@ import {
   readRuntimeAssignments,
 } from '../../shared/architecture-contract';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
-import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
+import { readActiveRunBootstrap, repairRunBootstrapForBoundChild } from '../../shared/run-bootstrap-policy';
 import {
   activeAgentRole,
   assignmentForContext,
   captureClaimDebug,
   claimThreadRole,
+  explainUnresolvedRunAgent,
   hasRunAgentState,
   hookSessionIdentity,
   isMaintenancePhase,
@@ -180,13 +181,27 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // attempt in subagents mode so we can see how Claude agent-teams role agents
   // identify when their claim fails to bind (see project_agent_teams_claim_deadlock).
   // Does NOT affect the decision below.
+  // When nothing bound, record WHY. `resolved:false, role:null` alone cannot
+  // distinguish a genuine parent write from a child whose claim was rejected.
+  const unresolvedDiagnosis = agentContext
+    ? null
+    : explainUnresolvedRunAgent(projectRoot, state, rawData);
   captureClaimDebug(projectRoot, typeof state.currentRunId === 'string' ? state.currentRunId : null, 'runteam-write', rawData, {
     filePath,
     filePaths: writeTargetPaths,
     resolved: Boolean(agentContext),
     role,
     runId: agentContext && agentContext.runId != null ? String(agentContext.runId) : null,
+    ...(unresolvedDiagnosis ? { unresolved: unresolvedDiagnosis } : {}),
   });
+  // A child bound to this run whose envelope is MISSING is wedged: in-scope,
+  // correctly claimed, and denied on every call with no publisher reachable from
+  // the child side. Fill the hole deterministically from the run's immutables
+  // before the contract checks below read it. A failed repair changes nothing —
+  // every deny still stands.
+  if (acRole && stateRunId && !readActiveRunBootstrap(projectRoot, stateRunId, acRole)) {
+    repairRunBootstrapForBoundChild(projectRoot, stateRunId, acRole, state);
+  }
   if (acRole === 'quick-fix') {
     const bootstrap = stateRunId
       ? readActiveRunBootstrap(projectRoot, stateRunId, 'quick-fix')
@@ -214,9 +229,16 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
       return deny(block('run-team-maintenance-contract',
         'Run-team enforcement gate: maintenance writes fail closed when the hook cannot resolve a spawned worker with a valid parent-published WorkUnitContract. No unattributed write was made; bind the bounded quick-fix claim and exact allowlist before retrying.'));
     }
-    const recovery = unresolvedChild
+    // An identity-rejected claim is NOT a spawn problem: the child is genuine and
+    // respawning lands the replacement in the same wedge. Say so, and name the
+    // drift, instead of sending the parent around the loop again.
+    const driftReason = unresolvedDiagnosis
+      && (unresolvedDiagnosis.reason === 'fingerprint-mismatch' || unresolvedDiagnosis.reason === 'run-id-mismatch')
+      ? ` DIAGNOSIS: a role claim for \`${unresolvedDiagnosis.role || 'this role'}\` exists under run \`${unresolvedDiagnosis.runId || '<unknown>'}\` but was rejected (${unresolvedDiagnosis.reason}; claim \`${unresolvedDiagnosis.claimFingerprint || 'none'}\` vs run \`${unresolvedDiagnosis.ledgerFingerprint || 'none'}\`, live \`${unresolvedDiagnosis.liveFingerprint || 'none'}\`). Respawning will NOT fix this and switching to main-agent mode is not the remedy: the run's identity drifted away from its claims. Let the next SessionStart reconcile it, or settle this run so a fresh one mints with the current identity.`
+      : '';
+    const recovery = (unresolvedChild
       ? 'This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Do not retry the edit and do not self-assert a role in assistant prose. The PARENT/orchestrator must stop or replace this child and retry the same role. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.'
-      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.';
+      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.') + driftReason;
     return deny(block('run-team-not-subagent',
       `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. ${recovery} Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role, RECOVERY: recovery }));

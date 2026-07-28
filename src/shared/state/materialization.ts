@@ -6,16 +6,33 @@ import { obj, type Rec } from '../obj';
 import { SUBAGENT_STALE_MS, VALID_AGENT_ROLES } from '../../config/state';
 import { stateVersion } from './io';
 
+// An absent/unreadable state is NOT a minimal project. `readJson` collapses a
+// missing, torn, or unparseable `.one.json` to `{}` (fsjson.ts), and the old
+// `||` defaults then minted the plausible-looking `minimal|none|none|none` for
+// it — a fabricated identity that got stamped into a run ledger and its claims,
+// after which every claim mismatched the real state and role binding silently
+// died for the life of the project (observed test-laravel: run
+// `1785172002942` carries `minimal|none|none|none` while `.one.json` says
+// laravel). Writers must be able to tell "no identity" from "this identity".
+export const UNKNOWN_STACK_FINGERPRINT = 'unknown|unknown|unknown|unknown';
+
 export function stackFingerprint(state: unknown): string {
   const s = obj(state);
-  if (!s) return 'minimal|none|none|none';
+  if (!s) return UNKNOWN_STACK_FINGERPRINT;
   const mobile = obj(s.mobile);
+  // A real minimal project carries `stack: 'minimal'` (normalizeState sets it).
+  // A record with no identity-bearing key at all is a degraded read.
+  if (!s.stack && !s.frontend && !s.backend && !mobile) return UNKNOWN_STACK_FINGERPRINT;
   return [
     (s.stack as string) || 'minimal',
     (s.frontend as string) || 'none',
     (s.backend as string) || 'none',
     (mobile && (mobile.framework as string)) || 'none',
   ].join('|');
+}
+
+export function isUnknownStackFingerprint(value: unknown): boolean {
+  return value === UNKNOWN_STACK_FINGERPRINT;
 }
 
 export function isMaterialized(state: unknown): boolean {

@@ -7,7 +7,9 @@ import {
   isFixCycleSession,
   isMaterialized,
   isSubagentSession,
+  isUnknownStackFingerprint,
   stackFingerprint,
+  UNKNOWN_STACK_FINGERPRINT,
 } from '../materialization';
 import { stateVersion } from '../io';
 
@@ -16,7 +18,14 @@ test('stackFingerprint joins the four dimensions', () => {
     stackFingerprint({ stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'ionic-capacitor' } }),
     'default|react-vite|supabase|ionic-capacitor',
   );
-  assert.equal(stackFingerprint({}), 'minimal|none|none|none');
+  // A REAL minimal project carries `stack: 'minimal'`.
+  assert.equal(stackFingerprint({ stack: 'minimal' }), 'minimal|none|none|none');
+  // A degraded/absent read must stay distinguishable from it, so no writer can
+  // stamp a fabricated identity that mismatches the project forever after.
+  assert.equal(stackFingerprint({}), UNKNOWN_STACK_FINGERPRINT);
+  assert.equal(stackFingerprint(null), UNKNOWN_STACK_FINGERPRINT);
+  assert.equal(isUnknownStackFingerprint(stackFingerprint({})), true);
+  assert.equal(isUnknownStackFingerprint(stackFingerprint({ stack: 'minimal' })), false);
 });
 
 test('isMaterialized matches the stamp against the live fingerprint and plugin version', () => {
