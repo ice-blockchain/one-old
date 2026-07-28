@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { ensureOnboardingServer, formatWizardBanner } from '../ensure';
-import { writeLaunchConfig } from '../launch-config';
+import { NO_LOCAL_FALLBACK, type LocalFallback } from '../wizard-links';
 import {
   clearServerRecord,
   readServerRecord,
@@ -125,15 +125,20 @@ test('ensure: NO_SPAWN with no seeded record returns the inert placeholder (empt
 
 test('formatWizardBanner: appends the dashboard link on every host when non-empty; plain when empty', () => {
   const url = 'https://traffic.io/onboarding/agent#p=51000&t=tok';
-  const local = 'http://127.0.0.1:51000/local?t=tok';
+  const fallback = 'If the hosted page is unavailable or returns 404, open the local wizard directly: http://127.0.0.1:51000/local?t=tok' as LocalFallback;
   for (const host of ['claude', 'cursor', 'windsurf', 'opencode', 'codex']) {
     assert.equal(
-      formatWizardBanner(host, url, local, 'setup required'),
-      `setup required — open Traffic One setup: ${url} — local fallback: ${local}`,
+      formatWizardBanner(host, url, fallback, 'setup required'),
+      `setup required — open Traffic One setup: ${url} — ${fallback}`,
+    );
+    // A healthy hosted dashboard renders NO second URL and no dangling separator.
+    assert.equal(
+      formatWizardBanner(host, url, NO_LOCAL_FALLBACK, 'setup required'),
+      `setup required — open Traffic One setup: ${url}`,
     );
   }
   // empty dashboardUrl (placeholder / spawn failure) → plain banner, no dangling text
-  assert.equal(formatWizardBanner('claude', '', '', 'setup required'), 'setup required');
+  assert.equal(formatWizardBanner('claude', '', NO_LOCAL_FALLBACK, 'setup required'), 'setup required');
 });
 
 test('ensure: relaunches when no record exists', () => {
@@ -208,21 +213,21 @@ test('ensure: no-spawn mode returns a placeholder instead of another host\'s URL
   });
 });
 
-test('ensure: non-Claude hosts preserve Claude\'s single preview launch entry', () => {
+test('ensure: never writes .claude/launch.json — Traffic One does not open the wizard for the user', () => {
   withProject((cwd, env) => {
-    writeLaunchConfig(cwd, 51991);
-    const launchPath = path.join(cwd, '.claude', 'launch.json');
-    const before = fs.readFileSync(launchPath, 'utf8');
-    ensureOnboardingServer(cwd, {
-      env,
-      host: 'cursor',
-      isAlive: () => false,
-      launch: (c, e, host) => {
-        writeServerRecord(c, rec({ pid: 6001, port: 51992, token: 'cursor', url: 'http://127.0.0.1:51992/?t=cursor' }), e, host);
-        return 6001;
-      },
-    });
-    assert.equal(fs.readFileSync(launchPath, 'utf8'), before);
+    for (const host of ['claude', 'cursor'] as const) {
+      ensureOnboardingServer(cwd, {
+        env,
+        host,
+        isAlive: () => false,
+        launch: (c, e, h) => {
+          writeServerRecord(c, rec({ pid: 6001, port: 51992, token: host, url: `http://127.0.0.1:51992/?t=${host}` }), e, h);
+          return 6001;
+        },
+      });
+    }
+    assert.equal(fs.existsSync(path.join(cwd, '.claude', 'launch.json')), false,
+      'the preview-pane entry is gone; onboarding surfaces a clickable link the USER opens');
   });
 });
 

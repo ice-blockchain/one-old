@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import {
   beginOnboardingAttempt,
   consentPhaseFailureOutput,
-  cursorSetupCloseDirective,
   openCodeRestartWarning,
   preSpawnArchitectDirective,
   preSpawnModelDirective,
@@ -90,20 +89,15 @@ test('openCodeRestartWarning tells the user to restart before continuing develop
   assert.doesNotMatch(warning, /Ctrl\+C/i);
 });
 
-test('Cursor setup completion closes the exact wizard tab through browser_tabs', () => {
-  const url = 'http://127.0.0.1:55174/?t=tok';
-  const directive = cursorSetupCloseDirective(url, 'cursor');
-  assert.ok(directive.includes('`browser_tabs`'));
-  assert.ok(directive.includes('{"action":"list"}'));
-  assert.ok(directive.includes('{"action":"close","index":<matching index>}'));
-  assert.ok(directive.includes(url), 'the exact tokenized wizard URL is used for index-safe matching');
-  assert.match(directive, /Traffic One — Setup/, 'title fallback when the exact URL does not match');
-  assert.match(directive, /VERIFY/i, 're-list to confirm the tab actually closed');
-  assert.match(directive, /Do not ask the user to close/i);
-  assert.equal(cursorSetupCloseDirective(url, 'claude'), '', 'other hosts keep their native close path');
+test('no close directive exists — the setup tab belongs to the user', async () => {
+  // Traffic One neither opens nor closes the browser. The agent-driven browser_tabs
+  // close was part of the same "agent drives the browser" model that left users with
+  // no link at all (2cu: navigate, claim "links were shared above", close the tab).
+  const mod = await import('../index');
+  assert.equal('cursorSetupCloseDirective' in mod, false);
 });
 
-test('declineOutput records the opt-out and closes an already-open cursor wizard tab', async () => {
+test('declineOutput records the opt-out and never touches the user\'s browser', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -116,13 +110,14 @@ test('declineOutput records the opt-out and closes an already-open cursor wizard
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
-    // Flag-off flow: the wizard link was already shown → its tab gets closed.
+    // Even with a wizard tab open, declining says nothing about the browser: a tab
+    // the user opened is theirs to close.
     const url = 'http://127.0.0.1:55177/?t=tok';
     writeServerRecord(dir, { pid: process.pid, port: 55177, token: 'tok', url, startedAt: 'x' }, process.env, 'cursor');
     const out = declineOutput(dir, 'cursor');
     assert.match(out, /^TRAFFIC_ONE_DISABLED/, 'terminal disable marker');
-    assert.ok(out.includes('`browser_tabs`'), 'closes the open wizard tab');
-    assert.ok(out.includes(url), 'matches the tab by its exact URL');
+    assert.ok(!out.includes('browser_tabs'), 'no tab-closing directive');
+    assert.ok(!out.includes(url), 'no wizard URL is echoed back');
     assert.equal(pluginUseDeclined(dir), true, 'choice recorded durably');
 
     // Ask-first flow: no wizard was ever opened → no tab-close noise. Own prefs
@@ -891,12 +886,12 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
     assert.equal(out.split(dashLink).length - 1, 2, 'banner repeats the URL near the waiting line for compact terminals');
     assert.match(out, /TRAFFIC ONE SETUP/i, 'banner is recognizable to the user');
 
-    // Another surface already showed the link (the first banner stamped the shared
-    // marker) → the runner prints a compact wait line, never the URL twice.
+    // THIS runner just printed its own banner → it does not print the same block
+    // twice back-to-back. Scoped to the banner alone: it gates no other surface.
     writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' }, process.env, 'cursor');
     out = '';
     announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
-    assert.ok(!out.includes('http://127.0.0.1:55174'), 'duplicate banner suppressed after the first emission');
+    assert.ok(!out.includes('http://127.0.0.1:55174'), 'the runner does not reprint its own banner immediately');
     assert.match(out, /Waiting for Traffic One setup/i, 'compact wait line still explains the block');
 
     // Placeholder (:0/) → never surfaced.
@@ -910,12 +905,13 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
   }
 });
 
-test('bootstrap-only output stamps the same session marker consumed by the waiter', async () => {
+test('bootstrap output does NOT silence the waiter — its stdout is not proof the user saw the link', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
   const { announceWizardUrl, bootstrapReadyOutput } = await import('../index');
   const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+  const { noteBrowserArrival } = await import('../../../shared/onboarding-server/browser-arrival');
 
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-bootstrap-marker-')));
   const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -926,10 +922,13 @@ test('bootstrap-only output stamps the same session marker consumed by the waite
     const token = 'bootstrap-token';
     const dashboard = `https://dash.example.test/onboarding/agent#p=55188&t=${token}`;
     const local = `http://127.0.0.1:55188/local?t=${token}`;
-    const ready = bootstrapReadyOutput(dir, token, dashboard, local, 'bootstrap:session');
+    const ready = bootstrapReadyOutput(dir, token, dashboard, local, 'cursor');
     assert.match(ready, /TRAFFIC_ONE_SETUP_READY/);
     assert.ok(ready.includes(dashboard));
-    assert.ok(ready.includes(local));
+    assert.match(ready, /does not count as showing it/i,
+      'the bootstrap must tell the agent its own stdout is not delivery');
+    assert.doesNotMatch(ready, /do not print the URLs again/i,
+      'the old show-once instruction is what agents echoed back as "link already shared above"');
 
     writeServerRecord(dir, {
       pid: process.pid,
@@ -938,10 +937,17 @@ test('bootstrap-only output stamps the same session marker consumed by the waite
       url: `http://127.0.0.1:55188/?t=${token}`,
       startedAt: 'x',
     }, process.env, 'cursor');
+    // Cursor collapses the bootstrap's stdout, so the waiter must STILL show the link.
     let waiter = '';
     announceWizardUrl(dir, (chunk) => { waiter += chunk; }, 'cursor', 'bootstrap_session');
-    assert.doesNotMatch(waiter, /onboarding\/agent|127\.0\.0\.1:55188\/local/);
-    assert.match(waiter, /links shown above/i);
+    assert.match(waiter, /onboarding\/agent/, 'the waiter re-offers the link the user may never have seen');
+
+    // Once the wizard is actually open in a browser, it goes quiet.
+    noteBrowserArrival(dir, token, process.env, 'cursor');
+    let quiet = '';
+    announceWizardUrl(dir, (chunk) => { quiet += chunk; }, 'cursor', 'bootstrap_session');
+    assert.doesNotMatch(quiet, /onboarding\/agent/);
+    assert.match(quiet, /open in your browser/i);
   } finally {
     if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
@@ -951,7 +957,7 @@ test('bootstrap-only output stamps the same session marker consumed by the waite
   }
 });
 
-test('announceWizardUrl ignores a legacy hosted-only marker and emits the direct /local fallback', async () => {
+test('announceWizardUrl ignores a legacy marker and emits the direct /local fallback when no probe verdict exists', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');

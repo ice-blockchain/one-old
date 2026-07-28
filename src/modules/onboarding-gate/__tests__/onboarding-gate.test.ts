@@ -18,7 +18,8 @@ import { captureCursorModels } from '../../../shared/materialize/cursor-models';
 import { modelGateCommand } from '../../../shared/model-gate-command';
 import { runModelPolicyPath } from '../../../shared/run-model-policy';
 import { doctorCommand } from '../../../shared/doctor-command';
-import { commitWizardLinksShown } from '../../../shared/onboarding-server/wizard-links';
+import { NO_LOCAL_FALLBACK, type LocalFallback } from '../../../shared/onboarding-server/wizard-links';
+import { noteBrowserArrival } from '../../../shared/onboarding-server/browser-arrival';
 import { cursorWaitLinkFirstReason } from '../../../shared/onboarding-server/cursor-setup';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
@@ -396,7 +397,8 @@ test('Cursor first wait deny ORDERS the agent to post the setup link in chat', (
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
       assert.ok(r.reason.includes(dashboardUrl), 'the hosted link must be present');
-      assert.ok(r.reason.includes(localUrl), 'the local fallback must be present');
+      assert.ok(r.reason.includes(localUrl),
+        'with no probe verdict yet the local fallback is included — the safe default');
       assert.match(r.reason, /NEXT CHAT MESSAGE/,
         'the agent must be told to repost the link where the user can actually see it');
       assert.match(r.reason, /NOT visible to the user/,
@@ -406,34 +408,48 @@ test('Cursor first wait deny ORDERS the agent to post the setup link in chat', (
   });
 });
 
-// Live regression (cursor 64798f69): the setup URL appeared TWICE in chat. The
-// bootstrap output stamps the shared links-shown marker and tells the agent to
-// show the links ONCE; the agent did. This branch then denied anyway and ordered
-// a second copy, while asserting the link "has still never appeared". Every other
-// URL surface already honours the marker.
-test('Cursor wait deny is suppressed once the links are already in the conversation', () => {
+// Suppression must require evidence the user actually RECEIVED the link, never
+// evidence that some surface produced text containing it. The old marker was
+// stamped by the bootstrap's collapsed stdout and by agent-facing deny reasons, so
+// one invisible producer silenced every visible one (2cu, 5cu).
+test('Cursor wait deny is suppressed only once the server sees the browser arrive', () => {
   withProject(null, (cwd) => {
     const url = 'http://127.0.0.1:51500/?t=curwait';
     const dashboardUrl = 'https://traffic.io/onboarding/agent#p=51500&t=curwait';
-    const localUrl = 'http://127.0.0.1:51500/local?t=curwait';
     writeServerRecord(cwd, { pid: process.pid, port: 51500, token: 'curwait', url, startedAt: 'x' }, process.env, 'cursor');
     const wait = onboardingWaitCommand(cwd, 'cursor');
 
-    // The bootstrap surface delivered BOTH links in this conversation.
-    assert.equal(
-      commitWizardLinksShown(cwd, 'curwait', `Setup link: ${dashboardUrl}\n${localUrl}\n`, dashboardUrl, localUrl, 'cursor-main'),
-      true,
-      'the marker only commits for a payload carrying both links',
-    );
+    // Producing the link somewhere is NOT delivery — the deny must still fire.
+    const before = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-main'));
+    assert.equal(before.kind, 'deny', 'without an observed browser the link keeps being offered');
 
-    const r = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-main'));
-    assert.equal(r.kind, 'noop', 'the wait must proceed instead of demanding a second post');
+    // The wizard actually loaded in a browser.
+    noteBrowserArrival(cwd, 'curwait', process.env, 'cursor');
+    const after = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-second'));
+    assert.equal(after.kind, 'noop', 'the wait proceeds instead of demanding a post over an open wizard');
+  });
+});
 
-    // A DIFFERENT conversation reusing the same server still gets its own links:
-    // the marker is conversation-scoped and the once-marker was never consumed.
-    const other = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-other'));
-    assert.equal(other.kind, 'deny');
-    if (other.kind === 'deny') assert.ok(other.reason.includes(dashboardUrl));
+test('a shell command that opens the setup URL in a browser is denied during onboarding', () => {
+  withProject(null, (cwd) => {
+    const url = 'http://127.0.0.1:51500/?t=curwait';
+    writeServerRecord(cwd, { pid: process.pid, port: 51500, token: 'curwait', url, startedAt: 'x' }, process.env, 'cursor');
+    for (const command of [
+      "open 'https://traffic.io/onboarding/agent#p=51500&t=curwait'",
+      'xdg-open https://traffic.io/onboarding/agent',
+      'open http://127.0.0.1:51500/local?t=curwait',
+    ]) {
+      const r = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command }, 'cursor-main'));
+      assert.equal(r.kind, 'deny', `${command} must not auto-open the wizard`);
+      if (r.kind === 'deny') assert.match(r.reason, /does not open the setup link for the user/);
+    }
+    // An ordinary orientation command is not treated as a browser open. (Cursor
+    // still denies the first gated tool with the setup recipe — that is the
+    // onboarding gate doing its normal job, not this check firing.)
+    const ls = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: 'ls -la' }, 'cursor-main'));
+    if (ls.kind === 'deny') {
+      assert.doesNotMatch(ls.reason, /does not open the setup link for the user/);
+    }
   });
 });
 
@@ -444,9 +460,9 @@ test('the Cursor wait-link TS fallback stays verbatim with its skill block', () 
   assert.ok(block.length > 0, 'the skill block must exist');
   const rendered = block
     .replace(/\{\{URL\}\}/g, 'U')
-    .replace(/\{\{LOCAL_URL\}\}/g, 'L')
+    .replace(/\{\{LOCAL_FALLBACK\}\}/g, 'L')
     .replace(/\{\{WAIT_CMD\}\}/g, 'W');
-  assert.equal(cursorWaitLinkFirstReason('U', 'L', 'W'), rendered,
+  assert.equal(cursorWaitLinkFirstReason('U', 'L' as LocalFallback, 'W'), rendered,
     'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical');
 });
 
@@ -538,38 +554,28 @@ test('incomplete new project: claude orientation (ls) flows, the first write get
   });
 });
 
-test('claude: link suppression stays within the conversation that already saw them', () => {
+test('claude: the link keeps being offered until the server sees the wizard open', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
-    // Session A already received the complete recipe from another surface
-    // (session-start/prompt-submit/wait banner), before its first tool denial.
-    assert.equal(commitWizardLinksShown(
-      cwd,
-      'tok',
-      `${DASH_URL}\n${LOCAL_URL}`,
-      DASH_URL,
-      LOCAL_URL,
-      'claude-main',
-    ), true);
-    // Another surface in the SAME conversation points at the links instead of
-    // re-printing them (which can race setup completion).
+    // Producing the links on some other surface is NOT evidence the user saw them:
+    // the bootstrap's stdout is collapsed on several hosts and deny reasons are
+    // agent-facing. Every deny must therefore still carry the URL.
+    const rawA = { tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' }, session_id: 'claude-main' };
+    const inputA: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: rawA, tool: { class: 'file-write', rawName: 'Write' } };
+    const a = onboardingGate({ input: inputA, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
+    assert.equal(a.kind, 'deny');
+    if (a.kind === 'deny') assert.ok(a.reason.includes(DASH_URL), 'first deny carries the clickable URL');
+
+    // The wizard actually loaded in the user's browser.
+    noteBrowserArrival(cwd, 'tok', process.env, 'claude');
     const rawB = { tool_name: 'Write', tool_input: { file_path: 'src/b.ts', content: 'x' }, session_id: 'claude-main' };
     const inputB: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: rawB, tool: { class: 'file-write', rawName: 'Write' } };
     const b = onboardingGate({ input: inputB, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
     assert.equal(b.kind, 'deny');
     if (b.kind === 'deny') {
-      assert.ok(!b.reason.includes(DASH_URL), 'links-shown deny must not re-print the dashboard URL');
-      assert.ok(/already\s+surfaced/i.test(b.reason), 'names the links as already surfaced');
+      assert.ok(!b.reason.includes(DASH_URL), 'do not re-print a link over a wizard the user has open');
+      assert.ok(/open in their browser/i.test(b.reason), 'the claim is backed by an observed arrival');
       assert.ok(b.reason.includes("'--host=claude'"), 'still prescribes the wait command');
-      assert.ok(b.reason.includes("'--sync-session=claude-main'"), 'waiter shares the conversation-scoped marker');
     }
-
-    // A new conversation can reuse the same live server/token, but it has not
-    // seen session A's chat. Its first deny must include the clickable URL.
-    const rawC = { tool_name: 'Write', tool_input: { file_path: 'src/c.ts', content: 'x' }, session_id: 'claude-second' };
-    const inputC: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: rawC, tool: { class: 'file-write', rawName: 'Write' } };
-    const c = onboardingGate({ input: inputC, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
-    assert.equal(c.kind, 'deny');
-    if (c.kind === 'deny') assert.ok(c.reason.includes(DASH_URL));
   });
 });
 

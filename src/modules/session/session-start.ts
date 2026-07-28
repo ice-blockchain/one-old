@@ -31,7 +31,7 @@ import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { windsurfSetupReason } from '../../shared/onboarding-server/windsurf-setup';
-import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-links';
+import { localFallbackLine, localFallbackSection } from '../../shared/onboarding-server/wizard-links';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
@@ -98,7 +98,12 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
   if (usePluginQuestionPending(cwd)) return banner;
   const prepared = prepareOnboardingServer(cwd, ctx.host);
   return prepared.kind === 'ready'
-    ? formatWizardBanner(ctx.host, prepared.server.dashboardUrl, prepared.server.localWizardUrl, banner)
+    ? formatWizardBanner(
+      ctx.host,
+      prepared.server.dashboardUrl,
+      localFallbackSection(cwd, prepared.server.localWizardUrl, process.env, ctx.host),
+      banner,
+    )
     : banner;
 }
 
@@ -124,32 +129,32 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
   if (prepared.kind !== 'ready') return prepared.reason;
   const { server, waitCommand } = prepared;
   if (!server.dashboardUrl) return block('setup-pending');
-  let directive: string;
+  // Hosted link alone while the dashboard is healthy; the loopback wizard is added
+  // only when it is genuinely unusable or the probe has not answered yet.
+  const localFallback = localFallbackSection(cwd, server.localWizardUrl, process.env, ctx.host);
   // OpenCode/Kilo: keep this factual and compact so their prompt-injection
   // filters do not reject a multi-host walkthrough. The live URL and executable
   // waiter are still present on the first prompt.
   if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-    directive = [
+    return [
       'Traffic One project setup is required before building.',
       `Setup link: ${server.dashboardUrl}`,
-      `Direct local fallback: ${server.localWizardUrl}`,
+      ...(localFallbackLine(cwd, server.localWizardUrl, process.env, ctx.host) ? [String(localFallbackLine(cwd, server.localWizardUrl, process.env, ctx.host))] : []),
       `Wait command: ${waitCommand}`,
       'Show the setup link, then immediately run the wait command and keep this turn active until setup completes.',
       `If the user does not want Traffic One for this project, run instead: ${onboardingDeclineCommand(cwd, ctx.host)}`,
     ].join('\n\n');
-  } else if (ctx.host === 'windsurf') {
-    const vars = { URL: server.dashboardUrl, LOCAL_URL: server.localWizardUrl, WAIT_CMD: waitCommand };
-    directive = block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, server.localWizardUrl, waitCommand));
-  } else {
-    directive = block('server-deny-reason', {
-      URL: server.dashboardUrl,
-      LOCAL_URL: server.localWizardUrl,
-      WAIT_CMD: waitCommand,
-      DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host),
-    });
   }
-  commitWizardLinksShown(cwd, server.token, directive, server.dashboardUrl, server.localWizardUrl, syncSession);
-  return directive;
+  if (ctx.host === 'windsurf') {
+    const vars = { URL: server.dashboardUrl, LOCAL_FALLBACK: localFallback, WAIT_CMD: waitCommand };
+    return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, localFallback, waitCommand));
+  }
+  return block('server-deny-reason', {
+    URL: server.dashboardUrl,
+    LOCAL_FALLBACK: localFallback,
+    WAIT_CMD: waitCommand,
+    DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host),
+  });
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
 

@@ -29,6 +29,29 @@ export function agentOnboardingUrl(
   return `${dashboardUrlFromEnv(env)}/onboarding/agent#p=${port}&t=${token}`;
 }
 
+// Is the hosted onboarding page usable enough to send the user there ALONE?
+// Only a page that is genuinely missing or broken earns the loopback fallback
+// line; every extra URL in the message is one more thing the user has to triage.
+//
+// 401/403 are deliberately HEALTHY: the hosted wizard asks the user to sign in
+// or create an account, so an auth wall is the intended flow, not an outage
+// (observed 2cu, where the agent read a sign-in prompt as a failure and the user
+// had to ask for the local link). 405 is healthy too — it only means this origin
+// dislikes HEAD, not that the page is gone.
+export type DashboardHealth = 'healthy' | 'unhealthy';
+
+export function classifyDashboardStatus(status: number): DashboardHealth {
+  if (status === 404 || status === 410) return 'unhealthy';
+  if (status >= 500) return 'unhealthy';
+  return 'healthy';
+}
+
+// The probe target. Deliberately the bare path: port and token ride the URL
+// FRAGMENT (see agentOnboardingUrl above) and must never be sent to traffic.io.
+export function dashboardProbeUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return `${dashboardUrlFromEnv(env)}/onboarding/agent`;
+}
+
 export interface AgentOnboardingUrls {
   /** Hosted dashboard entry shown to the user first. */
   dashboardUrl: string;

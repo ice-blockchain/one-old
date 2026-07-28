@@ -20,6 +20,7 @@
 // stdout TRAFFIC_ONE_SETUP_PENDING,  exit 2 → still pending after the timeout; re-run.
 
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 
 import { maintenanceTriageDirective } from '../../modules/session/triage-directive';
 import { capabilityProfileForRun } from '../../shared/architecture-contract';
@@ -54,7 +55,9 @@ import {
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { agentOnboardingUrls } from '../../config/dashboard';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
-import { commitWizardLinksShown, wizardLinksShownWithin } from '../../shared/onboarding-server/wizard-links';
+import { localFallbackSection, wizardOpened } from '../../shared/onboarding-server/wizard-links';
+import { awaitDashboardHealth } from '../../shared/onboarding-server/dashboard-health';
+import { emittedWithin, stampEmitMarker } from '../../shared/once';
 import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
@@ -70,9 +73,15 @@ import {
 // gets a clean PENDING signal (rather than a hard kill) when the user is slow.
 const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 2000;
-// How recently another surface must have shown the wizard URL for the runner's
-// banner to be considered a duplicate in the same turn/session.
-const WIZARD_URL_TTL_MS = 15 * 60 * 1000;
+// How recently THIS runner printed its own terminal banner. Deliberately short and
+// deliberately scoped to the banner alone: it stops the same block appearing twice
+// back-to-back in one turn, and gates no other surface. The old cross-surface
+// "links were shown" marker is gone — see shared/onboarding-server/wizard-links.ts.
+const WIZARD_BANNER_REPRINT_MS = 90 * 1000;
+
+function bannerMarkerLabel(token: string): string {
+  return `wizard-banner-printed:${createHash('sha256').update(token || 'pending', 'utf8').digest('hex').slice(0, 20)}`;
+}
 
 export type WaitOutcome = 'complete' | 'pending';
 
@@ -438,82 +447,72 @@ export function announceWizardUrl(
     if (!rec || !rec.url || rec.url.includes(':0/')) return;
     const urls = agentOnboardingUrls(process.env, rec.port, rec.token);
     const link = urls.dashboardUrl || urls.localWizardUrl;
-    // Another surface (session-start banner / prompt-submit recipe / gate deny)
-    // already showed this exact link moments ago — repeating the full banner
-    // renders the URL twice in the same turn (observed on Cursor). Keep a
-    // compact wait line so the terminal output still explains the block.
-    if (wizardLinksShownWithin(cwd, rec.token, WIZARD_URL_TTL_MS, sessionId)) {
-      write('\nWaiting for Traffic One setup to complete (hosted and local links shown above; this command keeps the turn open)…\n');
+    // The user has the wizard open in a browser — the server watched it arrive.
+    // Keep a compact wait line so the terminal output still explains the block.
+    // Note this is the ONLY thing that suppresses the banner: "some surface
+    // already printed the URL" is explicitly NOT evidence the user saw it.
+    if (wizardOpened(cwd, rec.token, process.env, host)) {
+      write('\nWaiting for Traffic One setup to complete (the wizard is open in your browser; this command keeps the turn open)…\n');
       return;
     }
-    const localFallback = urls.localWizardUrl
-      ? `  If the hosted page is unavailable or returns 404, open the local wizard directly: ${urls.localWizardUrl}\n`
-      : '';
+    // The banner is this process's own stdout, which several surfaces can print
+    // near-simultaneously in one turn. A short production-scoped marker keeps the
+    // terminal from showing the same block twice back-to-back — it never gates any
+    // OTHER surface, so it cannot cause the silence this file exists to prevent.
+    if (emittedWithin(cwd, bannerMarkerLabel(rec.token), WIZARD_BANNER_REPRINT_MS)) {
+      write('\nWaiting for Traffic One setup to complete (setup link shown just above)…\n');
+      return;
+    }
+    const localFallback = localFallbackSection(cwd, urls.localWizardUrl, process.env, host);
     const banner = (
       '\n════════════════════════════════════════════════════════════════\n'
       + '  TRAFFIC ONE SETUP — open this link in your browser to finish setup:\n\n'
       + `  ${link}\n\n`
-      + localFallback
+      + (localFallback ? `  ${String(localFallback)}\n` : '')
       + '  Enter your API key and complete the setup steps.\n'
       + `  Setup link: ${link}\n`
       + '  Waiting for setup to complete (this command keeps the turn open)…\n'
       + '════════════════════════════════════════════════════════════════\n'
     );
     write(banner);
-    commitWizardLinksShown(cwd, rec.token, banner, urls.dashboardUrl, urls.localWizardUrl, sessionId);
+    stampEmitMarker(cwd, bannerMarkerLabel(rec.token));
   } catch {
     // best-effort — the wait still works without the banner
   }
 }
 
-// Bootstrap-only is itself a user-visible URL surface. Stamp the same
-// conversation marker as prompt/session/gate output before exiting so the
-// follow-up waiter prints only its compact "links shown above" line.
+// The bootstrap's stdout is NOT a user-visible surface on every host — Cursor
+// collapses it into a "ran N commands" block. It used to stamp a cross-surface
+// "links were shown" marker and tell the agent not to print the URLs again, which
+// is precisely how a run reached the user with the agent asserting "link already
+// shared above" over a conversation that had never contained a link (2cu, 5cu).
+// It now stamps nothing and instructs the opposite.
 export function bootstrapReadyOutput(
   cwd: string,
-  token: string,
+  _token: string,
   dashboardUrl: string,
   localWizardUrl: string,
-  sessionId?: string,
+  host?: string,
 ): string {
-  const localFallback = localWizardUrl
-    ? `If the hosted page is unavailable or returns 404, open the local wizard directly: ${localWizardUrl}\n`
-    : '';
-  // The trailing line is model-facing: the links are shown to the user exactly
-  // once (observed 9c: the orchestrator re-typed the full Setup/local links in
-  // a later message from its own context, so the user saw the URL block twice).
-  const output = `TRAFFIC_ONE_SETUP_READY\nSetup link: ${dashboardUrl || localWizardUrl}\n${localFallback}`
-    + 'Show these links to the user ONCE. In later messages refer to the links already shown above — do not print the URLs again.\n';
-  commitWizardLinksShown(cwd, token, output, dashboardUrl, localWizardUrl, sessionId);
-  return output;
+  const localFallback = localFallbackSection(cwd, localWizardUrl, process.env, host);
+  return `TRAFFIC_ONE_SETUP_READY\nSetup link: ${dashboardUrl || localWizardUrl}\n`
+    + (localFallback ? `${String(localFallback)}\n` : '')
+    + 'Post the setup link to the user in your next CHAT MESSAGE, as plain clickable text on its own line. '
+    + 'This command output does not count as showing it — several hosts collapse or hide it. '
+    + 'Do NOT open the link yourself with a browser tool or an `open`/`xdg-open`/`start` command; the user clicks it.\n';
 }
 
-// Cursor's Browser editor is not a script-opened browser window, so page JavaScript
-// cannot close its tab. Cursor exposes that operation to the current agent via
-// browser_tabs — but only when the Browser feature is active, and only when setup
-// actually ran in the in-app Browser (the dashboard flow opens an EXTERNAL browser
-// that browser_tabs cannot see). Emit a tolerant sequence at SETUP_COMPLETE so
-// cleanup is automatic when possible and silently skipped when it is not (A5:
-// the hard 5-step directive sent agents hunting for a tool that did not exist).
-export function cursorSetupCloseDirective(wizardUrl: string, host: string = detectHost()): string {
-  if (host !== 'cursor') return '';
-  const primary = wizardUrl && !wizardUrl.includes(':0/')
-    ? `the tab whose URL is exactly \`${wizardUrl}\``
-    : 'the tab titled "Traffic One — Setup" on 127.0.0.1';
-  return [
-    '[traffic-one] Cursor — if the setup tab is open in Cursor\'s in-app Browser, close it before the next build command:',
-    `1. If a \`browser_tabs\` tool is available in this session, call it with \`{"action":"list"}\`, find ${primary} (fall back to the tab titled "Traffic One — Setup" on 127.0.0.1), close it with \`{"action":"close","index":<matching index>}\`, and re-list once to verify.`,
-    '2. If no `browser_tabs` tool exists, or no matching tab is listed (setup ran in the external browser), skip this cleanup silently — do not hunt for other tools and do not ask the user to close anything.',
-    '3. Continue the original request immediately.',
-  ].join('\n');
-}
+// The setup tab belongs to the user. Traffic One neither opens nor closes it —
+// the agent-driven `browser_tabs` close directive that used to live here was part
+// of the same "the agent drives the browser" model that left users with no link
+// at all (2cu: navigate, claim "links were shared above", close the tab).
 
 // Bounded grace: `computeOnboarding().done` flips on the LAST /answer, which is
 // seconds BEFORE the wizard tab finishes (`/verify-toolchain` → `/complete` →
-// done view). `/complete` shuts the server down and clears its record, so a
-// short poll on the record lets the tab settle on its final URL/title before
-// the agent is told to close it — the exact-URL `browser_tabs` match then
-// succeeds. Capped so a tab that never posts /complete (closed early, network
+// done view). `/complete` shuts the server down and clears its record, so a short
+// poll on the record lets the wizard settle before the build resumes — this is a
+// LOCAL poll ordering our own shutdown ahead of materialization, not a browser
+// action. Capped so a tab that never posts /complete (closed early, network
 // error) cannot stall the released build.
 const COMPLETION_ACK_GRACE_MS = 4000;
 const COMPLETION_ACK_POLL_MS = 250;
@@ -530,27 +529,13 @@ export function awaitWizardCompletionAck(cwd: string, host: string, graceMs: num
   }
 }
 
-// The --decline output: records the durable opt-out and, when a wizard tab is
-// already open (a live server record exists — the flag-off flow where the link
-// was shown before the user said no), also tells the Cursor agent to close it.
-// The URL is read BEFORE recording so the exact-URL tab match still works.
-export function declineOutput(cwd: string, host: string): string {
-  let openWizardUrl = '';
-  try {
-    const rec = readServerRecord(cwd, process.env, host);
-    if (rec?.url && !rec.url.includes(':0/')) openWizardUrl = rec.url;
-  } catch {
-    // best-effort — the decline itself never depends on the record
-  }
+// The --decline output: records the durable opt-out. A setup tab the user may
+// still have open is theirs to close — we do not drive their browser.
+export function declineOutput(cwd: string, _host: string): string {
   recordPluginUseChoice(cwd, false, 'command');
-  let out = 'TRAFFIC_ONE_DISABLED\n'
+  return 'TRAFFIC_ONE_DISABLED\n'
     + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions. "
     + 'It stays silent here until the user explicitly asks for Traffic One again.\n';
-  if (openWizardUrl) {
-    const close = cursorSetupCloseDirective(openWizardUrl, host);
-    if (close) out += `\n${close}\n`;
-  }
-  return out;
 }
 
 // The `--use` yes path: record the durable per-project opt-in, then seed the
@@ -699,6 +684,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   let ensuredLocalUrl = '';
   let ensuredDashboardUrl = '';
   let ensuredToken = '';
+  let launchedServer = false;
   try {
     if (!alreadyDone) {
       const server = ensureOnboardingServer(cwd, { host });
@@ -706,6 +692,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
         ensuredLocalUrl = server.localWizardUrl;
         ensuredDashboardUrl = server.dashboardUrl;
         ensuredToken = server.token;
+        launchedServer = server.started;
       }
     }
   } catch (error) {
@@ -730,28 +717,33 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     // permission classifier may not recognize; pre-allow it while we are still
     // inside this user-approved shell boundary.
     ensureOnboardingWaitPermission(cwd, host);
+    // This prints the FIRST link the user ever sees, so it is the one surface worth
+    // briefly waiting on the dashboard verdict for — otherwise the probe is always
+    // still in flight here and the first message needlessly carries two URLs.
+    // Bounded, and only when THIS invocation started the server: a reused server has
+    // already written its verdict, and where no server process exists (NO_SPAWN)
+    // nothing will ever write one, so waiting would just burn the timeout.
+    if (launchedServer) awaitDashboardHealth(cwd, process.env, host);
     // `Setup link:` must carry the traffic.io dashboard deep link — the same URL
     // every other setup surface shows (observed on OpenCode: printing the raw
     // loopback URL here made the agent repost 127.0.0.1 instead of traffic.io).
-    // The loopback wizard stays named as the fallback for a 404ing dashboard (A4).
     process.stdout.write(bootstrapReadyOutput(
       cwd,
       ensuredToken,
       ensuredDashboardUrl,
       ensuredLocalUrl,
-      syncSessionFromArgv(argv),
+      host,
     ));
     process.exit(0);
   }
-  // Windsurf opens the wizard before the prompt and runs this waiter inside the
-  // first mutating hook. Suppress the terminal-style URL banner there: it is not
-  // clickable in Devin's tool card and the browser is already open.
+  // A live server record means the wizard is up, so a launch error here is stale
+  // and must not be reported as a hard failure.
   let wizardUrl = '';
   try {
     const record = readServerRecord(cwd, process.env, host);
     if (record?.url && !record.url.includes(':0/')) wizardUrl = record.url;
   } catch {
-    // best-effort — the close directive can still match the setup title + host
+    // best-effort — a missing record just means we fall through to the error path
   }
   if (launchError && !wizardUrl && !alreadyDone) {
     const reason = isOnboardingPermissionError(launchError)
@@ -774,21 +766,18 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     intervalMs: positiveIntFlag(argv, '--interval-ms') ?? undefined,
   });
   if (outcome === 'complete') {
-    // Let the wizard tab finish its /complete handshake (bounded) so the close
-    // directive below targets a settled tab and the user sees the done view.
+    // Let the wizard finish its /complete handshake (bounded) so its shutdown lands
+    // before materialization below, and the user sees the done view.
     if (host === 'cursor' && !alreadyDone) awaitWizardCompletionAck(cwd, host);
     // The user declined Traffic One through the pre-onboarding plugin-use choice:
     // unblock the build with NO materialization, triage, or orchestration
-    // directives — the project
-    // keeps no .traffic-one folder and the hooks stand down from here on. The
-    // Cursor tab-close directive still applies (the wizard tab is open).
+    // directives — the project keeps no .traffic-one folder and the hooks stand
+    // down from here on.
     if (pluginUseDeclined(cwd)) {
       process.stdout.write(
         'TRAFFIC_ONE_DISABLED\n'
         + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions.\n",
       );
-      const declinedClose = cursorSetupCloseDirective(wizardUrl, host);
-      if (declinedClose) process.stdout.write(`\n${declinedClose}\n`);
       process.exit(0);
     }
     // Converge project materialization NOW, before the agent resumes and spawns its
@@ -810,10 +799,6 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       process.exit(2);
     }
     process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
-    const closeDirective = cursorSetupCloseDirective(wizardUrl, host);
-    if (closeDirective) {
-      process.stdout.write(`\n${closeDirective}\n`);
-    }
     const triage = postSetupTriage(cwd);
     if (triage) {
       process.stdout.write(`\n[traffic-one] Route the original request per this triage BEFORE implementing:\n${triage}\n`);

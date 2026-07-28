@@ -419,6 +419,19 @@ export function isModelCaptureCommand(
   return modelGateInvocation(toolName, toolInput, expectedProjectRoot)?.kind === 'capture';
 }
 
+// A shell command that pops a URL in the user's browser. Traffic One never opens
+// the setup link itself — the agent posts it and the user clicks it — but `open`,
+// `xdg-open` and `start` are not in MUTATING_SHELL_COMMAND, so without this they
+// classify as read-only orientation and sail through the onboarding gate. That is
+// exactly how a run auto-opened the wizard and then told the user the link had
+// "already been shared" when no link was ever posted (observed 5cu).
+const BROWSER_OPEN_COMMAND = /(^|[\s;&|])(open|xdg-open|cmd(\.exe)?\s+\/c\s+start|start)\s+(-[^\s]+\s+)*['"]?https?:\/\//i;
+
+export function isBrowserOpenCommand(toolName: unknown, toolInput: unknown): boolean {
+  if (!isShellToolName(String(toolName || ''))) return false;
+  return BROWSER_OPEN_COMMAND.test(commandFromToolInput(toolInput));
+}
+
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {
   const ti = toolInput && typeof toolInput === 'object' ? (toolInput as Rec) : null;
   const name = String(toolName || (ti && (ti.tool_name || ti.toolName)) || '');

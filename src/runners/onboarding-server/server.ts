@@ -6,45 +6,27 @@
 // publishes its {pid,port,token,url} to the registry after listen() and exits the
 // process on shutdown; tests run with standalone:false and drive close() directly.
 
-import { spawn } from 'child_process';
 import * as crypto from 'crypto';
 import * as http from 'http';
 
 import { detectHost } from '../../shared/host';
 import { canonicalHost } from '../../shared/model-tiers';
+import { isWizardArrivalPath, noteBrowserArrival } from '../../shared/onboarding-server/browser-arrival';
+import { probeDashboardHealth, writeDashboardHealth } from '../../shared/onboarding-server/dashboard-health';
 import { clearServerRecord, writeServerRecord, type ServerRecord } from '../../shared/onboarding-server/registry';
 import { stateTimestamp } from '../../shared/state/io';
-import { removeLaunchConfig, writeLaunchConfig } from './launch-config';
 import { dispatch, type RouteContext } from './routes';
 import { seedGlobalCodeGraphProviderIfInstalled } from './seed-provider';
 
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
-// Off by DEFAULT — Traffic One targets the editor's in-app surface: Claude Code's
-// preview pane, and on Cursor the built-in Simple Browser opened by clicking the
-// agent-surfaced wizard link (Cursor has no API to auto-open it, and auto-popping
-// the EXTERNAL OS browser is both off-target and prone to double-open under the
-// gate's spawn race — so we do NOT do it for Cursor). Opt in to pop the OS default
-// browser only with TRAFFIC_ONE_OPEN_BROWSER=1. Fire-and-forget.
-export function shouldOpenBrowser(env: NodeJS.ProcessEnv): boolean {
-  const flag = (env.TRAFFIC_ONE_OPEN_BROWSER || '').trim().toLowerCase();
-  return flag === '1' || flag === 'true' || flag === 'yes' || flag === 'on';
-}
-
-function maybeOpenBrowser(url: string, env: NodeJS.ProcessEnv): void {
-  if (!shouldOpenBrowser(env)) return;
-  const opener = process.platform === 'darwin'
-    ? { cmd: 'open', args: [url] }
-    : process.platform === 'win32'
-      ? { cmd: 'cmd', args: ['/c', 'start', '', url] }
-      : { cmd: 'xdg-open', args: [url] };
-  try {
-    spawn(opener.cmd, opener.args, { detached: true, stdio: 'ignore' }).unref();
-  } catch {
-    // best-effort; the clickable URL is the real surface
-  }
-}
+// Traffic One never opens a browser for the user. The agent posts the link as
+// plain clickable text and the user clicks it themselves. Auto-opening is what
+// made agents believe the link "was already shared" while the conversation held
+// no link at all (observed 2cu: browser_navigate, then "links were shared
+// above", then the user asking for the link) — so there is deliberately no
+// opener here, and no env flag to re-enable one.
 
 export interface StartOptions {
   cwd: string;
@@ -144,12 +126,7 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
         clearTimeout(idleTimer);
         idleTimer = null;
       }
-      if (standalone) {
-        clearServerRecord(cwd, env, trafficHost);
-        // `.claude/launch.json` belongs exclusively to Claude's preview pane.
-        // Other host servers may run in parallel and must not remove it.
-        if (trafficHost === 'claude') removeLaunchConfig(cwd);
-      }
+      if (standalone) clearServerRecord(cwd, env, trafficHost);
     };
 
     const finish = (): void => {
@@ -206,6 +183,15 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
           res.end('forbidden');
           return;
         }
+        // A request that reached here is authenticated (or on a public wizard
+        // path) and came from a real browser, so it is the only trustworthy
+        // evidence that the user actually received the setup link. Recorded
+        // AFTER the token gate and only for the two wizard-UI paths — see
+        // shared/onboarding-server/browser-arrival.ts for why `/`, `/healthz`,
+        // `/favicon.ico` and preflights are deliberately excluded.
+        if (isWizardArrivalPath(req.method || 'GET', reqUrl.pathname)) {
+          noteBrowserArrival(cwd, token, env, trafficHost);
+        }
         const ctx: RouteContext = { cwd, env, token, port, trafficHost, requestShutdown: standalone ? finish : cleanup };
         await dispatch(req, res, reqUrl, ctx);
       } catch (err) {
@@ -233,13 +219,17 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
         } catch {
           // best-effort; the agent can still be handed the URL from this process
         }
-        // Register with Claude Code's preview (.claude/launch.json) so the agent can
-        // show the wizard in the in-app preview pane via preview_start.
-        if (trafficHost === 'claude') writeLaunchConfig(cwd, port);
         for (const signal of ['SIGTERM', 'SIGINT'] as const) {
           process.on(signal, finish);
         }
-        maybeOpenBrowser(url, env);
+        // Probe the hosted dashboard AFTER the record and the signal handlers are
+        // in place, never before: this call can take seconds on a slow or offline
+        // network, and ensureOnboardingServer gives the whole launch only ~4s
+        // before it throws — a throw there means the user gets NO link at all.
+        // Surfaces that render before the verdict lands simply show both URLs.
+        void probeDashboardHealth(env)
+          .then((health) => writeDashboardHealth(cwd, health, env, trafficHost))
+          .catch(() => { /* absent verdict → both links, the safe default */ });
       }
       resolve({ server, host: bindHost, trafficHost, port, token, url, close });
     });

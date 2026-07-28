@@ -15,7 +15,7 @@ import { isNonProjectRoot } from '../shared/authoring-root';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
 import { devinPreToolDeny, hasValidPreToolPayload, isGatePreToolSubcommand } from './fail-closed';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { commitWizardLinksShown } from '../shared/onboarding-server/wizard-links';
+import { localFallbackSection } from '../shared/onboarding-server/wizard-links';
 import { onboardingSyncSessionId } from '../shared/onboarding-server/wait-command';
 
 export interface HookOutput { stdout: string; exitCode: number; }
@@ -37,23 +37,18 @@ function onboardingStopResult(stdin: string, cwd: string): string {
   if (prepared.kind !== 'ready') {
     return JSON.stringify({ decision: 'block', reason: prepared.reason });
   }
-  const payload = JSON.stringify({
+  // Deliberately NOT gated on the wizard already being open: this Stop block is
+  // Windsurf/Devin's only re-delivery channel, and dropping it would end the turn
+  // mid-onboarding. When the user does have the wizard open the message still
+  // re-states the same live link, which is harmless; going silent is not.
+  return JSON.stringify({
     decision: 'block',
     reason: windsurfSetupReason(
       prepared.server.dashboardUrl,
-      prepared.server.localWizardUrl,
+      localFallbackSection(root, prepared.server.localWizardUrl, process.env, 'windsurf'),
       prepared.waitCommand,
     ),
   });
-  commitWizardLinksShown(
-    root,
-    prepared.server.token,
-    payload,
-    prepared.server.dashboardUrl,
-    prepared.server.localWizardUrl,
-    syncSession,
-  );
-  return payload;
 }
 
 export async function runDevinHook(

@@ -6,15 +6,20 @@
 // body is agent-visible but NOT user-visible. Observed live (cursor-17c): the
 // agent received this block, never reposted the URL, and then told the user to
 // "use the setup link from the previous message" — a message that never had one.
+// The same failure recurred in 2cu/5cu, which is why this now asks the agent to
+// check its own last VISIBLE message rather than trust "I already shared it".
 
-export function cursorWaitLinkFirstReason(url: string, localUrl: string, waitCommand: string): string {
+import type { LocalFallback } from './wizard-links';
+
+export function cursorWaitLinkFirstReason(url: string, localFallback: LocalFallback, waitCommand: string): string {
   return [
     'This notice is NOT visible to the user: Cursor renders a blocked command inside a collapsed "ran N commands" block, so the setup link has still never appeared in the conversation.',
-    'Post these two lines to the user in your NEXT CHAT MESSAGE, each on its own line, as plain clickable text — not inside a code block, and do not open them with a browser tool:',
+    'Check your own last VISIBLE chat message. Tool output and collapsed command blocks do not count — if the link is not in a message you wrote, the user has not seen it.',
+    'Post this to the user in your NEXT CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself with a browser tool or an `open`/`xdg-open`/`start` command; the user clicks it:',
     `Open Traffic One setup: ${url}`,
-    `Direct local fallback: ${localUrl}`,
+    String(localFallback),
     'Only after that message is written, re-run the wait command in the FOREGROUND of the same turn and keep the turn open:',
     waitCommand,
     'When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.',
-  ].join('\n\n');
+  ].filter((line) => line !== '').join('\n\n');
 }

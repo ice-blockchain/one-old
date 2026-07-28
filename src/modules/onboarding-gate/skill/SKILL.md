@@ -20,11 +20,11 @@ Do not search for a wizard tool, claim the preview is already open, or end the t
 
 {{HOST_PERMISSION_STEP}}
 
-The bootstrap prints `TRAFFIC_ONE_SETUP_READY` and a live `Setup link:`, then exits. Show that URL to the user as a standalone clickable link (or open it in the host's in-app web view). Immediately afterward run this normal waiter and keep the turn active:
+The bootstrap prints `TRAFFIC_ONE_SETUP_READY` and a live `Setup link:`, then exits. Post that URL to the user as a standalone clickable link in a chat message — do not open it yourself with a browser tool. Immediately afterward run this normal waiter and keep the turn active:
 
 {{WAIT_CMD}}
 
-When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, close the setup view and immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. Building, installs, and subagent work remain blocked until completion.
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. Building, installs, and subagent work remain blocked until completion.
 <!-- T1BLOCK:END server-bootstrap-required -->
 
 <!-- T1BLOCK:BEGIN server-bootstrap-required-compact -->
@@ -45,17 +45,16 @@ then finish a few setup steps. Your job is to SURFACE THE LINK to the user and t
 wait. Do NOT try to answer the setup questions yourself, and do NOT create or edit
 .claude/launch.json.
 
-Present this clickable setup link to the user as your FIRST visible action, before any
-wait command — put it on its own line, not buried in a terminal block. Show it as
-plain clickable text only; do NOT open it with a browser/navigate tool — the user
-clicks it themselves:
+Post this clickable setup link to the user as your FIRST visible action, before any
+wait command — put it in a CHAT MESSAGE on its own line, not buried in a terminal
+block. Tool output and collapsed command blocks do NOT count as showing it: several
+hosts hide them, so if the link is not in a message you wrote, the user has not seen
+it. Show it as plain clickable text only; do NOT open it with a browser/navigate tool
+or an `open`/`xdg-open`/`start` command — the user clicks it themselves:
 
     Open Traffic One setup: {{URL}}
 
-If the hosted page is unavailable or returns 404, show and open this direct local
-fallback instead; the redirecting loopback root is not a fallback:
-
-    Open local Traffic One setup: {{LOCAL_URL}}
+{{LOCAL_FALLBACK}}
 
 All setup logic and saves stay on this machine; the dashboard is just the UI.
 
@@ -88,11 +87,13 @@ files are added to it) and Traffic One stays silent here until they ask for it a
 <!-- T1BLOCK:BEGIN cursor-wait-link-first -->
 This notice is NOT visible to the user: Cursor renders a blocked command inside a collapsed "ran N commands" block, so the setup link has still never appeared in the conversation.
 
-Post these two lines to the user in your NEXT CHAT MESSAGE, each on its own line, as plain clickable text — not inside a code block, and do not open them with a browser tool:
+Check your own last VISIBLE chat message. Tool output and collapsed command blocks do not count — if the link is not in a message you wrote, the user has not seen it.
+
+Post this to the user in your NEXT CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself with a browser tool or an `open`/`xdg-open`/`start` command; the user clicks it:
 
 Open Traffic One setup: {{URL}}
 
-Direct local fallback: {{LOCAL_URL}}
+{{LOCAL_FALLBACK}}
 
 Only after that message is written, re-run the wait command in the FOREGROUND of the same turn and keep the turn open:
 
@@ -103,8 +104,8 @@ When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.
 
 <!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
 Traffic One setup is still pending — building stays blocked until setup finishes.
-Open Traffic One setup in the browser: {{URL}}
-If the hosted page is unavailable or returns 404, open the local wizard directly: {{LOCAL_URL}}
+Post this setup link to the user in a chat message — the user opens it, not you: {{URL}}
+{{LOCAL_FALLBACK}}
 Keep your turn open by running the wait command again (long timeout, ~9 minutes):
 
 {{WAIT_CMD}}
@@ -115,11 +116,19 @@ Don't use Traffic One: if the user says they don't want it for this project, run
 {{DECLINE_CMD}}
 <!-- T1BLOCK:END server-deny-reason-repeat -->
 
+<!-- T1BLOCK:BEGIN browser-open-denied -->
+Traffic One does not open the setup link for the user — they open it themselves.
+
+Post the setup link in a CHAT MESSAGE instead, on its own line, as plain clickable text (not inside a code block), then run the wait command and keep your turn open.
+
+An agent that opens the link tends to then believe it has "already shared" it and never posts it, which leaves the user with no link at all. Look at your own last visible chat message: if the link is not there, the user has not seen it.
+<!-- T1BLOCK:END browser-open-denied -->
+
 <!-- T1BLOCK:BEGIN server-deny-reason-links-shown -->
-Traffic One setup is required before building — and the clickable setup links were
-ALREADY surfaced in this conversation moments ago. Do NOT print the links again: the
-user may have just finished setup or be mid-setup in the browser, and a repeated link
-reads as "start over". Only repeat a link if the user says they cannot find it.
+Traffic One setup is required before building — and the user HAS the setup wizard
+open in their browser right now (the setup server saw it load). Do NOT print the link
+again: they are mid-setup, and a repeated link reads as "start over". Only repeat it
+if the user says they cannot find it.
 
 CONTINUE AUTOMATICALLY — run this wait command NOW, in the FOREGROUND of this turn
 (never as a background task, and do not open any URL with a browser tool), with a long
@@ -140,11 +149,10 @@ Don't use Traffic One: if the user says they don't want it for this project, run
 <!-- T1BLOCK:BEGIN windsurf-server-deny-reason -->
 Traffic One setup is required before building.
 
-Before running any tool, show the user this standalone clickable setup link:
+Before running any tool, show the user this standalone clickable setup link — do not open it yourself:
 [Open Traffic One setup]({{URL}})
 
-If the hosted page is unavailable or returns 404, use the direct local wizard:
-[Open local Traffic One setup]({{LOCAL_URL}})
+{{LOCAL_FALLBACK}}
 
 Keep the current turn active by running this wait command (timeout ~9 minutes):
 {{WAIT_CMD}}
@@ -155,10 +163,10 @@ When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original r
 <!-- T1BLOCK:BEGIN windsurf-server-deny-reason-repeat -->
 Traffic One setup is still pending.
 
-Before running any tool, show the user this standalone clickable setup link:
+Before running any tool, show the user this standalone clickable setup link — do not open it yourself:
 [Open Traffic One setup]({{URL}})
 
-Direct local fallback: [Open local Traffic One setup]({{LOCAL_URL}})
+{{LOCAL_FALLBACK}}
 
 Keep the current turn active by running this wait command:
 {{WAIT_CMD}}

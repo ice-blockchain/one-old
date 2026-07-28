@@ -29,12 +29,13 @@ import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onb
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
 import { firstEmitThisSession } from '../../shared/once';
-import { commitWizardLinksShown, wizardLinksShownWithin } from '../../shared/onboarding-server/wizard-links';
+import { localFallbackLine, localFallbackSection, wizardOpened } from '../../shared/onboarding-server/wizard-links';
 import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
-import { canonicalToolName, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, isTrafficOneDoctorCommand, parsedToolInput } from '../../shared/tool-classify';
+import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, isTrafficOneDoctorCommand, parsedToolInput } from '../../shared/tool-classify';
+import { browserOpenDeniedReason } from '../../shared/onboarding-server/browser-open';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
@@ -51,9 +52,6 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
 
-// Matches WIZARD_URL_TTL_MS in runners/onboarding-wait: links shown within this
-// window are "already in the conversation" and must not be re-printed.
-const WIZARD_LINKS_SHOWN_TTL_MS = 15 * 60 * 1000;
 
 export function onboardingGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
@@ -139,6 +137,14 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // unsandboxed wizard that owns ~/.traffic-one/projects. Admit it before the
     // Cursor URL-repost path, which necessarily calls the same failing launcher.
     if (isOnboardingBootstrapCommand(toolName, toolInput)) return noop();
+    // Hoisted ABOVE every orientation release below — `open '<url>'` matches
+    // nothing in the mutating-command vocabulary, so each host branch would
+    // otherwise wave it through as harmless orientation. The user opens the setup
+    // link themselves; an agent that opens it also tends to believe it "shared"
+    // the link, and then never posts it (observed 2cu/5cu).
+    if (isBrowserOpenCommand(toolName, toolInput)) {
+      return deny(block('browser-open-denied', {}, browserOpenDeniedReason()));
+    }
     if (isOnboardingWaitCommand(toolName, toolInput)) {
       // Ask-first pending: the runner invocation IS the answer path (--use /
       // --decline) — let it run without pre-launching the wizard or reposting
@@ -151,28 +157,22 @@ export function onboardingGate(ctx: Ctx): HookResult {
         // because the same restricted hook cannot pre-create its URL.
         if (prepared.kind !== 'ready') return noop();
         const { server, waitCommand } = prepared;
-        // Another surface already delivered BOTH links in this conversation — the
-        // bootstrap output stamps this same marker and its own text tells the agent
-        // to "Show these links to the user ONCE … do not print the URLs again".
-        // Denying here to demand yet another post is what rendered the setup URL
-        // TWICE in Cursor chat (observed live): the agent posts it per the
-        // ask-first recipe, then this deny orders a second copy while asserting the
-        // link "has still never appeared in the conversation". Every other URL
-        // surface already honours this marker — the generic deny below switches to
-        // a links-shown variant, and the wait runner degrades to a compact line.
-        // Checked BEFORE the once-marker so a conversation that genuinely has no
-        // links still gets its single deny.
-        if (wizardLinksShownWithin(root, server.token, WIZARD_LINKS_SHOWN_TTL_MS, syncSession)) return noop();
+        // The user has the wizard open in a browser — the server watched it arrive.
+        // Ordering another post now would race them finishing setup. This is the
+        // ONLY thing that silences this branch: the old marker fired whenever some
+        // surface merely PRODUCED the links, including the bootstrap stdout Cursor
+        // collapses into "ran N commands", which is exactly how a run reached the
+        // user with the agent claiming a link it had never posted.
+        if (wizardOpened(root, server.token, process.env, ctx.host)) return noop();
         const id = hookSessionIdentity(raw).sessionId;
         if (server.dashboardUrl
           && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {
-          const result = deny(block('cursor-wait-link-first', {
+          const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
+          return deny(block('cursor-wait-link-first', {
             URL: server.dashboardUrl,
-            LOCAL_URL: server.localWizardUrl,
+            LOCAL_FALLBACK: localFallback,
             WAIT_CMD: waitCommand,
-          }, cursorWaitLinkFirstReason(server.dashboardUrl, server.localWizardUrl, waitCommand)));
-          commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
-          return result;
+          }, cursorWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
         }
       }
       return noop();
@@ -198,9 +198,14 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // Every deny below prescribes the wait command; make sure the host's
     // permission classifier will let it run without another interruption.
     ensureOnboardingWaitPermission(root, ctx.host);
+    // The hosted dashboard is the link the user gets. The loopback wizard is added
+    // only when the dashboard is actually unusable (404/410/5xx/unreachable) or
+    // when the probe has not landed yet — a healthy sign-in wall is the intended
+    // flow, not an outage, so it does NOT earn a second URL.
+    const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
     const vars = {
       URL: server.dashboardUrl,
-      LOCAL_URL: server.localWizardUrl,
+      LOCAL_FALLBACK: localFallback,
       WAIT_CMD: waitCommand,
       DECLINE_CMD: declineCmd,
     };
@@ -209,18 +214,18 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // injection safety training — it reads as a third-party hijack attempt and
     // refuses to follow the instructions. Use a minimal, factual message instead:
     // just the wizard URL and wait command, no behavioral overrides or code blocks.
+    // The fallback uses the bare one-line form for the same reason.
     if (ctx.host === 'opencode') {
-      const result = deny(
+      const opencodeFallback = localFallbackLine(root, server.localWizardUrl, process.env, ctx.host);
+      return deny(
         `Traffic One project setup is required before building. `
         + `Show this setup link to the user: ${vars.URL}\n\n`
-        + `If the hosted page is unavailable or returns 404, use the local wizard directly: ${vars.LOCAL_URL}\n\n`
+        + (opencodeFallback ? `${opencodeFallback}\n\n` : '')
         + `Then immediately run this wait command in the current turn (timeout ~9 minutes); do not wait for another user message first:\n${vars.WAIT_CMD}\n\n`
         + `If it prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, `
         + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.\n\n`
         + `If the user does not want Traffic One for this project, run instead: ${declineCmd}`,
       );
-      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
-      return result;
     }
     if (ctx.host === 'windsurf') {
       // Windsurf renders an exit-2 pre-hook as a failed tool card. Never spend
@@ -230,11 +235,9 @@ export function onboardingGate(ctx: Ctx): HookResult {
       // then releases that SAME tool after onboarding completes.
       if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
       const first = firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId);
-      const result = first
-        ? deny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, vars.LOCAL_URL, vars.WAIT_CMD)))
-        : deny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, vars.LOCAL_URL, vars.WAIT_CMD)));
-      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
-      return result;
+      return first
+        ? deny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, localFallback, vars.WAIT_CMD)))
+        : deny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, localFallback, vars.WAIT_CMD)));
     }
     // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
     // session — INCLUDING a read-only orientation call. On Codex the PreToolUse
@@ -252,24 +255,25 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // read renders as a red failed-tool card, so orientation flows like on
     // Windsurf and the walkthrough lands on the first mutating call instead.
     if (ctx.host === 'claude' && isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+    // The user has the wizard open in a browser — the server watched it arrive, so
+    // re-posting the link now would read as "start over" while they are mid-setup.
+    // This variant is truthful because it is backed by that observation; the old
+    // one fired whenever any surface had merely PRODUCED the link, which is how the
+    // agent ended up telling the user to use a link it had never posted.
+    const wizardIsOpen = wizardOpened(root, server.token, process.env, ctx.host);
     if (firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId)) {
-      // The bootstrap banner (or session-start/prompt surface) may have shown
-      // the wizard links moments ago; ordering a re-print races the user
-      // finishing setup in the browser (observed: stale link re-shown seconds
-      // after completion). When links are already in the conversation, point
-      // at them and go straight to the wait command instead.
-      const result = wizardLinksShownWithin(root, server.token, WIZARD_LINKS_SHOWN_TTL_MS, syncSession)
-        ? deny(block('server-deny-reason-links-shown', vars))
-        : deny(block('server-deny-reason', vars));
-      commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
-      return result;
+      return deny(wizardIsOpen
+        ? block('server-deny-reason-links-shown', vars)
+        : block('server-deny-reason', vars));
     }
     // Recipe already delivered this session → orientation flows; every further
-    // non-orientation / mutating attempt repeats only the URL + wait-command.
+    // non-orientation / mutating attempt repeats only the URL + wait-command. The
+    // URL rides EVERY repeat until the wizard is open: the full walkthrough is what
+    // must not repeat, not the link itself.
     if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
-    const result = deny(block('server-deny-reason-repeat', vars));
-    commitWizardLinksShown(root, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
-    return result;
+    return deny(wizardIsOpen
+      ? block('server-deny-reason-links-shown', vars)
+      : block('server-deny-reason-repeat', vars));
   }
 
   if (childEvent) return noop();
