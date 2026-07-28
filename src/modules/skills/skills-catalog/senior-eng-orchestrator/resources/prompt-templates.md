@@ -215,8 +215,7 @@ Before emitting PLAN_READY, verify project-local context is materialized. If
 root `AGENTS.md`, or root `CLAUDE.md` is missing, report the runtime
 materialization blocker instead of creating or repairing runtime-owned files.
 
-Token budget: ~8k for reads, ~3k for writes. End your reply with the literal
-token PLAN_READY on its own line.
+End your reply with the literal token PLAN_READY on its own line.
 ```
 
 ## Phase 2 — Frontend/UI implementer (when eligible)
@@ -284,8 +283,8 @@ Format: rules/common/agent-handoff-digests.md. Digest verdict line:
 `IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED,
 CHANGES_REQUESTED, or TESTS_GREEN; those tokens belong to other roles.
 
-Token budget: ~12k total. Don't read more than ~3 files outside the scope
-above unless the digest/plan/graph all came up empty for the question.
+Don't read more than ~3 files outside the scope above unless the
+digest/plan/graph all came up empty for the question.
 
 End your reply with a one-line status of what you produced and what's
 pending.
@@ -330,8 +329,8 @@ Format: rules/common/agent-handoff-digests.md. Digest verdict line:
 `IMPLEMENTED` (or `BLOCKED <one-line reason>`) — never PLAN_READY, APPROVED,
 CHANGES_REQUESTED, or TESTS_GREEN; those tokens belong to other roles.
 
-Token budget: ~12k total. Don't read more than ~3 files outside the scope
-above unless the digest/plan/graph all came up empty for the question.
+Don't read more than ~3 files outside the scope above unless the
+digest/plan/graph all came up empty for the question.
 
 End your reply with a one-line status of what you produced.
 ```
@@ -376,7 +375,7 @@ missing-config setup CTA lacks `href="https://traffic.io/"`.
 Write your digest to:
   .traffic-one/digests/<run-id>/reviewer.md
 
-Token budget: ~6k. Don't full-scroll files; read targeted line ranges.
+Don't full-scroll files; read targeted line ranges.
 ```
 
 ## Phase 3 — Tester (parallel with Reviewer)
@@ -445,8 +444,6 @@ missing-config setup surfaces, assert the setup link href is exactly
 
 Write your digest to:
   .traffic-one/digests/<run-id>/tester.md
-
-Token budget: ~8k.
 ```
 
 ## Run-ledger settlement (orchestrator only)
@@ -532,8 +529,6 @@ Write your digest to:
 Set its literal verdict to `SHIPPED` only after the deploy and post-deploy
 checks complete successfully; otherwise set `FAILED`. End the reply with the
 same literal token. A created/nonempty shipper digest is not proof of success.
-
-Token budget: ~5k.
 ```
 
 ## Cleanup (Phase 5 — orchestrator does this, not a subagent)

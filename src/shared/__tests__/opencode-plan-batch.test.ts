@@ -16,6 +16,38 @@ import {
 } from '../opencode-roles';
 import { buildOpenCodeQueue, readOpenCodeQueue, recordOpenCodeUnitStatus, writeOpenCodeQueue } from '../opencode-queue';
 
+test('a replan (new assignments hash) supersedes the terminal batch so Step-0 can run again', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocbatch-replan-'));
+  try {
+    const runDir = path.join(dir, '.traffic-one', 'runs', 'run-replan');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'assignments.json'), JSON.stringify({ v: 1, scope: 'before' }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- id: u1 | role: frontend | files: a | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    writeOpenCodeQueue(dir, buildOpenCodeQueue(dir, 'run-replan', [
+      { role: 'frontend', files: 'a', task: 't' },
+    ]));
+    const queue = readOpenCodeQueue(dir, 'run-replan');
+    finalizePlanBatch(dir, 'run-replan', {
+      total: 1,
+      delegated: 0,
+      units: [{ id: queue!.units[0]!.id, role: 'frontend', action: 'failed', status: 'rejected_policy', touched: [] }],
+    });
+    const terminal = readOpenCodePlanBatchState(dir, 'run-replan');
+    assert.ok(terminal && terminal.outcome !== 'running', 'first batch is terminal');
+    assert.ok(terminal!.assignmentHash, 'terminal batch is stamped with the assignments hash');
+
+    // Replan: runtime republishes assignments.json → the old batch no longer binds.
+    fs.writeFileSync(path.join(runDir, 'assignments.json'), JSON.stringify({ v: 2, scope: 'after-replan' }), 'utf8');
+    assert.equal(readOpenCodePlanBatchState(dir, 'run-replan'), null,
+      'observed 4cu: the pre-replan batch verdict must not replay after assignments change');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('finalizePlanBatch writes terminal batch.json, COMPLETE, and non-empty role markers', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocbatch-'));
   try {

@@ -17,6 +17,7 @@ import {
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_LIVE_RELEASE_SNAPSHOT_SCHEMA_VERSION,
+  ONE_MCP_MAX_MODELS_PER_TIER,
   ONE_MCP_MAX_PUBLISHED_PAYLOAD_BYTES,
   ONE_MCP_OPERATOR_CAS_SQL_FILE,
   ONE_MCP_OPERATOR_MANIFEST_FILE,
@@ -89,11 +90,14 @@ test('operator payload fails generation for rows the shipped decoder cannot cons
     plans: { pro: { balanced: ['not-a-supported-opencode-plan'] } },
   }), /unsupported opencode plan override: pro/);
 
-  const tooMany = Array.from({ length: 4 }, (_, index) => `model-${index}`) as unknown as readonly [string, ...string[]];
+  const tooMany = Array.from(
+    { length: ONE_MCP_MAX_MODELS_PER_TIER + 1 },
+    (_, index) => `model-${index}`,
+  ) as unknown as readonly [string, ...string[]];
   assert.throws(() => bundledOneMcpPayload('codex', {
     ...base,
     tiers: { ...base.tiers, highest: tooMany },
-  }), /decoder allows 3/);
+  }), new RegExp(`decoder allows ${ONE_MCP_MAX_MODELS_PER_TIER}`));
 });
 
 test('operator generation requires two models except for explicit single-choice host plans', () => {

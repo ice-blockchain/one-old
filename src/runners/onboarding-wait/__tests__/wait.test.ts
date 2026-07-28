@@ -11,6 +11,11 @@ import {
   waitForOnboarding,
 } from '../index';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { resolveModel } from '../../../shared/model-tiers';
+
+// Derived, never hardcoded: which family anchors a tier is editable policy.
+const CURSOR_HIGHEST_FAMILY = resolveModel('highest', 'cursor', 'pro') as string;
+const CURSOR_HIGHEST_SLUG = `${CURSOR_HIGHEST_FAMILY}-thinking-high`;
 
 // Deterministic seams: a fake clock that advances `step` ms per read, and a no-op
 // sleep — so the polling loop is exercised without a real timer or state IO.
@@ -591,7 +596,7 @@ test('preSpawnRunIdDirective: Cursor captures exact picker models before publish
     const policyPath = path.join(dir, '.traffic-one', 'runs', runId, 'model-policy.json');
     assert.equal(fs.existsSync(policyPath), false, 'no incomplete create-once policy is published');
 
-    const pickerModels = ['claude-fable-5-thinking-high', 'gpt-5.6-terra-medium', 'composer-2.5-fast'];
+    const pickerModels = [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra-medium', 'composer-2.5-fast'];
     assert.equal(captureCursorModels(dir, pickerModels, 'pro'), true);
     const ready = preSpawnRunIdDirective(dir, 'cursor');
     assert.match(ready, /Build run-id/);
@@ -701,7 +706,7 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
     const d = preSpawnModelDirective(dir, 'cursor');
     assert.ok(d.includes('cursor-models.json'), 'step 1 front-loads the model capture');
     assert.ok(d.includes('senior-architect') && d.includes('senior-frontend'), 'per-role map present');
-    assert.ok(d.includes('claude-fable-5'), 'tier family appears as eligibility reference');
+    assert.ok(d.includes(CURSOR_HIGHEST_FAMILY), 'tier family appears as eligibility reference');
     assert.ok(d.includes('never guess an uncaptured id') || d.includes('after step 2'), 'does not advertise an uncaptured guess as a spawn param');
     assert.ok(d.includes('spawn map'), 'step 3 points at model-gate spawn map output');
     // Step 2 mandates running the model-gate command, which is what pops the USER prompt
@@ -820,7 +825,7 @@ test('preSpawnModelDirective: with capture, lists exact picker ids including fam
     );
     withCursorAvailableModels(
       prefs,
-      ['claude-fable-5-thinking-high', 'gpt-5.6-terra', 'gpt-5.4-mini'],
+      [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra', 'gpt-5.4-mini'],
       'pro',
     );
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
@@ -836,7 +841,7 @@ test('preSpawnModelDirective: with capture, lists exact picker ids including fam
     // role-named type is not in the type list this session captured and the
     // spawn comes back "Couldn't start" (1cu, 3cu). The role binds via the
     // `[t1-role: …]` prompt marker either way.
-    assert.ok(d.includes('senior-architect → subagent_type: "generalPurpose", model: claude-fable-5-thinking-high'), 'exact slug in preview');
+    assert.ok(d.includes(`senior-architect → subagent_type: "generalPurpose", model: ${CURSOR_HIGHEST_SLUG}`), 'exact slug in preview');
     assert.ok(d.includes('senior-shipper → subagent_type: "generalPurpose", model: gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
     assert.ok(d.includes('senior-tester → subagent_type: "generalPurpose", model: gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
     assert.ok(!d.includes('model: (after step 2'), 'captured family-anchor id is not replaced by a placeholder');

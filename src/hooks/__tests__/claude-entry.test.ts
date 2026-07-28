@@ -37,10 +37,11 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   assert.deepEqual(idsFor('check-onboarding-gate'), ['onboarding-gate', 'session.auth', 'session.authoring-guard', 'session.workspace-boundary']);
   assert.deepEqual(idsFor('check-agent-model'), ['agent-model.spawn', 'session.auth', 'session.workspace-boundary']);
   assert.deepEqual(idsFor('check-plan-write'), ['plan-guard.write', 'session.auth', 'session.authoring-guard', 'session.workspace-boundary']);
-  // check-library-allowlist runs the scaffold gate (22, windsurf-only) + deploy gate
-  // (25) + install allowlist (30) after auth (0) — the scaffold/deploy gates run
-  // before the install allowlist, matching the legacy "deploy gate runs first" ordering.
-  assert.deepEqual(idsFor('check-library-allowlist'), ['plan-guard.deploy', 'plan-guard.library', 'plan-guard.scaffold', 'session.auth', 'session.workspace-boundary']);
+  // check-library-allowlist runs the scaffold gate (22, windsurf-only) + supabase
+  // local-stack gate (24, all hosts) + deploy gate (25) + install allowlist (30)
+  // after auth (0) — the scaffold/supabase/deploy gates run before the install
+  // allowlist, matching the legacy "deploy gate runs first" ordering.
+  assert.deepEqual(idsFor('check-library-allowlist'), ['plan-guard.deploy', 'plan-guard.library', 'plan-guard.scaffold', 'plan-guard.supabase-local', 'session.auth', 'session.workspace-boundary']);
   assert.deepEqual(idsFor('check-one-mcp-tool'), ['one-mcp-tool-gate.agent-call']);
   assert.deepEqual(idsFor('check-codex-child-model'), ['agent-model.codex-child-observed-model']);
   // Hints + post-build handlers route to exactly one handler (no cross-fire —

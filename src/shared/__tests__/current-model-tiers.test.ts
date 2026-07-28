@@ -153,7 +153,7 @@ test('bundled target fingerprints the complete host payload while applied drift 
 test('fallback resolution is anchored to the role tier and returns an exact captured slug', () => {
   const captured = [
     'gpt-5.6-terra-medium',
-    'gpt-5.6-sol-medium',
+    'grok-4.5-medium',
     'claude-sonnet-5-thinking-high',
     'composer-2.5-fast',
   ];
@@ -163,8 +163,8 @@ test('fallback resolution is anchored to the role tier and returns an exact capt
     capturedModels: captured,
   }, 'cursor', 'pro');
   assert.deepEqual(highest, {
-    family: 'gpt-5.6-sol',
-    model: 'gpt-5.6-sol-medium',
+    family: 'grok-4.5',
+    model: 'grok-4.5-medium',
   }, 'a failed balanced-family model cannot move a highest role into the balanced row');
 
   const balanced = resolveTierFallback({

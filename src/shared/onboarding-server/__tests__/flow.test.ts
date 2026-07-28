@@ -7,7 +7,10 @@ import * as path from 'path';
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
 import { recordPluginUseChoice } from '../../state/plugin-use';
 import { writeSimpleAuth } from '../../auth';
-import { hostModelSnapshot } from '../../model-tiers';
+import { hostModelSnapshot, modelTierSnapshot, resolveModel } from '../../model-tiers';
+
+// Derived, never hardcoded: which model anchors a tier is editable policy.
+const CLAUDE_HIGHEST = resolveModel('highest', 'claude') as string;
 import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { writeRuntimeModelSnapshot } from '../../__tests__/support/one-mcp-runtime';
@@ -298,7 +301,7 @@ test('performance and repick update only the active host and preserve Cursor ava
       },
       team: { mode: 'subagents', source: 'prompted', approved: true },
       availableModels: {
-        models: ['claude-opus-4-8-thinking-high', 'composer-2.5-fast'],
+        models: ['claude-opus-5-thinking-high', 'composer-2.5-fast'],
         capturedAt: '2026-07-12T08:00:00Z',
         target: {
           plan: 'pro',
@@ -318,7 +321,7 @@ test('performance and repick update only the active host and preserve Cursor ava
     assert.equal(hostPrefs(prefs, 'codex').performance, undefined);
     assert.equal(hostPrefs(prefs, 'codex').team, undefined);
     assert.deepEqual(hostPrefs(prefs, 'cursor').availableModels, {
-      models: ['claude-opus-4-8-thinking-high', 'composer-2.5-fast'],
+      models: ['claude-opus-5-thinking-high', 'composer-2.5-fast'],
       capturedAt: '2026-07-12T08:00:00Z',
       target: {
         plan: 'pro',
@@ -517,7 +520,7 @@ test('buildTeamLineup: high performance maps each role to its tier + claude mode
   const architect = requireRole(by, 'senior-architect');
   const tester = requireRole(by, 'senior-tester');
   const shipper = requireRole(by, 'senior-shipper');
-  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: 'claude-fable-5' });
+  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: CLAUDE_HIGHEST });
   assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'cheapest', model: 'claude-haiku-4-5' });
   assert.deepEqual({ tier: shipper.tier, model: shipper.model }, { tier: 'balanced', model: 'claude-sonnet-5' });
   assert.ok(architect.label === 'Architect' && architect.blurb.length > 0);
@@ -544,7 +547,7 @@ test('buildTeamLineup: a per-role tier override is honored', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'claude', { 'senior-tester': 'highest' }).map((m) => [m.role, m]));
   // tester is normally cheapest/haiku; the override promotes it
   const tester = requireRole(by, 'senior-tester');
-  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: 'claude-fable-5' });
+  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: CLAUDE_HIGHEST });
 });
 
 test('computeOnboarding: the team-confirmation step carries the resolved line-up', () => {
@@ -557,7 +560,7 @@ test('computeOnboarding: the team-confirmation step carries the resolved line-up
     assert.equal(view.meta.recommendedTier, 'highest'); // pinned plan 'max' → highest headline tier
     assert.ok(Array.isArray(view.meta.team) && view.meta.team?.length === 6);
     const architect = view.meta.team?.find((m) => m.role === 'senior-architect');
-    assert.equal(architect?.model, 'claude-fable-5');
+    assert.equal(architect?.model, CLAUDE_HIGHEST);
     // host is resolved (defaults to claude outside a host process) so the UI can label it
     assert.equal(view.meta.host, 'claude');
     // the approve/re-pick options are still present
@@ -584,12 +587,14 @@ test('team step offers the first two models from every tier without cross-tier d
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     const choices = view.meta.modelChoices || [];
-    assert.deepEqual(choices.filter((choice) => choice.tier === 'highest').map((choice) => choice.model), [
-      'claude-fable-5', 'claude-opus-4-8',
-    ]);
-    assert.deepEqual(choices.filter((choice) => choice.tier === 'balanced').map((choice) => choice.model), [
-      'claude-sonnet-5', 'claude-sonnet-4-6',
-    ]);
+    // The picker offers the row's concrete models (the host alias tail is not a choice).
+    for (const tier of ['highest', 'balanced'] as const) {
+      assert.deepEqual(
+        choices.filter((choice) => choice.tier === tier).map((choice) => choice.model),
+        modelTierSnapshot('claude', undefined)[tier].slice(0, 2),
+        `${tier} choices track the configured row`,
+      );
+    }
     assert.deepEqual(choices.filter((choice) => choice.tier === 'cheapest').map((choice) => choice.model), [
       'claude-haiku-4-5', 'claude-sonnet-4-6',
     ]);
@@ -598,18 +603,20 @@ test('team step offers the first two models from every tier without cross-tier d
       2,
       'the same model remains a distinct Balanced and Cheapest choice',
     );
-    assert.equal(choices.find((choice) => choice.model === 'claude-opus-4-8')?.label, 'Opus 4.8');
+    assert.equal(choices.find((choice) => choice.model === 'claude-opus-5')?.label, 'Opus 5');
   });
 });
 
 test('Claude lineup surfaces concrete generation labels; concrete hosts get none', () => {
   const lineup = buildTeamLineup('high', 'claude');
   const architect = lineup.find((m) => m.role === 'senior-architect');
-  assert.equal(architect?.model, 'claude-fable-5');
-  assert.equal(architect?.modelLabel, 'Fable 5');
+  assert.equal(architect?.model, CLAUDE_HIGHEST);
+  // Every Anthropic id in the lineup carries a readable generation label, whichever
+  // model currently anchors the tier.
+  assert.ok((architect?.modelLabel ?? '').length > 0, 'architect model has a generation label');
   const tester = lineup.find((m) => m.role === 'senior-tester');
-  assert.equal(tester?.model, 'claude-haiku-4-5');
-  assert.equal(tester?.modelLabel, 'Haiku 4.5');
+  assert.equal(tester?.model, resolveModel('cheapest', 'claude'));
+  assert.ok((tester?.modelLabel ?? '').length > 0, 'tester model has a generation label');
   // Concrete ids (copilot & co.) are already readable — no label.
   const copilot = buildTeamLineup('high', 'copilot');
   assert.equal(copilot.find((m) => m.role === 'senior-architect')?.modelLabel, undefined);
@@ -843,7 +850,7 @@ test('team approve with per-agent model overrides persists them under team.overr
     assert.deepEqual(asRec(team.overrides), { 'senior-tester': 'highest' });
     // …and that stored override drives the resolved line-up (tester jumps to Fable).
     const lineup = buildTeamLineup('high', 'claude', asRec(team.overrides));
-    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, 'claude-fable-5');
+    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, CLAUDE_HIGHEST);
   });
 });
 
@@ -855,7 +862,7 @@ test('team approve persists exact same-tier model selections for every visible r
     const modelSelections = Object.fromEntries(
       (view.meta.team || []).map((member) => [member.role, member.model]),
     );
-    modelSelections['senior-architect'] = 'claude-opus-4-8';
+    modelSelections['senior-architect'] = 'claude-opus-5';
     modelSelections['senior-tester'] = 'claude-sonnet-4-6';
 
     assert.deepEqual(
@@ -950,7 +957,7 @@ test('team step reload preserves a valid exact model selection in its original t
     const modelSelections = Object.fromEntries(
       (first.meta.team || []).map((member) => [member.role, member.model]),
     );
-    modelSelections['senior-architect'] = 'claude-opus-4-8';
+    modelSelections['senior-architect'] = 'claude-opus-5';
     mergeProjectHostPrefs(cwd, 'claude', {
       team: { mode: 'subagents', source: 'prompted', modelSelections },
     });
@@ -959,7 +966,7 @@ test('team step reload preserves a valid exact model selection in its original t
     assert.equal(reloaded.step, 'team-confirmation');
     assert.equal(
       reloaded.meta.team?.find((member) => member.role === 'senior-architect')?.model,
-      'claude-opus-4-8',
+      'claude-opus-5',
     );
     assert.equal(
       reloaded.meta.team?.find((member) => member.role === 'senior-tester')?.model,

@@ -56,9 +56,9 @@ export const ONE_MCP_MAX_CONFIG_VERSION = 2_147_483_647;
 export const ONE_MCP_MAX_PUBLISHED_PAYLOAD_BYTES = 32 * 1024;
 export const ONE_MCP_MAX_PAYLOAD_DEPTH = 32;
 // Keep both the bundled catalog and every accepted remote row deliberately
-// small. Ordered fallbacks beyond the first three are not actionable for the
+// small. Ordered fallbacks beyond the first four are not actionable for the
 // runtime and would make a published config diverge from the reviewed policy.
-export const ONE_MCP_MAX_MODELS_PER_TIER = 3;
+export const ONE_MCP_MAX_MODELS_PER_TIER = 4;
 export const ONE_MCP_MAX_AVAILABLE_MODELS = 256;
 export const ONE_MCP_MAX_MODEL_ID_LENGTH = 256;
 // Remote model identifiers are rendered in hook-owned agent context. Keep the

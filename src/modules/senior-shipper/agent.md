@@ -27,7 +27,7 @@ You only run on explicit user intent to release. You are the last gate before pr
 - The orchestrator detected a deploy-intent phrase in the user's message AND reviewer + tester both passed.
 - The user invoked you directly: "ship it", "deploy", "release", "publish", "push to prod".
 
-## Read protocol & token budget
+## Read protocol
 
 The orchestrator passes you `<run-id>`. Read in priority order:
 
@@ -45,7 +45,7 @@ The orchestrator passes you `<run-id>`. Read in priority order:
 5. `.env.example` — surface missing env vars.
 6. Deploy command output — capture verbatim for the digest.
 
-Token budget: ~5k. You don't need to re-read implementer digests; the verifier digests are your contract.
+You don't need to re-read implementer digests; the verifier digests are your contract.
 
 ## Pre-flight (block if any fail)
 

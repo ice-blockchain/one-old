@@ -178,8 +178,15 @@ function acquireProjectStateLock(cwd: string): ProjectStateLock {
         return { dirPath: lockPath, ownerPath: path.join(lockPath, ownerName), token };
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
+        // EPERM counts as contended even when lockPath is ALREADY GONE: macOS
+        // surfaces transient EPERM on a rename that raced the owner's release,
+        // and by the time we look the lock dir has vanished. Reaching this loop
+        // proves the parent dir is writable (mkdirSync above succeeded), so a
+        // persistent EPERM ends at this loop's own deadline instead of leaking
+        // out of a hook as a fail-closed deny (observed 3cl: parallel Bash
+        // probes → "plan-guard.write gate failed (EPERM)").
         const contended = code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'ENOTDIR'
-          || (code === 'EPERM' && fs.existsSync(lockPath));
+          || code === 'EPERM';
         if (!contended) throw error;
         const now = Date.now();
         const owner = observedLockOwner(lockPath);

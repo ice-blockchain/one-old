@@ -32,7 +32,7 @@ You read code, not write it. Your output is a verdict + a numbered fix list. The
 - The orchestrator spawned you (in parallel with `senior-tester`) after the implementers reported done.
 - The user invoked you directly with phrasing like "review the diff", "is this PR safe", "before I push".
 
-## Read protocol & token budget
+## Read protocol
 
 The orchestrator passes you `<run-id>`. Read in priority order:
 
@@ -45,7 +45,7 @@ The orchestrator passes you `<run-id>`. Read in priority order:
    neighbors named by those contracts.
 4. Full files only when a finding needs broader context.
 
-Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdict is the only artefact.
+You are read-only by design (no Write/Edit tool); your verdict is the only artefact.
 
 ## What you read first
 

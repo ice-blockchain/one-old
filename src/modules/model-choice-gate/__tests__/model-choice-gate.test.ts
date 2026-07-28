@@ -17,6 +17,10 @@ import {
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { modelGateCommand } from '../../../shared/model-gate-command';
+import { resolveModel } from '../../../shared/model-tiers';
+
+// Derived, never hardcoded: which family anchors a tier is editable policy.
+const CURSOR_HIGHEST_SLUG = `${resolveModel('highest', 'cursor', 'pro')}-thinking-high`;
 
 function withProject(fn: (cwd: string, runId: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model-choice-gate-')));
@@ -152,7 +156,7 @@ function withApiLimitPause(fn: (cwd: string, runId: string, state: Record<string
     );
     withCursorAvailableModels(
       prefs,
-      ['claude-fable-5-thinking-high', 'gpt-5.6-terra-medium', 'composer-2.5-fast'],
+      [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra-medium', 'composer-2.5-fast'],
       'pro',
     );
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');

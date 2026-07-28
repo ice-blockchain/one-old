@@ -45,7 +45,7 @@ You ship server code that's correct, secure, and observably correct under real l
   frontend sibling.
 - The user invoked you directly with backend phrasing.
 
-## Read protocol & token budget
+## Read protocol
 
 The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priority order:
 
@@ -58,8 +58,8 @@ The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priorit
 5. Specific schema / migration / handler files only when 1–4 do not answer the
    question. Cap raw `Read` to roughly three files outside that scope.
 
-Token budget: ~12k total. Do not wait for a sibling role or digest unless that
-role is present in the immutable work units/assignments.
+Do not wait for a sibling role or digest unless that role is present in the
+immutable work units/assignments.
 
 ## What you read first
 
@@ -137,7 +137,7 @@ You do **not** touch UI artefacts (`apps/*/src/**`, `packages/ui*`, `packages/i1
 2. Translate the Public contracts into concrete handlers, validators (Zod / Pydantic / Bean Validation / etc. per stack), and persistence layers.
 3. Validate every external input with a schema at the boundary. Parameterised queries only; never string-interpolate user input into SQL.
 4. Auth and authorisation checks on every protected endpoint — UI gating is not enough.
-5. Migrations are explicit and reversible. For Supabase, run `pnpm db:push` (linked) or `pnpm db:start` (local) — never tell the user to "open the SQL editor".
+5. Migrations are explicit and reversible. For Supabase, AUTHOR them — `supabase/migrations/*.sql` plus `supabase/functions/**` committed in the repo — and stop there: never install or boot the local Supabase stack (no `supabase start`, no `db:start`/`db:reset`, no Docker/OrbStack/Colima), and never link/push during the build. The user connects the real project (env keys, migration apply) through the traffic.io platform (the EnvBanner/setup CTA); `supabase db push --linked` is a shipper-gated deploy action. Never tell the user to "open the SQL editor". Verify SQL by review and committed migrations, not against a local database.
 6. Provider-first auth: Supabase Auth → RLS, NextAuth/Auth.js for Next.js, framework-native session middleware otherwise. Custom JWT only for service-to-service.
 7. After every migration, refresh `.traffic-one/schema.sql` from migrations or
    `pg_dump --schema-only --no-owner --no-privileges` and note the refresh in

@@ -28,6 +28,11 @@ export interface OpenCodePlanBatchState {
   finishedAt?: string;
   rolesCompleted: string[];
   error?: string | null;
+  /** Hash of runs/<runId>/assignments.json the batch ran against. A replan
+   * republishes assignments, so a terminal batch bound to the OLD hash is
+   * superseded — Step-0 must run again on the fresh queue (observed 4cu: the
+   * once-per-run batch kept returning the pre-replan rejection). */
+  assignmentHash?: string | null;
 }
 
 const TERMINAL_BATCH_OUTCOMES = new Set<OpenCodePlanBatchOutcome>(['success', 'failed', 'partial', 'abandoned']);
@@ -213,6 +218,17 @@ export function readOpenCodePlanBatchState(cwd: string, runId: string): OpenCode
     const rolesCompleted = Array.isArray(rec.rolesCompleted)
       ? rec.rolesCompleted.filter((r): r is string => typeof r === 'string')
       : [];
+    const assignmentHash = typeof rec.assignmentHash === 'string' && rec.assignmentHash
+      ? rec.assignmentHash
+      : null;
+    // Supersession: a replan republishes assignments.json, so a batch stamped
+    // with a DIFFERENT hash belongs to the pre-replan world. Report "no batch"
+    // so Step-0 runs again on the fresh queue instead of replaying the stale
+    // verdict (observed 4cu). Legacy batches without a stamp keep old behavior.
+    if (assignmentHash) {
+      const current = opencodeAssignmentHash(cwd, runId);
+      if (current && current !== assignmentHash) return null;
+    }
     return {
       version: 1,
       outcome,
@@ -220,6 +236,7 @@ export function readOpenCodePlanBatchState(cwd: string, runId: string): OpenCode
       ...(typeof rec.finishedAt === 'string' ? { finishedAt: rec.finishedAt } : {}),
       rolesCompleted,
       ...(rec.error != null ? { error: String(rec.error) } : {}),
+      ...(assignmentHash ? { assignmentHash } : {}),
     };
   } catch {
     return null;
@@ -238,6 +255,7 @@ export function markOpenCodePlanBatchRunning(cwd: string, runId: string): void {
       outcome: 'running',
       startedAt: existing?.startedAt ?? new Date().toISOString(),
       rolesCompleted: existing?.rolesCompleted ?? [],
+      assignmentHash: opencodeAssignmentHash(cwd, runId),
     } satisfies OpenCodePlanBatchState);
   } catch {
     // best-effort
@@ -286,6 +304,7 @@ export function markOpenCodePlanBatchTerminal(
       finishedAt: new Date().toISOString(),
       rolesCompleted: existing?.rolesCompleted ?? [],
       ...(error ? { error: String(error).slice(0, 500) } : {}),
+      assignmentHash: opencodeAssignmentHash(cwd, runId),
     } satisfies OpenCodePlanBatchState);
     writeLegacyBatchComplete(cwd, runId);
   } catch {

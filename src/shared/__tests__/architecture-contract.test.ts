@@ -66,6 +66,35 @@ test('architecture input is semantic and cannot choose roots or output paths', (
   assert.ok(validation.errors.some((error) => error.includes('may not choose output paths')));
 });
 
+test('vite-react+supabase compiled outputs cover the standard surfaces the rules require', () => {
+  withProject((cwd) => {
+    const inputPath = architectureInputPath(cwd, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify(INPUT), 'utf8');
+    const compiled = compileArchitectureForRun(cwd, 'R', REACT_STATE);
+    const scaffoldOutputs = compiled.scaffoldOutputs ?? [];
+    assert.ok(scaffoldOutputs.length > 0, 'compiled architecture carries scaffold outputs');
+    const byPath = new Map(scaffoldOutputs.map((o) => [o.path, o.ownerRole]));
+    // 4cu: frontend digested BLOCKED twice over these — the SEO rule requires
+    // them but nothing compiled them, forcing architect replans mid-build.
+    for (const asset of [
+      'apps/web/public/robots.txt',
+      'apps/web/public/sitemap.xml',
+      'apps/web/public/manifest.webmanifest',
+      'apps/web/public/favicon.ico',
+      'apps/web/public/apple-touch-icon.png',
+      'apps/web/public/og-image.png',
+    ]) {
+      assert.equal(byPath.get(asset), 'senior-frontend', `missing frontend asset grant: ${asset}`);
+    }
+    // 4cu backend: the generated Database types snapshot was in no allowlist.
+    assert.equal(byPath.get('packages/api-client/src/database.types.ts'), 'senior-backend');
+    // 3cl: README + the canonical en locale catalog were in nobody's scope.
+    assert.equal(byPath.get('README.md'), 'senior-frontend');
+    assert.equal(byPath.get('packages/i18n/src/locales/en/common.json'), 'senior-frontend');
+  });
+});
+
 test('module display names accept title punctuation and reject path/markup chars', () => {
   const named = (name: string): ReturnType<typeof validateArchitectureInput> =>
     validateArchitectureInput({

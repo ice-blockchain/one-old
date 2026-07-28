@@ -70,6 +70,10 @@ Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md
 Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Fix the queue block in `.traffic-one/plan.md` (stable unique ids, parseable `files:`, explicit `depends:` edges for overlaps) and re-emit `PLAN_READY`. Do not guess compiled paths: file-vs-assignment scope is enforced at Step-0 delegation, where out-of-scope units are rejected pre-model and fall back to paid implementers.
 <!-- T1BLOCK:END architect-opencode-queue-policy-gate -->
 
+<!-- T1BLOCK:BEGIN supabase-local-stack-gate -->
+Supabase gate: the local Supabase stack is not part of this project's flow — do not run `supabase start`/`stop`, `supabase db reset`, `supabase functions serve`, or the `db:start`/`db:stop`/`db:reset`/`functions:serve` scripts, and do not boot Docker/OrbStack/Colima for them. Author `supabase/config.toml`, `supabase/migrations/*.sql`, and `supabase/functions/**` in the repo only; the user connects the real project (env keys, migration apply) through the traffic.io platform — every setup CTA links to `https://traffic.io/` — and the app must run in not-configured demo mode behind the EnvBanner until then. Verify SQL by review and committed migrations, not against a local database; `supabase db push --linked` stays a shipper-gated deploy action.
+<!-- T1BLOCK:END supabase-local-stack-gate -->
+
 <!-- T1BLOCK:BEGIN plan-opencode-queue-policy-gate -->
 Plan gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add stable unique `id` fields, exact `files` allowlists, and `depends` edges for overlapping areas.
 <!-- T1BLOCK:END plan-opencode-queue-policy-gate -->

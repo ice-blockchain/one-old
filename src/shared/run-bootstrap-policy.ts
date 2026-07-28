@@ -313,6 +313,10 @@ function roleRunArtifacts(
     outputs.push(`.traffic-one/reports/qa/${safePart(runId)}/report-v2.json`);
   }
   if (role === 'senior-shipper') outputs.push('.traffic-one/deployments.jsonl');
+  // The committed schema snapshot must track the migrations the backend
+  // authors; it lived in nobody's scope, so the 4cu backend digested BLOCKED
+  // on it and forced a replan. Same artifact class as the digests above.
+  if (role === 'senior-backend') outputs.push('.traffic-one/schema.sql');
   return outputs;
 }
 

@@ -518,8 +518,30 @@ function workspaceScaffoldOutputs(webRoot: string): CompiledArchitectureOutputV1
     // compiled it, so no role could create it (2cu shipped with no .gitignore
     // at all while stray build output and a 241 MB harness sat untracked).
     '.gitignore',
+    // Same gap as .gitignore: README.md was in no role's scope, so a queued
+    // README unit was rejected at Step-0 and no paid role could write one
+    // either (observed 3cl).
+    'README.md',
   ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const }));
 }
+
+// Public crawl/share assets `rules/common/seo.md` REQUIRES for every public
+// web surface. Nothing compiled them, so every web build blocked at the same
+// wall: the frontend digested BLOCKED and forced an architect replan just to
+// widen the allowlist (observed 4cu — two of its four replans were exactly
+// robots/sitemap/manifest/icons/OG). Deterministic names, no globs, same as
+// every other scaffold output.
+const PUBLIC_CRAWL_ASSETS = [
+  'public/robots.txt',
+  'public/sitemap.xml',
+  'public/manifest.webmanifest',
+  'public/favicon.ico',
+  'public/favicon.svg',
+  'public/apple-touch-icon.png',
+  'public/icons/icon-192.png',
+  'public/icons/icon-512.png',
+  'public/og-image.png',
+] as const;
 
 function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitectureOutputV1[] {
   if (!profile.surfaces.includes('web-ui') || profile.architectureTarget === 'native-ui') return [];
@@ -535,10 +557,16 @@ function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitec
         at('vite.config.ts'),
         at('tsconfig.json'),
         at('src/vite-env.d.ts'),
+        ...PUBLIC_CRAWL_ASSETS.map(at),
         'packages/ui/package.json',
         'packages/ui/src/index.ts',
         'packages/i18n/package.json',
         'packages/i18n/src/index.ts',
+        // The canonical source-locale catalog (rules/frontend/i18n.md layout).
+        // Without it in scope, the classic bounded i18n delegation unit is
+        // rejected at Step-0 and the paid frontend cannot author the catalog
+        // file either (observed 3cl: 0/6 units delegable).
+        'packages/i18n/src/locales/en/common.json',
         'packages/tailwind-config/package.json',
         'packages/tailwind-config/src/globals.css',
       ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const })),
@@ -551,6 +579,7 @@ function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitec
         at('package.json'),
         at('next.config.ts'),
         at('tsconfig.json'),
+        ...PUBLIC_CRAWL_ASSETS.map(at),
       ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const })),
     ];
   }
@@ -561,6 +590,7 @@ function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitec
         at('package.json'),
         at('nuxt.config.ts'),
         at('tsconfig.json'),
+        ...PUBLIC_CRAWL_ASSETS.map(at),
       ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const })),
       ];
   }
@@ -571,6 +601,7 @@ function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitec
         at('package.json'),
         at('vite.config.ts'),
         at('tsconfig.json'),
+        ...PUBLIC_CRAWL_ASSETS.map(at),
       ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const })),
     ];
   }
@@ -660,6 +691,11 @@ function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitect
       'supabase/config.toml',
       'supabase/migrations/0001_init.sql',
       'supabase/seed.sql',
+      // The generated Database type snapshot (`gen:types` target) and the
+      // committed schema snapshot are required AFTER the migration lands, and
+      // neither was in any allowlist — the 4cu backend digested BLOCKED and
+      // forced an architect replan just to own them.
+      'packages/api-client/src/database.types.ts',
     ];
   } else if (!profile.surfaces.includes('web-ui')) {
     outputs = ['package.json'];

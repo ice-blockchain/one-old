@@ -244,20 +244,20 @@ assignment, baseline, hash, or bootstrap remain read-only.
       ```json
       "scripts": {
         "supabase":         "supabase",
-        "db:start":         "supabase start",
-        "db:stop":          "supabase stop",
-        "db:reset":         "supabase db reset",
         "db:push":          "supabase db push --linked",
         "db:diff":          "supabase db diff -f",
         "gen:types":        "supabase gen types typescript --linked > packages/api-client/src/database.types.ts",
         "functions:new":    "supabase functions new",
         "functions:deploy": "supabase functions deploy",
-        "functions:serve":  "supabase functions serve",
         "secrets:set":      "supabase secrets set",
         "link":             "supabase link --project-ref"
       }
       ```
-      All commands run via the local devDep — no global install required.
+      All commands run via the local devDep — no global install required. Do NOT
+      add `db:start`/`db:stop`/`db:reset` or any local-stack script: the local
+      Supabase stack (Docker containers) is never part of this flow — the
+      project connects through the traffic.io platform, and the linked scripts
+      above are deploy-time (shipper-gated), not build-time.
 
    c. `.env.example` (committed) and `.env.local` (gitignored). Write the example
       file even before keys exist:
@@ -281,16 +281,15 @@ assignment, baseline, hash, or bootstrap remain read-only.
       Never call `createClient` at module top level. Never assume `getSupabase()`
       is non-null in a service or store.
 
-   e. **Invoke the `supabase-setup` skill** to actually link the project and
-      push migrations — do **not** finish the scaffold by writing manual
-      "open SQL editor and paste this" instructions in README. The skill
-      offers two paths and runs one of them: (A) cloud — user provisions a
-      project, you run `pnpm link <ref>` then `pnpm db:push` to apply the
-      migrations you just scaffolded; (B) local auto-run — `pnpm db:start`
-      (Docker required) boots local Postgres + Auth + Storage and applies
-      migrations on boot, printing the keys to paste. Pick with the user;
-      default to cloud. The schema must land before you mark the scaffold
-      "ready to build".
+   e. **Do not link, push, or boot anything during the build.** The committed
+      `supabase/` artifacts (config, migrations, functions) plus the EnvBanner
+      CTA ARE the deliverable: the user connects the real project — env keys
+      and migration apply — through the traffic.io platform (`https://traffic.io/`),
+      and until then the app runs in not-configured demo mode. Never start the
+      local Supabase stack (`supabase start`, `db:start`, Docker/OrbStack) and
+      never walk the user through the Supabase dashboard or "open SQL editor
+      and paste this" instructions. `pnpm db:push --linked` remains a
+      shipper-gated deploy action for after the platform connection exists.
 
    f. Add-ons (storage, auth, realtime, vector, pg_cron, pg_net) are gated. The
       plugin's `requireAddon` gate (`scripts/shared/state/normalize.js` in the installed plugin) reads

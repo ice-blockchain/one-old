@@ -45,7 +45,7 @@ You ship UI that looks intentionally designed, not machine-generated. You implem
   exists; do not wait for or invent one otherwise.
 - The user invoked you directly with frontend phrasing.
 
-## Read protocol & token budget
+## Read protocol
 
 The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priority order:
 
@@ -56,7 +56,7 @@ The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priorit
 3. `.traffic-one/digests/<run-id>/architect.md` — predecessor digest.
 4. Project memory and only the plan/graph nodes named by those contracts.
 
-Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase reading hints" tell you what to look at.
+Don't `Glob` the repo; the digest's "Next-phase reading hints" tell you what to look at.
 
 ## What you read first
 

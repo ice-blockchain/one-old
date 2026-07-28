@@ -11,6 +11,14 @@ import {
   teamModeForLevel,
 } from '../performance';
 import { OPENCODE_FREE_MODELS } from '../../config/model-tiers';
+import { modelTierSnapshot, resolveModel } from '../model-tiers';
+
+// Derived, never hardcoded: which model anchors a tier is editable policy.
+const CLAUDE_HIGHEST = resolveModel('highest', 'claude') as string;
+// Hermetic: resolve against the BUNDLED catalog. Without this the machine-global
+// One MCP cache (the remote payload) wins and these expectations depend on
+// developer-local state.
+const BUNDLED_ENV = { ...process.env, TRAFFIC_ONE_MCP_CACHE_PATH: '/nonexistent/t1-perf-mcp-cache.json' };
 
 test('teamModeForLevel maps levels (default main-agent)', () => {
   assert.equal(teamModeForLevel('low'), 'main-agent');
@@ -34,11 +42,11 @@ test('effectiveTierForRole honors config + overrides; null for low', () => {
 });
 
 test('modelForRoleHost resolves per host; modelForRole gives all columns', () => {
-  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude'), 'claude-fable-5');
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, null, BUNDLED_ENV), CLAUDE_HIGHEST);
   assert.equal(modelForRoleHost('high', 'senior-tester', 'codex'), 'gpt-5.6-terra'); // cheapest
   assert.equal(modelForRoleHost('high', 'senior-tester', 'kilo'), 'kilo/kilo-auto/free');
   assert.equal(modelForRoleHost('high', 'senior-architect', 'windsurf'), 'SWE-1.7');
-  assert.equal(modelForRoleHost('high', 'senior-tester', 'claude', { 'senior-tester': 'highest' }), 'claude-fable-5');
+  assert.equal(modelForRoleHost('high', 'senior-tester', 'claude', { 'senior-tester': 'highest' }, null, BUNDLED_ENV), CLAUDE_HIGHEST);
   assert.equal(modelForRoleHost('low', 'senior-architect', 'claude'), null);
   assert.deepEqual(modelForRole('balanced', 'senior-frontend'), {
     tier: 'balanced', claude: 'claude-sonnet-5', codex: 'gpt-5.6-terra', cursor: 'gpt-5.6-terra', opencode: OPENCODE_FREE_MODELS[1], copilot: 'gpt-5.6-terra', windsurf: 'SWE-1.7', kilo: 'kilo/kilo-auto/balanced',
@@ -61,8 +69,8 @@ test('effectiveTierForRole: planCtx makes tiers plan-aware; overrides win; legac
 
 test('modelForRoleHost threads planCtx → plan-aware model id', () => {
   const free = { host: 'claude', plan: 'free' };
-  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, free), 'claude-fable-5');
-  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, null), 'claude-fable-5'); // legacy → highest
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, free, BUNDLED_ENV), CLAUDE_HIGHEST);
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, null, BUNDLED_ENV), CLAUDE_HIGHEST); // legacy → highest
   const windsurfFree = { host: 'windsurf', plan: 'free' };
   // Windsurf Free keeps the conservative PLAN_AGENT_TIERS policy even while
   // SWE-1.7 and SWE-1.6 are both quota-free during the preview window.
@@ -78,28 +86,35 @@ test('modelForRoleHost threads planCtx → plan-aware model id', () => {
 
 test('role model selections reorder the effective row and require a matching cross-tier override', () => {
   const planCtx = { host: 'claude', plan: 'max' };
-  const sameTier = { 'senior-architect': 'claude-opus-4-8' };
+  // A NON-preferred member of the row, so the reorder is actually exercised.
+  const claudeHighest = modelTierSnapshot('claude', undefined).highest;
+  const selected = claudeHighest[1];
+  const sameTier = { 'senior-architect': selected };
+  // Hermetic: resolve against the BUNDLED catalog. Without this override the
+  // machine-global One MCP cache (the remote payload) wins, and a bundled
+  // catalog refresh makes these expectations depend on developer-local state.
+  const env = { ...process.env, TRAFFIC_ONE_MCP_CACHE_PATH: '/nonexistent/t1-perf-mcp-cache.json' };
 
   assert.deepEqual(
-    roleModelSelection('high', 'senior-architect', 'claude', null, sameTier, planCtx),
+    roleModelSelection('high', 'senior-architect', 'claude', null, sameTier, planCtx, env),
     {
       tier: 'highest',
-      preferredModel: 'claude-opus-4-8',
-      acceptableModels: ['claude-opus-4-8', 'claude-fable-5', 'opus'],
+      preferredModel: selected,
+      acceptableModels: [selected, ...claudeHighest.filter((model) => model !== selected)],
     },
   );
   assert.equal(
-    modelForRoleHost('high', 'senior-architect', 'claude', null, planCtx, process.env, sameTier),
-    'claude-opus-4-8',
+    modelForRoleHost('high', 'senior-architect', 'claude', null, planCtx, env, sameTier),
+    selected,
   );
 
   const crossTier = { 'senior-architect': 'claude-sonnet-5' };
   assert.equal(
-    roleModelSelection('high', 'senior-architect', 'claude', null, crossTier, planCtx),
+    roleModelSelection('high', 'senior-architect', 'claude', null, crossTier, planCtx, env),
     null,
   );
   assert.equal(
-    modelForRoleHost('high', 'senior-architect', 'claude', null, planCtx, process.env, crossTier),
+    modelForRoleHost('high', 'senior-architect', 'claude', null, planCtx, env, crossTier),
     null,
     'an explicit cross-tier model must fail closed instead of falling back to the tier default',
   );
@@ -112,6 +127,7 @@ test('role model selections reorder the effective row and require a matching cro
       { 'senior-architect': 'balanced' },
       crossTier,
       planCtx,
+      env,
     ),
     {
       tier: 'balanced',
@@ -128,7 +144,7 @@ test('role model selections reorder the effective row and require a matching cro
       'claude',
       null,
       planCtx,
-      process.env,
+      env,
       { 'senior-tester': 'claude-sonnet-4-6' },
     ),
     'claude-sonnet-4-6',

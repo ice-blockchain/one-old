@@ -11,6 +11,10 @@ import { runModelGate } from '../../runners/model-gate';
 import { hostScopedPerformancePrefs } from '../../test-support/host-prefs';
 import { initializeToolchainState } from '../../shared/state/toolchain';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
+import { resolveModel } from '../../shared/model-tiers';
+
+// Derived, never hardcoded: which family anchors a tier is editable policy.
+const CURSOR_HIGHEST_SLUG = `${resolveModel('highest', 'cursor', 'pro')}-thinking-high`;
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
 // ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
@@ -105,7 +109,7 @@ function captureCommand(cwd: string): string {
   return [
     modelGateCommand(cwd, 'cursor'),
     "'--capture-models'",
-    "'claude-fable-5-thinking-high'",
+    `'${CURSOR_HIGHEST_SLUG}'`,
     "'gpt-5.6-terra-medium'",
     "'composer-2.5-fast'",
   ].join(' ');
@@ -182,7 +186,7 @@ test('beforeShellExecution pipeline lets Cursor repair missing capture, then fre
       cwd,
       '--host=cursor',
       '--capture-models',
-      'claude-fable-5-thinking-high',
+      CURSOR_HIGHEST_SLUG,
       'gpt-5.6-terra-medium',
       'composer-2.5-fast',
     ]), 0);
@@ -196,7 +200,7 @@ test('beforeShellExecution pipeline lets Cursor repair missing capture, then fre
     assert.ok(policy);
     assert.equal(policy?.host, 'cursor');
     assert.deepEqual(policy?.cursorAvailableModels, [
-      'claude-fable-5-thinking-high',
+      CURSOR_HIGHEST_SLUG,
       'gpt-5.6-terra-medium',
       'composer-2.5-fast',
     ]);
