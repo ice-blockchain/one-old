@@ -825,6 +825,15 @@ export function agentModelGate(ctx: Ctx): HookResult {
     );
   }
   const spawnRunId = ensureCurrentRunId(cwd, state);
+  // ensureCurrentRunId now fails closed rather than minting a sibling run over
+  // an unreadable `.one.json` — a fabricated id strands every live child.
+  if (!spawnRunId) {
+    return deny(
+      'traffic-one — spawn blocked: .traffic-one/.one.json exists but could not be parsed, so no run id '
+      + 'could be resolved. Do NOT mint one or hand-write the file: repair or restore .one.json '
+      + '(a backup may exist under .traffic-one/backups/) and retry the spawn.',
+    );
+  }
   const configuredSubagentTeam = obj(state.team)?.mode === 'subagents';
   const existingRunPolicy = readRunModelPolicy(cwd, spawnRunId);
   if (!existingRunPolicy && fs.existsSync(runModelPolicyPath(cwd, spawnRunId))) {

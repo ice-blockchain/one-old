@@ -11,7 +11,7 @@ import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
 import { STATE_FILE } from '../../config/paths';
-import { parseJson, readJson, writeJson } from '../fsjson';
+import { parseJson, readJson, readText, writeJson } from '../fsjson';
 import { normalizeRelPath, type AssignedScope } from '../scope';
 import {
   PENDING_AGENT_CLAIM_STALE_MS,
@@ -21,7 +21,13 @@ import {
 } from '../../config/state';
 import { TIER_IDS, type TierId } from '../../config/model-tiers';
 import { stateTimestamp } from './io';
-import { activeAgentRole, getSpawnIndex, isSubagentSession, stackFingerprint } from './materialization';
+import {
+  activeAgentRole,
+  getSpawnIndex,
+  isSubagentSession,
+  stackFingerprint,
+  UNKNOWN_STACK_FINGERPRINT,
+} from './materialization';
 import { writeState } from './normalize';
 import { withProjectStateLock } from './project-state-lock';
 import {
@@ -50,6 +56,16 @@ import {
 
 export function runIdNow(): string {
   return Date.now().toString();
+}
+
+// True when `.one.json` EXISTS but cannot be parsed. `readJson` hides this by
+// returning the same `{}` it returns for an absent file, and a caller that
+// treats the two alike mints a fresh run id over live run state.
+function stateFileDegraded(cwd: string): boolean {
+  const rawText = readText(path.join(cwd, STATE_FILE));
+  if (rawText === null) return false;
+  if (!rawText.trim()) return false;
+  return !obj(parseJson<Rec | null>(rawText, null));
 }
 
 // Ensure the project has a currentRunId, WITHOUT the full run-claim ceremony.
@@ -95,7 +111,15 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
   };
   try {
     withProjectStateLock(cwd, () => {
-      const onDisk = readJson<Rec>(path.join(cwd, STATE_FILE), {});
+      // `readJson` collapses "absent", "torn", and "unparseable" into the same
+      // `{}`. Only ABSENT means "new project, mint one"; an unreadable state
+      // file must never mint, because the sibling run it creates strands every
+      // live child and its ledger inherits a fabricated identity.
+      const statePath = path.join(cwd, STATE_FILE);
+      const rawText = readText(statePath);
+      const parsed = rawText === null ? null : parseJson<Rec | null>(rawText, null);
+      const degraded = rawText !== null && rawText.trim().length > 0 && !obj(parsed);
+      const onDisk = obj(parsed) || {};
       const diskRaw = onDisk.currentRunId;
       const diskId = typeof diskRaw === 'string'
         ? diskRaw.trim()
@@ -103,6 +127,14 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
       if (diskId) {
         runId = diskId;
         source.currentRunId = diskId;
+        return;
+      }
+      if (degraded) {
+        // Fail closed: adopt a live run if one exists, otherwise return '' and
+        // let the caller's gate refuse with a concrete error. Writing a fresh id
+        // over a corrupt state file is how run state splits in the first place.
+        runId = recentAdoptableRunId(cwd);
+        if (runId) source.currentRunId = runId;
         return;
       }
       // Second line of defense against a re-mint: a writer that rewrote
@@ -124,11 +156,15 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
     });
   } catch {
     // Lock acquisition failed (timeout/contention edge): keep the previous
-    // unserialized behavior rather than failing the caller's hook outright.
-    if (!runId) mint();
+    // unserialized behavior rather than failing the caller's hook outright —
+    // but still never mint over an unreadable state file.
+    if (!runId && !stateFileDegraded(cwd)) mint();
   }
+  // Fail closed: no id could be resolved without fabricating one. Callers gate
+  // on the empty string and surface a concrete repair instead of proceeding.
+  if (!runId) return '';
   if (minted) {
-    ensureRunLedger(cwd, runId, { status: 'planned', kind: 'spawn-gate', stackFingerprint: stackFingerprint(source) });
+    ensureRunLedger(cwd, runId, { status: 'planned', kind: 'spawn-gate', ...stackFingerprintPatch(cwd, runId, source) });
   }
   // Freeze runtime-owned capabilities and the immutable baseline as soon as
   // the run id exists. Bootstrap preflight repeats this fail-closed; this early
@@ -167,6 +203,52 @@ function runLedgerFile(cwd: string, runId: string): string {
   return path.join(runDir(cwd, runId), 'run.json');
 }
 
+// A run's stack identity is frozen at ledger mint and never recomputed. Claims
+// are validated against THIS, not against a live recompute of `.one.json`:
+// detection derives the live fingerprint from the project's own files, so the
+// team scaffolding the app it was told to build (empty dir -> Laravel adds
+// `resources/views`, flipping `frontend: none -> other`) used to change the very
+// identity that binds the team to its run, silently unbinding every role agent
+// mid-build with no log and no repair. Frozen-to-frozen equality keeps the
+// original intent — a claim from a different project identity still cannot leak
+// in, because a different identity gets its own run with its own frozen value.
+const RUN_LEDGER_FINGERPRINT_CACHE = new Map<string, string>();
+
+function runLedgerFingerprintCacheKey(cwd: string, runId: string): string {
+  return `${cwd}\u0000${runId}`;
+}
+
+function invalidateRunLedgerFingerprint(cwd: string, runId: string): void {
+  RUN_LEDGER_FINGERPRINT_CACHE.delete(runLedgerFingerprintCacheKey(cwd, runId));
+}
+
+function runLedgerFingerprint(cwd: string, runId: unknown): string {
+  if (typeof runId !== 'string' || !runId) return '';
+  const key = runLedgerFingerprintCacheKey(cwd, runId);
+  const cached = RUN_LEDGER_FINGERPRINT_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+  const frozen = ledger && typeof ledger.stackFingerprint === 'string' ? ledger.stackFingerprint : '';
+  RUN_LEDGER_FINGERPRINT_CACHE.set(key, frozen);
+  return frozen;
+}
+
+// Stamp the run's frozen identity rather than inventing one from the caller's
+// state: a degraded read must leave the field ABSENT (already tolerated by the
+// claim check, which then falls back to run-id scoping) instead of persisting a
+// fabricated `minimal|none|none|none` that mismatches forever after.
+function identityForStamp(cwd: string, runId: unknown, state: unknown): string | undefined {
+  const frozen = runLedgerFingerprint(cwd, runId);
+  if (frozen) return frozen;
+  const live = stackFingerprint(state);
+  return live === UNKNOWN_STACK_FINGERPRINT ? undefined : live;
+}
+
+function stackFingerprintPatch(cwd: string, runId: unknown, state: unknown): Rec {
+  const fingerprint = identityForStamp(cwd, runId, state);
+  return fingerprint ? { stackFingerprint: fingerprint } : {};
+}
+
 // Newest recently-minted planned spawn-gate run (or rollback-guarded in-flight
 // V2 run) under runs/, or '' when none. Used only as the mint fallback when
 // .one.json carries no currentRunId: adopt an in-flight run rather than mint a
@@ -181,12 +263,27 @@ function recentAdoptableRunId(cwd: string, nowMs: number = Date.now()): string {
       if (!/^\d{13}$/.test(name)) continue; // epoch-ms mint ids only
       const val = Number(name);
       if (!Number.isFinite(val) || val <= bestVal) continue;
-      if (nowMs - val > RUN_ADOPT_WINDOW_MS || val - nowMs > 60_000) continue; // recent, not future
+      if (val - nowMs > 60_000) continue; // never a future id
       const ledger = readJson<Rec>(runLedgerFile(cwd, name), null as unknown as Rec);
-      if (!ledger || ledger.kind !== 'spawn-gate') continue;
+      if (!ledger) continue;
       const effectiveStatus = effectiveLegacyRunStatus(ledger);
-      const adoptableV2 = ledger.qaContractVersion === 2 && effectiveStatus === 'active';
-      if (effectiveStatus && effectiveStatus !== 'planned' && !adoptableV2) continue;
+      // A terminal run is never resurrected, whatever its kind.
+      if (effectiveStatus && effectiveStatus !== 'planned' && effectiveStatus !== 'active') continue;
+      // Live claims mean this is the run we are ALREADY in — the spawn-gate
+      // kind filter used to exclude exactly that case, so a blanked
+      // `currentRunId` minted a sibling run beside a working team and stranded
+      // every live child in a run with no architecture, assignments, or
+      // bootstraps (observed test-laravel: `1785169657252` had all of them and
+      // two live claims; `1785172002942` was minted anyway). A truncated scan
+      // reports a conservative >= 1, which biases toward adoption — the safe
+      // direction here.
+      const live = activeRunClaimCount(cwd, name) > 0;
+      if (!live && ledger.kind !== 'spawn-gate') continue;
+      if (!live && effectiveStatus === 'active' && ledger.qaContractVersion !== 2) continue;
+      // Widen the window while claims are live: a build turn easily outlives
+      // the 10-minute mint window, and adopting is strictly safer than minting.
+      const windowMs = live ? SUBAGENT_STALE_MS : RUN_ADOPT_WINDOW_MS;
+      if (nowMs - val > windowMs) continue;
       best = name;
       bestVal = val;
     }
@@ -440,10 +537,63 @@ function writeRunLedgerTransition(
   try {
     fs.mkdirSync(runDir(cwd, id), { recursive: true });
     writeJson(runLedgerFile(cwd, id), persisted);
+    invalidateRunLedgerFingerprint(cwd, id);
     return next;
   } catch {
+    invalidateRunLedgerFingerprint(cwd, id);
     return null;
   }
+}
+
+// True while `currentRunId` names a run that is still planned or active. Such a
+// run OWNS the project's stack identity: re-detection may refresh materialized
+// assets, but it must not re-stamp `stack`/`frontend`/`backend`, because the
+// live team's claims are pinned to the identity the run was minted with.
+export function runIdentityFrozen(cwd: string, state: unknown): boolean {
+  const s = obj(state);
+  const runId = s && typeof s.currentRunId === 'string' ? s.currentRunId.trim() : '';
+  if (!runId) return false;
+  const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+  if (!ledger) return false;
+  const status = effectiveLegacyRunStatus(ledger);
+  return status === 'planned' || status === 'active';
+}
+
+export const RUN_STACK_DRIFT_HISTORY_LIMIT = 8;
+
+// Record that detection now reports a different identity than the one this run
+// froze. Never rewrites `stackFingerprint` — the whole point is that the run
+// keeps the identity it was minted with. The entry is diagnostic and tells the
+// next run what to mint with.
+export function recordRunStackDrift(cwd: string, state: unknown, observed: string): boolean {
+  if (isNonProjectRoot(cwd)) return false;
+  const s = obj(state);
+  const runId = s && typeof s.currentRunId === 'string' ? s.currentRunId.trim() : '';
+  if (!runId || !observed || observed === UNKNOWN_STACK_FINGERPRINT) return false;
+  const frozen = runLedgerFingerprint(cwd, runId);
+  if (!frozen || frozen === observed) return false;
+  let wrote = false;
+  withRunLedgerLock(cwd, runId, () => {
+    const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+    if (!ledger) return;
+    const history = Array.isArray(ledger.stackDriftHistory)
+      ? ledger.stackDriftHistory.filter(obj)
+      : [];
+    const last = history[history.length - 1] as Rec | undefined;
+    if (last && last.observed === observed) return; // already recorded
+    history.push({ from: frozen, observed, at: stateTimestamp() });
+    try {
+      writeJson(runLedgerFile(cwd, runId), {
+        ...ledger,
+        stackDriftHistory: history.slice(-RUN_STACK_DRIFT_HISTORY_LIMIT),
+      });
+      invalidateRunLedgerFingerprint(cwd, runId);
+      wrote = true;
+    } catch {
+      // Diagnostic only — never fail a session on it.
+    }
+  });
+  return wrote;
 }
 
 export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): Rec | null {
@@ -1077,24 +1227,48 @@ function isFreshTimestamp(value: unknown, maxAgeMs: number): boolean {
   return timestampAgeMs(value) <= maxAgeMs;
 }
 
-function stateAllowsRunContext(state: unknown, runId: unknown): boolean {
+// Why a claim did not bind. Recorded verbatim in the run's debug capture so an
+// unresolved child is diagnosable: the old boolean returned a bare `false` that
+// every consumer read as "no claim exists", which is how a project could sit
+// permanently unbindable with nothing in any log saying so.
+export type RunAgentUnresolvedReason =
+  | 'no-claim'
+  | 'run-id-mismatch'
+  | 'not-materialized'
+  | 'fingerprint-mismatch'
+  | 'claim-stale';
+
+function stateAllowsRunContext(state: unknown, runId: unknown): RunAgentUnresolvedReason | null {
   const s = obj(state);
-  if (!s) return false;
-  if (typeof runId !== 'string' || !runId) return false;
-  if (typeof s.currentRunId === 'string' && s.currentRunId && s.currentRunId !== runId) return false;
-  if (!s.materializedStack) return false;
-  if (s.materializedStack !== stackFingerprint(s)) return false;
-  return true;
+  if (!s) return 'no-claim';
+  if (typeof runId !== 'string' || !runId) return 'no-claim';
+  if (typeof s.currentRunId === 'string' && s.currentRunId && s.currentRunId !== runId) return 'run-id-mismatch';
+  // Materialized ASSETS must exist on disk. Their fingerprint is deliberately
+  // not re-derived here: `materializedStack` legitimately moves whenever
+  // detection re-runs (the team building the app changes what is detected), and
+  // binding a live agent to that moving value is the defect this replaces.
+  if (!s.materializedStack) return 'not-materialized';
+  return null;
 }
 
-function claimAllowsState(state: unknown, claim: unknown): boolean {
+function claimRejectReason(cwd: string, state: unknown, claim: unknown): RunAgentUnresolvedReason | null {
   const c = obj(claim);
-  if (!c) return false;
-  if (typeof c.role !== 'string' || !VALID_AGENT_ROLES.has(c.role)) return false;
-  if (!stateAllowsRunContext(state, c.runId)) return false;
-  if (c.stackFingerprint && c.stackFingerprint !== stackFingerprint(state)) return false;
-  if (!isFreshTimestamp(c.createdAt, SUBAGENT_STALE_MS)) return false;
-  return true;
+  if (!c) return 'no-claim';
+  if (typeof c.role !== 'string' || !VALID_AGENT_ROLES.has(c.role)) return 'no-claim';
+  const stateReason = stateAllowsRunContext(state, c.runId);
+  if (stateReason) return stateReason;
+  // Frozen-to-frozen: the claim's stamped identity against the run ledger's,
+  // never against a live recompute. A claim with no stamp (or a legacy ledger
+  // with none) still falls back to run-id scoping, which alone already pins a
+  // claim to one project root.
+  const frozen = runLedgerFingerprint(cwd, c.runId);
+  if (c.stackFingerprint && frozen && c.stackFingerprint !== frozen) return 'fingerprint-mismatch';
+  if (!isFreshTimestamp(c.createdAt, SUBAGENT_STALE_MS)) return 'claim-stale';
+  return null;
+}
+
+function claimAllowsState(cwd: string, state: unknown, claim: unknown): boolean {
+  return claimRejectReason(cwd, state, claim) === null;
 }
 
 function runIdsForLookup(cwd: string, state: unknown): string[] {
@@ -1198,7 +1372,7 @@ function matchingPendingClaim(
   model: string | null = null,
 ): PendingClaim | null {
   const pending = listPendingClaims(cwd, runId)
-    .filter(({ claim }) => claimAllowsState(state, claim))
+    .filter(({ claim }) => claimAllowsState(cwd, state, claim))
     .filter(({ claim }) => claim.role === role);
   const sameParent = pending.filter(({ claim }) => (
     parentSessionId && claim.parentSessionId && claim.parentSessionId === parentSessionId
@@ -1258,7 +1432,7 @@ function removeSiblingPendingClaims(
 ): void {
   if (!parentSessionId) return;
   const pending = listPendingClaims(cwd, runId)
-    .filter(({ claim }) => claimAllowsState(state, claim))
+    .filter(({ claim }) => claimAllowsState(cwd, state, claim))
     .filter(({ claim }) => claim.role === role)
     .filter(({ claim }) => claim.parentSessionId === parentSessionId)
     .filter(({ claim }) => !keepClaimId || claim.claimId !== keepClaimId);
@@ -2343,7 +2517,7 @@ export function ensureRunAgentClaim(
     const ledger = ensureRunLedger(cwd, runId, {
       status: 'active',
       kind: 'agent-claim',
-      stackFingerprint: stackFingerprint(source),
+      ...stackFingerprintPatch(cwd, runId, source),
     });
     if (ledger?.status !== 'active') return;
     const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
@@ -2357,7 +2531,7 @@ export function ensureRunAgentClaim(
       status: 'pending',
       parentSessionId: identity.sessionId || null,
       createdAt: stateTimestamp(),
-      stackFingerprint: stackFingerprint(source),
+      ...stackFingerprintPatch(cwd, runId, source),
       toolName: metadata.toolName || null,
       agentType: metadata.agentType || null,
       model: metadata.model || null,
@@ -2423,6 +2597,57 @@ function annotateClaimRoleSource(
     }
   });
   return locked ? result : null;
+}
+
+export interface RunAgentUnresolvedDiagnosis {
+  reason: RunAgentUnresolvedReason;
+  runId?: string;
+  role?: string;
+  claimFingerprint?: string;
+  ledgerFingerprint?: string;
+  liveFingerprint?: string;
+}
+
+// Why the claims ON DISK do not bind for this hook payload. Read-only companion
+// to resolveRunAgentContext: when that returns null the gates used to record a
+// bare `role: null`, which is indistinguishable from "this really is the parent"
+// — so a project could sit permanently unbindable with nothing anywhere saying
+// why. Returns the most specific rejection found across the candidate keys.
+export function explainUnresolvedRunAgent(
+  cwd: string,
+  state: unknown,
+  rawInput: unknown,
+): RunAgentUnresolvedDiagnosis {
+  const identity = hookSessionIdentity(rawInput);
+  const keys = [identity.agentId, identity.threadId, identity.sessionId]
+    .filter((v): v is string => Boolean(v));
+  // Most specific first: a fingerprint/run mismatch on a real claim explains far
+  // more than "no claim file existed under this key".
+  const ranked: RunAgentUnresolvedReason[] = [
+    'fingerprint-mismatch', 'run-id-mismatch', 'not-materialized', 'claim-stale', 'no-claim',
+  ];
+  let best: RunAgentUnresolvedDiagnosis = { reason: 'no-claim' };
+  let bestRank = ranked.length;
+  for (const runId of runIdsForLookup(cwd, state)) {
+    for (const key of keys) {
+      const claim = readClaimFile(runAgentFile(cwd, runId, key));
+      if (!claim) continue;
+      const reason = claimRejectReason(cwd, state, claim);
+      if (!reason) continue; // resolvable — some other stage rejected it
+      const rank = ranked.indexOf(reason);
+      if (rank < 0 || rank >= bestRank) continue;
+      bestRank = rank;
+      best = {
+        reason,
+        runId,
+        role: typeof claim.role === 'string' ? claim.role : undefined,
+        claimFingerprint: typeof claim.stackFingerprint === 'string' ? claim.stackFingerprint : undefined,
+        ledgerFingerprint: runLedgerFingerprint(cwd, runId) || undefined,
+        liveFingerprint: stackFingerprint(state),
+      };
+    }
+  }
+  return best;
 }
 
 export function resolveRunAgentContext(
@@ -2498,7 +2723,7 @@ export function resolveRunAgentContext(
       const claim = replay.status === 'complete'
         ? replay.claim
         : readClaimFile(runAgentFile(cwd, runId, key));
-      if (claim && claimAllowsState(state, claim)) {
+      if (claim && claimAllowsState(cwd, state, claim)) {
         let observed = requiresCodexObservation
           ? verifiedCodexObservation(runId, typeof claim.role === 'string' ? claim.role : null)
           : null;
@@ -2619,7 +2844,7 @@ export function resolveRunAgentContext(
       // live — the misclaimed worker then fails every scope check and the run
       // deadlocks until the orchestrator improvises).
       const pending = listPendingClaims(cwd, runId)
-        .filter(({ claim }) => claimAllowsState(state, claim));
+        .filter(({ claim }) => claimAllowsState(cwd, state, claim));
       const matched = inferredRole
         ? matchingPendingClaim(cwd, state, runId, inferredRole, effectiveParentSessionId, identity.model)
         : uniquelyCorrelatedPendingClaim(pending, effectiveParentSessionId, identity.model);
@@ -2636,13 +2861,13 @@ export function resolveRunAgentContext(
         if (!currentPending
           || currentPending.claimId !== matched.claim.claimId
           || currentPending.role !== matched.claim.role
-          || !claimAllowsState(state, currentPending)) return;
+          || !claimAllowsState(cwd, state, currentPending)) return;
         const existingThreadClaim = readClaimFile(runAgentFile(cwd, runId, sessionId));
-        if (existingThreadClaim && claimAllowsState(state, existingThreadClaim)) return;
+        if (existingThreadClaim && claimAllowsState(cwd, state, existingThreadClaim)) return;
         const ledger = ensureRunLedger(cwd, runId, {
           status: 'active',
           kind: 'agent-claim',
-          stackFingerprint: stackFingerprint(state),
+          ...stackFingerprintPatch(cwd, runId, state),
         });
         if (ledger?.status !== 'active') return;
         claimed = {
@@ -2680,7 +2905,7 @@ export function resolveRunAgentContext(
   if (shouldClaimPending && options.allowSoleAnonymousPending && exactKeys.length === 0) {
     const pending = runIds
       .flatMap((runId) => listPendingClaims(cwd, runId))
-      .filter(({ claim }) => claimAllowsState(state, claim));
+      .filter(({ claim }) => claimAllowsState(cwd, state, claim));
     if (pending.length === 1) return contextFromClaim(pending[0]!.claim, 'sole-foreground-pending');
   }
 
@@ -2730,7 +2955,7 @@ export function claimThreadRole(
   if (replay.status === 'blocked') return null;
   const locked = withRunAgentClaimsLock(cwd, runId, () => {
     const existing = readClaimFile(runAgentFile(cwd, runId, id));
-    if (existing && claimAllowsState(state, existing)) {
+    if (existing && claimAllowsState(cwd, state, existing)) {
       if (existing.role !== role) {
         if (isCorrectionGradeEvidence(evidence, existing.roleSource)) rebindExpected = existing;
         return;
@@ -2785,7 +3010,7 @@ export function claimThreadRole(
     const ledger = ensureRunLedger(cwd, runId, {
       status: 'active',
       kind: 'agent-claim',
-      stackFingerprint: stackFingerprint(source),
+      ...stackFingerprintPatch(cwd, runId, source),
     });
     if (ledger?.status !== 'active') return;
 
@@ -2815,7 +3040,9 @@ export function claimThreadRole(
       // prior lineage is preserved in previousClaimId below instead.
       createdAt: pending && typeof pending.claim.createdAt === 'string' ? pending.claim.createdAt : now,
       claimedAt: now,
-      stackFingerprint: pending && typeof pending.claim.stackFingerprint === 'string' ? pending.claim.stackFingerprint : stackFingerprint(source),
+      ...(pending && typeof pending.claim.stackFingerprint === 'string'
+        ? { stackFingerprint: pending.claim.stackFingerprint }
+        : stackFingerprintPatch(cwd, runId, source)),
       model: model
         || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null)
         || (prior && typeof prior.model === 'string' ? prior.model : null),
@@ -2879,7 +3106,7 @@ function strictPendingForRoleRebind(
 ): { match: PendingClaim | null; ambiguous: boolean } {
   if (!parentSessionId || !model) return { match: null, ambiguous: false };
   const matches = listPendingClaims(cwd, runId)
-    .filter(({ claim }) => claimAllowsState(state, claim))
+    .filter(({ claim }) => claimAllowsState(cwd, state, claim))
     .filter(({ claim }) => claim.role === role)
     .filter(({ claim }) => claim.parentSessionId === parentSessionId)
     .filter(({ claim }) => claimModel(claim) === model);
@@ -2896,7 +3123,7 @@ function activeClaimForOtherThread(
   threadId: string,
 ): Rec | null {
   return listClaimedAgents(cwd, runId).find((claim) => (
-    claimAllowsState(state, claim)
+    claimAllowsState(cwd, state, claim)
     && claim.status !== 'released'
     && claim.role === role
     && firstString(claim.sessionId) !== threadId
@@ -3400,7 +3627,9 @@ function authoritativeRebindThreadRole(
         parentSessionId,
         createdAt: typeof base.createdAt === 'string' ? base.createdAt : now,
         claimedAt: typeof base.claimedAt === 'string' ? base.claimedAt : now,
-        stackFingerprint: typeof base.stackFingerprint === 'string' ? base.stackFingerprint : stackFingerprint(state),
+        ...(typeof base.stackFingerprint === 'string'
+          ? { stackFingerprint: base.stackFingerprint }
+          : stackFingerprintPatch(cwd, runId, state)),
         model,
         roleSource: evidence.source,
         transcriptPath,
@@ -3502,6 +3731,104 @@ export function hasActiveRunClaims(cwd: string, state: unknown, options: { since
     ))) return true;
   }
   return false;
+}
+
+// ── Run-identity drift repair ────────────────────────────────────────────────
+// Un-wedge a project whose run identity already drifted away from its claims,
+// with no user action. Idempotent; safe to call on every SessionStart.
+//
+// Two shapes are repaired:
+//   1. A run ledger with NO frozen fingerprint (legacy, or minted from a
+//      degraded read). Backfilled from the run's own claims — never from live
+//      state, which is the moving value this whole change exists to stop
+//      trusting.
+//   2. Two non-terminal runs both holding live claims (a sibling run was minted
+//      beside a working team). The one with real orchestration evidence wins;
+//      `currentRunId` re-points to it and the loser is released and settled.
+function runEvidenceScore(cwd: string, runId: string): number {
+  let score = 0;
+  try {
+    if (fs.existsSync(assignmentsFile(cwd, runId))) score += 4;
+    if (fs.existsSync(path.join(runDir(cwd, runId), 'architecture-v1.json'))) score += 4;
+    if (fs.existsSync(path.join(runDir(cwd, runId), 'bootstrap'))) score += 2;
+    if (fs.existsSync(path.join(runDir(cwd, runId), 'verification-v2.json'))) score += 1;
+  } catch {
+    return score;
+  }
+  return score;
+}
+
+function backfillRunLedgerFingerprint(cwd: string, runId: string): boolean {
+  if (runLedgerFingerprint(cwd, runId)) return false;
+  const claims = listClaimedAgents(cwd, runId)
+    .filter((claim) => typeof claim.stackFingerprint === 'string' && claim.stackFingerprint);
+  const inherited = claims.length
+    ? String(claims[claims.length - 1]!.stackFingerprint)
+    : '';
+  if (!inherited || inherited === UNKNOWN_STACK_FINGERPRINT) return false;
+  let wrote = false;
+  withRunLedgerLock(cwd, runId, () => {
+    const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+    if (!ledger || typeof ledger.stackFingerprint === 'string') return;
+    try {
+      writeJson(runLedgerFile(cwd, runId), { ...ledger, stackFingerprint: inherited });
+      invalidateRunLedgerFingerprint(cwd, runId);
+      wrote = true;
+    } catch {
+      // Best effort — the claim check tolerates a ledger with no fingerprint.
+    }
+  });
+  return wrote;
+}
+
+export function reconcileRunIdentityDrift(cwd: string, state: unknown): boolean {
+  if (isNonProjectRoot(cwd)) return false;
+  const s = obj(state);
+  if (!s) return false;
+  let changed = false;
+  const live: { runId: string; score: number; val: number }[] = [];
+  try {
+    if (!fs.existsSync(runsRoot(cwd))) return false;
+    for (const name of fs.readdirSync(runsRoot(cwd))) {
+      if (!/^\d{13}$/.test(name)) continue;
+      const ledger = obj(readJson(runLedgerFile(cwd, name), null));
+      if (!ledger) continue;
+      const status = effectiveLegacyRunStatus(ledger);
+      if (status && status !== 'planned' && status !== 'active') continue;
+      if (backfillRunLedgerFingerprint(cwd, name)) changed = true;
+      if (activeRunClaimCount(cwd, name) > 0) {
+        live.push({ runId: name, score: runEvidenceScore(cwd, name), val: Number(name) });
+      }
+    }
+  } catch {
+    return changed;
+  }
+  if (live.length < 2) return changed;
+  // Most orchestration evidence wins; newest breaks a tie.
+  live.sort((a, b) => (b.score - a.score) || (b.val - a.val));
+  const survivor = live[0]!;
+  const current = typeof s.currentRunId === 'string' ? s.currentRunId.trim() : '';
+  if (current !== survivor.runId) {
+    try {
+      writeState(cwd, { ...readJson<Rec>(path.join(cwd, STATE_FILE), {}), currentRunId: survivor.runId });
+      (state as Rec).currentRunId = survivor.runId;
+      changed = true;
+    } catch {
+      return changed;
+    }
+  }
+  for (const loser of live.slice(1)) {
+    // Release BEFORE settling: a terminal transition fails closed while claims
+    // are still active.
+    releaseRunClaims(cwd, loser.runId, 'superseded-by-run-identity-repair');
+    transitionRunStatus(cwd, loser.runId, {
+      status: 'failed',
+      outcome: 'agent-failed',
+      reason: `superseded by run-identity repair (survivor ${survivor.runId})`,
+    });
+    changed = true;
+  }
+  return changed;
 }
 
 export function legacyRunAgentContext(state: unknown): RunAgentContext | null {
@@ -5226,7 +5553,7 @@ export function validateCodexLiveRunAgent(
       parentSessionId: entry.parentSessionId,
       createdAt: entry.recordedAt || stateTimestamp(),
       claimedAt: entry.recordedAt || stateTimestamp(),
-      stackFingerprint: stackFingerprint(state),
+      ...stackFingerprintPatch(cwd, runId, state),
       model: entry.model,
     };
     const rebound = authoritativeRebindThreadRole(cwd, state, runId, childId, baseClaim, evidence, {
