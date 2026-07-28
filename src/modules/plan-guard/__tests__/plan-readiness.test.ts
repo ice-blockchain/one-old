@@ -68,6 +68,9 @@ function writeRequiredScaffold(dir: string): void {
     packageManager: 'pnpm@10.12.1',
     workspaces: ['apps/*', 'packages/*'],
     scripts: { 'format:check': 'prettier --check .' },
+    // Script/config parity: the fixture declares the tool its script names,
+    // matching the frontend-format-parity-gate contract.
+    devDependencies: { prettier: '^3.0.0' },
   }), 'utf8');
   fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100, "singleQuote": true }\n', 'utf8');
   for (const rel of [
@@ -1470,5 +1473,170 @@ test('architect phase completeness has no formatter or tsconfig scaffold require
     const missing = architectPhaseIncompleteReasons(dir, DEFAULT_STATE)
       .filter((m) => m.includes('tsconfig'));
     assert.deepEqual(missing, []);
+  });
+});
+
+// Block stub that also exposes the substituted vars, so assertions can name the
+// exact file/problem a deny carries (the plain `names` stub returns only ids).
+const namesWithVars = (
+  name: string,
+  _fallback: string,
+  vars: Record<string, string | number | null | undefined> = {},
+): string => `${name}:${vars.FILE ?? vars.PROBLEMS ?? vars.CONFIG ?? ''}`;
+
+test('frontend emit-config gate denies the stock Vite template and passes the prescribed shape', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), 'export function App() {\n  return null;\n}\n', 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    // (a) composite: true forces declaration emit.
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"composite":true,"noEmit":true}}', 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+
+    // (b) tsc -b / tsc --build scripts emit next to sources.
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"noEmit":true}}', 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({
+      name: 'web',
+      scripts: { build: 'tsc -b && vite build' },
+    }), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({
+      name: 'web',
+      scripts: { typecheck: 'tsc --build' },
+    }), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+
+    // (c) noEmit declared nowhere.
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({
+      name: 'web',
+      scripts: { build: 'tsc --noEmit && vite build' },
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"jsx":"react-jsx"}}', 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+
+    // Unparseable tsconfig is a visible deny, never a silent pass.
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions": !!!}', 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+
+    // Prescribed shape passes — JSONC comments + trailing commas included,
+    // noEmit inherited from tsconfig.base.json.
+    fs.writeFileSync(path.join(dir, 'tsconfig.base.json'), '{"compilerOptions":{"noEmit":true}}', 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), [
+      '{',
+      '  // app config extends the workspace base',
+      '  "extends": "../../tsconfig.base.json",',
+      '  /* jsx for vite */',
+      '  "compilerOptions": {',
+      '    "jsx": "react-jsx",',
+      '  },',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // packages/* legitimately use composite/tsc -b — never gated.
+    fs.mkdirSync(path.join(dir, 'packages/ui'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'packages/ui/tsconfig.json'), '{"compilerOptions":{"composite":true}}', 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // BLOCKED stays writable with the stock template still on disk.
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"composite":true}}', 'utf8');
+    assert.deepEqual(planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: BLOCKED tsconfig cleanup pending\n',
+    }), []);
+
+    // Existing codebases keep their own tsc -b choice — maintenance never dead-ends.
+    assert.deepEqual(planReadinessViolations({
+      ...gateArgs,
+      state: { ...DEFAULT_STATE, mode: 'existing-codebase', onboardingComplete: true },
+    }), []);
+  });
+});
+
+test('frontend collapse gate skips emitted .js/.d.ts twins and reports the real collapsed source', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src/pages'), { recursive: true });
+    const collapsedLine = `function CourseDetailPage() { ${'const x = <div className="a">hi</div>; return <section>{x}</section>; '.repeat(12)} }`;
+    // Emitted twins (what a stock `tsc -b` build leaves behind) sort BEFORE the
+    // real source alphabetically — the 1co masking shape.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.d.ts'), `${collapsedLine}\n`, 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.js'), `${collapsedLine}\n`, 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.tsx'), `${collapsedLine}\n`, 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: namesWithVars,
+    };
+    const violations = planReadinessViolations(gateArgs);
+    const collapse = violations.find((violation) => violation.startsWith('frontend-collapse-gate:'));
+    assert.ok(collapse, 'collapse gate still fires');
+    assert.match(collapse!, /CourseDetailPage\.tsx:1$/, 'the REAL source is reported, not the emitted twin');
+
+    // Without a source sibling, a hand-written .js is still caught.
+    fs.rmSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.tsx'));
+    fs.rmSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.d.ts'));
+    const orphan = planReadinessViolations(gateArgs).find((violation) => violation.startsWith('frontend-collapse-gate:'));
+    assert.ok(orphan);
+    assert.match(orphan!, /CourseDetailPage\.js:1$/);
+  });
+});
+
+test('frontend format-parity gate: prettier config/script without the dependency is denied; declaring it passes', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), 'export function App() {\n  return null;\n}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100 }\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-format-parity-gate'));
+
+    // Declaring the dependency restores parity.
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0' },
+    }), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // A format:check script alone (no config file) also requires the dependency.
+    fs.rmSync(path.join(dir, '.prettierrc'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      scripts: { 'format:check': 'prettier --check .' },
+    }), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-format-parity-gate'));
+
+    // No config and no script → nothing to keep in parity.
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // The architect digest never carries this gate (v1.0.20 removed
+    // architect-side formatter requirements; the live regression test above
+    // pins that removal).
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const architectViolations = planReadinessViolations({
+      ...gateArgs,
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'PLAN_READY\n',
+    });
+    assert.ok(!architectViolations.includes('frontend-format-parity-gate'));
   });
 });

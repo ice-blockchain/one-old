@@ -22,6 +22,7 @@ export type StructureFindingId =
   | 'STRUCT_APP_INLINE_PAGE'
   | 'STRUCT_MULTI_PAGE_MODULE'
   | 'STRUCT_ROUTE_MODULE_MISMATCH'
+  | 'STRUCT_ROUTE_PATH_UNRESOLVED'
   | 'STRUCT_MISSING_PLANNED_MODULE'
   | 'STRUCT_LAYER_MISMATCH'
   | 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP'
@@ -87,6 +88,16 @@ interface RouteUsage {
   opaqueLaravelTarget?: boolean;
 }
 
+// A route whose `path` attribute/property EXISTS but is not a plain string
+// literal (`path={courseRoute}`, `path={\`/x/${'{id}'}\`}`). The extractor
+// cannot verify it against the compiled contract, so the route is invisible —
+// and before this field existed, the resulting mismatch deny never said WHY
+// (observed 1co: the agent improvised `'/'` escapes until the run died).
+interface UnresolvedRoute {
+  display: string;
+  line: number;
+}
+
 interface SourceAnalysis {
   file: string;
   text: string;
@@ -94,6 +105,7 @@ interface SourceAnalysis {
   functionCount: number;
   imports: ImportBinding[];
   routes: RouteUsage[];
+  unresolvedRoutes: UnresolvedRoute[];
   routerSignal: boolean;
   inlineHostUi: { index: number; line: number } | null;
 }
@@ -112,6 +124,11 @@ const WARNING_IDS = new Set<StructureFindingId>([
   'STRUCT_COMPONENT_LOC',
   'STRUCT_FUNCTION_COUNT',
   'STRUCT_COMPONENTS_PER_FILE',
+  // Advisory, not blocking: dynamic route paths (`path={ROUTES.x}`,
+  // `routes.map(...)`) are legitimate patterns the contract simply cannot
+  // verify. The blocking signal stays STRUCT_ROUTE_MODULE_MISMATCH, whose
+  // message now carries this cause.
+  'STRUCT_ROUTE_PATH_UNRESOLVED',
 ]);
 const ADVISORY_FUNCTION_COUNT = 12;
 
@@ -421,7 +438,12 @@ function routeTarget(value: string): {
   };
 }
 
-function objectRouteUsages(text: string): RouteUsage[] {
+function unresolvedDisplay(prefix: string, value: string): string {
+  const trimmed = value.trim().replace(/\s+/g, ' ');
+  return `${prefix}${trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed}`;
+}
+
+function objectRouteUsages(text: string, unresolved?: UnresolvedRoute[]): RouteUsage[] {
   const commentsMasked = lexicalMask(text, false);
   const syntax = lexicalMask(text, true);
   const routes: RouteUsage[] = [];
@@ -436,8 +458,16 @@ function objectRouteUsages(text: string): RouteUsage[] {
     if (close < 0 || match.index > close) continue;
     seenObjects.add(open);
     const properties = objectProperties(text, commentsMasked, syntax, open, close);
-    const routePath = literalValue(properties.get('path')?.[0]?.value || '');
-    if (routePath === null) continue;
+    const pathValue = properties.get('path')?.[0];
+    const routePath = literalValue(pathValue?.value || '');
+    if (routePath === null) {
+      // Property present but not a plain string literal: record the cause so
+      // the mismatch denies can state it instead of a generic "route missing".
+      if (pathValue && unresolved) {
+        unresolved.push({ display: unresolvedDisplay('path: ', pathValue.value), line: lineAt(text, open) });
+      }
+      continue;
+    }
     const targets = [
       ...(properties.get('element') || []),
       ...(properties.get('Component') || []),
@@ -504,7 +534,7 @@ function jsxAttributeValue(
   return { index: match.index, value: text.slice(cursor, valueEnd) };
 }
 
-function jsxRouteUsages(text: string): RouteUsage[] {
+function jsxRouteUsages(text: string, unresolved?: UnresolvedRoute[]): RouteUsage[] {
   const commentsMasked = lexicalMask(text, false);
   const syntax = lexicalMask(text, true);
   const routes: RouteUsage[] = [];
@@ -517,7 +547,15 @@ function jsxRouteUsages(text: string): RouteUsage[] {
     if (end < 0) continue;
     const pathAttribute = jsxAttributeValue(text, commentsMasked, syntax, tagStart, end, 'path');
     const routePath = literalValue(pathAttribute?.value || '');
-    if (routePath === null) continue;
+    if (routePath === null) {
+      // Attribute present but not a plain string literal (`path={courseRoute}`).
+      // A pathless <Route index> / layout route has NO attribute and stays
+      // silent — only an existing-but-unverifiable path is recorded.
+      if (pathAttribute && unresolved) {
+        unresolved.push({ display: unresolvedDisplay('path=', pathAttribute.value), line: lineAt(text, tagStart) });
+      }
+      continue;
+    }
     const targetValues = ['element', 'Component', 'component', 'lazy']
       .map((name) => jsxAttributeValue(text, commentsMasked, syntax, tagStart, end, name))
       .filter((value): value is PropertyValue => Boolean(value))
@@ -737,6 +775,7 @@ function importBindings(text: string): ImportBinding[] {
 function analyzeText(file: string, text: string): SourceAnalysis {
   const source = lexicalMask(text, false);
   const isPhp = /\.php$/i.test(file);
+  const unresolvedRoutes: UnresolvedRoute[] = [];
   return {
     file,
     text,
@@ -746,8 +785,9 @@ function analyzeText(file: string, text: string): SourceAnalysis {
     routes: isPhp
       ? laravelRouteUsages(text)
       : ANALYZABLE_UI_RE.test(file)
-        ? [...objectRouteUsages(text), ...jsxRouteUsages(text)]
+        ? [...objectRouteUsages(text, unresolvedRoutes), ...jsxRouteUsages(text, unresolvedRoutes)]
         : [],
+    unresolvedRoutes,
     routerSignal: /(?:createBrowserRouter|createRoutesFromElements|<Route\b|<RouterProvider\b|useRoutes\s*\(|\bpath\s*:)/.test(source),
     inlineHostUi: ANALYZABLE_UI_RE.test(file) ? firstInlineHostUi(text) : null,
   };
@@ -903,6 +943,16 @@ function localFindings(
       message: `Module declares ${analysis.functionCount} top-level functions; the ${ADVISORY_FUNCTION_COUNT}-function threshold is advisory during rollout.`,
     });
   }
+  if (analysis.unresolvedRoutes.length > 0) {
+    const first = analysis.unresolvedRoutes[0]!;
+    findings.push({
+      id: 'STRUCT_ROUTE_PATH_UNRESOLVED',
+      severity: 'warning',
+      file: analysis.file,
+      line: first.line,
+      message: `${analysis.unresolvedRoutes.length} route path value(s) (e.g. \`${first.display}\`) are not plain string literals, so contract verification cannot see them; prefer literal \`path\` strings.`,
+    });
+  }
   return findings.filter((finding) => !exceptionCovers(finding, exceptions));
 }
 
@@ -953,6 +1003,7 @@ export function analyzeStructureTextAgainstContract(
   const analysis = analyzeText(normalizeRel(file), text);
   const findings = localFindings(analysis, contract.profile, contract.exceptions);
   if (profileUsesExplicitRouter(contract.profile)) {
+    const cause = unresolvedRouteNote([analysis]);
     for (const usage of analysis.routes) {
       const routePath = normalizedRoutePath(usage.path);
       const compiled = contract.routes.filter((route) => (
@@ -966,9 +1017,9 @@ export function analyzeStructureTextAgainstContract(
         severity: 'error',
         file: analysis.file,
         line: usage.line,
-        message: compiled.length === 0
+        message: (compiled.length === 0
           ? `Route ${usage.path} is not present in the runtime-compiled architecture contract.`
-          : `Route ${usage.path} does not use its runtime-compiled module ${compiled.map((route) => route.moduleOutput).join(' or ')}.`,
+          : `Route ${usage.path} does not use its runtime-compiled module ${compiled.map((route) => route.moduleOutput).join(' or ')}.`) + cause,
       });
     }
   }
@@ -1204,6 +1255,20 @@ function routeUsesModule(
   });
 }
 
+// The actionable CAUSE for an unmatched contract route: when any analyzed file
+// carries a non-literal `path`, the extractor could not see that route at all.
+// Without this note the deny points at the page module with no line and no
+// explanation (observed 1co: the agent kept "fixing" the slash instead of the
+// literal until the run died).
+function unresolvedRouteNote(analyses: readonly SourceAnalysis[]): string {
+  const carriers = analyses.filter((analysis) => analysis.unresolvedRoutes.length > 0);
+  if (carriers.length === 0) return '';
+  const total = carriers.reduce((sum, analysis) => sum + analysis.unresolvedRoutes.length, 0);
+  const sample = carriers[0]!;
+  const first = sample.unresolvedRoutes[0]!;
+  return ` NOTE: ${total} non-literal route path value(s) (e.g. \`${first.display}\` at ${sample.file}:${first.line}) cannot be verified — route \`path\` must be a plain string literal in the JSX attribute/object property.`;
+}
+
 function contractFindings(
   projectRoot: string,
   contract: CompiledArchitectureV1,
@@ -1224,6 +1289,7 @@ function contractFindings(
   }
 
   if (profileUsesExplicitRouter(contract.profile)) {
+    const cause = unresolvedRouteNote(analyses);
     for (const route of contract.routes.filter((item) => !item.redirect)) {
       if (!fs.existsSync(path.join(projectRoot, route.moduleOutput))) continue;
       const routePath = normalizedRoutePath(route.path);
@@ -1239,7 +1305,7 @@ function contractFindings(
           id: 'STRUCT_ROUTE_MODULE_MISMATCH',
           severity: 'error',
           file: route.moduleOutput,
-          message: `Route ${route.path} does not demonstrably use its compiled module ${route.moduleOutput}.`,
+          message: `Route ${route.path} does not demonstrably use its compiled module ${route.moduleOutput}.${cause}`,
         });
       }
     }

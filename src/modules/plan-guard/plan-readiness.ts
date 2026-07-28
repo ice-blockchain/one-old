@@ -18,9 +18,10 @@ import {
   readCompiledArchitecture,
   readRuntimeAssignments,
   validateArchitectureInput,
+  webPackageRoot,
   type CompiledArchitectureV1,
 } from '../../shared/architecture-contract';
-import { profileHasWebUi } from '../../shared/capabilities';
+import { profileHasWebUi, type CapabilityProfileV1 } from '../../shared/capabilities';
 import { isKnownStack } from '../../shared/config';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
@@ -67,6 +68,7 @@ import {
   analyzeStructureTextAgainstContract,
   invalidateStructureCache,
   writeStructureReport,
+  type StructureFinding,
 } from './react-structure';
 
 type Rec = Record<string, unknown>;
@@ -194,6 +196,16 @@ function qaReportVerifiedBuild(
   }
 }
 
+// One summary format for every structural deny. Reporting only `id:file`
+// withheld the message and line — the full-scan denies became unactionable
+// (observed 1co: STRUCT_ROUTE_MODULE_MISMATCH pointed at the page module with
+// no line and no cause, and the agent improvised until the run died).
+function structureFindingSummary(findings: readonly StructureFinding[]): string {
+  return findings
+    .map((finding) => `${finding.id} (${finding.file}${finding.line ? `:${finding.line}` : ''}): ${finding.message}`)
+    .join(' | ');
+}
+
 interface CollapseScanResult {
   file: string | null;
   incomplete: boolean;
@@ -242,6 +254,23 @@ function collapsedProductSourceFile(projectRoot: string, state: Rec): CollapseSc
         continue;
       }
       if (!entry.isFile() || !COLLAPSE_SOURCE_RE.test(entry.name)) continue;
+      // Emit-in-place skip: a `.js`/`.d.ts` with a same-stem `.ts`/`.tsx`
+      // sibling is compiler output (a stock `tsc -b` build drops one next to
+      // every source). Reporting it masked the REAL collapsed source — observed
+      // 1co: the gate denied on the generated CourseDetailPage.js (first hit
+      // alphabetically) while CourseDetailPage.tsx stayed collapsed and
+      // unmentioned. Skipping it lets the scan reach the true source. Accepted
+      // residual: a hand-written collapsed helper.js beside an unrelated
+      // helper.ts escapes this scan (reviewer remains the net).
+      const emittedStem = entry.name.endsWith('.d.ts')
+        ? entry.name.slice(0, -'.d.ts'.length)
+        : entry.name.endsWith('.js')
+          ? entry.name.slice(0, -'.js'.length)
+          : null;
+      if (emittedStem && (
+        fs.existsSync(path.join(dir, `${emittedStem}.ts`))
+        || fs.existsSync(path.join(dir, `${emittedStem}.tsx`))
+      )) continue;
       if (++scanned > COLLAPSE_MAX_FILES) {
         return { file: null, incomplete: true, scanned };
       }
@@ -267,6 +296,135 @@ function collapsedProductSourceFile(projectRoot: string, state: Rec): CollapseSc
   }
   return { file: null, incomplete: false, scanned };
 }
+// ── Emit-config + format-parity completion gates ────────────────────────────
+// Deterministic replacements for prose-only mandates that did not bind every
+// host identically (observed 1co on Codex: the stock Vite template — `tsc -b`
+// scripts, `composite: true`, no `noEmit` — violated rules/frontend/react/vite.md
+// verbatim and shipped compiled .js/.d.ts next to every source; a written
+// .prettierrc had no prettier dependency, so format:check could never run).
+// Both fire only in the frontend IMPLEMENTED branch, only for new-project mode,
+// and target ONLY the web app package — never packages/* or tsconfig.base.json,
+// where `composite`/`tsc -b` are legitimate (monorepo-architecture skill).
+
+// Vite app tsconfigs are JSONC (comments + trailing commas). readJson's silent
+// fallback would let a malformed config slip past the gate, so parse failures
+// surface as a violation instead of a silent pass.
+function parseJsonc(text: string): unknown | null {
+  let out = '';
+  let inString = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    const next = text[i + 1];
+    if (inLine) {
+      if (ch === '\n') { inLine = false; out += ch; }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === '*' && next === '/') { inBlock = false; i += 1; }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (ch === '\\' && next !== undefined) { out += next; i += 1; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; out += ch; continue; }
+    if (ch === '/' && next === '/') { inLine = true; continue; }
+    if (ch === '/' && next === '*') { inBlock = true; i += 1; continue; }
+    out += ch;
+  }
+  try {
+    return JSON.parse(out.replace(/,\s*([}\]])/g, '$1'));
+  } catch {
+    return null;
+  }
+}
+
+// { parsed: null } distinguishes "present but unparseable" (a violation) from
+// "absent" (null — another gate's concern).
+function jsoncFile(projectRoot: string, relPath: string): { parsed: Rec | null } | null {
+  const raw = readTrimmed(projectRoot, relPath);
+  if (raw === null || raw === '') return null;
+  return { parsed: obj(parseJsonc(raw)) };
+}
+
+const EMIT_BUILD_SCRIPT_RE = /\btsc\s+(?:-b\b|--build\b)/;
+
+function emitConfigProblems(projectRoot: string, profile: CapabilityProfileV1): string[] {
+  const webRoot = webPackageRoot(profile);
+  const at = (rel: string): string => (webRoot === '.' ? rel : `${webRoot}/${rel}`);
+  const tsconfigRel = at('tsconfig.json');
+  const tsconfig = jsoncFile(projectRoot, tsconfigRel);
+  if (!tsconfig) return [];
+  const problems: string[] = [];
+  if (!tsconfig.parsed) {
+    problems.push(`\`${tsconfigRel}\` could not be parsed as JSON/JSONC`);
+  } else {
+    const compiler = obj(tsconfig.parsed.compilerOptions) || {};
+    if (compiler.composite === true) {
+      problems.push(`\`${tsconfigRel}\` sets \`"composite": true\` (build mode forces declaration emit)`);
+    }
+    if (compiler.noEmit === false) {
+      problems.push(`\`${tsconfigRel}\` sets \`"noEmit": false\``);
+    } else if (compiler.noEmit !== true) {
+      const base = jsoncFile(projectRoot, 'tsconfig.base.json');
+      const baseCompiler = base?.parsed ? obj(base.parsed.compilerOptions) || {} : {};
+      if (baseCompiler.noEmit !== true) {
+        problems.push(`neither \`${tsconfigRel}\` nor \`tsconfig.base.json\` sets \`"noEmit": true\``);
+      }
+    }
+  }
+  const pkg = jsoncFile(projectRoot, at('package.json'));
+  const scripts = pkg?.parsed ? obj(pkg.parsed.scripts) || {} : {};
+  for (const name of ['build', 'typecheck'] as const) {
+    const script = scripts[name];
+    if (typeof script === 'string' && EMIT_BUILD_SCRIPT_RE.test(script)) {
+      problems.push(`\`${at('package.json')}\` "${name}" script runs \`tsc -b\` (build mode EMITS next to sources)`);
+    }
+  }
+  return problems;
+}
+
+// quality-tooling parity: only emit a script/config whose tool is actually
+// declared. Not "prettier is mandatory" — the check fires only when a prettier
+// config or format script EXISTS without the dependency (the v1.0.20 refactor
+// deliberately removed any architect-side formatter requirement).
+const PRETTIER_CONFIG_FILES = [
+  '.prettierrc', '.prettierrc.json', '.prettierrc.json5', '.prettierrc.yaml',
+  '.prettierrc.yml', '.prettierrc.js', '.prettierrc.cjs', '.prettierrc.mjs',
+  '.prettierrc.toml', 'prettier.config.js', 'prettier.config.cjs',
+  'prettier.config.mjs', 'prettier.config.ts',
+];
+
+function formatParityViolation(projectRoot: string, profile: CapabilityProfileV1): string | null {
+  const webRoot = webPackageRoot(profile);
+  const at = (rel: string): string => (webRoot === '.' ? rel : `${webRoot}/${rel}`);
+  const rootPkg = jsoncFile(projectRoot, 'package.json')?.parsed || null;
+  const webPkg = webRoot === '.' ? rootPkg : jsoncFile(projectRoot, at('package.json'))?.parsed || null;
+  let reference: string | null = null;
+  for (const rel of PRETTIER_CONFIG_FILES) {
+    if (exists(projectRoot, rel)) { reference = `\`${rel}\``; break; }
+    if (webRoot !== '.' && exists(projectRoot, at(rel))) { reference = `\`${at(rel)}\``; break; }
+  }
+  if (!reference && rootPkg && 'prettier' in rootPkg) reference = 'the root `package.json` "prettier" key';
+  if (!reference && webPkg && webPkg !== rootPkg && 'prettier' in webPkg) {
+    reference = `the \`${at('package.json')}\` "prettier" key`;
+  }
+  if (!reference) {
+    for (const [ownerRel, pkg] of [['package.json', rootPkg], [at('package.json'), webPkg]] as const) {
+      const scripts = pkg ? obj(pkg.scripts) || {} : {};
+      const script = ['format', 'format:check'].find((name) => typeof scripts[name] === 'string');
+      if (script) { reference = `the \`${ownerRel}\` "${script}" script`; break; }
+    }
+  }
+  if (!reference) return null;
+  const deps = { ...(rootPkg ? obj(rootPkg.dependencies) : null), ...(rootPkg ? obj(rootPkg.devDependencies) : null) };
+  return typeof deps.prettier === 'string' ? null : reference;
+}
+
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
 const ROOT_MONOREPO_FLAT_RE = /^tsconfig(?!\.base\.json$)(\.[a-z0-9-]+)?\.json$/;
@@ -887,9 +1045,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         // guessed: observed 2cu, three of four routes were correct and only the
         // catch-all failed, but the frontend read the generic prose as "routes
         // are forbidden here", reported BLOCKED twice, and burned a re-plan.
-        const summary = findings
-          .map((finding) => `${finding.id} (${finding.file}${finding.line ? `:${finding.line}` : ''}): ${finding.message}`)
-          .join(' | ');
+        const summary = structureFindingSummary(findings);
         violations.push(block('frontend-structure-hot-gate',
           `Structural gate: ${summary}. Entrypoints may only bootstrap the app; route pages must be separate compiled modules. Formatting the same monolith across more lines does not satisfy this gate.`,
           { FINDINGS: summary }));
@@ -1042,6 +1198,27 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed.file}\` packs an entire component/route onto a single line (over ${COLLAPSE_LINE_CHARS} chars) — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
         { FILE: collapsed.file }));
     }
+    // Deterministic emit-config + format-parity gates (new-project only; the
+    // pre-existing tsc -b / missing-dependency choices of an existing codebase
+    // are the user's, and maintenance must never dead-end on them).
+    const frontendProfile = capabilityProfileForRun(projectRoot, state);
+    if (state.mode === 'new-project' && frontendProfile.profileId === 'vite-react') {
+      const emitProblems = emitConfigProblems(projectRoot, frontendProfile);
+      if (emitProblems.length > 0) {
+        const problems = emitProblems.join('; ');
+        violations.push(block('frontend-emit-config-gate',
+          `Frontend completion gate: ${problems}. The stock Vite template emits compiled \`.js\`/\`.d.ts\` next to every source on the first build, and the stale output can shadow the module at import time. Fix exactly this: set \`"noEmit": true\` in the app tsconfig, remove \`"composite": true\`, and use \`"build": "tsc --noEmit && vite build"\`, \`"typecheck": "tsc --noEmit"\`. Then re-emit \`IMPLEMENTED\`.`,
+          { PROBLEMS: problems }));
+      }
+    }
+    if (state.mode === 'new-project' && profileHasWebUi(frontendProfile)) {
+      const parity = formatParityViolation(projectRoot, frontendProfile);
+      if (parity) {
+        violations.push(block('frontend-format-parity-gate',
+          `Frontend completion gate: ${parity} exists but \`prettier\` is not declared in the root package.json dependencies/devDependencies. A script or config that names an absent tool makes later verification meaningless. Run exactly \`pnpm add -D -w prettier\` (or add \`"prettier"\` to the root devDependencies), then re-emit \`IMPLEMENTED\`.`,
+          { CONFIG: parity }));
+      }
+    }
     const runId = frontendDigest[2] || '';
     const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
     if (architecture) {
@@ -1053,7 +1230,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         const report = runFullStructureScan(projectRoot, runId, architecture, 'senior-frontend');
         const errors = report.findings.filter((finding) => finding.severity === 'error');
         if (errors.length > 0) {
-          const summary = errors.map((finding) => `${finding.id}:${finding.file}`).join(', ');
+          const summary = structureFindingSummary(errors);
           violations.push(block('frontend-structure-completion-gate',
             `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Numeric LOC/function-count/component-count findings remain warnings during this rollout.`,
             { FINDINGS: summary }));
@@ -1096,7 +1273,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         const report = runFullStructureScan(projectRoot, runId, architecture);
         const errors = report.findings.filter((finding) => finding.severity === 'error');
         if (errors.length > 0) {
-          const summary = errors.map((finding) => `${finding.id}:${finding.file}`).join(', ');
+          const summary = structureFindingSummary(errors);
           violations.push(block('reviewer-structure-gate',
             `Reviewer gate: \`APPROVED\` is forbidden while the complete runtime structure report contains errors (${summary}). Review the compiled architecture and request fixes.`,
             { FINDINGS: summary }));

@@ -812,3 +812,92 @@ test('top-level function count is advisory during rollout', () => {
     }]);
   });
 });
+
+test('full scan: non-literal route paths surface the cause in mismatch messages plus a warning finding', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    writeLaravelModules(cwd, contract);
+    const appShell = contract.modules.find((module) => module.kind === 'app-shell')!.output;
+    // The 1co incident shape: every route path is a variable, so the extractor
+    // sees zero routes and the mismatch deny used to point at the page module
+    // with no cause.
+    fs.writeFileSync(path.join(cwd, appShell), [
+      "import Home from './pages/HomePage';",
+      "import News from './pages/NewsPage';",
+      "const homeRoute = '/';",
+      "const newsRoute = '/news';",
+      'export default function App() {',
+      '  return <Routes><Route path={homeRoute} element={<Home />} /><Route path={newsRoute} element={<News />} /></Routes>;',
+      '}',
+      '',
+    ].join('\n'));
+    const report = analyzeProjectStructure(cwd, contract);
+    const mismatches = report.findings.filter((finding) => finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH');
+    assert.ok(mismatches.length >= 1, 'contract routes stay unproven');
+    for (const finding of mismatches) {
+      assert.match(finding.message, /non-literal route path value/);
+      assert.match(finding.message, /plain string literal/);
+      assert.match(finding.message, /App\.tsx:\d+/);
+      assert.match(finding.message, /path=\{?homeRoute\}?|path=\{?newsRoute\}?/);
+    }
+    const warning = report.findings.find((finding) => finding.id === 'STRUCT_ROUTE_PATH_UNRESOLVED');
+    assert.ok(warning, 'advisory finding is present in the report');
+    assert.equal(warning!.severity, 'warning');
+  });
+});
+
+test('hot contract gate appends the non-literal cause to a coexisting literal mismatch', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const text = [
+      "import Wrong from './pages/WrongPage';",
+      "const newsRoute = '/news';",
+      'export default function App() {',
+      '  return <Routes><Route path="/missing" element={<Wrong />} /><Route path={newsRoute} element={<Wrong />} /></Routes>;',
+      '}',
+      '',
+    ].join('\n');
+    const findings = analyzeStructureTextAgainstContract('apps/web/src/App.tsx', text, contract);
+    const mismatch = findings.find((finding) => finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH');
+    assert.ok(mismatch);
+    assert.match(mismatch!.message, /is not present in the runtime-compiled architecture contract/);
+    assert.match(mismatch!.message, /non-literal route path value/);
+    assert.match(mismatch!.message, /path=\{newsRoute\}/);
+  });
+});
+
+test('pathless index/layout routes stay silent; dynamic route arrays are warning-only', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const indexText = [
+      "import Home from './pages/HomePage';",
+      'export default function App() {',
+      '  return <Routes><Route index element={<Home />} /><Route element={<Home />} /></Routes>;',
+      '}',
+      '',
+    ].join('\n');
+    const indexFindings = analyzeStructureTextAgainstContract('apps/web/src/App.tsx', indexText, contract);
+    assert.ok(
+      !indexFindings.some((finding) => finding.id === 'STRUCT_ROUTE_PATH_UNRESOLVED'),
+      'a missing path attribute is legitimate react-router and records nothing',
+    );
+
+    const dynamicText = [
+      "import { ROUTES } from './lib/routes';",
+      "import Page from './pages/HomePage';",
+      'export default function App() {',
+      '  return <Routes>{ROUTES.map((route) => <Route path={route.path} element={<Page />} />)}</Routes>;',
+      '}',
+      '',
+    ].join('\n');
+    const dynamicFindings = analyzeStructureTextAgainstContract('apps/web/src/App.tsx', dynamicText, contract);
+    const unresolved = dynamicFindings.find((finding) => finding.id === 'STRUCT_ROUTE_PATH_UNRESOLVED');
+    assert.ok(unresolved, 'dynamic route arrays are recorded for visibility');
+    assert.equal(unresolved!.severity, 'warning');
+    assert.deepEqual(
+      dynamicFindings.filter((finding) => finding.severity === 'error'),
+      [],
+      'a legitimate dynamic pattern never hard-blocks on its own',
+    );
+  });
+});

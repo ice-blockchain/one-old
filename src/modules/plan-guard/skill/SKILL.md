@@ -130,6 +130,14 @@ Frontend completion gate: STRUCT_SCAN_INCOMPLETE after {{SCANNED}} product sourc
 Frontend completion gate: do not write `IMPLEMENTED` with collapsed source. `{{FILE}}` packs an entire component/route onto one line. Collapsed or minified product source is a defect even when build and typecheck pass. Format it and split routes, pages, features, and shared components according to the compiled architecture before re-emitting `IMPLEMENTED`.
 <!-- T1BLOCK:END frontend-collapse-gate -->
 
+<!-- T1BLOCK:BEGIN frontend-emit-config-gate -->
+Frontend completion gate: {{PROBLEMS}}. The stock Vite template emits compiled `.js`/`.d.ts` next to every source on the first build, and the stale output can shadow the module at import time. Fix exactly this: set `"noEmit": true` in the app tsconfig, remove `"composite": true`, and use `"build": "tsc --noEmit && vite build"`, `"typecheck": "tsc --noEmit"`. Then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END frontend-emit-config-gate -->
+
+<!-- T1BLOCK:BEGIN frontend-format-parity-gate -->
+Frontend completion gate: {{CONFIG}} exists but `prettier` is not declared in the root package.json dependencies/devDependencies. A script or config that names an absent tool makes later verification meaningless. Run exactly `pnpm add -D -w prettier` (or add `"prettier"` to the root devDependencies), then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END frontend-format-parity-gate -->
+
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
 Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Numeric LOC/function-count/component-count findings remain warnings during this rollout.
 <!-- T1BLOCK:END frontend-structure-completion-gate -->

@@ -490,7 +490,10 @@ function moduleOutput(
   return `${libRoot}/${name}${ext}`;
 }
 
-function webPackageRoot(profile: CapabilityProfileV1): string {
+// Exported for the emit-config completion gate: it must target ONLY the web
+// app package's own tsconfig/scripts (never packages/* or the workspace base,
+// where `composite`/`tsc -b` are legitimate).
+export function webPackageRoot(profile: CapabilityProfileV1): string {
   const candidates = [
     ...profile.sourceRoots,
     ...profile.entrypoints,

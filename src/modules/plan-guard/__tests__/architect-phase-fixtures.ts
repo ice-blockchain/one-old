@@ -27,6 +27,9 @@ export function writeRequiredScaffold(dir: string): void {
     packageManager: 'pnpm@10.12.1',
     workspaces: ['apps/*', 'packages/*'],
     scripts: { 'format:check': 'prettier --check .' },
+    // Script/config parity: the fixture declares the tool its script names,
+    // matching the frontend-format-parity-gate contract.
+    devDependencies: { prettier: '^3.0.0' },
   }), 'utf8');
   fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100, "singleQuote": true }\n', 'utf8');
   for (const rel of ['apps/web', 'packages/ui/src', 'packages/tailwind-config/src', 'packages/i18n/src']) {
