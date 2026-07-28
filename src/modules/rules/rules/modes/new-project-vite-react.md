@@ -1,43 +1,89 @@
 ---
-description: "Apply only when runtime selected the default stack with CompiledArchitectureV1 profileId=vite-react: route to the full pnpm/Turborepo, React/Vite, and Supabase scaffold."
+description: "Apply only when CompiledArchitectureV1 profileId=vite-react: React/Vite topology for managed workspace, flat-root, or detected custom web roots."
 ---
 
-# New Project Profile — Default Vite React
+# New Project Profile — React + Vite
 
-This rule is active only when both conditions are true:
+Apply only when `CompiledArchitectureV1.profile.profileId=vite-react`.
+This rule covers every React/Vite topology; it is not limited to the default
+stack and is not a fallback for other web frameworks.
 
-- `.traffic-one/.one.json` selects the default stack (or its legacy
-  `react-realtime-monorepo` alias); and
-- the immutable runtime capability/architecture profile is `vite-react`.
+The complete cross-stack index and overlays are in
+`rules/modes/new-project-architecture.md`.
+Eligible implementer(s), not the architect, create only paths in their active
+`WorkUnitContractV1`.
 
-Do not apply it to Next.js, Nuxt, Laravel, backend-only, native, or other custom
-profiles, even when the repository is empty.
+## Runtime-selected topology
 
-## Default architecture
+Use `<web-root>` from the compiled profile. Exactly one shape applies:
 
-The runtime compiles the pnpm + Turborepo workspace outputs for `apps/web`,
-shared `packages/*`, and the backend baseline selected during onboarding. The
-eligible implementer(s), not the architect, create those package/workspace,
-Tailwind, barrel, source, test, and configuration files from their
-`WorkUnitContractV1` allowlists. Backend-backed product features use the real
-Supabase contract, env validation, migrations, and RLS baseline before demo
-fixtures or local fallback data.
+- **Managed workspace:** `<web-root>` is `apps/web` for a new default/legacy
+  React realtime stack, or for an explicitly selected React/Vite frontend with
+  an owned backend. Root workspace manifests are then compiled.
+- **Flat frontend:** `<web-root>` is `.` for a frontend-only project without a
+  detected workspace root.
+- **Detected/custom workspace:** `<web-root>` is the frozen detected root such
+  as `web`, `frontend`, `client`, or another workspace. Preserve it.
 
-The complete annotated tree and package boundaries are read-on-demand at
-`rules/modes/new-project-architecture.md`. The ordered implementation checklist
-is read-on-demand at `rules/modes/new-project-setup.md`. Eligible implementers
-read only the slices relevant to their compiled outputs before scaffolding this
-profile.
+Never move a flat/custom Vite project into `apps/web`, and never flatten the
+managed workspace. `profile.sourceRoots`, not stack folklore, is authoritative.
 
-## Required order
+## Compiled shape
 
-1. Workspace skeleton and deterministic toolchain.
-2. Canonical project memory and runtime-materialized rules/skills.
-3. Shared packages before application implementation.
-4. Supabase baseline when selected by the compiled backend contract.
-5. UI design, internationalization, accessibility, and route metadata gates.
-6. `apps/web` scaffold, real tests, CI, deployment artifacts, and documentation.
-7. Stack-selected verification and codebase graph after the first valid build.
+```
+<web-root>/
+├── package.json
+├── index.html
+├── vite.config.ts
+├── tsconfig.json
+├── src/
+│   ├── vite-env.d.ts
+│   ├── main.tsx | main.jsx         selected entrypoint
+│   ├── App.tsx                     when an app-shell module is planned
+│   ├── pages/                      compiled page modules
+│   ├── components/                 compiled app components
+│   ├── features/<name>/index.ts    compiled feature modules
+│   └── lib/                        UI-local service/store modules
+└── public/
+    ├── robots.txt
+    ├── sitemap.xml
+    ├── manifest.webmanifest
+    ├── favicon.ico
+    ├── favicon.svg
+    ├── apple-touch-icon.png
+    ├── icons/icon-192.png
+    ├── icons/icon-512.png
+    └── og-image.png
 
-Never start feature implementation while an earlier required baseline is
-missing. Do not replace this profile with a flat root Vite application.
+packages/
+├── ui/package.json
+├── ui/src/index.ts
+├── i18n/package.json
+├── i18n/src/index.ts
+├── i18n/src/locales/en/common.json
+├── tailwind-config/package.json
+└── tailwind-config/src/globals.css
+```
+
+The compiler also adds the common repository/tooling, backend, environment,
+and QA overlays from the catalog. Root `vitest.config.ts`,
+`playwright.config.ts`, and `tests/e2e/smoke.spec.ts` remain tester-owned even
+when `<web-root>` is nested. Backend-owned `service`/`store` modules follow the
+backend overlay instead of `src/lib`.
+
+This tree describes deterministic scaffold and conventional module locations;
+the selected entrypoint, `modules[].output`, `scaffoldOutputs`, and
+`allowedOutputs` decide the exact files. Do not create uncompiled route,
+store, style, config, package, or platform files.
+
+## Default managed-workspace checklist
+
+`rules/modes/new-project-setup.md` is the ordered implementation checklist only
+for the default stack (or legacy `react-realtime-monorepo`) whose compiled
+React/Vite root is `apps/web`. Read only the checklist sections relevant to
+the active outputs. Flat-root and custom-root React/Vite projects do not inherit
+that playbook or its Supabase assumptions.
+
+When the capability profile also contains the `ionic-capacitor` skill bucket,
+apply the Ionic overlay in `rules/modes/new-project-architecture.md`; it does
+not change this profile id or widen the allowlist.

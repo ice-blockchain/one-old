@@ -5,10 +5,29 @@ import * as path from 'node:path';
 import { generatedRuleTemplates } from '../emit/rules';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+const STRUCTURAL_PROFILE_IDS = [
+  'vite-react',
+  'next-app',
+  'next-pages',
+  'nuxt',
+  'vue',
+  'sveltekit',
+  'svelte',
+  'astro',
+  'angular',
+  'server-rendered',
+  'generic-web',
+  'unsupported-hybrid',
+  'react-native',
+  'swift-native',
+  'kotlin-native',
+  'flutter-native',
+  'backend-only',
+] as const;
 
 test('generatedRuleTemplates re-gathers the full nested rules tree', () => {
   const docs = generatedRuleTemplates(REPO_ROOT);
-  assert.equal(docs.length, 80); // 76 + default-Vite gateway + 3 on-demand slices
+  assert.equal(docs.length, 96); // Previous 80 + 16 new profile-specific architecture rules.
   const paths = new Set(docs.map((d) => d.relPath));
   // Root, common, and deeply-nested rule paths are all preserved exactly.
   assert.ok(paths.has(path.join('rules', 'core.md')));
@@ -97,4 +116,70 @@ test('new policy rules exist and carry their canonical text', () => {
   // skill-precedence carries the precedence policy moved off every skill.
   assert.match(precedence.content, /take precedence/);
   assert.match(precedence.content, /Do not implement via any skill until the setup gate/);
+});
+
+test('new-project architecture catalog is exhaustive and keeps cross-profile overlays honest', () => {
+  const docs = generatedRuleTemplates(REPO_ROOT);
+  const byPath = new Map(docs.map((doc) => [doc.relPath, doc.content]));
+
+  for (const profileId of STRUCTURAL_PROFILE_IDS) {
+    const relPath = path.join('rules', 'modes', `new-project-${profileId}.md`);
+    const content = byPath.get(relPath);
+    assert.ok(content, `missing ${relPath}`);
+    const frontmatter = content.split('---', 3)[1] || '';
+    assert.ok(
+      frontmatter.includes(`Apply only when CompiledArchitectureV1 profileId=${profileId}:`),
+      `${relPath} must scope its frontmatter to exactly ${profileId}`,
+    );
+    const marker = `CompiledArchitectureV1.profile.profileId=${profileId}\``;
+    assert.ok(content.includes(marker), `${relPath} must carry ${marker}`);
+    assert.equal(
+      STRUCTURAL_PROFILE_IDS.filter((id) => (
+        content.includes(`CompiledArchitectureV1.profile.profileId=${id}\``)
+      )).length,
+      1,
+      `${relPath} must claim exactly one structural profile`,
+    );
+  }
+
+  const architecture = byPath.get(path.join(
+    'rules',
+    'modes',
+    'new-project-architecture.md',
+  ));
+  assert.ok(architecture);
+  for (const phrase of [
+    'CapabilityProfileV1.skillBuckets',
+    'ionic-capacitor',
+    '@ionic/react',
+    '@ionic/vue',
+    '@ionic/angular',
+    'never translate a Vue or Angular project into React',
+    'VITE_API_URL',
+    'AGENTS.md',
+    'CLAUDE.md',
+    '.traffic-one/**',
+  ]) {
+    assert.ok(architecture.includes(phrase), `architecture index missing ${phrase}`);
+  }
+
+  const laravel = byPath.get(path.join(
+    'rules',
+    'modes',
+    'new-project-server-rendered.md',
+  ));
+  assert.ok(laravel);
+  assert.ok(laravel.includes('Prettier and Pint coexistence'));
+  assert.ok(laravel.includes('Use Prettier for JavaScript'));
+  assert.ok(laravel.includes('Use Laravel Pint for PHP'));
+
+  const unsupported = byPath.get(path.join(
+    'rules',
+    'modes',
+    'new-project-unsupported-hybrid.md',
+  ));
+  assert.ok(unsupported);
+  assert.ok(unsupported.includes('CAPABILITY_HYBRID_UI_TARGET_REQUIRED'));
+  assert.ok(unsupported.includes('Do not produce a tree'));
+  assert.ok(!unsupported.includes('```'), 'unsupported hybrid must not expose an implementable tree');
 });

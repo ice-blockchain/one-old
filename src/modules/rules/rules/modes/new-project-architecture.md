@@ -1,124 +1,216 @@
 ---
-description: "Read on demand only for the default stack when CompiledArchitectureV1 profileId=vite-react: target pnpm/Turborepo tree and package boundaries."
+description: "Read on demand for every new-project CompiledArchitectureV1 profile: select the exact architecture catalog entry and apply common backend, QA, environment, and Ionic overlays."
 ---
 
-# Default Vite React — Target Architecture
+# New Project Architecture Catalog
 
-Read-on-demand resource routed by
-`rules/modes/new-project-vite-react.md`: the full target monorepo tree and
-package boundaries for the default `vite-react` profile (including the legacy
-`react-realtime-monorepo` alias). It is not a fallback architecture. Never
-apply it to Next.js, Nuxt, Laravel, backend-only, native, or another custom
-profile.
+This is the stack-neutral architecture control plane for new projects. It is
+not a fallback architecture and it does not grant outputs. Select exactly one
+profile rule from `CompiledArchitectureV1.profile.profileId`; never infer a
+profile from a framework name, an empty repository, or this catalog.
 
-Runtime maps semantic `ArchitectureInputV1` into this profile's concrete
-outputs. Eligible implementers create only the subset assigned by their
-`WorkUnitContractV1`; the architect never creates any file in this tree.
+The architect supplies only semantic `ArchitectureInputV1` routes, modules,
+and narrow exception requests. Eligible implementers, not the architect,
+create the exact files assigned by their `WorkUnitContractV1`. If this catalog
+describes a convention but the compiled `allowedOutputs` omit its file, replan
+and recompile instead of writing it.
 
-```
+## Profile index
+
+| `profileId` | Read-on-demand architecture |
+| --- | --- |
+| `vite-react` | `rules/modes/new-project-vite-react.md` |
+| `next-app` | `rules/modes/new-project-next-app.md` |
+| `next-pages` | `rules/modes/new-project-next-pages.md` |
+| `nuxt` | `rules/modes/new-project-nuxt.md` |
+| `vue` | `rules/modes/new-project-vue.md` |
+| `sveltekit` | `rules/modes/new-project-sveltekit.md` |
+| `svelte` | `rules/modes/new-project-svelte.md` |
+| `astro` | `rules/modes/new-project-astro.md` |
+| `angular` | `rules/modes/new-project-angular.md` |
+| `server-rendered` | `rules/modes/new-project-server-rendered.md` |
+| `generic-web` | `rules/modes/new-project-generic-web.md` |
+| `unsupported-hybrid` | `rules/modes/new-project-unsupported-hybrid.md` — blocking, no scaffold |
+| `react-native` | `rules/modes/new-project-react-native.md` |
+| `swift-native` | `rules/modes/new-project-swift-native.md` |
+| `kotlin-native` | `rules/modes/new-project-kotlin-native.md` |
+| `flutter-native` | `rules/modes/new-project-flutter-native.md` |
+| `backend-only` | `rules/modes/new-project-backend-only.md` |
+
+## Universal repository control plane
+
+The repository shell and Traffic One control plane are distinct ownership
+domains:
+
+```text
 <repo-root>/
-├── package.json                   "private": true, workspaces declared
-├── pnpm-workspace.yaml            apps/*  packages/*
-├── turbo.json                     pipeline: build / dev / lint / test / typecheck / storybook
-├── tsconfig.base.json             strict, noUncheckedIndexedAccess, exactOptionalPropertyTypes
-├── .eslintrc.cjs                  shared rules; package overrides allowed
-├── .prettierrc
-├── .nvmrc                         pin Node major
-├── .env.example                   documented env var names only, no secrets
-├── .traffic-one/                  memory baseline (product/stack/coding/
-│   │                              security/known-issues/agent-log/.agentignore/
-│   │                              deployments.jsonl/schema.sql/decisions/) +
-│   │                              generated rules/ and skills/ — canonical file
-│   │                              inventory in rules/common/project-memory.md
-├── .gitignore                     dist, node_modules, .turbo, coverage, playwright-report
-├── .github/
-│   └── workflows/                 CI/CD: verify + build the static dist/
-│                                    (web deploy is Traffic One `/deploy`, not a CI host action)
-├── supabase/
-│   └── migrations/                SQL schema + RLS policies for Supabase-backed apps
-│
-├── apps/
-│   └── web/                       primary React app (Vite)
-│       ├── package.json
-│       ├── vite.config.ts
-│       ├── tsconfig.json          extends ../../tsconfig.base.json
-│       ├── index.html
-│       ├── src/
-│       │   ├── main.tsx           ReactDOM.createRoot + Provider chain
-│       │   ├── App.tsx            top-level routes + Suspense boundary
-│       │   ├── routes.tsx         react-router-dom v6 routes config
-│       │   ├── store/             Redux store + middleware wiring
-│       │   │   ├── index.ts
-│       │   │   └── hooks.ts       useAppDispatch, useAppSelector
-│       │   ├── features/          feature slices: each owns components, hooks, slice, services
-│       │   │   └── <name>/
-│       │   │       ├── components/
-│       │   │       ├── hooks/
-│       │   │       ├── slice.ts
-│       │   │       ├── api.ts     (RTK Query if needed)
-│       │   │       └── index.ts
-│       │   ├── pages/             thin route wrappers — no business logic
-│       │   ├── services/
-│       │   │   ├── ws/            app-specific WS bridges (if not shared in packages)
-│       │   │   └── ...
-│       │   ├── components/        app-only components not promoted to packages/ui yet
-│       │   │   └── Seo.tsx        route-aware title/meta/canonical/JSON-LD layer
-│       │   ├── lib/
-│       │   │   ├── seo.ts         route metadata + JSON-LD helpers
-│       │   │   └── utils.ts        cn() helper (= clsx + tailwind-merge)
-│       │   └── styles/
-│       │       └── globals.css     imports @app/tailwind-config/globals.css
-│       ├── public/                robots, sitemap, manifest, favicon, icons, OG image
-│       ├── vite.config.ts          includes the @tailwindcss/vite plugin (v4 —
-│       │                           no tailwind.config.*, no postcss.config)
-│       ├── components.json         shadcn/ui CLI config
-│       └── e2e/                    Playwright specs
-│
-└── packages/
-    ├── ui/                        shadcn/ui primitives (Storybook)
-    │   ├── package.json           "exports": { ... }
-    │   ├── src/
-    │   │   ├── components/
-    │   │   │   └── ui/             shadcn-installed primitives (button, input,
-    │   │   │       │               card, dialog, dropdown-menu, form, sheet,
-    │   │   │       │               tabs, select, sonner, badge, separator, …)
-    │   │   │       └── button.tsx
-    │   │   ├── lib/
-    │   │   │   └── utils.ts        cn() helper (re-exported by app)
-    │   │   └── index.ts            barrel: re-export public components
-    │   ├── components.json         shadcn config (root for monorepo init)
-    │   └── tsconfig.json
-    │
-    ├── tailwind-config/            shared Tailwind v4 stylesheet (CSS-first; no JS preset)
-    │   ├── package.json
-    │   └── src/
-    │       └── globals.css         @import "tailwindcss" + design tokens in
-    │                               @theme/:root blocks (light + .dark)
-    │
-    ├── i18n/                      shared typed i18next resources and locale config
-    │   ├── package.json
-    │   └── src/
-    │       ├── index.ts           exports provider, resources, namespace helpers
-    │       └── locales/
-    │           └── en/            source-language feature namespaces
-    │
-    ├── api-client/                Supabase client + axios/RTK Query baseQuery
-    │   └── src/
-    │       ├── supabase.ts        typed Supabase browser client
-    │       ├── instance.ts
-    │       ├── errors.ts          AppError discriminated union
-    │       └── index.ts
-    │
-    ├── ws-client/                 WebSocket transport + protocol layer
-    │   └── src/
-    │       ├── transport.ts       reconnect, heartbeat, backoff
-    │       ├── protocol.ts        zod schemas + decoders
-    │       ├── hooks.ts           useChannel(...) etc.
-    │       └── test-fake.ts       in-memory fake for tests
-    │
-    ├── utils/                     pure utilities, no React imports
-    │
-    ├── tsconfig/                  shared TS configs (base, react, node)
-    │
-    └── eslint-config/             shared ESLint config
+├── README.md                         compiled scaffold
+├── .gitignore                       compiled scaffold
+├── .editorconfig                    compiled scaffold
+├── .github/workflows/ci.yml         compiled scaffold
+├── .prettierrc                      conditional Node tooling
+├── .prettierignore                  conditional Node tooling
+├── .nvmrc                           conditional Node tooling
+├── .env.example                     conditional environment contract
+├── AGENTS.md                        Traffic One materializer
+├── CLAUDE.md -> AGENTS.md           materializer, only when absent
+├── .traffic-one/                    control plane, never scaffold output
+│   ├── .one.json
+│   ├── .agentignore
+│   ├── product.md
+│   ├── plan.md
+│   ├── stack.md
+│   ├── coding.md
+│   ├── security.md
+│   ├── api.md
+│   ├── database.md
+│   ├── deployment.md
+│   ├── environment-setup.md
+│   ├── known-issues.md
+│   ├── schema.sql
+│   ├── deployments.jsonl
+│   ├── agent-log.md
+│   ├── decisions/
+│   ├── rules/
+│   ├── skills/
+│   ├── manifest.json
+│   ├── runs/
+│   ├── digests/
+│   └── reports/
+└── <selected profile structure>
 ```
+
+`README.md`, `.gitignore`, `.editorconfig`, and `ci.yml` each compile exactly
+once. The owner is `senior-frontend` for a selected UI target and otherwise
+`senior-backend`. `AGENTS.md`, `CLAUDE.md`, and every `.traffic-one/**` path
+are explicitly absent from implementer `scaffoldOutputs`, `allowedOutputs`,
+and work-unit allowlists.
+
+## How to read a compiled topology
+
+The immutable contract, not an illustrative tree, resolves every variable:
+
+1. `profile.sourceRoots`, `profile.entrypoints`, and `profile.layerRoots` freeze the
+   detected or planned roots. Runtime selects an existing entrypoint, then a
+   parent-backed candidate, otherwise the first profile candidate.
+2. `modules[].output` and `routes[].moduleOutput` are the concrete results of
+   the semantic plan. Route-aware frameworks own their file-router locations.
+3. `scaffoldOutputs[]` adds deterministic repository, framework, backend, test,
+   and tooling files with one owner each.
+4. `allowedOutputs` is the closed union. A path shown in a profile document is
+   still unwritable unless it appears here and in the active work unit.
+
+Candidate roots in the profile are precedence lists, not instructions to
+create every candidate directory. Existing immutable baseline evidence wins.
+
+## Common new-project overlays
+
+Every selected implementation surface can compile repository scaffolding:
+`.gitignore`, `README.md`, `.editorconfig`, and `.github/workflows/ci.yml`.
+The selected Node package can additionally compile `.prettierrc`,
+`.prettierignore`, and `.nvmrc` beside its `package.json`. A web package rooted
+under `apps/*` or `packages/*` also compiles root `package.json`,
+`pnpm-workspace.yaml`, `turbo.json`, and `tsconfig.base.json`. Any compiled
+output under `packages/<name>/` causes that package's `package.json` to be
+owned by the same implementation role unless already present.
+
+At that one tooling root, the manifest declares `prettier` plus real `format`
+and `format:check` scripts. When the tooling root is the repository root,
+`.prettierignore` excludes `.traffic-one/`, dependencies, generated/build
+artifacts, coverage, and runtime reports. Non-Node targets use their native
+formatter and do not receive a synthetic Node manifest.
+
+When a React Native target and an owned Node backend share root `package.json`,
+the selected UI implementation owner is the single manifest integration owner.
+That manifest must include both surfaces' declared dependencies and scripts;
+the backend reports its requirements through the contract/digest and does not
+claim a second writable copy.
+
+These are conditional compiler results, not universal files. Always read the
+actual `scaffoldOutputs`.
+
+### Backend scaffold matrix
+
+The backend overlay applies only when `senior-backend` is an eligible role:
+
+| `backendFramework` | Deterministic scaffold outputs |
+| --- | --- |
+| `go` | `go.mod`, `go.sum` |
+| `python`, `django`, `fastapi` | `pyproject.toml` |
+| `laravel`, `php` | `composer.json`, `artisan` |
+| `rust` | `Cargo.toml` |
+| `java` | `pom.xml` |
+| `kotlin` | `build.gradle.kts` |
+| `dotnet` | `Directory.Build.props` |
+| `supabase`, `our-fork` | `supabase/config.toml`, `supabase/migrations/0001_init.sql`, `supabase/seed.sql`, `packages/api-client/src/database.types.ts` |
+| another owned backend with no web UI | root `package.json` |
+
+UI-profile `service` and `store` modules move to the owned backend when one is
+selected: Supabase/our-fork uses `packages/api-client/src/`, Go uses
+`internal/`, Python-family backends use `services/api/`, PHP-family backends
+use `app/Services/`, and other owned backends use `services/api/src/`. Use the
+compiled module path; do not duplicate a browser-side service.
+
+### Test and QA overlay
+
+Module-derived tester outputs are authoritative only when they appear in
+`scaffoldOutputs`; do not infer an extra test path from this catalog. The
+compiler also adds these deterministic QA infrastructure outputs:
+
+| Surface/profile | Deterministic QA outputs and adapter |
+| --- | --- |
+| any `web-ui` | root `vitest.config.ts`, `playwright.config.ts`, `tests/e2e/smoke.spec.ts`; Playwright |
+| `react-native` | `.maestro/flows/smoke.yaml`; Maestro |
+| `swift-native` | `Tests/AppSmokeTests.swift`; Xcode simulator |
+| `kotlin-native` | `app/src/androidTest/AppSmokeTest.kt`; Android emulator |
+| `flutter-native` | `integration_test/app_test.dart`; Flutter driver |
+| Python-family backend-only | `tests/conftest.py` |
+| PHP-family backend-only | `phpunit.xml` |
+
+Run only adapters in the immutable capability/verification contracts. A
+missing binary or platform is `blocked-environment`, not a reason to substitute
+an unselected harness.
+
+### External API environment names
+
+`external-api` is an integration, not an owned backend, and does not by itself
+grant `senior-backend`. For a web external-API profile the compiler assigns
+`.env.example` to the frontend; an owned backend assigns it to the backend.
+Document names only—never values or secrets:
+
+- React/Vite, Vue, and plain Vite Svelte: `VITE_API_URL`.
+- Next.js: `NEXT_PUBLIC_API_URL` for browser-visible configuration and
+  `API_URL` for server-only use.
+- Nuxt: `NUXT_PUBLIC_API_BASE` in public runtime config and
+  `NUXT_API_BASE` server-side.
+- SvelteKit and Astro: `PUBLIC_API_URL` client-side and `API_URL` server-side.
+- Angular: a non-secret `API_URL` supplied through the app's selected runtime
+  configuration mechanism.
+- Laravel/server-rendered: `API_URL` server-side; `VITE_API_URL` only when the
+  browser must receive it.
+All public-prefixed values are readable by end users. Credentials remain
+server-side or in platform secret storage. Do not invent an environment
+adapter or config source outside `allowedOutputs`. Native external-API profiles
+do not receive `.env.example` from this baseline; use a platform build
+configuration only when its exact path is compiled.
+
+## Ionic/Capacitor overlay
+
+Apply this overlay when `CapabilityProfileV1.skillBuckets` includes
+`ionic-capacitor`. Ionic/Capacitor has no separate `StructuralProfileId`.
+Runtime keeps whichever web profile was selected—such as `vite-react`, `vue`,
+`angular`, or a compatible `generic-web` profile—and adds the
+`ionic-capacitor` skill/rule bucket. The base profile remains authoritative:
+
+- preserve its framework, router, source roots, components, and formatter;
+- default to a Capacitor wrapper around that one web application;
+- use `@ionic/react`, `@ionic/vue`, or `@ionic/angular` only when a full Ionic
+  UI rewrite is explicitly selected for the matching base framework;
+- never translate a Vue or Angular project into React as an Ionic default;
+- use React Native only when React Native/Expo is explicitly selected.
+
+The current architecture contract does not automatically grant
+`capacitor.config.*`, `ionic.config.json`, `ios/`, or `android/`. Create such
+outputs only when they appear in the compiled work unit. The QA adapter remains
+the selected web adapter (normally Playwright) unless runtime compiles a
+different verification contract.

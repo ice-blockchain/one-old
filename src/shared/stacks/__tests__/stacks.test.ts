@@ -54,13 +54,32 @@ test('minimal stack pushes common references into mandatory', () => {
   assert.ok(STACKS.minimal.mandatory.includes('rules/common/stack-recommendations.md'));
 });
 
-test('ionic-capacitor adds the react base + ionic optional rules', () => {
-  const m = composeRuleManifest({
-    stack: 'custom-frontend', frontend: 'none', backend: 'supabase',
+test('ionic-capacitor overlays the selected web framework without forcing React', () => {
+  for (const frontend of ['react-vite', 'vue', 'angular']) {
+    const manifest = composeRuleManifest({
+      stack: 'custom-frontend',
+      frontend,
+      backend: 'external-api',
+      mobile: { enabled: true, framework: 'ionic-capacitor' },
+    });
+    assert.ok(manifest.optional.includes('rules/frontend/ionic/capacitor.md'));
+    assert.equal(
+      manifest.mandatory.includes('rules/frontend/react/core.md'),
+      frontend === 'react-vite',
+      `${frontend} keeps only its selected base framework`,
+    );
+  }
+});
+
+test('ionic-capacitor contributes no rules without an explicit web framework', () => {
+  const manifest = composeRuleManifest({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'external-api',
     mobile: { enabled: true, framework: 'ionic-capacitor' },
   });
-  assert.ok(m.mandatory.includes('rules/frontend/react/core.md'));
-  assert.ok(m.optional.includes('rules/frontend/ionic/capacitor.md'));
+  assert.ok(!manifest.optional.includes('rules/frontend/ionic/capacitor.md'));
+  assert.ok(!manifest.mandatory.includes('rules/frontend/react/core.md'));
 });
 
 test('roleScopedRules scopes per role and returns null for unknown roles', () => {

@@ -1,6 +1,10 @@
 ---
 paths:
   - "apps/**/src/**"
+  - "web/**/src/**"
+  - "frontend/**/src/**"
+  - "client/**/src/**"
+  - "packages/**/src/**"
   - "src/**"
   - "capacitor.config.*"
   - "apps/**/capacitor.config.*"
@@ -8,8 +12,8 @@ paths:
 
 # Ionic Performance Rules
 
-React and frontend performance budgets still apply. Capacitor adds WebView and
-native-startup constraints.
+The selected web profile's performance budgets still apply. Capacitor adds
+WebView and native-startup constraints.
 
 ## Performance and WebView standard
 

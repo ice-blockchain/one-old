@@ -11,24 +11,26 @@ import { obj, type Rec } from '../obj';
 export const CAPABILITY_SCHEMA_VERSION = 1 as const;
 
 export type ProjectSurface = 'web-ui' | 'native-ui' | 'api' | 'cli' | 'worker' | 'data';
-export type StructuralProfileId =
-  | 'vite-react'
-  | 'next-app'
-  | 'next-pages'
-  | 'nuxt'
-  | 'vue'
-  | 'sveltekit'
-  | 'svelte'
-  | 'astro'
-  | 'angular'
-  | 'server-rendered'
-  | 'generic-web'
-  | 'unsupported-hybrid'
-  | 'react-native'
-  | 'swift-native'
-  | 'kotlin-native'
-  | 'flutter-native'
-  | 'backend-only';
+export const STRUCTURAL_PROFILE_IDS = [
+  'vite-react',
+  'next-app',
+  'next-pages',
+  'nuxt',
+  'vue',
+  'sveltekit',
+  'svelte',
+  'astro',
+  'angular',
+  'server-rendered',
+  'generic-web',
+  'unsupported-hybrid',
+  'react-native',
+  'swift-native',
+  'kotlin-native',
+  'flutter-native',
+  'backend-only',
+] as const;
+export type StructuralProfileId = typeof STRUCTURAL_PROFILE_IDS[number];
 export type QaAdapterId = 'playwright' | 'maestro' | 'xcode-simulator' | 'android-emulator' | 'flutter-driver';
 export type ArchitectureTargetSurface = 'web-ui' | 'native-ui';
 
@@ -1051,8 +1053,11 @@ export function skillBucketsForState(input: unknown): string[] {
   }
   if (mobile !== 'none' && mobile !== 'ionic-capacitor') {
     buckets.push('native-ui', mobile);
-  } else if (mobile === 'ionic-capacitor') {
-    buckets.push('web-ui', 'react-vite', 'ionic-capacitor');
+  } else if (mobile === 'ionic-capacitor' && !FRONTEND_NONE.has(frontend)) {
+    // Capacitor wraps the selected web framework. React/Vite, Vue, Angular,
+    // and generic web projects keep their own base bucket; Ionic must never
+    // manufacture a web/React stack when no base frontend was selected.
+    buckets.push('ionic-capacitor');
   }
   if (!BACKEND_NONE.has(backend)) {
     buckets.push('backend-common');

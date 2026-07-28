@@ -149,17 +149,64 @@ export function cleanupPrevious(cwd: string, previous: Rec, nextRulePaths: Set<s
   return removed;
 }
 
-const DEFAULT_VITE_NEW_PROJECT_RULE = 'rules/modes/new-project-vite-react.md';
-const DEFAULT_VITE_NEW_PROJECT_REFERENCES = [
-  'rules/modes/new-project-architecture.md',
-  'rules/modes/new-project-setup.md',
-];
+const NEW_PROJECT_ARCHITECTURE_RULE = 'rules/modes/new-project-architecture.md';
+const DEFAULT_VITE_NEW_PROJECT_SETUP_RULE = 'rules/modes/new-project-setup.md';
+
+// Closed at compile time in this dependency-free materializer layer.
+// profile-rule-routing.test.ts also compares it against the canonical runtime
+// STRUCTURAL_PROFILE_IDS tuple, so either side changing alone fails the suite.
+type StructuralProfileId =
+  | 'vite-react'
+  | 'next-app'
+  | 'next-pages'
+  | 'nuxt'
+  | 'vue'
+  | 'sveltekit'
+  | 'svelte'
+  | 'astro'
+  | 'angular'
+  | 'server-rendered'
+  | 'generic-web'
+  | 'unsupported-hybrid'
+  | 'react-native'
+  | 'swift-native'
+  | 'kotlin-native'
+  | 'flutter-native'
+  | 'backend-only';
+
+export const NEW_PROJECT_PROFILE_RULE_BY_ID: Readonly<Record<StructuralProfileId, string>> = {
+  'vite-react': 'rules/modes/new-project-vite-react.md',
+  'next-app': 'rules/modes/new-project-next-app.md',
+  'next-pages': 'rules/modes/new-project-next-pages.md',
+  nuxt: 'rules/modes/new-project-nuxt.md',
+  vue: 'rules/modes/new-project-vue.md',
+  sveltekit: 'rules/modes/new-project-sveltekit.md',
+  svelte: 'rules/modes/new-project-svelte.md',
+  astro: 'rules/modes/new-project-astro.md',
+  angular: 'rules/modes/new-project-angular.md',
+  'server-rendered': 'rules/modes/new-project-server-rendered.md',
+  'generic-web': 'rules/modes/new-project-generic-web.md',
+  'unsupported-hybrid': 'rules/modes/new-project-unsupported-hybrid.md',
+  'react-native': 'rules/modes/new-project-react-native.md',
+  'swift-native': 'rules/modes/new-project-swift-native.md',
+  'kotlin-native': 'rules/modes/new-project-kotlin-native.md',
+  'flutter-native': 'rules/modes/new-project-flutter-native.md',
+  'backend-only': 'rules/modes/new-project-backend-only.md',
+};
+
+function profileRuleFor(profileId?: string): string | null {
+  if (
+    !profileId
+    || !Object.prototype.hasOwnProperty.call(NEW_PROJECT_PROFILE_RULE_BY_ID, profileId)
+  ) {
+    return null;
+  }
+  return NEW_PROJECT_PROFILE_RULE_BY_ID[profileId as StructuralProfileId];
+}
 
 function defaultViteNewProject(state: Rec, profileId?: string): boolean {
-  const effectiveProfile = profileId
-    || (state.frontend === 'react-vite' ? 'vite-react' : '');
   const defaultStack = state.stack === 'default' || state.stack === 'react-realtime-monorepo';
-  return defaultStack && effectiveProfile === 'vite-react';
+  return defaultStack && profileId === 'vite-react';
 }
 
 function existingRulePaths(root: string, relPaths: readonly string[]): string[] {
@@ -167,9 +214,9 @@ function existingRulePaths(root: string, relPaths: readonly string[]): string[] 
 }
 
 /**
- * Blocking mode rules. The new-project spine is universal, while the default
- * Vite gateway is selected from the immutable runtime capability profile.
- * Detailed setup/tree documents are references, not always-on policy.
+ * Blocking mode rules. The new-project spine is universal and exactly one
+ * profile rule is selected from the immutable runtime capability profile.
+ * Missing/unknown profiles fail closed to the spine instead of guessing.
  */
 export function modeRulesForState(root: string, state: Rec, profileId?: string): string[] {
   const mode = state && typeof state.mode === 'string' ? state.mode : '';
@@ -177,10 +224,11 @@ export function modeRulesForState(root: string, state: Rec, profileId?: string):
   const relPath = `rules/modes/${mode}.md`;
   if (!fs.existsSync(path.join(root, templatePath(relPath)))) return [];
   if (mode === 'new-project') {
+    const profileRule = profileRuleFor(profileId);
     return [
       relPath,
-      ...(defaultViteNewProject(state, profileId) && fs.existsSync(path.join(root, templatePath(DEFAULT_VITE_NEW_PROJECT_RULE)))
-        ? [DEFAULT_VITE_NEW_PROJECT_RULE]
+      ...(profileRule && fs.existsSync(path.join(root, templatePath(profileRule)))
+        ? [profileRule]
         : []),
     ];
   }
@@ -200,11 +248,16 @@ export function modeRulesForState(root: string, state: Rec, profileId?: string):
 }
 
 /**
- * Profile-scoped mode references. Keeping this separate prevents backend-only,
- * native, and custom web projects from inheriting the default web playbook.
+ * Every new project receives the universal architecture/control-plane index.
+ * The detailed setup checklist remains exclusive to the default Vite profile.
  */
 export function modeReferenceRulesForState(root: string, state: Rec, profileId?: string): string[] {
   const mode = state && typeof state.mode === 'string' ? state.mode : '';
-  if (mode !== 'new-project' || !defaultViteNewProject(state, profileId)) return [];
-  return existingRulePaths(root, DEFAULT_VITE_NEW_PROJECT_REFERENCES);
+  if (mode !== 'new-project') return [];
+  return existingRulePaths(root, [
+    NEW_PROJECT_ARCHITECTURE_RULE,
+    ...(defaultViteNewProject(state, profileId)
+      ? [DEFAULT_VITE_NEW_PROJECT_SETUP_RULE]
+      : []),
+  ]);
 }

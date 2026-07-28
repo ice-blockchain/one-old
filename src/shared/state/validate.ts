@@ -133,6 +133,12 @@ export function trafficOneStateValidationIssues(
     }
     if (typeof mobile.framework !== 'string' || !MOBILE_FRAMEWORK_IDS.has(mobile.framework)) {
       issues.push(`\`mobile.framework\` is ${formatStateValue(mobile.framework)}; valid values: ${idList(MOBILE_FRAMEWORK_IDS)}.`);
+    } else if (
+      s.mode === 'new-project'
+      && mobile.framework === 'ionic-capacitor'
+      && s.frontend === 'none'
+    ) {
+      issues.push('`mobile.framework="ionic-capacitor"` requires an explicit web `frontend`; Ionic is an overlay, not a standalone native profile.');
     }
     if (typeof mobile.source !== 'string' || !MOBILE_SOURCE_IDS.has(mobile.source)) {
       issues.push(`\`mobile.source\` is ${formatStateValue(mobile.source)}; valid values: ${idList(MOBILE_SOURCE_IDS)}.`);

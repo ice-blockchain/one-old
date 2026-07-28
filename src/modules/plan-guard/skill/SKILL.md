@@ -138,9 +138,13 @@ Frontend completion gate: do not write `IMPLEMENTED` with collapsed source. `{{F
 Frontend completion gate: {{PROBLEMS}}. The stock Vite template emits compiled `.js`/`.d.ts` next to every source on the first build, and the stale output can shadow the module at import time. Fix exactly this: set `"noEmit": true` in the app tsconfig, remove `"composite": true`, and use `"build": "tsc --noEmit && vite build"`, `"typecheck": "tsc --noEmit"`. Then re-emit `IMPLEMENTED`.
 <!-- T1BLOCK:END frontend-emit-config-gate -->
 
-<!-- T1BLOCK:BEGIN frontend-format-parity-gate -->
-Frontend completion gate: {{CONFIG}} exists but `prettier` is not declared in the root package.json dependencies/devDependencies. A script or config that names an absent tool makes later verification meaningless. Run exactly `pnpm add -D -w prettier` (or add `"prettier"` to the root devDependencies), then re-emit `IMPLEMENTED`.
-<!-- T1BLOCK:END frontend-format-parity-gate -->
+<!-- T1BLOCK:BEGIN implementer-format-parity-gate -->
+Implementer format parity gate: role `{{ROLE}}` owns formatter config `{{CONFIG}}`, but `prettier` is not declared in `{{MANIFEST}}` dependencies/devDependencies. A script or config that names an absent tool makes verification meaningless. Add `prettier` with the selected package manager at tooling root `{{TOOLING_ROOT}}`, then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-format-parity-gate -->
+
+<!-- T1BLOCK:BEGIN implementer-format-toolchain-gate -->
+Implementer format toolchain gate: role `{{ROLE}}` owns compiled formatter outputs at `{{TOOLING_ROOT}}`, but no Prettier config, `format`/`format:check` scripts, or `prettier` dependency is present. Create `{{CONFIG}}`, add matching scripts and the dependency to `{{MANIFEST}}`, run the formatter, then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-format-toolchain-gate -->
 
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
 Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Numeric LOC/function-count/component-count findings remain warnings during this rollout.

@@ -515,17 +515,162 @@ function workspaceScaffoldOutputs(webRoot: string): CompiledArchitectureOutputV1
     'pnpm-workspace.yaml',
     'turbo.json',
     'tsconfig.base.json',
-    '.prettierrc',
-    '.prettierignore',
-    // `new-project-setup` prescribes this file's contents, but nothing ever
-    // compiled it, so no role could create it (2cu shipped with no .gitignore
-    // at all while stray build output and a 241 MB harness sat untracked).
-    '.gitignore',
-    // Same gap as .gitignore: README.md was in no role's scope, so a queued
-    // README unit was rejected at Step-0 and no paid role could write one
-    // either (observed 3cl).
-    'README.md',
   ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const }));
+}
+
+const REPOSITORY_SCAFFOLD_OUTPUTS = [
+  '.gitignore',
+  'README.md',
+  '.editorconfig',
+  '.github/workflows/ci.yml',
+] as const;
+
+const NODE_TOOLING_OUTPUTS = [
+  '.prettierrc',
+  '.prettierignore',
+  '.nvmrc',
+] as const;
+
+function selectedImplementationOwner(profile: CapabilityProfileV1): string | null {
+  const selectedUi = profile.surfaces.includes('web-ui') || profile.surfaces.includes('native-ui');
+  if (selectedUi && profile.roles.includes('senior-frontend')) return 'senior-frontend';
+  if (profile.roles.includes('senior-backend')) return 'senior-backend';
+  return null;
+}
+
+function selectedTargetHasWebUi(profile: CapabilityProfileV1): boolean {
+  return profile.surfaces.includes('web-ui') && profile.architectureTarget !== 'native-ui';
+}
+
+function repositoryScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitectureOutputV1[] {
+  const ownerRole = selectedImplementationOwner(profile);
+  if (!ownerRole) return [];
+  return REPOSITORY_SCAFFOLD_OUTPUTS.map((output) => ({
+    path: output,
+    ownerRole,
+    kind: 'scaffold',
+  }));
+}
+
+function environmentScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitectureOutputV1[] {
+  const ownerRole = profile.roles.includes('senior-backend')
+    ? 'senior-backend'
+    : (
+        selectedTargetHasWebUi(profile)
+        && profile.backendFramework === 'external-api'
+        && profile.roles.includes('senior-frontend')
+          ? 'senior-frontend'
+          : null
+      );
+  return ownerRole
+    ? [{ path: '.env.example', ownerRole, kind: 'scaffold' }]
+    : [];
+}
+
+function selectedNodePackageManifest(
+  profile: CapabilityProfileV1,
+  outputs: readonly CompiledArchitectureOutputV1[],
+  immutablePaths: ReadonlySet<string>,
+): CompiledArchitectureOutputV1 | null {
+  const manifests = outputs.filter((output) => (
+    output.path === 'package.json' || output.path.endsWith('/package.json')
+  ));
+  if (manifests.length === 0) return null;
+  const rootManifest = manifests.find((output) => output.path === 'package.json');
+
+  let selectedManifest: CompiledArchitectureOutputV1 | undefined = rootManifest;
+  if (!selectedManifest && selectedTargetHasWebUi(profile)) {
+    const webRoot = webPackageRoot(profile);
+    const webManifest = webRoot === '.' ? 'package.json' : `${webRoot}/package.json`;
+    selectedManifest = manifests.find((output) => output.path === webManifest);
+  }
+
+  selectedManifest ||= manifests
+    .slice()
+    .sort((a, b) => {
+      const depth = a.path.split('/').length - b.path.split('/').length;
+      return depth || a.path.localeCompare(b.path);
+    })[0];
+  if (!selectedManifest) return null;
+
+  // A detected root manifest is the repository tooling authority even when the
+  // selected application package lives below it. Keep the same deterministic
+  // owner as the selected Node manifest so config, scripts, and dependency
+  // changes cannot split across roles.
+  if (immutablePaths.has('package.json') && selectedManifest.path !== 'package.json') {
+    return {
+      path: 'package.json',
+      ownerRole: selectedManifest.ownerRole,
+      kind: 'scaffold',
+    };
+  }
+  return selectedManifest;
+}
+
+function nodeToolingScaffoldOutputs(
+  profile: CapabilityProfileV1,
+  outputs: readonly CompiledArchitectureOutputV1[],
+  immutablePaths: ReadonlySet<string>,
+): CompiledArchitectureOutputV1[] {
+  const manifest = selectedNodePackageManifest(profile, outputs, immutablePaths);
+  if (!manifest) return [];
+  const packageRoot = path.posix.dirname(manifest.path);
+  return [
+    ...(!outputs.some((output) => output.path === manifest.path) ? [manifest] : []),
+    ...NODE_TOOLING_OUTPUTS.map((output) => ({
+      path: packageRoot === '.' ? output : `${packageRoot}/${output}`,
+      ownerRole: manifest.ownerRole,
+      kind: 'scaffold' as const,
+    })),
+  ];
+}
+
+function appendUniqueScaffoldOutputs(
+  outputs: CompiledArchitectureOutputV1[],
+  additions: readonly CompiledArchitectureOutputV1[],
+): void {
+  for (const addition of additions) {
+    if (!outputs.some((output) => output.path === addition.path)) outputs.push(addition);
+  }
+}
+
+function resolveInitialScaffoldOwners(
+  profile: CapabilityProfileV1,
+  outputs: readonly CompiledArchitectureOutputV1[],
+): CompiledArchitectureOutputV1[] {
+  const resolved = new Map<string, CompiledArchitectureOutputV1>();
+  for (const output of outputs) {
+    const existing = resolved.get(output.path);
+    if (!existing) {
+      resolved.set(output.path, output);
+      continue;
+    }
+    if (existing.ownerRole === output.ownerRole) continue;
+
+    // React Native and a root Node API can legitimately share package.json.
+    // The selected implementation owner is the single integration owner and
+    // must merge both surfaces' dependency/script requirements. Every other
+    // cross-role collision remains a compiler error instead of being silently
+    // discarded by path de-duplication.
+    const integrationOwner = selectedImplementationOwner(profile);
+    const implementationOwners = new Set([existing.ownerRole, output.ownerRole]);
+    if (
+      output.path === 'package.json'
+      && integrationOwner
+      && implementationOwners.has(integrationOwner)
+      && [...implementationOwners].every((owner) => (
+        owner === 'senior-frontend' || owner === 'senior-backend'
+      ))
+    ) {
+      resolved.set(output.path, { ...existing, ownerRole: integrationOwner });
+      continue;
+    }
+    throw new Error(
+      `compiled scaffold output ${output.path} has conflicting owners `
+      + `${existing.ownerRole} and ${output.ownerRole}`,
+    );
+  }
+  return [...resolved.values()];
 }
 
 // Public crawl/share assets `rules/common/seo.md` REQUIRES for every public
@@ -700,7 +845,7 @@ function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitect
       // forced an architect replan just to own them.
       'packages/api-client/src/database.types.ts',
     ];
-  } else if (!profile.surfaces.includes('web-ui')) {
+  } else if (!selectedTargetHasWebUi(profile)) {
     outputs = ['package.json'];
   }
   return outputs.map((output) => ({
@@ -793,7 +938,7 @@ function testerOutputs(
       ownerRole: 'senior-tester',
       kind: 'test',
     }));
-  if (profile.surfaces.includes('web-ui')) {
+  if (selectedTargetHasWebUi(profile)) {
     outputs.push(
       // A unit-test runner config the tester OWNS. Without one it has no legal
       // place to configure a runner and improvises: observed 2cu, the tester
@@ -805,7 +950,8 @@ function testerOutputs(
       { path: 'playwright.config.ts', ownerRole: 'senior-tester', kind: 'test-infra' },
       { path: 'tests/e2e/smoke.spec.ts', ownerRole: 'senior-tester', kind: 'test' },
     );
-  } else if (profile.profileId === 'react-native') {
+  }
+  if (profile.profileId === 'react-native') {
     outputs.push({ path: '.maestro/flows/smoke.yaml', ownerRole: 'senior-tester', kind: 'test-infra' });
   } else if (profile.profileId === 'swift-native') {
     outputs.push({ path: 'Tests/AppSmokeTests.swift', ownerRole: 'senior-tester', kind: 'test-infra' });
@@ -1350,25 +1496,52 @@ export function compileArchitecture(
       ? [parentBackedEntrypoints[0]!]
       : entrypointCandidates.slice(0, 1);
   const isNewProject = obj(state)?.mode === 'new-project';
-  const scaffoldOutputs = [
+  const scaffoldOutputs = resolveInitialScaffoldOwners(profile, [
     ...(isNewProject ? frontendScaffoldOutputs(profile) : []),
     ...(isNewProject ? nativeScaffoldOutputs(profile) : []),
     ...(isNewProject ? backendScaffoldOutputs(profile) : []),
     ...routeRegistrationOutputs(profile, input.routes),
     ...testerOutputs(profile, modules),
-  ].filter((output, index, all) => (
-    all.findIndex((candidate) => candidate.path === output.path && candidate.ownerRole === output.ownerRole) === index
-  ));
+  ]);
   if (isNewProject) {
+    appendUniqueScaffoldOutputs(scaffoldOutputs, repositoryScaffoldOutputs(profile));
+    appendUniqueScaffoldOutputs(scaffoldOutputs, environmentScaffoldOutputs(profile));
     scaffoldOutputs.push(...workspaceManifestOutputs(scaffoldOutputs, modules));
-    // Non-workspace layouts never reach `workspaceScaffoldOutputs`, so pin the
-    // ignore file to whichever implementer this profile actually runs.
-    if (!scaffoldOutputs.some((output) => output.path === '.gitignore')) {
-      const owner = ['senior-frontend', 'senior-backend'].find((role) => profile.roles.includes(role));
-      if (owner) scaffoldOutputs.push({ path: '.gitignore', ownerRole: owner, kind: 'scaffold' });
+    appendUniqueScaffoldOutputs(
+      scaffoldOutputs,
+      nodeToolingScaffoldOutputs(profile, scaffoldOutputs, immutablePaths),
+    );
+    const duplicateScaffold = scaffoldOutputs.find((output, index) => (
+      scaffoldOutputs.findIndex((candidate) => candidate.path === output.path) !== index
+    ));
+    if (duplicateScaffold) {
+      throw new Error(`compiled scaffold output ${duplicateScaffold.path} has multiple owners`);
+    }
+    const repositoryOwner = selectedImplementationOwner(profile);
+    if (repositoryOwner) {
+      for (const required of REPOSITORY_SCAFFOLD_OUTPUTS) {
+        const output = scaffoldOutputs.find((candidate) => candidate.path === required);
+        if (!output || output.ownerRole !== repositoryOwner) {
+          throw new Error(`repository scaffold ${required} is missing its deterministic owner`);
+        }
+      }
     }
   }
   const inputHash = contractHash(input);
+  const allowedOutputs = [...new Set([
+    ...selectedEntrypoints,
+    ...modules.map((module) => module.output),
+    ...scaffoldOutputs.map((output) => output.path),
+  ])].sort();
+  const runtimeOwnedOutput = allowedOutputs.find((output) => (
+    output === 'AGENTS.md'
+    || output === 'CLAUDE.md'
+    || output === '.traffic-one'
+    || output.startsWith('.traffic-one/')
+  ));
+  if (runtimeOwnedOutput) {
+    throw new Error(`compiled output ${runtimeOwnedOutput} is runtime/materializer-owned`);
+  }
   const withoutHash = {
     schemaVersion: COMPILED_ARCHITECTURE_SCHEMA_VERSION,
     runId,
@@ -1380,11 +1553,7 @@ export function compileArchitecture(
     routes,
     modules,
     scaffoldOutputs,
-    allowedOutputs: [...new Set([
-      ...selectedEntrypoints,
-      ...modules.map((module) => module.output),
-      ...scaffoldOutputs.map((output) => output.path),
-    ])].sort(),
+    allowedOutputs,
     exceptions: input.exceptions || [],
     inputHash,
   };

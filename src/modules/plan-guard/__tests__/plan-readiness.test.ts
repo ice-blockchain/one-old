@@ -69,7 +69,7 @@ function writeRequiredScaffold(dir: string): void {
     workspaces: ['apps/*', 'packages/*'],
     scripts: { 'format:check': 'prettier --check .' },
     // Script/config parity: the fixture declares the tool its script names,
-    // matching the frontend-format-parity-gate contract.
+    // matching the owner-scoped implementer-format-parity-gate contract.
     devDependencies: { prettier: '^3.0.0' },
   }), 'utf8');
   fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100, "singleQuote": true }\n', 'utf8');
@@ -126,8 +126,9 @@ function writeArchitectureInputAndAssignments(
   dir: string,
   runId = 'R',
   state: Record<string, unknown> = DEFAULT_STATE,
+  input?: Record<string, unknown>,
 ): void {
-  writeArchitectureInputOnly(dir, runId);
+  writeArchitectureInputOnly(dir, runId, input);
   const architecture = compileArchitectureForRun(dir, runId, state);
   const verification = compileVerificationContract(dir, runId, state, architecture, {
     changedPaths: [],
@@ -135,10 +136,14 @@ function writeArchitectureInputAndAssignments(
   publishRuntimeAssignments(dir, architecture, verification.contractHash);
 }
 
-function writeArchitectureInputOnly(dir: string, runId = 'R'): void {
+function writeArchitectureInputOnly(
+  dir: string,
+  runId = 'R',
+  input?: Record<string, unknown>,
+): void {
   const inputPath = architectureInputPath(dir, runId);
   fs.mkdirSync(path.dirname(inputPath), { recursive: true });
-  fs.writeFileSync(inputPath, JSON.stringify({
+  fs.writeFileSync(inputPath, JSON.stringify(input || {
     schemaVersion: 1,
     routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
     modules: [
@@ -152,7 +157,7 @@ const DEFAULT_STATE = {
   mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
 };
 
-// Satisfies frontend-format-toolchain-gate for fixtures that exercise OTHER
+// Satisfies the owner-scoped implementer format gate for fixtures exercising OTHER
 // frontend completion gates (the gate itself is covered by its own tests).
 function writeFormatterToolchain(dir: string): void {
   fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100 }\n', 'utf8');
@@ -1670,28 +1675,30 @@ test('frontend collapse gate skips emitted .js/.d.ts twins and reports the real 
   });
 });
 
-test('frontend format-parity gate: prettier config/script without the dependency is denied; declaring it passes', () => {
+test('implementer format gates follow the compiled frontend owner and preserve parity semantics', () => {
   withProject((dir) => {
-    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), 'export function App() {\n  return null;\n}\n', 'utf8');
+    const state = { ...DEFAULT_STATE, onboardingComplete: true };
+    writeArchitectureInputAndAssignments(dir, 'R', state);
     fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100 }\n', 'utf8');
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
     const gateArgs = {
       filePath: '.traffic-one/digests/R/frontend.md',
       content: 'verdict: IMPLEMENTED\n',
       projectRoot: dir,
-      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      state,
       writingFeatureSource: false,
       block: names,
     };
-    assert.ok(planReadinessViolations(gateArgs).includes('frontend-format-parity-gate'));
+    const formatViolations = (): string[] => planReadinessViolations(gateArgs)
+      .filter((violation) => violation.startsWith('implementer-format-'));
+    assert.deepEqual(formatViolations(), ['implementer-format-parity-gate']);
 
     // Declaring the dependency restores parity.
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
       private: true,
       devDependencies: { prettier: '^3.0.0' },
     }), 'utf8');
-    assert.deepEqual(planReadinessViolations(gateArgs), []);
+    assert.deepEqual(formatViolations(), []);
 
     // A format:check script alone (no config file) also requires the dependency.
     fs.rmSync(path.join(dir, '.prettierrc'));
@@ -1699,29 +1706,182 @@ test('frontend format-parity gate: prettier config/script without the dependency
       private: true,
       scripts: { 'format:check': 'prettier --check .' },
     }), 'utf8');
-    assert.ok(planReadinessViolations(gateArgs).includes('frontend-format-parity-gate'));
+    assert.deepEqual(formatViolations(), ['implementer-format-parity-gate']);
 
     // Regression (3co, 1.0.28): NO config, NO script, NO dependency used to
     // pass ("nothing to keep in parity") — which shipped collapsed one-liner
     // code with a formatter the collapse-gate remedy could never run. The
     // absent toolchain is now its own deterministic deny.
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
-    assert.ok(planReadinessViolations(gateArgs).includes('frontend-format-toolchain-gate'));
+    assert.deepEqual(formatViolations(), ['implementer-format-toolchain-gate']);
 
     // An alternative formatter toolchain (biome) satisfies the gate.
     fs.writeFileSync(path.join(dir, 'biome.json'), '{}\n', 'utf8');
-    assert.deepEqual(planReadinessViolations(gateArgs), []);
+    assert.deepEqual(formatViolations(), []);
     fs.rmSync(path.join(dir, 'biome.json'));
 
-    // The architect digest never carries this gate (v1.0.20 removed
-    // architect-side formatter requirements; the live regression test above
-    // pins that removal).
+    // The architect digest and non-terminal implementer prose never carry this gate.
     fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
     const architectViolations = planReadinessViolations({
       ...gateArgs,
       filePath: '.traffic-one/digests/R/architect.md',
       content: 'PLAN_READY\n',
     });
-    assert.ok(!architectViolations.includes('frontend-format-parity-gate'));
+    assert.ok(!architectViolations.some((violation) => violation.startsWith('implementer-format-')));
+    const nonTerminalViolations = planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: NOT_IMPLEMENTED\n',
+    });
+    assert.ok(!nonTerminalViolations.some((violation) => violation.startsWith('implementer-format-')));
+  });
+});
+
+test('implementer format gates support backend ownership and ignore the non-owner digest', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+
+    const violationsFor = (role: 'frontend' | 'backend'): string[] =>
+      planReadinessViolations({
+        filePath: `.traffic-one/digests/R/${role}.md`,
+        content: 'verdict: IMPLEMENTED\n',
+        projectRoot: dir,
+        state,
+        writingFeatureSource: false,
+        block: names,
+      }).filter((violation) => violation.startsWith('implementer-format-'));
+
+    assert.deepEqual(violationsFor('backend'), ['implementer-format-parity-gate']);
+    assert.deepEqual(violationsFor('frontend'), [], 'frontend does not own backend-only tooling');
+
+    fs.rmSync(path.join(dir, '.prettierrc'));
+    assert.deepEqual(violationsFor('backend'), ['implementer-format-toolchain-gate']);
+  });
+});
+
+test('implementer format gate resolves config, manifest, scripts, and dependency at one tooling root', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    fs.mkdirSync(path.join(dir, 'web', 'app'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'web', 'package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0' },
+    }), 'utf8');
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    fs.writeFileSync(path.join(dir, 'web', '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      devDependencies: { prettier: '^3.0.0' },
+    }), 'utf8');
+
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: namesWithVars,
+    };
+    const formatViolations = (): string[] => planReadinessViolations(gateArgs)
+      .filter((violation) => violation.startsWith('implementer-format-'));
+    assert.deepEqual(
+      formatViolations(),
+      ['implementer-format-parity-gate:web/.prettierrc'],
+      'a root dependency cannot satisfy nested web tooling',
+    );
+
+    fs.writeFileSync(path.join(dir, 'web', 'package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0' },
+      devDependencies: { prettier: '^3.0.0' },
+    }), 'utf8');
+    assert.deepEqual(formatViolations(), []);
+
+    const backendDigest = planReadinessViolations({
+      ...gateArgs,
+      filePath: '.traffic-one/digests/R/backend.md',
+    });
+    assert.ok(!backendDigest.some((violation) => violation.startsWith('implementer-format-')));
+  });
+});
+
+test('implementer format gate T1BLOCK prose is byte-identical to both TypeScript fallbacks', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+
+    const captured = new Map<string, {
+      fallback: string;
+      vars: Record<string, string | number | null | undefined>;
+    }>();
+    const capture = (
+      name: string,
+      fallback: string,
+      vars: Record<string, string | number | null | undefined> = {},
+    ): string => {
+      if (name.startsWith('implementer-format-')) captured.set(name, { fallback, vars });
+      return name;
+    };
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: capture,
+    };
+
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    planReadinessViolations(gateArgs);
+    fs.rmSync(path.join(dir, '.prettierrc'));
+    planReadinessViolations(gateArgs);
+
+    const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+    for (const blockId of [
+      'implementer-format-parity-gate',
+      'implementer-format-toolchain-gate',
+    ]) {
+      const found = captured.get(blockId);
+      assert.ok(found, `missing TypeScript fallback for ${blockId}`);
+      const begin = `<!-- T1BLOCK:BEGIN ${blockId} -->`;
+      const end = `<!-- T1BLOCK:END ${blockId} -->`;
+      const beginAt = skill.indexOf(begin);
+      const endAt = skill.indexOf(end);
+      assert.ok(beginAt >= 0 && endAt > beginAt, `missing T1BLOCK ${blockId}`);
+      let rendered = skill.slice(beginAt + begin.length, endAt).trim();
+      for (const [key, value] of Object.entries(found.vars)) {
+        rendered = rendered.split(`{{${key}}}`).join(String(value ?? ''));
+      }
+      assert.equal(rendered, found.fallback, `${blockId} prose/fallback drift`);
+    }
   });
 });

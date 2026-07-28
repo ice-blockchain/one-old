@@ -1,6 +1,6 @@
 ---
 description: "Apply to every brand-new Traffic One project: compile the runtime-owned capability and architecture contracts before scaffolding, then follow only the selected profile."
-# Loaded when mode = new-project (≤5 source files detected)
+# Loaded when runtime-owned mode = new-project.
 ---
 
 # Mode: New Project — Capability Contract First

@@ -5,43 +5,50 @@ paths:
   - "apps/**/capacitor.config.*"
   - "apps/**/ionic.config.json"
   - "apps/**/src/**"
+  - "web/**/src/**"
+  - "frontend/**/src/**"
+  - "client/**/src/**"
+  - "packages/**/src/**"
   - "src/**"
 ---
 
 # Ionic Framework — Stack Core
 
-Ionic is the approved hybrid-mobile path for React web products. The default
-delivery model is a Capacitor shell around the existing/generated React app.
+Ionic is the approved hybrid-mobile overlay for a selected web product. The
+default delivery model is a Capacitor shell around the existing/generated web
+app while any selected compatible web profile remains authoritative. Full
+Ionic UI adapters exist for React, Vue, and Angular; Next, Nuxt,
+SvelteKit/Svelte, Astro, and generic-web normally use the wrapper form.
 Use React Native / Expo only when the client explicitly asks for React Native,
 Expo, RN, or a fully React Native implementation.
 
-## Forced library stack — no exceptions
+## Framework-preserving stack
 
 - **Hybrid runtime:** Ionic Framework + Capacitor.
 - **Recommended packaging:** `@capacitor/core`, `@capacitor/cli`, plus
   `@capacitor/ios` and/or `@capacitor/android` for requested targets.
-- **React source app:** React ^18 (Ionic React's validated peer range — this
-  pin is deliberate), Vite, react-router-dom v6 (`@ionic/react-router` peer),
-  Redux Toolkit, RTK Query, zustand, Tailwind + shadcn/ui, i18next, and the
-  React rules remain the source of truth. Styling stack, the deliberate Tailwind
-  v3.4 pin, and the Ionic ↔ shadcn theme bridge are owned by
-  `rules/frontend/ionic/styles.md`.
+- **Base application:** preserve the compiled profile's framework, router,
+  source roots, state model, formatter, and design system. Do not install
+  React or React-only rules for Vue or Angular.
+- **Full Ionic UI adapter:** use `@ionic/react`, `@ionic/vue`, or
+  `@ionic/angular` only when it matches the selected base framework and the
+  user explicitly requests Ionic UI primitives.
 - **Native APIs:** Capacitor plugins behind services/hooks, never ad hoc calls
   from random components.
 
-## Full Ionic React vs Capacitor-wrapper default (canonical)
+## Full Ionic UI vs Capacitor-wrapper default (canonical)
 
 This decision is stated once here; `components.md`, `navigation.md`, and
 `capacitor.md` defer to it.
 
-- **Default — Capacitor wrapper:** ship a Capacitor shell around the
-  existing/generated React app; keep one React codebase, `react-router-dom v6`
-  routing, and the shared shadcn UI. This is the recommended path for "make this
-  site an app", "mobile version", "iOS/Android", or "publish to stores".
-- **Full Ionic React alternative:** `@ionic/react` with Ionic
-  navigation/components and `IonRouterOutlet`, only when the user explicitly
-  wants a mobile-first rewrite. Verify router compatibility before migrating
-  routes; do not translate web routes one-for-one without checking mobile UX.
+- **Default — Capacitor wrapper:** ship a Capacitor shell around the selected
+  web application; keep one codebase, its existing router, and its shared
+  design system. This is the recommended path for "make this site an app",
+  "mobile version", "iOS/Android", or "publish to stores".
+- **Full Ionic UI alternative:** use the matching React, Vue, or Angular Ionic
+  adapter only when the user explicitly wants a mobile-first rewrite. Verify
+  router compatibility before migrating routes; do not translate web routes
+  one-for-one without checking mobile UX.
 - Do not create a parallel React Native app unless React Native / Expo is named
   explicitly.
 

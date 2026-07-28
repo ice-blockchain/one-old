@@ -509,6 +509,7 @@ test('backend-only, native, Next, and Nuxt new projects never materialize the de
   const fixtures = [
     {
       name: 'Go API',
+      profileRule: 'rules/modes/new-project-backend-only.md',
       state: {
         mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'go',
         mobile: { framework: 'none' }, onboardingComplete: true,
@@ -519,6 +520,7 @@ test('backend-only, native, Next, and Nuxt new projects never materialize the de
     },
     {
       name: 'Swift native',
+      profileRule: 'rules/modes/new-project-swift-native.md',
       state: {
         mode: 'new-project', stack: 'custom-stack', frontend: 'none', backend: 'none',
         mobile: { framework: 'swift-native' }, onboardingComplete: true,
@@ -529,6 +531,7 @@ test('backend-only, native, Next, and Nuxt new projects never materialize the de
     },
     {
       name: 'Next.js',
+      profileRule: 'rules/modes/new-project-next-app.md',
       state: {
         mode: 'new-project', stack: 'custom-frontend', frontend: 'nextjs', backend: 'none',
         mobile: { framework: 'none' }, onboardingComplete: true,
@@ -540,6 +543,7 @@ test('backend-only, native, Next, and Nuxt new projects never materialize the de
     },
     {
       name: 'Nuxt',
+      profileRule: 'rules/modes/new-project-nuxt.md',
       state: {
         mode: 'new-project', stack: 'custom-frontend', frontend: 'nuxt', backend: 'none',
         mobile: { framework: 'none' }, onboardingComplete: true,
@@ -562,14 +566,22 @@ test('backend-only, native, Next, and Nuxt new projects never materialize the de
       materializeProjectAssets(project, fixture.state);
       const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
       assert.ok(manifest.rules.includes('rules/modes/new-project.md'), `${fixture.name}: universal spine`);
+      assert.ok(manifest.rules.includes(fixture.profileRule), `${fixture.name}: selected profile rule`);
+      assert.ok(manifest.rules.includes('rules/modes/new-project-architecture.md'),
+        `${fixture.name}: universal architecture reference`);
       for (const relPath of [
         'rules/modes/new-project-vite-react.md',
-        'rules/modes/new-project-architecture.md',
         'rules/modes/new-project-setup.md',
       ]) {
         assert.ok(!manifest.rules.includes(relPath), `${fixture.name}: excludes ${relPath}`);
         assert.equal(fs.existsSync(path.join(project, '.traffic-one', relPath)), false);
       }
+      assert.ok(fs.existsSync(path.join(project, '.traffic-one', fixture.profileRule)));
+      assert.ok(fs.existsSync(path.join(
+        project,
+        '.traffic-one',
+        'rules/modes/new-project-architecture.md',
+      )));
 
       const spine = fs.readFileSync(
         path.join(project, '.traffic-one', 'rules', 'modes', 'new-project.md'),
@@ -577,8 +589,120 @@ test('backend-only, native, Next, and Nuxt new projects never materialize the de
       );
       assert.doesNotMatch(spine, /\b(?:React|Vite|Turborepo|Supabase|Playwright)\b|apps\/web/i,
         `${fixture.name}: universal active rule has no default-web mandate`);
+      const agents = fs.readFileSync(path.join(project, 'AGENTS.md'), 'utf8');
+      const profileAt = agents.indexOf(`.traffic-one/${fixture.profileRule}`);
+      const referenceHeadingAt = agents.indexOf('### Reference On Demand');
+      const architectureAt = agents.indexOf('.traffic-one/rules/modes/new-project-architecture.md');
+      assert.ok(profileAt > 0 && profileAt < referenceHeadingAt,
+        `${fixture.name}: profile rule is mandatory`);
+      assert.ok(architectureAt > referenceHeadingAt,
+        `${fixture.name}: architecture index is read on demand`);
     });
   }
+});
+
+test('unresolved web/native new projects materialize only the fail-closed hybrid profile rule', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+
+    materializeProjectAssets(project, {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'react-native-expo' },
+      onboardingComplete: true,
+    });
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project.md'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project-unsupported-hybrid.md'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project-architecture.md'));
+    assert.ok(!manifest.rules.includes('rules/modes/new-project-vite-react.md'));
+    assert.ok(!manifest.rules.includes('rules/modes/new-project-react-native.md'));
+    assert.ok(!manifest.rules.includes('rules/modes/new-project-setup.md'));
+  });
+});
+
+test('Ionic materialization composes with Vite, Vue, and Angular profile rules', () => {
+  for (const fixture of [
+    { frontend: 'react-vite', profileId: 'vite-react', reactRules: true },
+    { frontend: 'vue', profileId: 'vue', reactRules: false },
+    { frontend: 'angular', profileId: 'angular', reactRules: false },
+  ] as const) {
+    withPluginAndProject((project, plugin) => {
+      fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+      fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+
+      materializeProjectAssets(project, {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: fixture.frontend,
+        backend: 'external-api',
+        mobile: { framework: 'ionic-capacitor' },
+        onboardingComplete: true,
+      });
+
+      const manifest = JSON.parse(fs.readFileSync(
+        path.join(project, '.traffic-one', 'manifest.json'),
+        'utf8',
+      ));
+      assert.ok(manifest.rules.includes(
+        `rules/modes/new-project-${fixture.profileId}.md`,
+      ));
+      assert.ok(manifest.rules.includes('rules/modes/new-project-architecture.md'));
+      assert.ok(manifest.rules.includes('rules/frontend/ionic/core.md'));
+      assert.ok(manifest.rules.includes('rules/frontend/ionic/capacitor.md'));
+      assert.equal(
+        manifest.rules.includes('rules/frontend/react/core.md'),
+        fixture.reactRules,
+        `${fixture.frontend} keeps its own base framework`,
+      );
+    });
+  }
+});
+
+test('new-project profile transitions remove stale profile/setup rules but retain the architecture index', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+
+    materializeProjectAssets(project, {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    });
+    fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    materializeProjectAssets(project, {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    });
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project-backend-only.md'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project-architecture.md'));
+    for (const stale of [
+      'rules/modes/new-project-vite-react.md',
+      'rules/modes/new-project-setup.md',
+    ]) {
+      assert.ok(!manifest.rules.includes(stale), `manifest removes ${stale}`);
+      assert.equal(fs.existsSync(path.join(project, '.traffic-one', stale)), false, `disk removes ${stale}`);
+    }
+  });
 });
 
 const GAP_RULES = [

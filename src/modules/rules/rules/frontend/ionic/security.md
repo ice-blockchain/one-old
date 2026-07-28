@@ -6,14 +6,19 @@ paths:
   - "apps/**/ionic.config.json"
   - "apps/**/src/services/**"
   - "apps/**/src/features/**/services/**"
+  - "web/**/src/**"
+  - "frontend/**/src/**"
+  - "client/**/src/**"
+  - "packages/**/src/**"
   - "src/services/**"
   - "src/features/**/services/**"
+  - "src/**"
 ---
 
 # Ionic Security Rules
 
-React browser security rules still apply. Capacitor adds native shell, deep-link,
-and permission surfaces.
+The selected web profile's browser security rules still apply. Capacitor adds
+native shell, deep-link, and permission surfaces.
 
 ## Secrets and storage
 
@@ -27,9 +32,10 @@ and permission surfaces.
 
 - Treat deep links, push payloads, clipboard text, camera/gallery results, file
   paths, and share targets as untrusted input.
-- **Zod inbound-payload validation (canonical for the Ionic stack):** validate
-  every native-plugin / deep-link / realtime payload against a zod schema before
-  it reaches Redux, RTK Query cache, or business logic. `capacitor.md`,
+- **Inbound-payload validation (canonical for the Ionic stack):** validate
+  every native-plugin / deep-link / realtime payload with the schema validator
+  selected by the base profile before it reaches application state or business
+  logic. `capacitor.md`,
   `navigation.md`, `realtime.md`, and `services` rules point here.
 - Allowlist external URL schemes and hosts before opening them from the app.
 - Production traffic uses HTTPS/WSS only.

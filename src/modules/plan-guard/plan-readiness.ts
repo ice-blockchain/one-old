@@ -85,7 +85,7 @@ const QA_REPORT_ARTIFACT_RE = /^\.traffic-one\/reports\/qa\/([^/]+)\/report-v2\.
 const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/architect\.md$/;
 const FRONTEND_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?frontend\.md$/;
 const IMPLEMENTER_DIGEST_RE =
-  /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?(?:frontend|backend)\.md$/;
+  /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?(frontend|backend)\.md$/;
 const REVIEWER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?reviewer\.md$/;
 const TESTER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?tester\.md$/;
 // Collapsed-source delivery guard. A single source line packing an entire
@@ -403,26 +403,48 @@ type FormatParityProblem =
   | { kind: 'missing-dependency'; reference: string }
   | { kind: 'missing-toolchain' };
 
-function formatParityViolation(projectRoot: string, profile: CapabilityProfileV1): FormatParityProblem | null {
-  const webRoot = webPackageRoot(profile);
-  const at = (rel: string): string => (webRoot === '.' ? rel : `${webRoot}/${rel}`);
-  const rootPkg = jsoncFile(projectRoot, 'package.json')?.parsed || null;
-  const webPkg = webRoot === '.' ? rootPkg : jsoncFile(projectRoot, at('package.json'))?.parsed || null;
+interface FormatToolchainTarget {
+  configPath: string;
+  manifestPath: string;
+  toolingRoot: string;
+}
+
+function compiledFormatToolchainForRole(
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): FormatToolchainTarget | null {
+  const config = (architecture.scaffoldOutputs || []).find((output) => (
+    output.ownerRole === ownerRole
+    && path.posix.basename(output.path) === '.prettierrc'
+  ));
+  if (!config) return null;
+  const toolingRoot = path.posix.dirname(config.path);
+  return {
+    configPath: config.path,
+    manifestPath: toolingRoot === '.' ? 'package.json' : `${toolingRoot}/package.json`,
+    toolingRoot,
+  };
+}
+
+function formatParityViolation(
+  projectRoot: string,
+  target: FormatToolchainTarget,
+): FormatParityProblem | null {
+  const at = (rel: string): string => (
+    target.toolingRoot === '.' ? rel : `${target.toolingRoot}/${rel}`
+  );
+  const pkg = jsoncFile(projectRoot, target.manifestPath)?.parsed || null;
   let reference: string | null = null;
   for (const rel of PRETTIER_CONFIG_FILES) {
-    if (exists(projectRoot, rel)) { reference = `\`${rel}\``; break; }
-    if (webRoot !== '.' && exists(projectRoot, at(rel))) { reference = `\`${at(rel)}\``; break; }
+    if (exists(projectRoot, at(rel))) { reference = `\`${at(rel)}\``; break; }
   }
-  if (!reference && rootPkg && 'prettier' in rootPkg) reference = 'the root `package.json` "prettier" key';
-  if (!reference && webPkg && webPkg !== rootPkg && 'prettier' in webPkg) {
-    reference = `the \`${at('package.json')}\` "prettier" key`;
+  if (!reference && pkg && 'prettier' in pkg) {
+    reference = `the \`${target.manifestPath}\` "prettier" key`;
   }
   if (!reference) {
-    for (const [ownerRel, pkg] of [['package.json', rootPkg], [at('package.json'), webPkg]] as const) {
-      const scripts = pkg ? obj(pkg.scripts) || {} : {};
-      const script = ['format', 'format:check'].find((name) => typeof scripts[name] === 'string');
-      if (script) { reference = `the \`${ownerRel}\` "${script}" script`; break; }
-    }
+    const scripts = pkg ? obj(pkg.scripts) || {} : {};
+    const script = ['format', 'format:check'].find((name) => typeof scripts[name] === 'string');
+    if (script) reference = `the \`${target.manifestPath}\` "${script}" script`;
   }
   if (!reference) {
     // NOTHING prettier-shaped exists. On a new-project scaffold that includes
@@ -431,10 +453,10 @@ function formatParityViolation(projectRoot: string, profile: CapabilityProfileV1
     // script") is then impossible and collapsed one-liner code ships unchecked
     // (observed 3co: 9+ files with 500+ char lines, no config, no scripts, no
     // dependency). An alternative formatter (biome) counts as a toolchain.
-    const biome = ['biome.json', 'biome.jsonc'].some((rel) => exists(projectRoot, rel) || (webRoot !== '.' && exists(projectRoot, at(rel))));
+    const biome = ['biome.json', 'biome.jsonc'].some((rel) => exists(projectRoot, at(rel)));
     return biome ? null : { kind: 'missing-toolchain' };
   }
-  const deps = { ...(rootPkg ? obj(rootPkg.dependencies) : null), ...(rootPkg ? obj(rootPkg.devDependencies) : null) };
+  const deps = { ...(pkg ? obj(pkg.dependencies) : null), ...(pkg ? obj(pkg.devDependencies) : null) };
   return typeof deps.prettier === 'string' ? null : { kind: 'missing-dependency', reference };
 }
 
@@ -1240,9 +1262,10 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed.file}\` packs an entire component/route onto a single line (over ${COLLAPSE_LINE_CHARS} chars) — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
         { FILE: collapsed.file }));
     }
-    // Deterministic emit-config + format-parity gates (new-project only; the
-    // pre-existing tsc -b / missing-dependency choices of an existing codebase
-    // are the user's, and maintenance must never dead-end on them).
+    // Deterministic emit-config gate (new-project only; the pre-existing tsc -b
+    // choices of an existing codebase are the user's, and maintenance must
+    // never dead-end on them). Formatter parity is implementer-owner scoped
+    // below and intentionally does not share this frontend-only branch.
     const frontendProfile = capabilityProfileForRun(projectRoot, state);
     if (state.mode === 'new-project' && frontendProfile.profileId === 'vite-react') {
       const emitProblems = emitConfigProblems(projectRoot, frontendProfile);
@@ -1251,17 +1274,6 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         violations.push(block('frontend-emit-config-gate',
           `Frontend completion gate: ${problems}. The stock Vite template emits compiled \`.js\`/\`.d.ts\` next to every source on the first build, and the stale output can shadow the module at import time. Fix exactly this: set \`"noEmit": true\` in the app tsconfig, remove \`"composite": true\`, and use \`"build": "tsc --noEmit && vite build"\`, \`"typecheck": "tsc --noEmit"\`. Then re-emit \`IMPLEMENTED\`.`,
           { PROBLEMS: problems }));
-      }
-    }
-    if (state.mode === 'new-project' && profileHasWebUi(frontendProfile)) {
-      const parity = formatParityViolation(projectRoot, frontendProfile);
-      if (parity?.kind === 'missing-dependency') {
-        violations.push(block('frontend-format-parity-gate',
-          `Frontend completion gate: ${parity.reference} exists but \`prettier\` is not declared in the root package.json dependencies/devDependencies. A script or config that names an absent tool makes later verification meaningless. Run exactly \`pnpm add -D -w prettier\` (or add \`"prettier"\` to the root devDependencies), then re-emit \`IMPLEMENTED\`.`,
-          { CONFIG: parity.reference }));
-      } else if (parity?.kind === 'missing-toolchain') {
-        violations.push(block('frontend-format-toolchain-gate',
-          'Frontend completion gate: no formatter toolchain exists — no prettier config file, no root `format`/`format:check` scripts, and no `prettier` dependency. The compiled scaffold for this run includes `.prettierrc` and `.prettierignore` in your allowlist: write both, add `"format": "prettier --write ."` and `"format:check": "prettier --check ."` to the root package.json scripts with `prettier` in devDependencies, run the formatter over the workspace, then re-emit `IMPLEMENTED`. Without this toolchain the formatting verification later phases depend on can never run.'));
       }
     }
     const runId = frontendDigest[2] || '';
@@ -1290,6 +1302,40 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   // come from the real immutable-baseline diff. Candidate assignments and every
   // bootstrap are preflighted against the new hash before publication.
   const implementedDigest = IMPLEMENTER_DIGEST_RE.exec(filePath);
+  if (
+    implementedDigest
+    && new RegExp('\\bIMPLEMENTED\\b').test(content)
+    && state.mode === 'new-project'
+  ) {
+    const runId = implementedDigest[2] || '';
+    const ownerRole = `senior-${implementedDigest[3] || ''}`;
+    const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
+    const tooling = architecture
+      ? compiledFormatToolchainForRole(architecture, ownerRole)
+      : null;
+    if (tooling) {
+      const parity = formatParityViolation(projectRoot, tooling);
+      if (parity?.kind === 'missing-dependency') {
+        violations.push(block('implementer-format-parity-gate',
+          `Implementer format parity gate: role \`${ownerRole}\` owns formatter config \`${tooling.configPath}\`, but \`prettier\` is not declared in \`${tooling.manifestPath}\` dependencies/devDependencies. A script or config that names an absent tool makes verification meaningless. Add \`prettier\` with the selected package manager at tooling root \`${tooling.toolingRoot}\`, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            CONFIG: tooling.configPath,
+            MANIFEST: tooling.manifestPath,
+            TOOLING_ROOT: tooling.toolingRoot,
+          }));
+      } else if (parity?.kind === 'missing-toolchain') {
+        violations.push(block('implementer-format-toolchain-gate',
+          `Implementer format toolchain gate: role \`${ownerRole}\` owns compiled formatter outputs at \`${tooling.toolingRoot}\`, but no Prettier config, \`format\`/\`format:check\` scripts, or \`prettier\` dependency is present. Create \`${tooling.configPath}\`, add matching scripts and the dependency to \`${tooling.manifestPath}\`, run the formatter, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            CONFIG: tooling.configPath,
+            MANIFEST: tooling.manifestPath,
+            TOOLING_ROOT: tooling.toolingRoot,
+          }));
+      }
+    }
+  }
   if (implementedDigest
     && implementedDigest[2] === currentRunId
     && /\bIMPLEMENTED\b/.test(content)

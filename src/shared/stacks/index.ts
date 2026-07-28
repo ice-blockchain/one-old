@@ -252,11 +252,9 @@ export function composeRuleManifest(input: unknown): RuleManifest {
   if (mobileFramework === 'react-native-expo') {
     mandatory.push(...REACT_NATIVE_MANDATORY);
     optional.push(...REACT_NATIVE_OPTIONAL);
-  } else if (mobileFramework === 'ionic-capacitor') {
-    if (frontend !== 'react-vite') {
-      mandatory.push(...REACT_VITE_MANDATORY);
-      optional.push(...REACT_VITE_OPTIONAL);
-    }
+  } else if (mobileFramework === 'ionic-capacitor' && frontend !== 'none') {
+    // Ionic/Capacitor is a cross-framework overlay. The frontend branch above
+    // remains the sole owner of the base React/Vue/Angular/generic rule set.
     optional.push(...IONIC_OPTIONAL);
   }
 

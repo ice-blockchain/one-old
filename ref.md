@@ -181,8 +181,25 @@ Catalog conventions normalized by the audit: the activation heading is
 | `rules/frontend/react-native/testing.md` | Traffic One RN testing rule, paired with Jest/RNTL/Maestro guidance. |
 | `rules/modes/existing-codebase.md` | Traffic One local mode rule, inspired by ECC repo-safety guidance. |
 | `rules/modes/new-project.md` | Traffic One local new-project rule (read-order spine), inspired by ECC setup/orchestration patterns. |
-| `rules/modes/new-project-architecture.md` | Traffic One local new-project target-architecture mode rule. |
+| `rules/modes/new-project-architecture.md` | Stack-neutral new-project architecture catalog, exact profile index, and common backend/QA/environment/Ionic overlays. |
+| `rules/modes/new-project-angular.md` | Exact `angular` new-project architecture profile. |
+| `rules/modes/new-project-astro.md` | Exact `astro` new-project architecture profile. |
+| `rules/modes/new-project-backend-only.md` | Exact `backend-only` API/CLI/worker/data new-project architecture profile. |
+| `rules/modes/new-project-flutter-native.md` | Exact `flutter-native` new-project architecture profile. |
+| `rules/modes/new-project-generic-web.md` | Exact conservative `generic-web` new-project architecture profile. |
+| `rules/modes/new-project-kotlin-native.md` | Exact `kotlin-native` Android new-project architecture profile. |
+| `rules/modes/new-project-next-app.md` | Exact `next-app` App Router new-project architecture profile. |
+| `rules/modes/new-project-next-pages.md` | Exact `next-pages` Pages Router new-project architecture profile. |
+| `rules/modes/new-project-nuxt.md` | Exact `nuxt` new-project architecture profile. |
+| `rules/modes/new-project-react-native.md` | Exact `react-native`/Expo new-project architecture profile. |
+| `rules/modes/new-project-server-rendered.md` | Exact `server-rendered` Laravel Blade/Inertia new-project architecture profile. |
 | `rules/modes/new-project-setup.md` | Traffic One local new-project setup checklist (full detail; `new-project.md` is the spine). |
+| `rules/modes/new-project-svelte.md` | Exact plain `svelte` new-project architecture profile. |
+| `rules/modes/new-project-sveltekit.md` | Exact `sveltekit` new-project architecture profile. |
+| `rules/modes/new-project-swift-native.md` | Exact `swift-native`/SwiftUI new-project architecture profile. |
+| `rules/modes/new-project-unsupported-hybrid.md` | Blocking `unsupported-hybrid` profile requiring one runtime/user-owned UI target. |
+| `rules/modes/new-project-vite-react.md` | Exact `vite-react` profile covering managed workspace, flat-root, and custom-root topology. |
+| `rules/modes/new-project-vue.md` | Exact `vue` new-project architecture profile. |
 | `rules/modes/supabase-migration.md` | Traffic One local Supabase migration rule. |
 
 ## Skills

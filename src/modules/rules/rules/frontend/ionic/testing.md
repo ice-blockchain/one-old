@@ -3,6 +3,10 @@ paths:
   - "apps/**/e2e/**"
   - "apps/**/src/**/*.test.*"
   - "apps/**/src/**/*.spec.*"
+  - "web/**/src/**"
+  - "frontend/**/src/**"
+  - "client/**/src/**"
+  - "packages/**/src/**"
   - "src/**/*.test.*"
   - "src/**/*.spec.*"
   - "capacitor.config.*"
@@ -11,10 +15,9 @@ paths:
 
 # Ionic Testing Rules
 
-The test layers, coverage targets, and shared provider helpers
-(`renderWithProviders`, jest config, MSW) live in `rules/frontend/testing.md`
-and apply in full. Ionic delivery adds packaging and device-behavior
-verification.
+The test layers, coverage targets, runner, and framework-specific helpers from
+the selected web profile apply in full. Ionic delivery adds packaging and
+device-behavior verification.
 
 ## Unit and integration
 

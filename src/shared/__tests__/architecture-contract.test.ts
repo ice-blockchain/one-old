@@ -55,6 +55,32 @@ const INPUT: ArchitectureInputV1 = {
   ],
 };
 
+const SERVICE_INPUT: ArchitectureInputV1 = {
+  schemaVersion: 1,
+  routes: [],
+  modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+};
+
+function assertScaffoldOwner(
+  compiled: ReturnType<typeof compileArchitecture>,
+  outputPath: string,
+  ownerRole: string,
+): void {
+  const matches = (compiled.scaffoldOutputs || []).filter((output) => output.path === outputPath);
+  assert.equal(matches.length, 1, `${outputPath} must be compiled exactly once`);
+  assert.equal(matches[0]?.ownerRole, ownerRole, `${outputPath} owner`);
+}
+
+function assertNoRuntimeContextScaffolds(compiled: ReturnType<typeof compileArchitecture>): void {
+  const outputs = [
+    ...(compiled.scaffoldOutputs || []).map((output) => output.path),
+    ...compiled.allowedOutputs,
+  ];
+  assert.ok(!outputs.includes('AGENTS.md'));
+  assert.ok(!outputs.includes('CLAUDE.md'));
+  assert.ok(!outputs.some((output) => output === '.traffic-one' || output.startsWith('.traffic-one/')));
+}
+
 test('architecture input is semantic and cannot choose roots or output paths', () => {
   assert.equal(validateArchitectureInput(INPUT).ok, true);
   const invalid = {
@@ -92,6 +118,459 @@ test('vite-react+supabase compiled outputs cover the standard surfaces the rules
     // 3cl: README + the canonical en locale catalog were in nobody's scope.
     assert.equal(byPath.get('README.md'), 'senior-frontend');
     assert.equal(byPath.get('packages/i18n/src/locales/en/common.json'), 'senior-frontend');
+  });
+});
+
+test('new-project scaffold baselines are stack-aware, single-owner, and keep tooling beside the selected Node manifest', () => {
+  const repositoryOutputs = [
+    '.gitignore',
+    'README.md',
+    '.editorconfig',
+    '.github/workflows/ci.yml',
+  ];
+  const nodeTooling = ['.prettierrc', '.prettierignore', '.nvmrc'];
+  const workspaceOnly = ['pnpm-workspace.yaml', 'turbo.json', 'tsconfig.base.json'];
+
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'workspace-web', REACT_STATE, INPUT);
+    for (const output of repositoryOutputs) assertScaffoldOwner(compiled, output, 'senior-frontend');
+    for (const output of nodeTooling) assertScaffoldOwner(compiled, output, 'senior-frontend');
+    for (const output of workspaceOnly) assertScaffoldOwner(compiled, output, 'senior-frontend');
+    assertScaffoldOwner(compiled, '.env.example', 'senior-backend');
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'root-next', {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'external-api',
+      mobile: { framework: 'none' },
+    }, INPUT);
+    assert.equal(compiled.profile.profileId, 'next-app');
+    for (const output of repositoryOutputs) assertScaffoldOwner(compiled, output, 'senior-frontend');
+    for (const output of nodeTooling) assertScaffoldOwner(compiled, output, 'senior-frontend');
+    assertScaffoldOwner(compiled, '.env.example', 'senior-frontend');
+    for (const output of workspaceOnly) {
+      assert.ok(!compiled.allowedOutputs.includes(output), `root Next excludes workspace-only ${output}`);
+    }
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'vite-external-api', {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'external-api',
+      mobile: { framework: 'none' },
+    }, INPUT);
+    assert.equal(compiled.profile.profileId, 'vite-react');
+    assertScaffoldOwner(compiled, '.env.example', 'senior-frontend');
+    assertScaffoldOwner(compiled, '.prettierrc', 'senior-frontend');
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'web/app'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'web/package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0', react: '19.0.0' },
+    }));
+    const compiled = compileArchitecture(cwd, 'nested-next', {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, INPUT);
+    assert.ok(compiled.allowedOutputs.includes('web/package.json'));
+    assert.ok(!compiled.allowedOutputs.includes('package.json'));
+    for (const output of repositoryOutputs) assertScaffoldOwner(compiled, output, 'senior-frontend');
+    for (const output of nodeTooling) {
+      assertScaffoldOwner(compiled, `web/${output}`, 'senior-frontend');
+      assert.ok(!compiled.allowedOutputs.includes(output), `nested Next keeps ${output} beside its manifest`);
+    }
+    assert.ok(!compiled.allowedOutputs.includes('.env.example'));
+    for (const output of workspaceOnly) {
+      assert.ok(!compiled.allowedOutputs.includes(output), `nested Next excludes workspace-only ${output}`);
+    }
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'web', 'app'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      private: true,
+    }));
+    fs.writeFileSync(path.join(cwd, 'web', 'package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0', react: '19.0.0' },
+    }));
+    const compiled = compileArchitecture(cwd, 'nested-next-root-tooling', {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, INPUT);
+    assertScaffoldOwner(compiled, 'package.json', 'senior-frontend');
+    assertScaffoldOwner(compiled, 'web/package.json', 'senior-frontend');
+    for (const output of nodeTooling) {
+      assertScaffoldOwner(compiled, output, 'senior-frontend');
+      assert.ok(!compiled.allowedOutputs.includes(`web/${output}`));
+    }
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+
+  for (const fixture of [
+    {
+      name: 'Go API',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'go',
+        mobile: { framework: 'none' },
+      },
+      input: SERVICE_INPUT,
+      node: false,
+      envOwner: 'senior-backend',
+      expectedScaffolds: ['go.mod', 'go.sum'],
+    },
+    {
+      name: 'NestJS API',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'nestjs',
+        mobile: { framework: 'none' },
+      },
+      input: SERVICE_INPUT,
+      node: true,
+      envOwner: 'senior-backend',
+      expectedScaffolds: ['package.json'],
+    },
+    {
+      name: 'Python API',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'fastapi',
+        mobile: { framework: 'none' },
+      },
+      input: SERVICE_INPUT,
+      node: false,
+      envOwner: 'senior-backend',
+      expectedScaffolds: ['pyproject.toml'],
+    },
+    {
+      name: 'Swift app',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-stack',
+        frontend: 'none',
+        backend: 'none',
+        mobile: { framework: 'swift-native' },
+      },
+      input: INPUT,
+      node: false,
+      envOwner: null,
+      expectedScaffolds: ['Package.swift'],
+    },
+    {
+      name: 'Rust API',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'rust',
+        mobile: { framework: 'none' },
+      },
+      input: SERVICE_INPUT,
+      node: false,
+      envOwner: 'senior-backend',
+      expectedScaffolds: ['Cargo.toml'],
+    },
+    {
+      name: 'Java API',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'java',
+        mobile: { framework: 'none' },
+      },
+      input: SERVICE_INPUT,
+      node: false,
+      envOwner: 'senior-backend',
+      expectedScaffolds: ['pom.xml'],
+    },
+    {
+      name: 'Kotlin API',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'kotlin',
+        mobile: { framework: 'none' },
+      },
+      input: SERVICE_INPUT,
+      node: false,
+      envOwner: 'senior-backend',
+      expectedScaffolds: ['build.gradle.kts'],
+    },
+    {
+      name: '.NET API',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'dotnet',
+        mobile: { framework: 'none' },
+      },
+      input: SERVICE_INPUT,
+      node: false,
+      envOwner: 'senior-backend',
+      expectedScaffolds: ['Directory.Build.props'],
+    },
+    {
+      name: 'Kotlin native app',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-stack',
+        frontend: 'none',
+        backend: 'none',
+        mobile: { framework: 'kotlin-android' },
+      },
+      input: INPUT,
+      node: false,
+      envOwner: null,
+      expectedScaffolds: ['settings.gradle.kts', 'app/build.gradle.kts'],
+    },
+    {
+      name: 'Flutter app',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-stack',
+        frontend: 'none',
+        backend: 'none',
+        mobile: { framework: 'flutter' },
+      },
+      input: INPUT,
+      node: false,
+      envOwner: null,
+      expectedScaffolds: ['pubspec.yaml'],
+    },
+    {
+      name: 'React Native external API app',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-stack',
+        frontend: 'none',
+        backend: 'external-api',
+        mobile: { framework: 'react-native-expo' },
+      },
+      input: INPUT,
+      node: true,
+      envOwner: null,
+      expectedScaffolds: ['package.json', 'app.json'],
+    },
+  ] as const) {
+    withProject((cwd) => {
+      const compiled = compileArchitecture(cwd, fixture.name, fixture.state, fixture.input);
+      const repositoryOwner = compiled.profile.roles.includes('senior-frontend')
+        ? 'senior-frontend'
+        : 'senior-backend';
+      for (const output of repositoryOutputs) assertScaffoldOwner(compiled, output, repositoryOwner);
+      for (const output of nodeTooling) {
+        if (fixture.node) assertScaffoldOwner(compiled, output, repositoryOwner);
+        else assert.ok(!compiled.allowedOutputs.includes(output), `${fixture.name} excludes ${output}`);
+      }
+      if (fixture.envOwner) assertScaffoldOwner(compiled, '.env.example', fixture.envOwner);
+      else assert.ok(!compiled.allowedOutputs.includes('.env.example'), `${fixture.name} excludes .env.example`);
+      for (const output of workspaceOnly) {
+        assert.ok(!compiled.allowedOutputs.includes(output), `${fixture.name} excludes workspace-only ${output}`);
+      }
+      for (const output of fixture.expectedScaffolds) {
+        assertScaffoldOwner(compiled, output, repositoryOwner);
+      }
+      assertNoRuntimeContextScaffolds(compiled);
+    });
+  }
+});
+
+test('every root web profile compiles its exact framework scaffold beside Node tooling', () => {
+  const fixtures: Array<{
+    frontend: string;
+    profileId: string;
+    frameworkScaffolds: string[];
+    setupPaths?: string[];
+  }> = [
+    {
+      frontend: 'nextjs',
+      profileId: 'next-app',
+      frameworkScaffolds: ['package.json', 'next.config.ts', 'tsconfig.json'],
+    },
+    {
+      frontend: 'nextjs',
+      profileId: 'next-pages',
+      frameworkScaffolds: ['package.json', 'next.config.ts', 'tsconfig.json'],
+      setupPaths: ['pages'],
+    },
+    {
+      frontend: 'nuxt',
+      profileId: 'nuxt',
+      frameworkScaffolds: ['package.json', 'nuxt.config.ts', 'tsconfig.json'],
+    },
+    {
+      frontend: 'vue',
+      profileId: 'vue',
+      frameworkScaffolds: ['package.json', 'vite.config.ts', 'tsconfig.json'],
+    },
+    {
+      frontend: 'sveltekit',
+      profileId: 'sveltekit',
+      frameworkScaffolds: ['package.json', 'svelte.config.js', 'vite.config.ts', 'tsconfig.json'],
+    },
+    {
+      frontend: 'svelte',
+      profileId: 'svelte',
+      frameworkScaffolds: ['package.json', 'vite.config.ts', 'tsconfig.json'],
+    },
+    {
+      frontend: 'astro',
+      profileId: 'astro',
+      frameworkScaffolds: ['package.json', 'astro.config.mjs', 'tsconfig.json'],
+    },
+    {
+      frontend: 'angular',
+      profileId: 'angular',
+      frameworkScaffolds: ['package.json', 'angular.json', 'tsconfig.json'],
+    },
+    {
+      frontend: 'other',
+      profileId: 'generic-web',
+      frameworkScaffolds: ['package.json'],
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    withProject((cwd) => {
+      for (const setupPath of fixture.setupPaths || []) {
+        fs.mkdirSync(path.join(cwd, setupPath), { recursive: true });
+      }
+      const compiled = compileArchitecture(cwd, `root-${fixture.profileId}`, {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: fixture.frontend,
+        backend: 'none',
+        mobile: { framework: 'none' },
+      }, INPUT);
+
+      assert.equal(compiled.profile.profileId, fixture.profileId);
+      for (const output of fixture.frameworkScaffolds) {
+        assertScaffoldOwner(compiled, output, 'senior-frontend');
+      }
+      for (const output of ['.prettierrc', '.prettierignore', '.nvmrc']) {
+        assertScaffoldOwner(compiled, output, 'senior-frontend');
+      }
+      for (const output of ['pnpm-workspace.yaml', 'turbo.json', 'tsconfig.base.json']) {
+        assert.ok(!compiled.allowedOutputs.includes(output), `${fixture.profileId} excludes ${output}`);
+      }
+      assertNoRuntimeContextScaffolds(compiled);
+    });
+  }
+});
+
+test('compound profiles keep one owner per scaffold and honor the selected UI target', () => {
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'react-native-node-api', {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'react-native-expo' },
+    }, {
+      ...INPUT,
+      modules: [
+        ...INPUT.modules,
+        { id: 'sync-service', name: 'Sync Service', kind: 'service' },
+      ],
+    });
+    assertScaffoldOwner(compiled, 'package.json', 'senior-frontend');
+    assertScaffoldOwner(compiled, '.prettierrc', 'senior-frontend');
+    assertScaffoldOwner(compiled, '.env.example', 'senior-backend');
+    assert.ok(compiled.modules.some((module) => module.ownerRole === 'senior-backend'));
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'swift-node-api', {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'swift-native' },
+    }, INPUT);
+    assertScaffoldOwner(compiled, 'package.json', 'senior-backend');
+    assertScaffoldOwner(compiled, '.prettierrc', 'senior-backend');
+    assertScaffoldOwner(compiled, '.gitignore', 'senior-frontend');
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'native-target-external-api', {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'react-vite',
+      backend: 'external-api',
+      mobile: { framework: 'react-native-expo' },
+      architectureTarget: 'native-ui',
+    }, INPUT);
+    assert.equal(compiled.profile.profileId, 'react-native');
+    assert.ok(!compiled.allowedOutputs.includes('.env.example'));
+    assert.ok(compiled.allowedOutputs.includes('.maestro/flows/smoke.yaml'));
+    assert.ok(!compiled.allowedOutputs.includes('playwright.config.ts'));
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'native-target-node-api', {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'react-vite',
+      backend: 'nestjs',
+      mobile: { framework: 'swift-native' },
+      architectureTarget: 'native-ui',
+    }, INPUT);
+    assert.equal(compiled.profile.profileId, 'swift-native');
+    assertScaffoldOwner(compiled, 'package.json', 'senior-backend');
+    assertScaffoldOwner(compiled, '.prettierrc', 'senior-backend');
+    assertScaffoldOwner(compiled, '.env.example', 'senior-backend');
+    assert.ok(compiled.allowedOutputs.includes('Tests/AppSmokeTests.swift'));
+    assert.ok(!compiled.allowedOutputs.includes('playwright.config.ts'));
+    assertNoRuntimeContextScaffolds(compiled);
+  });
+});
+
+test('Laravel compiles the Node and PHP formatter/testing boundaries without sharing ownership', () => {
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'laravel-ui', {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'laravel-ui',
+      backend: 'laravel',
+      mobile: { framework: 'none' },
+    }, INPUT);
+    assert.equal(compiled.profile.profileId, 'server-rendered');
+    assertScaffoldOwner(compiled, 'package.json', 'senior-frontend');
+    assertScaffoldOwner(compiled, '.prettierrc', 'senior-frontend');
+    assertScaffoldOwner(compiled, 'composer.json', 'senior-backend');
+    assertScaffoldOwner(compiled, 'phpunit.xml', 'senior-tester');
+    assertScaffoldOwner(compiled, 'playwright.config.ts', 'senior-tester');
+    assertNoRuntimeContextScaffolds(compiled);
   });
 });
 

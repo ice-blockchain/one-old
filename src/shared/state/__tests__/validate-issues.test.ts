@@ -74,3 +74,15 @@ test('trafficOneStateValidationIssues: new-project mobile.source=none is rejecte
   const issues = trafficOneStateValidationIssues(state);
   assert.ok(issues.some((i) => i.includes('`mobile.source` must be `prompted` or `explicit`')));
 });
+
+test('trafficOneStateValidationIssues: Ionic requires an explicit web frontend', () => {
+  const state = readyNewProjectState();
+  state.frontend = 'none';
+  state.mobile = {
+    enabled: true,
+    framework: 'ionic-capacitor',
+    source: 'prompted',
+  };
+  const issues = trafficOneStateValidationIssues(state);
+  assert.ok(issues.some((i) => i.includes('Ionic is an overlay, not a standalone native profile')));
+});

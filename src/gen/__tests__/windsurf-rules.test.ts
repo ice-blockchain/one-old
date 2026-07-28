@@ -9,6 +9,25 @@ import { runGen } from '../index';
 import { WINDSURF_RULE_CHAR_LIMIT } from '../../shared/windsurf-rules';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+const STRUCTURAL_PROFILE_IDS = [
+  'vite-react',
+  'next-app',
+  'next-pages',
+  'nuxt',
+  'vue',
+  'sveltekit',
+  'svelte',
+  'astro',
+  'angular',
+  'server-rendered',
+  'generic-web',
+  'unsupported-hybrid',
+  'react-native',
+  'swift-native',
+  'kotlin-native',
+  'flutter-native',
+  'backend-only',
+] as const;
 
 test('generatedWindsurfRules emits Cascade rules with documented triggers and size limits', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-rules-'));
@@ -34,6 +53,19 @@ test('generatedWindsurfRules emits Cascade rules with documented triggers and si
     const defaultVite = docs.find((doc) => doc.relPath.includes('mode-new-project-vite-react'))?.content;
     assert.ok(defaultVite?.startsWith('---\ntrigger: model_decision\n'));
     assert.ok(defaultVite?.includes('profileId=vite-react'));
+    for (const profileId of STRUCTURAL_PROFILE_IDS) {
+      const profileParts = docs.filter((doc) => {
+        const base = path.basename(doc.relPath);
+        return base === `mode-new-project-${profileId}.md`
+          || base.startsWith(`mode-new-project-${profileId}-part-`);
+      });
+      assert.ok(profileParts.length > 0, `missing Windsurf rule for ${profileId}`);
+      assert.ok(profileParts[0]?.content.startsWith('---\ntrigger: model_decision\n'));
+      assert.ok(
+        profileParts.some((doc) => doc.content.includes(`profileId=${profileId}`)),
+        `missing exact profile marker for ${profileId}`,
+      );
+    }
 
     const architect = docs.find((doc) => doc.relPath.includes('00-agent-senior-architect'))?.content;
     assert.ok(architect?.startsWith('---\ntrigger: model_decision\n'));

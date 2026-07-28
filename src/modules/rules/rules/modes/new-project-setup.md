@@ -9,12 +9,16 @@ Read-on-demand resource routed by
 default stack (or its legacy `react-realtime-monorepo` alias) and the immutable
 compiled profile is `vite-react`. Never apply
 this checklist to Next.js, Nuxt, Laravel, backend-only, native, or another
-custom profile. Do the steps in order; do not skip.
+custom profile. Evaluate the steps in order.
 
 This is an implementation-role checklist. The architect never executes it.
 Create only scaffold/config/source/test outputs present in the active
 `WorkUnitContractV1`; another role's output and every runtime-owned contract,
 assignment, baseline, hash, or bootstrap remain read-only.
+Every path named below is conditional on that exact compiled output. A
+directory, convention, CLI example, or checklist item never grants ownership.
+When a required path is absent, return a blocker for runtime recompilation
+instead of creating it out of scope.
 
 1. **Workspace skeleton**
    - First write the root `package.json`, with `"private": true`, a
@@ -25,9 +29,10 @@ assignment, baseline, hash, or bootstrap remain read-only.
      registry (`npm view`, `npm outdated`, …) for this or any scaffold version —
      the stack rules pin every choice; install with their ranges and move on.
    - `pnpm-workspace.yaml` listing `apps/*` and `packages/*`.
-   - `turbo.json` with the pipeline shown above.
+   - `turbo.json` with explicit `tasks` for the compiled scripts.
    - `tsconfig.base.json` with strict settings.
-   - `.gitignore`, `.nvmrc`, `.editorconfig`, `.prettierrc`.
+   - `.gitignore`, `.nvmrc`, `.editorconfig`, `.prettierrc`,
+     `.prettierignore`, and `.github/workflows/ci.yml`.
    - Initialise git, set Gitflow branches: `main`, `develop`.
    - Use Write/Edit for every scaffold file; parent directories are created by
      those tools. Bash is for read-only inspection or verification, never
@@ -39,9 +44,9 @@ assignment, baseline, hash, or bootstrap remain read-only.
      never fill it from an implementation work unit.
    - Confirm root `.traffic-one/.one.json` exists with the full Traffic One state
      schema. `.traffic-one/` is memory; `.traffic-one/.one.json` is stack/state.
-   - Write the full `.traffic-one/` memory-baseline file inventory — the
-     canonical list and per-file purpose live in
-     `rules/common/project-memory.md`.
+   - Verify the full `.traffic-one/` memory-baseline inventory against
+     `rules/common/project-memory.md`. It is architect/runtime/materializer
+     owned; an implementer must never create, repair, or claim those paths.
    - Ensure the generated active stack bundle exists before feature-source
      writes: `.traffic-one/rules/**`,
      `.traffic-one/manifest.json`, `.traffic-one/skills/**`, root `AGENTS.md`
@@ -64,9 +69,10 @@ assignment, baseline, hash, or bootstrap remain read-only.
      `.traffic-one/rules/AGENTS.md`; `.traffic-one/rules/` must contain only
      generated rule files. Root `CLAUDE.md` should be a symlink to root
      `AGENTS.md` for host compatibility only when `CLAUDE.md` is absent.
-   - If the project has no DB yet, `.traffic-one/schema.sql` says
-     `Not applicable` with the reason. Once migrations exist, refresh it after
-     every migration.
+   - If the project has no DB yet, verify `.traffic-one/schema.sql` says
+     `Not applicable` with the reason. Once migrations exist, verify the
+     architect/runtime refreshed it after every migration; block when stale
+     rather than editing it from an implementation work unit.
    - Keep `.traffic-one/digests/`, `.traffic-one/reports/`,
      `.traffic-one/backups/`, `graphify-out/`, and `.gitnexus/` gitignored
      as local caches; the memory baseline files above are source.
@@ -212,25 +218,26 @@ assignment, baseline, hash, or bootstrap remain read-only.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
 
-11. **Mandatory auto-documentation baseline**
+11. **Mandatory documentation verification**
    - Invoke `auto-documentation-generator` for every generated project before
      calling the scaffold complete, even if the user did not explicitly request
      docs.
-   - Create or refresh the relevant canonical docs from
-     `rules/common/documentation.md`: `README.md`, `AGENTS.md`, concise
-     `CLAUDE.md` or symlink, `.traffic-one/plan.md`,
-     `.traffic-one/decisions/`, `.traffic-one/api.md`,
-     `.traffic-one/database.md`, `.traffic-one/deployment.md`,
-     `.traffic-one/security.md`, `CHANGELOG.md`,
-     `.traffic-one/environment-setup.md`, `CONTRIBUTING.md`, and served
-     `/llms.txt` for web surfaces. Do not create duplicate root-level
-     `api.md`, `database.md`, `deployment.md`, `environment-setup.md`, or
-     `security.md`; merge legacy copies into `.traffic-one/`.
+   - Create or refresh only documentation paths in the active work-unit
+     allowlist, including the compiled `README.md`. `AGENTS.md`, `CLAUDE.md`,
+     and every `.traffic-one/**` path are runtime/materializer/architect owned
+     and remain read-only to implementers. Verify them and return a blocker
+     when they are absent or stale.
+   - Other suggested files from `rules/common/documentation.md`—such as
+     `CHANGELOG.md`, `CONTRIBUTING.md`, or served `/llms.txt`—are created only
+     when their exact paths are compiled. Do not infer permission from this
+     checklist and do not create duplicate root-level memory documents.
    - Mark facts as `Unverified` with the exact needed command/input instead of
      inventing deploy URLs, database output, secret values, or production
      configuration.
-   - Do not leave the project with only a README. The reviewer must treat a
-     missing mandatory docs baseline as `CHANGES_REQUESTED`.
+   - The reviewer verifies every compiled documentation output plus the
+     runtime-owned memory baseline. A repository with only `README.md` in the
+     implementation allowlist is valid; never request an uncompiled document
+     merely to make the list longer.
 
 12. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
 
@@ -247,8 +254,6 @@ assignment, baseline, hash, or bootstrap remain read-only.
         "db:push":          "supabase db push --linked",
         "db:diff":          "supabase db diff -f",
         "gen:types":        "supabase gen types typescript --linked > packages/api-client/src/database.types.ts",
-        "functions:new":    "supabase functions new",
-        "functions:deploy": "supabase functions deploy",
         "secrets:set":      "supabase secrets set",
         "link":             "supabase link --project-ref"
       }
@@ -282,10 +287,11 @@ assignment, baseline, hash, or bootstrap remain read-only.
       is non-null in a service or store.
 
    e. **Do not link, push, or boot anything during the build.** The committed
-      `supabase/` artifacts (config, migrations, functions) plus the EnvBanner
-      CTA ARE the deliverable: the user connects the real project — env keys
-      and migration apply — through the traffic.io platform (`https://traffic.io/`),
-      and until then the app runs in not-configured demo mode. Never start the
+      `supabase/` artifacts (config, migration, and seed paths compiled for the
+      run) plus the EnvBanner CTA are the deliverable: the user connects the
+      real project — env keys and migration apply — through the traffic.io
+      platform (`https://traffic.io/`), and until then the app runs in
+      not-configured demo mode. Never start the
       local Supabase stack (`supabase start`, `db:start`, Docker/OrbStack) and
       never walk the user through the Supabase dashboard or "open SQL editor
       and paste this" instructions. `pnpm db:push --linked` remains a
@@ -293,12 +299,16 @@ assignment, baseline, hash, or bootstrap remain read-only.
 
    f. Add-ons (storage, auth, realtime, vector, pg_cron, pg_net) are gated. The
       plugin's `requireAddon` gate (`scripts/shared/state/normalize.js` in the installed plugin) reads
-      `.traffic-one/.one.json` → `supabaseAddons[<name>]`. Ask the user once before
-      enabling each, then write `approved` and proceed silently for that add-on.
+      `.traffic-one/.one.json` → `supabaseAddons[<name>]`. Ask the user once
+      before enabling each; onboarding/runtime persists `approved`. The
+      implementer waits for and verifies that state, but never writes it.
 
-   g. Edge Functions (`supabase/functions/<name>/`) auto-deploy on save when
-      `.traffic-one/.one.json` → `supabaseFunctionsAutoDeploy: true`. The
-      PostToolUse hook prompts the user the first time.
+   g. Edge Functions apply only when an exact
+      `supabase/functions/<name>/...` output is compiled. Runtime may auto-deploy
+      on save when `.traffic-one/.one.json` records
+      `supabaseFunctionsAutoDeploy: true`; the PostToolUse hook prompts and
+      persists the user's choice. An implementer neither creates an uncompiled
+      function nor edits that state flag.
 
 13. **Codebase graph (after first successful build, REQUIRED at onboarding)**
 

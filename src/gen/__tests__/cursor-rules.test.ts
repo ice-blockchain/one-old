@@ -14,6 +14,25 @@ import {
 } from '../lib/frontmatter';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+const STRUCTURAL_PROFILE_IDS = [
+  'vite-react',
+  'next-app',
+  'next-pages',
+  'nuxt',
+  'vue',
+  'sveltekit',
+  'svelte',
+  'astro',
+  'angular',
+  'server-rendered',
+  'generic-web',
+  'unsupported-hybrid',
+  'react-native',
+  'swift-native',
+  'kotlin-native',
+  'flutter-native',
+  'backend-only',
+] as const;
 
 test('splitFrontmatter + parseFrontmatter read paths/description/alwaysApply', () => {
   const md = '---\ndescription: "Hi"\npaths:\n  - "src/**/*.ts"\nalwaysApply: false\n---\n# Title\n\nbody\n';
@@ -42,8 +61,8 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
   try {
     runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const docs = generatedCursorRules(dir);
-    // 80 rule templates (incl. the profile gateway + 3 on-demand slices) + 7 agents.
-    assert.equal(docs.length, 87);
+    // 96 rule templates (including all 17 structural profiles) + 7 agents.
+    assert.equal(docs.length, 103);
     const byPath = new Map(docs.map((d) => [d.relPath, d.content]));
 
     // common/auth-gate.md -> auth-required.mdc (special slug, always-on kernel).
@@ -81,6 +100,16 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
     const defaultVite = byPath.get(path.join('.cursor', 'rules', 'mode-new-project-vite-react.mdc'));
     assert.ok(defaultVite?.includes('alwaysApply: false'));
     assert.ok(defaultVite?.includes('profileId=vite-react'));
+    for (const profileId of STRUCTURAL_PROFILE_IDS) {
+      const profileRule = byPath.get(path.join(
+        '.cursor',
+        'rules',
+        `mode-new-project-${profileId}.mdc`,
+      ));
+      assert.ok(profileRule, `missing Cursor rule for ${profileId}`);
+      assert.ok(profileRule.includes('alwaysApply: false'));
+      assert.ok(profileRule.includes(`profileId=${profileId}`));
+    }
 
     // Cursor requires .mdc frontmatter to be the first bytes. The generated
     // marker lives below the frontmatter so Cursor does not reject the file.

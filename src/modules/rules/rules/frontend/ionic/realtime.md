@@ -2,6 +2,10 @@
 paths:
   - "apps/**/src/services/ws/**"
   - "apps/**/src/features/**/realtime/**"
+  - "web/**/src/**"
+  - "frontend/**/src/**"
+  - "client/**/src/**"
+  - "packages/**/src/**"
   - "packages/ws-client/**"
   - "src/services/ws/**"
   - "src/features/**/realtime/**"
@@ -10,7 +14,8 @@ paths:
 # Ionic Real-time Rules
 
 The shared WebSocket contract — connection ownership in service singletons,
-`wss://` in production, zod frame validation, `requestAnimationFrame` batching
+`wss://` in production, validation with the selected schema tool,
+`requestAnimationFrame` batching
 with a 30 fps non-game cap, connection-state labels (idle/connecting/live/
 reconnecting/offline/degraded), and PII-stripped frame logs — lives in
 `rules/frontend/realtime.md` and applies in full. Ionic adds the Capacitor app
