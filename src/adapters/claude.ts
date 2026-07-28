@@ -39,11 +39,15 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
 
       let tool: ToolInput | undefined;
       if (rawName) {
-        const command = asString(toolInput.command ?? toolInput.cmd);
+        const isPatchTool = /^(?:apply_patch|patch)$/i.test(rawName.split('.').pop() || '');
+        // Codex sends the apply_patch payload in tool_input.command; that is
+        // patch DATA, not a shell command — leaving it on `command` makes every
+        // command-text scanner treat patch content as shell (observed 3co).
+        const command = isPatchTool ? '' : asString(toolInput.command ?? toolInput.cmd);
         const workdir = asString(toolInput.workdir ?? toolInput.cwd);
         const filePath = asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
         const content = asString(toolInput.content ?? toolInput.new_content ?? toolInput.newContent);
-        const patchText = /^(?:apply_patch|patch)$/i.test(rawName.split('.').pop() || '')
+        const patchText = isPatchTool
           ? patchTextFromToolInput(rawToolInput, data)
           : '';
         tool = {

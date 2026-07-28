@@ -279,8 +279,11 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // parsedToolInput reads first, so their behavior is byte-identical.
   const rawFilePath = (asString(toolInput.file_path) || asString(toolInput.filePath)
     || asString(toolInput.path) || asString(tool?.filePath)).replace(/\\/g, '/');
-  const rawCommand = commandFromToolInput(toolInput) || asString(tool?.command);
   const isApplyPatch = normalizedToolName(toolName).toLowerCase() === 'apply_patch';
+  // Codex apply_patch payloads arrive in tool_input.command — patch DATA, not a
+  // shell command. Run-id/feature-write/heredoc scanners must never read patch
+  // bodies as shell text (observed 3co: content strings became phantom targets).
+  const rawCommand = isApplyPatch ? '' : (commandFromToolInput(toolInput) || asString(tool?.command));
   const rawPatchText = isApplyPatch
     ? patchTextFromToolInput(tool?.patchText, raw.tool_input, raw.toolInput, raw.input, raw, toolInput)
     : '';
@@ -445,6 +448,9 @@ export function planWriteGate(ctx: Ctx): HookResult {
     appendUnique(violations, planReadinessViolations({
       filePath: target.filePath,
       content: target.resultContent,
+      // Shell-derived targets (staticCheck false) carry no reconstructable
+      // payload; content-shape gates must judge the on-disk artifact, not ''.
+      contentVerified: target.staticCheck,
       projectRoot,
       state,
       writingFeatureSource: isFeatureTarget(target.filePath)

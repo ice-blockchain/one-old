@@ -90,6 +90,37 @@ test('clean write in a materialized main-agent project → noop', () => {
   });
 });
 
+// Regression (3co, 1.0.28): the architect ran the plugin's own contract
+// validator via `node -e` (read-only) and was denied 3× with "architecture
+// input must be valid JSON" while the on-disk file was valid. Unverifiable
+// shell references must judge the DISK artifact, not an empty pseudo-payload.
+test('node -e referencing a VALID on-disk architecture-input is not denied as invalid JSON', () => {
+  withMaterialized({ currentRunId: 'R', activeAgentRole: 'senior-architect' }, (cwd) => {
+    const inputPath = path.join(cwd, '.traffic-one', 'runs', 'R', 'architecture-input-v1.json');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    }), 'utf8');
+    const command = 'node -e "const fs=require(\'node:fs\'); const x=JSON.parse(fs.readFileSync(\'.traffic-one/runs/R/architecture-input-v1.json\',\'utf8\')); process.stdout.write(JSON.stringify(x.schemaVersion))"';
+    const result = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+    assert.equal(result.kind, 'noop', JSON.stringify(result));
+
+    // The extraction path is alive: the same command against an INVALID disk
+    // file still denies — now blaming the unverifiable command, not the file.
+    fs.writeFileSync(inputPath, '{ not json', 'utf8');
+    const denied = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.match(denied.reason, /cannot be reconstructed|not valid ArchitectureInputV1/);
+    }
+  });
+});
+
 test('plugin authoring cwd does not exempt an absolute project file from the plan/structure gate', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (project) => {
     const target = path.join(project, 'apps', 'web', 'src', 'main.tsx');

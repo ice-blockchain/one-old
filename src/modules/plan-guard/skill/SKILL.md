@@ -98,6 +98,10 @@ Runtime contract gate: `.traffic-one/runs/<runId>/assignments.json` is generated
 Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: {{ERRORS}}.
 <!-- T1BLOCK:END architecture-input-gate -->
 
+<!-- T1BLOCK:BEGIN architecture-input-shell-unverified -->
+Architecture input gate: this shell command references `{{TARGET}}` but its write payload cannot be reconstructed for validation, and the current on-disk file is not valid ArchitectureInputV1 ({{ERRORS}}). Read-only checks pass once the on-disk file is valid; to (re)write it, use the role-scoped Write/Edit tools with the complete semantic JSON instead of shell eval.
+<!-- T1BLOCK:END architecture-input-shell-unverified -->
+
 <!-- T1BLOCK:BEGIN architecture-assignment-gate -->
 Architecture assignment gate: the runtime-compiled outputs are not covered before spawn. {{ERRORS}}. Amend semantic ArchitectureInputV1 and re-run PLAN_READY compilation; never edit or widen runtime-owned assignments.
 <!-- T1BLOCK:END architecture-assignment-gate -->

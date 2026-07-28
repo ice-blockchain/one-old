@@ -399,7 +399,11 @@ const PRETTIER_CONFIG_FILES = [
   'prettier.config.mjs', 'prettier.config.ts',
 ];
 
-function formatParityViolation(projectRoot: string, profile: CapabilityProfileV1): string | null {
+type FormatParityProblem =
+  | { kind: 'missing-dependency'; reference: string }
+  | { kind: 'missing-toolchain' };
+
+function formatParityViolation(projectRoot: string, profile: CapabilityProfileV1): FormatParityProblem | null {
   const webRoot = webPackageRoot(profile);
   const at = (rel: string): string => (webRoot === '.' ? rel : `${webRoot}/${rel}`);
   const rootPkg = jsoncFile(projectRoot, 'package.json')?.parsed || null;
@@ -420,9 +424,18 @@ function formatParityViolation(projectRoot: string, profile: CapabilityProfileV1
       if (script) { reference = `the \`${ownerRel}\` "${script}" script`; break; }
     }
   }
-  if (!reference) return null;
+  if (!reference) {
+    // NOTHING prettier-shaped exists. On a new-project scaffold that includes
+    // `.prettierrc` in the compiled scope this means the frontend skipped the
+    // formatter toolchain entirely — the collapse-gate remedy ("run the format
+    // script") is then impossible and collapsed one-liner code ships unchecked
+    // (observed 3co: 9+ files with 500+ char lines, no config, no scripts, no
+    // dependency). An alternative formatter (biome) counts as a toolchain.
+    const biome = ['biome.json', 'biome.jsonc'].some((rel) => exists(projectRoot, rel) || (webRoot !== '.' && exists(projectRoot, at(rel))));
+    return biome ? null : { kind: 'missing-toolchain' };
+  }
   const deps = { ...(rootPkg ? obj(rootPkg.dependencies) : null), ...(rootPkg ? obj(rootPkg.devDependencies) : null) };
-  return typeof deps.prettier === 'string' ? null : reference;
+  return typeof deps.prettier === 'string' ? null : { kind: 'missing-dependency', reference };
 }
 
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
@@ -918,6 +931,10 @@ function usesMainAgentTeam(state: Rec): boolean {
 export interface ReadinessArgs {
   filePath: string;          // project-relative target path
   content: string;           // write content (Write.content / Edit.new_string)
+  // False when the target was inferred from a shell command whose write payload
+  // cannot be reconstructed (e.g. `node -e` naming the file). Content-shape
+  // gates then judge the on-disk artifact instead of an empty pseudo-payload.
+  contentVerified?: boolean;
   projectRoot: string;       // resolved project root for the target
   state: Rec;                // readEffectiveState(projectRoot)
   writingFeatureSource: boolean;
@@ -929,6 +946,7 @@ export interface ReadinessArgs {
 // Readiness violations for a single write/edit. Empty array == nothing to block.
 export function planReadinessViolations(args: ReadinessArgs): string[] {
   const { filePath, content, projectRoot, state, writingFeatureSource, rawData, block, host } = args;
+  const contentVerified = args.contentVerified !== false;
   const violations: string[] = [];
   const currentHost = canonicalHost(host);
   const currentRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
@@ -989,11 +1007,35 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Architecture input gate: only the parent-bound \`senior-architect\` planning role may write ArchitectureInputV1; active role is \`${writerRole}\`.`,
         { ROLE: writerRole }));
     }
-    const errors = architectureInputErrors(content);
-    if (errors.length > 0) {
-      violations.push(block('architecture-input-gate',
-        `Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: ${errors.join('; ')}.`,
-        { ERRORS: errors.join('; ') }));
+    if (contentVerified) {
+      const errors = architectureInputErrors(content);
+      if (errors.length > 0) {
+        violations.push(block('architecture-input-gate',
+          `Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: ${errors.join('; ')}.`,
+          { ERRORS: errors.join('; ') }));
+      }
+    } else {
+      // Shell-inferred target: the payload is not reconstructable, so judge the
+      // artifact already on disk. A valid on-disk file means this is almost
+      // certainly a read/diagnostic (observed 3co: the architect running the
+      // plugin's own validateArchitectureInput via `node -e` was denied with a
+      // message blaming a file that was valid the whole time). Only a missing
+      // or invalid on-disk artifact keeps the deny — and says what is actually
+      // wrong instead of accusing the file when the COMMAND is the unknown.
+      const diskErrors = ((): string[] => {
+        try {
+          return architectureInputErrors(
+            fs.readFileSync(path.join(projectRoot, filePath), 'utf8'),
+          );
+        } catch {
+          return ['architecture input file does not exist on disk yet'];
+        }
+      })();
+      if (diskErrors.length > 0) {
+        violations.push(block('architecture-input-shell-unverified',
+          `Architecture input gate: this shell command references \`${filePath}\` but its write payload cannot be reconstructed for validation, and the current on-disk file is not valid ArchitectureInputV1 (${diskErrors.join('; ')}). Read-only checks pass once the on-disk file is valid; to (re)write it, use the role-scoped Write/Edit tools with the complete semantic JSON instead of shell eval.`,
+          { TARGET: filePath, ERRORS: diskErrors.join('; ') }));
+      }
     }
   }
 
@@ -1213,10 +1255,13 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     }
     if (state.mode === 'new-project' && profileHasWebUi(frontendProfile)) {
       const parity = formatParityViolation(projectRoot, frontendProfile);
-      if (parity) {
+      if (parity?.kind === 'missing-dependency') {
         violations.push(block('frontend-format-parity-gate',
-          `Frontend completion gate: ${parity} exists but \`prettier\` is not declared in the root package.json dependencies/devDependencies. A script or config that names an absent tool makes later verification meaningless. Run exactly \`pnpm add -D -w prettier\` (or add \`"prettier"\` to the root devDependencies), then re-emit \`IMPLEMENTED\`.`,
-          { CONFIG: parity }));
+          `Frontend completion gate: ${parity.reference} exists but \`prettier\` is not declared in the root package.json dependencies/devDependencies. A script or config that names an absent tool makes later verification meaningless. Run exactly \`pnpm add -D -w prettier\` (or add \`"prettier"\` to the root devDependencies), then re-emit \`IMPLEMENTED\`.`,
+          { CONFIG: parity.reference }));
+      } else if (parity?.kind === 'missing-toolchain') {
+        violations.push(block('frontend-format-toolchain-gate',
+          'Frontend completion gate: no formatter toolchain exists — no prettier config file, no root `format`/`format:check` scripts, and no `prettier` dependency. The compiled scaffold for this run includes `.prettierrc` and `.prettierignore` in your allowlist: write both, add `"format": "prettier --write ."` and `"format:check": "prettier --check ."` to the root package.json scripts with `prettier` in devDependencies, run the formatter over the workspace, then re-emit `IMPLEMENTED`. Without this toolchain the formatting verification later phases depend on can never run.'));
       }
     }
     const runId = frontendDigest[2] || '';

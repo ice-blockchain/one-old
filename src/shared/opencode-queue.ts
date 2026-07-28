@@ -620,7 +620,16 @@ export function openCodeQueuePolicyReport(
         // "widen assignments.json" sent the architect down a path that can only
         // fail (observed 1cu-cursor: it dropped the units instead, halving the
         // delegation queue). Ownership comes from the module declaration.
-        add(`OpenCode unit \`${unit.id}\` (role ${unit.role}) lists file(s) outside ${unit.role}'s assignment scope: ${outside.join(', ')}; move them into a unit whose role owns them, or drop them from the queue. \`runs/<runId>/assignments.json\` is runtime-owned and compiled from your ArchitectureInputV1 modules — declare the module under the owning role instead of editing that file.`, unit.id);
+        // Print real in-scope paths: "declare the module" alone still made
+        // agents guess (observed 4cl: 4/5 units invented helper paths like
+        // src/lib/format.ts that no module kind ever compiles, so their files
+        // were unwritable for EVERYONE and the delegation silently fell back).
+        const inScope = roleScopes
+          .flatMap((scope) => scope.include)
+          .filter((entry) => !GLOB_META_RE.test(entry));
+        const sample = inScope.slice(0, 8).join(', ');
+        const sampleTail = inScope.length > 8 ? ', …' : '';
+        add(`OpenCode unit \`${unit.id}\` (role ${unit.role}) lists file(s) outside ${unit.role}'s assignment scope: ${outside.join(', ')}; retarget the unit to files ${unit.role} actually owns, move it to the owning role, or drop it. These files are NOT writable by the implementers either — the compiled scope is the whole write surface for this run, so fold the unit's content into an owned file instead. In-scope ${unit.role} files include: ${sample}${sampleTail}. \`runs/<runId>/assignments.json\` is runtime-owned and compiled from your ArchitectureInputV1 modules — declare the module under the owning role instead of editing that file.`, unit.id);
       }
     }
   }

@@ -152,6 +152,16 @@ const DEFAULT_STATE = {
   mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
 };
 
+// Satisfies frontend-format-toolchain-gate for fixtures that exercise OTHER
+// frontend completion gates (the gate itself is covered by its own tests).
+function writeFormatterToolchain(dir: string): void {
+  fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100 }\n', 'utf8');
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    private: true,
+    devDependencies: { prettier: '^3.0.0' },
+  }), 'utf8');
+}
+
 test('monorepo-package-json: a non-workspace root package.json on a monorepo stack is blocked', () => {
   withProject((dir) => {
     const v = planReadinessViolations({
@@ -644,6 +654,7 @@ test('PLAN_READY consumes strict verification intent and IMPLEMENTED refreshes u
 test('frontend completion gate: IMPLEMENTED is denied while product source is collapsed, allowed once split/formatted', () => {
   withProject((dir) => {
     fs.mkdirSync(path.join(dir, 'apps/web/src/pages'), { recursive: true });
+    writeFormatterToolchain(dir);
     const collapsedLine = `function App() { ${'const x = <div className="a">hi</div>; return <section>{x}</section>; '.repeat(12)} }`;
     fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), `${collapsedLine}\n`, 'utf8');
     const gateArgs = {
@@ -810,6 +821,7 @@ test('tester completion gate: TESTS_GREEN is denied when the sweep loaded anothe
 test('frontend completion gate: a long single-string/data-URI line is NOT flagged as collapse', () => {
   withProject((dir) => {
     fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    writeFormatterToolchain(dir);
     // A 900-char string literal has no statement/JSX punctuation — real code, not collapse.
     fs.writeFileSync(path.join(dir, 'apps/web/src/logo.ts'), `export const LOGO = "data:image/svg+xml;base64,${'A'.repeat(900)}"\n`, 'utf8');
     const v = planReadinessViolations({
@@ -1270,6 +1282,70 @@ test('runtime-owned run sidecars are read-only while ArchitectureInput stays arc
   });
 });
 
+// Regression (3co, 1.0.28): a `node -e` diagnostic naming the architecture
+// input was classified as an unverifiable shell write; the gate then parsed an
+// EMPTY pseudo-payload and denied with "must be valid JSON" while the on-disk
+// file was valid the whole time. Shell-inferred targets must judge the disk.
+test('architecture-input: unverifiable shell target passes when the on-disk file is valid', () => {
+  withProject((dir) => {
+    writeArchitectureInputOnly(dir, 'R');
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: '',
+      contentVerified: false,
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, currentRunId: 'R', activeAgentRole: 'senior-architect' },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!violations.includes('architecture-input-gate'), violations.join(','));
+  });
+});
+
+test('architecture-input: unverifiable shell target still denies when the on-disk file is missing or invalid', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, currentRunId: 'R', activeAgentRole: 'senior-architect' };
+    const missing = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: '',
+      contentVerified: false,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(missing.includes('architecture-input-shell-unverified'));
+
+    const inputPath = architectureInputPath(dir, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, '{ not json', 'utf8');
+    const invalid = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: '',
+      contentVerified: false,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(invalid.includes('architecture-input-shell-unverified'));
+  });
+});
+
+test('architecture-input: reconstructed write content is still validated directly', () => {
+  withProject((dir) => {
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: '{ not json',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, currentRunId: 'R', activeAgentRole: 'senior-architect' },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(violations.includes('architecture-input-gate'));
+  });
+});
+
 test('digests and QA reports require the exact active child WorkUnitContract', () => {
   withProject((dir) => {
     const state = {
@@ -1487,6 +1563,7 @@ const namesWithVars = (
 test('frontend emit-config gate denies the stock Vite template and passes the prescribed shape', () => {
   withProject((dir) => {
     fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    writeFormatterToolchain(dir);
     fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), 'export function App() {\n  return null;\n}\n', 'utf8');
     const gateArgs = {
       filePath: '.traffic-one/digests/R/frontend.md',
@@ -1624,9 +1701,17 @@ test('frontend format-parity gate: prettier config/script without the dependency
     }), 'utf8');
     assert.ok(planReadinessViolations(gateArgs).includes('frontend-format-parity-gate'));
 
-    // No config and no script → nothing to keep in parity.
+    // Regression (3co, 1.0.28): NO config, NO script, NO dependency used to
+    // pass ("nothing to keep in parity") — which shipped collapsed one-liner
+    // code with a formatter the collapse-gate remedy could never run. The
+    // absent toolchain is now its own deterministic deny.
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-format-toolchain-gate'));
+
+    // An alternative formatter toolchain (biome) satisfies the gate.
+    fs.writeFileSync(path.join(dir, 'biome.json'), '{}\n', 'utf8');
     assert.deepEqual(planReadinessViolations(gateArgs), []);
+    fs.rmSync(path.join(dir, 'biome.json'));
 
     // The architect digest never carries this gate (v1.0.20 removed
     // architect-side formatter requirements; the live regression test above

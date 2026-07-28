@@ -132,8 +132,13 @@ export function planStaticViolations(filePath: string, content: string, isNative
       .map((match) => match[1])
       .filter((feature) => feature !== current);
     if (cross.length > 0) {
+      // Remedies must be writable in the run's compiled scope: packages/utils
+      // does not exist in most compiled profiles (observed 3co — the message
+      // recommended it while the only frontend-writable shared homes were
+      // packages/ui and src/components/), and domain types/state usually live
+      // in the backend-owned api-client package that any feature may import.
       violations.push(block('cross-feature-import',
-        `Cross-feature import detected (${current} -> ${cross}). Share via packages/ui, packages/ui-native, packages/utils, or a feature-agnostic store slice.`,
+        `Cross-feature import detected (${current} -> ${cross}). Never import one feature from another. Import shared domain types/data contracts from the api-client workspace package; put shared UI in src/components/ or packages/ui (packages/ui-native for native) when your allowlist includes it. If the shared piece has no writable home in your compiled scope, ask for the owning \`service\`/\`store\`/\`component\` module via ArchitectureInputV1 instead of widening imports.`,
         { CURRENT: current, CROSS: String(cross) }));
     }
   }

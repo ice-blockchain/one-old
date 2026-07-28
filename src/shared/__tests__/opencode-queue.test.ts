@@ -173,6 +173,30 @@ test('openCodeQueuePolicyViolations: a docs-only unit documenting test commands 
   assert.deepEqual(openCodeQueuePolicyViolations(units), []);
 });
 
+// Regression (4cl, 1.0.28): 4/5 units invented helper paths no module compiles
+// (src/lib/format.ts) — the rejection must PRINT real in-scope paths so the
+// architect stops guessing, and must say the files are unwritable for everyone.
+test('openCodeQueuePolicyViolations: out-of-scope unit rejection lists real in-scope files for the role', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: format-helpers | role: frontend | kind: pure-helper | files: apps/web/src/lib/format.ts | task: pure formatting helpers',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  const errors = openCodeQueuePolicyViolations(units, {
+    assignments: [{
+      role: 'senior-frontend',
+      scope: {
+        include: ['apps/web/src/App.tsx', 'apps/web/src/features/course-catalog/index.ts', 'README.md'],
+        exclude: [],
+      },
+    }],
+  });
+  const scopeError = errors.find((error) => /outside frontend's assignment scope/.test(error));
+  assert.ok(scopeError, errors.join(' | '));
+  assert.match(scopeError as string, /apps\/web\/src\/features\/course-catalog\/index\.ts/);
+  assert.match(scopeError as string, /NOT writable by the implementers either/);
+});
+
 test('openCodeQueuePolicyViolations: a non-docs unit mentioning tests still needs test paths in its allowlist', () => {
   const units = parsePlanDelegationUnits([
     '<!-- opencode-delegate:start -->',

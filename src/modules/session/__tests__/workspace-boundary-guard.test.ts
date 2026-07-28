@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { workspaceBoundaryGuard } from '../workspace-boundary-guard';
+import { makeClaudeAdapter } from '../../../adapters/claude';
 import { toolClassForRawName } from '../../../core/events';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
@@ -102,6 +103,64 @@ test('apply_patch resolves the project boundary when a host omits workspaceRoot'
       '*** End Patch',
     ].join('\n');
     const result = workspaceBoundaryGuard(ctxFor(ws6b, undefined, 'apply_patch', { patch }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.ok(result.reason.includes(ws5b));
+  });
+});
+
+// Regression (3co, 1.0.28): Codex delivers the apply_patch payload in
+// tool_input.command. The patch BODY must never be scanned as shell text —
+// a semantic route string ("/courses/:courseSlug") in written content was
+// extracted as an absolute path candidate and the whole multi-file patch was
+// denied as a workspace escape.
+test('allows a codex apply_patch whose CONTENT contains route strings and $vars (payload in tool_input.command)', () => {
+  withSiblingWorkspaces((_root, ws6b) => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: .traffic-one/plan.md',
+      '+# Plan',
+      '+| `course-detail` | `/courses/:courseSlug` | detail page |',
+      '+Set `$VITE_SITE_URL` in the environment before builds.',
+      '*** Add File: .traffic-one/runs/123/architecture-input-v1.json',
+      '+{ "routes": [ { "id": "course-detail", "path": "/courses/:courseSlug" } ] }',
+      '*** End Patch',
+    ].join('\n');
+    const parsed = makeClaudeAdapter('codex').parse({
+      stdin: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'apply_patch',
+        tool_input: { command: patch },
+        cwd: ws6b,
+      }),
+      argv: [],
+    });
+    assert.equal(parsed.tool?.command, undefined);
+    assert.equal(parsed.tool?.patchText, patch);
+    const ctx = { input: parsed, host: 'codex', cwd: ws6b, now: () => 'x' } as unknown as Ctx;
+    const result = workspaceBoundaryGuard(ctx);
+    assert.equal(result.kind, 'noop');
+  });
+});
+
+test('still denies a codex command-shaped apply_patch whose OPERATION escapes the workspace', () => {
+  withSiblingWorkspaces((_root, ws6b, ws5b) => {
+    const patch = [
+      '*** Begin Patch',
+      `*** Add File: ${path.join(ws5b, 'src', 'outside.ts')}`,
+      '+outside',
+      '*** End Patch',
+    ].join('\n');
+    const parsed = makeClaudeAdapter('codex').parse({
+      stdin: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'apply_patch',
+        tool_input: { command: patch },
+        cwd: ws6b,
+      }),
+      argv: [],
+    });
+    const ctx = { input: parsed, host: 'codex', cwd: ws6b, now: () => 'x' } as unknown as Ctx;
+    const result = workspaceBoundaryGuard(ctx);
     assert.equal(result.kind, 'deny');
     if (result.kind === 'deny') assert.ok(result.reason.includes(ws5b));
   });

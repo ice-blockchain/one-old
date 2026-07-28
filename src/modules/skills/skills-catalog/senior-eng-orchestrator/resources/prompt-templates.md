@@ -149,7 +149,20 @@ Derive paths from the modules you declared — runtime compiles per-role
 ownership from them AFTER your `PLAN_READY`, and a unit whose files fall
 outside its role's compiled assignment is rejected at Step-0 delegation
 (pre-model, paid fallback). Scope mismatches never block `PLAN_READY`, so do
-not try to guess the compiled allowlist — declare the owning module instead. If
+not try to guess the compiled allowlist — declare the owning module instead.
+The compiled path per module is DETERMINISTIC (closed kind list: app-shell,
+page, component, feature, service, store, test): `feature` → `<features-root>/
+<kebab(name)>/index.ts`; `page` → `<pages-root>/<Pascal(name)>.tsx`;
+`component` → `<components-root>/<Pascal(name)>.tsx`; `app-shell` → the app
+shell entry (router/shell only); `test` → `tests/<kebab(name)>.test.ts`;
+`service`/`store` compile into backend-owned api-client files whenever a
+backend role exists. Standing scaffold files are also unit-safe when the
+role owns them: `README.md`, the source i18n catalog, backend seed/migrations.
+There is NO compiled helpers/util file for the frontend when a backend role
+exists — never queue invented paths (`src/lib/format.ts`, `features/<x>/
+demo-content.ts`): the rejected unit's files are unwritable for the
+implementers too, so fold helper/demo content into the owning feature's
+`index.ts` or a declared component instead. If
 the task mentions tests, testability, Vitest, Playwright, specs, or config/deps,
 the allowlist must include the exact test/spec/config/package files it may
 touch; otherwise remove that acceptance and leave verification/config work to

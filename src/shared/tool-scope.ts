@@ -303,7 +303,8 @@ function explicitToolTargets(
   }
 
   const rawName = normalizedToolName(ctx.input.tool?.rawName || raw.tool_name || raw.toolName);
-  if (/^apply_patch$/i.test(rawName)) {
+  const isApplyPatch = /^apply_patch$/i.test(rawName);
+  if (isApplyPatch) {
     const patchText = patchTextFromToolInput(
       ctx.input.tool?.patchText,
       raw.tool_input,
@@ -318,7 +319,13 @@ function explicitToolTargets(
     }
   }
 
-  const command = ctx.input.tool?.command || commandFromToolInput(toolInput);
+  // An apply_patch payload is DATA, never shell text: Codex delivers the patch
+  // in tool_input.command, and scanning it as a command turns content strings
+  // (route paths like "/courses/:slug", `$VAR` in embedded snippets) into
+  // phantom write targets outside the workspace (observed 3co: the architect's
+  // whole multi-file patch was denied over a semantic route). The parsed patch
+  // operations above are the complete, authoritative target set.
+  const command = isApplyPatch ? '' : (ctx.input.tool?.command || commandFromToolInput(toolInput));
   const commandScan = commandTargets(command, base);
   targets.push(...commandScan.targets);
   return { base, targets, unresolvedWriteTargets: commandScan.unresolvedWriteTargets };
