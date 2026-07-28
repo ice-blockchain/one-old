@@ -222,6 +222,42 @@ test('declined project: silent on normal prompts; an explicit Traffic One mentio
   });
 });
 
+// The chat message is the last moment our code runs at all — no host fires a
+// plugin uninstall hook — so the check sits ahead of every gate below it.
+test('an uninstall request is answered from anywhere, including outside a project', () => {
+  for (const cwd of [process.cwd(), os.tmpdir()]) {
+    const r = runUserPromptSubmit(ctx(cwd, 'uninstall traffic one'));
+    assert.equal(r.kind, 'context', `expected the directive from ${cwd}`);
+    if (r.kind === 'context') {
+      assert.match(r.context, /ONE explicit confirmation/);
+      assert.ok(r.context.includes('traffic-one-uninstall.cjs'), 'carries the cleanup command');
+      assert.equal(r.systemMessage, 'traffic-one [uninstall requested]');
+    }
+  }
+});
+
+test('an uninstall request on a DECLINED project uninstalls — it does not offer to re-enable', () => {
+  withAuthedProject(null, (cwd) => {
+    recordPluginUseChoice(cwd, false, 'command');
+    const r = runUserPromptSubmit(ctx(cwd, 'please uninstall the traffic one plugin'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.match(r.context, /UNINSTALL Traffic One/);
+      assert.ok(!r.context.includes('--reconsider'), 'the reconsider branch must not claim this prompt');
+    }
+  });
+});
+
+test('talk ABOUT uninstalling is not an uninstall request', () => {
+  withAuthedProject(null, (cwd) => {
+    for (const prompt of ['how do I uninstall traffic one?', "don't uninstall traffic one"]) {
+      const r = runUserPromptSubmit(ctx(cwd, prompt));
+      const text = r.kind === 'context' ? r.context : '';
+      assert.ok(!text.includes('traffic-one-uninstall.cjs'), `must not arm the cleanup: ${prompt}`);
+    }
+  });
+});
+
 test('authed + no state + a coding prompt → bootstraps new-project setup (mid-session auth)', () => {
   withAuthedProject(null, (cwd) => {
     const r = runUserPromptSubmit(ctx(cwd, 'build a todo app with auth'));

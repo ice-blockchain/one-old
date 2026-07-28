@@ -549,6 +549,46 @@ For OpenCode, Kilo, and Windsurf, run the same
 or `scripts/windsurf-host.cjs install --yes` command from the installed plugin
 root after publication.
 
+## Uninstall
+
+Telling the agent to uninstall Traffic One ("uninstall traffic one", "remove the
+traffic-one plugin") is enough: the UserPromptSubmit hook recognises the request,
+the agent asks once for confirmation, and then runs the whole cleanup. That chat
+message is the only moment a full cleanup is reachable — no host runs a plugin
+uninstall lifecycle hook, so once the bundle is removed nothing of Traffic One's
+ever executes again.
+
+The same cleanup can be run directly:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/traffic-one-uninstall.cjs --dry-run
+node /absolute/path/to/traffic-one/dist/scripts/traffic-one-uninstall.cjs --yes
+```
+
+It removes, in this order:
+
+1. the user-level host integrations — the Kilo and OpenCode wrappers, the
+   Windsurf/Cascade hooks and global rule (all three channels), and the Codex
+   machine-global MCP block;
+2. `~/.traffic-one` — the saved API key, per-project preferences, runner shims,
+   and the managed toolchains (over 1 GB; reinstalled on a future setup);
+3. the plugin bundle, via `claude plugin uninstall` / `codex plugin remove`, for
+   every marketplace that has it.
+
+The order is load-bearing. The Kilo wrapper is fail-closed and its bundle path is
+baked in at install time, so a wrapper left behind after the bundle is gone denies
+every tool call in every Traffic One project — and the script that would repair it
+has just been deleted. Pass `--keep-plugin` to clean everything but leave the
+bundle installed. Nothing is written without `--yes`.
+
+Cursor has no plugin-management CLI, so a Cursor install must be removed from its
+plugin UI; the command reports it when it finds one. Restart the host afterwards:
+it loaded this session's hook wiring at startup and does not reload it, so hooks
+keep resolving to the removed bundle until it restarts.
+
+Onboarded projects are deliberately untouched — their `.traffic-one/` folders and
+generated instructions are project content, not plugin state.
+
 ---
 
 ## Customising

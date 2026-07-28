@@ -349,6 +349,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `scripts/opencode-host.cjs` | OpenCode wrapper installer, project enable/disable marker manager, uninstaller, and doctor. |
 | `scripts/kilo-hook-runtime.cjs` | Kilo host runtime shim; wrapper invocations stamp `--host=kilo`. |
 | `scripts/kilo-host.cjs` | Kilo wrapper installer, project enable/disable marker manager, uninstaller, and doctor. |
+| `scripts/traffic-one-uninstall.cjs` | Full machine-global uninstall: the four user-level host integrations, then `~/.traffic-one`, then the plugin bundle via each host CLI. Consent-gated (`--yes`); armed from chat by the UserPromptSubmit uninstall directive. |
 | `scripts/hook-runtime/config.cjs` | Hook runtime config constants. |
 | `scripts/hook-runtime/detection/detection.cjs` | Project mode/stack detection helpers (one-file-per-function folder). |
 | `scripts/hook-runtime/directives/directives.cjs` | Hook-time instruction/directive rendering (one-file-per-function folder). |

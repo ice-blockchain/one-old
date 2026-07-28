@@ -27,6 +27,7 @@ import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
+import { isUninstallTrafficOneIntent, uninstallDirective } from '../../shared/uninstall-intent';
 import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { obj } from '../../shared/obj';
@@ -68,6 +69,20 @@ function opencodeSetupDirective(url: string, localUrl: string, waitCommand: stri
 // that request never reaches UserPromptSubmit).
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
+  // ── Uninstall request ──
+  // Deliberately the FIRST thing checked, ahead of every gate below. Uninstalling
+  // is machine-global, so cwd is irrelevant: isNonProjectRoot would drop the
+  // request when it is typed from $HOME or a non-project dir, the declined-project
+  // branch matches the very same "traffic one" mention and would answer with how to
+  // RE-ENABLE, and the coding-intent gate drops it on an uninitialized project
+  // because asking to uninstall is not a coding prompt. This is also the last
+  // moment our code can run at all — no host fires a plugin uninstall hook, so once
+  // the bundle is gone nothing of ours executes again. The directive only ARMS the
+  // cleanup; the agent takes one explicit confirmation before running it.
+  if (isUninstallTrafficOneIntent(ctx.input.prompt || promptTextFromSubmit(ctx.input.raw))) {
+    return context(uninstallDirective(ctx.host), { systemMessage: 'traffic-one [uninstall requested]' });
+  }
+
   if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
   initializeTrafficOneEnv(cwd, ctx.host);
