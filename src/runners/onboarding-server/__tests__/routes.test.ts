@@ -149,11 +149,11 @@ test('routes: validated API key persists through the server ctx.env custom state
     TRAFFIC_ONE_AUTH: '1',
     TRAFFIC_ONE_STATE_PATH: customState,
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'preferences.json'),
-    TRAFFIC_ONE_MCP_KEY_ENDPOINT: `http://127.0.0.1:${authPort}/mcp`,
   } as NodeJS.ProcessEnv;
   const server = await startOnboardingServer({
     cwd: dir,
     env: customEnv,
+    authEndpoint: `http://127.0.0.1:${authPort}/mcp`,
     token: 'secret',
     standalone: false,
     idleMs: 60_000,

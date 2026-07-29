@@ -9,9 +9,9 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
+  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
 } from '../../config/one-mcp';
 import type { HostCommandConfig } from './types';
 import {
@@ -210,7 +210,7 @@ export function seedCodexE2eModelCatalog(
   };
   const now = new Date().toISOString();
   writeOneMcpConfigCacheEntry('codex', {
-    endpoint: publicEndpoint(env),
+    endpoint: DEFAULT_PUBLIC_ENDPOINT,
     configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
     decoderVersion: ONE_MCP_DECODER_VERSION,
     version: 1,

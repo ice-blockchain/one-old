@@ -188,9 +188,9 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   const live0 = reuseIfLive();
   if (live0) return live0;
 
-  // Test/CI guard (mirrors TRAFFIC_ONE_ONE_MCP_NO_SPAWN): never spawn a real
-  // detached server. Reuse a pre-seeded record if present, else hand back a
-  // placeholder URL so the gate can still render its deny prose deterministically.
+  // Test/CI guard: never spawn a real detached server. Reuse a pre-seeded
+  // record if present, else hand back a placeholder URL so the gate can still
+  // render its deny prose deterministically.
   if (env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN === '1') {
     if (existing) return finalize({ port: existing.port, token: existing.token, started: false });
     return placeholder();

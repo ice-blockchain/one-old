@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { HOST_IDS } from '../../../config/model-tiers';
 import {
+  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_CACHE_SCHEMA_VERSION,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
@@ -311,18 +312,16 @@ test('probeCanonicalAuth reports path, validity, and update time without exposin
 
 test('probeOneMcp reports bounded runtime-usable cache state for all hosts without payloads or remote text', () => {
   const root = tmp('onemcp');
-  const file = path.join(root, 'one-mcp.json');
-  const env = {
-    TRAFFIC_ONE_MCP_CACHE_PATH: file,
-    TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: 'https://must-not-appear.example/public-mcp',
-  } as NodeJS.ProcessEnv;
+  const file = path.join(root, 'traffic-one', 'one-mcp.json');
+  const env = { XDG_STATE_HOME: root } as NodeJS.ProcessEnv;
   try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, `${JSON.stringify({
       schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
       hosts: {
         codex: {
           config: {
-            endpoint: 'https://must-not-appear.example/public-mcp',
+            endpoint: DEFAULT_PUBLIC_ENDPOINT,
             configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
             decoderVersion: ONE_MCP_DECODER_VERSION,
             version: 9,
@@ -387,12 +386,10 @@ test('probeOneMcp reports bounded runtime-usable cache state for all hosts witho
 
 test('probeOneMcp falls back to bundled when runtime rejects a cache from another endpoint', () => {
   const root = tmp('onemcp-unusable');
-  const file = path.join(root, 'one-mcp.json');
-  const env = {
-    TRAFFIC_ONE_MCP_CACHE_PATH: file,
-    TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: 'https://current.example/public-mcp',
-  } as NodeJS.ProcessEnv;
+  const file = path.join(root, 'traffic-one', 'one-mcp.json');
+  const env = { XDG_STATE_HOME: root } as NodeJS.ProcessEnv;
   try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, `${JSON.stringify({
       schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
       hosts: {

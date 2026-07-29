@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 
-import { ONE_MCP_CONFIG_NAME_BY_HOST } from '../../config/one-mcp';
+import { DEFAULT_PUBLIC_ENDPOINT, ONE_MCP_CONFIG_NAME_BY_HOST } from '../../config/one-mcp';
 import { currentHostModelTarget } from '../current-model-tiers';
 import {
   mapOneMcpTiers,
@@ -46,8 +46,7 @@ function fixture(): Fixture {
       TRAFFIC_ONE_USER_PLAN: 'pro',
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'preferences.json'),
       TRAFFIC_ONE_STATE_PATH: path.join(dir, 'one.json'),
-      TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json'),
-      TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: 'https://config.example.test/public-mcp',
+      XDG_STATE_HOME: dir,
       TRAFFIC_ONE_HOST: 'codex',
     } as NodeJS.ProcessEnv,
   };
@@ -93,7 +92,7 @@ function applied(
 function entry(fx: Fixture, version: number, tag: string, auto?: string): OneMcpConfigCacheEntry {
   const outcome = full(version, tag, undefined, auto);
   return {
-    endpoint: fx.env.TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT!,
+    endpoint: DEFAULT_PUBLIC_ENDPOINT,
     configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
     decoderVersion: 2,
     version,
@@ -159,7 +158,7 @@ test('sync is strict opt-in and sends the exact active-host config name only aft
       },
     });
     assert.deepEqual(seen, [{
-      endpoint: 'https://config.example.test/public-mcp',
+      endpoint: DEFAULT_PUBLIC_ENDPOINT,
       name: 'traffic_one_codex_plugin_ai_model_configuration',
       version: 0,
     }]);

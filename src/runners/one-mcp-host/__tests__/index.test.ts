@@ -41,12 +41,9 @@ test('one-mcp host maintenance refuses to remove a modified block', () => {
 
 test('one-mcp host maintenance honors the central registration switch', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 't1-one-mcp-host-'));
-  const env = {
-    CODEX_HOME: home,
-    TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION: '1',
-  } as NodeJS.ProcessEnv;
+  const env = { CODEX_HOME: home } as NodeJS.ProcessEnv;
   try {
-    const result = runOneMcpHostCommand(['install', '--yes'], env);
+    const result = runOneMcpHostCommand(['install', '--yes'], env, false);
     assert.equal(result.code, 0);
     assert.match(result.stdout, /skipped-disabled/);
     assert.equal(fs.existsSync(path.join(home, 'config.toml')), false);

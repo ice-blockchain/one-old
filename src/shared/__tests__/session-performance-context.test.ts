@@ -12,7 +12,7 @@ test('SessionStart injects active host performance and role models from the One 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-session-performance-'));
   const env = {
     TRAFFIC_ONE_STATE_PATH: path.join(dir, 'one.json'),
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(dir, 'state'),
     TRAFFIC_ONE_USER_PLAN: 'pro',
   } as NodeJS.ProcessEnv;
   try {

@@ -12,7 +12,7 @@ import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
   ONE_MCP_MAX_MODELS_PER_TIER,
-  publicEndpoint,
+  DEFAULT_PUBLIC_ENDPOINT,
 } from '../../config/one-mcp';
 import { captureCursorModels } from '../materialize/cursor-models';
 import { modelTierSnapshot, resolveModel } from '../model-tiers';
@@ -37,7 +37,7 @@ function fixture<T>(body: (cwd: string, env: NodeJS.ProcessEnv) => T): T {
     ...process.env,
     TRAFFIC_ONE_HOST: 'codex',
     TRAFFIC_ONE_USER_PLAN: 'pro',
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(cwd, 'state'),
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
   };
   try {
@@ -106,7 +106,7 @@ function publishCursorPayload(
   version: number,
 ): void {
   writeOneMcpConfigCacheEntry('cursor', {
-    endpoint: publicEndpoint(env),
+    endpoint: DEFAULT_PUBLIC_ENDPOINT,
     configName: ONE_MCP_CONFIG_NAME_BY_HOST.cursor,
     decoderVersion: ONE_MCP_DECODER_VERSION,
     version,
@@ -415,7 +415,7 @@ test('concurrent parents publish one valid create-once policy', async () => {
     ...process.env,
     TRAFFIC_ONE_HOST: 'codex',
     TRAFFIC_ONE_USER_PLAN: 'pro',
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(cwd, 'state'),
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
     TRAFFIC_ONE_POLICY_STATE: path.join(cwd, 'state.json'),
   };

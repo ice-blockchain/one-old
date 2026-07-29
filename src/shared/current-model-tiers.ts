@@ -5,9 +5,9 @@
 
 import type { HostModelKey, TierId } from '../config/model-tiers';
 import {
+  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
 } from '../config/one-mcp';
 import {
   canonicalHost,
@@ -40,10 +40,10 @@ export interface CurrentHostModelTarget {
 export function usableOneMcpConfigCacheEntry(
   host: HostModelKey,
   entry: OneMcpConfigCacheEntry | null,
-  env: NodeJS.ProcessEnv = process.env,
+  endpoint: string = DEFAULT_PUBLIC_ENDPOINT,
 ): OneMcpConfigCacheEntry | null {
   if (!entry
-    || entry.endpoint !== publicEndpoint(env)
+    || entry.endpoint !== endpoint
     || entry.configName !== ONE_MCP_CONFIG_NAME_BY_HOST[host]
     || entry.decoderVersion !== ONE_MCP_DECODER_VERSION) return null;
   const payload = parseOneMcpModelConfigPayload(entry.payload, host);
@@ -55,6 +55,7 @@ export function currentHostModelTarget(
   hostInput: unknown,
   planInput: unknown,
   env: NodeJS.ProcessEnv = process.env,
+  endpoint: string = DEFAULT_PUBLIC_ENDPOINT,
 ): CurrentHostModelTarget {
   const host = canonicalHost(hostInput);
   const plan = canonicalPlan(host, planInput);
@@ -62,7 +63,7 @@ export function currentHostModelTarget(
     const cached = usableOneMcpConfigCacheEntry(
       host,
       readOneMcpConfigCacheEntry(host, env),
-      env,
+      endpoint,
     );
     if (cached) {
       const payload = parseOneMcpModelConfigPayload(cached.payload, host)!;

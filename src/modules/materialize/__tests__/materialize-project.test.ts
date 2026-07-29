@@ -19,11 +19,9 @@ function withFreshAuthProject(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-materialize-'));
   const env = process.env;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
-  const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevAuth = env.TRAFFIC_ONE_AUTH;
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_AUTH = '1';
   fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
@@ -35,7 +33,6 @@ function withFreshAuthProject(fn: (dir: string) => void): void {
     fn(dir);
   } finally {
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
-    if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevAuth;
     fs.rmSync(dir, { recursive: true, force: true });

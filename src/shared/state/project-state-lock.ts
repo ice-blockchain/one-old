@@ -15,7 +15,7 @@ import {
   ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS,
   ONE_UID_FIELD,
   isValidOneMcpReportId,
-} from '../../config/one-mcp';
+} from '../../config/reporting';
 import { STATE_FILE } from '../../config/paths';
 
 interface ProjectStateLock {

@@ -5,10 +5,10 @@
 // atomically publishes the canonical config and a bounded diagnostic.
 
 import {
+  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  oneMcpSyncEnabled,
-  publicEndpoint,
+  ONE_MCP_SYNC,
 } from '../config/one-mcp';
 import type { HostModelKey } from '../config/model-tiers';
 import { currentHostModelTarget, usableOneMcpConfigCacheEntry } from './current-model-tiers';
@@ -39,6 +39,8 @@ type GetConfig = typeof callOneMcpGetConfig;
 
 export interface OneMcpSyncOptions {
   readonly env?: NodeJS.ProcessEnv;
+  /** Explicit test seam; production always uses DEFAULT_PUBLIC_ENDPOINT. */
+  readonly endpoint?: string;
   readonly getConfig?: GetConfig;
   readonly transport?: OneMcpGetConfigOptions;
   readonly now?: () => string;
@@ -76,8 +78,9 @@ function fallbackTarget(
   host: HostModelKey,
   plan: string,
   env: NodeJS.ProcessEnv,
+  endpoint: string,
 ): ResolvedTarget {
-  return currentHostModelTarget(host, plan, env);
+  return currentHostModelTarget(host, plan, env, endpoint);
 }
 
 function bundledTarget(host: HostModelKey, plan: string): ResolvedTarget {
@@ -94,9 +97,9 @@ function cacheTarget(
   host: HostModelKey,
   plan: string,
   entry: OneMcpConfigCacheEntry | null,
-  env: NodeJS.ProcessEnv,
+  endpoint: string,
 ): ResolvedTarget | null {
-  const usable = usableOneMcpConfigCacheEntry(host, entry, env);
+  const usable = usableOneMcpConfigCacheEntry(host, entry, endpoint);
   if (!usable) return null;
   const canonicalPlan = hostModelSnapshot(host, plan).plan;
   const tiers = mapOneMcpTiers(oneMcpRemoteTiersForPlan(usable.payload, canonicalPlan));
@@ -187,14 +190,14 @@ export async function syncOneMcpHostForProject(
   options: OneMcpSyncOptions = {},
 ): Promise<OneMcpSyncResult> {
   const env = options.env ?? process.env;
+  const endpoint = options.endpoint ?? DEFAULT_PUBLIC_ENDPOINT;
   const host = canonicalHost(hostInput);
   const plan = detectHostPlan(host, env);
-  const disabledTarget = fallbackTarget(host, plan, env);
-  if (!oneMcpSyncEnabled(env, options.featureEnabled) || !pluginUseEnabled(cwd, env)) {
+  const disabledTarget = fallbackTarget(host, plan, env, endpoint);
+  if (!(options.featureEnabled ?? ONE_MCP_SYNC) || !pluginUseEnabled(cwd, env)) {
     return result(host, plan, 'disabled', disabledTarget, false);
   }
 
-  const endpoint = publicEndpoint(env);
   const configName = ONE_MCP_CONFIG_NAME_BY_HOST[host];
   const attemptedAt = canonicalAttemptedAt(options.now?.() ?? stateTimestamp());
   let observed: OneMcpConfigCacheEntry | null;
@@ -206,11 +209,11 @@ export async function syncOneMcpHostForProject(
     expected = request.identity;
     syncGeneration = request.syncGeneration;
   } catch {
-    const target = cacheTarget(host, plan, safeReadCache(host, env), env) || bundledTarget(host, plan);
+    const target = cacheTarget(host, plan, safeReadCache(host, env), endpoint) || bundledTarget(host, plan);
     return result(host, plan, 'unavailable', target, false, 'cache-unavailable');
   }
 
-  const usableObserved = usableOneMcpConfigCacheEntry(host, observed, env);
+  const usableObserved = usableOneMcpConfigCacheEntry(host, observed, endpoint);
   let requestedVersion = usableObserved?.version ?? 0;
   const getConfig = options.getConfig ?? callOneMcpGetConfig;
   let remote: OneMcpGetConfigOutcome;
@@ -221,7 +224,7 @@ export async function syncOneMcpHostForProject(
       remote = await getConfig(endpoint, configName, 0, options.transport);
     }
   } catch {
-    const observedTarget = cacheTarget(host, plan, usableObserved, env) || bundledTarget(host, plan);
+    const observedTarget = cacheTarget(host, plan, usableObserved, endpoint) || bundledTarget(host, plan);
     try {
       completeOneMcpConfigCacheRequest(
         host,
@@ -241,7 +244,7 @@ export async function syncOneMcpHostForProject(
     } catch {
       // A diagnostic write must never make public configuration blocking.
     }
-    const target = cacheTarget(host, plan, safeReadCache(host, env), env) || bundledTarget(host, plan);
+    const target = cacheTarget(host, plan, safeReadCache(host, env), endpoint) || bundledTarget(host, plan);
     return result(host, plan, 'unavailable', target, false, 'transport-failed');
   }
 
@@ -249,10 +252,10 @@ export async function syncOneMcpHostForProject(
     ? fullCacheEntry(endpoint, configName, remote)
     : null;
   const expectedTarget = replacement
-    ? cacheTarget(host, plan, replacement, env)!
+    ? cacheTarget(host, plan, replacement, endpoint)!
     : remote.kind === 'config-not-found'
       ? bundledTarget(host, plan)
-      : cacheTarget(host, plan, usableObserved, env) || bundledTarget(host, plan);
+      : cacheTarget(host, plan, usableObserved, endpoint) || bundledTarget(host, plan);
   const reason = remote.kind === 'invalid-response' ? remote.reason : undefined;
   const observedVersion = remote.kind === 'full'
     ? remote.config.version
@@ -290,8 +293,8 @@ export async function syncOneMcpHostForProject(
     current = safeReadCache(host, env);
   }
 
-  const target = cacheTarget(host, plan, current, env)
-    || cacheTarget(host, plan, safeReadCache(host, env), env)
+  const target = cacheTarget(host, plan, current, endpoint)
+    || cacheTarget(host, plan, safeReadCache(host, env), endpoint)
     || bundledTarget(host, plan);
   const changed = remote.kind === 'full'
     ? written

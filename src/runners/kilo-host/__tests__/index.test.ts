@@ -87,14 +87,13 @@ test('install requires explicit consent and writes an owned global Kilo wrapper'
 
 test('central registration switch installs the Kilo wrapper without creating public MCP config', () => {
   withHome((env) => {
-    env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION = 'true';
     const configPath = kiloGlobalConfigPath(env);
-    const installed = installWrapper(env, ['install', '--yes']);
+    const installed = installWrapper(env, ['install', '--yes'], false);
     assert.equal(installed.code, 0);
     assert.equal(fs.existsSync(kiloGlobalPluginPath(env)), true);
     assert.equal(fs.existsSync(configPath), false);
     assert.match(installed.stdout, /registration is disabled/);
-    const doctor = doctorWrapper(env);
+    const doctor = doctorWrapper(env, ['doctor'], false);
     assert.equal(doctor.code, 0);
     assert.match(doctor.stdout, /config: registration-disabled/);
   });

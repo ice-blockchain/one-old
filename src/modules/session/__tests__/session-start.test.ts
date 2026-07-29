@@ -38,12 +38,12 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
-  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const prevXdgState = env.XDG_STATE_HOME;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   // Canonical auth and codeGraphProvider are machine-wide (one.json) — isolate it.
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(dir, 'state');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -52,7 +52,7 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   try { fn(dir); } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
-    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
+    if (prevXdgState === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = prevXdgState;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -192,14 +192,12 @@ test('nested SessionStart checks the canonical project Performance target, not t
     xdgState: env.XDG_STATE_HOME,
     prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
     state: env.TRAFFIC_ONE_STATE_PATH,
-    mcpCache: env.TRAFFIC_ONE_MCP_CACHE_PATH,
     plan: env.TRAFFIC_ONE_USER_PLAN,
   };
   env.HOME = home;
   delete env.XDG_STATE_HOME;
   delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   env.TRAFFIC_ONE_STATE_PATH = path.join(home, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(home, 'one-mcp.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     const target = currentLocalPreferenceTarget('claude', env, cwd);
@@ -227,7 +225,6 @@ test('nested SessionStart checks the canonical project Performance target, not t
     if (previous.xdgState === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = previous.xdgState;
     if (previous.prefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previous.prefs;
     if (previous.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = previous.state;
-    if (previous.mcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = previous.mcpCache;
     if (previous.plan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = previous.plan;
     fs.rmSync(dir, { recursive: true, force: true });
   }

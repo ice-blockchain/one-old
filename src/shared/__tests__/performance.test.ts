@@ -18,7 +18,7 @@ const CLAUDE_HIGHEST = resolveModel('highest', 'claude') as string;
 // Hermetic: resolve against the BUNDLED catalog. Without this the machine-global
 // One MCP cache (the remote payload) wins and these expectations depend on
 // developer-local state.
-const BUNDLED_ENV = { ...process.env, TRAFFIC_ONE_MCP_CACHE_PATH: '/nonexistent/t1-perf-mcp-cache.json' };
+const BUNDLED_ENV = { ...process.env, XDG_STATE_HOME: '/nonexistent/t1-perf-state' };
 
 test('teamModeForLevel maps levels (default main-agent)', () => {
   assert.equal(teamModeForLevel('low'), 'main-agent');
@@ -93,7 +93,7 @@ test('role model selections reorder the effective row and require a matching cro
   // Hermetic: resolve against the BUNDLED catalog. Without this override the
   // machine-global One MCP cache (the remote payload) wins, and a bundled
   // catalog refresh makes these expectations depend on developer-local state.
-  const env = { ...process.env, TRAFFIC_ONE_MCP_CACHE_PATH: '/nonexistent/t1-perf-mcp-cache.json' };
+  const env = { ...process.env, XDG_STATE_HOME: '/nonexistent/t1-perf-state' };
 
   assert.deepEqual(
     roleModelSelection('high', 'senior-architect', 'claude', null, sameTier, planCtx, env),

@@ -173,9 +173,9 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   // Single one-mcp report gate: fire ONLY once onboarding is finalized — new-project
   // (canonical state committed) or existing-project (local prefs resolved), via
-  // computeOnboarding(...).done. Runs before the auth gate below so an explicit
-  // TRAFFIC_ONE_AUTH=off dev/test run still reports; prepareReport owns the
-  // real-codebase, canonical-auth, and once-per-project checks.
+  // computeOnboarding(...).done. The anonymous report is independent of auth;
+  // prepareReport owns the real-codebase, exact plugin-use opt-in, and
+  // once-per-project checks.
   const oneUidMissing = !(typeof state[ONE_UID_FIELD] === 'string' && state[ONE_UID_FIELD]);
   if (reportOneMcp && oneUidMissing && computeOnboarding(reportRoot).done) {
     reportOneMcp(reportRoot, state, 'onboarding-complete');

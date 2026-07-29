@@ -20,8 +20,7 @@ async function withScenario(
 ): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-parity-'));
   const env = process.env;
-  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, state: env.TRAFFIC_ONE_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
-  env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+  const saved = { state: env.TRAFFIC_ONE_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // parity test must never spawn a real wizard server
@@ -40,7 +39,7 @@ async function withScenario(
     await fn(dir);
   } finally {
     for (const [k, v] of Object.entries({
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_STATE_PATH: saved.state,
+      TRAFFIC_ONE_STATE_PATH: saved.state,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn, TRAFFIC_ONE_AUTH: saved.authFlag,
     })) { if (v === undefined) delete env[k]; else env[k] = v; }

@@ -22,7 +22,12 @@ import {
   OPENCODE_HOST_PROJECT_MARKER_REL,
   OPENCODE_HOST_TARGET_VERSION,
 } from '../../config/opencode-host';
-import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME, oneMcpRegistrationEnabled, publicEndpoint } from '../../config/one-mcp';
+import {
+  DEFAULT_PUBLIC_ENDPOINT,
+  ONE_MCP_MANAGED_TOOLS,
+  ONE_MCP_REGISTRATION,
+  ONE_MCP_SERVER_NAME,
+} from '../../config/one-mcp';
 import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../../shared/one-mcp-agent-tools';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
@@ -372,8 +377,8 @@ function ensureGlobalConfigPlugin(
     config.plugin.push(spec);
     changed = true;
   }
-  if (oneMcpRegistrationEnabled(env, registrationFeatureEnabled)) {
-    const oneMcp = ensureOneMcpDisabled(config, publicEndpoint(env));
+  if (registrationFeatureEnabled ?? ONE_MCP_REGISTRATION) {
+    const oneMcp = ensureOneMcpDisabled(config, DEFAULT_PUBLIC_ENDPOINT);
     if (!oneMcp.ok) return { ok: false, path: file, spec, error: oneMcp.error };
     changed = changed || oneMcp.changed;
   }
@@ -416,7 +421,7 @@ function globalConfigHasPlugin(
   if (!config) return { ok: false, path: file, spec, error: 'OpenCode global config must be a JSON object.' };
   if (!Array.isArray(config.plugin)) return { ok: false, path: file, spec, error: 'OpenCode global config is missing a `plugin` array.' };
   if (!config.plugin.some((entry) => samePluginEntry(entry, spec, file))) return { ok: false, path: file, spec, error: 'Traffic One wrapper is not registered in the OpenCode global `plugin` array.' };
-  if (oneMcpRegistrationEnabled(env, registrationFeatureEnabled)) {
+  if (registrationFeatureEnabled ?? ONE_MCP_REGISTRATION) {
     const oneMcpError = oneMcpDisabledStatus(config);
     if (oneMcpError) return { ok: false, path: file, spec, error: oneMcpError };
   }

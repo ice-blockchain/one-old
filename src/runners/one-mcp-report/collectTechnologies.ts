@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { ONE_MCP_REPORTED_TECHNOLOGY_IDS } from '../../config/one-mcp';
+import { ONE_MCP_REPORTED_TECHNOLOGY_IDS } from '../../config/reporting';
 import { addTechForDependency, dependencyNames } from './lib';
 
 type Rec = Record<string, unknown>;

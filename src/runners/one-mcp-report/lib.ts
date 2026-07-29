@@ -13,9 +13,10 @@ import * as path from 'path';
 import {
   ONE_MCP_REPORTED_FILE_EXTENSIONS,
   ONE_MCP_REPORT_TIMEOUT_MS,
-} from '../../config/one-mcp';
+  SKIP_DIRS,
+  SKIP_FILES,
+} from '../../config/reporting';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
-import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
 import { stripLocalPreferenceFields } from '../../shared/state/local-prefs';
 import {
   preserveCurrentRunId,
@@ -229,7 +230,6 @@ export async function mcpRequest(
   endpoint: string,
   payload: unknown,
   timeoutMs = ONE_MCP_REPORT_TIMEOUT_MS,
-  _env: NodeJS.ProcessEnv = process.env,
   requestImpl?: typeof https.request,
 ): Promise<string> {
   const request: OneMcpJsonRpcRequest = buildMcpPayload(payload);

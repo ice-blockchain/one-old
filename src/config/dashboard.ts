@@ -9,8 +9,8 @@
 
 export const DEFAULT_DASHBOARD_URL = 'https://traffic.io';
 
-// Base dashboard origin, trailing slash stripped (mirrors endpointFromEnv in
-// shared/auth). Never throws: a malformed override still returns a usable string.
+// Base dashboard origin, trailing slash stripped. Never throws: a malformed
+// override still returns a usable string.
 export function dashboardUrlFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   const raw = (env.TRAFFIC_ONE_DASHBOARD_URL || DEFAULT_DASHBOARD_URL).trim();
   return raw.replace(/\/+$/, '');

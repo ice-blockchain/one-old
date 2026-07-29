@@ -116,7 +116,6 @@ async function main(): Promise<void> {
       ...process.env,
       TRAFFIC_ONE_AUTH: 'on',
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'http://127.0.0.1:8787/mcp',
       TRAFFIC_ONE_STATE_PATH: path.join(authTmp, 'one.json'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(authTmp, 'prefs.json'),
       TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,

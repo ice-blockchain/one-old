@@ -10,7 +10,7 @@ import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_MAX_RESPONSE_BYTES,
   ONE_MCP_SESSION_SYNC_TIMEOUT_MS,
-  oneMcpSyncEnabled,
+  ONE_MCP_SYNC,
 } from '../../config/one-mcp';
 import { canonicalHost } from '../../shared/model-tiers';
 import {
@@ -50,7 +50,7 @@ export function syncOneMcpForSession(
   runnerPath?: string,
   featureEnabled?: boolean,
 ): SpawnSyncReturns<string> | null {
-  if (!oneMcpSyncEnabled(env, featureEnabled) || !pluginUseEnabled(cwd, env)) return null;
+  if (!(featureEnabled ?? ONE_MCP_SYNC) || !pluginUseEnabled(cwd, env)) return null;
   const runner = runnerPath || path.resolve(pluginRoot(), 'scripts', 'one-mcp-sync.cjs');
   if (!fs.existsSync(runner)) return null;
   try {
@@ -79,7 +79,7 @@ export function syncOneMcpOnce(
   featureEnabled?: boolean,
 ): boolean {
   const root = canonicalProjectRoot(cwd);
-  if (!pluginUseEnabled(root, env) || !oneMcpSyncEnabled(env, featureEnabled)) return false;
+  if (!pluginUseEnabled(root, env) || !(featureEnabled ?? ONE_MCP_SYNC)) return false;
   const activeHost = canonicalHost(host);
   if (identity && !firstEmitThisSession(root, `one-mcp-sync-${activeHost}`, identity)) return false;
   sync(root, activeHost, env);

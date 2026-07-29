@@ -32,7 +32,7 @@ import type { OneMcpModelConfigPayload } from '../../../shared/one-mcp/types';
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
+  DEFAULT_PUBLIC_ENDPOINT,
 } from '../../../config/one-mcp';
 
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, agentName, and prose', () => {
@@ -277,10 +277,10 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
-  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const prevXdgState = env.XDG_STATE_HOME;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(dir, 'state');
   // Pin a paid plan so the plan-aware gate resolves deterministic tiers regardless
   // of the test machine's real ~/.claude.json|~/.codex auth (a non-free plan inherits
   // DEFAULT_AGENT_TIERS → the high=highest behavior these assertions encode).
@@ -323,7 +323,7 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
-    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
+    if (prevXdgState === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = prevXdgState;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1205,7 +1205,7 @@ test('Cursor spawn and child bind stay on the frozen run after sidecar, plan, an
       },
     };
     writeOneMcpConfigCacheEntry('cursor', {
-      endpoint: publicEndpoint(process.env),
+      endpoint: DEFAULT_PUBLIC_ENDPOINT,
       configName: ONE_MCP_CONFIG_NAME_BY_HOST.cursor,
       decoderVersion: ONE_MCP_DECODER_VERSION,
       version: 9,

@@ -25,7 +25,7 @@ function fixture(): { cwd: string; env: NodeJS.ProcessEnv; cleanup(): void } {
   const env = {
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
     TRAFFIC_ONE_STATE_PATH: path.join(cwd, 'one.json'),
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(cwd, 'state'),
   } as NodeJS.ProcessEnv;
   writeRuntimeModelSnapshot('cursor', hostModelSnapshot('cursor', 'pro'), env);
   return { cwd, env, cleanup: () => fs.rmSync(cwd, { recursive: true, force: true }) };

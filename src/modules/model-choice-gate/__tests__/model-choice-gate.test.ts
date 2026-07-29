@@ -28,10 +28,10 @@ function withProject(fn: (cwd: string, runId: string) => void): void {
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
-  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const prevXdgState = env.XDG_STATE_HOME;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(dir, 'state');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   const runId = '1780000000000';
   try {
@@ -62,7 +62,7 @@ function withProject(fn: (cwd: string, runId: string) => void): void {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
-    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
+    if (prevXdgState === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = prevXdgState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -141,10 +141,10 @@ function withApiLimitPause(fn: (cwd: string, runId: string, state: Record<string
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
-  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const prevXdgState = env.XDG_STATE_HOME;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(dir, 'state');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   const runId = '1780000000000';
   try {
@@ -187,7 +187,7 @@ function withApiLimitPause(fn: (cwd: string, runId: string, state: Record<string
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
-    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
+    if (prevXdgState === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = prevXdgState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

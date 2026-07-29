@@ -25,7 +25,12 @@ import {
   KILO_HOST_PROJECT_MARKER_REL,
   KILO_HOST_TARGET_VERSION,
 } from '../../config/kilo-host';
-import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME, oneMcpRegistrationEnabled, publicEndpoint } from '../../config/one-mcp';
+import {
+  DEFAULT_PUBLIC_ENDPOINT,
+  ONE_MCP_MANAGED_TOOLS,
+  ONE_MCP_REGISTRATION,
+  ONE_MCP_SERVER_NAME,
+} from '../../config/one-mcp';
 import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../../shared/one-mcp-agent-tools';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
@@ -283,7 +288,7 @@ function ensureOneMcpDisabled(env: NodeJS.ProcessEnv = process.env): ConfigUpdat
   if (mcp[ONE_MCP_SERVER_NAME] === undefined) {
     mcp[ONE_MCP_SERVER_NAME] = {
       type: 'remote',
-      url: publicEndpoint(env),
+      url: DEFAULT_PUBLIC_ENDPOINT,
       enabled: false,
       oauth: false,
     };
@@ -866,7 +871,7 @@ export function installWrapper(
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, wrapperSource(pluginRoot), 'utf8');
-  const registrationEnabled = oneMcpRegistrationEnabled(env, registrationFeatureEnabled);
+  const registrationEnabled = registrationFeatureEnabled ?? ONE_MCP_REGISTRATION;
   if (registrationEnabled) {
     const config = ensureOneMcpDisabled(env);
     if (!config.ok) {
@@ -961,7 +966,7 @@ export function doctorWrapper(
   }
   const currentRoot = runtimePluginRoot(env);
   const current = path.resolve(owner.pluginRoot) === path.resolve(currentRoot);
-  const registrationEnabled = oneMcpRegistrationEnabled(env, registrationFeatureEnabled);
+  const registrationEnabled = registrationFeatureEnabled ?? ONE_MCP_REGISTRATION;
   const config = registrationEnabled
     ? oneMcpDisabledStatus(env)
     : { ok: true as const, path: kiloGlobalConfigPath(env), changed: false as const };

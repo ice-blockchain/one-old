@@ -31,6 +31,9 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 export interface StartOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  // Explicit test seam. Production omits this and validates against the fixed
+  // authenticated MCP endpoint compiled into the plugin.
+  authEndpoint?: string;
   // Network bind address. Kept separate from the Traffic One product host so a
   // Cursor server can never accidentally register itself as `127.0.0.1`.
   bindHost?: string;
@@ -192,7 +195,15 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
         if (isWizardArrivalPath(req.method || 'GET', reqUrl.pathname)) {
           noteBrowserArrival(cwd, token, env, trafficHost);
         }
-        const ctx: RouteContext = { cwd, env, token, port, trafficHost, requestShutdown: standalone ? finish : cleanup };
+        const ctx: RouteContext = {
+          cwd,
+          env,
+          authEndpoint: options.authEndpoint,
+          token,
+          port,
+          trafficHost,
+          requestShutdown: standalone ? finish : cleanup,
+        };
         await dispatch(req, res, reqUrl, ctx);
       } catch (err) {
         if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });

@@ -6,7 +6,7 @@ import {
   ensureCodexOneMcpServerRegistered,
   removeCodexOneMcpServerRegistration,
 } from '../../shared/codex-mcp';
-import { oneMcpRegistrationEnabled } from '../../config/one-mcp';
+import { ONE_MCP_REGISTRATION } from '../../config/one-mcp';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string }
 
@@ -20,7 +20,7 @@ export function runOneMcpHostCommand(
     if (!argv.includes('--yes')) {
       return { code: 2, stdout: '', stderr: 'Refusing to edit Codex machine-global config without `install --yes`.\n' };
     }
-    if (!oneMcpRegistrationEnabled(env, registrationFeatureEnabled)) {
+    if (!(registrationFeatureEnabled ?? ONE_MCP_REGISTRATION)) {
       return { code: 0, stdout: 'Codex Traffic One MCP registration: skipped-disabled\n' };
     }
     const result = ensureCodexOneMcpServerRegistered({ ...env, TRAFFIC_ONE_HOST: 'codex' });

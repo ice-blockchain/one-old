@@ -18,6 +18,7 @@ import { getTask, startInstallTask } from './tasks';
 export interface RouteContext {
   cwd: string;
   env: NodeJS.ProcessEnv;
+  authEndpoint?: string;
   token: string;
   port: number;
   trafficHost: string;
@@ -109,7 +110,7 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
         sendJson(res, 400, { ok: false, error: 'Enter your API key to continue.' });
         return;
       }
-      const check = await validateApiKey(key, ctx.env);
+      const check = await validateApiKey(key, { endpoint: ctx.authEndpoint });
       if (!check.ok) {
         const error = check.reason === 'invalid-api-key'
           ? 'That API key was rejected. Double-check it and try again.'

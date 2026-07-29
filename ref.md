@@ -41,12 +41,13 @@ line-verifiable source files.
   Performance acknowledgements retain plan + applied fingerprint + the
   acknowledged config version (the version is metadata-only for drift), while
   `~/.traffic-one/one.json` remains limited to auth and code-graph settings.
-  Milestone 1 keeps all public switches disabled. Cache schema v1 is ignored;
-  an enabled v2 sync starts at version zero, while transient transport failures
-  preserve valid cache or bundled fallback and remain SessionStart-silent.
-  Milestone-2 generation requires a fresh bounded evidence bundle covering the
-  seven exact live rows, per-host JSON/SSE/upToDate probes, hosted onboarding,
-  and live Codex Sol/Terra hook observations.
+  Cache schema v1 is ignored; v2 sync starts at version zero, while transient
+  transport failures preserve valid cache or bundled fallback and remain
+  SessionStart-silent. Anonymous structural reporting is enabled and sends one
+  report per opted-in project, deduplicated by `one-uid`; local report-status
+  persistence and machine-global MCP registration remain disabled. Sync and
+  reporting use the fixed compiled public endpoint with no One MCP environment
+  overrides or release-evidence input.
 - Generated OpenCode user-local agents: `~/.config/opencode/agents/traffic-one-<projectHash12>-<role>.md`; legacy generated project profiles are cleaned while user-authored files are preserved.
 - Generated Kilo wrapper support: `scripts/kilo-host.cjs` installs `~/.config/kilo/plugin/traffic-one.js`, and `.kilo/traffic-one.json` records explicit per-project enable/disable overrides.
 - Windsurf project assets: `.devin/rules/*.md` plus generated Devin Local profiles are materialized per onboarded project when Windsurf is the host; skills remain under the canonical `.traffic-one/skills/<skill>/SKILL.md` tree.
@@ -337,12 +338,12 @@ Catalog conventions normalized by the audit: the activation heading is
 - `.claude-plugin/marketplace.json` - Claude marketplace registration.
 - `.agents/plugins/marketplace.json` - local plugin marketplace registration.
 - `.mcp.json` - shared Claude/Cursor/Codex MCP descriptor; intentionally omits the public traffic-one-mcp server.
-- `.mcp-copilot.json` - Copilot-only descriptor; registers traffic-one-mcp with an empty tool allowlist.
+- `.mcp-copilot.json` - Copilot-only descriptor; omits the public traffic-one-mcp server while `ONE_MCP_REGISTRATION=false` (an enabled build would use an empty tool allowlist).
 - `.config/opencode/plugins/traffic-one.js` - consented user-level OpenCode wrapper installed by `scripts/opencode-host.cjs`.
-- OpenCode install also adds an inert machine-global `traffic-one-mcp` entry and exact deny permissions when absent; uninstall preserves those potentially user-owned values.
+- OpenCode install skips machine-global `traffic-one-mcp` registration while `ONE_MCP_REGISTRATION=false`; its wrapper still denies managed One MCP tools.
 - `.opencode/traffic-one.json` - optional project-level OpenCode marker for explicit enable/disable overrides; no marker is required for normal auto-run behavior.
 - `~/.config/kilo/plugin/traffic-one.js` - consented user-level Kilo server-plugin wrapper installed by `scripts/kilo-host.cjs`.
-- Kilo install likewise adds an inert machine-global `traffic-one-mcp` entry and exact deny permissions when absent; uninstall removes only the owned wrapper.
+- Kilo install likewise skips machine-global `traffic-one-mcp` registration while the compiled switch is false; uninstall removes only the owned wrapper.
 - `.kilo/traffic-one.json` - optional project-level Kilo marker for explicit enable/disable overrides; no marker is required for normal auto-run behavior.
 - `~/.codeium/windsurf/hooks.json`, `~/.config/devin/config.json`, and `~/.codeium/windsurf/memories/global_rules.md` - consented user-level Windsurf / Devin Desktop integration managed by `scripts/windsurf-host.cjs`; public `traffic-one-mcp` registration is intentionally omitted, so the installer never edits `mcp_config.json`.
 

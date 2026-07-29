@@ -240,7 +240,6 @@ function sameIdentity(
 }
 
 export function oneMcpCachePath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.TRAFFIC_ONE_MCP_CACHE_PATH) return path.resolve(env.TRAFFIC_ONE_MCP_CACHE_PATH);
   return path.join(globalTrafficOneDir(env), ONE_MCP_CACHE_FILE);
 }
 

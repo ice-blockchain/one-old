@@ -82,8 +82,7 @@ test('install requires explicit consent and writes an owned global wrapper', () 
 
 test('central registration switch keeps the OpenCode wrapper but omits public MCP config', () => {
   withHome((env) => {
-    env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION = '1';
-    const installed = installWrapper(env, ['install', '--yes']);
+    const installed = installWrapper(env, ['install', '--yes'], false);
     assert.equal(installed.code, 0);
     const config = JSON.parse(fs.readFileSync(opencodeGlobalConfigPath(env), 'utf8')) as {
       plugin?: string[];
@@ -93,7 +92,7 @@ test('central registration switch keeps the OpenCode wrapper but omits public MC
     assert.equal(config.plugin?.length, 1);
     assert.equal(config.mcp, undefined);
     assert.equal(config.permission, undefined);
-    assert.equal(doctorWrapper(env).code, 0);
+    assert.equal(doctorWrapper(env, ['doctor'], false).code, 0);
   });
 });
 

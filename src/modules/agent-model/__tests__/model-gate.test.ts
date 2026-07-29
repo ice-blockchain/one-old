@@ -24,10 +24,10 @@ function withProj(opts: { models: string[] | null; overrides?: Record<string, st
   const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const pl = env.TRAFFIC_ONE_USER_PLAN;
   const ps = env.TRAFFIC_ONE_STATE_PATH;
-  const pm = env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const px = env.XDG_STATE_HOME;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(dir, 'state');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   const prefs = hostScopedPerformancePrefs(
@@ -45,7 +45,7 @@ function withProj(opts: { models: string[] | null; overrides?: Record<string, st
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
     if (ps === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = ps;
-    if (pm === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = pm;
+    if (px === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = px;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

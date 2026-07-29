@@ -22,7 +22,6 @@ import {
   ONE_MCP_CODEX_TOOL_TIMEOUT_SEC,
   ONE_MCP_MANAGED_TOOLS,
   ONE_MCP_SERVER_NAME,
-  publicEndpoint,
 } from '../config/one-mcp';
 
 export function codexConfigPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -434,7 +433,7 @@ export function ensureCodexOneMcpServerRegistered(env: NodeJS.ProcessEnv = proce
       // block. In both cases, leave every byte untouched and rely on the
       // universal hook deny if the user independently enabled that server.
       if (hasCodexMcpServerConfig(existing, ONE_MCP_SERVER_NAME)) return 'already-present';
-      fs.appendFileSync(cfgPath, codexOneMcpServerBlock(publicEndpoint(env)));
+      fs.appendFileSync(cfgPath, codexOneMcpServerBlock(DEFAULT_PUBLIC_ENDPOINT));
       return 'registered';
     });
   } catch {
@@ -455,7 +454,7 @@ export function removeCodexOneMcpServerRegistration(
     return withCodexMcpLock(cfgPath, () => {
       if (!fs.existsSync(cfgPath)) return 'absent';
       const existing = fs.readFileSync(cfgPath, 'utf8');
-      const block = codexOneMcpServerBlock(publicEndpoint(env));
+      const block = codexOneMcpServerBlock(DEFAULT_PUBLIC_ENDPOINT);
       const first = existing.indexOf(block);
       if (first < 0) {
         return existing.includes('# >>> traffic-one managed public MCP (disabled)')

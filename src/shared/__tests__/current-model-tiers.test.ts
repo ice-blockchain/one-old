@@ -5,9 +5,9 @@ import * as path from 'node:path';
 import test from 'node:test';
 
 import {
+  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
 } from '../../config/one-mcp';
 import { hostModelSnapshot } from '../model-tiers';
 import {
@@ -30,7 +30,7 @@ test('runtime model resolution uses the authoritative One MCP sidecar preferred 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-current-models-'));
   const env = {
     TRAFFIC_ONE_STATE_PATH: path.join(dir, 'one.json'),
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json'),
+    XDG_STATE_HOME: dir,
   } as NodeJS.ProcessEnv;
   try {
     const snapshot = {
@@ -59,7 +59,7 @@ test('runtime model resolution uses the authoritative One MCP sidecar preferred 
 
 test('runtime derives the applied projection and fingerprint for the active plan', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-current-models-'));
-  const env = { TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json') } as NodeJS.ProcessEnv;
+  const env = { XDG_STATE_HOME: dir } as NodeJS.ProcessEnv;
   try {
     const payload: OneMcpModelConfigPayload = {
       tiers: {
@@ -72,7 +72,7 @@ test('runtime derives the applied projection and fingerprint for the active plan
       },
     };
     writeOneMcpConfigCacheEntry('codex', {
-      endpoint: publicEndpoint(env),
+      endpoint: DEFAULT_PUBLIC_ENDPOINT,
       configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
       decoderVersion: ONE_MCP_DECODER_VERSION,
       version: 4,
@@ -103,7 +103,7 @@ test('runtime ignores retired one.json host tiers and uses bundled data without 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-current-models-'));
   const env = {
     TRAFFIC_ONE_STATE_PATH: path.join(dir, 'one.json'),
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json'),
+    XDG_STATE_HOME: dir,
   } as NodeJS.ProcessEnv;
   try {
     const bundled = hostModelSnapshot('cursor', 'pro');
@@ -137,7 +137,7 @@ test('runtime ignores retired one.json host tiers and uses bundled data without 
 
 test('bundled target fingerprints the complete host payload while applied drift remains plan-specific', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-current-models-bundled-fingerprint-'));
-  const env = { TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'missing-one-mcp.json') } as NodeJS.ProcessEnv;
+  const env = { XDG_STATE_HOME: dir } as NodeJS.ProcessEnv;
   try {
     const free = currentHostModelTarget('cursor', 'free', env);
     const pro = currentHostModelTarget('cursor', 'pro', env);

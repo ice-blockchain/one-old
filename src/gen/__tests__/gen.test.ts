@@ -18,6 +18,7 @@ import {
   windsurfCommand,
 } from '../sources/hooks';
 import { HOST_MODELS } from '../../config/model-tiers';
+import { DEFAULT_PUBLIC_ENDPOINT } from '../../config/one-mcp';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const MAX_CURSOR_TIER_LENGTH = Math.max(
@@ -134,7 +135,7 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
       assert.doesNotMatch(worker.args.join(' '), /\[\s+-f\s+|\bexec\s+node\b/, `${label} MCP worker must use the Node bootstrap`);
     }
     assert.equal(sharedMcp.mcpServers['traffic-one-mcp'], undefined, 'Claude/Cursor/Codex must not expose the public server');
-    assert.equal(copilotMcp.mcpServers['traffic-one-mcp'], undefined, 'milestone A keeps public registration build-disabled');
+    assert.equal(copilotMcp.mcpServers['traffic-one-mcp'], undefined, 'the compiled switch keeps public registration disabled');
     const frontendAgent = fs.readFileSync(path.join(dir, 'agents', 'senior-frontend.agent.md'), 'utf8');
     assert.match(frontendAgent, /^tools: \["view", "search", "bash", "edit"\]$/m);
     assert.doesNotMatch(frontendAgent, /^tools: Read,/m);
@@ -685,22 +686,17 @@ test('emitMcp omits the Copilot public server when the build-time registration s
   }
 });
 
-test('emitMcp refuses direct Supabase activation and accepts the reviewed custom release endpoint', () => {
+test('emitMcp registers the fixed public endpoint when the compiled switch is on', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-mcp-enabled-'));
   try {
     const write = new GenRun({ check: false, root: dir, sourceRoot: REPO_ROOT });
-    assert.throws(() => emitMcp(write, true), /public release blocked for registration/);
-    assert.throws(
-      () => emitMcp(write, true, 'https://mcp.traffic-one.example/public-mcp'),
-      /seven live rows/,
-    );
-    emitMcp(write, true, 'https://mcp.traffic-one.example/public-mcp', true);
+    emitMcp(write, true);
     const copilot = JSON.parse(fs.readFileSync(path.join(dir, '.mcp-copilot.json'), 'utf8')) as {
       mcpServers: Record<string, { type?: string; tools?: unknown[] }>;
     };
     assert.deepEqual(copilot.mcpServers['traffic-one-mcp'], {
       type: 'http',
-      url: 'https://mcp.traffic-one.example/public-mcp',
+      url: DEFAULT_PUBLIC_ENDPOINT,
       tools: [],
     });
   } finally {

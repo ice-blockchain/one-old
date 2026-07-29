@@ -28,7 +28,7 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
-  const prevMcpCache = process.env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const prevXdgStateHome = process.env.XDG_STATE_HOME;
   const prevHostEnv = new Map<string, string | undefined>();
   for (const key of HOST_ENV_KEYS) {
     prevHostEnv.set(key, process.env[key]);
@@ -38,7 +38,7 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   // codeGraphProvider is machine-wide now — isolate one.json so applyAnswer's
   // writeGlobalCodeGraphProvider never touches the real ~/.traffic-one.
   process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  process.env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  process.env.XDG_STATE_HOME = path.join(dir, 'state');
   // This suite exercises post-auth wizard sequencing. The API-key gate itself
   // has dedicated flow/routes tests, so enable canonical auth explicitly here.
   writeSimpleAuth('sk-flow-fixture');
@@ -57,8 +57,8 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
     else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
-    if (prevMcpCache === undefined) delete process.env.TRAFFIC_ONE_MCP_CACHE_PATH;
-    else process.env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
+    if (prevXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = prevXdgStateHome;
     if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
     else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     for (const [key, value] of prevHostEnv) {
@@ -652,7 +652,7 @@ test('computeOnboarding explicit env owns the preference target and model metada
       TRAFFIC_ONE_HOST: 'codex',
       TRAFFIC_ONE_USER_PLAN: 'pro',
       TRAFFIC_ONE_STATE_PATH: path.join(cwd, 'explicit-one.json'),
-      TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'explicit-one-mcp.json'),
+      XDG_STATE_HOME: path.join(cwd, 'explicit-state'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'explicit-preferences.json'),
       TRAFFIC_ONE_AUTH: '1',
     } as NodeJS.ProcessEnv;

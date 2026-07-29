@@ -610,7 +610,7 @@ test('repairRunBootstrapForBoundChild recovers a bounded scope from an invalidat
       ...process.env,
       TRAFFIC_ONE_HOST: 'codex',
       TRAFFIC_ONE_USER_PLAN: 'pro',
-      TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'one-mcp.json'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
     };
     const target = currentHostModelTarget('codex', 'pro', env);

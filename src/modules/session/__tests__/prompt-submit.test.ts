@@ -79,7 +79,6 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-promptsub-'));
   const env = process.env;
   const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
-  const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   const prevToolchainRoot = env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
@@ -91,7 +90,6 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const prevCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
@@ -128,7 +126,6 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   }
   try { fn(dir); } finally {
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
-    if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     if (prevToolchainRoot === undefined) delete env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else env.TRAFFIC_ONE_TOOLCHAIN_ROOT = prevToolchainRoot;
@@ -359,12 +356,10 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
   const child = path.join(root, 'one-nextjs');
   const env = process.env;
   const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
-  const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   try {
     env.TRAFFIC_ONE_STATE_PATH = path.join(root, 'one.json');
-    env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
     env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(root, 'prefs.json');
     env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
     fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
@@ -399,7 +394,6 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
     assert.equal(rootStateAfter.stack, 'minimal');
   } finally {
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
-    if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     fs.rmSync(root, { recursive: true, force: true });

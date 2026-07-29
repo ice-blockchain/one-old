@@ -10,7 +10,7 @@ import { collectFileExtensions } from '../collectFileExtensions';
 import { collectMetadata } from '../collectMetadata';
 import { collectTechnologies } from '../collectTechnologies';
 import { hasRealCodebase } from '../hasRealCodebase';
-import { ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS } from '../../../config/one-mcp';
+import { ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS } from '../../../config/reporting';
 import { FAILED_RETRY_MS } from '../../../config/reporting';
 import { detectInfrastructureVendor, extensionFor } from '../lib';
 import { createReportId } from '../report-id-mint';
@@ -183,30 +183,37 @@ test('a cross-process stale canonical writer preserves the concurrent minted id'
 
 test('report-id lock timeout is bounded, fail-open, and never mints unlocked', () => {
   withTmp((cwd) => {
-    const env = {
-      ...process.env,
-      TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
-    } as NodeJS.ProcessEnv;
-    recordPluginUseChoice(cwd, true, 'test', env);
-    fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
-    const lockDir = path.join(cwd, '.traffic-one', '.one.json.report-id.lock');
-    const token = 'live-owner';
-    fs.mkdirSync(lockDir, { recursive: true });
-    fs.writeFileSync(path.join(lockDir, `owner-${token}.json`), JSON.stringify({
-      pid: process.pid,
-      token,
-      createdAt: Date.now(),
-    }), 'utf8');
-    const started = Date.now();
-    const result = maybeStartOneMcpReport(cwd, { spawn: false, env, featureEnabled: true });
-    const elapsed = Date.now() - started;
-    assert.equal(result.started, false);
-    assert.equal(result.reason, 'error');
-    assert.match(String('error' in result ? result.error : ''), /project state lock timed out/i);
-    assert.ok(elapsed >= ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS - 50);
-    assert.ok(elapsed < ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS + 1_000);
-    assert.equal(readReportIdState(cwd), null);
-    assert.equal(fs.existsSync(lockDir), true);
+    const previousHome = process.env.HOME;
+    const previousXdgStateHome = process.env.XDG_STATE_HOME;
+    process.env.HOME = path.join(cwd, 'home');
+    process.env.XDG_STATE_HOME = path.join(cwd, 'state');
+    try {
+      recordPluginUseChoice(cwd, true, 'test');
+      fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+      const lockDir = path.join(cwd, '.traffic-one', '.one.json.report-id.lock');
+      const token = 'live-owner';
+      fs.mkdirSync(lockDir, { recursive: true });
+      fs.writeFileSync(path.join(lockDir, `owner-${token}.json`), JSON.stringify({
+        pid: process.pid,
+        token,
+        createdAt: Date.now(),
+      }), 'utf8');
+      const started = Date.now();
+      const result = maybeStartOneMcpReport(cwd, { spawn: false, featureEnabled: true });
+      const elapsed = Date.now() - started;
+      assert.equal(result.started, false);
+      assert.equal(result.reason, 'error');
+      assert.match(String('error' in result ? result.error : ''), /project state lock timed out/i);
+      assert.ok(elapsed >= ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS - 50);
+      assert.ok(elapsed < ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS + 1_000);
+      assert.equal(readReportIdState(cwd), null);
+      assert.equal(fs.existsSync(lockDir), true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousXdgStateHome;
+    }
   });
 });
 

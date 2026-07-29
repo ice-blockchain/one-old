@@ -26,17 +26,15 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-entry-'));
   const env = process.env;
   const saved = {
-    ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT,
     state: env.TRAFFIC_ONE_STATE_PATH,
     prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
-    cache: env.TRAFFIC_ONE_MCP_CACHE_PATH,
+    stateHome: env.XDG_STATE_HOME,
     plan: env.TRAFFIC_ONE_USER_PLAN,
     noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
   };
-  env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(dir, 'state');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // unit tests must never spawn a real wizard server
   if (opts.authed) {
@@ -51,9 +49,9 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
     await fn(dir);
   } finally {
     for (const [k, v] of Object.entries({
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_STATE_PATH: saved.state,
+      TRAFFIC_ONE_STATE_PATH: saved.state,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
-      TRAFFIC_ONE_MCP_CACHE_PATH: saved.cache, TRAFFIC_ONE_USER_PLAN: saved.plan,
+      XDG_STATE_HOME: saved.stateHome, TRAFFIC_ONE_USER_PLAN: saved.plan,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn,
     })) { if (v === undefined) delete env[k]; else env[k] = v; }
     fs.rmSync(dir, { recursive: true, force: true });

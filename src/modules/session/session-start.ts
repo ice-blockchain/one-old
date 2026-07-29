@@ -72,7 +72,7 @@ import {
   type SessionOneMcpSync,
 } from './one-mcp-sync';
 import { ensureCodexOneMcpServerRegistered } from '../../shared/codex-mcp';
-import { oneMcpRegistrationEnabled } from '../../config/one-mcp';
+import { ONE_MCP_REGISTRATION } from '../../config/one-mcp';
 import { sessionPerformanceContext } from '../../shared/session-performance-context';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
 import { detectHostPlan } from '../../shared/host-plan';
@@ -256,7 +256,7 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   // server is appended disabled with both tools disabled. Do this independently
   // of per-project pluginUse so installs are deterministic; never rewrite an
   // existing same-name table owned by the user.
-  if (ctx.host === 'codex' && oneMcpRegistrationEnabled(process.env)) {
+  if (ctx.host === 'codex' && ONE_MCP_REGISTRATION) {
     ensureCodexOneMcpServerRegistered({ ...process.env, TRAFFIC_ONE_HOST: 'codex' });
   }
   // The user chose not to use Traffic One for this project — stay silent.

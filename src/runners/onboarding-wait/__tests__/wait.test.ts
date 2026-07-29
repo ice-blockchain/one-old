@@ -197,7 +197,7 @@ test('applyReconsiderChoice persists exact opt-in before synchronizing', async (
     applyReconsiderChoice(dir, 'codex', (syncCwd, syncHost) => {
       choiceObservedBySync = readPluginUseChoice(syncCwd);
       hostObservedBySync = syncHost;
-    }, undefined, { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' }, true);
+    }, undefined, process.env, true);
 
     assert.deepEqual(choiceObservedBySync && {
       enabled: (choiceObservedBySync as { enabled: boolean }).enabled,
@@ -227,7 +227,7 @@ test('beginOnboardingAttempt syncs before the first wizard-state read on normal 
     recordPluginUseChoice(dir, true, 'test');
     beginOnboardingAttempt(dir, 'cursor', [dir], {
       sync,
-      env: { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' },
+      env: process.env,
       featureEnabled: true,
       isDone: () => { events.push('compute'); return false; },
     });
@@ -236,7 +236,7 @@ test('beginOnboardingAttempt syncs before the first wizard-state read on normal 
     events.length = 0;
     beginOnboardingAttempt(dir, 'cursor', ['--bootstrap-only', dir], {
       sync,
-      env: { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' },
+      env: process.env,
       featureEnabled: true,
       isDone: () => { events.push('compute'); return false; },
     });
@@ -269,7 +269,7 @@ test('beginOnboardingAttempt persists --use before sync and shares the SessionSt
     const session = 'parent-session-1';
     beginOnboardingAttempt(dir, 'cursor', ['--use', '--bootstrap-only', dir, `--sync-session=${session}`], {
       sync,
-      env: { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' },
+      env: process.env,
       featureEnabled: true,
       isDone: () => false,
     });
@@ -277,11 +277,10 @@ test('beginOnboardingAttempt persists --use before sync and shares the SessionSt
 
     // The SessionStart path and both waiter commands use the same project +
     // host + session marker, so later surfaces do not issue another request.
-    const enabledEnv = { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' };
-    syncOneMcpAtSessionStart(dir, 'cursor', { session_id: session }, enabledEnv, sync);
+    syncOneMcpAtSessionStart(dir, 'cursor', { session_id: session }, process.env, sync, true);
     beginOnboardingAttempt(dir, 'cursor', [dir, `--sync-session=${session}`], {
       sync,
-      env: enabledEnv,
+      env: process.env,
       featureEnabled: true,
       isDone: () => false,
     });

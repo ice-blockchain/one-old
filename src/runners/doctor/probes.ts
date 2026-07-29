@@ -12,7 +12,7 @@ import { legacyCustomBackendMigration } from '../../shared/architecture-contract
 
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
-import { ONE_MCP_CONFIG_NAME_BY_HOST } from '../../config/one-mcp';
+import { DEFAULT_PUBLIC_ENDPOINT, ONE_MCP_CONFIG_NAME_BY_HOST } from '../../config/one-mcp';
 import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
 import { readSimpleAuth } from '../../shared/auth';
 import { codexHookEvidenceEvent, hasCodexHookEvidenceMarker, isCodexHookEvent } from '../../shared/codex-hook-evidence';
@@ -379,7 +379,7 @@ export function probeOneMcp(env: NodeJS.ProcessEnv = process.env): OneMcpProbe {
       // parseable cache entry can still be unusable for this build (most notably
       // when it belongs to another endpoint); runtime falls back to bundled and
       // doctor must report that same source.
-      const config = usableOneMcpConfigCacheEntry(host, state?.config ?? null, env);
+      const config = usableOneMcpConfigCacheEntry(host, state?.config ?? null, DEFAULT_PUBLIC_ENDPOINT);
       const lastSync = state?.lastSync ?? null;
       return {
         host,

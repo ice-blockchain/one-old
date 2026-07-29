@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
+  DEFAULT_PUBLIC_ENDPOINT,
 } from '../../../config/one-mcp';
 import { oneMcpAppliedFingerprint, oneMcpPayloadFingerprint } from '../../one-mcp';
 import { writeOneMcpConfigCacheEntry } from '../../one-mcp-cache';
@@ -119,7 +119,7 @@ test('currentLocalPreferenceTarget uses bundled tiers for the detected plan with
   const env = {
     TRAFFIC_ONE_STATE_PATH: path.join(dir, 'one.json'),
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'preferences.json'),
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(dir, 'state'),
     TRAFFIC_ONE_USER_PLAN: 'pro',
   } as NodeJS.ProcessEnv;
   try {
@@ -139,7 +139,7 @@ test('currentLocalPreferenceTarget uses a valid One MCP sidecar', () => {
   const env = {
     TRAFFIC_ONE_STATE_PATH: path.join(dir, 'one.json'),
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'preferences.json'),
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(dir, 'state'),
     TRAFFIC_ONE_USER_PLAN: 'pro',
   } as NodeJS.ProcessEnv;
   try {
@@ -154,7 +154,7 @@ test('currentLocalPreferenceTarget uses a valid One MCP sidecar', () => {
     };
     const appliedFingerprint = oneMcpAppliedFingerprint(snapshot.tiers);
     writeOneMcpConfigCacheEntry('codex', {
-      endpoint: publicEndpoint(env),
+      endpoint: DEFAULT_PUBLIC_ENDPOINT,
       configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
       decoderVersion: ONE_MCP_DECODER_VERSION,
       version: 8,

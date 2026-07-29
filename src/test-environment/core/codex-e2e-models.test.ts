@@ -87,7 +87,7 @@ test('isolated Codex E2E sidecar changes only the case env; production keeps its
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const config = defaultConfig().hosts.codex;
   const isolatedEnv = {
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'case', 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(dir, 'case'),
   } as NodeJS.ProcessEnv;
 
   seedCodexE2eModelCatalog(config, isolatedEnv);
@@ -100,7 +100,7 @@ test('isolated Codex E2E sidecar changes only the case env; production keeps its
   assert.equal(isolated.source, 'one-mcp');
 
   const productionEnv = {
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(dir, 'production-missing.json'),
+    XDG_STATE_HOME: path.join(dir, 'production'),
   } as NodeJS.ProcessEnv;
   const production = currentHostModelTarget('codex', 'pro', productionEnv);
   assert.deepEqual(production.snapshot.tiers, {
