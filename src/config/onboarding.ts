@@ -52,13 +52,13 @@ export interface FormField {
   hint?: string;
 }
 
-export interface TeamRole {
+interface TeamRole {
   role: string;
   label: string;
   blurb: string;
 }
 
-export type StepKind = 'single_select' | 'form' | 'finalize' | 'done' | 'text_input';
+type StepKind = 'single_select' | 'form' | 'finalize' | 'done' | 'text_input';
 
 // The steps that carry static copy (excludes the 'finalize'/'done'/null flow
 // states, which flow.ts builds inline).
@@ -94,7 +94,7 @@ export const TEAM_ROLES: TeamRole[] = [
 
 // Human-friendly label + placeholder for each PROJECT_CONTEXT_ANSWER_KEY, so the
 // wizard form reads like questions instead of camelCase identifiers.
-export const PROJECT_CONTEXT_FIELDS: FormField[] = [
+const PROJECT_CONTEXT_FIELDS: FormField[] = [
   { key: 'audience', label: 'Who is it for?', hint: 'Primary users / audience' },
   { key: 'coreFlows', label: 'Core user flows', hint: 'The main things a user does, end to end' },
   { key: 'v1Features', label: 'V1 features', hint: 'What must ship in the first version' },

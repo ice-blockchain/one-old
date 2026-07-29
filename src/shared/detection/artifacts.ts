@@ -23,9 +23,6 @@ export function hasWorkspaces(pkg: unknown): boolean {
   return Boolean(p.workspaces) || Object.prototype.hasOwnProperty.call(p, 'pnpm');
 }
 
-export function workspaceYamlPresent(cwd: string): boolean {
-  return fs.existsSync(path.join(cwd, 'pnpm-workspace.yaml')) || fs.existsSync(path.join(cwd, 'pnpm-workspace.yml'));
-}
 
 export const SOURCE_EXTS = new Set([
   '.tsx', '.ts', '.jsx', '.js', '.vue', '.svelte',
@@ -137,7 +134,7 @@ export function detectMobileFromText(text: string): MobileDetection {
   return { enabled: true, framework: 'ionic-capacitor', source: 'explicit', intentDetected: true };
 }
 
-export interface StackDetection {
+interface StackDetection {
   stack: string | null;
   backend: string | null;
   frontend: string | null;

@@ -330,7 +330,6 @@ export {
   delegateFromPlan,
   parsePlanDelegationQueue,
   finalizePlanBatchOnly,
-  type PlanDelegationResult,
 } from './from-plan';
 import { delegateFromPlan, parsePlanDelegationQueue } from './from-plan';
 

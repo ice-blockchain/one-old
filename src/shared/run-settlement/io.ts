@@ -57,7 +57,7 @@ export function readRunSettlement(projectRoot: string, runId: string): RunSettle
   return parseSettlement(readJson(runSettlementPath(projectRoot, runId), null), runId);
 }
 
-export interface ActiveRunClaimScan {
+interface ActiveRunClaimScan {
   count: number;
   complete: boolean;
   scanned: number;
@@ -241,7 +241,7 @@ export function digestExists(projectRoot: string, runId: string, names: string[]
     }
   });
 }
-export type FallbackCompletionMatch = 'matched' | 'pending' | 'marker-missing' | 'hash-mismatch';
+type FallbackCompletionMatch = 'matched' | 'pending' | 'marker-missing' | 'hash-mismatch';
 export function recordsPaidFallback(value: unknown): boolean {
   return Boolean(paidFallbackCompletionFromMaintenance(value));
 }

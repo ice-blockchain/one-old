@@ -186,7 +186,6 @@ export {
   activeRunBootstrapPath,
   boundedMaintenanceSourceScope,
   quickFixDigestPath,
-  quickFixSourceScope,
   type BootstrapMaterialRefV2,
   type BootstrapRuntimeContractsV1,
   type EnsureRunBootstrapOptions,

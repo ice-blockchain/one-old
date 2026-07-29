@@ -34,7 +34,7 @@ function defaultMobileState(): Rec {
   return { enabled: false, framework: 'none', source: 'none' };
 }
 
-export function defaultTechnologiesFor(state: Rec): { frontend: string[]; backend: string[]; mobile: string[] } {
+function defaultTechnologiesFor(state: Rec): { frontend: string[]; backend: string[]; mobile: string[] } {
   const frontend: string[] = [];
   const backend: string[] = [];
   const mobile: string[] = [];
@@ -286,7 +286,7 @@ export function normalizeState(state: unknown, defaultMode?: string): boolean {
   return changed;
 }
 
-export interface AddonGate {
+interface AddonGate {
   approved: boolean;
   skipped: boolean;
   status: string;

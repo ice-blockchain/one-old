@@ -13,10 +13,10 @@ import { nowIsoNoMs } from '../../shared/text';
 import { spawnTool } from '../../shared/spawn-tool';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 
-export const SPEC_PATH = path.join(__dirname, 'toolchain-versions.json');
+const SPEC_PATH = path.join(__dirname, 'toolchain-versions.json');
 
 type Rec = Record<string, unknown>;
-export interface ToolSpec {
+interface ToolSpec {
   recommended?: string;
   minimum?: string;
   installLatest?: boolean;
@@ -31,7 +31,7 @@ export interface ToolSpec {
   [k: string]: unknown;
 }
 
-export interface ToolRuntimeReq {
+interface ToolRuntimeReq {
   runtime: 'python' | 'node' | null;
   minMajor: number;
   minMinor: number;
@@ -66,9 +66,9 @@ export function toolRuntime(toolName: string): ToolRuntimeReq {
   return { runtime, minMajor, minMinor };
 }
 
-export type ToolStatusKind = 'unknown' | 'missing' | 'too-old' | 'outdated' | 'current';
+type ToolStatusKind = 'unknown' | 'missing' | 'too-old' | 'outdated' | 'current';
 
-export interface ToolProbe {
+interface ToolProbe {
   binPath: string | null;
   version: string | null;
   status: ToolStatusKind;

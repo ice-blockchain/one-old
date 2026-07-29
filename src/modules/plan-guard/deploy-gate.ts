@@ -27,7 +27,7 @@ const SECURITY_RUN_CMD = 'node ~/.traffic-one/bin/security-check-runner.cjs --st
 
 interface StampCheck { ok: boolean; reason?: string; }
 
-export function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
+function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
   const status = state.lastSecurityCheckStatus;
   const checkedAt = typeof state.lastSecurityCheckAt === 'string' ? Date.parse(state.lastSecurityCheckAt) : 0;
   const fresh = checkedAt > 0 && (Date.now() - checkedAt) < SECURITY_CHECK_WINDOW_MS;

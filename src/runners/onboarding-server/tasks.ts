@@ -15,9 +15,9 @@ import * as path from 'path';
 
 import { pluginRoot } from '../../shared/paths';
 
-export type TaskStatus = 'running' | 'done' | 'error';
+type TaskStatus = 'running' | 'done' | 'error';
 
-export interface TaskState {
+interface TaskState {
   id: string;
   status: TaskStatus;
   action?: string;

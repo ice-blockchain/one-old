@@ -141,7 +141,7 @@ export function patchTextFromToolInput(...sources: readonly unknown[]): string {
   return canonicalPatchTextFromToolInput(...sources);
 }
 
-export function patchTouchedFiles(patchText: string): string[] {
+function patchTouchedFiles(patchText: string): string[] {
   const parsed = parseApplyPatch(patchText);
   return parsed.ok ? patchOperationPaths(parsed.operations) : [];
 }

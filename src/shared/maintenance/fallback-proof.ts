@@ -7,8 +7,8 @@ import * as path from 'path';
 
 import { sha256 } from '../text';
 
-export const FALLBACK_SOURCE_SNAPSHOT_SCHEMA_VERSION = 1 as const;
-export const PAID_FALLBACK_COMPLETION_SCHEMA_VERSION = 1 as const;
+const FALLBACK_SOURCE_SNAPSHOT_SCHEMA_VERSION = 1 as const;
+const PAID_FALLBACK_COMPLETION_SCHEMA_VERSION = 1 as const;
 const MAX_FALLBACK_SOURCE_FILES = 128;
 const MAX_FALLBACK_SOURCE_BYTES = 16 * 1024 * 1024;
 
@@ -29,7 +29,7 @@ export interface FallbackSourceSnapshotV1 {
   snapshotHash: string;
 }
 
-export interface PaidFallbackCompletionV1 {
+interface PaidFallbackCompletionV1 {
   schemaVersion: typeof PAID_FALLBACK_COMPLETION_SCHEMA_VERSION;
   authority: 'traffic-one-runtime';
   role: string;
@@ -170,7 +170,7 @@ export function createPaidFallbackCompletion(
   return { ...canonical, completionHash: hash(canonical) };
 }
 
-export function parsePaidFallbackCompletion(value: unknown): PaidFallbackCompletionV1 | null {
+function parsePaidFallbackCompletion(value: unknown): PaidFallbackCompletionV1 | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as Partial<PaidFallbackCompletionV1>;
   if (raw.schemaVersion !== PAID_FALLBACK_COMPLETION_SCHEMA_VERSION

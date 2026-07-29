@@ -20,7 +20,7 @@ import { projectSlugFromCwd } from './projectSlugFromCwd';
 import { renderMarkdown } from './render';
 
 type Rec = Record<string, unknown>;
-export interface TokenReportArgs {
+interface TokenReportArgs {
   json: boolean; all: boolean; source: string;
   session?: string; project?: string; out?: string; cwd?: string;
 }

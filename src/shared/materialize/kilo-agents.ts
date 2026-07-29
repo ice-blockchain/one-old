@@ -28,7 +28,7 @@ function yamlString(value: string): string {
   return JSON.stringify(value.replace(/\n+/g, ' ').trim());
 }
 
-export function isGeneratedKiloAgent(filePath: string): boolean {
+function isGeneratedKiloAgent(filePath: string): boolean {
   const text = readText(filePath);
   return typeof text === 'string' && text.includes(KILO_AGENT_MARKER);
 }

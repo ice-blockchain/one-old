@@ -22,7 +22,7 @@ export function resolveBin(): string | null {
 // the MCP server is long-lived, and --from-plan loops units in one process) how
 // far we got, so a retired promo model is not re-tried on every single unit.
 // Never persisted: a plugin update with a fresh chain resets it naturally.
-export let freeChainStart = 0;
+let freeChainStart = 0;
 
 // Test-only: the memo is module-level process state, so in-process tests must
 // reset it between cases to stay order-independent.

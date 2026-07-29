@@ -93,7 +93,7 @@ function installGraphProvider(cwd: string, provider: GraphProvider, requireScan:
   return { tool: provider, ok: true, action, error: null, installedVersion: ensured.installedVersion ?? scan.installedVersion ?? null };
 }
 
-export interface OnboardingToolchainResult {
+interface OnboardingToolchainResult {
   ok: boolean;
   action: string;
   provider: string | null;
@@ -225,7 +225,7 @@ export function ensureOnboardingToolchain(cwd: string = process.cwd()): Onboardi
 // landed. Skips the graph provider entirely (it has its own self-heal with its
 // own cooldown); runs the same stamp + Codex registration + managed install the
 // full onboarding pass would. Best-effort: always exits 0.
-export function ensureOpenCodeOnly(cwd: string = process.cwd()): OnboardingToolchainResult {
+function ensureOpenCodeOnly(cwd: string = process.cwd()): OnboardingToolchainResult {
   const state = readEffectiveState(cwd);
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
   const host = detectHost();

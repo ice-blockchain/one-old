@@ -6,7 +6,7 @@ import { ONE_UID_FIELD } from '../../config/reporting';
 import { readProjectState } from './lib';
 import { validReportId } from './validReportId';
 
-export interface ReportIdState {
+interface ReportIdState {
   id: string;
   created: false;
   invalid?: boolean;

@@ -10,7 +10,7 @@ import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
 import { autoDetectedAnnouncement } from '../../shared/directives';
-import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
+import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
 import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
@@ -80,7 +80,7 @@ import { ensureCodexOneMcpServerRegistered } from '../../shared/codex-mcp';
 import { ONE_MCP_REGISTRATION } from '../../config/one-mcp';
 import { removeStrayProjectArtifactsFromGlobalDir } from '../../shared/state/traffic-one-paths';
 
-export function runSessionStartInner(ctx: Ctx): HookResult {
+function runSessionStartInner(ctx: Ctx): HookResult {
   // Self-heal machines the pre-guard bug touched: project artifacts materialized
   // into the machine dir (session cwd = $HOME) are never legitimate there.
   // Deletes only never-legitimate names; runs before the stand-down guard so a

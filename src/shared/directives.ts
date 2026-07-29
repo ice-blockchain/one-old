@@ -6,7 +6,7 @@
 
 import { pitchDeployLabel } from './config';
 
-export interface DetectedStack {
+interface DetectedStack {
   stack: string | null;
   frontend?: string | null;
   backend?: string | null;
@@ -43,7 +43,7 @@ export function autoDetectedAnnouncement(detected: DetectedStack): string {
   return pieces.join('\n');
 }
 
-export interface IncompleteWarningArgs {
+interface IncompleteWarningArgs {
   stack?: string | null;
   validStackIds?: string[];
   codeGraphProvider?: string | null;

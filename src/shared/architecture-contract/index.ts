@@ -164,12 +164,6 @@ export function publishRuntimeAssignments(
   });
 }
 
-export function validateArchitectureAllowlist(
-  contract: CompiledArchitectureV1,
-  include: string[],
-): string[] {
-  return contract.allowedOutputs.filter((output) => !include.some((pattern) => matchesPattern(output, pattern)));
-}
 
 export function createWorkUnitContract(input: Omit<WorkUnitContractV1, 'schemaVersion' | 'contractHash'>): WorkUnitContractV1 {
   if (!input.trafficOneRole.trim()) throw new Error('trafficOneRole must be non-null');
@@ -236,11 +230,6 @@ export function validateWorkUnitContract(value: unknown): value is WorkUnitContr
   }
 }
 
-export function architectureInputFromUnknown(value: unknown): ArchitectureInputV1 | null {
-  const validation = validateArchitectureInput(value);
-  if (!validation.ok) return null;
-  return value as ArchitectureInputV1;
-}
 
 export function legacyCustomBackendMigration(
   projectRoot: string,
@@ -361,10 +350,8 @@ export {
   type ArchitectureValidationResult,
   type CompiledArchitectureModuleV1,
   type CompiledArchitectureOutputV1,
-  type CompiledArchitectureRouteV1,
   type CompiledArchitectureV1,
   type CompiledOutputKindV1,
-  type ResolvedPolicyMaterialV1,
   type RuntimeAssignmentEntryV1,
   type RuntimeAssignmentsV1,
   type WorkUnitContractV1,

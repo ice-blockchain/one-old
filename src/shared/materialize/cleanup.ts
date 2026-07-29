@@ -27,7 +27,7 @@ export function loadPreviousManifest(cwd: string): Rec {
   return {};
 }
 
-export function migrateLegacyMemoryFile(cwd: string, fileName: string): boolean {
+function migrateLegacyMemoryFile(cwd: string, fileName: string): boolean {
   const legacyPath = path.join(cwd, '.traffic-one', 'rules', fileName);
   const targetPath = path.join(cwd, '.traffic-one', fileName);
   if (!fs.existsSync(legacyPath) || fs.lstatSync(legacyPath).isDirectory()) return false;
@@ -74,7 +74,7 @@ function migratedRootDocBlock(fileName: string, content: string): string {
   ].join('\n');
 }
 
-export function migrateLegacyRootDocumentationFile(cwd: string, fileName: string): boolean {
+function migrateLegacyRootDocumentationFile(cwd: string, fileName: string): boolean {
   const legacyPath = path.join(cwd, fileName);
   const targetPath = path.join(cwd, '.traffic-one', fileName);
   if (!fs.existsSync(legacyPath) || fs.lstatSync(legacyPath).isDirectory()) return false;
@@ -113,7 +113,7 @@ export function migrateLegacyRootDocumentationFile(cwd: string, fileName: string
   return true;
 }
 
-export function migrateLegacyRootDocumentation(cwd: string): number {
+function migrateLegacyRootDocumentation(cwd: string): number {
   let migrated = 0;
   for (const fileName of LEGACY_ROOT_DOCUMENTATION_FILES) {
     if (migrateLegacyRootDocumentationFile(cwd, fileName)) migrated += 1;

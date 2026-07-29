@@ -40,9 +40,9 @@ export function runStartMsForDigest(digestPath: string): number | undefined {
   }
 }
 
-export const PROJECT_ROOT_HINT_FIELDS = ['file_path', 'path', 'cwd', 'workdir'];
-export const PROJECT_COMMAND_HINT_FIELDS = ['command', 'cmd', 'shell_command'];
-export const PROJECT_PATH_TOKEN_RE = /(?:^|[\s"'`=])((?:\.{1,2}\/)?(?:[A-Za-z0-9_.@-]+\/)+(?:[A-Za-z0-9_.@-]+)?)(?=$|[\s"'`,;|&])/g;
+const PROJECT_ROOT_HINT_FIELDS = ['file_path', 'path', 'cwd', 'workdir'];
+const PROJECT_COMMAND_HINT_FIELDS = ['command', 'cmd', 'shell_command'];
+const PROJECT_PATH_TOKEN_RE = /(?:^|[\s"'`=])((?:\.{1,2}\/)?(?:[A-Za-z0-9_.@-]+\/)+(?:[A-Za-z0-9_.@-]+)?)(?=$|[\s"'`,;|&])/g;
 
 // Walk up from a path hint to the nearest dir that carries a .traffic-one state
 // file. Returns null for flags, URLs, var-expansions, or no enclosing project.

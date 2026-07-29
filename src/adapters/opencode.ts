@@ -252,4 +252,3 @@ export function makeOpenCodeAdapter(): HostAdapter {
   };
 }
 
-export const opencodeAdapter = makeOpenCodeAdapter();

@@ -31,16 +31,16 @@ import {
 // the agent-model layer; this module only owns the one-to-one persistence
 // primitives and accepts the classifier's eventual outcome/directive.
 
-export const CURSOR_SPAWN_OBSERVATION_LIMIT = 128;
+const CURSOR_SPAWN_OBSERVATION_LIMIT = 128;
 
-export type CursorSpawnObservationOutcome = 'api-limit' | 'model-unavailable' | 'generic';
+type CursorSpawnObservationOutcome = 'api-limit' | 'model-unavailable' | 'generic';
 export type CursorFollowupSuppressionReason =
   | 'stop-user-abort'
   | 'subagent-stop-user-abort'
   | 'subagent-stop-parent-user-abort'
   | 'parent-transcript-user-abort';
 
-export interface CursorSpawnObservationInput {
+interface CursorSpawnObservationInput {
   parentSessionId: string;
   toolCallId: string;
   role: string;
@@ -73,7 +73,7 @@ export interface CursorSpawnObservation {
   updatedAtMs: number;
 }
 
-export interface CursorSpawnObservationUpdate {
+interface CursorSpawnObservationUpdate {
   outcome?: CursorSpawnObservationOutcome | null;
   error?: string | null;
   directive?: string | null;
@@ -100,13 +100,13 @@ export interface CursorFollowupClaimRequest {
   prescribedModel: string | null;
 }
 
-export interface CursorParentObservationSnapshot {
+interface CursorParentObservationSnapshot {
   parentSessionId: string;
   fingerprint: string;
   observations: CursorSpawnObservation[];
 }
 
-export interface CursorParentFollowupSuppressionRequest {
+interface CursorParentFollowupSuppressionRequest {
   scope: 'parent';
   parentSessionId: string;
   observedAtMs: number;
@@ -116,7 +116,7 @@ export interface CursorParentFollowupSuppressionRequest {
     | 'parent-transcript-user-abort';
 }
 
-export interface CursorChildFollowupSuppressionRequest {
+interface CursorChildFollowupSuppressionRequest {
   scope: 'child';
   toolCallId: string;
   parentSessionId?: string;

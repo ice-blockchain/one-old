@@ -84,7 +84,7 @@ export interface CompiledArchitectureModuleV1 extends ArchitectureModuleInputV1 
   output: string;
 }
 
-export interface CompiledArchitectureRouteV1 extends ArchitectureRouteInputV1 {
+interface CompiledArchitectureRouteV1 extends ArchitectureRouteInputV1 {
   moduleOutput: string;
 }
 
@@ -123,7 +123,7 @@ export interface CompiledArchitectureV1 {
   contractHash: string;
 }
 
-export interface ResolvedPolicyMaterialV1 {
+interface ResolvedPolicyMaterialV1 {
   id: string;
   contentHash: string;
 }

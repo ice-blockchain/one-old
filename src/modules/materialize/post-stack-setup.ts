@@ -55,7 +55,7 @@ import { normalizeDigestFinishedAt } from './digest-finished-at';
 const skillBlock = makeSkillBlock(pluginRoot);
 const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|followup_task|send_message|send_input|wait_agent)$/i;
 
-export interface PostStackSetupDeps {
+interface PostStackSetupDeps {
   logTokenUse?: (cwd: string, payload: unknown) => void;
   functionEditDeploy?: (filePath: string) => string | null;
   reportOneMcp?: ReportOneMcp;

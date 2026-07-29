@@ -12,7 +12,7 @@ function usage(): string {
   ].join('\n');
 }
 
-function parseArgs(argv = process.argv.slice(2)): { cwd: string; dryRun: boolean; json: boolean; help: boolean } {
+export function parseArgs(argv = process.argv.slice(2)): { cwd: string; dryRun: boolean; json: boolean; help: boolean } {
   let cwd = process.cwd();
   let dryRun = true;
   let json = false;

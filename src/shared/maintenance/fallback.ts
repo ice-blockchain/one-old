@@ -47,7 +47,7 @@ export type PaidFallbackFinalizationStatus =
   | 'completed'
   | 'already-completed';
 
-export interface PaidFallbackFinalizationResult {
+interface PaidFallbackFinalizationResult {
   status: PaidFallbackFinalizationStatus;
   reason: string;
   changedPaths?: string[];

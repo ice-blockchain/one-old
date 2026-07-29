@@ -52,7 +52,7 @@ export const LOCAL_PREF_KEYS = new Set([
   'hosts',
 ]);
 
-export interface PerformanceTarget {
+interface PerformanceTarget {
   plan: string;
   appliedFingerprint: string;
   configVersion: number;

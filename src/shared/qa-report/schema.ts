@@ -5,19 +5,19 @@
 
 import * as path from 'path';
 
-export const QA_CONTRACT_VERSION = 1 as const;
+const QA_CONTRACT_VERSION = 1 as const;
 export const QA_REQUIRED_WIDTHS = [390, 768, 1440] as const;
 
 export type QaRequiredWidth = (typeof QA_REQUIRED_WIDTHS)[number];
-export type QaReportProducer = 'senior-tester' | 'parent-browser';
-export type QaBlockerCode = 'browser-unavailable' | 'sandbox' | 'usage-limit' | 'timeout';
+type QaReportProducer = 'senior-tester' | 'parent-browser';
+type QaBlockerCode = 'browser-unavailable' | 'sandbox' | 'usage-limit' | 'timeout';
 export type QaReportStatus =
   | 'passed'
   | 'failed'
   | `blocked:${QaBlockerCode}`;
-export type QaPrimaryActionStatus = 'reachable' | 'unreachable' | 'not-applicable';
+type QaPrimaryActionStatus = 'reachable' | 'unreachable' | 'not-applicable';
 
-export interface QaPrimaryActionResult {
+interface QaPrimaryActionResult {
   status: QaPrimaryActionStatus;
   /** Required when status is `not-applicable`; otherwise optional context. */
   reason?: string;
@@ -34,12 +34,12 @@ export interface QaViewportResult {
   screenshotPath?: string;
 }
 
-export interface QaRouteResult {
+interface QaRouteResult {
   route: string;
   viewports: QaViewportResult[];
 }
 
-export interface QaBlocker {
+interface QaBlocker {
   code: QaBlockerCode;
   /** A short, single-line, user-safe explanation; never raw tool output. */
   summary: string;
@@ -65,7 +65,7 @@ export interface QaReportV1 {
   verifiedBuild?: string;
 }
 
-export type QaReportFailureCode =
+type QaReportFailureCode =
   | 'invalid-run-id'
   | 'report-missing'
   | 'report-unreadable'
@@ -80,7 +80,7 @@ export type QaReportFailureCode =
   | 'report-blocked'
   | 'matrix-not-passed';
 
-export interface QaReportAccepted {
+interface QaReportAccepted {
   ok: true;
   code?: never;
   message?: never;
@@ -88,7 +88,7 @@ export interface QaReportAccepted {
   reportPath: string;
 }
 
-export interface QaReportRejected {
+interface QaReportRejected {
   ok: false;
   code: QaReportFailureCode;
   message: string;

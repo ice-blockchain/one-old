@@ -12,9 +12,9 @@ import type {
 
 export const VERIFICATION_PLAN_INTENT_START = '<!-- traffic-one-verification:start -->';
 export const VERIFICATION_PLAN_INTENT_END = '<!-- traffic-one-verification:end -->';
-export const VERIFICATION_PLAN_INTENT_SCHEMA_VERSION = 1 as const;
+const VERIFICATION_PLAN_INTENT_SCHEMA_VERSION = 1 as const;
 
-export type VerificationPlanCompileOptions = Pick<
+type VerificationPlanCompileOptions = Pick<
   VerificationCompileOptions,
   'agentRaisedImpact' | 'redesign' | 'performanceRisk' | 'explicitLighthouse' | 'advisoryLighthouse'
 >;
@@ -159,7 +159,7 @@ export function parseVerificationPlanIntent(planText: string): VerificationPlanC
   return options;
 }
 
-export function verificationPlanPath(projectRoot: string): string {
+function verificationPlanPath(projectRoot: string): string {
   return path.join(projectRoot, '.traffic-one', 'plan.md');
 }
 

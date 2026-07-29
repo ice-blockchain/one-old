@@ -239,4 +239,3 @@ export function makeKiloAdapter(): HostAdapter {
   };
 }
 
-export const kiloAdapter = makeKiloAdapter();

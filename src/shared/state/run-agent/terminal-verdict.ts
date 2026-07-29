@@ -436,7 +436,7 @@ export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean 
   return maintenanceRunReachedTerminal(cwd, runId) || buildRunReachedTerminalVerdict(cwd, runId);
 }
 
-export type RunVerificationState = 'terminal' | 'not-started' | 'nonterminal' | 'empty';
+type RunVerificationState = 'terminal' | 'not-started' | 'nonterminal' | 'empty';
 
 export function runProducedImplementerOutput(cwd: string, runId: string): boolean {
   return anyDigestSpellingHasContent(cwd, runId, 'frontend.md')

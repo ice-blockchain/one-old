@@ -41,7 +41,7 @@ const which = exec.which;
 
 const REPORT_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 
-export interface GraphifyResult {
+interface GraphifyResult {
   ok: boolean;
   action: string;
   report: string | null;
@@ -58,7 +58,7 @@ export interface GraphifyToolResult {
   installedVersion?: string | null;
 }
 
-export interface GraphifyOpts {
+interface GraphifyOpts {
   force?: boolean;
   skipInstall?: boolean;
 }

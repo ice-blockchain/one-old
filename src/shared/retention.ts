@@ -10,19 +10,19 @@ import { readJson } from './fsjson';
 import { resolveProjectRoot } from './hook/paths';
 import { obj } from './obj';
 
-export interface RetentionPolicy {
+interface RetentionPolicy {
   keepRuns: number;
   backupKeep: number;
   orphanTtlDays: number;
 }
 
-export interface RetentionAction {
+interface RetentionAction {
   action: 'remove';
   path: string;
   reason: string;
 }
 
-export interface RetentionResult {
+interface RetentionResult {
   cwd: string;
   dryRun: boolean;
   policy: RetentionPolicy;

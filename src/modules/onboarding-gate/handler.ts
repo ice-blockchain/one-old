@@ -20,7 +20,7 @@ import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
 import { isOnboardedProjectRoot } from '../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
-import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
+import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';

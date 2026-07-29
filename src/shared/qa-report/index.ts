@@ -307,21 +307,11 @@ export function readQaReportV1(
 
 export { QA_REQUIRED_WIDTHS, qaReportDirectory, qaReportPath };
 export {
-  QA_CONTRACT_VERSION,
   isQaBrowserBridgeEligible,
-  type QaBlocker,
-  type QaBlockerCode,
-  type QaPrimaryActionResult,
-  type QaPrimaryActionStatus,
-  type QaReportAccepted,
-  type QaReportFailureCode,
-  type QaReportProducer,
-  type QaReportRejected,
   type QaReportStatus,
   type QaReportV1,
   type QaReportValidationOptions,
   type QaReportValidationResult,
   type QaRequiredWidth,
-  type QaRouteResult,
   type QaViewportResult,
 } from './schema';

@@ -19,7 +19,7 @@ export const GITNEXUS_ROOT_DIRNAME = '.gitnexus';
 // Where Traffic One keeps them (relative to the project root).
 export const GRAPHIFY_OUT_REL = path.join('.traffic-one', 'graphify-out');
 export const GRAPHIFY_REPORT_REL = path.join(GRAPHIFY_OUT_REL, 'GRAPH_REPORT.md');
-export const GRAPHIFY_GRAPH_JSON_REL = path.join(GRAPHIFY_OUT_REL, 'graph.json');
+const GRAPHIFY_GRAPH_JSON_REL = path.join(GRAPHIFY_OUT_REL, 'graph.json');
 export const GITNEXUS_REL = path.join('.traffic-one', '.gitnexus');
 
 // Plugin/host-generated paths that are NOT project source — they must be kept

@@ -327,7 +327,7 @@ export function isArchitectPhaseComplete(projectRoot: string, state: Rec): boole
   return architectPhaseIncompleteReasons(projectRoot, state).length === 0;
 }
 
-export function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
+function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (!runId) return false;
   try {

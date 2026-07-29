@@ -10,13 +10,7 @@ export function isKnownStack(stack: unknown): boolean {
     && (STACK_IDS.has(stack) || Object.prototype.hasOwnProperty.call(LEGACY_STACK_ALIASES, stack));
 }
 
-export function defaultBackendValue(): string {
-  return 'supabase';
-}
 
-export function pitchBackendLabel(): string {
-  return 'Supabase (managed Postgres with Auth, Storage, Realtime, and RLS)';
-}
 
 export function pitchDeployLabel(): string {
   return INFRA_CONFIG.ourDeployConfigured

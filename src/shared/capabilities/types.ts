@@ -24,10 +24,10 @@ export const STRUCTURAL_PROFILE_IDS = [
   'backend-only',
 ] as const;
 export type StructuralProfileId = typeof STRUCTURAL_PROFILE_IDS[number];
-export type QaAdapterId = 'playwright' | 'maestro' | 'xcode-simulator' | 'android-emulator' | 'flutter-driver';
+type QaAdapterId = 'playwright' | 'maestro' | 'xcode-simulator' | 'android-emulator' | 'flutter-driver';
 export type ArchitectureTargetSurface = 'web-ui' | 'native-ui';
 
-export interface CapabilityBlockingIssueV1 {
+interface CapabilityBlockingIssueV1 {
   code: 'CAPABILITY_HYBRID_UI_TARGET_REQUIRED';
   message: string;
 }

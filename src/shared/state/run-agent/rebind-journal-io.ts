@@ -140,7 +140,7 @@ export function readAuthoritativeRebindJournal(
     createdAt: firstString(raw.createdAt) || stateTimestamp(),
   };
 }
-export function removePendingClaimsByIdUnlocked(
+function removePendingClaimsByIdUnlocked(
   cwd: string,
   runId: string,
   claimIds: readonly string[],

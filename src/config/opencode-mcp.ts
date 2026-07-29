@@ -39,7 +39,7 @@ export const OPENCODE_MCP_SHIM_PATH = 'scripts/opencode-mcp.cjs';
 // a __dirname-relative resolution at runtime; tests point it at a stub runner.
 export const OPENCODE_RUNNER_OVERRIDE_ENV = 'TRAFFIC_ONE_OPENCODE_RUNNER';
 
-export interface McpStdioServerEntry {
+interface McpStdioServerEntry {
   readonly command: string;
   readonly args: readonly string[];
 }

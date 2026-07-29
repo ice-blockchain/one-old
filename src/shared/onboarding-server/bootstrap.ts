@@ -16,13 +16,13 @@ const skillBlock = makeSkillBlock(pluginRoot);
 
 type EnsureFn = (cwd: string, options: { host: string }) => EnsureResult;
 
-export interface OnboardingBootstrapReady {
+interface OnboardingBootstrapReady {
   kind: 'ready';
   server: EnsureResult;
   waitCommand: string;
 }
 
-export interface OnboardingBootstrapRequired {
+interface OnboardingBootstrapRequired {
   kind: 'bootstrap-required';
   reason: string;
   bootstrapCommand: string;
@@ -30,13 +30,13 @@ export interface OnboardingBootstrapRequired {
   errorCode: string;
 }
 
-export interface OnboardingStartFailed {
+interface OnboardingStartFailed {
   kind: 'start-failed';
   reason: string;
   errorCode: string;
 }
 
-export type OnboardingBootstrap = OnboardingBootstrapReady | OnboardingBootstrapRequired | OnboardingStartFailed;
+type OnboardingBootstrap = OnboardingBootstrapReady | OnboardingBootstrapRequired | OnboardingStartFailed;
 
 function errorCode(error: unknown): string {
   if (error && typeof error === 'object' && typeof (error as NodeJS.ErrnoException).code === 'string') {

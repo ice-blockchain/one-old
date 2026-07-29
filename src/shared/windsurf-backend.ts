@@ -1,9 +1,9 @@
 // Distinguish Windsurf's two agent backends. Both share host="windsurf", but
 // only Devin Local exposes run_subagent; Cascade is main-agent-only.
 
-export type WindsurfBackend = 'cascade' | 'devin' | null;
+type WindsurfBackend = 'cascade' | 'devin' | null;
 
-export const WINDSURF_BACKEND_ENV = 'TRAFFIC_ONE_WINDSURF_BACKEND';
+const WINDSURF_BACKEND_ENV = 'TRAFFIC_ONE_WINDSURF_BACKEND';
 
 export function windsurfBackend(env: NodeJS.ProcessEnv = process.env): WindsurfBackend {
   const value = String(env[WINDSURF_BACKEND_ENV] ?? '').trim().toLowerCase();

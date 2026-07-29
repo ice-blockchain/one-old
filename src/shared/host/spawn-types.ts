@@ -22,7 +22,7 @@ import { canonicalHost } from '../model-tiers';
 import type { HostId } from '../../core/types';
 import { openCodeGlobalAgentName } from '../materialize/opencode-assets';
 
-export interface HostSpawnType {
+interface HostSpawnType {
   /** Value to pass first. Null when the host exposes no typed subagents at all. */
   primary: string | null;
   /**

@@ -155,7 +155,7 @@ function managedCodexMcpBlock(config: string): ManagedCodexMcpBlock | null {
 // Public traffic-one-mcp registration is deliberately inert: hook-owned HTTP
 // clients perform sync/reporting, while Codex sees neither public tool. Keep the
 // block append-only and byte-preserving like the proven opencode-worker path.
-export function codexOneMcpServerBlock(endpoint: string = DEFAULT_PUBLIC_ENDPOINT): string {
+function codexOneMcpServerBlock(endpoint: string = DEFAULT_PUBLIC_ENDPOINT): string {
   return [
     '',
     '# >>> traffic-one managed public MCP (disabled)',
@@ -374,7 +374,7 @@ export type CodexMcpRegistration =
   | 'skipped-no-root'
   | 'failed';
 
-export type CodexOneMcpRemoval = 'removed' | 'absent' | 'modified' | 'failed';
+type CodexOneMcpRemoval = 'removed' | 'absent' | 'modified' | 'failed';
 
 export function ensureCodexMcpServerRegistered(
   env: NodeJS.ProcessEnv = process.env,

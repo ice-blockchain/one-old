@@ -28,7 +28,6 @@ export {
   activeRunClaimScan,
   readRunSettlement,
   writeRunSettlement,
-  type ActiveRunClaimScan,
 } from './io';
 
 export {

@@ -60,7 +60,7 @@ export function probeCanonicalAuth(env: NodeJS.ProcessEnv = process.env): Canoni
   };
 }
 
-export interface OneMcpHostProbe {
+interface OneMcpHostProbe {
   host: HostModelKey;
   configName: string;
   catalogSource: 'one-mcp' | 'bundled';
@@ -112,7 +112,7 @@ export function probeOneMcp(env: NodeJS.ProcessEnv = process.env): OneMcpProbe {
   };
 }
 
-export interface SessionDiagnostics {
+interface SessionDiagnostics {
   id: string;
   jsonl?: string;
   cwd: string | null;

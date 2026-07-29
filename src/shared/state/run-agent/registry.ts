@@ -155,7 +155,7 @@ export interface RunAgentEntry {
 
 const VERDICT_AGENT_ROLES = new Set(['senior-reviewer', 'senior-tester']);
 
-export interface VerdictAgentConflict {
+interface VerdictAgentConflict {
   role: string;
   agentId: string;
   matchedId: string;

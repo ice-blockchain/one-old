@@ -3,7 +3,7 @@ import * as path from 'path';
 
 import { readText } from '../fsjson';
 
-export interface PlanMigrationResult {
+interface PlanMigrationResult {
   changed: boolean;
   migrated: string[];
   planPath: string;

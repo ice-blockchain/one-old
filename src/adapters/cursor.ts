@@ -265,4 +265,3 @@ export function makeCursorAdapter(): HostAdapter {
   };
 }
 
-export const cursorAdapter = makeCursorAdapter();

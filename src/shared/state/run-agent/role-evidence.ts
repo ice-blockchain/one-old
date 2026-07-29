@@ -24,7 +24,7 @@ export function transcriptThreadId(transcriptPath: unknown): string | null {
   return match ? (match[1] as string).toLowerCase() : null;
 }
 
-export type RoleEvidenceAuthority = 'authoritative' | 'explicit' | 'heuristic';
+type RoleEvidenceAuthority = 'authoritative' | 'explicit' | 'heuristic';
 
 export interface RoleEvidence {
   role: string;
@@ -76,7 +76,7 @@ export type RoleEvidenceResolution =
   | { kind: 'conflict'; candidates: RoleEvidence[] }
   | { kind: 'none' };
 
-export interface CodexSessionMetaIdentity {
+interface CodexSessionMetaIdentity {
   threadId: string | null;
   parentThreadId: string | null;
   role: RoleEvidenceResolution;

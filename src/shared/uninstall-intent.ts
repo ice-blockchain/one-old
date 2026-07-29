@@ -69,7 +69,7 @@ export function isUninstallTrafficOneIntent(prompt: unknown): boolean {
   return UNINSTALL_REQUEST.test(text);
 }
 
-export function uninstallScriptPath(): string {
+function uninstallScriptPath(): string {
   return path.join(pluginRoot(), 'scripts', 'traffic-one-uninstall.cjs');
 }
 

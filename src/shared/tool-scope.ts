@@ -19,7 +19,7 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-export interface ToolScopeTarget {
+interface ToolScopeTarget {
   path: string;
   directoryHint: boolean;
   source: 'workdir' | 'file-input' | 'patch' | 'command';
@@ -36,7 +36,7 @@ export interface ToolScopeTarget {
   evidence?: 'write' | 'transition' | 'relative-operand' | 'operand';
 }
 
-export interface ToolScopeResolution {
+interface ToolScopeResolution {
   rawCwd: string;
   base: string;
   targets: ToolScopeTarget[];
@@ -460,14 +460,8 @@ export function resolveToolScope(ctx: Ctx): ToolScopeResolution {
  * workdir remains in non-project space. Any target in a real project disables
  * stand-down so normal auth/model/plan enforcement evaluates that target.
  */
-export function toolScopeStandsDown(ctx: Ctx): boolean {
-  return resolveToolScope(ctx).standsDown;
-}
 
 export function resolveToolProjectRoot(ctx: Ctx): string {
   return resolveToolScope(ctx).projectRoot;
 }
 
-export function toolScopeTargets(ctx: Ctx): ToolScopeTarget[] {
-  return resolveToolScope(ctx).targets;
-}

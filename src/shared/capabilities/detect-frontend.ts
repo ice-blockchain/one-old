@@ -14,7 +14,7 @@ import {
   candidateWebRoots,
 } from './fs-probe';
 
-export interface FrontendFrameworkDetectionV1 {
+interface FrontendFrameworkDetectionV1 {
   frontend: string;
   hasWebUi: boolean;
   evidence: string[];

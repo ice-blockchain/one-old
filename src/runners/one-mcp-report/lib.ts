@@ -110,7 +110,7 @@ export function writeProjectState(cwd: string, state: unknown): void {
   });
 }
 
-export function shouldSkipFile(relPath: string, fileName: string): boolean {
+function shouldSkipFile(relPath: string, fileName: string): boolean {
   const normalized = relPath.replace(/\\/g, '/');
   if (SKIP_FILES.has(fileName)) return true;
   if (/\.(min|bundle)\.(js|css)$/i.test(fileName)) return true;
@@ -153,7 +153,7 @@ export function countLines(text: string | null): number {
   return text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length;
 }
 
-export function packageJsonFiles(cwd: string): string[] {
+function packageJsonFiles(cwd: string): string[] {
   const files: string[] = [];
   walkFiles(cwd, (absPath, relPath) => {
     if (path.basename(relPath) === 'package.json') files.push(absPath);

@@ -60,7 +60,7 @@ function migrateLegacyMachineSettings(cwd: string, env: NodeJS.ProcessEnv): void
   if (Object.keys(patch).length > 0) updateOneSettings(patch, env);
 }
 
-export function migrateLegacyProjectLocalTrafficOneState(
+function migrateLegacyProjectLocalTrafficOneState(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): boolean {

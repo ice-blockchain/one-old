@@ -203,7 +203,6 @@ if (require.main === module) {
 }
 
 export {
-  opencodeConfigDir,
   opencodeGlobalConfigPath,
   opencodeGlobalPluginPath,
   opencodeProjectMarkerPath,

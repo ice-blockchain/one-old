@@ -9,9 +9,9 @@
 // signal present, and an ambiguous prompt (no signal) resolves to `small`, NEVER
 // `trivial`. `confidence` tells the agent how much to trust the hint.
 
-export type ComplexityTier = 'trivial' | 'small' | 'complex';
+type ComplexityTier = 'trivial' | 'small' | 'complex';
 
-export interface TriageHint {
+interface TriageHint {
   tier: ComplexityTier;
   confidence: 'low' | 'high';
   signals: string[];

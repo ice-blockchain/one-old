@@ -30,7 +30,7 @@ import {
 type Rec = Record<string, unknown>;
 const which = exec.which;
 
-export interface OnboardingToolResult {
+interface OnboardingToolResult {
   tool: string;
   ok: boolean;
   action: string;
@@ -226,39 +226,12 @@ function formatResult(result: OnboardingToolResult): string | null {
   return `[toolchain] ${result.tool} install/upgrade failed: ${result.error || 'unknown error'}.`;
 }
 
-export function ensureOnboardingToolchainContext(cwd: string): string | null {
-  const state = readEffectiveState(cwd);
-  const results: OnboardingToolResult[] = [];
-
-  const provider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
-  if (provider === 'graphify') {
-    results.push(normalizeGraphifyResult(ensureGraphifyTool(cwd)));
-  } else if (provider === 'gitnexus') {
-    const result = ensureGitnexusTool(cwd);
-    results.push({
-      tool: 'gitnexus',
-      ok: result.ok,
-      action: result.action,
-      error: result.error,
-      binPath: result.gitnexusBin,
-      installedVersion: result.installedVersion,
-    });
-  }
-
-  const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
-  if (openCode?.enabled === true) {
-    results.push(ensureOpenCodeTool(cwd));
-  }
-
-  const lines = results.map(formatResult).filter((line): line is string => Boolean(line));
-  return lines.length > 0 ? lines.join('\n') : null;
-}
 
 // Probe-only check (no install) used by the wizard's verify-on-complete path so
 // a reopened/already-complete wizard can re-gate when a required tool is absent.
 // Reuses the ensure*Tool candidate probing via `skipInstall` so gitnexus is
 // probed through its Node-22 binary, not a bare PATH lookup.
-export interface OnboardingToolchainProbe {
+interface OnboardingToolchainProbe {
   provider: string | null;
   graphMissing: boolean;
   openCodeEnabled: boolean;

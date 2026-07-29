@@ -298,13 +298,6 @@ export function canPublishRunPolicyBootstraps(
   );
 }
 
-export function runRoleModelPolicy(
-  cwd: string,
-  runId: string,
-  role: string,
-): RunRoleModelPolicy | null {
-  return readRunModelPolicy(cwd, runId)?.roles[role] || null;
-}
 export {
   RUN_MODEL_POLICY_SCHEMA_VERSION,
   policyModelsForExpected,

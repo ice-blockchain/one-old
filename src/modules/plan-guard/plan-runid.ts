@@ -16,7 +16,7 @@ import { strayRunIdInText } from '../../shared/run-id-paths';
 type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
 
-export interface RunIdArgs {
+interface RunIdArgs {
   state: Rec;
   relTargets: string[];   // project-relative write targets (Write/Edit/apply_patch)
   command: string;        // raw shell command (catches `> .traffic-one/runs/<id>/…`)

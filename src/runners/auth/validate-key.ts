@@ -20,7 +20,7 @@ export type KeyValidation =
   | { ok: true }
   | { ok: false; reason: 'invalid-api-key' | 'auth-endpoint-unreachable'; error?: string };
 
-export interface ValidateApiKeyOptions {
+interface ValidateApiKeyOptions {
   endpoint?: string;
   timeoutMs?: number;
 }

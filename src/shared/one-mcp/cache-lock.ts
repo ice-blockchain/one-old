@@ -38,7 +38,7 @@ export interface CacheLock {
   ownerPath: string;
   token: string;
 }
-export interface CacheLockOwner {
+interface CacheLockOwner {
   ownerPath: string;
   token: string;
   pid: number;

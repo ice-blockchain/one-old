@@ -137,7 +137,7 @@ export function readRunHostCapability(
   );
 }
 
-export interface HostCapabilityObservation {
+interface HostCapabilityObservation {
   point?: string | null;
   event?: string;
   source?: string;

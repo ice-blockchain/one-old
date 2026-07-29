@@ -36,7 +36,7 @@ import {
 } from './locks';
 import { runCompletionEvidenceAllows } from './terminal-verdict';
 
-export const RUN_LEDGER_TRANSITION_HISTORY_LIMIT = 32;
+const RUN_LEDGER_TRANSITION_HISTORY_LIMIT = 32;
 
 export type RunLedgerStatus = 'planned' | 'active' | 'completed' | 'blocked' | 'failed';
 export type RunLedgerOutcome =
@@ -47,7 +47,7 @@ export type RunLedgerOutcome =
   | 'environment-blocked'
   | 'agent-failed';
 
-export interface RunLedgerTransitionOptions {
+interface RunLedgerTransitionOptions {
   status: RunLedgerStatus;
   outcome?: RunLedgerOutcome;
   reason?: string;
@@ -284,7 +284,7 @@ export function runIdentityFrozen(cwd: string, state: unknown): boolean {
   return status === 'planned' || status === 'active';
 }
 
-export const RUN_STACK_DRIFT_HISTORY_LIMIT = 8;
+const RUN_STACK_DRIFT_HISTORY_LIMIT = 8;
 
 // Record that detection now reports a different identity than the one this run
 // froze. Never rewrites `stackFingerprint` — the whole point is that the run

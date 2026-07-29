@@ -17,7 +17,7 @@ import {
   type RunAgentEntry,
 } from '../../shared/state';
 
-export interface CursorLivenessOptions {
+interface CursorLivenessOptions {
   corroborated: boolean;
   /** Immutable SubagentStart time, used when the registry row is absent. */
   startedAtMs?: number;

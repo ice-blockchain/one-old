@@ -12,13 +12,13 @@ import {
   type VerificationContractV2,
 } from '../verification-contract';
 
-export const QA_REPORT_V2_SCHEMA_VERSION = 2 as const;
+const QA_REPORT_V2_SCHEMA_VERSION = 2 as const;
 export const QA_BUILD_IDENTITY_PROBE_PATH = '/.traffic-one/qa-build-identity.json';
 export const QA_ACCEPTANCE_ATTESTATION_SCHEMA_VERSION = 1 as const;
 
-export type QaV2Status = 'passed' | 'failed' | 'blocked-environment';
+type QaV2Status = 'passed' | 'failed' | 'blocked-environment';
 
-export interface QaV2Check {
+interface QaV2Check {
   id: string;
   status: 'passed' | 'failed' | 'not-applicable';
   summary?: string;
@@ -62,16 +62,16 @@ export interface QaViewportV2 {
   screenshotPath?: string;
 }
 
-export interface QaRouteV2 {
+interface QaRouteV2 {
   route: string;
   viewports: QaViewportV2[];
 }
 
-export interface NativeQaEvidenceV2 {
+interface NativeQaEvidenceV2 {
   evidencePath: string;
 }
 
-export interface LighthouseEvidenceV2 {
+interface LighthouseEvidenceV2 {
   evidencePath: string;
 }
 
@@ -122,7 +122,7 @@ export type QaV2FailureCode =
   | 'native-evidence-invalid'
   | 'lighthouse-threshold-failed';
 
-export interface QaV2ValidationAccepted {
+interface QaV2ValidationAccepted {
   ok: true;
   report: QaReportV2;
   contract: VerificationContractV2;

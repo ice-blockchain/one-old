@@ -15,7 +15,7 @@ import { modelForRoleHost } from '../performance';
 import { readRunModelPolicy } from '../run-model-policy';
 import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
-export interface UnavailablePick {
+interface UnavailablePick {
   role: string;     // senior-<role>
   expected: string; // the tier-family model the user PICKED (e.g. gpt-5.6-terra)
   fallback: string; // the same-tier alternate the build DOES offer (e.g. claude-sonnet-5-thinking-high)

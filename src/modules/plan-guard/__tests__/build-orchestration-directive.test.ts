@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { buildOrchestrationDirective, shouldEmitArchitectCompletionReminder, shouldEmitBuildOrchestration } from '../build-orchestration-directive';
-import { writeArchitectPhaseComplete } from '../../modules/plan-guard/__tests__/architect-phase-fixtures';
+import { writeArchitectPhaseComplete } from '../../../shared/../modules/plan-guard/__tests__/architect-phase-fixtures';
 
 function withProject(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-build-orch-'));

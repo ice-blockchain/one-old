@@ -8,7 +8,6 @@ export {
   assignmentForContext,
   readRunAssignments,
   readRunAssignmentsResilient,
-  type AssignmentEntry,
   type RunManifest,
 } from './assignments';
 export {
@@ -35,7 +34,6 @@ export {
   hasRunAgentState,
   resolveRunAgentContext,
   type RunAgentContext,
-  type RunAgentUnresolvedDiagnosis,
 } from './context-resolve';
 export {
   claimCursorFollowupsBatch,
@@ -45,22 +43,15 @@ export {
   suppressCursorFollowupsBatch,
 } from './cursor-followups';
 export {
-  CURSOR_SPAWN_OBSERVATION_LIMIT,
   claimCursorSpawnObservation,
   cursorParentObservationSnapshot,
   cursorSpawnObservationForChild,
   listCursorSpawnObservations,
   recordCursorSpawnObservation,
-  type CursorChildFollowupSuppressionRequest,
   type CursorFollowupClaimRequest,
   type CursorFollowupSuppressionReason,
   type CursorFollowupSuppressionRequest,
-  type CursorParentFollowupSuppressionRequest,
-  type CursorParentObservationSnapshot,
   type CursorSpawnObservation,
-  type CursorSpawnObservationInput,
-  type CursorSpawnObservationOutcome,
-  type CursorSpawnObservationUpdate,
   updateCursorSpawnObservation,
 } from './cursor-observations';
 export {
@@ -76,15 +67,12 @@ export {
   reconcileRunIdentityDrift,
 } from './identity-drift';
 export {
-  RUN_LEDGER_TRANSITION_HISTORY_LIMIT,
-  RUN_STACK_DRIFT_HISTORY_LIMIT,
   ensureRunLedger,
   recordRunStackDrift,
   runIdentityFrozen,
   transitionRunStatus,
   type RunLedgerOutcome,
   type RunLedgerStatus,
-  type RunLedgerTransitionOptions,
 } from './ledger';
 export {
   REPLACE_AGENT_MARKER,
@@ -100,7 +88,6 @@ export {
   roleForRunSessionId,
   subagentContinuationAvailable,
   type RunAgentEntry,
-  type VerdictAgentConflict,
   verdictAgentConflict,
 } from './registry';
 export {
@@ -109,9 +96,7 @@ export {
   normalizeRoleIdentity,
   readCodexSessionMetaIdentity,
   transcriptThreadId,
-  type CodexSessionMetaIdentity,
   type RoleEvidence,
-  type RoleEvidenceAuthority,
   type RoleEvidenceResolution,
 } from './role-evidence';
 export {
@@ -129,12 +114,10 @@ export {
 export {
   hookSessionIdentity,
   isSubagentThread,
-  type SessionIdentity,
 } from './session-identity';
 export {
   runHasEnvironmentBlockedQaOutcome,
   runHasExplicitBlockedQaOutcome,
   runReachedTerminalVerdict,
   runVerificationState,
-  type RunVerificationState,
 } from './terminal-verdict';

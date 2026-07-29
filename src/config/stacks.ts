@@ -15,9 +15,6 @@ export const LEGACY_STACK_ALIASES: Readonly<Record<string, string>> = {
 };
 
 export const RN_STACKS = new Set(['react-native-expo-monorepo', 'react-native-expo-app']);
-export const WEB_STACKS = new Set([
-  'default', 'custom-frontend', 'custom-backend', 'custom-stack', 'react-realtime-monorepo', 'react-frontend-only',
-]);
 
 // Mutable feature flag read by pitchDeployLabel(); flip when our managed deploy lands.
 export const INFRA_CONFIG = { ourDeployConfigured: false };

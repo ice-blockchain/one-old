@@ -10,7 +10,7 @@ import { isLocallyAuthenticated } from './simple-auth';
 
 export { readSimpleAuth, isLocallyAuthenticated, writeSimpleAuth, clearAuthentication } from './simple-auth';
 
-export function isLoopbackHostname(hostname: string): boolean {
+function isLoopbackHostname(hostname: string): boolean {
   const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
   const ipVersion = net.isIP(host);
   // 0.0.0.0 is the wildcard address, not loopback. Keep the plaintext-HTTP

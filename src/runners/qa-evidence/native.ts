@@ -54,7 +54,7 @@ import {
   type NativeMachineResult,
 } from './native-process';
 
-export async function runXcodeNative(
+async function runXcodeNative(
   args: RunnerArgs,
   command: readonly string[],
   cwd: string,
@@ -106,7 +106,7 @@ export async function runXcodeNative(
   };
 }
 
-export async function runAndroidNative(
+async function runAndroidNative(
   args: RunnerArgs,
   command: readonly string[],
   cwd: string,

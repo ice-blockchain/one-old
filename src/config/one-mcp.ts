@@ -55,12 +55,12 @@ export const ONE_MCP_MAX_PAYLOAD_DEPTH = 32;
 // runtime and would make a published config diverge from the reviewed policy.
 export const ONE_MCP_MAX_MODELS_PER_TIER = 4;
 export const ONE_MCP_MAX_AVAILABLE_MODELS = 256;
-export const ONE_MCP_MAX_MODEL_ID_LENGTH = 256;
+const ONE_MCP_MAX_MODEL_ID_LENGTH = 256;
 // Remote model identifiers are rendered in hook-owned agent context. Keep the
 // accepted alphabet deliberately structural: no whitespace, Markdown syntax,
 // controls, bidi markers, or other Unicode prose can cross this boundary.
-export const ONE_MCP_MODEL_ID_RE = /^(?=.*[A-Za-z0-9])[A-Za-z0-9._:+/@-]+$/;
-export const ONE_MCP_WINDSURF_MODEL_ID_RE = /^(?=.*[A-Za-z0-9])[A-Za-z0-9._:+/@ -]+$/;
+const ONE_MCP_MODEL_ID_RE = /^(?=.*[A-Za-z0-9])[A-Za-z0-9._:+/@-]+$/;
+const ONE_MCP_WINDSURF_MODEL_ID_RE = /^(?=.*[A-Za-z0-9])[A-Za-z0-9._:+/@ -]+$/;
 
 export function isSafeOneMcpModelId(value: unknown, host?: HostModelKey): value is string {
   return typeof value === 'string'

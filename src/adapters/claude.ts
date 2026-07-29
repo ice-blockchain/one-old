@@ -113,5 +113,4 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
   };
 }
 
-export const claudeAdapter = makeClaudeAdapter('claude');
 export const codexAdapter = makeClaudeAdapter('codex');

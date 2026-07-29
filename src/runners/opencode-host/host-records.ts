@@ -1,38 +1,45 @@
 // src/runners/opencode-host/host-records.ts
-// Owner/activation records + config paths. runtimePluginRoot resolves the
-// compiled layout via __dirname/../../.. -- this file must stay a sibling
-// of index.ts at the same directory depth.
+// OpenCode paths + typed owner/activation wrappers over the shared machinery
+// in shared/host/wrapper-records. runtimePluginRoot resolves the compiled
+// layout via __dirname/../../.. -- this file must stay a sibling of index.ts
+// at the same directory depth.
 
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { pathToFileURL } from 'url';
 import {
-  OPENCODE_HOOK_CHAT_MESSAGE,
-  OPENCODE_HOOK_SYSTEM_TRANSFORM,
-  OPENCODE_HOOK_TOOL_AFTER,
-  OPENCODE_HOOK_TOOL_BEFORE,
-  OPENCODE_HOST_GLOBAL_CONFIG_DIR_REL,
   OPENCODE_HOST_GLOBAL_CONFIG_DEFAULT_FILE,
+  OPENCODE_HOST_GLOBAL_CONFIG_DIR_REL,
   OPENCODE_HOST_GLOBAL_CONFIG_FILES,
   OPENCODE_HOST_GLOBAL_PLUGIN_FILE,
-  OPENCODE_HOST_GLOBAL_PLUGIN_ID,
   OPENCODE_HOST_GLOBAL_PLUGINS_REL,
   OPENCODE_HOST_PACKAGE,
   OPENCODE_HOST_PROJECT_MARKER_REL,
   OPENCODE_HOST_TARGET_VERSION,
 } from '../../config/opencode-host';
+import {
+  buildActivationRecord,
+  buildOwnerRecord,
+  homeDir,
+  readActivationRecord,
+  readOwnerRecord,
+  type WrapperRecordSpec,
+} from '../../shared/host/wrapper-records';
 
-export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
+export {
+  explicitCwdArg,
+  jsString,
+  projectRootFromArgs,
+  type RunnerOutput,
+} from '../../shared/host/wrapper-records';
 
-const OWNER_NAME = 'traffic-one';
-const OWNER_RE = /TRAFFIC_ONE_WRAPPER_OWNER\s*=\s*(\{[^\n]+});/;
+const SPEC: WrapperRecordSpec = {
+  targetField: 'targetOpenCode',
+  targetVersion: OPENCODE_HOST_TARGET_VERSION,
+  packageName: OPENCODE_HOST_PACKAGE,
+};
 
-function homeDir(env: NodeJS.ProcessEnv): string {
-  return env.HOME || env.USERPROFILE || os.homedir();
-}
-
-export function opencodeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+function opencodeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.XDG_CONFIG_HOME) return path.join(env.XDG_CONFIG_HOME, 'opencode');
   return path.join(homeDir(env), OPENCODE_HOST_GLOBAL_CONFIG_DIR_REL);
 }
@@ -79,95 +86,25 @@ interface ProjectActivationRecord {
 }
 
 export function ownerRecord(pluginRoot: string): OwnerRecord {
-  return {
-    owner: OWNER_NAME,
-    version: 1,
-    pluginRoot,
-    targetOpenCode: OPENCODE_HOST_TARGET_VERSION,
-    packageName: OPENCODE_HOST_PACKAGE,
-    installedAt: new Date().toISOString(),
-  };
+  return buildOwnerRecord(SPEC, pluginRoot) as unknown as OwnerRecord;
 }
 
 export function projectActivationRecord(pluginRoot: string): ProjectActivationRecord {
-  return {
-    owner: OWNER_NAME,
-    version: 1,
-    pluginRoot,
-    targetOpenCode: OPENCODE_HOST_TARGET_VERSION,
-    packageName: OPENCODE_HOST_PACKAGE,
-    enabled: true,
-    enabledAt: new Date().toISOString(),
-  };
+  return buildActivationRecord(SPEC, pluginRoot, true) as unknown as ProjectActivationRecord;
 }
 
 export function projectDisabledRecord(pluginRoot: string): ProjectActivationRecord {
-  return {
-    owner: OWNER_NAME,
-    version: 1,
-    pluginRoot,
-    targetOpenCode: OPENCODE_HOST_TARGET_VERSION,
-    packageName: OPENCODE_HOST_PACKAGE,
-    enabled: false,
-    disabledAt: new Date().toISOString(),
-  };
+  return buildActivationRecord(SPEC, pluginRoot, false) as unknown as ProjectActivationRecord;
 }
 
 export function readOwner(filePath: string): OwnerRecord | null {
-  try {
-    const body = fs.readFileSync(filePath, 'utf8');
-    const match = body.match(OWNER_RE);
-    if (!match || !match[1]) return null;
-    const parsed = JSON.parse(match[1]) as unknown;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const rec = parsed as Record<string, unknown>;
-    if (rec.owner !== OWNER_NAME || rec.version !== 1 || typeof rec.pluginRoot !== 'string') return null;
-    return {
-      owner: OWNER_NAME,
-      version: 1,
-      pluginRoot: rec.pluginRoot,
-      targetOpenCode: typeof rec.targetOpenCode === 'string' ? rec.targetOpenCode : '',
-      packageName: typeof rec.packageName === 'string' ? rec.packageName : '',
-      ...(typeof rec.installedAt === 'string' ? { installedAt: rec.installedAt } : {}),
-    };
-  } catch {
-    return null;
-  }
+  return readOwnerRecord(SPEC, filePath) as unknown as OwnerRecord | null;
 }
 
 export function readProjectActivation(filePath: string): ProjectActivationRecord | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const rec = parsed as Record<string, unknown>;
-    if (rec.owner !== OWNER_NAME || rec.version !== 1 || typeof rec.pluginRoot !== 'string') return null;
-    return {
-      owner: OWNER_NAME,
-      version: 1,
-      pluginRoot: rec.pluginRoot,
-      targetOpenCode: typeof rec.targetOpenCode === 'string' ? rec.targetOpenCode : '',
-      packageName: typeof rec.packageName === 'string' ? rec.packageName : '',
-      ...(typeof rec.enabled === 'boolean' ? { enabled: rec.enabled } : {}),
-      ...(typeof rec.enabledAt === 'string' ? { enabledAt: rec.enabledAt } : {}),
-      ...(typeof rec.disabledAt === 'string' ? { disabledAt: rec.disabledAt } : {}),
-    };
-  } catch {
-    return null;
-  }
+  return readActivationRecord(SPEC, filePath) as unknown as ProjectActivationRecord | null;
 }
 
 export function opencodeProjectMarkerPath(projectRoot: string): string {
   return path.join(path.resolve(projectRoot), OPENCODE_HOST_PROJECT_MARKER_REL);
-}
-
-export function explicitCwdArg(args: readonly string[]): string | null {
-  const eq = args.find((arg) => arg.startsWith('--cwd='));
-  if (eq) return eq.slice('--cwd='.length);
-  const index = args.indexOf('--cwd');
-  if (index >= 0 && typeof args[index + 1] === 'string') return args[index + 1] as string;
-  return null;
-}
-
-export function projectRootFromArgs(env: NodeJS.ProcessEnv, args: readonly string[]): string {
-  return path.resolve(explicitCwdArg(args) || env.PWD || process.cwd());
 }

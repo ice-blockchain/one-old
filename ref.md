@@ -41,10 +41,15 @@ folders: `shared/one-mcp/`, `shared/opencode-plan/`, `shared/opencode-queue/`,
 `shared/run-bootstrap-policy/`, `shared/architecture-contract/`,
 `shared/capabilities/`, `shared/state/run-agent/`, `shared/state/local-prefs/`,
 `modules/plan-guard/{plan-readiness,plan-write,react-structure}/`.
-Documented exceptions above 500: `modules/agent-model/handler.ts` (one
-692-line gate function), `runners/kilo-host/wrapper-source.ts` (a single
-emitted template literal), and dev tooling under `src/test-environment/` +
-`src/build/compiled-smoke.ts`.
+`agentModelGate` runs as a prologue in `modules/agent-model/handler.ts` plus
+three extracted phases sharing a `GateContext`
+(`gate-opencode-first`/`gate-reuse`/`gate-enforcement`). The kilo/opencode
+host runners share their JSONC + owner-record machinery via
+`shared/host/wrapper-{jsonc,records}.ts`; per-host disk formats (`targetKilo`
+vs `targetOpenCode`) and the `__dirname`-depth-sensitive `runtimePluginRoot`
+stay in each runner. Documented exceptions above 500:
+`runners/kilo-host/wrapper-source.ts` (a single emitted template literal) and
+dev tooling under `src/test-environment/` + `src/build/compiled-smoke.ts`.
 
 ## Inventory Summary
 

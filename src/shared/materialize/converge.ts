@@ -48,7 +48,7 @@ export interface MaterializeOutcome {
   result: MaterializeResult | null;
 }
 
-export interface ConvergeOptions {
+interface ConvergeOptions {
   trigger?: string;
   // Fire-and-forget one-mcp first-look reporter; injected so shared/ stays
   // free of the runner layer. Defaults to a no-op.

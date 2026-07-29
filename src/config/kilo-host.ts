@@ -20,9 +20,9 @@ export const KILO_HOOK_SHELL_ENV = 'shell.env';
 export const KILO_HOOK_PERMISSION_ASK = 'permission.ask';
 export const KILO_HOOK_EVENT = 'event';
 
-export const KILO_HOST_PROJECT_DIR = '.kilo';
-export const KILO_HOST_AGENTS_DIR = 'agents';
-export const KILO_HOST_PROJECT_MARKER_FILE = 'traffic-one.json';
+const KILO_HOST_PROJECT_DIR = '.kilo';
+const KILO_HOST_AGENTS_DIR = 'agents';
+const KILO_HOST_PROJECT_MARKER_FILE = 'traffic-one.json';
 export const KILO_HOST_AGENTS_REL = `${KILO_HOST_PROJECT_DIR}/${KILO_HOST_AGENTS_DIR}`;
 export const KILO_HOST_PROJECT_MARKER_REL = `${KILO_HOST_PROJECT_DIR}/${KILO_HOST_PROJECT_MARKER_FILE}`;
 

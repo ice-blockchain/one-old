@@ -125,7 +125,7 @@ export function scanAppSecurity(cwd: string, textFiles: TextFile[], report: Scan
   }
 }
 
-export function scanSupplyChain(cwd: string, textFiles: TextFile[], report: ScanReport): void {
+function scanSupplyChain(cwd: string, textFiles: TextFile[], report: ScanReport): void {
   const pkg = readPackageJson(cwd);
   if (!pkg) return;
   const lockfiles = ['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lockb', 'bun.lock'];
@@ -171,7 +171,7 @@ export function scanSupplyChain(cwd: string, textFiles: TextFile[], report: Scan
   runPackageAudit(cwd, presentLockfiles, report);
 }
 
-export function runPackageAudit(cwd: string, presentLockfiles: string[], report: ScanReport): void {
+function runPackageAudit(cwd: string, presentLockfiles: string[], report: ScanReport): void {
   if (presentLockfiles.length === 0) return;
   let command = 'npm';
   let args = ['audit', '--omit=dev', '--json'];

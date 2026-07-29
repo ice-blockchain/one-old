@@ -20,7 +20,7 @@ import {
   reconcileAllRunningUnits,
 } from '../opencode-queue';
 
-export interface PlanBatchUnit {
+interface PlanBatchUnit {
   id?: string;
   role: string;
   task?: string;
@@ -112,21 +112,6 @@ export function buildBatchResultFromUnitStatuses(projectRoot: string, runId: str
   return { total: units.length, delegated, units };
 }
 
-export function allOpenCodePlanUnitsTerminal(cwd: string, runId: string): boolean {
-  if (!runId) return false;
-  if (planDelegationQueueRolesForRun(cwd, runId).length === 0) return false;
-  const queue = readOpenCodeQueue(cwd, runId);
-  if (!queue || queue.units.length === 0) return false;
-  const statuses = readOpenCodeUnitStatuses(cwd, runId);
-  return queue.units.every((q) => {
-    const s = statuses.find((x) => x.id === q.id);
-    if (!s) return false;
-    if (s.status === 'running' || s.action === 'running') return false;
-    const status = s.status || '';
-    const action = s.action || '';
-    return TERMINAL_UNIT_STATUSES.has(status) || TERMINAL_UNIT_STATUSES.has(action);
-  });
-}
 
 /** Sole terminal writer shared by MCP and shell paths. */
 export function finalizePlanBatch(projectRoot: string, runId: string, merged: PlanBatchResult): PlanBatchResult {

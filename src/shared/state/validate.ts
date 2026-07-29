@@ -73,7 +73,7 @@ export function hasTechnologyArrays(technologies: unknown): boolean {
   return Boolean(t && Array.isArray(t.frontend) && Array.isArray(t.backend) && Array.isArray(t.mobile));
 }
 
-export function hasValidMobileState(mobile: unknown): boolean {
+function hasValidMobileState(mobile: unknown): boolean {
   const m = asObject(mobile);
   return Boolean(m
     && typeof m.enabled === 'boolean'

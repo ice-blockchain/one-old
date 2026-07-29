@@ -23,7 +23,7 @@ export function hasValidHookObjectPayload(stdin: string): boolean {
 }
 
 type HookRecord = Record<string, unknown>;
-export type PreToolPayloadSurface = 'nested' | 'wrapper' | 'cursor' | 'copilot' | 'windsurf';
+type PreToolPayloadSurface = 'nested' | 'wrapper' | 'cursor' | 'copilot' | 'windsurf';
 
 function hookRecord(stdin: string): HookRecord | null {
   try {

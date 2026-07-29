@@ -13,7 +13,7 @@ import type { Stats } from './lib';
 
 type Rec = Record<string, unknown>;
 
-export interface CursorSqliteTarget {
+interface CursorSqliteTarget {
   id: string;
   cwd: string;
   dbPath: string;
@@ -22,7 +22,7 @@ export interface CursorSqliteTarget {
   sourceType?: 'cursor';
 }
 
-export interface CursorEstimate {
+interface CursorEstimate {
   dbPath: string;
   rowsScanned: number;
   matchedRows: number;
@@ -31,7 +31,7 @@ export interface CursorEstimate {
   warnings: string[];
 }
 
-export function defaultCursorSqlitePaths(env: NodeJS.ProcessEnv = process.env): string[] {
+function defaultCursorSqlitePaths(env: NodeJS.ProcessEnv = process.env): string[] {
   const out: string[] = [];
   if (env.TRAFFIC_ONE_CURSOR_STATE_DB) out.push(env.TRAFFIC_ONE_CURSOR_STATE_DB);
   const home = os.homedir();

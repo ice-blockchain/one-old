@@ -43,7 +43,7 @@ export function wizardOpened(
 // Should this message carry the loopback wizard alongside the hosted link?
 // Absent verdict (probe still in flight, or never ran) → yes: the safe default
 // never strands a user on a page that will not load.
-export function needsLocalFallback(
+function needsLocalFallback(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   host?: unknown,

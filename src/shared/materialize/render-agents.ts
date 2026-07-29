@@ -212,7 +212,7 @@ export function renderAgentsWithLocalContext(cwd: string, state: Rec, rules: str
   return [base, '', '## Preserved Project Notes', '', ...localBlocks, ''].join('\n');
 }
 
-export function renderClaudeFallback(): string {
+function renderClaudeFallback(): string {
   return `${['# Traffic One Claude Context', '', GENERATED_MARKER, '', 'Read the canonical root agent context:', '', '@AGENTS.md', ''].join('\n')}\n`;
 }
 

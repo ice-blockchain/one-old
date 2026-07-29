@@ -223,7 +223,7 @@ function stackLabel(state: Rec): string {
   return `${(state.stack as string) || 'minimal'} stack · frontend:${(state.frontend as string) || 'none'} · backend:${(state.backend as string) || 'none'}${mobile}`;
 }
 
-export interface RuleManifest {
+interface RuleManifest {
   label: string;
   mandatory: string[];
   optional: string[];

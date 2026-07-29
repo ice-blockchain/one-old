@@ -10,7 +10,7 @@ import { readQaReportV1 } from './qa-report';
 import { readQaReportV2 } from './qa-report-v2';
 import { readVerificationContract } from './verification-contract';
 
-export interface StrictVerificationEvidence {
+interface StrictVerificationEvidence {
   ok: boolean;
   incompleteChecks: string[];
   evidenceKind: 'v2' | 'v1' | 'legacy';

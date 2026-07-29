@@ -14,13 +14,13 @@ const STORE_FILE = 'codex-model-observations.json';
 const LOCK_TIMEOUT_MS = 1_000;
 const LOCK_STALE_MS = 10_000;
 
-export type CodexModelObservationStatus = 'pending-role' | 'verified' | 'mismatch' | 'conflict';
+type CodexModelObservationStatus = 'pending-role' | 'verified' | 'mismatch' | 'conflict';
 
 // A verified row whose reason carries this prefix accepted ONE host continuation
 // on a different model than its anchor (see evaluate()). Readers that compare the
 // hook's model against the anchor must consult this, or a tolerated continuation
 // looks like an identity mismatch and wedges the child.
-export const CONTINUATION_REASON_PREFIX = 'continuation-on-';
+const CONTINUATION_REASON_PREFIX = 'continuation-on-';
 
 export function continuationModelOf(observation: CodexModelObservation | null | undefined): string | null {
   const reason = observation?.reason;

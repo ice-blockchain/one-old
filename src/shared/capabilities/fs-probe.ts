@@ -153,7 +153,7 @@ export function candidateWebRoots(cwd: string): string[] {
   return unique([...conventional, ...workspace, '.']);
 }
 
-export function workspaceChildren(cwd: string, container: 'apps' | 'packages'): string[] {
+function workspaceChildren(cwd: string, container: 'apps' | 'packages'): string[] {
   try {
     return fs.readdirSync(path.join(cwd, container), { withFileTypes: true })
       .filter((entry) => entry.isDirectory())

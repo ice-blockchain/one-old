@@ -15,7 +15,7 @@ import {
   transcriptThreadId,
 } from './role-evidence';
 
-export interface SessionIdentity {
+interface SessionIdentity {
   sessionId: string | null;
   parentSessionId: string | null;
   isSubagent: boolean;

@@ -80,7 +80,7 @@ function inside(candidate: string, boundary: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-export function hashFile(filePath: string): string {
+function hashFile(filePath: string): string {
   const hash = createHash('sha256');
   const fd = fs.openSync(filePath, 'r');
   const chunk = Buffer.allocUnsafe(1024 * 1024);

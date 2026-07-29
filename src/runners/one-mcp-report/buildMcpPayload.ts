@@ -4,7 +4,7 @@
 
 import { ONE_MCP_REPORT_TOOL } from '../../config/one-mcp';
 
-export interface ReportMcpPayload extends Record<string, unknown> {
+interface ReportMcpPayload extends Record<string, unknown> {
   readonly jsonrpc: '2.0';
   readonly id: 1;
   readonly method: 'tools/call';

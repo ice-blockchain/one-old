@@ -12,7 +12,7 @@ export const INSTALL_RE = /(npm (install|i|add)|yarn add|pnpm add|bun add)/;
 type Rec = Record<string, unknown>;
 type Rule = [string, string];
 
-export function packageJsonHasNext(cwd: string): boolean {
+function packageJsonHasNext(cwd: string): boolean {
   return Boolean(dependenciesFromPackage(loadPackageJson(cwd)).next);
 }
 
@@ -20,7 +20,7 @@ export function allowsNextjs(state: Rec, cwd: string): boolean {
   return state.frontend === 'nextjs' || packageJsonHasNext(cwd);
 }
 
-export function stateFromStackForAllowlist(stackOrState: unknown): Rec {
+function stateFromStackForAllowlist(stackOrState: unknown): Rec {
   if (stackOrState && typeof stackOrState === 'object') return stackOrState as Rec;
   const stack = typeof stackOrState === 'string' ? stackOrState : null;
   if (stack === 'react-native-expo-monorepo' || stack === 'react-native-expo-app') {

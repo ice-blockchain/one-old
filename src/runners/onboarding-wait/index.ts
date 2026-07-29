@@ -273,5 +273,4 @@ export {
   applyReconsiderChoice,
   beginOnboardingAttempt,
   consentPhaseFailureOutput,
-  syncOneMcpBeforeOnboarding,
 } from './consent';

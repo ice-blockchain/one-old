@@ -50,7 +50,7 @@ import {
 import { delegate } from './index';
 import { normalizePlanRole } from './diff-policy';
 
-export interface PlanDelegationResult {
+interface PlanDelegationResult {
   total: number;
   delegated: number;
   units: Array<{ id?: string; role: string; task: string; action: DelegateResult['action']; status?: string; touched: string[]; model?: string; failureKind?: FailureKind | null; error?: string | null }>;

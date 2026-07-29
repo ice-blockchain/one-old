@@ -7,7 +7,7 @@
 // never reaches traffic.io's servers/logs. Override the base per-process with
 // TRAFFIC_ONE_DASHBOARD_URL (e.g. http://localhost:3000 for dashboard dev).
 
-export const DEFAULT_DASHBOARD_URL = 'https://traffic.io';
+const DEFAULT_DASHBOARD_URL = 'https://traffic.io';
 
 // Base dashboard origin, trailing slash stripped. Never throws: a malformed
 // override still returns a usable string.
@@ -20,7 +20,7 @@ export function dashboardUrlFromEnv(env: NodeJS.ProcessEnv = process.env): strin
 // to the dashboard server). Returns '' for the not-yet-listening placeholder
 // (port 0 / missing token) so callers can guard on a non-empty string instead of
 // leaking a ':0/pending'-style URL.
-export function agentOnboardingUrl(
+function agentOnboardingUrl(
   env: NodeJS.ProcessEnv,
   port: number,
   token: string,
@@ -52,7 +52,7 @@ export function dashboardProbeUrl(env: NodeJS.ProcessEnv = process.env): string 
   return `${dashboardUrlFromEnv(env)}/onboarding/agent`;
 }
 
-export interface AgentOnboardingUrls {
+interface AgentOnboardingUrls {
   /** Hosted dashboard entry shown to the user first. */
   dashboardUrl: string;
   /** Direct loopback wizard. This must never point at the redirecting root. */

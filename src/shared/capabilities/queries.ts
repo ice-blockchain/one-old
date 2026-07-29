@@ -27,9 +27,6 @@ export function profileHasNativeUi(profile: CapabilityProfileV1): boolean {
   return profile.surfaces.includes('native-ui');
 }
 
-export function eligibleRolesForProject(cwd: string, input: unknown): Set<string> {
-  return new Set(capabilityProfileForProject(cwd, input).roles);
-}
 
 export function eligibleRolesForProfile(profile: CapabilityProfileV1): Set<string> {
   return new Set(profile.roles);

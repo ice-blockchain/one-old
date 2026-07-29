@@ -11,7 +11,7 @@ import { nowIsoNoMs } from '../../shared/text';
 type Rec = Record<string, unknown>;
 
 // Back-compat alias: the canonical predicate now lives in shared/config.
-export const isKnownStackName = isKnownStack;
+const isKnownStackName = isKnownStack;
 
 export function isCompletedTrafficOneMaterialization(cwd: string, state: Rec): boolean {
   return Boolean(

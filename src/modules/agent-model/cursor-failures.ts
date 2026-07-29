@@ -417,7 +417,7 @@ export function correlatedCursorFailureGate(
 
 // Called only after a real SubagentStart, which is the proof that a prescribed
 // model actually ran. PreToolUse acceptance alone never settles a retry.
-export interface CursorRetryStart {
+interface CursorRetryStart {
   parentSessionId: string;
   role: string;
   startedToolCallId: string;

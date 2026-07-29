@@ -126,7 +126,7 @@ export function annotateClaimRoleSource(
   return locked ? result : null;
 }
 
-export interface RunAgentUnresolvedDiagnosis {
+interface RunAgentUnresolvedDiagnosis {
   reason: RunAgentUnresolvedReason;
   runId?: string;
   role?: string;

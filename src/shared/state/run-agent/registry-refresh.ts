@@ -144,7 +144,7 @@ export function markRunAgentReplacedIfMatches(
   });
   return replaced;
 }
-export function markRunAgentReplacedUnlocked(cwd: string, runId: string, role: string): void {
+function markRunAgentReplacedUnlocked(cwd: string, runId: string, role: string): void {
   const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
   const agents = obj(registry.agents) || {};
   const entry = obj(agents[role]);

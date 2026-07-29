@@ -123,7 +123,6 @@ export function readEffectiveState(cwd: string, env: NodeJS.ProcessEnv = process
 
 export {
   LOCAL_PREF_KEYS,
-  type PerformanceTarget,
 } from './pref-schema';
 export {
   PROJECT_PREFS_LOCK_TIMEOUT_MS,

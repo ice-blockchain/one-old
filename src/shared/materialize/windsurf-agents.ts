@@ -22,7 +22,7 @@ function yamlString(value: string): string {
   return JSON.stringify(value.replace(/\n+/g, ' ').trim());
 }
 
-export function isGeneratedWindsurfAgent(filePath: string): boolean {
+function isGeneratedWindsurfAgent(filePath: string): boolean {
   const text = readText(filePath);
   return typeof text === 'string' && text.includes(WINDSURF_AGENT_MARKER);
 }

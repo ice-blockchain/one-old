@@ -31,12 +31,12 @@ import { serverRecordPath } from './registry';
 // first connection (DNS + TLS, no cache) took >2s on a healthy traffic.io that
 // answers in ~100ms warm, so a tight timeout reported a perfectly good dashboard as
 // unhealthy and printed a second URL nobody needed.
-export const DASHBOARD_PROBE_TIMEOUT_MS = 8000;
+const DASHBOARD_PROBE_TIMEOUT_MS = 8000;
 
 // How long a NON-hook surface (the bootstrap runner) may wait for the detached
 // server's verdict before falling back to showing both links. Bounded hard: the
 // setup link matters far more than which URLs accompany it.
-export const DASHBOARD_VERDICT_WAIT_MS = 2500;
+const DASHBOARD_VERDICT_WAIT_MS = 2500;
 const VERDICT_POLL_MS = 50;
 
 interface DashboardVerdictFile {
@@ -114,7 +114,7 @@ export function awaitDashboardHealth(
   }
 }
 
-export type ProbeRequest = typeof https.request;
+type ProbeRequest = typeof https.request;
 
 // Resolves 'unhealthy' for every transport failure (DNS, TLS, timeout, offline):
 // a page the user's machine cannot reach is exactly as unusable as a 404, and

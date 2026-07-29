@@ -145,7 +145,7 @@ function reapAbandonedEmptyLock(lockPath: string, now: number): boolean {
   }
 }
 
-export function projectStateLockPath(cwd: string): string {
+function projectStateLockPath(cwd: string): string {
   return `${path.join(path.resolve(cwd), STATE_FILE)}.report-id.lock`;
 }
 

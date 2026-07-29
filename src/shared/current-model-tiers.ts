@@ -27,9 +27,9 @@ import {
   parseOneMcpModelConfigPayload,
 } from './one-mcp';
 
-export type CurrentHostModelSource = 'one-mcp' | 'bundled';
+type CurrentHostModelSource = 'one-mcp' | 'bundled';
 
-export interface CurrentHostModelTarget {
+interface CurrentHostModelTarget {
   readonly snapshot: HostModelSnapshot;
   readonly payloadFingerprint: string;
   readonly appliedFingerprint: string;
@@ -123,7 +123,7 @@ export function currentModelForTier(
   return currentModelsForTier(tierInput, hostInput, planInput, env)[0] ?? null;
 }
 
-export interface TierFallbackRequest {
+interface TierFallbackRequest {
   /** The role's tier at the time the failed subagent was started. */
   readonly tier: TierId;
   /** Models already proven API-limited for this role in the current run. */
@@ -138,7 +138,7 @@ export interface TierFallbackRequest {
   readonly capturedModels?: readonly string[];
 }
 
-export interface TierFallbackCandidate {
+interface TierFallbackCandidate {
   /** Family entry from the configured tier row. */
   readonly family: string;
   /** Exact runnable slug (or the family itself when no capture is supplied). */
@@ -220,18 +220,3 @@ export function currentAcceptableModels(
 // Cursor slug resolution happens at spawn time). '' when the row offers no untried
 // same-tier model. Shared by the PreToolUse spawn gate (the only rotation point on
 // Cursor, which emits no post-spawn stop event) and the PostToolUse stop recorder.
-export function nextSameTierFallback(
-  exhausted: unknown,
-  hostInput: unknown,
-  planInput: unknown,
-  alsoExhausted: readonly string[] = [],
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const model = typeof exhausted === 'string' ? exhausted.trim() : '';
-  if (!model) return '';
-  const row = currentAcceptableModels(model, hostInput, planInput, env);
-  const isExhausted = (candidate: string): boolean =>
-    modelMatchesExpected(model, candidate)
-    || alsoExhausted.some((x) => modelMatchesExpected(x, candidate) || modelMatchesExpected(candidate, x));
-  return row.find((entry) => !isExhausted(entry)) || '';
-}

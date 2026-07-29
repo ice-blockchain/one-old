@@ -4,7 +4,7 @@
 
 import { paidFallbackCompletionFromMaintenance } from './fallback-proof';
 
-export const MAINTENANCE_TERMINAL_OUTCOMES = new Set([
+const MAINTENANCE_TERMINAL_OUTCOMES = new Set([
   'success',
   'completed',
   'verified',

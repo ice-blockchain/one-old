@@ -1,4 +1,4 @@
-// src/shared/build-orchestration-directive.ts
+// src/modules/plan-guard/build-orchestration-directive.ts
 // Post-setup build-start directive for OpenCode/Kilo hosts: the orchestrator must
 // spawn senior-architect via the host task tool BEFORE any feature-source or
 // monorepo scaffold writes. OpenCode exposes the materialized named role agents;
@@ -8,16 +8,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { architectPhaseIncompleteReasons } from '../modules/plan-guard/plan-readiness';
-import { capabilityProfileForRun } from './architecture-contract';
-import type { CapabilityProfileV1 } from './capabilities';
-import { canonicalHost } from './model-tiers';
-import { obj, type Rec } from './obj';
-import { pluginRoot } from './paths';
-import { teamModeForLevel } from './performance';
-import { makeSkillBlock } from './skill-block';
-import { ensureCurrentRunId, isMaintenancePhase, readEffectiveState } from './state';
-import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from './materialize/opencode-assets';
+import { architectPhaseIncompleteReasons } from './plan-readiness';
+import { capabilityProfileForRun } from '../../shared/architecture-contract';
+import type { CapabilityProfileV1 } from '../../shared/capabilities';
+import { canonicalHost } from '../../shared/model-tiers';
+import { obj, type Rec } from '../../shared/obj';
+import { pluginRoot } from '../../shared/paths';
+import { teamModeForLevel } from '../../shared/performance';
+import { makeSkillBlock } from '../../shared/skill-block';
+import { ensureCurrentRunId, isMaintenancePhase, readEffectiveState } from '../../shared/state';
+import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (

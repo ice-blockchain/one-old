@@ -128,7 +128,7 @@ import {
 } from './contracts';
 import { digestCompletionGates } from './completion';
 
-export interface ReadinessArgs {
+interface ReadinessArgs {
   filePath: string;          // project-relative target path
   content: string;           // write content (Write.content / Edit.new_string)
   // False when the target was inferred from a shell command whose write payload
@@ -494,6 +494,5 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
 
 export {
   architectPhaseIncompleteReasons,
-  architectPlanReadyOnDisk,
   isArchitectPhaseComplete,
 } from './contracts';

@@ -7,7 +7,7 @@ import * as path from 'path';
 
 import { templatePath } from './stacks/template-path';
 
-export interface PackResult {
+interface PackResult {
   body: string;
   included: string[];
 }

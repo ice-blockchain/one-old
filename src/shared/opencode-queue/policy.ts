@@ -125,7 +125,7 @@ export function openCodeQueuePolicyViolations(
   return openCodeQueuePolicyReport(units, options).violations;
 }
 
-export interface OpenCodeQueuePolicyReport {
+interface OpenCodeQueuePolicyReport {
   violations: string[];
   byUnitId: Map<string, string[]>;
 }

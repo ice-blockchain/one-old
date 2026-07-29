@@ -177,4 +177,3 @@ export function makeWindsurfAdapter(): HostAdapter {
   };
 }
 
-export const windsurfAdapter = makeWindsurfAdapter();

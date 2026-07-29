@@ -42,7 +42,7 @@ import {
 // so the gate can never hard-deadlock. Roles here are free-form (NOT validated against
 // VALID_AGENT_ROLES) so future streams (e.g. senior-mobile) are purely additive.
 
-export interface AssignmentEntry {
+interface AssignmentEntry {
   role: string;
   agentKey?: string;
   summary?: string;

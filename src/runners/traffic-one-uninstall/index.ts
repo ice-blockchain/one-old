@@ -43,7 +43,7 @@ export interface Step { label: string; ok: boolean; detail: string }
 const PLUGIN_NAME = 'traffic-one';
 const WINDSURF_CHANNELS = ['stable', 'next', 'insiders'] as const;
 
-export interface PluginInstall {
+interface PluginInstall {
   host: 'claude' | 'codex' | 'cursor';
   cli: string | null;
   marketplace: string;
@@ -161,7 +161,7 @@ function hostStep(label: string, result: RunnerOutput): Step {
   };
 }
 
-export interface UninstallOptions {
+interface UninstallOptions {
   dryRun: boolean;
   keepPlugin: boolean;
 }

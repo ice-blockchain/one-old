@@ -14,7 +14,7 @@ import { readState, writeState } from '../state';
 // Ceiling for a prompt embedded as a `--seed-prompt=` argv value. Stack
 // classification and triage routing only need the leading keywords; an
 // unbounded seed bloats the approved command line for no signal gain.
-export const SEED_PROMPT_MAX_LENGTH = 2000;
+const SEED_PROMPT_MAX_LENGTH = 2000;
 
 // The seed must look like build/coding work — the SAME predicates the
 // activation gate uses. A control / non-coding command ("stop all", "cancel",

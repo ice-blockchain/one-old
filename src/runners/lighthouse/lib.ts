@@ -21,11 +21,11 @@ export function packageHasDependency(pkg: Rec | null, name: string): boolean {
 const VITE_CONFIG_NAMES = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'] as const;
 const NEXT_CONFIG_NAMES = ['next.config.ts', 'next.config.js', 'next.config.mjs', 'next.config.cjs'] as const;
 
-export function hasViteConfig(dir: string): boolean {
+function hasViteConfig(dir: string): boolean {
   return VITE_CONFIG_NAMES.some((name) => existsSync(join(dir, name)));
 }
 
-export function hasNextConfig(dir: string): boolean {
+function hasNextConfig(dir: string): boolean {
   return NEXT_CONFIG_NAMES.some((name) => existsSync(join(dir, name)));
 }
 
@@ -43,9 +43,9 @@ export function nextConfigOutputExport(dir: string): boolean {
   return false;
 }
 
-export type PreviewKind = 'vite' | 'next' | 'static';
+type PreviewKind = 'vite' | 'next' | 'static';
 
-export interface FrontendApp {
+interface FrontendApp {
   appDir: string;
   previewKind: PreviewKind;
   staticDir?: string;
@@ -199,7 +199,7 @@ export function numericValue(audits: Rec, id: string): number | null {
   return typeof value === 'number' ? value : null;
 }
 
-export interface Thresholds {
+interface Thresholds {
   performanceMin: number;
   fcpMax: number;
   lcpMax: number;
@@ -211,7 +211,7 @@ export interface Thresholds {
 // gate — Lighthouse has run-to-run noise at that margin (measured live: three
 // fix cycles + reruns chasing a stable 5–6ms FCP residue). It is reported in
 // `withinTolerance` so the residual stays visible without burning iterations.
-export const GATE_TOLERANCE_RATIO = 0.03;
+const GATE_TOLERANCE_RATIO = 0.03;
 
 export interface Summary {
   metrics: {

@@ -20,7 +20,7 @@ export const DEFAULT_OPENCODE_DELEGATE_ROLES: readonly string[] = [
 // `opencode_delegate` ad hoc. Each unit must name 1–2 files and concrete
 // acceptance criteria. Prose in the architect/orchestrator docs mirrors this
 // list — when they disagree, THIS file wins.
-export interface OpenCodeUnitKind {
+interface OpenCodeUnitKind {
   readonly id: string;
   readonly summary: string;
   readonly examples: readonly string[];

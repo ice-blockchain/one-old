@@ -57,7 +57,7 @@ export function consentPhaseFailureOutput(
     : `TRAFFIC_ONE_SETUP_START_FAILED\n\n${onboardingStartFailureReason(error, host)}\n`;
 }
 
-export function syncOneMcpBeforeOnboarding(
+function syncOneMcpBeforeOnboarding(
   cwd: string,
   host: unknown,
   argv: readonly string[],

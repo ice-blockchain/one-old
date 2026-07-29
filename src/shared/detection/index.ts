@@ -52,7 +52,7 @@ export function reconcileStackFromArtifacts(cwd: string, state: unknown): boolea
   return true;
 }
 
-export interface PromptClassification {
+interface PromptClassification {
   stack: string;
   frontend: string;
   backend: string;
@@ -272,6 +272,4 @@ export {
   detectStackFromCodebase,
   hasWorkspaces,
   loadPackageJson,
-  type StackDetection,
-  workspaceYamlPresent,
 } from './artifacts';

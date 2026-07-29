@@ -217,7 +217,6 @@ if (require.main === module) {
 }
 
 export {
-  kiloConfigDir,
   kiloGlobalConfigPath,
   kiloGlobalPluginPath,
   kiloProjectMarkerPath,

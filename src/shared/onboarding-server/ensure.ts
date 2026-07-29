@@ -37,7 +37,7 @@ export interface EnsureResult {
   started: boolean;
 }
 
-export interface EnsureOptions {
+interface EnsureOptions {
   env?: NodeJS.ProcessEnv;
   isAlive?: (pid: number) => boolean;
   launch?: (cwd: string, env: NodeJS.ProcessEnv, host?: string) => number;

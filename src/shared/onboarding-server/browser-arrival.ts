@@ -32,7 +32,7 @@ import { serverRecordPath } from './registry';
 
 // Matches the window a setup message stays actionable. Shared by every surface
 // so "the wizard is open" means the same thing everywhere.
-export const WIZARD_OPEN_TTL_MS = 15 * 60 * 1000;
+const WIZARD_OPEN_TTL_MS = 15 * 60 * 1000;
 
 // Refreshing on every single request would rewrite the file on each wizard poll;
 // this keeps the mtime meaningfully fresh without the churn.

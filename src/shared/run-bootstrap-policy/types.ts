@@ -111,12 +111,6 @@ export function boundedMaintenanceSourceScope(
   return values.filter((value) => value !== digest);
 }
 
-export function quickFixSourceScope(
-  runId: string,
-  values: readonly string[],
-): string[] {
-  return boundedMaintenanceSourceScope(runId, 'quick-fix', values);
-}
 
 export function runBootstrapDir(cwd: string, runId: string): string {
   return path.join(cwd, RUNS_REL_DIR, safePart(runId), 'bootstrap');

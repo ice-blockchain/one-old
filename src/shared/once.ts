@@ -72,13 +72,6 @@ export function emittedWithin(cwd: string, label: string, ttlMs: number): boolea
 }
 
 // Test helper: forget all once-markers for a project.
-export function resetOnceMarkers(cwd: string): void {
-  try {
-    fs.rmSync(onceDir(cwd), { recursive: true, force: true });
-  } catch {
-    // best effort
-  }
-}
 
 function sweepStale(dir: string): void {
   try {

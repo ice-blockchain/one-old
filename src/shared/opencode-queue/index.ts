@@ -39,5 +39,4 @@ export {
   openCodeQueuePolicyViolations,
   unsafeAllowedFilePatterns,
   type OpenCodeQueuePolicyOptions,
-  type OpenCodeQueuePolicyReport,
 } from './policy';

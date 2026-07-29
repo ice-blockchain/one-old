@@ -3,7 +3,7 @@
 // and the Windsurf/Devin architect directive.
 
 import { capabilityProfileForRun } from '../../shared/architecture-contract';
-import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
+import { buildOrchestrationDirective } from '../../modules/plan-guard/build-orchestration-directive';
 import { buildPreSpawnOpenCodeDirective } from '../../shared/opencode-plan/directive';
 import { detectHost } from '../../shared/host';
 import { detectHostPlan } from '../../shared/host/plan';

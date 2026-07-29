@@ -42,7 +42,6 @@ export {
 } from './types';
 export {
   analyzeStructureTextAgainstContract,
-  type StructureTextContractOptions,
 } from './contract';
 export {
   analyzeProjectStructure,

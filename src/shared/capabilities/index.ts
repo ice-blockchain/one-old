@@ -7,15 +7,12 @@ export {
   CAPABILITY_SCHEMA_VERSION,
   STRUCTURAL_PROFILE_IDS,
   type ArchitectureTargetSurface,
-  type CapabilityBlockingIssueV1,
   type CapabilityProfileV1,
   type ProjectSurface,
-  type QaAdapterId,
   type StructuralProfileId,
 } from './types';
 export {
   detectFrontendFramework,
-  type FrontendFrameworkDetectionV1,
 } from './detect-frontend';
 export {
   frontendArtifactsPresent,
@@ -28,7 +25,6 @@ export {
 } from './profile';
 export {
   eligibleRolesForProfile,
-  eligibleRolesForProject,
   profileHasNativeUi,
   profileHasWebUi,
   runtimeCapabilityState,

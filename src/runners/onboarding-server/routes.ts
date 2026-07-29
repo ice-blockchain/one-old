@@ -27,7 +27,7 @@ export interface RouteContext {
 
 const MAX_BODY_BYTES = 256 * 1024;
 
-export function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
   res.end(JSON.stringify(body));
 }

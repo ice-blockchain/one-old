@@ -28,7 +28,7 @@ import {
   localFindings,
 } from './findings';
 
-export interface StructureTextContractOptions {
+interface StructureTextContractOptions {
   allowlist?: string[];
   assignmentScope?: AssignedScope;
 }

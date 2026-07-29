@@ -147,7 +147,7 @@ export function persistTerminalClassification(
   if (!persisted) return null;
   return { observation: persisted, transcript, kind };
 }
-export function matchingLiveAgentStillActive(cwd: string, runId: string, observation: CursorSpawnObservation): boolean {
+function matchingLiveAgentStillActive(cwd: string, runId: string, observation: CursorSpawnObservation): boolean {
   const registry = readRunAgentRegistry(cwd, runId);
   const entry = registry[observation.role];
   if (!entry || entry.replaced) return false;

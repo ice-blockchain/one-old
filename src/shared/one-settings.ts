@@ -19,25 +19,25 @@ import * as path from 'path';
 import { ONE_SETTINGS_VERSION } from '../config/one-settings';
 import { readJson } from './fsjson';
 
-export interface OneApiKeyAuth {
+interface OneApiKeyAuth {
   version: 1;
   authenticated: true;
   apiKey: string;
   updatedAt: string;
 }
 
-export interface OneSettings {
+interface OneSettings {
   schemaVersion: number;
   auth?: OneApiKeyAuth;
   codeGraphProvider?: string | null;
 }
 
-export interface OneSectionValueMap {
+interface OneSectionValueMap {
   auth: OneApiKeyAuth;
   codeGraphProvider: string | null;
 }
 
-export type OneSection = keyof OneSectionValueMap;
+type OneSection = keyof OneSectionValueMap;
 
 export type OneSettingsPatch = Pick<Partial<OneSettings>, 'auth' | 'codeGraphProvider'>;
 
@@ -332,7 +332,7 @@ function withSettingsLock<T>(filePath: string, body: () => T): T {
   }
 }
 
-export interface CanonicalOneSettingsRead {
+interface CanonicalOneSettingsRead {
   ok: boolean;
   settings: OneSettings;
   error?: string;

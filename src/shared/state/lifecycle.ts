@@ -15,9 +15,9 @@ import { readState, writeState } from './normalize';
 import { releaseAllRunClaims } from './run-agent';
 import { ensureInitialCommit } from '../git-init';
 
-export type LifecyclePhase = 'building' | 'maintenance';
+type LifecyclePhase = 'building' | 'maintenance';
 
-export interface LifecycleState {
+interface LifecycleState {
   phase: LifecyclePhase;
   source?: string;
   completedAt?: string;

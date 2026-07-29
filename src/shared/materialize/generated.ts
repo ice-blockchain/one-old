@@ -23,7 +23,7 @@ export function removeGeneratedFile(filePath: string): boolean {
   return false;
 }
 
-export function isGeneratedManifest(filePath: string): boolean {
+function isGeneratedManifest(filePath: string): boolean {
   try {
     const json = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     return Boolean(json && json.generatedBy === 'traffic-one');
@@ -40,7 +40,7 @@ export function removeGeneratedManifest(filePath: string): boolean {
   return false;
 }
 
-export function isGeneratedTree(dirPath: string): boolean {
+function isGeneratedTree(dirPath: string): boolean {
   if (!fs.existsSync(dirPath)) return false;
   const stat = fs.lstatSync(dirPath);
   if (stat.isFile()) return isGenerated(dirPath);

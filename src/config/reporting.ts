@@ -21,7 +21,7 @@ export const QUEUED_RETRY_MS = 5 * 60 * 1000;
 export const FAILED_RETRY_MS = 60 * 60 * 1000;
 export const ONE_MCP_REPORT_TIMEOUT_MS = 15_000;
 
-export const ONE_MCP_REPORT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+const ONE_MCP_REPORT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 
 export function isValidOneMcpReportId(value: unknown): value is string {
   return typeof value === 'string'

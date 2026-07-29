@@ -84,7 +84,7 @@ function projectPlaywright(projectRoot: string): { api: PlaywrightLike; version:
 
 
 
-export async function runViewport(
+async function runViewport(
   browser: BrowserLike,
   owned: OwnedServer,
   contract: VerificationContractV2,
