@@ -224,6 +224,13 @@ the architect digest. It contains semantic intent only:
 
 Allowed module kinds are `app-shell`, `page`, `component`, `feature`, `service`,
 `store`, and `test`. Every route target must reference a declared module.
+
+Declare the not-found route as the router's real catch-all, `"path": "*"`, and a
+parameterized route by its pattern, `"path": "/courses/:courseSlug"`. These are
+route IDENTITIES, not URLs — QA probes them through a concrete `startPath` and
+files the evidence under the pattern. Never substitute a literal stand-in such as
+`/404` to make a sweep easier: observed 6co, that shipped an application whose
+unknown URLs matched no route at all.
 Exceptions require a specific rule id, narrow glob, and reason. They cannot
 disable entrypoint, multi-page-module, route-module, allowlist, or incomplete
 scan enforcement.

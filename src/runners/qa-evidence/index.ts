@@ -54,7 +54,14 @@ interface ScenarioStep {
 }
 
 interface RouteScenario {
+  /**
+   * The compiled contract's route IDENTITY — `/`, `*`, `/courses/:courseSlug`.
+   * Evidence stays indexed by this so a report can be matched back to the
+   * architecture.
+   */
   route: string;
+  /** The concrete URL actually navigated to. Equals `route` when it is literal. */
+  startPath: string;
   finalPath: string;
   stableSelector: string;
   steps: ScenarioStep[];
@@ -214,6 +221,10 @@ function usage(): string {
     '',
     'Scenario schema:',
     '  {"schemaVersion":1,"routes":[{"route":"/","finalPath":"/","stableSelector":"main","steps":[{"type":"click","selector":"button"},{"type":"expect-visible","selector":"main"}]}]}',
+    '  `route` is the CONTRACT route (evidence is indexed by it). When it is not a literal path — `*`,',
+    '  `/courses/:courseSlug` — add `startPath` with the concrete URL to visit; it must match the pattern,',
+    '  and for `*` it must be a URL no other declared route claims:',
+    '  {"route":"*","startPath":"/does-not-exist",...}   {"route":"/courses/:courseSlug","startPath":"/courses/html-css",...}',
   ].join('\n');
 }
 
@@ -353,6 +364,34 @@ function parseStep(value: unknown): ScenarioStep | null {
   };
 }
 
+// A compiled route is an identity, not a URL. `*` is the router-idiomatic
+// catch-all and `/courses/:courseSlug` names a family; neither can be fetched.
+// The runner used to require every scenario route to start with `/` and then
+// navigate to it verbatim, so a contract carrying `*` made QA unsatisfiable
+// (observed 6co: the architect rewrote the product's catch-all to a literal
+// `/404` just to get a passing sweep, and the app shipped with no reachable
+// not-found route at all) while `:param` routes were "verified" by visiting the
+// literal path `/courses/:courseSlug`. `startPath` carries the concrete probe.
+function isConcreteRoutePath(value: string): boolean {
+  return value.startsWith('/')
+    && !value.split('/').some((segment) => segment.startsWith(':') || segment === '*');
+}
+
+// Null when the pattern matches everything (`*`), which no regex needs to prove.
+function routePatternToRegExp(pattern: string): RegExp | null {
+  if (pattern === '*') return null;
+  const source = pattern.split('/').map((segment) => {
+    if (segment.startsWith(':')) return '[^/]+';
+    if (segment === '*') return '.*';
+    return segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }).join('/');
+  try {
+    return new RegExp(`^${source}$`);
+  } catch {
+    return null;
+  }
+}
+
 function parseScenario(value: unknown, requiredRoutes: readonly string[]): ScenarioV1 | null {
   if (!isRecord(value)
     || value.schemaVersion !== 1
@@ -362,8 +401,10 @@ function parseScenario(value: unknown, requiredRoutes: readonly string[]): Scena
   for (const raw of value.routes) {
     if (!isRecord(raw)
       || typeof raw.route !== 'string'
-      || !raw.route.startsWith('/')
+      || !(raw.route === '*' || raw.route.startsWith('/'))
       || raw.route.length > 2_048
+      || (raw.startPath !== undefined
+        && (typeof raw.startPath !== 'string' || raw.startPath.length > 2_048))
       || typeof raw.stableSelector !== 'string'
       || !raw.stableSelector.trim()
       || raw.stableSelector.length > 1_000
@@ -372,15 +413,33 @@ function parseScenario(value: unknown, requiredRoutes: readonly string[]): Scena
       || !Array.isArray(raw.steps)
       || raw.steps.length < 1
       || raw.steps.length > 100
-      || Object.keys(raw).some((key) => !['route', 'finalPath', 'stableSelector', 'steps'].includes(key))) return null;
+      || Object.keys(raw).some((key) => (
+        !['route', 'startPath', 'finalPath', 'stableSelector', 'steps'].includes(key)
+      ))) return null;
+    const pattern = raw.route;
+    // A literal route is its own probe; a pattern must name one explicitly.
+    const startPath = typeof raw.startPath === 'string'
+      ? raw.startPath
+      : (isConcreteRoutePath(pattern) ? pattern : '');
+    if (!isConcreteRoutePath(startPath)) return null;
+    const patternRe = routePatternToRegExp(pattern);
+    if (patternRe && !patternRe.test(startPath)) return null;
+    // The catch-all is only exercised by a URL no other declared route claims —
+    // otherwise the sweep proves the sibling route, not the 404.
+    if (pattern === '*' && requiredRoutes.some((other) => {
+      if (other === '*') return false;
+      const otherRe = routePatternToRegExp(other);
+      return otherRe ? otherRe.test(startPath) : false;
+    })) return null;
     const steps = raw.steps.map(parseStep);
     if (steps.some((step) => !step)) return null;
     if (!(steps as ScenarioStep[]).some((step) => (
       ['click', 'fill', 'press', 'check', 'select'].includes(step.type)
     ))) return null;
     routes.push({
-      route: raw.route,
-      finalPath: typeof raw.finalPath === 'string' ? raw.finalPath : raw.route,
+      route: pattern,
+      startPath,
+      finalPath: typeof raw.finalPath === 'string' ? raw.finalPath : startPath,
       stableSelector: raw.stableSelector,
       steps: steps as ScenarioStep[],
     });
@@ -863,7 +922,9 @@ async function runLighthouseOnOwnedServer(
 }
 
 function routeSlug(route: string): string {
-  return route === '/' ? 'home' : route.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'route';
+  if (route === '/') return 'home';
+  if (route === '*') return 'catch-all';
+  return route.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'route';
 }
 
 async function executeStep(page: PageLike, step: ScenarioStep, timeoutMs: number): Promise<void> {
@@ -997,7 +1058,7 @@ async function runViewport(
         }
       }
     });
-    const target = new URL(scenario.route, `${owned.url}/`).href;
+    const target = new URL(scenario.startPath, `${owned.url}/`).href;
     await page.goto(target, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     await page.waitForLoadState('load', { timeout: timeoutMs });
     await page.locator(scenario.stableSelector).first().waitFor({ state: 'visible', timeout: timeoutMs });

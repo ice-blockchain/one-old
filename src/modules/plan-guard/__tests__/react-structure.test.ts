@@ -111,7 +111,7 @@ function writeLaravelModules(cwd: string, contract: CompiledArchitectureV1): voi
   }
 }
 
-test('pretty and minified 600-line entrypoint monoliths produce identical blocking IDs', () => {
+test('minifying a 600-line entrypoint monolith hides no blocking ID and adds the collapse one', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);
     const functions = [
@@ -129,9 +129,23 @@ test('pretty and minified 600-line entrypoint monoliths produce identical blocki
     const minifiedIds = ids(analyzeProjectStructure(cwd, contract));
     fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), pretty);
     const prettyIds = ids(analyzeProjectStructure(cwd, contract));
-    assert.deepEqual(prettyIds, minifiedIds);
+    // The invariant this test exists for: minifying must not let a monolith
+    // escape a single structural finding. It is now a SUPERSET rather than an
+    // equality, because STRUCT_COLLAPSED_LINE is precisely the signal that
+    // distinguishes the two forms — the minified variant earns one extra ID and
+    // never loses one.
+    for (const id of prettyIds) {
+      assert.ok(minifiedIds.includes(id), `minifying hid ${id}`);
+    }
     assert.ok(prettyIds.includes('STRUCT_ENTRYPOINT_COMPONENT'));
     assert.ok(prettyIds.includes('STRUCT_MULTI_PAGE_MODULE'));
+    assert.equal(prettyIds.includes('STRUCT_COLLAPSED_LINE'), false);
+    assert.equal(minifiedIds.includes('STRUCT_COLLAPSED_LINE'), true);
+    assert.deepEqual(
+      minifiedIds.filter((id) => !prettyIds.includes(id)),
+      ['STRUCT_COLLAPSED_LINE'],
+      'collapse is the only difference minification may introduce',
+    );
   });
 });
 
@@ -810,6 +824,153 @@ test('top-level function count is advisory during rollout', () => {
       file: 'apps/web/src/lib/helpers.ts',
       message: 'Module declares 13 top-level functions; the 12-function threshold is advisory during rollout.',
     }]);
+  });
+});
+
+test('collapsed lines are rejected at the write, with strings and types spared', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const collapsed = (file: string, source: string): boolean => (
+      analyzeStructureText(file, source, contract.profile)
+        .some((finding) => finding.id === 'STRUCT_COLLAPSED_LINE' && finding.severity === 'error')
+    );
+
+    // Verbatim shapes from 7co, where the whole implementation phase ran with
+    // components packed onto one line and only the completion digest would have
+    // caught it.
+    assert.equal(collapsed('apps/web/src/components/LearnerNavigation.tsx', [
+      "import { useState } from 'react'",
+      'export function LearnerNavigation() { const [open,setOpen]=useState(false); const {t}=useTranslation();'
+        + ' return <header className="app-header"><div className="shell nav"><NavLink className="brand" to="/">Atlas'
+        + ' <span>Learn</span></NavLink><button onClick={()=>setOpen(!open)}>{t(open?\'nav.close\':\'nav.menu\')}</button>'
+        + '</div></header> }',
+    ].join('\n')), true);
+
+    // A whole component on one line, closed only by self-closing elements.
+    assert.equal(collapsed('apps/web/src/pages/CourseDetail.tsx',
+      'export default function CourseDetail(){const course=getCourse(useParams().courseSlug);'
+      + 'return course?<CourseDetailFeature course={course}/>:<NotFound/>}'), true);
+
+    // Packed JSX inside an otherwise formatted component: three element
+    // boundaries on one line is collapse at a much lower width.
+    assert.equal(collapsed('apps/web/src/components/CourseCard.tsx', [
+      'export function CourseCard({ title, summary }: CourseCardProps) {',
+      '  return (',
+      '    <Link to="/courses">',
+      '      <span className="course-mark">{title.charAt(0)}</span><h3>{title}</h3><p>{summary}</p><em>{summary}</em>',
+      '    </Link>',
+      '  )',
+      '}',
+    ].join('\n')), true);
+
+    // Formatted source stays clean — one statement and one element per line.
+    assert.equal(collapsed('apps/web/src/pages/Catalog.tsx', [
+      'export function Catalog() {',
+      '  const { t } = useTranslation()',
+      "  const [status, setStatus] = useState<'loading' | 'success'>('loading')",
+      '  return (',
+      '    <section className="catalog">',
+      '      <h1>{t(\'catalog.title\')}</h1>',
+      '    </section>',
+      '  )',
+      '}',
+    ].join('\n')), false);
+
+    // A long className/data URI is string content, not code — masking it is the
+    // only reason Tailwind-heavy markup is not a permanent false positive.
+    assert.equal(collapsed('apps/web/src/components/Hero.tsx', [
+      'export function Hero() {',
+      '  return <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200'
+        + ' bg-white px-4 py-3 shadow-sm hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-offset-2">Hi</div>',
+      '}',
+    ].join('\n')), false);
+
+    // A one-line TS type body is legitimately `;`-dense and is not code.
+    assert.equal(collapsed('apps/web/src/lib/types.ts',
+      'export interface Unit { id?: string; role: string; task: string; action: string; status?: string;'
+      + ' touched: string[]; model?: string; failureKind?: string | null; error?: string | null }'), false);
+
+    // A nested template literal must not leak out of the mask and read as code.
+    assert.equal(collapsed('apps/web/src/lib/report.ts',
+      'export function line(points: string[]) { return `expects **${points.length}** across'
+      + ' ${points.map((point) => `\\`${point}\\``).join(\', \')}; observed **none**`; }'), false);
+
+    // Generated declaration modules and tests are out of scope.
+    const packed = 'export default function X(){const a=1;return <A/><B/><C/>;}';
+    assert.equal(collapsed('packages/api-client/src/database.types.ts', packed), false);
+    assert.equal(collapsed('apps/web/src/pages/Catalog.test.tsx', packed), false);
+  });
+});
+
+test('module LOC blocks the monolith, spares merely-large and generated modules', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    // Calibrated on 6co: `pages/Catalog.tsx` was 515 logical lines and every
+    // structural signal it raised was advisory, so `IMPLEMENTED` was accepted.
+    const lines = (count: number): string => Array.from(
+      { length: count },
+      (_, index) => `const value${index} = ${index};`,
+    ).join('\n');
+
+    const monolith = analyzeStructureText('apps/web/src/lib/monolith.ts', lines(420), contract.profile);
+    assert.deepEqual(monolith, [{
+      id: 'STRUCT_MODULE_LOC',
+      severity: 'error',
+      file: 'apps/web/src/lib/monolith.ts',
+      message: 'Module is approximately 421 logical lines, over the 400 limit. Split it along its own seams — routes, pages, features, and shared components each belong in their own module under the compiled layer roots.',
+    }]);
+
+    // Just under the limit stays clean: the advisory per-component rules are
+    // deliberately untouched by this change.
+    assert.deepEqual(analyzeStructureText('apps/web/src/lib/large.ts', lines(399), contract.profile), []);
+
+    // Collapse-resistant: the same module minified onto one line still counts
+    // its statements, so this is the only size signal a collapsed write cannot
+    // evade between digests.
+    const collapsed = analyzeStructureText(
+      'apps/web/src/lib/monolith.ts',
+      lines(420).replace(/\n/g, ' '),
+      contract.profile,
+    );
+    assert.equal(collapsed.some((finding) => finding.id === 'STRUCT_MODULE_LOC'), true);
+
+    // Generated declaration/type modules scale with the schema and cannot be
+    // shrunk by the implementer — blocking them would be a deadlock.
+    assert.deepEqual(
+      analyzeStructureText('packages/api-client/src/database.types.ts', lines(900), contract.profile),
+      [],
+    );
+    assert.deepEqual(
+      analyzeStructureText('packages/api-client/src/schema.d.ts', lines(900), contract.profile),
+      [],
+    );
+  });
+});
+
+test('module LOC is exception-eligible only for a narrow compound family glob', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      ...INPUT,
+      exceptions: [{
+        ruleId: 'STRUCT_MODULE_LOC',
+        glob: 'packages/ui/src/Accordion*.tsx',
+        reason: 'Accordion is a same-prefix compound primitive family.',
+      }],
+    });
+    const source = Array.from(
+      { length: 420 },
+      (_, index) => `const value${index} = ${index};`,
+    ).join('\n');
+    assert.deepEqual(
+      analyzeStructureText('packages/ui/src/Accordion.tsx', source, contract.profile, contract.exceptions),
+      [],
+    );
+    // The exception is glob-scoped: an application module never inherits it.
+    assert.equal(
+      analyzeStructureText('apps/web/src/pages/Catalog.tsx', source, contract.profile, contract.exceptions)
+        .some((finding) => finding.id === 'STRUCT_MODULE_LOC'),
+      true,
+    );
   });
 });
 

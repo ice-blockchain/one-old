@@ -31,6 +31,7 @@ import {
   FEATURE_SOURCE_RE,
   shellCommandHasWritePrimitive,
   shellAssetImportDest,
+  shellStrayDeleteTarget,
   shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
 } from '../../shared/feature-source';
@@ -44,6 +45,7 @@ import { capturePlanGuardDebug } from '../../shared/state/claim-capture';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 import {
   capabilityProfileForRun,
+  isDeletableStrayArtifact,
   readCompiledArchitecture,
   type CompiledArchitectureV1,
 } from '../../shared/architecture-contract';
@@ -420,12 +422,27 @@ export function planWriteGate(ctx: Ctx): HookResult {
     if (isFeatureTarget(assetImportDest)) appendUnique(featureTargetPaths, [assetImportDest]);
     if (BUILD_ARTIFACT_RE.test(assetImportDest)) appendUnique(buildArtifactTargetPaths, [assetImportDest]);
   }
+  // Stray-artifact carve-out: an exact single-file `rm` whose target is present
+  // on disk, owned by NOBODY in the compiled contract, untracked, and absent
+  // from the immutable baseline is cleanup, not an implementation write. Without
+  // it a role that produced a stray file cannot remove it and neither can its
+  // parent (observed 6co on `apps/web/public/icons/favicon.svg.png`), so the run
+  // only escapes through an exact `git clean`. Everything broader — globs,
+  // `-r`, multiple operands, tracked or compiled paths — stays denied.
+  const strayDeleteTarget = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
+    ? shellStrayDeleteTarget(rawCommand, patchBase, projectRoot)
+    : null;
+  const cleaningStrayArtifact = Boolean(
+    strayDeleteTarget && isDeletableStrayArtifact(projectRoot, strayDeleteTarget, compiledArchitecture),
+  );
   const writingFeatureSourceViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
+    && !cleaningStrayArtifact
     && (
       commandAppearsToWriteFeatureSource(rawCommand)
       || commandAppearsToWriteCompiledFeature(rawCommand, compiledArchitecture)
     );
   const writingBuildArtifactViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
+    && !cleaningStrayArtifact
     && commandAppearsToWriteBuildArtifact(rawCommand);
   const writingExternalTempViaCommand = isShellToolName(toolName) && commandAppearsToWriteExternalTemp(rawCommand);
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;

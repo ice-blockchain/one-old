@@ -515,9 +515,11 @@ function parseMachineViewport(value: unknown): QaMachineViewportEvidenceV1 | nul
 }
 
 function parseMachineRoute(value: unknown): QaMachineRouteEvidenceV1 | null {
+  // `*` is the compiled catch-all identity, not a URL; the runner probes it via
+  // a concrete `startPath` and files the evidence under the pattern.
   if (!isRecord(value)
     || !safeText(value.route, 2_048)
-    || !String(value.route).startsWith('/')
+    || !(String(value.route) === '*' || String(value.route).startsWith('/'))
     || !Array.isArray(value.viewports)) return null;
   const viewports = value.viewports.map(parseMachineViewport);
   if (viewports.some((viewport) => !viewport)) return null;

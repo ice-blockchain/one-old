@@ -11,6 +11,7 @@ import {
   compiledArchitecturePath,
   createWorkUnitContract,
   ensureArchitectureRunSnapshot,
+  isDeletableStrayArtifact,
   publishRuntimeAssignments,
   readArchitectureRunBaseline,
   legacyCustomBackendMigration,
@@ -115,6 +116,14 @@ test('vite-react+supabase compiled outputs cover the standard surfaces the rules
     }
     // 4cu backend: the generated Database types snapshot was in no allowlist.
     assert.equal(byPath.get('packages/api-client/src/database.types.ts'), 'senior-backend');
+    // 6co: no compiled home for the client factory, so the FRONTEND built its
+    // own `createClient` in an auth feature and passed closures into
+    // backend-owned services. One factory, owned with the schema and types.
+    assert.equal(byPath.get('packages/api-client/src/supabase.ts'), 'senior-backend');
+    assert.equal(byPath.get('packages/api-client/src/index.ts'), 'senior-backend');
+    // The package manifest is what makes it a resolvable workspace member and
+    // what the typecheck gate reads.
+    assert.equal(byPath.get('packages/api-client/package.json'), 'senior-backend');
     // 3cl: README + the canonical en locale catalog were in nobody's scope.
     assert.equal(byPath.get('README.md'), 'senior-frontend');
     assert.equal(byPath.get('packages/i18n/src/locales/en/common.json'), 'senior-frontend');
@@ -1491,5 +1500,50 @@ test('backend-only scaffolds stay stack-native and existing-codebase skips scaff
       assert.ok(!existing.allowedOutputs.some((output) => fixture.expected.includes(output)),
         `${fixture.backend}: existing-codebase must not re-plan scaffold/config outputs`);
     });
+  }
+});
+
+test('isDeletableStrayArtifact permits only untracked, uncompiled, non-baseline files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-stray-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+
+    // The 6co shape: a stray raster beside owned icons that neither the child
+    // nor the parent could remove.
+    fs.mkdirSync(path.join(dir, 'public/icons'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'public/icons/favicon.svg.png'), 'stray');
+    assert.equal(isDeletableStrayArtifact(dir, 'public/icons/favicon.svg.png', architecture), true);
+
+    // A compiled output is a contract change, never cleanup.
+    const compiled = (architecture.scaffoldOutputs || [])
+      .find((output) => output.path.endsWith('public/sitemap.xml'))!.path;
+    fs.mkdirSync(path.join(dir, path.dirname(compiled)), { recursive: true });
+    fs.writeFileSync(path.join(dir, compiled), '<urlset/>');
+    assert.equal(isDeletableStrayArtifact(dir, compiled, architecture), false);
+
+    // Directories, missing files, plugin state, and escapes all stay denied.
+    assert.equal(isDeletableStrayArtifact(dir, 'public/icons', architecture), false);
+    assert.equal(isDeletableStrayArtifact(dir, 'public/absent.png', architecture), false);
+    assert.equal(isDeletableStrayArtifact(dir, '.traffic-one/runs/R/run.json', architecture), false);
+    assert.equal(isDeletableStrayArtifact(dir, '../outside.png', architecture), false);
+    assert.equal(isDeletableStrayArtifact(dir, 'public/icons/favicon.svg.png', null), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

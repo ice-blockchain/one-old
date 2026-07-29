@@ -63,9 +63,23 @@ async function withProjectAsync(
   }
 }
 
-test('reporting defaults to active fire-and-forget mode', () => {
+function readStatus(cwd: string): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(path.join(cwd, STATUS_FILE), 'utf8')) as Record<string, unknown>;
+}
+
+// `runReport` only sends what `prepareReport` queued, so a test that POSTs must
+// either queue first or opt out of the gate explicitly.
+function queueStatus(cwd: string, reportId: string): void {
+  fs.writeFileSync(
+    path.join(cwd, STATUS_FILE),
+    JSON.stringify({ status: 'queued', reportId, queuedAt: new Date().toISOString(), attempts: 0 }),
+    'utf8',
+  );
+}
+
+test('reporting defaults to active with on-disk status tracking', () => {
   assert.equal(ONE_MCP_REPORT, true);
-  assert.equal(SAVE_MCP_REPORT, false);
+  assert.equal(SAVE_MCP_REPORT, true);
 });
 
 test('mcpRequest sends an anonymous JSON-RPC POST', async () => {
@@ -104,7 +118,7 @@ test('mcpRequest sends an anonymous JSON-RPC POST', async () => {
   assert.equal(typeof headers['content-length'], 'number');
 });
 
-test('runReport posts to DEFAULT_PUBLIC_ENDPOINT and never writes status in fire-and-forget mode', async () => {
+test('runReport posts to DEFAULT_PUBLIC_ENDPOINT and settles the status file to ok', async () => {
   await withProjectAsync(async (cwd) => {
     fs.writeFileSync(
       path.join(cwd, 'package.json'),
@@ -116,6 +130,7 @@ test('runReport posts to DEFAULT_PUBLIC_ENDPOINT and never writes status in fire
       JSON.stringify({ 'one-uid': 'rep-default-endpoint' }),
       'utf8',
     );
+    queueStatus(cwd, 'rep-default-endpoint');
     let postedEndpoint = '';
     let posted: unknown = null;
 
@@ -130,7 +145,42 @@ test('runReport posts to DEFAULT_PUBLIC_ENDPOINT and never writes status in fire
     assert.equal(result.ok, true);
     assert.equal(postedEndpoint, DEFAULT_PUBLIC_ENDPOINT);
     assert.equal((posted as { report_id: string }).report_id, 'rep-default-endpoint');
-    assert.equal(fs.existsSync(path.join(cwd, STATUS_FILE)), false);
+    const status = readStatus(cwd);
+    assert.equal(status.status, 'ok');
+    assert.equal(status.reportId, 'rep-default-endpoint');
+    assert.equal(status.endpoint, DEFAULT_PUBLIC_ENDPOINT);
+    assert.equal(typeof status.reportedAt, 'string');
+    assert.equal(status.attempts, 1);
+  });
+});
+
+test('runReport sends only what prepareReport queued', async () => {
+  await withProjectAsync(async (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+    fs.writeFileSync(
+      path.join(cwd, '.traffic-one', '.one.json'),
+      JSON.stringify({ 'one-uid': 'rep-unqueued' }),
+      'utf8',
+    );
+    let called = false;
+    const transport = async (): Promise<string> => {
+      called = true;
+      return 'ok';
+    };
+
+    // No status file at all: nothing was queued, so nothing is sent.
+    const unqueued = await runReport(cwd, { transport });
+    assert.equal(unqueued.skipped, 'not-queued');
+    assert.equal(called, false);
+
+    // A queued entry for a DIFFERENT id must not release this one either.
+    queueStatus(cwd, 'rep-someone-else');
+    assert.equal((await runReport(cwd, { transport })).skipped, 'not-queued');
+    assert.equal(called, false);
+
+    // `requireQueued: false` is the explicit opt-out for a direct send.
+    assert.equal((await runReport(cwd, { transport, requireQueued: false })).ok, true);
+    assert.equal(called, true);
   });
 });
 
@@ -142,6 +192,7 @@ test('runReport keeps endpoint and transport as explicit test seams', async () =
       JSON.stringify({ 'one-uid': 'rep-injected-endpoint' }),
       'utf8',
     );
+    queueStatus(cwd, 'rep-injected-endpoint');
     const endpoint = 'https://report.example.test/public-mcp';
     let seenEndpoint = '';
 
@@ -155,10 +206,12 @@ test('runReport keeps endpoint and transport as explicit test seams', async () =
 
     assert.equal(result.ok, true);
     assert.equal(seenEndpoint, endpoint);
+    // The injected endpoint is what gets recorded, not the compiled default.
+    assert.equal(readStatus(cwd).endpoint, endpoint);
   });
 });
 
-test('runReport returns transport failures without persisting a status file', async () => {
+test('runReport records transport failures as a retryable failed status', async () => {
   await withProjectAsync(async (cwd) => {
     fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
     fs.writeFileSync(
@@ -166,6 +219,7 @@ test('runReport returns transport failures without persisting a status file', as
       JSON.stringify({ 'one-uid': 'rep-failed' }),
       'utf8',
     );
+    queueStatus(cwd, 'rep-failed');
 
     const result = await runReport(cwd, {
       transport: async () => {
@@ -175,7 +229,14 @@ test('runReport returns transport failures without persisting a status file', as
 
     assert.equal(result.ok, false);
     assert.match(String(result.error), /boom/);
-    assert.equal(fs.existsSync(path.join(cwd, STATUS_FILE)), false);
+    // The whole point of persisting: the failure and its attempt count survive
+    // the process, so the retry window in prepareReport can act on them.
+    const status = readStatus(cwd);
+    assert.equal(status.status, 'failed');
+    assert.equal(status.reportId, 'rep-failed');
+    assert.match(String(status.error), /boom/);
+    assert.equal(status.attempts, 1);
+    assert.equal(typeof status.lastAttemptAt, 'string');
   });
 });
 
@@ -211,7 +272,13 @@ test('prepareReport requires a real codebase, mints one-uid once, and supports s
     assert.equal(first.started, true);
     assert.equal(first.spawned, false);
     assert.equal(typeof first.reportId, 'string');
-    assert.equal(fs.existsSync(path.join(cwd, STATUS_FILE)), false);
+    // Queuing IS the handoff to the detached worker: runReport sends nothing
+    // without this file.
+    const queued = readStatus(cwd);
+    assert.equal(queued.status, 'queued');
+    assert.equal(queued.reportId, first.reportId);
+    assert.equal(queued.attempts, 0);
+    assert.equal(typeof queued.queuedAt, 'string');
 
     const state = JSON.parse(
       fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'),

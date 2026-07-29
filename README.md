@@ -255,9 +255,11 @@ project calls the anonymous
 `traffic-one-mcp` `get_config` tool through the validated hook runtime. The
 model never receives or calls that tool. `ONE_MCP_REPORT` is also enabled:
 an opted-in project sends one anonymous structural first-look report to the
-same public endpoint, deduplicated by its `one-uid`. `SAVE_MCP_REPORT` remains
-disabled, so the report is not tracked in a local `one-mcp-report.json` status
-file. Machine-global MCP registration remains disabled by
+same public endpoint, deduplicated by its `one-uid`. `SAVE_MCP_REPORT` is also
+enabled, so the report is tracked in a local `.traffic-one/one-mcp-report.json`
+status file: SessionStart queues it, the detached worker sends only what was
+queued, and the settled `ok`/`failed` state plus attempt count drive the retry
+windows. Machine-global MCP registration remains disabled by
 `ONE_MCP_REGISTRATION`.
 Host-specific operator rows use the
 `traffic_one_<host>_plugin_ai_model_configuration` names centralized in

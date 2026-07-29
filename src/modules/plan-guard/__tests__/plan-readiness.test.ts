@@ -1836,6 +1836,58 @@ test('implementer format gate resolves config, manifest, scripts, and dependency
   });
 });
 
+test('implementer format coverage gate: narrowed prettier globs cannot pass while compiled outputs go unchecked', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'course-catalog', name: 'Course Catalog', kind: 'service' },
+      ],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const withLint = (lint: string): void => {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3' },
+        scripts: { lint, typecheck: 'tsc --noEmit' },
+      }), 'utf8');
+    };
+    const coverage = (): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).filter((violation) => violation === 'implementer-format-coverage-gate');
+
+    // Verbatim 6co: this exact script passed while `prettier --check .` failed
+    // on 25 owned files — all of packages/api-client, every test, vitest.config.
+    withLint('prettier --check "apps/web/src/**/*.{ts,tsx}" "packages/{i18n,tailwind-config,ui}/**/*.{ts,css,json}" && pnpm typecheck');
+    assert.deepEqual(coverage(), ['implementer-format-coverage-gate']);
+
+    // Whole-project check is the passing shape; exclusions belong in
+    // .prettierignore, which this gate deliberately does not second-guess.
+    withLint('prettier --check . && pnpm typecheck');
+    assert.deepEqual(coverage(), []);
+
+    // A non-prettier lint script is out of scope for this gate.
+    withLint('eslint .');
+    assert.deepEqual(coverage(), []);
+  });
+});
+
 test('implementer format gate T1BLOCK prose is byte-identical to both TypeScript fallbacks', () => {
   withProject((dir) => {
     const state = {
@@ -1862,7 +1914,7 @@ test('implementer format gate T1BLOCK prose is byte-identical to both TypeScript
       fallback: string,
       vars: Record<string, string | number | null | undefined> = {},
     ): string => {
-      if (name.startsWith('implementer-format-')) captured.set(name, { fallback, vars });
+      if (name.startsWith('implementer-')) captured.set(name, { fallback, vars });
       return name;
     };
     const gateArgs = {
@@ -1878,11 +1930,28 @@ test('implementer format gate T1BLOCK prose is byte-identical to both TypeScript
     planReadinessViolations(gateArgs);
     fs.rmSync(path.join(dir, '.prettierrc'));
     planReadinessViolations(gateArgs);
+    // Typecheck twin plus the self-reported-skip gate render from the same
+    // T1BLOCK contract; capture them in the same pass.
+    planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: IMPLEMENTED\n- typecheck was skipped: `tsc` not found.\n',
+    });
+    // Coverage gate needs a real toolchain plus a narrowed prettier script.
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3' },
+      scripts: { lint: 'prettier --check "docs/**/*.md"' },
+    }), 'utf8');
+    planReadinessViolations(gateArgs);
 
     const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
     for (const blockId of [
       'implementer-format-parity-gate',
       'implementer-format-toolchain-gate',
+      'implementer-format-coverage-gate',
+      'implementer-typecheck-toolchain-gate',
+      'implementer-verification-skipped-gate',
     ]) {
       const found = captured.get(blockId);
       assert.ok(found, `missing TypeScript fallback for ${blockId}`);
@@ -1987,5 +2056,292 @@ test('implementer typecheck gate: TS outputs with no reachable compiler deny IMP
       scripts: { typecheck: 'tsc --noEmit' },
     }), 'utf8');
     assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+  });
+});
+
+test('implementer typecheck gate: a delegating root script does not cover a member package that has none', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'course-catalog', name: 'Course Catalog', kind: 'service' },
+      ],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    // The exact 6co shape: root fans out to workspace members, the member that
+    // owns the compiled TS outputs declares nothing, so `turbo run typecheck`
+    // finds no target and exits 0. The old resolver returned clean on the first
+    // qualifying manifest in the set, and root was always in that set.
+    const writeManifests = (member: Record<string, unknown>): void => {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.0.0', typescript: '^5.8.3', turbo: '^2.5.4' },
+        scripts: { typecheck: 'turbo run typecheck' },
+      }), 'utf8');
+      fs.mkdirSync(path.join(dir, 'packages/api-client'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'packages/api-client/package.json'), JSON.stringify(member), 'utf8');
+    };
+
+    writeManifests({ name: '@app/api-client', scripts: {} });
+    assert.ok(planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+
+    // The member gaining its own compiler closes the gap.
+    writeManifests({ name: '@app/api-client', scripts: { typecheck: 'tsc --noEmit' } });
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+
+    // So does a root that compiles directly instead of fanning out — project
+    // references genuinely do cover their members.
+    writeManifests({ name: '@app/api-client', scripts: {} });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0', typescript: '^5.8.3' },
+      scripts: { typecheck: 'tsc -b' },
+    }), 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+  });
+});
+
+test('implementer crawl origin gate: an invented or relative sitemap origin cannot be IMPLEMENTED', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    // The manifest must exist BEFORE compilation or the profile never resolves
+    // to a web target and no crawl assets are compiled at all.
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+      devDependencies: {
+        prettier: '^3.5.3', typescript: '^5.8.3', vitest: '3.2.2', '@playwright/test': '1.52.0',
+      },
+      scripts: { typecheck: 'tsc --noEmit', test: 'vitest run', 'test:e2e': 'playwright test' },
+    }), 'utf8');
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+    fs.mkdirSync(path.join(dir, 'public'), { recursive: true });
+    const sitemap = (loc: string): void => {
+      fs.writeFileSync(
+        path.join(dir, 'public/sitemap.xml'),
+        `<?xml version="1.0" encoding="UTF-8"?>\n<urlset><url><loc>${loc}</loc></url></urlset>\n`,
+        'utf8',
+      );
+    };
+    const gate = (): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).filter((violation) => violation === 'implementer-crawl-origin-gate');
+
+    // Verbatim 6co: the reviewer caught this, the completion gate did not.
+    sitemap('https://workshop.example/');
+    assert.deepEqual(gate(), ['implementer-crawl-origin-gate']);
+
+    for (const invented of [
+      'http://localhost:5173/',
+      'https://your-domain.com/',
+      'https://example.org/',
+      '/courses',
+    ]) {
+      sitemap(invented);
+      assert.deepEqual(gate(), ['implementer-crawl-origin-gate'], invented);
+    }
+
+    // A real origin the user supplied is not this gate's business — "supplied
+    // but unverified" is not decidable here and stays a reviewer concern.
+    sitemap('https://acme-learning.co/');
+    assert.deepEqual(gate(), []);
+
+    // robots.txt carries the same directive and the same failure mode.
+    fs.writeFileSync(
+      path.join(dir, 'public/robots.txt'),
+      'User-agent: *\nAllow: /\nSitemap: https://workshop.example/sitemap.xml\n',
+      'utf8',
+    );
+    assert.deepEqual(gate(), ['implementer-crawl-origin-gate']);
+  });
+});
+
+test('implementer test toolchain gate: the manifest owner must ship the runner the tester is handed configs for', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const writeManifest = (extra: {
+      devDependencies?: Record<string, string>;
+      scripts?: Record<string, string>;
+    }): void => {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3', ...extra.devDependencies },
+        scripts: { typecheck: 'tsc --noEmit', ...extra.scripts },
+      }), 'utf8');
+    };
+    const gate = (): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).filter((violation) => violation === 'implementer-test-toolchain-gate');
+
+    // 6co: the tester owned vitest/playwright configs while the frontend owned
+    // the only manifest, so it inherited configs for tools nobody installed.
+    writeManifest({});
+    assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
+
+    // Dependency without an entry point is still unusable.
+    writeManifest({ devDependencies: { vitest: '3.2.2', '@playwright/test': '1.52.0' } });
+    assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
+
+    // A script naming an absent tool is the same anti-pattern the format
+    // parity gate rejects.
+    writeManifest({ scripts: { test: 'vitest run', 'test:e2e': 'playwright test' } });
+    assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
+
+    writeManifest({
+      devDependencies: { vitest: '3.2.2', '@playwright/test': '1.52.0' },
+      scripts: { test: 'vitest run', 'test:e2e': 'playwright test' },
+    });
+    assert.deepEqual(gate(), []);
+
+    // Only the manifest owner is answerable; a sibling implementer is not.
+    writeManifest({});
+    assert.deepEqual(planReadinessViolations({
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).filter((violation) => violation === 'implementer-test-toolchain-gate'), []);
+
+    // Deny prose renders from SKILL.md; the TypeScript fallback must be its
+    // byte-identical twin (this gate needs a web-UI profile, which the shared
+    // prose-parity fixture deliberately does not have).
+    let captured: { fallback: string; vars: Record<string, string | number | null | undefined> } | null = null;
+    planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: (name, fallback, vars = {}) => {
+        if (name === 'implementer-test-toolchain-gate') captured = { fallback, vars };
+        return name;
+      },
+    });
+    assert.ok(captured, 'missing TypeScript fallback for implementer-test-toolchain-gate');
+    const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+    const begin = '<!-- T1BLOCK:BEGIN implementer-test-toolchain-gate -->';
+    const end = '<!-- T1BLOCK:END implementer-test-toolchain-gate -->';
+    const beginAt = skill.indexOf(begin);
+    const endAt = skill.indexOf(end);
+    assert.ok(beginAt >= 0 && endAt > beginAt, 'missing T1BLOCK implementer-test-toolchain-gate');
+    let rendered = skill.slice(beginAt + begin.length, endAt).trim();
+    for (const [key, value] of Object.entries((captured as { vars: Record<string, unknown> }).vars)) {
+      rendered = rendered.split(`{{${key}}}`).join(String(value ?? ''));
+    }
+    assert.equal(rendered, (captured as { fallback: string }).fallback);
+  });
+});
+
+test('implementer verification gate: a digest that reports a required command as skipped cannot be IMPLEMENTED', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    // Toolchain fully present, so only the self-reported skip is exercised.
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0', typescript: '^5.0.0' },
+      scripts: { typecheck: 'tsc --noEmit' },
+    }), 'utf8');
+    const gate = (content: string): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/backend.md',
+      content,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+
+    // Verbatim from the 6co backend digest, one line above `verdict: IMPLEMENTED`.
+    assert.ok(gate([
+      'verdict: IMPLEMENTED',
+      '- TypeScript execution was skipped because dependencies are not installed'
+        + ' and frontend work is concurrent; `pnpm exec tsc --version` reported `tsc` not found.',
+    ].join('\n')).includes('implementer-verification-skipped-gate'));
+
+    // Reports of absence are not confessions.
+    for (const clean of [
+      'verdict: IMPLEMENTED\n- Ran pnpm typecheck: 0 errors. Ran pnpm lint: clean.',
+      'verdict: IMPLEMENTED\n- prettier --check .: 42 files checked, 0 skipped.',
+      'verdict: IMPLEMENTED\n- All required checks ran; no checks were skipped.',
+    ]) assert.ok(!gate(clean).includes('implementer-verification-skipped-gate'), clean);
+
+    // A BLOCKED digest may narrate the same fact — that is the honest path.
+    assert.ok(!gate('verdict: BLOCKED\n- typecheck could not run: tsc not found.')
+      .includes('implementer-verification-skipped-gate'));
   });
 });

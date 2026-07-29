@@ -192,6 +192,11 @@ const EXCEPTION_RULES = new Set([
   'STRUCT_COMPONENT_LOC',
   'STRUCT_FUNCTION_COUNT',
   'STRUCT_COMPONENTS_PER_FILE',
+  // Blocking, unlike its neighbours here — but a compound primitive family under
+  // `packages/ui` can legitimately exceed the module budget, and the glob
+  // constraint below already confines the escape to exactly those. Authored
+  // application modules keep only one remedy: split the file.
+  'STRUCT_MODULE_LOC',
 ]);
 const MODULE_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 // `*` (bare) is the router-idiomatic catch-all every SPA needs for its 404.
@@ -291,6 +296,61 @@ function baselinePathSet(
 function baselineContains(paths: ReadonlySet<string>, candidate: string): boolean {
   return paths.has(candidate)
     || [...paths].some((entry) => entry.startsWith(`${candidate.replace(/\/+$/, '')}/`));
+}
+
+/**
+ * Is `relPath` a stray by-product safe to delete outright — present on disk,
+ * owned by nobody in the compiled contract, and absent from the immutable
+ * baseline? A role that produced a file outside its allowlist otherwise cannot
+ * remove it (observed 6co: `apps/web/public/icons/favicon.svg.png` was denied to
+ * the frontend AND to the parent), so a deadlock only an exact `git clean`
+ * escaped. Fail CLOSED: anything unreadable, tracked, compiled, or outside the
+ * project is not deletable through this path.
+ */
+export function isDeletableStrayArtifact(
+  projectRoot: string,
+  relPath: string,
+  architecture: CompiledArchitectureV1 | null,
+): boolean {
+  const normalized = normalizeRelative(relPath);
+  if (!normalized || !architecture) return false;
+  if (/(?:^|\/)(?:\.git|\.traffic-one)(?:\/|$)/.test(normalized)) return false;
+  const absolute = path.join(projectRoot, normalized);
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(absolute);
+  } catch {
+    return false;
+  }
+  if (!stat.isFile()) return false;
+  // Never a compiled output: deleting one is a contract change, not cleanup.
+  const compiled = new Set([
+    ...(architecture.scaffoldOutputs || []).map((output) => output.path),
+    ...(architecture.modules || []).map((module) => module.output),
+  ]);
+  if (compiled.has(normalized)) return false;
+  let baselinePaths: ReadonlySet<string>;
+  try {
+    baselinePaths = baselinePathSet(projectRoot, architecture.baseline);
+  } catch {
+    return false;
+  }
+  if (baselineContains(baselinePaths, normalized)) return false;
+  // A Git baseline lists HEAD, not the index — a file staged after capture is
+  // tracked and must not vanish through a cleanup carve-out.
+  if (architecture.baseline.kind === 'git-head') {
+    try {
+      execFileSync('git', ['-C', projectRoot, 'ls-files', '--error-unmatch', '--', normalized], {
+        encoding: 'utf8',
+        timeout: 3_000,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      return false;
+    } catch {
+      // not tracked — the only branch that permits deletion
+    }
+  }
+  return true;
 }
 
 function chosenRoot(
@@ -861,6 +921,15 @@ function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitect
       // neither was in any allowlist — the 4cu backend digested BLOCKED and
       // forced an architect replan just to own them.
       'packages/api-client/src/database.types.ts',
+      // The client boundary itself. `new-project-setup.md` already describes
+      // `packages/api-client` as the home of the Supabase browser client, but
+      // no role was ever given a path to write it: observed 6co, the backend
+      // compiled three typed services and the FRONTEND constructed its own
+      // `createClient<Database>` inside `apps/web/src/features/auth-boundary`,
+      // then passed closures back into backend-owned services. One factory,
+      // owned by the role that owns the schema and the generated types.
+      'packages/api-client/src/supabase.ts',
+      'packages/api-client/src/index.ts',
     ];
   } else if (!selectedTargetHasWebUi(profile)) {
     outputs = ['package.json'];

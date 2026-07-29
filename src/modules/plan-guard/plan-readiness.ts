@@ -43,7 +43,7 @@ import {
   readRunModelPolicy,
 } from '../../shared/run-model-policy';
 import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
-import { matchesScope, type AssignedScope } from '../../shared/scope';
+import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
   activeAgentRole,
   isMaterialized,
@@ -401,7 +401,71 @@ const PRETTIER_CONFIG_FILES = [
 
 type FormatParityProblem =
   | { kind: 'missing-dependency'; reference: string }
-  | { kind: 'missing-toolchain' };
+  | { kind: 'missing-toolchain' }
+  | { kind: 'uncovered-outputs'; script: string; command: string; uncovered: string[] };
+
+// A format script proves nothing about files its own arguments exclude.
+// Observed 6co: `"lint": "prettier --check \"apps/web/src/**/*.{ts,tsx}\"
+// \"packages/{i18n,tailwind-config,ui}/**/*.{ts,css,json}\" && pnpm typecheck"`
+// passed while a plain `prettier --check .` failed on 25 owned source files —
+// all four `packages/api-client` modules, every test, and `vitest.config.ts`.
+// Presence of a formatter was verified; coverage never was.
+const FORMATTABLE_OUTPUT_RE = /\.(?:[cm]?[jt]sx?|css|scss|less|json|jsonc|md|mdx|ya?ml|html|vue|svelte|astro|graphql|gql)$/i;
+
+// `a/{b,c}/*.{ts,tsx}` → every concrete pattern. Bounded so a pathological
+// script can never blow up the gate.
+function expandBraces(pattern: string, budget = 64): string[] {
+  const open = pattern.indexOf('{');
+  if (open < 0) return [pattern];
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < pattern.length; i += 1) {
+    if (pattern[i] === '{') depth += 1;
+    else if (pattern[i] === '}') {
+      depth -= 1;
+      if (depth === 0) { close = i; break; }
+    }
+  }
+  if (close < 0) return [pattern];
+  const head = pattern.slice(0, open);
+  const tail = pattern.slice(close + 1);
+  const out: string[] = [];
+  for (const choice of pattern.slice(open + 1, close).split(',')) {
+    for (const expanded of expandBraces(`${head}${choice.trim()}${tail}`, budget)) {
+      if (out.length >= budget) return out;
+      out.push(expanded);
+    }
+  }
+  return out;
+}
+
+// The path arguments a `prettier --check`/`--write` invocation actually reads.
+// Null when the script does not run prettier at all (another formatter, or a
+// composite script whose prettier segment is absent).
+function prettierCheckTargets(script: string): { command: string; targets: string[] } | null {
+  for (const segment of script.split(/&&|\|\||;/)) {
+    const command = segment.trim();
+    if (!/(?:^|[\s/])prettier\b/.test(command)) continue;
+    const targets: string[] = [];
+    // Quoted args keep their globs intact; bare args are shell-split.
+    const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+    for (const raw of tokens.slice(1)) {
+      const token = raw.replace(/^["']|["']$/g, '');
+      if (!token || token.startsWith('-')) continue;
+      if (/(?:^|\/)prettier$/.test(token)) continue;
+      targets.push(normalizeRelPath(token));
+    }
+    if (targets.length > 0) return { command, targets };
+  }
+  return null;
+}
+
+function coversPath(targets: readonly string[], relPath: string): boolean {
+  return targets.some((target) => {
+    if (target === '.' || target === './' || target === '**' || target === '**/*') return true;
+    return expandBraces(target).some((pattern) => matchesPattern(relPath, pattern));
+  });
+}
 
 interface FormatToolchainTarget {
   configPath: string;
@@ -429,6 +493,7 @@ function compiledFormatToolchainForRole(
 function formatParityViolation(
   projectRoot: string,
   target: FormatToolchainTarget,
+  ownedOutputs: readonly string[] = [],
 ): FormatParityProblem | null {
   const at = (rel: string): string => (
     target.toolingRoot === '.' ? rel : `${target.toolingRoot}/${rel}`
@@ -457,7 +522,30 @@ function formatParityViolation(
     return biome ? null : { kind: 'missing-toolchain' };
   }
   const deps = { ...(pkg ? obj(pkg.dependencies) : null), ...(pkg ? obj(pkg.devDependencies) : null) };
-  return typeof deps.prettier === 'string' ? null : { kind: 'missing-dependency', reference };
+  if (typeof deps.prettier !== 'string') return { kind: 'missing-dependency', reference };
+
+  // The toolchain is real; now prove it reads what this role wrote. Only the
+  // scripts an implementer is told to run are inspected — a hand-typed
+  // `prettier --check .` is always the passing shape.
+  const scripts = pkg ? obj(pkg.scripts) || {} : {};
+  for (const name of ['format:check', 'format', 'lint']) {
+    const script = typeof scripts[name] === 'string' ? String(scripts[name]) : '';
+    const invocation = script ? prettierCheckTargets(script) : null;
+    if (!invocation) continue;
+    const formattable = ownedOutputs.filter((output) => FORMATTABLE_OUTPUT_RE.test(output));
+    const uncovered = formattable.filter((output) => !coversPath(invocation.targets, output));
+    if (uncovered.length > 0) {
+      return {
+        kind: 'uncovered-outputs',
+        script: name,
+        command: invocation.command,
+        uncovered: uncovered.slice(0, 5),
+      };
+    }
+    // The first prettier-bearing script decides; later ones are aliases of it.
+    break;
+  }
+  return null;
 }
 
 // Typecheck twin of the format-parity pair above. A role that owns compiled
@@ -468,42 +556,217 @@ function formatParityViolation(
 // an ambient module shim to compile around the unresolvable package).
 const TS_SOURCE_OUTPUT_RE = /\.(?:ts|tsx|mts|cts)$/;
 
+// Every path the contract compiles, optionally narrowed to one role's share.
+function compiledOutputPaths(
+  architecture: CompiledArchitectureV1,
+  ownerRole?: string,
+): string[] {
+  return [
+    ...(architecture.scaffoldOutputs || [])
+      .filter((output) => !ownerRole || output.ownerRole === ownerRole)
+      .map((output) => output.path),
+    ...(architecture.modules || [])
+      .filter((module) => !ownerRole || module.ownerRole === ownerRole)
+      .map((module) => module.output),
+  ];
+}
+
 function roleOwnedTsOutputs(
   architecture: CompiledArchitectureV1,
   ownerRole: string,
 ): string[] {
-  const outputs = [
-    ...(architecture.scaffoldOutputs || [])
-      .filter((output) => output.ownerRole === ownerRole)
-      .map((output) => output.path),
-    ...(architecture.modules || [])
-      .filter((module) => module.ownerRole === ownerRole)
-      .map((module) => module.output),
-  ];
-  return outputs.filter((output) => TS_SOURCE_OUTPUT_RE.test(output) && !output.endsWith('.d.ts'));
+  return compiledOutputPaths(architecture, ownerRole)
+    .filter((output) => TS_SOURCE_OUTPUT_RE.test(output) && !output.endsWith('.d.ts'));
 }
 
-// Null when ANY manifest that governs the role's TS outputs (the root manifest
-// or the owning workspace package's) declares `typescript` or a `typecheck`
-// script. Otherwise the candidate manifest list, for the remedy text.
+// A root `typecheck` that only fans out to workspace members (`turbo run
+// typecheck`, `pnpm -r typecheck`, `nx run-many`) proves nothing about a member
+// that has no such script: the runner finds no target and exits 0.
+const DELEGATING_RUNNER_RE = /(?:^|[\s;&|])(?:turbo|nx|lerna)\s|(?:pnpm|yarn|npm)\s+(?:run\s+)?(?:-r|--recursive|--workspaces|-ws)\b|\s--filter\b/;
+
+type TypecheckCoverage = 'none' | 'delegated' | 'direct';
+
+function manifestTypecheckCoverage(pkg: Rec | null): TypecheckCoverage {
+  if (!pkg) return 'none';
+  const scripts = obj(pkg.scripts) || {};
+  const script = typeof scripts.typecheck === 'string' ? scripts.typecheck.trim() : '';
+  if (script) return DELEGATING_RUNNER_RE.test(script) ? 'delegated' : 'direct';
+  const deps = { ...obj(pkg.dependencies), ...obj(pkg.devDependencies) };
+  return typeof deps.typescript === 'string' ? 'direct' : 'none';
+}
+
+// Null when EVERY workspace member that owns TS outputs is actually governed by
+// a compiler — its own manifest, or a root manifest that compiles directly
+// rather than fanning out. The previous form returned clean as soon as ANY
+// manifest in the candidate set qualified, and `package.json` was always seeded
+// into that set: observed 6co, the root declared `"typecheck": "turbo run
+// typecheck"` while `packages/api-client` had `scripts: {}`, so the gate passed
+// and the backend shipped `IMPLEMENTED` whose own digest said `pnpm exec tsc
+// --version` reported tsc not found.
 function typecheckParityViolation(
   projectRoot: string,
   tsOutputs: readonly string[],
 ): { manifests: string[] } | null {
-  const manifests = new Set<string>(['package.json']);
+  const owners = new Set<string>();
+  let rootOwned = false;
   for (const output of tsOutputs) {
     const pkg = /^((?:apps|packages|services)\/[^/]+)\//.exec(output)?.[1];
-    if (pkg) manifests.add(`${pkg}/package.json`);
+    if (pkg) owners.add(pkg);
+    else rootOwned = true;
   }
-  for (const manifest of manifests) {
-    const pkg = jsoncFile(projectRoot, manifest)?.parsed || null;
-    if (!pkg) continue;
-    const deps = { ...obj(pkg.dependencies), ...obj(pkg.devDependencies) };
-    if (typeof deps.typescript === 'string') return null;
-    const scripts = obj(pkg.scripts) || {};
-    if (typeof scripts.typecheck === 'string') return null;
+  const rootCoverage = manifestTypecheckCoverage(jsoncFile(projectRoot, 'package.json')?.parsed || null);
+  const uncovered = new Set<string>();
+  for (const owner of owners) {
+    const manifest = `${owner}/package.json`;
+    const parsed = jsoncFile(projectRoot, manifest)?.parsed || null;
+    if (manifestTypecheckCoverage(parsed) !== 'none') continue;
+    // A root that runs the compiler itself (`tsc -b`, project references) does
+    // cover its members; a delegating runner does not.
+    if (rootCoverage === 'direct') continue;
+    uncovered.add(parsed ? manifest : 'package.json');
   }
-  return { manifests: [...manifests].sort() };
+  if (rootOwned && rootCoverage === 'none') uncovered.add('package.json');
+  return uncovered.size > 0 ? { manifests: [...uncovered].sort() } : null;
+}
+
+// rules/common/seo.md already says "never invent a deploy URL", and 6co invented
+// one anyway: every `<loc>` in the shipped `apps/web/public/sitemap.xml` reads
+// `https://workshop.example/…`. The reviewer caught it; the frontend completion
+// gate did not. A crawl asset is the one place a fabricated origin is
+// unambiguous — reserved/placeholder hosts and loopback can never be a
+// production site, and a relative `<loc>` is invalid per the sitemap spec. A
+// real-looking-but-unverified domain is NOT decidable here and stays a reviewer
+// concern; this gate only rejects what is provably wrong.
+const CRAWL_ORIGIN_FILE_RE = /(?:^|\/)public\/(?:sitemap\.xml|robots\.txt)$/;
+const RESERVED_ORIGIN_HOST_RE = /(?:^|\.)(?:example|test|invalid|local|localhost)$/i;
+const PLACEHOLDER_ORIGIN_RE = /(?:your[-_.]?(?:domain|site|app)|changeme|change-me|placeholder|example\.(?:com|org|net)|mysite|my-site)/i;
+const LOOPBACK_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)$/i;
+
+function fabricatedOrigin(value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/.test(parsed.protocol)) return null;
+  const host = parsed.hostname;
+  return LOOPBACK_HOST_RE.test(host)
+    || RESERVED_ORIGIN_HOST_RE.test(host)
+    || PLACEHOLDER_ORIGIN_RE.test(host)
+    ? parsed.origin
+    : null;
+}
+
+function crawlOriginProblem(
+  projectRoot: string,
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): { file: string; detail: string } | null {
+  const assets = (architecture.scaffoldOutputs || [])
+    .filter((output) => output.ownerRole === ownerRole && CRAWL_ORIGIN_FILE_RE.test(output.path))
+    .map((output) => output.path);
+  for (const asset of assets) {
+    const raw = readTrimmed(projectRoot, asset);
+    if (!raw) continue;
+    if (asset.endsWith('sitemap.xml')) {
+      const locations = [...raw.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((match) => match[1]!);
+      for (const location of locations) {
+        const origin = fabricatedOrigin(location);
+        if (origin) return { file: asset, detail: `\`${origin}\` is not a real production origin` };
+        if (!/^https?:\/\//i.test(location)) {
+          return { file: asset, detail: `\`${location}\` is relative, and sitemap \`<loc>\` must be an absolute URL` };
+        }
+      }
+      continue;
+    }
+    for (const line of raw.split(/\r?\n/)) {
+      const declared = /^\s*sitemap\s*:\s*(\S+)/i.exec(line)?.[1];
+      if (!declared) continue;
+      const origin = fabricatedOrigin(declared);
+      if (origin) return { file: asset, detail: `\`${origin}\` is not a real production origin` };
+      if (!/^https?:\/\//i.test(declared)) {
+        return { file: asset, detail: `\`${declared}\` is relative, and the \`Sitemap:\` directive must be an absolute URL` };
+      }
+    }
+  }
+  return null;
+}
+
+// Third parity twin: the tester OWNS `vitest.config.ts`/`playwright.config.ts`
+// but never the manifest that would carry their dependencies and scripts, so a
+// run can hand it configs for runners that are not installed. Observed 6co: the
+// first tester had no Vitest, Playwright, Lighthouse, or `test`/`test:e2e`
+// script at all and had to negotiate with the manifest owner mid-run; the
+// `playwright.config.ts` it finally wrote is `defineConfig({ testDir:
+// './tests/e2e' })` — no `baseURL`, no `webServer` — so `test:e2e` still cannot
+// run. Ownership must stay single, so accountability lands on whoever owns the
+// governing manifest: it must ship the runner before claiming `IMPLEMENTED`.
+const TEST_RUNNER_REQUIREMENTS: Array<{
+  config: RegExp;
+  dependency: string;
+  script: string;
+  label: string;
+}> = [
+  { config: /(?:^|\/)vitest\.config\.[cm]?[jt]s$/, dependency: 'vitest', script: 'test', label: 'Vitest' },
+  { config: /(?:^|\/)playwright\.config\.[cm]?[jt]s$/, dependency: '@playwright/test', script: 'test:e2e', label: 'Playwright' },
+];
+
+function testToolchainGaps(
+  projectRoot: string,
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): { manifest: string; missing: string[] } | null {
+  const infra = (architecture.scaffoldOutputs || []).filter((output) => output.kind === 'test-infra');
+  if (infra.length === 0) return null;
+  // One governing manifest per config; only the role that owns it is answerable.
+  const manifestFor = (outputPath: string): string => {
+    const pkg = /^((?:apps|packages|services)\/[^/]+)\//.exec(outputPath)?.[1];
+    return pkg ? `${pkg}/package.json` : 'package.json';
+  };
+  const manifestPath = manifestFor(infra[0]!.path);
+  const manifestOwner = (architecture.scaffoldOutputs || [])
+    .find((output) => output.path === manifestPath)?.ownerRole;
+  if (manifestOwner !== ownerRole) return null;
+  const pkg = jsoncFile(projectRoot, manifestPath)?.parsed || null;
+  const deps = { ...(pkg ? obj(pkg.dependencies) : null), ...(pkg ? obj(pkg.devDependencies) : null) };
+  const scripts = pkg ? obj(pkg.scripts) || {} : {};
+  const missing: string[] = [];
+  for (const requirement of TEST_RUNNER_REQUIREMENTS) {
+    if (!infra.some((output) => requirement.config.test(output.path))) continue;
+    if (typeof deps[requirement.dependency] !== 'string') {
+      missing.push(`\`${requirement.dependency}\` dependency (${requirement.label})`);
+    }
+    if (typeof scripts[requirement.script] !== 'string') {
+      missing.push(`\`${requirement.script}\` script (${requirement.label})`);
+    }
+  }
+  return missing.length > 0 ? { manifest: manifestPath, missing } : null;
+}
+
+// The toolchain gates above prove a compiler/formatter is REACHABLE. They cannot
+// prove it was RUN — and an implementer that says so in its own digest has
+// already published the evidence: observed 6co, `backend.md` read "TypeScript
+// execution was skipped because dependencies are not installed … `pnpm exec tsc
+// --version` reported `tsc` not found" directly above `verdict: IMPLEMENTED`.
+// Take the digest at its word rather than letting the omission surface two fix
+// cycles later in a sibling role's build.
+const REQUIRED_COMMAND_RE = /\b(?:tsc|typecheck|type-check|typescript|prettier|format:check|eslint|lint|build)\b/i;
+const SKIPPED_COMMAND_RE = /\b(?:skipped|not run|never run|did not run|didn'?t run|could ?n[o']t (?:be )?run|cannot (?:be )?run|can'?t (?:be )?run|unable to run|not installed|not available|unavailable|not found|missing)\b/i;
+// "no checks were skipped", "0 files skipped", "nothing was omitted" are reports
+// of absence, not confessions.
+const NEGATED_SKIP_RE = /\b(?:no|none|nothing|zero|0|not)\b(?:[^.;\n]{0,40}?)\b(?:skipped|omitted|missing|unavailable)\b/i;
+
+function skippedVerificationLine(content: string): string | null {
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    if (!REQUIRED_COMMAND_RE.test(line)) continue;
+    if (!SKIPPED_COMMAND_RE.test(line)) continue;
+    if (NEGATED_SKIP_RE.test(line)) continue;
+    return line.length > 240 ? `${line.slice(0, 240)}…` : line;
+  }
+  return null;
 }
 
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
@@ -1354,7 +1617,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
           violations.push(block('frontend-structure-completion-gate',
-            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Numeric LOC/function-count/component-count findings remain warnings during this rollout.`,
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module.`,
             { FINDINGS: summary }));
         }
       }
@@ -1379,8 +1642,28 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       ? compiledFormatToolchainForRole(architecture, ownerRole)
       : null;
     if (tooling) {
-      const parity = formatParityViolation(projectRoot, tooling);
-      if (parity?.kind === 'missing-dependency') {
+      // Reaching here means this role OWNS the compiled `.prettierrc`, so it is
+      // accountable for the script reading the whole compiled tree — not just
+      // its own share. The remedy is a one-line edit in its own manifest
+      // (`prettier --check .` plus `.prettierignore`), never formatting another
+      // role's files, so this cannot deadlock across roles.
+      const parity = formatParityViolation(
+        projectRoot,
+        tooling,
+        architecture ? compiledOutputPaths(architecture) : [],
+      );
+      if (parity?.kind === 'uncovered-outputs') {
+        const sample = parity.uncovered.map((output) => `\`${output}\``).join(', ');
+        violations.push(block('implementer-format-coverage-gate',
+          `Implementer format coverage gate: the \`${tooling.manifestPath}\` "${parity.script}" script runs \`${parity.command}\`, whose arguments never reach compiled outputs including ${sample}. A formatter that skips owned source proves nothing — it passes while those files are unformatted. Check the whole project instead (\`prettier --check .\`) and put build output, lockfiles, and \`.traffic-one\` in \`.prettierignore\`, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            MANIFEST: tooling.manifestPath,
+            SCRIPT: parity.script,
+            COMMAND: parity.command,
+            UNCOVERED: sample,
+          }));
+      } else if (parity?.kind === 'missing-dependency') {
         violations.push(block('implementer-format-parity-gate',
           `Implementer format parity gate: role \`${ownerRole}\` owns formatter config \`${tooling.configPath}\`, but \`prettier\` is not declared in \`${tooling.manifestPath}\` dependencies/devDependencies. A script or config that names an absent tool makes verification meaningless. Add \`prettier\` with the selected package manager at tooling root \`${tooling.toolingRoot}\`, then re-emit \`IMPLEMENTED\`.`,
           {
@@ -1414,6 +1697,35 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
             MANIFESTS: manifestList,
           }));
       }
+    }
+    if (architecture) {
+      const origin = crawlOriginProblem(projectRoot, architecture, ownerRole);
+      if (origin) {
+        violations.push(block('implementer-crawl-origin-gate',
+          `Implementer crawl origin gate: \`${origin.file}\` ships an unusable production origin — ${origin.detail}. Crawl assets are published verbatim, so an invented origin is a live defect, not a placeholder. Generate these files from the public site-url env var (\`VITE_SITE_URL\` or the framework equivalent) and fail generation when it is unset; leave the deploy origin \`Unverified\` in project memory until the user supplies it. Then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            FILE: origin.file,
+            DETAIL: origin.detail,
+          }));
+      }
+      const testGaps = testToolchainGaps(projectRoot, architecture, ownerRole);
+      if (testGaps) {
+        const missing = testGaps.missing.join(', ');
+        violations.push(block('implementer-test-toolchain-gate',
+          `Implementer test toolchain gate: role \`${ownerRole}\` owns \`${testGaps.manifest}\`, and the contract compiles tester-owned runner configs there, but ${missing} is absent. The tester owns the configs and never the manifest, so it cannot install its own runner — it inherits a config for a tool that is not there and has no way to run the suite. Add the missing dependencies and scripts to \`${testGaps.manifest}\`, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            MANIFEST: testGaps.manifest,
+            MISSING: missing,
+          }));
+      }
+    }
+    const skipped = skippedVerificationLine(content);
+    if (skipped) {
+      violations.push(block('implementer-verification-skipped-gate',
+        `Implementer verification gate: this digest reports a required command as skipped or unavailable — "${skipped}" — directly alongside \`IMPLEMENTED\`. A verdict is a claim that the owned scope was verified, so an unrun build/typecheck/lint makes it unverifiable and the errors surface later in a sibling role's build. Install the toolchain at its owning manifest, run the command to completion, record the real outcome, then re-emit \`IMPLEMENTED\`. If the command genuinely does not apply, say why without claiming it was skipped.`,
+        { EVIDENCE: skipped }));
     }
   }
   if (implementedDigest

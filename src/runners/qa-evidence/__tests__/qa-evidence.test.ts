@@ -427,6 +427,111 @@ test('browser CLI fails exact Lighthouse thresholds and rejects another localhos
   });
 });
 
+// 6co: the contract legitimately carries `*` and `/courses/:courseSlug`, but the
+// runner required every scenario route to start with `/` and then navigated to
+// it verbatim. QA became unsatisfiable for a catch-all (the architect rewrote
+// the product's 404 to a literal `/404` to get a passing sweep, shipping an app
+// with no reachable not-found route) and silently false-passed `:param` routes
+// by visiting the literal `/courses/:courseSlug`.
+function setupPatternRoutesProject(cwd: string): void {
+  fs.mkdirSync(path.join(cwd, 'apps/web/src/pages'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+    dependencies: { react: '19.0.0', vite: '7.0.0' },
+  }));
+  const architecture = compileArchitecture(cwd, 'R', STATE, {
+    schemaVersion: 1,
+    routes: [
+      { id: 'home-route', path: '/', moduleId: 'home' },
+      { id: 'course-route', path: '/courses/:courseSlug', moduleId: 'course-detail' },
+      { id: 'not-found-route', path: '*', moduleId: 'not-found' },
+    ],
+    modules: [
+      { id: 'home', name: 'Home', kind: 'page' },
+      { id: 'course-detail', name: 'Course Detail', kind: 'page' },
+      { id: 'not-found', name: 'Not Found', kind: 'page' },
+    ],
+  });
+  const changedPath = 'apps/web/src/pages/Home.tsx';
+  fs.writeFileSync(
+    path.join(cwd, changedPath),
+    'export const Home=()=> <main><button>Open</button></main>;\n',
+  );
+  compileVerificationContract(cwd, 'R', STATE, architecture, {
+    changedPaths: [changedPath],
+    explicitLighthouse: {
+      performanceMin: 90,
+      accessibilityMin: 90,
+      bestPracticesMin: 90,
+      lcpMaxMs: 2_500,
+      clsMax: 0.1,
+    },
+  });
+  const buildDir = path.join(cwd, 'apps/web/dist');
+  fs.mkdirSync(buildDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(buildDir, 'index.html'),
+    '<!doctype html><html><body><main><button>Open</button></main></body></html>\n',
+  );
+}
+
+test('browser CLI probes catch-all and parameterized routes through startPath, keyed by the contract pattern', async () => {
+  await withProject(async (cwd) => {
+    setupPatternRoutesProject(cwd);
+    installFakePlaywright(cwd);
+    installFakeLighthouse(cwd);
+    const steps = [
+      { type: 'click', selector: 'button' },
+      { type: 'expect-visible', selector: 'main' },
+    ];
+    const routeEntry = (
+      route: string,
+      extra: Record<string, unknown> = {},
+    ): Record<string, unknown> => ({ route, stableSelector: 'main', steps, ...extra });
+    const run = async (routes: Array<Record<string, unknown>>): Promise<number> => main([
+      'browser',
+      '--run-id', 'R',
+      '--build-dir', 'apps/web/dist',
+      '--scenario-json', JSON.stringify({ schemaVersion: 1, routes }),
+    ], cwd);
+
+    // A pattern with no concrete probe is unusable — fail closed rather than
+    // fetching the literal `:courseSlug`.
+    assert.equal(await run([
+      routeEntry('/'),
+      routeEntry('/courses/:courseSlug'),
+      routeEntry('*', { startPath: '/does-not-exist' }),
+    ]), 2);
+
+    // A probe that does not satisfy its own pattern proves nothing.
+    assert.equal(await run([
+      routeEntry('/'),
+      routeEntry('/courses/:courseSlug', { startPath: '/dashboard' }),
+      routeEntry('*', { startPath: '/does-not-exist' }),
+    ]), 2);
+
+    // A catch-all probed with a URL another declared route claims exercises the
+    // sibling route, not the 404.
+    assert.equal(await run([
+      routeEntry('/'),
+      routeEntry('/courses/:courseSlug', { startPath: '/courses/html-css' }),
+      routeEntry('*', { startPath: '/courses/html-css' }),
+    ]), 2);
+
+    // Concrete probes for both patterns: the sweep runs and the report stays
+    // indexed by the contract identity, not by the URL that was visited.
+    assert.equal(await run([
+      routeEntry('/'),
+      routeEntry('/courses/:courseSlug', { startPath: '/courses/html-css' }),
+      routeEntry('*', { startPath: '/does-not-exist' }),
+    ]), 0);
+    const report = JSON.parse(fs.readFileSync(qaReportV2Path(cwd, 'R'), 'utf8'));
+    assert.deepEqual(
+      report.routes.map((route: { route: string }) => route.route).sort(),
+      ['*', '/', '/courses/:courseSlug'],
+    );
+  });
+});
+
 test('browser CLI requires an interactive action and records a behavioral failure screenshot', async () => {
   await withProject(async (cwd) => {
     setupProject(cwd);

@@ -115,10 +115,16 @@ output under `packages/<name>/` causes that package's `package.json` to be
 owned by the same implementation role unless already present.
 
 At that one tooling root, the manifest declares `prettier` plus real `format`
-and `format:check` scripts. When the tooling root is the repository root,
-`.prettierignore` excludes `.traffic-one/`, dependencies, generated/build
-artifacts, coverage, and runtime reports. Non-Node targets use their native
-formatter and do not receive a synthetic Node manifest.
+and `format:check` scripts. Both check the WHOLE project — `prettier --write .`
+and `prettier --check .` — with exclusions expressed only in `.prettierignore`,
+never as narrowed path arguments. A script that lists a few globs passes while
+every source outside them is unformatted: observed 6co, a root `lint` covering
+`apps/web/src` and three `packages/*` reported success while a plain
+`prettier --check .` failed on 25 files, including all of `packages/api-client`,
+every test, and `vitest.config.ts`. When the tooling root is the repository
+root, `.prettierignore` excludes `.traffic-one/`, dependencies, generated/build
+artifacts, lockfiles, coverage, and runtime reports. Non-Node targets use their
+native formatter and do not receive a synthetic Node manifest.
 
 When a React Native target and an owned Node backend share root `package.json`,
 the selected UI implementation owner is the single manifest integration owner.

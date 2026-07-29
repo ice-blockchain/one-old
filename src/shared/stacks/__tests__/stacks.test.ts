@@ -141,8 +141,12 @@ test('common rules stay stack-native and defer classification to runtime contrac
   const common = path.resolve(__dirname, '../../../modules/rules/rules/common');
   const clean = fs.readFileSync(path.join(common, 'clean-code.md'), 'utf8');
   assert.doesNotMatch(clean, /`const` by default|`camelCase` vars|800 hard cap|~50 lines max/);
-  assert.match(clean, /numeric LOC, function-size,[\s\S]*top-level-function-count,[\s\S]*advisory[\s\S]*`WARN`/);
+  assert.match(clean, /per-component LOC, function-size,[\s\S]*top-level-function-count,[\s\S]*advisory[\s\S]*`WARN`/);
   assert.match(clean, /false-positive[\s\S]*below 1%/);
+  // The one numeric threshold that blocks, and the escapes that keep it from
+  // deadlocking a legitimately large or generated module.
+  assert.match(clean, /400 logical lines[\s\S]*`STRUCT_MODULE_LOC`/);
+  assert.match(clean, /`\*\.types\.ts`[\s\S]*are exempt/);
 
   const tooling = fs.readFileSync(path.join(common, 'quality-tooling.md'), 'utf8');
   assert.match(tooling, /JavaScript\/TypeScript only/);

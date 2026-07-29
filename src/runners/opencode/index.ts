@@ -25,6 +25,7 @@ import * as path from 'path';
 
 import { OPENCODE_FREE_MODELS } from '../../config/model-tiers';
 import { gatewayBreakerMs, maxConsecutiveStalls, opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
+import { collapsedLineNumber, isCollapseCandidate } from '../../shared/collapsed-source';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
@@ -556,6 +557,35 @@ export function postApplyTypecheck(cwd: string, touched: string[]): string | nul
     if (!outputMentionsTouched(out, cwd, tsTouched)) continue; // pre-existing breakage elsewhere — not this unit's fault
     const firstLines = out.trim().split('\n').filter(Boolean).slice(0, 4).join(' | ').slice(0, 400);
     return `${command.label}: ${firstLines}`;
+  }
+  return null;
+}
+
+/**
+ * Quality twin of postApplyTypecheck: reject a delegated unit whose landed
+ * source is collapsed onto one line. OpenCode writes by applying a git diff, so
+ * its output never passes through the structural write gate — observed 7co, the
+ * free model returned a `CourseCard.tsx` packing four JSX elements per line,
+ * `DELEGATED_OK` was recorded, and the paid frontend then integrated against it.
+ * Typecheck alone cannot see this (collapsed code compiles), and the owning
+ * role's completion gate only runs much later, at its digest.
+ *
+ * Returns an error string so the caller rolls the apply back exactly the way a
+ * failed typecheck does and falls back to the paid implementer with a clean tree.
+ */
+export function postApplyQuality(cwd: string, touched: string[]): string | null {
+  for (const rel of touched) {
+    if (!isCollapseCandidate(rel)) continue;
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+    } catch {
+      continue; // deleted or unreadable — not this check's concern
+    }
+    const line = collapsedLineNumber(rel, text);
+    if (line !== null) {
+      return `${rel}:${line} packs an entire function/component onto one line`;
+    }
   }
   return null;
 }
@@ -1254,6 +1284,12 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
       const rollbackError = restoreApplyTargets(backups);
       const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
       return { kind: 'failed', error: `delegated diff applied but typecheck failed${suffix}: ${verifyError}` };
+    }
+    const qualityError = postApplyQuality(cwd, touched);
+    if (qualityError) {
+      const rollbackError = restoreApplyTargets(backups);
+      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+      return { kind: 'failed', error: `delegated diff applied but landed collapsed source${suffix}: ${qualityError}` };
     }
     return { kind: 'delegated', touched, summary };
   } finally {

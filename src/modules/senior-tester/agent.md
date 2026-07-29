@@ -67,6 +67,15 @@ a devDependency is missing, say which one in your digest and let the role that
 owns the manifest add it; a missing dependency is `TESTS_FAILING` with a reason,
 never a reason to build your own tree.
 
+`playwright.config.ts` is yours too, and it must be runnable on its own, not a
+bare `testDir` (observed 6co: `defineConfig({ testDir: './tests/e2e' })` shipped
+with no `baseURL` and no `webServer`, so `test:e2e` could never start the app).
+Give it `use.baseURL`, a `webServer` that builds and serves the runtime-detected
+output root on a port THIS run owns (`--strictPort`, never a shared default like
+4173/5173/3000), and `reuseExistingServer: false`. The canonical QA runner still
+owns its own listener — this config is what makes `pnpm test:e2e` work for
+everyone else.
+
 ## Test workflow
 
 1. Map every changed contract to a happy path, failure path, and relevant
@@ -128,6 +137,13 @@ Change `--build-dir` to the runtime-detected output root. For Next/Nuxt/custom
 SSR, append the skill's shell-free `--server-command-json` adapter. Each changed
 route must include a real interactive action, route-specific selector, and
 planned final path.
+
+`route` is the contract identity and the key the evidence is filed under. When it
+is not a literal path — `*`, `/courses/:courseSlug` — add `startPath` with the
+concrete URL to visit: `{"route":"*","startPath":"/does-not-exist",…}`,
+`{"route":"/courses/:courseSlug","startPath":"/courses/html-css",…}`. The probe
+must satisfy its own pattern, and a catch-all probe must be a URL no other
+declared route claims. Never edit the architecture to make a route literal.
 
 The runner—not this agent—computes the output-manifest build hash, owns the
 listener, creates Playwright traces/screenshots, writes machine evidence and

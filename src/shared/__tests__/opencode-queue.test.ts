@@ -59,6 +59,50 @@ test('readOpenCodeQueue + readOpenCodeUnitStatuses round-trip queue and status f
   });
 });
 
+test('recordOpenCodeUnitStatus folds repeated terminal writes into one attempt and keeps the model', () => {
+  withRunDir((cwd, runId) => {
+    const unit = { id: 'responsive-navigation', role: 'frontend', touched: ['src/Nav.tsx'] };
+    // The exact 6co sequence for one successful unit: the delegate records the
+    // terminal status, the batch records it again 2 ms later, and batch
+    // finalization reconciles it a third time without model metadata.
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'running', action: 'running', model: null, updatedAt: '2026-07-29T09:18:50.380Z',
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'delegated', action: 'delegated', model: 'opencode/deepseek-v4-flash-free', updatedAt: '2026-07-29T09:22:09.278Z',
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'delegated', action: 'delegated', model: 'opencode/deepseek-v4-flash-free', updatedAt: '2026-07-29T09:22:09.280Z',
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'delegated', action: 'delegated', model: null, updatedAt: '2026-07-29T09:33:12.688Z',
+    });
+
+    const [status] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.deepEqual(
+      (status?.attempts || []).map((attempt) => attempt.status),
+      ['running', 'delegated'],
+      'one terminal transition must record one attempt',
+    );
+    assert.equal(status?.attempts?.[1]?.model, 'opencode/deepseek-v4-flash-free');
+    assert.equal(status?.attempts?.[1]?.updatedAt, '2026-07-29T09:22:09.278Z');
+    assert.equal(status?.model, 'opencode/deepseek-v4-flash-free', 'reconciliation must not blank the model');
+
+    // A genuine retry is still a new attempt — the cap protects real history.
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'running', action: 'running', model: null, updatedAt: '2026-07-29T09:40:00.000Z',
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'failed', action: 'failed', model: 'opencode/other', error: 'boom', updatedAt: '2026-07-29T09:41:00.000Z',
+    });
+    const [retried] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.deepEqual(
+      (retried?.attempts || []).map((attempt) => attempt.status),
+      ['running', 'delegated', 'running', 'failed'],
+    );
+  });
+});
+
 test('recordOpenCodeUnitStatus keeps best status and appends attempts', () => {
   withRunDir((cwd, runId) => {
     recordOpenCodeUnitStatus(cwd, runId, {
@@ -87,7 +131,17 @@ test('recordOpenCodeUnitStatus keeps best status and appends attempts', () => {
 test('recordOpenCodeUnitStatus caps attempt history and stores a repeated error once', () => {
   withRunDir((cwd, runId) => {
     const error = `delegation denied: ${'x'.repeat(400)}`;
+    // Real retries alternate running/terminal; consecutive identical terminals
+    // are duplicate reporting and now fold into one attempt, so the cap is
+    // exercised with the shape it actually protects.
     for (let index = 0; index < 12; index += 1) {
+      recordOpenCodeUnitStatus(cwd, runId, {
+        id: 'ui-card',
+        role: 'frontend',
+        status: 'running',
+        action: 'running',
+        touched: [],
+      });
       recordOpenCodeUnitStatus(cwd, runId, {
         id: 'ui-card',
         role: 'frontend',

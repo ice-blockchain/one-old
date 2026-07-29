@@ -36,10 +36,16 @@ and `frontend/<flavour>/core.md`.
 ## File & function size
 - Keep modules cohesive and functions focused. Split them when they combine
   unrelated routes, screens, commands, jobs, or domain responsibilities.
-- During the current one-version rollout, numeric LOC, function-size,
+- During the current one-version rollout, per-component LOC, function-size,
   top-level-function-count, and component-per-file thresholds are advisory
   `WARN` signals only. They are not standalone blockers until fixture
   validation demonstrates a false-positive rate below 1%.
+- One numeric threshold DOES block: a single module over ~400 logical lines
+  (`STRUCT_MODULE_LOC`). A module that large is packing a whole feature into one
+  file regardless of how its components are counted. Split it along its own
+  seams. Generated declaration/type modules (`*.d.ts`, `*.types.ts`,
+  `*.generated.ts`) are exempt, and the architect may declare a narrow
+  `STRUCT_MODULE_LOC` exception with a glob and a reason.
 - Runtime structural findings remain blocking independently of LOC:
   entrypoints containing inline UI/routes, multiple pages in one module,
   route/contract mismatches, allowlist gaps, and incomplete scans.

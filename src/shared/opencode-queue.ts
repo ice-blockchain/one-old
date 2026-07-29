@@ -266,11 +266,45 @@ export function recordOpenCodeUnitStatus(cwd: string, runId: string, entry: Omit
         updatedAt: next.updatedAt,
       };
       if (priorEntry) {
-        const attempts = [...priorAttempts, attempt].slice(-OPENCODE_UNIT_ATTEMPT_CAP);
+        // A unit reaches a terminal status ONCE. Two layers report it — the
+        // delegate call itself and the batch that owns the unit — and batch
+        // finalization can reconcile it a third time, so 6co recorded four
+        // attempts for every one of its six successful units: `running`, the
+        // same `delegated` twice 1-2 ms apart, then a `delegated` with
+        // `model: null`. Against the 8-attempt cap that evicts the real retry
+        // history of any unit that genuinely retried, and the last writer
+        // erased the model. Fold a repeat of the SAME terminal transition into
+        // the attempt already recorded, keeping whichever metadata is known.
+        const previous = priorAttempts[priorAttempts.length - 1];
+        const repeatsTerminal = Boolean(
+          previous
+          && previous.status === attempt.status
+          && attempt.status !== 'queued'
+          && attempt.status !== 'running'
+          && (previous.action ?? null) === (attempt.action ?? null),
+        );
+        const attempts = repeatsTerminal
+          ? [
+              ...priorAttempts.slice(0, -1),
+              {
+                ...previous,
+                ...attempt,
+                model: attempt.model ?? previous!.model ?? null,
+                failureKind: attempt.failureKind ?? previous!.failureKind ?? null,
+                error: attempt.error ?? previous!.error ?? null,
+                updatedAt: previous!.updatedAt,
+              },
+            ]
+          : [...priorAttempts, attempt].slice(-OPENCODE_UNIT_ATTEMPT_CAP);
         const keepPriorSummary = statusPrecedence(priorEntry.status) > statusPrecedence(next.status);
-        statuses[idx] = keepPriorSummary
+        const merged = keepPriorSummary
           ? { ...priorEntry, attempts, updatedAt: next.updatedAt }
           : { ...priorEntry, ...next, attempts };
+        statuses[idx] = repeatsTerminal
+          // The reconciliation pass carries no model/timing; never let it blank
+          // what the delegate already observed.
+          ? { ...merged, model: next.model ?? priorEntry.model ?? null }
+          : merged;
       } else {
         statuses.push({ ...next, attempts: [attempt] });
       }

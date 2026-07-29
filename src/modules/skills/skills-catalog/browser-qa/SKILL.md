@@ -84,6 +84,20 @@ action—not only visibility assertions:
 }
 ```
 
+`route` is the compiled contract's route IDENTITY and the key the evidence is
+filed under — it is matched against `changedRoutes`, never fetched. When the
+identity is not a literal path, add `startPath` with the concrete URL to visit:
+
+```json
+{ "route": "*", "startPath": "/does-not-exist", "finalPath": "/does-not-exist", "stableSelector": "[data-testid='not-found']", "steps": [ … ] }
+{ "route": "/courses/:courseSlug", "startPath": "/courses/html-css", "finalPath": "/courses/html-css", "stableSelector": "main", "steps": [ … ] }
+```
+
+`startPath` must satisfy its own pattern, and a `*` probe must be a URL no other
+declared route claims — otherwise the sweep exercises the sibling route instead
+of the 404. Never rewrite the architecture to turn a pattern into a literal path
+to simplify the scenario.
+
 Run the exact QA command:
 
 ```bash

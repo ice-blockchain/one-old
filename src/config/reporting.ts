@@ -9,8 +9,10 @@ import * as path from 'path';
 // runner's featureEnabled option; production callers use this compiled value.
 export const ONE_MCP_REPORT = true;
 
-// When false, reporting stays fire-and-forget and is deduplicated by one-uid in
-// .one.json, without reading or writing one-mcp-report.json.
+// When true, the reporter reads and writes the `one-mcp-report.json` status
+// file (pending/ok/failed plus retry timing), so a queued report survives the
+// session and retries on its own schedule. When false it is fire-and-forget,
+// deduplicated only by the one-uid in `.one.json`.
 export const SAVE_MCP_REPORT = true;
 
 export const ONE_UID_FIELD = 'one-uid';

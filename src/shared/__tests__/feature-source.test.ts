@@ -10,6 +10,7 @@ import {
   isTestScopePath,
   roleCanWriteFeatureSource,
   shellAssetImportDest,
+  shellStrayDeleteTarget,
   shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
   subagentMayWriteFeatureSource,
@@ -242,6 +243,43 @@ test('shellAssetImportDest accepts only single outside→inside cp/mv imports', 
   assert.equal(shellAssetImportDest('cp public/a.png', wd, root), null);
   assert.equal(shellAssetImportDest('', wd, root), null);
   assert.equal(shellAssetImportDest(undefined, wd, root), null);
+});
+
+test('shellStrayDeleteTarget accepts only an exact single-file rm inside the project', () => {
+  const root = '/proj';
+  const wd = '/proj';
+  // The observed 6co shape: a stray raster the frontend produced beside its
+  // owned icons, which neither the child nor the parent could remove.
+  assert.equal(
+    shellStrayDeleteTarget('rm apps/web/public/icons/favicon.svg.png', wd, root),
+    'apps/web/public/icons/favicon.svg.png',
+  );
+  assert.equal(shellStrayDeleteTarget('rm -f public/stray.png', wd, root), 'public/stray.png');
+  assert.equal(shellStrayDeleteTarget('rm -- public/stray.png', wd, root), 'public/stray.png');
+  assert.equal(shellStrayDeleteTarget("rm 'public/with space.png'", wd, root), 'public/with space.png');
+  assert.equal(shellStrayDeleteTarget('rm /proj/public/stray.png', wd, root), 'public/stray.png');
+  // subdir workdir resolves the relative operand correctly
+  assert.equal(shellStrayDeleteTarget('rm public/stray.png', '/proj/apps/web', root), 'apps/web/public/stray.png');
+
+  // Rejections: recursion, globs, multiple operands, escapes, dot-dirs,
+  // compounds, redirects, other commands.
+  assert.equal(shellStrayDeleteTarget('rm -rf public/icons', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm -r public/icons', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm -R public/icons', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm --recursive public/icons', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm public/*.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm public/a.png public/b.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm ../outside.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm /elsewhere/a.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm .traffic-one/runs/x.json', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm .git/index', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm public/a.png && rm -rf src', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm public/a.png > log.txt', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm $(cat list.txt)', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('unlink public/a.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('', wd, root), null);
+  assert.equal(shellStrayDeleteTarget(undefined, wd, root), null);
 });
 
 test('isTestScopePath classifies test files and conventional test dirs', () => {

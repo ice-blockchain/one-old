@@ -74,8 +74,11 @@ instead of creating it out of scope.
      architect/runtime refreshed it after every migration; block when stale
      rather than editing it from an implementation work unit.
    - Keep `.traffic-one/digests/`, `.traffic-one/reports/`,
-     `.traffic-one/backups/`, `graphify-out/`, and `.gitnexus/` gitignored
-     as local caches; the memory baseline files above are source.
+     `.traffic-one/backups/`, `.traffic-one/one-mcp-report.json`,
+     `graphify-out/`, and `.gitnexus/` gitignored as local caches; the memory
+     baseline files above are source. The report status file carries a
+     machine-local report id, attempt counts, and timestamps — it is per-clone
+     state, never a shared artifact.
    - `.prettierignore` must exclude `node_modules`, build output, and the WHOLE
      `.traffic-one` directory. Narrowing it to `.traffic-one/reports` lets a
      workspace-wide `prettier --write` rewrite run artifacts owned by other
@@ -285,6 +288,18 @@ instead of creating it out of scope.
       regression test that asserts the setup link has that exact `href`.
       Never call `createClient` at module top level. Never assume `getSupabase()`
       is non-null in a service or store.
+
+      There is exactly ONE `createClient` call in the repository, in the
+      backend-owned `packages/api-client/src/supabase.ts` factory, re-exported
+      from `packages/api-client/src/index.ts` alongside the typed services and
+      `database.types.ts`. Frontends import that factory; they never construct a
+      client of their own and never pass client closures back into a service.
+      Observed 6co: with no compiled home for the factory, the frontend built
+      its own client inside an auth feature and threaded closures into
+      backend-owned services, so the boundary existed only by convention.
+      `packages/api-client/package.json` declares its own `typecheck` (and
+      `test`, where the package has tests) script — a root `turbo run typecheck`
+      finds no target in a package that declares none and exits 0.
 
    e. **Do not link, push, or boot anything during the build.** The committed
       `supabase/` artifacts (config, migration, and seed paths compiled for the

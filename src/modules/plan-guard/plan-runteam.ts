@@ -150,7 +150,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // Shell writes can't be ownership-verified from a command line.
   if (writingFeatureSourceViaCommand || writingBuildArtifactViaCommand) {
     return deny(block('run-team-shell',
-      'Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt.'));
+      'Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt. Two shell shapes ARE verifiable and stay allowed: a single `cp`/`mv` importing one file from outside the project, and a single `rm <path>` (at most `-f`, never `-r`, no globs, one operand) removing a stray file that is present on disk, untracked, absent from the immutable baseline, and owned by nobody in the compiled contract — that is cleanup of your own by-product, not an implementation write.'));
   }
 
   const nativeAnonymousDevinWrite = args.host === 'windsurf'

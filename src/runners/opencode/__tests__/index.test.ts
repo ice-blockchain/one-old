@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
+import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyQuality, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
@@ -73,7 +73,7 @@ function withCodexProPolicyEnv(
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts' | 'prompt';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts' | 'prompt' | 'collapsed';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -332,6 +332,19 @@ const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'committed foo.txt' } }) + '\\n');
 fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
 execSync('git add -A && git commit -q -m delegated', { cwd: dir, stdio: 'ignore', shell: '/bin/sh' });
+`,
+    // 7co shape: the free model returns working, type-correct code with the
+    // whole component packed onto one line. Typecheck cannot see it, so without
+    // the quality check the unit is recorded DELEGATED_OK and the paid role
+    // integrates against collapsed source.
+    collapsed: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created CourseCard' } }) + '\\n');
+fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'src', 'CourseCard.tsx'),
+  'export function CourseCard({ title, summary }) { const open = useState(false); return <article className="card"><h3>{title}</h3><p>{summary}</p><footer><span>{title}</span></footer></article> }\\n');
 `,
   };
   fs.writeFileSync(path.join(bin, 'opencode'), scripts[behavior], { mode: 0o755 });
@@ -1697,6 +1710,59 @@ test('post-apply typecheck skips on pre-existing breakage (errors only in untouc
     // And the pure helper: no tsc on disk → verification skipped entirely.
     assert.equal(postApplyTypecheck(fs.mkdtempSync(path.join(os.tmpdir(), 't1-notsc-')), ['src/foo.ts']), null);
   });
+});
+
+test('a delegated unit that lands collapsed source is rejected and reverted, not DELEGATED_OK', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('collapsed');
+    const result = delegate(dir, { role: 'frontend', task: 'add the course card', runId: 'r-collapsed' });
+
+    // 7co: this exact shape typechecks, so only a quality check can catch it.
+    assert.equal(result.action, 'failed');
+    assert.match(String(result.error), /collapsed source/);
+    assert.match(String(result.error), /src\/CourseCard\.tsx:1/);
+    // Reverted: the paid implementer must inherit a clean tree, not the
+    // collapsed file it would otherwise have to notice and rewrite.
+    assert.equal(fs.existsSync(path.join(dir, 'src', 'CourseCard.tsx')), false);
+  });
+});
+
+test('postApplyQuality reads landed files and spares strings, types, and non-source', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocq-'));
+  const write = (rel: string, body: string): string => {
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), body, 'utf8');
+    return rel;
+  };
+
+  const collapsed = write('src/Nav.tsx',
+    'export function Nav(){const [o,setO]=useState(false);return <header><nav><a href="/">H</a></nav><button>{o}</button></header>}\n');
+  assert.match(String(postApplyQuality(dir, [collapsed])), /src\/Nav\.tsx:1/);
+
+  // Formatted source, a long Tailwind className, and a one-line type body are
+  // all clean — the same corpora the write-time rule was calibrated against.
+  const formatted = write('src/Card.tsx', [
+    'export function Card({ title }: Props) {',
+    '  return (',
+    '    <article className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">',
+    '      <h3>{title}</h3>',
+    '    </article>',
+    '  )',
+    '}',
+  ].join('\n'));
+  const types = write('src/types.ts',
+    'export interface Unit { id?: string; role: string; task: string; action: string; status?: string; touched: string[]; model?: string }\n');
+  assert.equal(postApplyQuality(dir, [formatted, types]), null);
+
+  // Generated, test, and non-source paths are out of scope; a deleted file in
+  // the touched list must not throw.
+  const generated = write('src/database.types.ts', 'export type A={a:string};export type B={b:string};export function f(){return 1;}\n');
+  const spec = write('src/Card.test.tsx',
+    'it("x", () => { const a = 1; render(<A/>); expect(<B><C/></B>).toBeTruthy(); expect(a).toBe(1); });\n');
+  const readme = write('README.md', 'x'.repeat(400));
+  assert.equal(postApplyQuality(dir, [generated, spec, readme, 'src/deleted.tsx']), null);
+
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('post-apply verifier prefers nearest package typecheck script over raw tsconfig fallback', () => {

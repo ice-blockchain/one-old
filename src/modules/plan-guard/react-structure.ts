@@ -11,6 +11,7 @@ import {
   type CompiledArchitectureV1,
 } from '../../shared/architecture-contract';
 import type { CapabilityProfileV1 } from '../../shared/capabilities';
+import { collapsedLineNumber, lexicalMask } from '../../shared/collapsed-source';
 import { writeJson } from '../../shared/fsjson';
 import { matchesPattern, matchesScope, type AssignedScope } from '../../shared/scope';
 
@@ -29,7 +30,9 @@ export type StructureFindingId =
   | 'STRUCT_SCAN_INCOMPLETE'
   | 'STRUCT_COMPONENT_LOC'
   | 'STRUCT_FUNCTION_COUNT'
-  | 'STRUCT_COMPONENTS_PER_FILE';
+  | 'STRUCT_COMPONENTS_PER_FILE'
+  | 'STRUCT_MODULE_LOC'
+  | 'STRUCT_COLLAPSED_LINE';
 
 export interface StructureFinding {
   id: StructureFindingId;
@@ -120,10 +123,14 @@ const cache = new Map<string, CacheEntry>();
 const STRUCTURAL_SOURCE_RE = /\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|html|php|css|scss)$/i;
 const ANALYZABLE_UI_RE = /\.(?:tsx?|jsx?|mjs|cjs|vue)$/i;
 const SKIP_RE = /(^|\/)(?:\.git|\.traffic-one|node_modules|dist|build|coverage|out|\.turbo|\.next|\.vite|generated|__generated__|tests?|__tests__|fixtures?|stories)(?:\/|$)|\.(?:test|spec|stories?)\.[^.]+$/i;
-const WARNING_IDS = new Set<StructureFindingId>([
+// Findings an architect-declared exception may suppress. Every advisory numeric
+// rule qualifies, plus the one BLOCKING numeric rule (STRUCT_MODULE_LOC) —
+// without that a legitimately large module would have no escape hatch at all.
+const EXCEPTIONABLE_IDS = new Set<StructureFindingId>([
   'STRUCT_COMPONENT_LOC',
   'STRUCT_FUNCTION_COUNT',
   'STRUCT_COMPONENTS_PER_FILE',
+  'STRUCT_MODULE_LOC',
   // Advisory, not blocking: dynamic route paths (`path={ROUTES.x}`,
   // `routes.map(...)`) are legitimate patterns the contract simply cannot
   // verify. The blocking signal stays STRUCT_ROUTE_MODULE_MISMATCH, whose
@@ -131,6 +138,26 @@ const WARNING_IDS = new Set<StructureFindingId>([
   'STRUCT_ROUTE_PATH_UNRESOLVED',
 ]);
 const ADVISORY_FUNCTION_COUNT = 12;
+// The one numeric threshold that BLOCKS. Per-component LOC and
+// components-per-file stay advisory (rules/common/clean-code.md: numeric
+// thresholds wait on a <1% false-positive fixture validation), but a module
+// that packs an entire feature into one file is unambiguous: observed 6co,
+// `pages/Catalog.tsx` shipped 515 logical lines / 7 components with all nine
+// structural signals raised as non-blocking warnings, so `IMPLEMENTED` was
+// accepted. Calibrated against that project: Catalog 515, next-largest module
+// 307 — 400 separates the monolith from merely-large modules.
+//
+// It counts LOGICAL lines (the same collapse-resistant measure as
+// STRUCT_COMPONENT_LOC), so minifying the module onto a handful of lines does
+// not evade it — this is also the only size signal that runs on every scanned
+// write rather than only at the frontend's `IMPLEMENTED` digest.
+const BLOCKING_MODULE_LOC = 400;
+// Generated declaration/type modules are legitimately enormous and nobody
+// authored them: a Supabase `database.types.ts` is 198 logical lines from 85
+// physical ones in 6co alone, and scales with the schema. Blocking those would
+// be an unescapable deadlock on a file the implementer cannot shrink.
+const GENERATED_MODULE_RE = /\.(?:d|types|generated)\.[cm]?[jt]sx?$/i;
+
 
 function normalizeRel(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/');
@@ -149,62 +176,6 @@ function lineAt(text: string, index: number): number {
  * That lets the regex recognizers ignore fake JSX in data/comments without
  * losing stable locations or depending on source formatting.
  */
-function lexicalMask(text: string, maskStrings: boolean): string {
-  const chars = [...text];
-  let state: 'code' | 'line' | 'block' | 'single' | 'double' | 'template' = 'code';
-  let escaped = false;
-  for (let i = 0; i < chars.length; i += 1) {
-    const current = chars[i]!;
-    const next = chars[i + 1] || '';
-    if (state === 'line') {
-      if (current === '\n') state = 'code';
-      else chars[i] = ' ';
-      continue;
-    }
-    if (state === 'block') {
-      if (current === '*' && next === '/') {
-        chars[i] = ' ';
-        chars[i + 1] = ' ';
-        i += 1;
-        state = 'code';
-      } else if (current !== '\n') chars[i] = ' ';
-      continue;
-    }
-    if (state !== 'code') {
-      const closing = state === 'single' ? '\'' : state === 'double' ? '"' : '`';
-      if (maskStrings && current !== '\n') chars[i] = ' ';
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (current === '\\') {
-        escaped = true;
-        continue;
-      }
-      if (current === closing) state = 'code';
-      continue;
-    }
-    if (current === '/' && next === '/') {
-      chars[i] = ' ';
-      chars[i + 1] = ' ';
-      i += 1;
-      state = 'line';
-      continue;
-    }
-    if (current === '/' && next === '*') {
-      chars[i] = ' ';
-      chars[i + 1] = ' ';
-      i += 1;
-      state = 'block';
-      continue;
-    }
-    if (current === '\'' || current === '"' || current === '`') {
-      state = current === '\'' ? 'single' : current === '"' ? 'double' : 'template';
-      if (maskStrings) chars[i] = ' ';
-    }
-  }
-  return chars.join('');
-}
 
 function braceDepths(masked: string): Uint16Array {
   const depths = new Uint16Array(masked.length + 1);
@@ -823,7 +794,7 @@ function exceptionCovers(
   finding: StructureFinding,
   exceptions: ArchitectureExceptionRequestV1[],
 ): boolean {
-  if (!WARNING_IDS.has(finding.id)) return false;
+  if (!EXCEPTIONABLE_IDS.has(finding.id)) return false;
   return exceptions.some((exception) => (
     exception.ruleId === finding.id
     && matchesPattern(finding.file, exception.glob)
@@ -913,6 +884,33 @@ function localFindings(
       file: analysis.file,
       line: pageComponents[0]?.line,
       message: 'Route page is outside the runtime-compiled page roots.',
+    });
+  }
+
+  // Comments and string bodies are masked first: a module is "too long" by its
+  // code, not its documentation, and counting comment lines would also break the
+  // pretty-vs-minified parity the rest of this scanner guarantees (610 lines of
+  // `// filler` must not outrank the same code on one line).
+  const collapsedLine = collapsedLineNumber(analysis.file, analysis.text);
+  if (collapsedLine !== null) {
+    findings.push({
+      id: 'STRUCT_COLLAPSED_LINE',
+      severity: 'error',
+      file: analysis.file,
+      line: collapsedLine,
+      message: `Line ${collapsedLine} packs an entire function/component onto one line. Collapsed source is a defect even when build and typecheck pass — write one statement per line and one JSX element per line.`,
+    });
+  }
+
+  const moduleLoc = GENERATED_MODULE_RE.test(analysis.file)
+    ? 0
+    : logicalLoc(lexicalMask(analysis.text, true));
+  if (moduleLoc > BLOCKING_MODULE_LOC) {
+    findings.push({
+      id: 'STRUCT_MODULE_LOC',
+      severity: 'error',
+      file: analysis.file,
+      message: `Module is approximately ${moduleLoc} logical lines, over the ${BLOCKING_MODULE_LOC} limit. Split it along its own seams — routes, pages, features, and shared components each belong in their own module under the compiled layer roots.`,
     });
   }
 

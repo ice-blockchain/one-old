@@ -324,6 +324,57 @@ export function shellAssetImportDest(command: unknown, workdir: unknown, project
   return rel;
 }
 
+// Deletion twin of shellAssetImportDest. A role that produces a stray file
+// outside its allowlist — a tool by-product, a mis-named export — currently
+// cannot remove it: `rm` is denied as an unverifiable shell write, the path is
+// denied as an allowlist gap, and Write/Edit cannot delete. Observed 6co, the
+// frontend created `apps/web/public/icons/favicon.svg.png`, was denied removing
+// it, and the PARENT was denied too; the run only escaped through an exact
+// `git clean`. Returns the project-relative target of a single, unambiguous
+// file deletion so the caller can decide it against the baseline — null (no
+// carve-out, normal shell-write handling) unless ALL of:
+//   - exactly one simple command: no separators, pipes, redirects, subshells,
+//     command substitution, or glob characters;
+//   - plain `rm` with at most `-f` (never `-r`/`-R`/`--recursive`: a directory
+//     deletion is never "one stray file");
+//   - exactly one operand, resolving INSIDE the project root and never under a
+//     dot-directory — `.git/` and `.traffic-one/` keep their own rules.
+export function shellStrayDeleteTarget(command: unknown, workdir: unknown, projectRoot: unknown): string | null {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  if (typeof workdir !== 'string' || !workdir.startsWith('/')) return null;
+  if (typeof projectRoot !== 'string' || !projectRoot.startsWith('/')) return null;
+  if (/[\n;|&<>`]|\$\(/.test(command)) return null;
+  if (/[*?{}[\]~]/.test(command)) return null;
+  const tokens: string[] = [];
+  const tokenRe = /'([^']*)'|"([^"]*)"|(\S+)/g;
+  for (let m = tokenRe.exec(command); m; m = tokenRe.exec(command)) {
+    tokens.push(m[1] ?? m[2] ?? m[3] ?? '');
+  }
+  const [cmd, ...rest] = tokens;
+  if (cmd !== 'rm') return null;
+  const operands: string[] = [];
+  let flagsDone = false;
+  for (const token of rest) {
+    if (!flagsDone && token === '--') { flagsDone = true; continue; }
+    if (!flagsDone && token.startsWith('-') && token.length > 1) {
+      if (!/^-[f]+$/.test(token) && token !== '--force') return null;
+      continue;
+    }
+    operands.push(token);
+  }
+  if (operands.length !== 1) return null;
+  const root = projectRoot.replace(/\/+$/, '');
+  const base = workdir.replace(/\/+$/, '');
+  const operand = operands[0]!;
+  const abs = operand.startsWith('/') ? operand : `${base}/${operand}`;
+  const segments = abs.split('/');
+  if (segments[0] !== '' || segments.slice(1).some((s) => s === '' || s === '.' || s === '..')) return null;
+  if (abs === root || !abs.startsWith(`${root}/`)) return null;
+  const rel = abs.slice(root.length + 1);
+  if (rel.split('/').some((segment) => segment.startsWith('.'))) return null;
+  return rel;
+}
+
 export function commandAppearsToWriteExternalTemp(command: unknown): boolean {
   if (typeof command !== 'string' || !command.trim()) return false;
   const tempPath = "(?:/tmp|/private/tmp|/var/tmp)/[^\\s'\"`;|&>]+";

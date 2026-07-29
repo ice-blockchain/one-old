@@ -146,6 +146,10 @@ Implementer format parity gate: role `{{ROLE}}` owns formatter config `{{CONFIG}
 Implementer format toolchain gate: role `{{ROLE}}` owns compiled formatter outputs at `{{TOOLING_ROOT}}`, but no Prettier config, `format`/`format:check` scripts, or `prettier` dependency is present. Create `{{CONFIG}}`, add matching scripts and the dependency to `{{MANIFEST}}`, run the formatter, then re-emit `IMPLEMENTED`.
 <!-- T1BLOCK:END implementer-format-toolchain-gate -->
 
+<!-- T1BLOCK:BEGIN implementer-format-coverage-gate -->
+Implementer format coverage gate: the `{{MANIFEST}}` "{{SCRIPT}}" script runs `{{COMMAND}}`, whose arguments never reach compiled outputs including {{UNCOVERED}}. A formatter that skips owned source proves nothing — it passes while those files are unformatted. Check the whole project instead (`prettier --check .`) and put build output, lockfiles, and `.traffic-one` in `.prettierignore`, then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-format-coverage-gate -->
+
 <!-- T1BLOCK:BEGIN registry-probe-gate -->
 Registry probe gate: do not query the npm registry (`npm view`/`show`/`info`/`outdated`, `pnpm view`, `yarn info`) to pick scaffold or dependency versions during new-project setup. Versions come from the active stack contract — install with the pinned ranges (`pnpm add <pkg>` resolves the latest matching minor/patch). Only an explicit user request for a newer major overrides a pin, recorded as an ADR in `.traffic-one/decisions/`.
 <!-- T1BLOCK:END registry-probe-gate -->
@@ -154,8 +158,20 @@ Registry probe gate: do not query the npm registry (`npm view`/`show`/`info`/`ou
 Implementer typecheck gate: role `{{ROLE}}` owns compiled TypeScript outputs, but no `typescript` dependency or `typecheck` script exists in {{MANIFESTS}}. `IMPLEMENTED` without a runnable compiler is unverifiable — the type errors surface later in a sibling role's build instead. Add `typescript` and a `typecheck` script (`tsc --noEmit`) to the tooling root, run it clean, then re-emit `IMPLEMENTED`.
 <!-- T1BLOCK:END implementer-typecheck-toolchain-gate -->
 
+<!-- T1BLOCK:BEGIN implementer-verification-skipped-gate -->
+Implementer verification gate: this digest reports a required command as skipped or unavailable — "{{EVIDENCE}}" — directly alongside `IMPLEMENTED`. A verdict is a claim that the owned scope was verified, so an unrun build/typecheck/lint makes it unverifiable and the errors surface later in a sibling role's build. Install the toolchain at its owning manifest, run the command to completion, record the real outcome, then re-emit `IMPLEMENTED`. If the command genuinely does not apply, say why without claiming it was skipped.
+<!-- T1BLOCK:END implementer-verification-skipped-gate -->
+
+<!-- T1BLOCK:BEGIN implementer-test-toolchain-gate -->
+Implementer test toolchain gate: role `{{ROLE}}` owns `{{MANIFEST}}`, and the contract compiles tester-owned runner configs there, but {{MISSING}} is absent. The tester owns the configs and never the manifest, so it cannot install its own runner — it inherits a config for a tool that is not there and has no way to run the suite. Add the missing dependencies and scripts to `{{MANIFEST}}`, then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-test-toolchain-gate -->
+
+<!-- T1BLOCK:BEGIN implementer-crawl-origin-gate -->
+Implementer crawl origin gate: `{{FILE}}` ships an unusable production origin — {{DETAIL}}. Crawl assets are published verbatim, so an invented origin is a live defect, not a placeholder. Generate these files from the public site-url env var (`VITE_SITE_URL` or the framework equivalent) and fail generation when it is unset; leave the deploy origin `Unverified` in project memory until the user supplies it. Then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-crawl-origin-gate -->
+
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
-Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Numeric LOC/function-count/component-count findings remain warnings during this rollout.
+Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; `STRUCT_MODULE_LOC` blocks — split the module.
 <!-- T1BLOCK:END frontend-structure-completion-gate -->
 
 <!-- T1BLOCK:BEGIN reviewer-structure-gate -->
@@ -179,7 +195,7 @@ Tester completion gate: the QA sweep validated a different application. Expected
 <!-- T1BLOCK:END tester-qa-build-identity-mismatch -->
 
 <!-- T1BLOCK:BEGIN run-team-shell -->
-Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt.
+Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt. Two shell shapes ARE verifiable and stay allowed: a single `cp`/`mv` importing one file from outside the project, and a single `rm <path>` (at most `-f`, never `-r`, no globs, one operand) removing a stray file that is present on disk, untracked, absent from the immutable baseline, and owned by nobody in the compiled contract — that is cleanup of your own by-product, not an implementation write.
 <!-- T1BLOCK:END run-team-shell -->
 
 <!-- T1BLOCK:BEGIN opencode-external-temp-shell -->

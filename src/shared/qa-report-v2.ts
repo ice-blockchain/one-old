@@ -292,7 +292,13 @@ function parseViewport(value: unknown): QaViewportV2 | null {
 }
 
 function parseRoute(value: unknown): QaRouteV2 | null {
-  if (!isRecord(value) || !safeString(value.route, 2_048) || !value.route.startsWith('/') || !Array.isArray(value.viewports)) return null;
+  // Evidence is keyed by the CONTRACT route, so `*` (the router-idiomatic
+  // catch-all) is a legal identity here even though it is never a URL — the
+  // runner probes it through a concrete `startPath`.
+  if (!isRecord(value)
+    || !safeString(value.route, 2_048)
+    || !(value.route === '*' || value.route.startsWith('/'))
+    || !Array.isArray(value.viewports)) return null;
   const viewports = value.viewports.map(parseViewport);
   if (viewports.some((viewport) => !viewport)) return null;
   return { route: value.route, viewports: viewports as QaViewportV2[] };
