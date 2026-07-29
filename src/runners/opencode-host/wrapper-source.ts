@@ -2,29 +2,21 @@
 // The embedded ESM OpenCode plugin, emitted as ONE template literal (its
 // spawnSync and payload normalizers live inside the generated string).
 
-import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import {
   OPENCODE_HOOK_CHAT_MESSAGE,
   OPENCODE_HOOK_SYSTEM_TRANSFORM,
   OPENCODE_HOOK_TOOL_AFTER,
   OPENCODE_HOOK_TOOL_BEFORE,
-  OPENCODE_HOST_GLOBAL_CONFIG_DIR_REL,
-  OPENCODE_HOST_GLOBAL_CONFIG_DEFAULT_FILE,
-  OPENCODE_HOST_GLOBAL_CONFIG_FILES,
-  OPENCODE_HOST_GLOBAL_PLUGIN_FILE,
   OPENCODE_HOST_GLOBAL_PLUGIN_ID,
-  OPENCODE_HOST_GLOBAL_PLUGINS_REL,
   OPENCODE_HOST_PACKAGE,
   OPENCODE_HOST_PROJECT_MARKER_REL,
   OPENCODE_HOST_TARGET_VERSION,
 } from '../../config/opencode-host';
 import {
-  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_MANAGED_TOOLS,
-  ONE_MCP_REGISTRATION,
   ONE_MCP_SERVER_NAME,
 } from '../../config/one-mcp';
 import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../../shared/one-mcp/agent-tools';

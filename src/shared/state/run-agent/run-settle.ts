@@ -4,16 +4,10 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson } from '../../fsjson';
 import { isMaintenanceTerminal } from '../../maintenance/terminal';
 import {
   activeRunClaimCount,
-  effectiveLegacyRunOutcome,
-  effectiveLegacyRunStatus,
-  projectRunLedgerForV2Rollback,
-  readRunSettlement,
-  writeRunSettlement,
-  type CanonicalRunStatus,
 } from '../../run-settlement';
 
 import {

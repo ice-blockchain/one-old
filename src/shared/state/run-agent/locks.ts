@@ -3,7 +3,7 @@
 // release, and withOwnedDirLock. Domain wrappers keep their own
 // SharedArrayBuffer wait singletons beside their stores.
 
-import { obj, type Rec } from '../../obj';
+import { obj } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 

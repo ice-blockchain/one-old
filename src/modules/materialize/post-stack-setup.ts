@@ -14,7 +14,7 @@
 // exact wording against the legacy when both are side-by-side.
 
 import { asString } from '../../adapters/coerce';
-import { obj, type Rec } from '../../shared/obj';
+import { obj } from '../../shared/obj';
 import * as fs from 'fs';
 import * as path from 'path';
 

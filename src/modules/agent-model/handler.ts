@@ -7,73 +7,29 @@ import { asString } from '../../adapters/coerce';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { obj, type Rec } from '../../shared/obj';
+import { obj } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
-import { detectHostPlan } from '../../shared/host/plan';
 import { canonicalHost } from '../../shared/model-tiers';
-import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
-import { exhaustedModelsForRole, isApiUsageLimitText, markModelExhaustionTerminal, modelIsExhausted, recordExhaustedModel } from './exhausted-models';
-import { modelForRoleHost, teamModeForLevel, type PlanCtx } from '../../shared/performance';
-import { recordOpenCodeFallback } from '../../shared/opencode-queue';
-import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
-import {
-  markOpenCodeGateDenied,
-  openCodeGateDenied,
-  openCodePlanBatchComplete,
-  openCodePlanRoleCompleted,
-  openCodeRoleAttempted,
-  pendingOpenCodePlanRoles,
-  roleHasQueuedUnits,
-  shouldBlockImplementerForPlanBatch,
-  shouldRunRoleOnOpenCode,
-} from '../../shared/opencode-roles';
 import {
   captureClaimDebug,
   ensureCurrentRunId,
-  ensureRunAgentClaim,
-  continuationAgentId,
-  type CodexLiveAgentValidation,
   hookSessionIdentity,
-  isMaintenancePhase,
-  isTeamApproved,
-  liveRunAgent,
-  markRunAgentReplaced,
-  markRunAgentReplacedIfMatches,
-  refreshCursorRunAgentFromTranscriptCache,
   readEffectiveState,
-  readRunAssignmentsResilient,
-  REPLACE_AGENT_MARKER,
-  retireUnverifiedCodexRunAgent,
-  subagentContinuationAvailable,
-  validateCodexLiveRunAgent,
-  verdictAgentConflict,
 } from '../../shared/state';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { hasRunIdPlaceholder, strayRunIdInText, substituteRunIdPlaceholder } from '../../shared/run-id-paths';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
-import {
-  correlatedCursorFailureGate,
-  CURSOR_FAILURE_BLOCK_FALLBACKS,
-} from './cursor-failures';
-import { cursorAgentPresumedDead } from './cursor-liveness';
-import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan/directive';
-import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
-import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
-import { acceptableSpawnTypes, canonicalHostAgentType, hostSpawnType } from '../../shared/host/spawn-types';
+import {  canonicalHostAgentType } from '../../shared/host/spawn-types';
 import {
   cursorRunPolicyMissingTiers,
   ensureRunModelPolicy,
-  policyModelsForExpected,
   readRunModelPolicy,
-  resolveRunPolicyFallback,
   runModelPolicyPath,
-  type RunModelPolicyV1,
 } from '../../shared/run-model-policy';
 import {
   boundedMaintenanceSourceScope,
@@ -86,35 +42,15 @@ import {
   ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
   CURSOR_MODELS_CAPTURE_FALLBACK,
   block,
-  isPlanBatchGatedRole,
 } from './handler-prose';
 import {
-  cursorAgentTypeDeny,
-  isBuiltinSubagent,
-  kiloGeneralAgentDeny,
-  modelParamEnforced,
-  modelSatisfiesTier,
-  namedOpenCodeAgentDeny,
   quickFixScopeFromSpawn,
   spawnAgentType,
 } from './spawn-shape';
 import {
   absoluteTrafficOnePathDeny,
   absoluteTrafficOnePathsOutsideProject,
-  continuationRecipe,
-  recordSpawnParentSession,
 } from './spawn-hygiene';
-import {
-  exhaustedModelRotationDeny,
-  replacementJustified,
-} from './model-rotation';
-import {
-  cursorExactModelDeny,
-  degradedToFloorDeny,
-  maybeModelAdvisory,
-  modelTierDeny,
-  preferredModelUnavailableDeny,
-} from './model-denies';
 import type { GateContext } from './gate-context';
 import { openCodeFirstGates } from './gate-opencode-first';
 import { reuseReplaceGates } from './gate-reuse';

@@ -4,20 +4,12 @@
 
 import * as path from 'path';
 import {
-  buildRuntimeAssignments,
-  capabilityProfileForRun,
-  compileArchitectureForRun,
-  persistCompiledArchitecture,
-  publishRuntimeAssignments,
-  readCompiledArchitecture,
-  readRuntimeAssignments,
-  validateArchitectureInput,
   webPackageRoot,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
-import { profileHasWebUi, type CapabilityProfileV1 } from '../../../shared/capabilities';
+import {  type CapabilityProfileV1 } from '../../../shared/capabilities';
 import { obj } from '../../../shared/obj';
-import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../../shared/scope';
+import { matchesPattern,  normalizeRelPath } from '../../../shared/scope';
 
 import {
   type Rec,

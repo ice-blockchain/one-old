@@ -5,10 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  capabilityProfileForProject,
   detectFrontendFramework,
-  runtimeCapabilityStateFromProfile,
-  type CapabilityProfileV1,
 } from '../capabilities';
 import { readJson, writeJson } from '../fsjson';
 import { obj, type Rec } from '../obj';

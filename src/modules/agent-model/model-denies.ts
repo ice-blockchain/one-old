@@ -2,35 +2,27 @@
 // Model tier/choice/advisory deny builders over the frozen run policy.
 
 import * as path from 'path';
-import { obj, type Rec } from '../../shared/obj';
-import { context, deny, noop } from '../../core/result';
+import {  type Rec } from '../../shared/obj';
+import { context, deny } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { detectHostPlan } from '../../shared/host/plan';
-import { modelMatchesAny, modelMatchesHostModels } from '../../shared/model-tiers';
+import { modelMatchesAny } from '../../shared/model-tiers';
 import { CURSOR_MODEL_FLOOR } from '../../config/model-tiers';
-import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
+import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import {
   freshCursorModels,
   pickCursorSlug,
 } from '../../shared/materialize/cursor-models';
-import { modelForRoleHost, teamModeForLevel, type PlanCtx } from '../../shared/performance';
+import { modelForRoleHost,  type PlanCtx } from '../../shared/performance';
 import { AGENT_ROLES } from '../../config/performance';
 import { modelUnavailablePromptRequest } from '../../shared/prompt-request';
 import {
   markModelAdvisoryShown,
   markModelChoicePrompted,
-  type ModelChoiceStatus,
   modelAdvisoryShown,
-  modelChoicePrompted,
-  readModelChoice,
 } from './model-choice';
 import {
-  cursorRunPolicyMissingTiers,
-  ensureRunModelPolicy,
   policyModelsForExpected,
-  readRunModelPolicy,
-  resolveRunPolicyFallback,
-  runModelPolicyPath,
   type RunModelPolicyV1,
 } from '../../shared/run-model-policy';
 

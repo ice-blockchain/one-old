@@ -3,7 +3,7 @@
 // decline/use choice handling. Stdout protocol tokens stay byte-identical.
 
 import { detectHost } from '../../shared/host';
-import { pluginUseDeclined, recordPluginUseChoice } from '../../shared/state/plugin-use';
+import {  recordPluginUseChoice } from '../../shared/state/plugin-use';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { agentOnboardingUrls } from '../../config/dashboard';

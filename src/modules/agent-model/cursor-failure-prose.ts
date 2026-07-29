@@ -2,31 +2,12 @@
 // Block prose closures, the verbatim SKILL.md fallbacks, correlation
 // windows, and the shared status/transcript shapes.
 
-import { deny, followup, context, noop } from '../../core/result';
+import {   context } from '../../core/result';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import {
-  claimCursorFollowupsBatch,
-  claimCursorSpawnObservation,
-  consumeCursorSpawnObservation,
-  cursorParentObservationSnapshot,
-  inferRoleFromTranscript,
-  isResumeCapableAgentId,
-  listCursorSpawnObservations,
-  normalizeHostCallId,
-  listCursorSubagentTranscriptCandidates,
-  markCursorSpawnObservationRetryHandled,
-  markRunAgentReplacedIfMatches,
-  readEffectiveState,
-  readRunAgentRegistry,
-  refreshCursorRunAgentFromTranscriptCache,
-  suppressCursorFollowupsBatch,
-  type CursorFollowupClaimRequest,
-  type CursorFollowupSuppressionReason,
   type CursorSpawnObservation,
   type CursorTranscriptCandidate,
-  type RunAgentEntry,
-  updateCursorSpawnObservation,
 } from '../../shared/state';
 
 const skillBlock = makeSkillBlock(pluginRoot);

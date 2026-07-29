@@ -2,7 +2,7 @@
 // Stack fingerprinting, materialization-freshness, and subagent / fix-cycle
 // signals. Ported 1:1 from scripts/hook-runtime/state/materialization.cjs.
 
-import { obj, type Rec } from '../obj';
+import { obj } from '../obj';
 import { SUBAGENT_STALE_MS, VALID_AGENT_ROLES } from '../../config/state';
 import { stateVersion } from './io';
 

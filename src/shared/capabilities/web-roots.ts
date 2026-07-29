@@ -5,13 +5,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
-  MAX_WORKSPACE_ROOTS,
-} from './types';
-import {
   composerPackages,
   exists,
   packageDependencies,
-  unique,
   prefixed,
   candidateWebRoots,
 } from './fs-probe';

@@ -9,33 +9,16 @@ import { pluginVersion } from '../../config/plugin-identity';
 import { stableContractJson } from '../../shared/architecture-contract';
 import { writeJson } from '../../shared/fsjson';
 import {
-  combineNativeSummaries,
-  computeBuildOutputManifest,
   contentHash,
-  createQaLighthouseEvidence,
   createQaMachineEvidence,
-  createQaNativeEvidence,
-  parseAndroidJUnitXml,
-  parseXcodeResultSummary,
-  readLighthouseArtifact,
-  type BuildOutputManifestV1,
   type QaMachineRouteEvidenceV1,
   type QaMachineViewportEvidenceV1,
-  type QaNativeArtifactV1,
-  type QaNativeTestSummaryV1,
 } from '../../shared/qa-evidence-runtime';
 import {
-  expectedBuildFingerprint,
-  QA_BUILD_IDENTITY_PROBE_PATH,
   qaReportV2Path,
-  readQaReportV2,
-  validateQaReportV2,
-  type QaReportV2,
 } from '../../shared/qa-report-v2';
 import { sha256 } from '../../shared/text';
 import {
-  currentVerificationSourceHash,
-  readVerificationContract,
   type VerificationContractV2,
 } from '../../shared/verification-contract';
 
@@ -46,7 +29,6 @@ import {
   type PlaywrightLike,
   type RouteScenario,
   type RunnerArgs,
-  type ScenarioStep,
 } from './types';
 import {
   isRecord,

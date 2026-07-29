@@ -6,10 +6,8 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson,  writeJson } from '../../fsjson';
 import {
-  PENDING_AGENT_CLAIM_STALE_MS,
-  RUNS_REL_DIR,
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../../config/state';
@@ -29,25 +27,8 @@ import {
   isFreshTimestamp,
 } from './session-identity';
 import {
-  CURSOR_TRANSCRIPT_EARLY_TOLERANCE_MS,
-  finiteMs,
-  readCursorSpawnObservationStore,
-  withCursorSpawnObservationLock,
-} from './cursor-observations';
-import {
-  latestCursorObservation,
-} from './cursor-followups';
-import {
-  candidateThreadId,
-  cursorSubagentTranscriptsForRole,
-  cursorTranscriptCandidateTimeMs,
-} from './cursor-transcripts';
-import {
   listClaimedAgents,
 } from './claims-store';
-import {
-  claimThreadRole,
-} from './claim-thread-role';
 import {
   resolveRunAgentContext,
 } from './context-resolve';

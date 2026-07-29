@@ -4,7 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { packageJsonDeclaresWorkspace, stateRequiresNewProjectMonorepo } from '../../../shared/hook/paths';
+import { packageJsonDeclaresWorkspace } from '../../../shared/hook/paths';
 import { canonicalHost } from '../../../shared/model-tiers';
 import { OPENCODE_PLAN_MIN_UNITS, parsePlanDelegationUnits, planDelegationUnitCount } from '../../../shared/opencode-roles';
 import { openCodeQueuePolicyViolations, type OpenCodeQueuePolicyOptions } from '../../../shared/opencode-queue';

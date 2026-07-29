@@ -6,9 +6,6 @@
 import * as path from 'path';
 import { sha256 } from '../text';
 import {
-  currentVerificationSourceHash,
-  readVerificationContract,
-  type LighthouseThresholdsV1,
   type VerificationContractV2,
 } from '../verification-contract';
 

@@ -3,12 +3,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { type Issue, type Rec, type ScanReport } from './constants';
+import {  type Rec, type ScanReport } from './constants';
 import {
-  gitOutput, hasAllowComment, hasCommand, isDocumentationOrFixturePath,
-  isInsideGitWorkTree, isRuntimeAppSecurityPath, isSecurityHeaderConfigPath,
-  lineForIndex, missingToolInstallPrompt, parseAuditJson, projectFiles,
-  readPackageJson, readTextFile, relativePath, runCommand, splitNul,
+    hasCommand, 
+   isRuntimeAppSecurityPath, isSecurityHeaderConfigPath,
+  lineForIndex,  parseAuditJson, projectFiles,
+  readPackageJson, readTextFile,  runCommand, 
 } from './helpers';
 
 import { scanSecrets, scanSupabaseSql, type TextFile } from './scanners-secrets';

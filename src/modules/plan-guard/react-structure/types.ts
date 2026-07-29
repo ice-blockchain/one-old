@@ -2,7 +2,7 @@
 // Finding ids/severities, report schema, and the internal analysis shapes.
 
 import * as path from 'path';
-import { matchesPattern, matchesScope, type AssignedScope } from '../../../shared/scope';
+import {   type AssignedScope } from '../../../shared/scope';
 
 export const STRUCTURE_REPORT_SCHEMA_VERSION = 1 as const;
 export const STRUCTURE_SCAN_DEFAULT_MAX_FILES = 10_000;

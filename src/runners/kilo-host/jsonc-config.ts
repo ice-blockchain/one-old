@@ -2,12 +2,10 @@
 // Bounded JSONC read/strip/write for the Kilo global config plus the
 // managed one-mcp disable status.
 
-import * as fs from 'fs';
 import * as path from 'path';
 import {
   DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_MANAGED_TOOLS,
-  ONE_MCP_REGISTRATION,
   ONE_MCP_SERVER_NAME,
 } from '../../config/one-mcp';
 

@@ -2,57 +2,30 @@
 // Exhausted-model rotation and replacement justification.
 
 import * as path from 'path';
-import { obj, type Rec } from '../../shared/obj';
-import { context, deny, noop } from '../../core/result';
+import {  type Rec } from '../../shared/obj';
+import { context, deny } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { modelMatchesAny, modelMatchesHostModels } from '../../shared/model-tiers';
+import { modelMatchesAny } from '../../shared/model-tiers';
 import { CURSOR_MODEL_FLOOR } from '../../config/model-tiers';
 import { exhaustedModelsForRole, isApiUsageLimitText, markModelExhaustionTerminal, modelIsExhausted, recordExhaustedModel } from './exhausted-models';
 import {
-  freshCursorModels,
   pickCursorSlug,
 } from '../../shared/materialize/cursor-models';
 import {
-  markModelAdvisoryShown,
   markModelChoicePrompted,
   type ModelChoiceStatus,
-  modelAdvisoryShown,
-  modelChoicePrompted,
   readModelChoice,
 } from './model-choice';
 import {
-  captureClaimDebug,
-  ensureCurrentRunId,
-  ensureRunAgentClaim,
-  continuationAgentId,
-  type CodexLiveAgentValidation,
-  hookSessionIdentity,
-  isMaintenancePhase,
-  isTeamApproved,
   liveRunAgent,
-  markRunAgentReplaced,
-  markRunAgentReplacedIfMatches,
-  refreshCursorRunAgentFromTranscriptCache,
-  readEffectiveState,
-  readRunAssignmentsResilient,
   REPLACE_AGENT_MARKER,
-  retireUnverifiedCodexRunAgent,
-  subagentContinuationAvailable,
-  validateCodexLiveRunAgent,
-  verdictAgentConflict,
 } from '../../shared/state';
 import {
-  correlatedCursorFailureGate,
   CURSOR_FAILURE_BLOCK_FALLBACKS,
 } from './cursor-failures';
 import {
-  cursorRunPolicyMissingTiers,
-  ensureRunModelPolicy,
-  policyModelsForExpected,
   readRunModelPolicy,
   resolveRunPolicyFallback,
-  runModelPolicyPath,
-  type RunModelPolicyV1,
 } from '../../shared/run-model-policy';
 
 import {

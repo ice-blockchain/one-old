@@ -8,10 +8,10 @@ import { buildPreSpawnOpenCodeDirective } from '../../shared/opencode-plan/direc
 import { detectHost } from '../../shared/host';
 import { detectHostPlan } from '../../shared/host/plan';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
-import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-command';
+import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { canonicalHost } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
-import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
+import { ensureCurrentRunId,  readEffectiveState } from '../../shared/state';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
 
 export function preSpawnOpenCodeDirective(cwd: string, host: string = detectHost()): string {

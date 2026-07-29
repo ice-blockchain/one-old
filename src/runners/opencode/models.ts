@@ -4,7 +4,7 @@
 
 import * as fs from 'fs';
 import { OPENCODE_FREE_MODELS } from '../../config/model-tiers';
-import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
+import { managedNpmBin } from '../toolchain';
 
 import {
   which,

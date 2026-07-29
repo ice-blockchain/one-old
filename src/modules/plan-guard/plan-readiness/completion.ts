@@ -5,34 +5,18 @@
 // where the sections used to sit.
 
 import {
-  buildRuntimeAssignments,
   capabilityProfileForRun,
-  compileArchitectureForRun,
-  persistCompiledArchitecture,
-  publishRuntimeAssignments,
   readCompiledArchitecture,
   readRuntimeAssignments,
-  validateArchitectureInput,
-  webPackageRoot,
-  type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import { readQaReportV2 } from '../../../shared/qa-report-v2';
 import {
-  buildVerificationContract,
-  changedPathsFromBaseline,
-  publishVerificationContract,
   readVerificationContract,
-  type LighthouseThresholdsV1,
-  type UiImpact,
 } from '../../../shared/verification-contract';
 import {
-  ARCHITECTURE_INPUT_RE,
-  ARCHITECT_DIGEST_RE,
-  ASSIGNMENTS_FILE_RE,
   COLLAPSE_LINE_CHARS,
   FRONTEND_DIGEST_RE,
   IMPLEMENTER_DIGEST_RE,
-  PLAN_FILE_RE,
   REVIEWER_DIGEST_RE,
   TESTER_DIGEST_RE,
   type Block,
@@ -59,17 +43,9 @@ import {
 } from './toolchain';
 import {
   allImplementationRolesDelivered,
-  architectMayWrite,
-  architectureInputErrors,
-  artifactContract,
-  assignmentScopesForRole,
-  assignmentWriterRole,
   digestClaimsVerdict,
   refreshVerificationAfterImplementation,
-  roleContract,
   runFullStructureScan,
-  runtimeOwnedRunSidecar,
-  usesMainAgentTeam,
 } from './contracts';
 
 

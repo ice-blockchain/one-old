@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'child_process';
-import { createHash } from 'crypto';
 import { once } from 'events';
 import * as fs from 'fs';
 import * as os from 'os';

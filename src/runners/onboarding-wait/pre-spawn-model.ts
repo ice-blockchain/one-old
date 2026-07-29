@@ -12,8 +12,8 @@ import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-c
 import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import { obj } from '../../shared/obj';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
-import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
-import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
+import {   readEffectiveState } from '../../shared/state';
+import {  readRunModelPolicy } from '../../shared/run-model-policy';
 
 function claudeAgentToolAlias(modelId: string): string {
   const id = modelId.toLowerCase();

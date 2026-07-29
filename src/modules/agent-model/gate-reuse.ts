@@ -4,24 +4,17 @@
 // [t1-replace-agent] escape hatch, and exhausted-model rotation. Returns a
 // deny or null to continue.
 
-import { context, deny, noop } from '../../core/result';
-import type { Ctx, HookResult } from '../../core/types';
-import { exhaustedModelsForRole, isApiUsageLimitText, markModelExhaustionTerminal, modelIsExhausted, recordExhaustedModel } from './exhausted-models';
+import { context, deny } from '../../core/result';
+import type {  HookResult } from '../../core/types';
+import {  isApiUsageLimitText,  modelIsExhausted } from './exhausted-models';
 import {
-  captureClaimDebug,
-  ensureCurrentRunId,
-  ensureRunAgentClaim,
   continuationAgentId,
   type CodexLiveAgentValidation,
   hookSessionIdentity,
-  isMaintenancePhase,
-  isTeamApproved,
   liveRunAgent,
   markRunAgentReplaced,
   markRunAgentReplacedIfMatches,
   refreshCursorRunAgentFromTranscriptCache,
-  readEffectiveState,
-  readRunAssignmentsResilient,
   REPLACE_AGENT_MARKER,
   retireUnverifiedCodexRunAgent,
   subagentContinuationAvailable,
@@ -30,20 +23,13 @@ import {
 } from '../../shared/state';
 import {
   correlatedCursorFailureGate,
-  CURSOR_FAILURE_BLOCK_FALLBACKS,
 } from './cursor-failures';
 import { cursorAgentPresumedDead } from './cursor-liveness';
 import {
-  ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
-  CURSOR_MODELS_CAPTURE_FALLBACK,
   block,
-  isPlanBatchGatedRole,
 } from './handler-prose';
 import {
-  absoluteTrafficOnePathDeny,
-  absoluteTrafficOnePathsOutsideProject,
   continuationRecipe,
-  recordSpawnParentSession,
 } from './spawn-hygiene';
 import {
   exhaustedModelRotationDeny,

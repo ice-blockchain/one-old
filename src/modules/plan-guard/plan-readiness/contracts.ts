@@ -6,14 +6,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   buildRuntimeAssignments,
-  capabilityProfileForRun,
-  compileArchitectureForRun,
-  persistCompiledArchitecture,
   publishRuntimeAssignments,
   readCompiledArchitecture,
   readRuntimeAssignments,
   validateArchitectureInput,
-  webPackageRoot,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import { obj } from '../../../shared/obj';
@@ -22,15 +18,11 @@ import {
   ensureRunPolicyBootstraps,
   readRunModelPolicy,
 } from '../../../shared/run-model-policy';
-import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../../shared/scope';
+import {    type AssignedScope } from '../../../shared/scope';
 import {
   activeAgentRole,
-  isMaterialized,
-  legacyStatePath,
   readRunAssignmentsResilient,
   resolveRunAgentContext,
-  stackFingerprint,
-  statePath,
 } from '../../../shared/state';
 import {
   buildVerificationContract,
@@ -43,11 +35,7 @@ import {
 import { readVerificationPlanIntent } from '../../../shared/verification-plan-intent';
 import {
   analyzeProjectStructure,
-  analyzeStructureText,
-  analyzeStructureTextAgainstContract,
-  invalidateStructureCache,
   writeStructureReport,
-  type StructureFinding,
 } from '../react-structure';
 
 import {

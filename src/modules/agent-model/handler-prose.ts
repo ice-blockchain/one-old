@@ -2,7 +2,7 @@
 // The skillBlock/block prose closures and the verbatim SKILL.md fallback
 // constants shared by every deny builder.
 
-import { context, deny, noop } from '../../core/result';
+import {  deny } from '../../core/result';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 

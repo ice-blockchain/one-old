@@ -2,11 +2,7 @@
 // One MCP cache shapes, parse/validation, and identity comparison.
 
 import {
-  ONE_MCP_CACHE_FILE,
-  ONE_MCP_CACHE_LOCK_RETRY_MS,
-  ONE_MCP_CACHE_LOCK_STALE_MS,
   ONE_MCP_CACHE_LOCK_TIMEOUT_MS,
-  ONE_MCP_CACHE_SCHEMA_VERSION,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
   ONE_MCP_MAX_CONFIG_VERSION,
@@ -16,7 +12,7 @@ import {
   oneMcpPayloadFingerprint,
 } from './fingerprint';
 import { parseOneMcpModelConfigPayload } from './get-config';
-import type { OneMcpModelConfigPayload, OneMcpRemoteTiers } from './types';
+import type { OneMcpModelConfigPayload } from './types';
 
 export type Rec = Record<string, unknown>;
 

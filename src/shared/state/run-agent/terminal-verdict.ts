@@ -5,17 +5,13 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson } from '../../fsjson';
 import { isQaBrowserBridgeEligible, readQaReportV1, type QaReportValidationResult } from '../../qa-report';
 import { readQaReportV2, type QaV2ValidationResult } from '../../qa-report-v2';
 import {
   activeRunClaimCount,
   effectiveLegacyRunOutcome,
   effectiveLegacyRunStatus,
-  projectRunLedgerForV2Rollback,
-  readRunSettlement,
-  writeRunSettlement,
-  type CanonicalRunStatus,
 } from '../../run-settlement';
 
 import {

@@ -6,46 +6,29 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { OPENCODE_FREE_MODELS } from '../../config/model-tiers';
-import { gatewayBreakerMs, maxConsecutiveStalls, opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
+import { gatewayBreakerMs, maxConsecutiveStalls } from '../../config/opencode-timeouts';
 import { ensureInitialCommit } from '../../shared/git-init';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import {
-  hasFreshArchitectQueueForRun,
   markOpenCodeGatewayOutage,
-  markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
   openCodeGatewayOutageActive,
-  type PlanDelegationUnit,
-  parsePlanDelegationUnits,
   recordOpenCodeAttemptOutcome,
 } from '../../shared/opencode-roles';
 import {
-  finalizePlanBatch,
   finalizePlanBatchOnly,
-  markPlanBatchRunningIfNeeded,
 } from '../../shared/opencode-plan/batch';
 import {
-  blockedByFailedDependencies,
-  buildOpenCodeQueue,
-  normalizeOpenCodeRole,
-  opencodeAssignmentHash,
-  openCodeQueuePolicyReport,
-  parseAllowedFiles,
-  readOpenCodeUnitStatuses,
   recordOpenCodeUnitStatus,
-  reconcileStaleRunningUnits,
   statusFromDelegateAction,
   unsafeAllowedFilePatterns,
-  writeOpenCodeQueue,
-  type OpenCodeUnitStatus,
 } from '../../shared/opencode-queue';
-import { isMaintenancePhase, readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
-import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
+import {  readEffectiveState } from '../../shared/state';
+import {  reconcileManagedToolStamp } from '../toolchain';
 
 import {
   type DelegateOpts,
   type DelegateResult,
-  type FailureKind,
   type Rec,
 } from './types';
 import {

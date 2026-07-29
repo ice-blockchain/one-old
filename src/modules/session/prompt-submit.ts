@@ -30,7 +30,6 @@ import { makeSkillBlock } from '../../shared/skill-block';
 import { isUninstallTrafficOneIntent, uninstallDirective } from '../../shared/uninstall-intent';
 import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
-import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { localFallbackLine, localFallbackSection, type LocalFallback } from '../../shared/onboarding-server/wizard-links';
 import { maintenanceTriageDirective, unresolvedRunDirective } from './triage-directive';

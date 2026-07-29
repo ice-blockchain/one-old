@@ -3,16 +3,12 @@
 // before onboarding completes.
 
 import { obj, type Rec } from '../../shared/obj';
-import * as fs from 'fs';
 import * as path from 'path';
-import { context, mergeResults, noop } from '../../core/result';
+import { context,  noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isNonProjectRoot } from '../../shared/authoring-root';
-import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
-import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
+import { hasMaterializedProjectAssets } from '../../shared/materialize';
 import { resolveProjectRoot } from '../../shared/hook/paths';
-import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
+import {  packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
@@ -25,38 +21,17 @@ import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
-  ensureCurrentRunId,
   hasRunAgentState,
   hookSessionIdentity,
-  isMaintenancePhase,
-  isSubagentThread,
   legacyRunAgentContext,
-  legacyStatePath,
-  maintenanceLifecycle,
-  normalizeState,
-  pruneExpiredPendingClaims,
   readEffectiveState,
-  reconcileRunIdentityDrift,
-  recordRunStackDrift,
   resolveRunAgentContext,
-  runIdentityFrozen,
-  runReachedTerminalVerdict,
   type RunAgentContext,
-  scrubProjectStateLocalPrefs,
-  stackFingerprint,
-  statePath,
-  stateVersion,
-  writeState,
 } from '../../shared/state';
-import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
-import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
-import { ensureCodexOneMcpServerRegistered } from '../../shared/codex-mcp';
-import { ONE_MCP_REGISTRATION } from '../../config/one-mcp';
-import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
+import {    ensureSessionMaterialization, readGraphPreview } from './session-start-lib';
+import {  readRunModelPolicy } from '../../shared/run-model-policy';
 import { canonicalHost } from '../../shared/model-tiers';
 import { capabilityStateForRun } from '../../shared/architecture-contract';
-import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
-import { removeStrayProjectArtifactsFromGlobalDir } from '../../shared/state/traffic-one-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>

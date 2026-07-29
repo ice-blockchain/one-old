@@ -2,17 +2,16 @@
 // Wizard view shapes, team lineup, device identity, and step metadata
 // enrichment for the onboarding flow.
 
-import { classifyPromptForStack, detectMode, promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
+import {  detectMode } from '../detection';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
 import { nextOnboardingStep } from '../onboarding/prompts';
-import { currentLocalPreferenceTarget, nextLocalPreferenceStep, type LocalPreferenceTarget } from '../onboarding/local-prefs';
+import {  nextLocalPreferenceStep, type LocalPreferenceTarget } from '../onboarding/local-prefs';
 import {
   projectContextDomainQuestionLines,
-  projectContextOriginalPrompt,
 } from '../onboarding/project-context';
 import { detectHost } from '../host';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
@@ -21,23 +20,17 @@ import { readPluginUseChoice } from '../state/plugin-use';
 import { TIER_IDS } from '../../config/model-tiers';
 import { recommendTierForPlan } from '../model-tiers';
 import { currentModelsForTier } from '../current-model-tiers';
-import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
+import { effectiveTierForRole, modelForRoleHost,  type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { windsurfBackend } from '../windsurf-backend';
 import {
   applyGlobalCodeGraphProvider,
-  clearProjectHostPrefs,
   effectiveState,
-  mergeProjectHostPrefs,
-  mergeProjectPrefs,
   projectPrefsPath,
   hasValidPerformanceState,
   readEffectiveState,
   readGlobalCodeGraphProvider,
   readProjectPrefs,
-  readState,
-  writeGlobalCodeGraphProvider,
-  writeState,
 } from '../state';
 
 export type WizardStep = WizardStepId | 'finalize' | null;

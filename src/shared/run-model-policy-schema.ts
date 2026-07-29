@@ -14,12 +14,10 @@ import {
 import type { HostModelKey, TierId, UserPlan } from '../config/model-tiers';
 import { RUNS_REL_DIR, VALID_AGENT_ROLES } from '../config/state';
 import {
-  ensureRunHostCapability,
-  readRunHostCapability,
   RUN_HOST_CAPABILITY_RELATIVE_FILE,
 } from './host/capabilities';
 import { canonicalHost, canonicalPlan, modelMatchesExpected, type ModelTierSnapshot } from './model-tiers';
-import { obj, type Rec } from './obj';
+import { obj } from './obj';
 
 export const RUN_MODEL_POLICY_SCHEMA_VERSION = 1;
 const POLICY_FILE = 'model-policy.json';

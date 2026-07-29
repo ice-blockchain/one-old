@@ -6,16 +6,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   ONE_MCP_CACHE_FILE,
-  ONE_MCP_CACHE_LOCK_RETRY_MS,
-  ONE_MCP_CACHE_LOCK_STALE_MS,
   ONE_MCP_CACHE_LOCK_TIMEOUT_MS,
   ONE_MCP_CACHE_SCHEMA_VERSION,
-  ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  ONE_MCP_MAX_CONFIG_VERSION,
 } from '../../config/one-mcp';
 import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
-import type { OneMcpModelConfigPayload, OneMcpRemoteTiers } from './types';
+import type {  OneMcpRemoteTiers } from './types';
 import { globalTrafficOneDir } from '../state/traffic-one-paths';
 
 import {
@@ -38,7 +34,6 @@ import {
   type Rec,
 } from './cache-schema';
 import { acquireCacheLock, releaseCacheLock } from './cache-lock';
-import type { CacheLock } from './cache-lock';
 
 
 export function oneMcpCachePath(env: NodeJS.ProcessEnv = process.env): string {

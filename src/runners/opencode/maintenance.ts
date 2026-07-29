@@ -3,21 +3,9 @@
 
 import * as path from 'path';
 import {
-  blockedByFailedDependencies,
-  buildOpenCodeQueue,
-  normalizeOpenCodeRole,
-  opencodeAssignmentHash,
-  openCodeQueuePolicyReport,
   parseAllowedFiles,
-  readOpenCodeUnitStatuses,
-  recordOpenCodeUnitStatus,
-  reconcileStaleRunningUnits,
-  statusFromDelegateAction,
-  unsafeAllowedFilePatterns,
-  writeOpenCodeQueue,
-  type OpenCodeUnitStatus,
 } from '../../shared/opencode-queue';
-import { isMaintenancePhase, readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
+import { isMaintenancePhase } from '../../shared/state';
 import {
   ensureRunBootstrap,
   readActiveRunBootstrap,

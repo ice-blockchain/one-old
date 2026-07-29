@@ -3,9 +3,6 @@
 
 import { isNonProjectRoot } from '../../authoring-root';
 import {
-  PENDING_AGENT_CLAIM_STALE_MS,
-  RUNS_REL_DIR,
-  SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../../config/state';
 

@@ -14,17 +14,11 @@ import { readEffectiveState, mergeProjectPrefs } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import {
   getToolSpec,
-  isToolUsable,
-  managedNpmBin,
-  managedNpmConfigFlags,
-  managedNpmPrefix,
   mergeToolchainStamp,
-  probeTool,
   probeToolVersion,
   toolInstallSpec,
-  toolStatus,
 } from '../toolchain';
-import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
+import { CONFLICT_PATHS,  GITNEXUS_MIN_NODE_MAJOR } from '../../config/gitnexus';
 import {
   currentNodeMajor,
   findNvmNode22,

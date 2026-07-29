@@ -4,7 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import {
   DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_MANAGED_TOOLS,

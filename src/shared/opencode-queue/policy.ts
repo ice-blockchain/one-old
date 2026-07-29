@@ -4,7 +4,7 @@
 
 import * as path from 'path';
 import type { PlanDelegationUnit } from '../opencode-plan/unit-types';
-import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../scope';
+import { matchesPattern, matchesScope,  type AssignedScope } from '../scope';
 
 import {
   UNIT_ID_RE,

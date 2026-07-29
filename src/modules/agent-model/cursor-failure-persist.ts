@@ -2,38 +2,22 @@
 // Persistence of correlated post-tool failures and terminal observation
 // finalization.
 
-import type { Ctx, HookResult } from '../../core/types';
+import type { Ctx } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import {
-  claimCursorFollowupsBatch,
   claimCursorSpawnObservation,
   consumeCursorSpawnObservation,
-  cursorParentObservationSnapshot,
-  inferRoleFromTranscript,
-  isResumeCapableAgentId,
-  listCursorSpawnObservations,
-  normalizeHostCallId,
-  listCursorSubagentTranscriptCandidates,
-  markCursorSpawnObservationRetryHandled,
   markRunAgentReplacedIfMatches,
   readEffectiveState,
   readRunAgentRegistry,
-  refreshCursorRunAgentFromTranscriptCache,
-  suppressCursorFollowupsBatch,
-  type CursorFollowupClaimRequest,
-  type CursorFollowupSuppressionReason,
   type CursorSpawnObservation,
-  type CursorTranscriptCandidate,
-  type RunAgentEntry,
   updateCursorSpawnObservation,
 } from '../../shared/state';
 import { classifyModelFailureText, type ModelFailureKind } from './failure-classify';
 import {
-  exhaustedModelsForRole,
   markModelExhaustionTerminal,
   modelExhaustionTerminalForRole,
-  modelIsExhausted,
   recordExhaustedModel,
 } from './exhausted-models';
 import {
@@ -42,30 +26,17 @@ import {
   readModelChoice,
 } from './model-choice';
 import {
-  CURSOR_FAILURE_BLOCK_FALLBACKS,
-  block,
-  type CursorFailureReconcileResult,
   type ParsedCursorTranscript,
 } from './cursor-failure-prose';
 import {
-  compatibleObservation,
-  correlationTimeMs,
-  exactRecommendedModel,
-  parseCursorTranscript,
-  sameExactSlug,
   sameFamily,
-  unavailableModelsForRun,
 } from './cursor-transcript';
 import {
   resolutionFor,
   type ClassifiedTerminalObservation,
 } from './cursor-failure-resolution';
 import {
-  claimCursorParentPendingFollowups,
-  compareCursorStart,
   refreshPendingResolution,
-  selectCursorFailureForParentRole,
-  uniqueParentForRole,
 } from './cursor-failure-select';
 import { correlatedPostToolObservation } from './cursor-failures';
 

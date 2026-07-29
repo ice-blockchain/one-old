@@ -5,7 +5,7 @@
 
 import { detectHost } from '../../shared/host';
 import { materializeProjectIfNeeded, writeOpenCodeHostAssets } from '../../shared/materialize';
-import { pluginUseDeclined, recordPluginUseChoice } from '../../shared/state/plugin-use';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import {
   isOnboardingPermissionError,
@@ -16,7 +16,7 @@ import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { awaitDashboardHealth } from '../../shared/onboarding-server/dashboard-health';
 import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
-import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
+import {   readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 
 import {

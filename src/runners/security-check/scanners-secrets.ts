@@ -6,9 +6,9 @@ import * as path from 'path';
 import { type Issue, type Rec, type ScanReport } from './constants';
 import {
   gitOutput, hasAllowComment, hasCommand, isDocumentationOrFixturePath,
-  isInsideGitWorkTree, isRuntimeAppSecurityPath, isSecurityHeaderConfigPath,
-  lineForIndex, missingToolInstallPrompt, parseAuditJson, projectFiles,
-  readPackageJson, readTextFile, relativePath, runCommand, splitNul,
+  isInsideGitWorkTree,  
+  lineForIndex, missingToolInstallPrompt,  
+    relativePath, runCommand, splitNul,
 } from './helpers';
 
 export function scanExternalTools(cwd: string, reportDir: string, report: ScanReport): void {

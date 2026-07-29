@@ -6,23 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { obj, type Rec } from '../../../shared/obj';
 import {
-  BUILD_ARTIFACT_RE,
-  commandAppearsToWriteBuildArtifact,
-  commandAppearsToWriteExternalTemp,
-  commandAppearsToWriteFeatureSource,
-  FEATURE_SOURCE_RE,
   shellCommandHasWritePrimitive,
-  shellAssetImportDest,
-  shellStrayDeleteTarget,
-  shellTrafficOneWriteTargets,
-  shellWriteTargetsStateDir,
 } from '../../../shared/feature-source';
-import { parseApplyPatch, patchTextFromToolInput, type PatchFileOperation } from '../../../shared/apply-patch';
+import {   type PatchFileOperation } from '../../../shared/apply-patch';
 import { projectRelativeHookPath } from '../../../shared/hook/paths';
 import {
-  capabilityProfileForRun,
-  isDeletableStrayArtifact,
-  readCompiledArchitecture,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 

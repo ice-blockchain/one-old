@@ -4,7 +4,6 @@
 // exception to the 500-line target: splitting a single string into
 // concatenated fragments would only obscure the emitted plugin.
 
-import * as fs from 'fs';
 import * as path from 'path';
 import { PRE_TOOL_REMEDIATION, preToolFailureReason } from '../../hooks/fail-closed';
 import {
@@ -15,20 +14,13 @@ import {
   KILO_HOOK_SYSTEM_TRANSFORM,
   KILO_HOOK_TOOL_AFTER,
   KILO_HOOK_TOOL_BEFORE,
-  KILO_HOST_GLOBAL_CONFIG_DEFAULT_FILE,
-  KILO_HOST_GLOBAL_CONFIG_DIR_REL,
-  KILO_HOST_GLOBAL_CONFIG_FILES,
-  KILO_HOST_GLOBAL_PLUGIN_FILE,
   KILO_HOST_GLOBAL_PLUGIN_ID,
-  KILO_HOST_GLOBAL_PLUGINS_REL,
   KILO_HOST_PACKAGE,
   KILO_HOST_PROJECT_MARKER_REL,
   KILO_HOST_TARGET_VERSION,
 } from '../../config/kilo-host';
 import {
-  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_MANAGED_TOOLS,
-  ONE_MCP_REGISTRATION,
   ONE_MCP_SERVER_NAME,
 } from '../../config/one-mcp';
 import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../../shared/one-mcp/agent-tools';

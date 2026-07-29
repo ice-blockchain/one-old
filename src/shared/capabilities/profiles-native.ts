@@ -1,7 +1,7 @@
 // src/shared/capabilities/profiles-native.ts
 // The native profile table plus profile glue.
 
-import { obj, type Rec } from '../obj';
+import {  type Rec } from '../obj';
 
 import {
   type ArchitectureTargetSurface,

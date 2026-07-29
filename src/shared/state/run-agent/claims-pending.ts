@@ -5,19 +5,14 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson } from '../../fsjson';
 import {
   PENDING_AGENT_CLAIM_STALE_MS,
-  RUNS_REL_DIR,
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../../config/state';
 import {
-  activeAgentRole,
-  getSpawnIndex,
-  isSubagentSession,
   stackFingerprint,
-  UNKNOWN_STACK_FINGERPRINT,
 } from '../materialization';
 
 import {

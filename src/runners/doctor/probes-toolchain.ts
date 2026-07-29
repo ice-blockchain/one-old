@@ -7,7 +7,7 @@ import { isMaintenanceTerminal } from '../../shared/maintenance/terminal';
 import { effectiveLegacyRunStatus } from '../../shared/run-settlement';
 import { legacyCustomBackendMigration } from '../../shared/architecture-contract';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
-import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
+import { OPENCODE_MCP_SERVER_KEY } from '../../config/opencode-mcp';
 import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
 import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
@@ -19,16 +19,10 @@ import {
 } from '../gitnexus';
 import {
   codexConfigPath,
-  codexSessionsDir,
-  commandLooksMutating,
   parseCodexConfigToml,
-  readFirstJsonlObject,
-  safeJsonParse,
   safeRead,
   safeStat,
-  sessionIdFromFile,
   trustedProjectForCwd,
-  walkJsonlFiles,
   which,
 } from './lib';
 import {

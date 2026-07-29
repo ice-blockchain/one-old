@@ -10,7 +10,6 @@ import {
   canonicalTrafficOneContextLink,
   contextAliasHash,
   isScanSkippedPath,
-  stableContractJson,
   type ArchitectureBaselineV1,
   type CompiledArchitectureV1,
 } from '../architecture-contract';

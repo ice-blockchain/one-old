@@ -3,38 +3,27 @@
 
 import {
   claimCursorFollowupsBatch,
-  claimCursorSpawnObservation,
-  consumeCursorSpawnObservation,
   cursorParentObservationSnapshot,
   inferRoleFromTranscript,
   isResumeCapableAgentId,
   listCursorSpawnObservations,
-  normalizeHostCallId,
   listCursorSubagentTranscriptCandidates,
-  markCursorSpawnObservationRetryHandled,
   markRunAgentReplacedIfMatches,
-  readEffectiveState,
   readRunAgentRegistry,
   refreshCursorRunAgentFromTranscriptCache,
-  suppressCursorFollowupsBatch,
   type CursorFollowupClaimRequest,
-  type CursorFollowupSuppressionReason,
   type CursorSpawnObservation,
   type CursorTranscriptCandidate,
   type RunAgentEntry,
   updateCursorSpawnObservation,
 } from '../../shared/state';
 import {
-  exhaustedModelsForRole,
   markModelExhaustionTerminal,
   modelExhaustionTerminalForRole,
   modelIsExhausted,
-  recordExhaustedModel,
 } from './exhausted-models';
 import {
   markModelChoicePrompted,
-  modelChoicePrompted,
-  readModelChoice,
 } from './model-choice';
 import { cursorAgentPresumedDead } from './cursor-liveness';
 

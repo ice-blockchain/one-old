@@ -7,27 +7,16 @@ import * as path from 'path';
 import { stableContractJson } from '../architecture-contract';
 import { writeJson } from '../fsjson';
 import {
-  combineNativeSummaries,
   computeBuildOutputManifest,
   contentHash,
   decodeImageFile,
-  parseAndroidJUnitXml,
   parseQaLighthouseEvidence,
   parseQaMachineEvidence,
   parseQaNativeEvidence,
-  parseXcodeResultSummary,
   readJsonFile,
-  readLighthouseArtifact,
-  type QaLighthouseEvidenceV1,
-  type QaMachineEvidenceV1,
-  type QaMachineViewportEvidenceV1,
-  type QaNativeEvidenceV1,
 } from '../qa-evidence-runtime';
 import { sha256 } from '../text';
 import {
-  currentVerificationSourceHash,
-  readVerificationContract,
-  type LighthouseThresholdsV1,
   type VerificationContractV2,
 } from '../verification-contract';
 

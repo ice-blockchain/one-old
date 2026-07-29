@@ -6,39 +6,22 @@
 
 import * as path from 'path';
 import { obj, type Rec } from '../../shared/obj';
-import { context, deny, noop } from '../../core/result';
+import {  deny, noop } from '../../core/result';
 import { detectHostPlan } from '../../shared/host/plan';
-import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
-import { modelForRoleHost, teamModeForLevel, type PlanCtx } from '../../shared/performance';
+import {  currentModelForTier } from '../../shared/current-model-tiers';
+import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import {
-  captureClaimDebug,
-  ensureCurrentRunId,
   ensureRunAgentClaim,
-  continuationAgentId,
-  type CodexLiveAgentValidation,
-  hookSessionIdentity,
-  isMaintenancePhase,
   isTeamApproved,
-  liveRunAgent,
-  markRunAgentReplaced,
-  markRunAgentReplacedIfMatches,
-  refreshCursorRunAgentFromTranscriptCache,
   readEffectiveState,
-  readRunAssignmentsResilient,
-  REPLACE_AGENT_MARKER,
-  retireUnverifiedCodexRunAgent,
-  subagentContinuationAvailable,
-  validateCodexLiveRunAgent,
-  verdictAgentConflict,
 } from '../../shared/state';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
-import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
-import { acceptableSpawnTypes, canonicalHostAgentType, hostSpawnType } from '../../shared/host/spawn-types';
+import { openCodeGlobalAgentName } from '../../shared/materialize/opencode-assets';
+import { acceptableSpawnTypes } from '../../shared/host/spawn-types';
 import {
   ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
-  CURSOR_MODELS_CAPTURE_FALLBACK,
   block,
   isPlanBatchGatedRole,
 } from './handler-prose';
@@ -49,13 +32,9 @@ import {
   modelParamEnforced,
   modelSatisfiesTier,
   namedOpenCodeAgentDeny,
-  quickFixScopeFromSpawn,
   spawnAgentType,
 } from './spawn-shape';
 import {
-  absoluteTrafficOnePathDeny,
-  absoluteTrafficOnePathsOutsideProject,
-  continuationRecipe,
   recordSpawnParentSession,
 } from './spawn-hygiene';
 import {

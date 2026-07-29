@@ -1,7 +1,7 @@
 // src/modules/plan-guard/react-structure/analyze.ts
 // Import bindings + the per-file analyzeText entry over parse/routes/laravel.
 
-import { collapsedLineNumber, lexicalMask } from '../../../shared/collapsed-source';
+import {  lexicalMask } from '../../../shared/collapsed-source';
 
 import {
   type ImportBinding,

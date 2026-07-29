@@ -5,8 +5,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  canonicalRoutePath,
-  type ArchitectureExceptionRequestV1,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import { writeJson } from '../../../shared/fsjson';
@@ -18,7 +16,6 @@ import {
   type SourceAnalysis,
   type StructureReportV1,
   type StructureScanOptions,
-  ANALYZABLE_UI_RE,
   SKIP_RE,
   STRUCTURAL_SOURCE_RE,
 } from './types';

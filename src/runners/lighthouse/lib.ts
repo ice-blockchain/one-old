@@ -3,7 +3,7 @@
 // lighthouse runner. CLI parsing lives in cli-args.ts.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import {  join } from 'node:path';
 
 import {
   readJson,

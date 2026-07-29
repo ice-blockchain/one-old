@@ -18,7 +18,7 @@ import { captureCursorModels } from '../../../shared/materialize/cursor-models';
 import { modelGateCommand } from '../../../shared/model-gate-command';
 import { runModelPolicyPath } from '../../../shared/run-model-policy';
 import { doctorCommand } from '../../../shared/doctor-command';
-import { NO_LOCAL_FALLBACK, type LocalFallback } from '../../../shared/onboarding-server/wizard-links';
+import {  type LocalFallback } from '../../../shared/onboarding-server/wizard-links';
 import { noteBrowserArrival } from '../../../shared/onboarding-server/browser-arrival';
 import { cursorWaitLinkFirstReason } from '../../../shared/onboarding-server/cursor-setup';
 

@@ -12,12 +12,6 @@ import {
 } from '../traffic-one-paths';
 import {
   canonicalOpenCodeSource,
-  canonicalPerformanceLevel,
-  canonicalTeamMode,
-  canonicalTeamOverrides,
-  canonicalTeamSource,
-  codeGraphProviderFromValue,
-  teamStateFromString,
 } from '../canonicalize';
 import { stateTimestamp } from '../io';
 import { initializeLocalToolchainState } from '../toolchain';

@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { collapsedLineNumber, isCollapseCandidate } from '../../shared/collapsed-source';
 import { spawnTool } from '../../shared/spawn-tool';
-import { isMaintenancePhase, readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
+import {  readEffectiveState } from '../../shared/state';
 
 import {
   type Rec,

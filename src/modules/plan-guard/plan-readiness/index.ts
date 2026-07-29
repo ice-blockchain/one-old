@@ -12,22 +12,19 @@ import {
   persistCompiledArchitecture,
   publishRuntimeAssignments,
   readCompiledArchitecture,
-  readRuntimeAssignments,
   validateArchitectureInput,
-  webPackageRoot,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
-import { profileHasWebUi, type CapabilityProfileV1 } from '../../../shared/capabilities';
+import { profileHasWebUi } from '../../../shared/capabilities';
 import { isKnownStack } from '../../../shared/config';
 import { isPluginAuthoringRoot } from '../../../shared/authoring-root';
 import { detectMode } from '../../../shared/detection';
-import { packageJsonDeclaresWorkspace, stateRequiresNewProjectMonorepo } from '../../../shared/hook/paths';
+import {  stateRequiresNewProjectMonorepo } from '../../../shared/hook/paths';
 import { hasMaterializedProjectAssets } from '../../../shared/materialize';
 import { canonicalHost } from '../../../shared/model-tiers';
 import { openCodeDelegationActive } from '../../../shared/performance';
-import { OPENCODE_PLAN_MIN_UNITS, parsePlanDelegationUnits, planDelegationUnitCount } from '../../../shared/opencode-roles';
+import { OPENCODE_PLAN_MIN_UNITS } from '../../../shared/opencode-roles';
 import { obj } from '../../../shared/obj';
-import { readQaReportV2 } from '../../../shared/qa-report-v2';
 import {
   activateRunV2RollbackBarrier,
   writeRunSettlement,
@@ -38,66 +35,36 @@ import {
   readRunModelPolicy,
 } from '../../../shared/run-model-policy';
 import { readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
-import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../../shared/scope';
+import {  matchesScope } from '../../../shared/scope';
 import {
-  activeAgentRole,
   isMaterialized,
   legacyStatePath,
-  readRunAssignmentsResilient,
-  resolveRunAgentContext,
   stackFingerprint,
   statePath,
 } from '../../../shared/state';
 import {
   buildVerificationContract,
-  changedPathsFromBaseline,
   publishVerificationContract,
-  readVerificationContract,
-  type LighthouseThresholdsV1,
-  type UiImpact,
 } from '../../../shared/verification-contract';
 import { readVerificationPlanIntent } from '../../../shared/verification-plan-intent';
 import {
-  analyzeProjectStructure,
   analyzeStructureText,
   analyzeStructureTextAgainstContract,
   invalidateStructureCache,
-  writeStructureReport,
-  type StructureFinding,
 } from '../react-structure';
 
 import {
   ARCHITECTURE_INPUT_RE,
   ARCHITECT_DIGEST_RE,
   ASSIGNMENTS_FILE_RE,
-  COLLAPSE_LINE_CHARS,
-  FRONTEND_DIGEST_RE,
-  IMPLEMENTER_DIGEST_RE,
   PLAN_FILE_RE,
-  REVIEWER_DIGEST_RE,
-  TESTER_DIGEST_RE,
   type Block,
   type Rec,
   exists,
 } from './context';
 import {
-  builtAppIdentities,
-  collapsedProductSourceFile,
-  qaReportOlderThanImplementation,
-  qaReportVerifiedBuild,
   structureFindingSummary,
 } from './checks';
-import {
-  compiledFormatToolchainForRole,
-  compiledOutputPaths,
-  crawlOriginProblem,
-  emitConfigProblems,
-  formatParityViolation,
-  roleOwnedTsOutputs,
-  skippedVerificationLine,
-  testToolchainGaps,
-  typecheckParityViolation,
-} from './toolchain';
 import {
   ADR_OR_DOC_RE,
   ROOT_MONOREPO_FLAT_RE,
@@ -113,16 +80,13 @@ import {
   planOnDiskOpenCodeQueuePolicyErrors,
 } from './architect';
 import {
-  allImplementationRolesDelivered,
   architectMayWrite,
   architectureInputErrors,
   artifactContract,
   assignmentScopesForRole,
   assignmentWriterRole,
   digestClaimsVerdict,
-  refreshVerificationAfterImplementation,
   roleContract,
-  runFullStructureScan,
   runtimeOwnedRunSidecar,
   usesMainAgentTeam,
 } from './contracts';

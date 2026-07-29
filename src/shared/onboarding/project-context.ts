@@ -5,7 +5,7 @@
 // from _helpers.cjs (PROJECT_CONTEXT_ANSWER_KEYS:1044, projectContextOriginalPrompt,
 // projectContextDomainQuestionLines).
 
-import { obj, type Rec } from '../obj';
+import { obj } from '../obj';
 
 // The user's first request, used to tailor onboarding questions. Checks the
 // persisted projectContext.originalPrompt first, then loose top-level aliases.

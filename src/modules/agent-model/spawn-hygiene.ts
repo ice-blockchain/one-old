@@ -3,29 +3,12 @@
 
 import * as path from 'path';
 import { obj, type Rec } from '../../shared/obj';
-import { context, deny, noop } from '../../core/result';
-import type { Ctx, HookResult } from '../../core/types';
+import { context, deny } from '../../core/result';
+import type {  HookResult } from '../../core/types';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import {
-  captureClaimDebug,
-  ensureCurrentRunId,
-  ensureRunAgentClaim,
-  continuationAgentId,
-  type CodexLiveAgentValidation,
   hookSessionIdentity,
-  isMaintenancePhase,
-  isTeamApproved,
-  liveRunAgent,
-  markRunAgentReplaced,
-  markRunAgentReplacedIfMatches,
-  refreshCursorRunAgentFromTranscriptCache,
-  readEffectiveState,
-  readRunAssignmentsResilient,
   REPLACE_AGENT_MARKER,
-  retireUnverifiedCodexRunAgent,
-  subagentContinuationAvailable,
-  validateCodexLiveRunAgent,
-  verdictAgentConflict,
 } from '../../shared/state';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 

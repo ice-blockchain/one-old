@@ -2,7 +2,7 @@
 // Hook-input session identity and subagent-thread detection.
 
 import { obj, type Rec } from '../../obj';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import { parseJson } from '../../fsjson';
 
 import {
   firstString,

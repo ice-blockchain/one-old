@@ -9,7 +9,7 @@ import * as path from 'path';
 import { opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { writeJson } from '../fsjson';
 import type { PlanDelegationUnit } from '../opencode-plan/unit-types';
-import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../scope';
+import {   normalizeRelPath } from '../scope';
 import { withProjectStateLock } from '../state/project-state-lock';
 
 import {

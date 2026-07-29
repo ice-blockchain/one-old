@@ -1,7 +1,7 @@
 // src/runners/lighthouse/cli-args.ts
 // Lighthouse runner defaults, argument parsing, and usage text.
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 type Rec = Record<string, unknown>;

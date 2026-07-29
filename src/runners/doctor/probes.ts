@@ -6,40 +6,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
 import { DEFAULT_PUBLIC_ENDPOINT, ONE_MCP_CONFIG_NAME_BY_HOST } from '../../config/one-mcp';
-import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
+import {  OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
 import { readSimpleAuth } from '../../shared/auth';
 import { codexHookEvidenceEvent, hasCodexHookEvidenceMarker, isCodexHookEvent } from '../../shared/codex-hook-evidence';
 import { readOneMcpCache, type OneMcpLastSync } from '../../shared/one-mcp/cache';
 import { usableOneMcpConfigCacheEntry } from '../../shared/current-model-tiers';
 import { oneSettingsPath } from '../../shared/one-settings';
 import { stableBinDir } from '../../shared/runner-shims';
-import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
-  GITNEXUS_MIN_NODE_MAJOR,
-  currentNodeMajor,
-  findNvmNode22,
-  nvmPresent,
-  type NvmNode22,
-} from '../gitnexus';
-import {
-  codexConfigPath,
   codexSessionsDir,
   commandLooksMutating,
-  parseCodexConfigToml,
   readFirstJsonlObject,
   safeJsonParse,
-  safeRead,
-  safeStat,
   sessionIdFromFile,
-  trustedProjectForCwd,
   walkJsonlFiles,
-  which,
 } from './lib';
-import {
-  probeCodexHookTrust,
-  type CodexHookTrustProbe,
-  type CodexHookTrustProbeOptions,
-} from './codex-hook-trust';
 type Rec = Record<string, unknown>;
 
 export interface CanonicalAuthProbe {

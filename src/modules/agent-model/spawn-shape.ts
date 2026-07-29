@@ -3,22 +3,17 @@
 // with its per-host denies, and model/tier predicates.
 
 import { asString } from '../../adapters/coerce';
-import { obj, type Rec } from '../../shared/obj';
-import { context, deny, noop } from '../../core/result';
+import {  type Rec } from '../../shared/obj';
+import {  deny } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { detectHostPlan } from '../../shared/host/plan';
-import { modelMatchesAny, modelMatchesHostModels } from '../../shared/model-tiers';
-import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
+import {  modelMatchesHostModels } from '../../shared/model-tiers';
+import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
-import { acceptableSpawnTypes, canonicalHostAgentType, hostSpawnType } from '../../shared/host/spawn-types';
+import {   hostSpawnType } from '../../shared/host/spawn-types';
 import { cursorAgentTypeReason } from './cursor-agent-type';
 import {
-  cursorRunPolicyMissingTiers,
-  ensureRunModelPolicy,
   policyModelsForExpected,
-  readRunModelPolicy,
-  resolveRunPolicyFallback,
-  runModelPolicyPath,
   type RunModelPolicyV1,
 } from '../../shared/run-model-policy';
 

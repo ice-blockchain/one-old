@@ -2,33 +2,26 @@
 // The onboarding flow engine: computeOnboarding + applyAnswer over the
 // view/meta helpers in flow-view.ts.
 
-import { classifyPromptForStack, detectMode, promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
+import { classifyPromptForStack,  promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
 import { authEnforced, isLocallyAuthenticated } from '../auth';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
 import { nextOnboardingStep } from '../onboarding/prompts';
-import { currentLocalPreferenceTarget, nextLocalPreferenceStep, type LocalPreferenceTarget } from '../onboarding/local-prefs';
+import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../onboarding/local-prefs';
 import {
-  projectContextDomainQuestionLines,
   projectContextOriginalPrompt,
 } from '../onboarding/project-context';
 import { detectHost } from '../host';
 import { readPluginUseChoice } from '../state/plugin-use';
 import { currentModelsForTier } from '../current-model-tiers';
-import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
+import {   teamModeForLevel, type PlanCtx } from '../performance';
 import { stateTimestamp } from '../state/io';
 import { windsurfBackend } from '../windsurf-backend';
 import {
-  applyGlobalCodeGraphProvider,
   clearProjectHostPrefs,
-  effectiveState,
   mergeProjectHostPrefs,
   mergeProjectPrefs,
-  projectPrefsPath,
-  hasValidPerformanceState,
   readEffectiveState,
-  readGlobalCodeGraphProvider,
-  readProjectPrefs,
   readState,
   writeGlobalCodeGraphProvider,
   writeState,

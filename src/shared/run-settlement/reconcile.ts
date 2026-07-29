@@ -3,15 +3,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { readJson, writeJson } from '../fsjson';
+import { readJson } from '../fsjson';
 import { isMaintenanceTerminal, maintenanceOutcome } from '../maintenance/terminal';
-import { paidFallbackCompletionFromMaintenance } from '../maintenance/fallback-proof';
 import { withProjectStateLock } from '../state/project-state-lock';
 import { strictRunVerificationEvidence } from '../strict-verification-evidence';
 
 import {
   runDir,
-  safeRunId,
   type CanonicalRunStatus,
   type Rec,
   type RunSettlementV2,

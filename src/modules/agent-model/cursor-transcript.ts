@@ -5,36 +5,15 @@ import * as fs from 'fs';
 import { pickCursorSlug } from '../../shared/materialize/cursor-models';
 import { modelMatchesExpected } from '../../shared/model-tiers';
 import {
-  readRunModelPolicy,
-  resolveRunPolicyFallback,
   type RunModelPolicyV1,
 } from '../../shared/run-model-policy';
 import {
-  claimCursorFollowupsBatch,
-  claimCursorSpawnObservation,
-  consumeCursorSpawnObservation,
-  cursorParentObservationSnapshot,
   inferRoleFromTranscript,
-  isResumeCapableAgentId,
   listCursorSpawnObservations,
-  normalizeHostCallId,
-  listCursorSubagentTranscriptCandidates,
-  markCursorSpawnObservationRetryHandled,
-  markRunAgentReplacedIfMatches,
-  readEffectiveState,
-  readRunAgentRegistry,
-  refreshCursorRunAgentFromTranscriptCache,
-  suppressCursorFollowupsBatch,
-  type CursorFollowupClaimRequest,
-  type CursorFollowupSuppressionReason,
   type CursorSpawnObservation,
   type CursorTranscriptCandidate,
-  type RunAgentEntry,
-  updateCursorSpawnObservation,
 } from '../../shared/state';
 import {
-  markModelChoicePrompted,
-  modelChoicePrompted,
   readModelChoice,
 } from './model-choice';
 

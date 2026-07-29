@@ -2,17 +2,10 @@
 // Delegation constants, the hardened run env, and the public result types.
 
 import * as path from 'path';
-import { gatewayBreakerMs, maxConsecutiveStalls, opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
+import {  maxConsecutiveStalls } from '../../config/opencode-timeouts';
 import { exec } from '../../shared/exec';
 import {
-  hasFreshArchitectQueueForRun,
   markOpenCodeGatewayOutage,
-  markOpenCodePlanRoleCompleted,
-  markOpenCodeRoleAttempted,
-  openCodeGatewayOutageActive,
-  type PlanDelegationUnit,
-  parsePlanDelegationUnits,
-  recordOpenCodeAttemptOutcome,
 } from '../../shared/opencode-roles';
 
 export type Rec = Record<string, unknown>;

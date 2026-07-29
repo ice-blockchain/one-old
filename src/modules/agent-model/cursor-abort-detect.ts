@@ -3,31 +3,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { deny, followup, context, noop } from '../../core/result';
-import type { Ctx, HookResult } from '../../core/types';
+import {  followup } from '../../core/result';
+import type { Ctx } from '../../core/types';
 import { obj } from '../../shared/obj';
 import {
-  claimCursorFollowupsBatch,
-  claimCursorSpawnObservation,
-  consumeCursorSpawnObservation,
-  cursorParentObservationSnapshot,
-  inferRoleFromTranscript,
-  isResumeCapableAgentId,
-  listCursorSpawnObservations,
   normalizeHostCallId,
   listCursorSubagentTranscriptCandidates,
-  markCursorSpawnObservationRetryHandled,
-  markRunAgentReplacedIfMatches,
-  readEffectiveState,
-  readRunAgentRegistry,
-  refreshCursorRunAgentFromTranscriptCache,
-  suppressCursorFollowupsBatch,
-  type CursorFollowupClaimRequest,
-  type CursorFollowupSuppressionReason,
   type CursorSpawnObservation,
-  type CursorTranscriptCandidate,
-  type RunAgentEntry,
-  updateCursorSpawnObservation,
 } from '../../shared/state';
 
 import {

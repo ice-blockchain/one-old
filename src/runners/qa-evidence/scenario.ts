@@ -5,8 +5,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  currentVerificationSourceHash,
-  readVerificationContract,
   type VerificationContractV2,
 } from '../../shared/verification-contract';
 

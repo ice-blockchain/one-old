@@ -21,7 +21,6 @@ import {
   createPaidFallbackCompletion,
   paidFallbackCompletionFromMaintenance,
   parseFallbackSourceSnapshot,
-  type FallbackSourceFileV1,
   type FallbackSourceSnapshotV1,
 } from './fallback-proof';
 import { roleDigestName } from '../packing';

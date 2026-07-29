@@ -5,23 +5,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  buildRuntimeAssignments,
   capabilityProfileForRun,
-  compileArchitectureForRun,
-  persistCompiledArchitecture,
-  publishRuntimeAssignments,
-  readCompiledArchitecture,
-  readRuntimeAssignments,
-  validateArchitectureInput,
-  webPackageRoot,
-  type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import {
-  analyzeProjectStructure,
-  analyzeStructureText,
-  analyzeStructureTextAgainstContract,
-  invalidateStructureCache,
-  writeStructureReport,
   type StructureFinding,
 } from '../react-structure';
 

@@ -3,9 +3,6 @@
 
 import * as path from 'path';
 import {
-  capabilityProfileForProject,
-  detectFrontendFramework,
-  runtimeCapabilityStateFromProfile,
   type CapabilityProfileV1,
 } from '../capabilities';
 

@@ -17,13 +17,12 @@ import {
   commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
-  shellCommandHasWritePrimitive,
   shellAssetImportDest,
   shellStrayDeleteTarget,
   shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
 } from '../../../shared/feature-source';
-import { parseApplyPatch, patchTextFromToolInput, type PatchFileOperation } from '../../../shared/apply-patch';
+import { parseApplyPatch, patchTextFromToolInput } from '../../../shared/apply-patch';
 import { projectRelativeHookPath } from '../../../shared/hook/paths';
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../../shared/materialize';
 import { pluginRoot } from '../../../shared/paths';
@@ -35,7 +34,6 @@ import {
   capabilityProfileForRun,
   isDeletableStrayArtifact,
   readCompiledArchitecture,
-  type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import { profileHasWebUi } from '../../../shared/capabilities';
 import { planReadinessViolations } from '../plan-readiness';

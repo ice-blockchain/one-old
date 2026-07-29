@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
 import { STATE_FILE } from '../../../config/paths';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson,  writeJson } from '../../fsjson';
 import {
   activeAgentRole,
   getSpawnIndex,
@@ -17,12 +17,7 @@ import {
 import { writeState } from '../normalize';
 import {
   activeRunClaimCount,
-  effectiveLegacyRunOutcome,
   effectiveLegacyRunStatus,
-  projectRunLedgerForV2Rollback,
-  readRunSettlement,
-  writeRunSettlement,
-  type CanonicalRunStatus,
 } from '../../run-settlement';
 
 import {

@@ -33,7 +33,6 @@ import {
   correlatedCursorFailureGate,
   cursorFailureReconcileHook,
   reconcileCursorSubagentFailures,
-  settleCorrelatedCursorRetryOnStart,
 } from '../cursor-failures';
 import {
   EXHAUSTED_MODEL_TTL_MS,

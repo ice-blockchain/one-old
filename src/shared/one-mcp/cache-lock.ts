@@ -4,32 +4,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  ONE_MCP_CACHE_FILE,
   ONE_MCP_CACHE_LOCK_RETRY_MS,
   ONE_MCP_CACHE_LOCK_STALE_MS,
   ONE_MCP_CACHE_LOCK_TIMEOUT_MS,
-  ONE_MCP_CACHE_SCHEMA_VERSION,
-  ONE_MCP_CONFIG_NAME_BY_HOST,
-  ONE_MCP_DECODER_VERSION,
-  ONE_MCP_MAX_CONFIG_VERSION,
 } from '../../config/one-mcp';
 import {
-  GENERATION_RE,
-  knownHost,
-  oneMcpConfigCacheIdentity,
-  parseLastSync,
-  parseOneMcpConfigCacheEntry,
-  record,
-  sameIdentity,
-  validString,
-  type OneMcpCache,
-  type OneMcpConfigCacheCasResult,
-  type OneMcpConfigCacheEntry,
-  type OneMcpConfigCacheIdentity,
-  type OneMcpConfigCacheRequestObservation,
-  type OneMcpConfigCacheUpdate,
-  type OneMcpHostCacheMap,
-  type OneMcpLastSync,
   type Rec,
 } from './cache-schema';
 

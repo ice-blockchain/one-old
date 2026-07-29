@@ -1,7 +1,7 @@
 // src/runners/doctor/codex-hook-schema.ts
 // Codex hook trust schema: expected keys, statuses, and probe shapes.
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { samePlatformPath } from './path-identity';

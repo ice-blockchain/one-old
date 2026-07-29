@@ -4,13 +4,11 @@
 
 import * as path from 'path';
 import {
-  canonicalRoutePath,
   type ArchitectureExceptionRequestV1,
-  type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import type { CapabilityProfileV1 } from '../../../shared/capabilities';
 import { collapsedLineNumber, lexicalMask } from '../../../shared/collapsed-source';
-import { matchesPattern, matchesScope, type AssignedScope } from '../../../shared/scope';
+import { matchesPattern } from '../../../shared/scope';
 
 import {
   type SourceAnalysis,

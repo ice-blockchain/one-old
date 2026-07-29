@@ -13,12 +13,12 @@ import { autoDetectedAnnouncement } from '../../shared/directives';
 import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
 import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
-import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
+import { packBundle } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
-import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
+import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective } from '../../shared/skill-filters';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
-import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
-import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
+import {  onboardingSyncSessionId } from '../../shared/onboarding-server/wait-command';
+import {  STACKS, stackSpecForState } from '../../shared/stacks';
 import {
   ensureCurrentRunId,
   hasRunAgentState,
@@ -36,7 +36,6 @@ import {
   resolveRunAgentContext,
   runIdentityFrozen,
   runReachedTerminalVerdict,
-  type RunAgentContext,
   scrubProjectStateLocalPrefs,
   stackFingerprint,
   statePath,
@@ -55,7 +54,7 @@ import {
   type SessionOneMcpSync,
 } from './one-mcp-sync';
 import { sessionPerformanceContext } from '../../shared/session-performance-context';
-import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
+import { ensureRunModelPolicy } from '../../shared/run-model-policy';
 import { detectHostPlan } from '../../shared/host/plan';
 import { finalizePaidMaintenanceFallback } from '../../shared/maintenance/fallback';
 import { reconcileRunSettlement } from '../../shared/run-settlement';

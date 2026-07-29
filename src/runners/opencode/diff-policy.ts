@@ -5,21 +5,11 @@
 import * as path from 'path';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
-  blockedByFailedDependencies,
-  buildOpenCodeQueue,
   normalizeOpenCodeRole,
   opencodeAssignmentHash,
-  openCodeQueuePolicyReport,
   parseAllowedFiles,
-  readOpenCodeUnitStatuses,
-  recordOpenCodeUnitStatus,
-  reconcileStaleRunningUnits,
-  statusFromDelegateAction,
-  unsafeAllowedFilePatterns,
-  writeOpenCodeQueue,
-  type OpenCodeUnitStatus,
 } from '../../shared/opencode-queue';
-import { isMaintenancePhase, readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
+import {   readRunAssignmentsResilient } from '../../shared/state';
 
 import {
   which,

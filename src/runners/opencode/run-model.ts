@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { gatewayBreakerMs, maxConsecutiveStalls, opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
+import {  maxConsecutiveStalls, opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { spawnTool } from '../../shared/spawn-tool';
 import { roleDigestName } from '../../shared/packing';
 import { nowIso } from '../../shared/text';

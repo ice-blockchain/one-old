@@ -4,12 +4,8 @@
 // surface is re-exported by verification-contract.ts.
 
 import {
-  canonicalTrafficOneContextLink,
-  contextAliasHash,
   isScanSkippedPath,
-  stableContractJson,
   type ArchitectureBaselineV1,
-  type CompiledArchitectureV1,
 } from '../architecture-contract';
 
 export const VERIFICATION_CONTRACT_SCHEMA_VERSION = 2 as const;

@@ -3,9 +3,7 @@
 // that keeps every original './react-structure' import specifier working.
 
 import {
-  canonicalRoutePath,
   type ArchitectureExceptionRequestV1,
-  type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import type { CapabilityProfileV1 } from '../../../shared/capabilities';
 

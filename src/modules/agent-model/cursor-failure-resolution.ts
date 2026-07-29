@@ -5,42 +5,15 @@
 import {
   readRunModelPolicy,
   resolveRunPolicyFallback,
-  type RunModelPolicyV1,
 } from '../../shared/run-model-policy';
 import {
-  claimCursorFollowupsBatch,
-  claimCursorSpawnObservation,
-  consumeCursorSpawnObservation,
-  cursorParentObservationSnapshot,
-  inferRoleFromTranscript,
-  isResumeCapableAgentId,
-  listCursorSpawnObservations,
-  normalizeHostCallId,
-  listCursorSubagentTranscriptCandidates,
-  markCursorSpawnObservationRetryHandled,
-  markRunAgentReplacedIfMatches,
-  readEffectiveState,
-  readRunAgentRegistry,
-  refreshCursorRunAgentFromTranscriptCache,
-  suppressCursorFollowupsBatch,
-  type CursorFollowupClaimRequest,
-  type CursorFollowupSuppressionReason,
   type CursorSpawnObservation,
-  type CursorTranscriptCandidate,
-  type RunAgentEntry,
-  updateCursorSpawnObservation,
 } from '../../shared/state';
-import { classifyModelFailureText, type ModelFailureKind } from './failure-classify';
+import {  type ModelFailureKind } from './failure-classify';
 import {
   exhaustedModelsForRole,
-  markModelExhaustionTerminal,
-  modelExhaustionTerminalForRole,
-  modelIsExhausted,
-  recordExhaustedModel,
 } from './exhausted-models';
 import {
-  markModelChoicePrompted,
-  modelChoicePrompted,
   readModelChoice,
 } from './model-choice';
 

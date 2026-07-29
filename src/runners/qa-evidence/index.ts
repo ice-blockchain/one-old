@@ -4,8 +4,6 @@
 // shim calls main(); the require.main guard stays here.
 
 import {
-  currentVerificationSourceHash,
-  readVerificationContract,
   type VerificationContractV2,
 } from '../../shared/verification-contract';
 

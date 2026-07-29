@@ -6,17 +6,13 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson,  writeJson } from '../../fsjson';
 import { stateTimestamp } from '../io';
 import {
-  activeAgentRole,
-  getSpawnIndex,
-  isSubagentSession,
   stackFingerprint,
   UNKNOWN_STACK_FINGERPRINT,
 } from '../materialization';
 import {
-  activeRunClaimCount,
   effectiveLegacyRunOutcome,
   effectiveLegacyRunStatus,
   projectRunLedgerForV2Rollback,

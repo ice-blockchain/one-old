@@ -2,13 +2,10 @@
 // Transcript role inference: [t1-role] markers, identity normalization,
 // Codex session-meta parsing, and capped head reads.
 
-import { obj, type Rec } from '../../obj';
+import { obj } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  PENDING_AGENT_CLAIM_STALE_MS,
-  RUNS_REL_DIR,
-  SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../../config/state';
 

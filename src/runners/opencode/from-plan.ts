@@ -7,13 +7,9 @@ import * as path from 'path';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import {
   hasFreshArchitectQueueForRun,
-  markOpenCodeGatewayOutage,
   markOpenCodePlanRoleCompleted,
-  markOpenCodeRoleAttempted,
-  openCodeGatewayOutageActive,
   type PlanDelegationUnit,
   parsePlanDelegationUnits,
-  recordOpenCodeAttemptOutcome,
 } from '../../shared/opencode-roles';
 import {
   finalizePlanBatch,
@@ -23,29 +19,22 @@ import {
 import {
   blockedByFailedDependencies,
   buildOpenCodeQueue,
-  normalizeOpenCodeRole,
-  opencodeAssignmentHash,
   openCodeQueuePolicyReport,
-  parseAllowedFiles,
   readOpenCodeUnitStatuses,
   recordOpenCodeUnitStatus,
   reconcileStaleRunningUnits,
   statusFromDelegateAction,
-  unsafeAllowedFilePatterns,
   writeOpenCodeQueue,
   type OpenCodeUnitStatus,
 } from '../../shared/opencode-queue';
 import { isMaintenancePhase, readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
 import {
-  type DelegateOpts,
   type DelegateResult,
   type FailureKind,
   type Rec,
 } from './types';
 import {
   classifyFailureKind,
-  maintenanceContractPreflight,
-  recordMaintenanceDelegationOutcome,
 } from './maintenance';
 import { delegate } from './index';
 import { normalizePlanRole } from './diff-policy';

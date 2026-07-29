@@ -3,9 +3,9 @@
 // performance-target metadata advance.
 
 import { obj, type Rec } from '../../obj';
-import { HOST_IDS, type HostModelKey } from '../../../config/model-tiers';
+import {  type HostModelKey } from '../../../config/model-tiers';
 import { detectHost } from '../../host';
-import { canonicalHost, canonicalPlan, planIsRecognized } from '../../model-tiers';
+import { canonicalHost } from '../../model-tiers';
 
 import {
   HOST_PREF_KEYS,

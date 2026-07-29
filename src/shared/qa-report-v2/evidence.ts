@@ -8,7 +8,6 @@ import {
   combineNativeSummaries,
   computeBuildOutputManifest,
   contentHash,
-  decodeImageFile,
   parseAndroidJUnitXml,
   parseQaLighthouseEvidence,
   parseQaMachineEvidence,
@@ -23,9 +22,6 @@ import {
 } from '../qa-evidence-runtime';
 import { sha256 } from '../text';
 import {
-  currentVerificationSourceHash,
-  readVerificationContract,
-  type LighthouseThresholdsV1,
   type VerificationContractV2,
 } from '../verification-contract';
 

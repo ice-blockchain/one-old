@@ -2,16 +2,13 @@
 // Cursor spawn observations: the dedicated lock, store read/write, and
 // record/claim/update/consume.
 
-import { obj, type Rec } from '../../obj';
+import { obj } from '../../obj';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson,  writeJson } from '../../fsjson';
 import {
-  PENDING_AGENT_CLAIM_STALE_MS,
-  RUNS_REL_DIR,
-  SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../../config/state';
 import { TIER_IDS, type TierId } from '../../../config/model-tiers';

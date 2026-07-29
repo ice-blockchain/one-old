@@ -3,12 +3,11 @@
 // reconsider handling, and the begin-onboarding attempt.
 
 import { detectHost } from '../../shared/host';
-import { pluginUseDeclined, recordPluginUseChoice } from '../../shared/state/plugin-use';
+import {  recordPluginUseChoice } from '../../shared/state/plugin-use';
 import {
   onboardingBootstrapCommand,
   onboardingSyncSessionId,
   onboardingUseBootstrapCommand,
-  onboardingWaitCommand,
 } from '../../shared/onboarding-server/wait-command';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import {

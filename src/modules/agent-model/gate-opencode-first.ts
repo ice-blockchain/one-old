@@ -4,7 +4,7 @@
 // invariant documented inline). Returns a deny or null to continue.
 
 import * as path from 'path';
-import { context, deny, noop } from '../../core/result';
+import { context, deny } from '../../core/result';
 import { recordOpenCodeFallback } from '../../shared/opencode-queue';
 import {
   markOpenCodeGateDenied,
@@ -18,30 +18,12 @@ import {
   shouldRunRoleOnOpenCode,
 } from '../../shared/opencode-roles';
 import {
-  captureClaimDebug,
   ensureCurrentRunId,
   ensureRunAgentClaim,
-  continuationAgentId,
-  type CodexLiveAgentValidation,
-  hookSessionIdentity,
   isMaintenancePhase,
-  isTeamApproved,
-  liveRunAgent,
-  markRunAgentReplaced,
-  markRunAgentReplacedIfMatches,
-  refreshCursorRunAgentFromTranscriptCache,
-  readEffectiveState,
-  readRunAssignmentsResilient,
-  REPLACE_AGENT_MARKER,
-  retireUnverifiedCodexRunAgent,
-  subagentContinuationAvailable,
-  validateCodexLiveRunAgent,
-  verdictAgentConflict,
 } from '../../shared/state';
 import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan/directive';
 import {
-  ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
-  CURSOR_MODELS_CAPTURE_FALLBACK,
   block,
   isPlanBatchGatedRole,
 } from './handler-prose';

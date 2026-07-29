@@ -8,15 +8,13 @@ import {
   ONE_MCP_MAX_CONFIG_VERSION,
   isSafeOneMcpModelId,
 } from '../../../config/one-mcp';
-import { canonicalHost, canonicalPlan, planIsRecognized } from '../../model-tiers';
+import {  canonicalPlan, planIsRecognized } from '../../model-tiers';
 import { agentTierForPlan } from '../../performance-config';
 import {
-  canonicalOpenCodeSource,
   canonicalPerformanceLevel,
   canonicalTeamMode,
   canonicalTeamOverrides,
   canonicalTeamSource,
-  codeGraphProviderFromValue,
   teamStateFromString,
 } from '../canonicalize';
 import {

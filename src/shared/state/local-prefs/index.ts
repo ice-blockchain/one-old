@@ -8,16 +8,10 @@ import * as path from 'path';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../../config/paths';
 import { readJson } from '../../fsjson';
 import { detectHost } from '../../host';
-import { canonicalHost, canonicalPlan, planIsRecognized } from '../../model-tiers';
+import { canonicalHost } from '../../model-tiers';
 import { readOneSettings, writeOneSection } from '../../one-settings';
 import {
-  canonicalOpenCodeSource,
-  canonicalPerformanceLevel,
-  canonicalTeamMode,
-  canonicalTeamOverrides,
-  canonicalTeamSource,
   codeGraphProviderFromValue,
-  teamStateFromString,
 } from '../canonicalize';
 
 import {

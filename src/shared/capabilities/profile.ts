@@ -1,7 +1,7 @@
 // src/shared/capabilities/profile.ts
 // capabilityProfileForProject: the assembler.
 
-import { obj, type Rec } from '../obj';
+import { obj } from '../obj';
 
 import {
   BACKEND_NONE,

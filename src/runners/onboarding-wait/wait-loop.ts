@@ -7,7 +7,7 @@ import { maintenanceTriageDirective } from '../../modules/session/triage-directi
 import { detectMode } from '../../shared/detection';
 import { detectHost } from '../../shared/host';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
-import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
+import {  normalizeState, readEffectiveState } from '../../shared/state';
 
 const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 2000;

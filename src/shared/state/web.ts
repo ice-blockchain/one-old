@@ -2,7 +2,7 @@
 // Web/native stack predicates. Ported 1:1 from isWebState/isNativeState in
 // scripts/hook-runtime/handlers/_helpers.cjs.
 
-import { obj, type Rec } from '../obj';
+import { obj } from '../obj';
 import { RN_STACKS } from '../../config/stacks';
 
 export function isNativeState(state: unknown): boolean {

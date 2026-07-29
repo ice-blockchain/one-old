@@ -5,13 +5,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AGENT_ROLES } from '../config/performance';
 import {
-  isSafeOneMcpModelId,
-  ONE_MCP_MAX_AVAILABLE_MODELS,
   ONE_MCP_MAX_CONFIG_VERSION,
-  ONE_MCP_MAX_MODELS_PER_TIER,
 } from '../config/one-mcp';
-import type { HostModelKey, TierId, UserPlan } from '../config/model-tiers';
-import { RUNS_REL_DIR, VALID_AGENT_ROLES } from '../config/state';
+import type {  TierId } from '../config/model-tiers';
+import {  VALID_AGENT_ROLES } from '../config/state';
 import { isNonProjectRoot } from './authoring-root';
 import {
   capabilityProfileForRun,
@@ -26,7 +23,7 @@ import {
 import { currentHostModelTarget } from './current-model-tiers';
 import { detectHostPlan } from './host/plan';
 import { freshCursorModels } from './materialize/cursor-models';
-import { canonicalHost, canonicalPlan, modelMatchesExpected, type ModelTierSnapshot } from './model-tiers';
+import { canonicalHost, canonicalPlan } from './model-tiers';
 import { obj, type Rec } from './obj';
 import { roleModelSelection } from './performance';
 import {

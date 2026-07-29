@@ -4,12 +4,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
-import { resolveNode, npmNextToNode } from '../../shared/runtime-resolve';
+import { resolveNode } from '../../shared/runtime-resolve';
 import { spawnTool } from '../../shared/spawn-tool';
 import { writeGraphPreview } from '../../shared/materialize';
 import { nowIso } from '../../shared/text';
 import {
-  getToolSpec,
   isToolUsable,
   managedNpmBin,
   managedNpmConfigFlags,
@@ -17,15 +16,13 @@ import {
   mergeToolchainStamp,
   probeTool,
   probeToolVersion,
-  toolInstallSpec,
   toolStatus,
 } from '../toolchain';
-import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
+import {  GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
 import { CODE_GRAPH_SCAN_EXCLUDES, GITNEXUS_ROOT_DIRNAME, applyCodeGraphScanIgnore, codeGraphIndexIsStale, gitnexusGraphIsEmpty, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import {
   currentNodeMajor,
   findNvmNode22,
-  nvmPresent,
 } from './nvm';
 
 import {

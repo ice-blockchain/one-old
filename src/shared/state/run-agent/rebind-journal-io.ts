@@ -5,20 +5,13 @@ import type { AuthoritativeRebindJournal, AuthoritativeRebindReplay } from './re
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson,  writeJson } from '../../fsjson';
 import {
-  PENDING_AGENT_CLAIM_STALE_MS,
-  RUNS_REL_DIR,
-  SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../../config/state';
 import { stateTimestamp } from '../io';
 import {
-  activeAgentRole,
-  getSpawnIndex,
-  isSubagentSession,
   stackFingerprint,
-  UNKNOWN_STACK_FINGERPRINT,
 } from '../materialization';
 import {
   authoritativeRebindJournalFile,
@@ -27,7 +20,6 @@ import {
   runAgentFile,
   runDir,
   safePathSegment,
-  stackFingerprintPatch,
   uniqueStrings,
 } from './run-paths';
 import {
@@ -36,13 +28,11 @@ import {
 import {
   agentRegistryFile,
   idsForRunAgent,
-  withAgentRegistryLock,
 } from './registry';
 import {
   activeClaimForOtherThread,
-  strictPendingForRoleRebind,
 } from './claim-thread-role';
-import { releaseFallbackClaimsForHolderUnlocked, withFallbackClaimsLock } from './fallback-claims';
+import { releaseFallbackClaimsForHolderUnlocked } from './fallback-claims';
 import { AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES, AUTHORITATIVE_REBIND_PENDING_LIMIT } from './rebind-journal';
 
 export function boundedRebindRegistryEntry(entry: Rec, threadId: string): Rec {

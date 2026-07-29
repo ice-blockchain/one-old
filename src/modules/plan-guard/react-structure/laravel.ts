@@ -3,7 +3,7 @@
 // targets, and opaque controller callables.
 
 import * as path from 'path';
-import { collapsedLineNumber, lexicalMask } from '../../../shared/collapsed-source';
+import {  lexicalMask } from '../../../shared/collapsed-source';
 
 import {
   type RouteUsage,

@@ -2,8 +2,8 @@
 // Runner shapes: scenario steps/routes, args, the structural Playwright
 // surface, and the OwnedServer pair.
 
-import { spawn, type ChildProcess } from 'child_process';
-import { createServer, type Server } from 'http';
+import {  type ChildProcess } from 'child_process';
+import {  type Server } from 'http';
 import * as path from 'path';
 
 export type Rec = Record<string, unknown>;

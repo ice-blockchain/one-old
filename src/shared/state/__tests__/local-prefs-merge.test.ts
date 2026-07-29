@@ -12,7 +12,6 @@ import {
   mergeProjectHostPrefs,
   mergeProjectPrefs,
   PROJECT_PREFS_LOCK_TIMEOUT_MS,
-  projectRootHash,
   readProjectPrefs,
 } from '../local-prefs';
 import { scrubProjectStateLocalPrefs } from '../normalize';

@@ -5,29 +5,20 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseJson, readJson, readText, writeJson } from '../../fsjson';
+import {  readJson,  writeJson } from '../../fsjson';
 import {
-  PENDING_AGENT_CLAIM_STALE_MS,
-  RUNS_REL_DIR,
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../../config/state';
 import { stateTimestamp } from '../io';
 import {
-  activeAgentRole,
-  getSpawnIndex,
-  isSubagentSession,
   stackFingerprint,
-  UNKNOWN_STACK_FINGERPRINT,
 } from '../materialization';
 
 import {
   authoritativeRebindJournalFile,
   firstString,
-  pendingDir,
   runAgentFile,
-  runDir,
-  safePathSegment,
   stackFingerprintPatch,
   uniqueStrings,
 } from './run-paths';
@@ -58,7 +49,7 @@ import {
   activeClaimForOtherThread,
   strictPendingForRoleRebind,
 } from './claim-thread-role';
-import { releaseFallbackClaimsForHolderUnlocked, withFallbackClaimsLock } from './fallback-claims';
+import {  withFallbackClaimsLock } from './fallback-claims';
 import { boundedRebindRegistryEntry, boundedRebindTargetClaim, completeAuthoritativeRebindJournalUnlocked, readAuthoritativeRebindJournal } from './rebind-journal-io';
 
 export const AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES = 32 * 1024;

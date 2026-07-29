@@ -3,7 +3,7 @@
 // component declarations, logical LOC, brace/JSX scanning primitives.
 
 import * as path from 'path';
-import { collapsedLineNumber, lexicalMask } from '../../../shared/collapsed-source';
+import {  lexicalMask } from '../../../shared/collapsed-source';
 
 import {
   type ComponentDeclaration,
