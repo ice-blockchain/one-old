@@ -440,7 +440,7 @@ When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-
 
 4. **After the fix-cycle reply returns**, loop back to `senior-reviewer` — continuation-first there too: the host-specific continuation call to the live reviewer agent with "re-review ONLY the fixes for findings <list>" (fresh re-spawn with `spawnIndex[senior-reviewer]++` only when no live reviewer agent exists).
 
-The 2-cycle reviewer cap (architect / orchestrator level) still applies — if the second fix cycle also gets `CHANGES_REQUESTED`, stop and surface the unresolved findings to the user.
+The 5-cycle reviewer cap (architect / orchestrator level) still applies — if the fifth fix cycle also gets `CHANGES_REQUESTED`, stop and surface the unresolved findings to the user.
 
 ### Phase 1 — Architect (subagents mode, sequential, blocking)
 
@@ -535,7 +535,7 @@ satisfy functional QA.
 
 ### Phase 3a — Reviewer fix loop (capped at 2 cycles)
 
-Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way and require an updated `reviewer.md` digest. Repeat until `APPROVED` or the 2-cycle cap.
+Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way and require an updated `reviewer.md` digest. Repeat until `APPROVED` or the 5-cycle cap.
 
 After 2 unsuccessful cycles, record the cap before escalating to the user with
 both diffs and the latest review:
@@ -551,7 +551,7 @@ Send actual failing tests or failed QA matrix entries to the relevant
 implementer (continuation-first, as above). After their reply, send the re-test
 to the live `senior-tester` and require an updated `tester.md` digest and QA
 report. Repeat until the evidence-valid `TESTS_GREEN` combination above or the
-2-cycle cap.
+5-cycle cap.
 
 `blocked-environment` is `TESTS_FAILING`, never green, and does not consume a
 fix cycle because no implementation changed. A missing browser blocks only a

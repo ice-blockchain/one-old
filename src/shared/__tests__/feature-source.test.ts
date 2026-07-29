@@ -100,6 +100,24 @@ test('commandAppearsToWriteFeatureSource needs both a write primitive and a feat
   assert.equal(commandAppearsToWriteFeatureSource(undefined), false);
 });
 
+test('quoted text is data: comparison/prose ">" and quoted rm/tee never count as write primitives', () => {
+  // 5cl-claude regression: the frontend's own collapse self-check was denied —
+  // the awk comparison "length > m" read as an output redirect.
+  assert.equal(commandAppearsToWriteFeatureSource(
+    'for f in $(find src -name "*.tsx"); do awk \'{ if (length > m) m = length } END { print m }\' "$f"; done'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('echo "usage: gen > src/out.ts" && ls src/'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('grep -n "tee" src/app.ts'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('echo "rm -rf src/" && ls src/'), false);
+  // stderr silencing is not a write
+  assert.equal(commandAppearsToWriteFeatureSource('pkill -f "next start" 2>/dev/null; wc -L src/app.ts'), false);
+  // real operators outside quotes stay gated, including quoted TARGETS
+  assert.equal(commandAppearsToWriteFeatureSource('echo hi > "src/x file.ts"'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('printf x | tee src/x.ts'), true);
+  // a nested shell body is real code — quotes there keep scanning raw
+  assert.equal(commandAppearsToWriteFeatureSource("bash -c 'echo hi > src/x.ts'"), true);
+  assert.equal(commandAppearsToWriteFeatureSource("sh -lc 'echo x > src/x.ts'"), true);
+});
+
 test('bare interpreter reads are not writes; eval writes still are (B5)', () => {
   // read-only inspection commands that previously false-positived
   assert.equal(commandAppearsToWriteFeatureSource(

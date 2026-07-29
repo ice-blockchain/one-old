@@ -469,6 +469,18 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // direct target, apply_patch targets, and the shell command.
   const runIdViolation = runIdPathViolation({ state, relTargets: writeTargetPaths, command: rawCommand, block, projectRoot });
   if (runIdViolation) violations.push(runIdViolation);
+  // Registry probes during new-project setup were prose-only
+  // (rules/common/stack-recommendations.md) and agents ignored the rule when it
+  // mattered: observed 5cl-claude, the frontend ran `npm view typescript
+  // versions`, concluded "the registry treats 7.0.2 as latest", and EDITED the
+  // stack-pinned `typescript: 5.9.3` up two majors with no ADR. Deterministic
+  // deny, new-project mode only; installs (`pnpm add`, `npm install`) stay
+  // untouched — they resolve inside the pinned ranges.
+  if (state.mode === 'new-project'
+    && /(?:^|[\s;&|(])(?:(?:npm|pnpm)\s+(?:view|show|info|v)\b|yarn\s+info\b|(?:npm|pnpm|yarn|bun)\s+outdated\b)/.test(rawCommand)) {
+    violations.push(block('registry-probe-gate',
+      'Registry probe gate: do not query the npm registry (`npm view`/`show`/`info`/`outdated`, `pnpm view`, `yarn info`) to pick scaffold or dependency versions during new-project setup. Versions come from the active stack contract — install with the pinned ranges (`pnpm add <pkg>` resolves the latest matching minor/patch). Only an explicit user request for a newer major overrides a pin, recorded as an ADR in `.traffic-one/decisions/`.'));
+  }
   const recordFallbackClaims = violations.length === 0;
   const runTeam = runTeamEnforcementViolation({
     host: ctx.host,
@@ -521,5 +533,8 @@ export function planWriteGate(ctx: Ctx): HookResult {
     role: activeAgentRole(state) || resolvedRole,
     violations: violations.map((v) => (v.length > 400 ? `${v.slice(0, 400)}…` : v)),
   });
-  return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}`);
+  // The trailing line prevents a real recovery failure: after a deny on a NEW
+  // file the agent assumed partial content existed and issued Edit calls
+  // against it ("File does not exist" ×2, observed 5cl-claude on plan.md).
+  return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}\nNo write was applied — the denied Write/Edit/apply_patch left the target file(s) unchanged on disk. Fix the violation(s) and re-issue the FULL corrected write; do not Edit content that was never written.`);
 }

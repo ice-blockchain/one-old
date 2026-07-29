@@ -1111,6 +1111,52 @@ test('the router catch-all is declarable and matches the path routers actually u
   });
 });
 
+test('flat next-app compiles styling/i18n homes and the workspace declaration for its backend package', () => {
+  // 5cl-claude: the profile shipped only package.json/next.config/tsconfig, so
+  // the frontend inlined 240 lines of CSS into a <style> tag, hardcoded every
+  // string, and `packages/api-client` sat in a repo with NO pnpm-workspace.yaml
+  // in any role's scope — an unresolvable workspace member.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'app'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0', react: '19.0.0' },
+    }));
+    const compiled = compileArchitecture(cwd, 'R', {
+      ...REACT_STATE,
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'supabase',
+    }, {
+      ...INPUT,
+      modules: [
+        ...INPUT.modules,
+        { id: 'learning-repository', name: 'Learning Repository', kind: 'service' },
+      ],
+    });
+    assert.equal(compiled.profile.profileId, 'next-app');
+    const paths = (compiled.scaffoldOutputs || []).map((output) => output.path);
+    for (const expected of [
+      'postcss.config.mjs',
+      'next-env.d.ts',
+      'app/globals.css',
+      'messages/en.json',
+    ]) {
+      assert.ok(paths.includes(expected), `missing frontend scaffold ${expected}`);
+      assert.equal(
+        (compiled.scaffoldOutputs || []).find((output) => output.path === expected)?.ownerRole,
+        'senior-frontend',
+      );
+    }
+    // backend package compiled under packages/ → the workspace declaration
+    // must exist exactly once with a real owner
+    assert.ok(paths.includes('packages/api-client/package.json'));
+    const workspaceDecl = (compiled.scaffoldOutputs || [])
+      .filter((output) => output.path === 'pnpm-workspace.yaml');
+    assert.equal(workspaceDecl.length, 1);
+    assert.equal(workspaceDecl[0]?.ownerRole, 'senior-frontend');
+  });
+});
+
 test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs', () => {
   withProject((cwd) => {
     fs.mkdirSync(path.join(cwd, 'apps/web/app'), { recursive: true });

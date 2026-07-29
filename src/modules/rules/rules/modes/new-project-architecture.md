@@ -68,7 +68,7 @@ domains:
 │   ├── environment-setup.md
 │   ├── known-issues.md
 │   ├── schema.sql
-│   ├── deployments.jsonl
+│   ├── deployments.jsonl           shipper-only, first deploy — never pre-created
 │   ├── agent-log.md
 │   ├── decisions/
 │   ├── rules/

@@ -307,13 +307,28 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
 // the backstop. Returns '' for non-Cursor hosts, non-new-project, non-subagents levels, or on any
 // read error — so Claude/Codex and main-agent builds print nothing.
 // Claude — per-role spawn map, emitted at SETUP_COMPLETE right after the run-id
-// directive froze model-policy.json. Claude's Agent tool takes the policy model
-// id directly (no picker-capture step like Cursor), so the map is a straight
-// projection of the frozen policy. Front-loading it makes the FIRST spawn carry
-// the correct `model` parameter — without it the root spawns model-less, the
-// Performance gate denies, and the host renders that deny as "failed to run
-// agent" (observed 1cl + 2cl; both self-recovered but burned a retry each).
+// directive froze model-policy.json. Front-loading it makes the FIRST spawn
+// carry the correct `model` parameter — without it the root spawns model-less,
+// the Performance gate denies, and the host renders that deny as "failed to
+// run agent" (observed 1cl + 2cl; both self-recovered but burned a retry each).
 // Returns '' for non-new-project, non-subagents levels, or on any read error.
+
+// Claude's Agent tool `model` parameter is an ENUM OF FAMILY ALIASES
+// (sonnet|opus|haiku|fable), not a model-id field: a spawn that copies the
+// policy's full id verbatim fails the host's own InputValidationError before
+// any Traffic One gate runs (observed 6cl: `model: "claude-opus-4-8"` →
+// "Failed to run agent", recovered only by re-reading model-policy.json and
+// retrying with `opus`). Print the alias as the value to PASS and keep the
+// full id as the policy target the gate verifies.
+function claudeAgentToolAlias(modelId: string): string {
+  const id = modelId.toLowerCase();
+  if (id.includes('fable')) return 'fable';
+  if (id.includes('opus')) return 'opus';
+  if (id.includes('haiku')) return 'haiku';
+  if (id.includes('sonnet')) return 'sonnet';
+  return modelId;
+}
+
 function claudeSpawnModelDirective(cwd: string): string {
   try {
     const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' }) as Record<string, unknown>;
@@ -326,14 +341,15 @@ function claudeSpawnModelDirective(cwd: string): string {
     for (const role of AGENT_ROLES) {
       const rolePolicy = policy.roles[role];
       if (!rolePolicy?.preferredModel) continue;
-      rows.push(`   - ${role} → subagent_type: "traffic-one:${role}", model: "${rolePolicy.preferredModel}"`);
+      const alias = claudeAgentToolAlias(rolePolicy.preferredModel);
+      rows.push(`   - ${role} → subagent_type: "traffic-one:${role}", model: "${alias}" (policy model: ${rolePolicy.preferredModel})`);
     }
     if (!rows.length) return '';
     return [
       `[traffic-one] Claude — per-role spawn map for run \`${runId}\` (immutable policy \`${policy.policyId}\`):`,
-      '- Pass BOTH parameters on EVERY Agent spawn — the `subagent_type` AND the exact `model` below. A spawn without `model` inherits the parent session model, so the Performance gate denies it and the host renders that deny as "failed to run agent" (nothing crashed — but passing the model below on the FIRST spawn avoids the deny+retry entirely).',
+      '- Pass BOTH parameters on EVERY Agent spawn — the `subagent_type` AND the exact `model` alias below. The Agent tool accepts ONLY the alias values sonnet|opus|haiku|fable (a full model id fails the tool\'s own input validation as "failed to run agent" before any gate runs). A spawn without `model` inherits the parent session model, so the Performance gate denies it — passing the alias below on the FIRST spawn avoids the deny+retry entirely.',
       ...rows,
-      `- Aliases listed in that role's \`acceptableModels\` in \`.traffic-one/runs/${runId}/model-policy.json\` are also accepted; never pass a model from another tier, and re-use this exact map for replacement and retry spawns.`,
+      `- The gate verifies the spawned model against that role's \`acceptableModels\` in \`.traffic-one/runs/${runId}/model-policy.json\`; never pass an alias from another tier, and re-use this exact map for replacement and retry spawns.`,
     ].join('\n');
   } catch {
     return '';

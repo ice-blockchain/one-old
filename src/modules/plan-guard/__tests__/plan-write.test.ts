@@ -1102,3 +1102,31 @@ test('pluginUse decline bypasses the plan gate', () => {
     assert.equal(r.kind, 'noop');
   });
 });
+
+test('registry probes are denied in new-project mode; installs and other modes stay clean', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    // 5cl-claude regression: `npm view typescript versions` led the frontend to
+    // raise the stack-pinned typescript two majors from registry data.
+    for (const command of [
+      'npm view typescript dist-tags',
+      'pnpm view next version',
+      'npm show react version',
+      'yarn info react',
+      'npm outdated',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+      assert.equal(r.kind, 'deny', `expected deny for: ${command}`);
+      if (r.kind === 'deny') assert.ok(/Registry probe gate/.test(r.reason));
+    }
+    for (const command of [
+      'pnpm add react',
+      'npm install',
+      'pnpm install --frozen-lockfile',
+      'npm run view-report',
+      'git log --format="%s" npm-view-notes.md',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+      assert.equal(r.kind, 'noop', `expected noop for: ${command}`);
+    }
+  });
+});

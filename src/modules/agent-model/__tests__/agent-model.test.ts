@@ -512,6 +512,64 @@ test('every recognized host child needs both the parent policy and a parent-boun
   });
 });
 
+test('an unbound child that the reuse registry names as the live role agent is adopted, not deadlocked', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // Live deadlock: the reuse gate refused a replacement spawn because
+    // agents.json names this child as the live `senior-architect`, while this
+    // gate demanded exactly that respawn because the child carried no claim
+    // (it was spawned before its bootstrap envelope existed). Nine consecutive
+    // identical denials across Read and Bash — a bare `pwd` included — and the
+    // follow-up feature could never start.
+    const childCtx = (agentId: string): Ctx => ({
+      input: {
+        event: 'PreToolUse', host: 'claude', cwd,
+        raw: {
+          hook_event_name: 'PreToolUse', tool_name: 'Read', session_id: 'parent-session',
+          // recognized as a child (distinct thread under the parent session)
+          // but carrying NO role — exactly the shape that deadlocked live.
+          agent_id: agentId, agent_type: 'default',
+          source: { subagent: { thread_spawn: { parent_thread_id: 'parent-session' } } },
+        },
+        tool: { class: 'file-read', rawName: 'Read', filePath: path.join(cwd, 'README.md') },
+      },
+      host: 'claude', cwd, now: () => 'x',
+    } as unknown as Ctx);
+
+    freezeRunPolicy(cwd, 'claude');
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' });
+    const runId = String(state.currentRunId);
+    const policy = readRunModelPolicy(cwd, runId);
+    assert.ok(policy);
+    assert.ok(ensureRunBootstrap(cwd, runId, 'senior-architect', state, {
+      modelPolicyId: policy.policyId,
+      host: 'claude',
+    }));
+
+    // no registry row → still fail-closed
+    const stillDenied = codexChildModelGate(childCtx('a4418a7fd15384451'));
+    assert.equal(stillDenied.kind, 'deny');
+    if (stillDenied.kind === 'deny') assert.match(stillDenied.reason, /no parent-resolved trafficOneRole/i);
+
+    // parent-issued registry row naming this exact child → adopted
+    recordRunAgent(cwd, runId, 'senior-architect', {
+      agentId: 'a4418a7fd15384451',
+      parentSessionId: 'parent-session',
+    });
+    assert.equal(codexChildModelGate(childCtx('a4418a7fd15384451')).kind, 'noop');
+    // and the adoption is durable: the claim now resolves for later calls
+    assert.equal(
+      resolveRunAgentContext(cwd, readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' }), {
+        hook_event_name: 'PreToolUse', session_id: 'parent-session', agent_id: 'a4418a7fd15384451',
+      }, { claimPending: false, host: 'claude' })?.role,
+      'senior-architect',
+    );
+    // a DIFFERENT child id is never adopted off someone else's registry row
+    const foreign = codexChildModelGate(childCtx('some-other-child'));
+    assert.equal(foreign.kind, 'deny');
+    if (foreign.kind === 'deny') assert.match(foreign.reason, /no parent-resolved trafficOneRole/i);
+  });
+});
+
 test('spawn identity conflict is denied before any role claim is staked', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const result = agentModelGate(spawnCtx(cwd, {

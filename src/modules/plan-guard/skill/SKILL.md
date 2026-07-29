@@ -51,7 +51,7 @@ Architect scope gate: `senior-architect` may write only the semantic plan/projec
 <!-- T1BLOCK:END architect-planning-allowlist-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-gate -->
-Architect completion gate: OpenCode is enabled but the plan is missing at least 3 runnable machine-readable delegation units. Include `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- role: … | files: … | task: …`) in `.traffic-one/plan.md` before emitting `PLAN_READY`. The orchestrator runs `opencode_delegate_from_plan` from that block BEFORE spawning implementers.
+Architect completion gate: OpenCode is enabled but the plan is missing at least 3 runnable machine-readable delegation units. Include `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- id: <stable-unit-id> | role: … | files: … | task: …`) in `.traffic-one/plan.md` before emitting `PLAN_READY`. The orchestrator runs `opencode_delegate_from_plan` from that block BEFORE spawning implementers.
 <!-- T1BLOCK:END architect-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-self-delegation-gate -->
@@ -59,7 +59,7 @@ Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.tra
 <!-- T1BLOCK:END architect-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-queue-gate -->
-Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machine-readable `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` block with at least 3 runnable bounded units (`- role: frontend|backend|tester|docs | files: … | task: …`). Prose-only or incomplete OpenCode lists are ignored by `opencode_delegate_from_plan`.
+Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machine-readable `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` block with at least 3 runnable bounded units (`- id: <stable-unit-id> | role: frontend|backend|tester|docs | files: … | task: …`). Prose-only or incomplete OpenCode lists are ignored by `opencode_delegate_from_plan`.
 <!-- T1BLOCK:END plan-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-self-delegation-gate -->
@@ -67,7 +67,7 @@ Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md
 <!-- T1BLOCK:END plan-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-policy-gate -->
-Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Fix the queue block in `.traffic-one/plan.md` (stable unique ids, parseable `files:`, explicit `depends:` edges for overlaps) and re-emit `PLAN_READY`. Do not guess compiled paths: file-vs-assignment scope is enforced at Step-0 delegation, where out-of-scope units are rejected pre-model and fall back to paid implementers.
+Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Fix the queue block in `.traffic-one/plan.md` (stable unique ids, parseable `files:`, explicit `depends:` edges for overlaps) and re-emit `PLAN_READY`. Scope errors above list the owning role's real compiled in-scope files — retarget each unit's `files:` to those exact paths, or declare the module in ArchitectureInputV1 so runtime compiles the output you need.
 <!-- T1BLOCK:END architect-opencode-queue-policy-gate -->
 
 <!-- T1BLOCK:BEGIN supabase-local-stack-gate -->
@@ -145,6 +145,14 @@ Implementer format parity gate: role `{{ROLE}}` owns formatter config `{{CONFIG}
 <!-- T1BLOCK:BEGIN implementer-format-toolchain-gate -->
 Implementer format toolchain gate: role `{{ROLE}}` owns compiled formatter outputs at `{{TOOLING_ROOT}}`, but no Prettier config, `format`/`format:check` scripts, or `prettier` dependency is present. Create `{{CONFIG}}`, add matching scripts and the dependency to `{{MANIFEST}}`, run the formatter, then re-emit `IMPLEMENTED`.
 <!-- T1BLOCK:END implementer-format-toolchain-gate -->
+
+<!-- T1BLOCK:BEGIN registry-probe-gate -->
+Registry probe gate: do not query the npm registry (`npm view`/`show`/`info`/`outdated`, `pnpm view`, `yarn info`) to pick scaffold or dependency versions during new-project setup. Versions come from the active stack contract — install with the pinned ranges (`pnpm add <pkg>` resolves the latest matching minor/patch). Only an explicit user request for a newer major overrides a pin, recorded as an ADR in `.traffic-one/decisions/`.
+<!-- T1BLOCK:END registry-probe-gate -->
+
+<!-- T1BLOCK:BEGIN implementer-typecheck-toolchain-gate -->
+Implementer typecheck gate: role `{{ROLE}}` owns compiled TypeScript outputs, but no `typescript` dependency or `typecheck` script exists in {{MANIFESTS}}. `IMPLEMENTED` without a runnable compiler is unverifiable — the type errors surface later in a sibling role's build instead. Add `typescript` and a `typecheck` script (`tsc --noEmit`) to the tooling root, run it clean, then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-typecheck-toolchain-gate -->
 
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
 Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Numeric LOC/function-count/component-count findings remain warnings during this rollout.

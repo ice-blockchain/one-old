@@ -55,6 +55,17 @@ function portableNodeCommand(
       return `e.${key}='${value}';`;
     })
     .join('');
+  // NOTE (6co-codex, 2026-07-29): hosts freeze the plugin-root env at app
+  // start, so a marketplace sync that replaces the version-keyed cache dir
+  // mid-flight leaves this launcher pointing at a deleted path — require()
+  // throws and EVERY hook dies silently (fail-open: no onboarding ask, no
+  // gates for that session). A newest-sibling-version fallback belongs here,
+  // but ANY byte change to this command changes every Codex trusted_hash
+  // (see tests/codex-hook-abi.test.ts) and itself triggers the same
+  // all-hooks-untrusted outage on update — ship it only as a deliberate
+  // CODEX_HOOK_ABI_VERSION bump with the trust-state migration, never as a
+  // drive-by edit. Operational remedy meanwhile: restart the host app after
+  // a plugin sync before starting a session.
   const launcher = [
     "const p=require('path'),e=process.env;",
     `const r=p.resolve([${rootKeys}].map(k=>e[k]).find(Boolean)||process.cwd());`,

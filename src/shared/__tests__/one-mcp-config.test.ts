@@ -22,8 +22,8 @@ import {
 } from '../../config/one-mcp';
 
 test('one-mcp config centralizes endpoints, managed tools, and all host config names', () => {
-  assert.equal(DEFAULT_ENDPOINT, 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/mcp');
-  assert.equal(DEFAULT_PUBLIC_ENDPOINT, 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/public-mcp');
+  assert.equal(DEFAULT_ENDPOINT, 'https://otxgutlmatdihqkbsvvh.supabase.co/functions/v1/traffic-one-mcp/mcp');
+  assert.equal(DEFAULT_PUBLIC_ENDPOINT, 'https://otxgutlmatdihqkbsvvh.supabase.co/functions/v1/traffic-one-mcp/public-mcp');
   assert.deepEqual(ONE_MCP_MANAGED_TOOLS, ['get_config', 'report_codebase_metadata']);
   assert.deepEqual(ONE_MCP_CONFIG_NAME_BY_HOST, {
     claude: 'traffic_one_claude_code_plugin_ai_model_configuration',
@@ -77,6 +77,15 @@ test('hook-owned sync is active while registration and reporting stay build-disa
   assert.equal(oneMcpRegistrationEnabled({} as NodeJS.ProcessEnv), false);
   assert.equal(oneMcpReportingEnabled({} as NodeJS.ProcessEnv), false);
   assert.equal(oneMcpReportingEnabled({ TRAFFIC_ONE_DISABLE_ONE_MCP: 'on' } as NodeJS.ProcessEnv), false);
+  // per-machine operator/dev opt-in re-enables reporting without touching the
+  // release-gated build flag; the explicit disable still wins over it
+  assert.equal(oneMcpReportingEnabled({ TRAFFIC_ONE_ENABLE_ONE_MCP_REPORT: '1' } as NodeJS.ProcessEnv), true);
+  assert.equal(oneMcpReportingEnabled({ TRAFFIC_ONE_ENABLE_ONE_MCP_REPORT: 'yes' } as NodeJS.ProcessEnv), true);
+  assert.equal(oneMcpReportingEnabled({ TRAFFIC_ONE_ENABLE_ONE_MCP_REPORT: '0' } as NodeJS.ProcessEnv), false);
+  assert.equal(oneMcpReportingEnabled({
+    TRAFFIC_ONE_ENABLE_ONE_MCP_REPORT: '1',
+    TRAFFIC_ONE_DISABLE_ONE_MCP: '1',
+  } as NodeJS.ProcessEnv), false);
   assert.equal(oneMcpSyncEnabled({} as NodeJS.ProcessEnv, true), true);
   assert.equal(oneMcpSyncEnabled({ TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '1' } as NodeJS.ProcessEnv, true), false);
 });

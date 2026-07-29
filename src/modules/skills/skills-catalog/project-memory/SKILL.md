@@ -69,7 +69,9 @@ Create or refresh:
   exists; preserve and merge existing `AGENTS.md` and `CLAUDE.md` content in
   place with Traffic One managed blocks
 - `.traffic-one/schema.sql`
-- `.traffic-one/deployments.jsonl`
+- `.traffic-one/deployments.jsonl` — `senior-shipper` ONLY, created at the
+  first deploy. The run-artifact gate denies every other role (including the
+  architect) writing it; do NOT pre-create it as part of the memory baseline
 - `.traffic-one/known-issues.md`
 - `.traffic-one/stack.md`
 - `.traffic-one/.agentignore`
@@ -175,7 +177,11 @@ Create or refresh:
 
 ### `.traffic-one/deployments.jsonl`
 
-Create the file empty. Append one line per deploy:
+Shipper-owned deploy log — it does not exist until the first deploy.
+`senior-shipper` creates it then and appends one line per deploy; no other
+role (architect included) may create or touch it, and it is NOT part of the
+architect's memory baseline (observed 5co-codex: an architect patch that
+pre-created it empty was denied whole by the run-artifact gate):
 
 ```json
 {"timestamp":"2026-05-08T00:00:00Z","commit":"<sha>","environment":"staging","actor":"<user-or-agent>","trigger":"manual","result":"success","url":"https://example.com","rollbackId":"<id>"}

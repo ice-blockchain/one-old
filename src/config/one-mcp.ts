@@ -8,12 +8,12 @@ import * as path from 'path';
 import type { HostModelKey } from './model-tiers';
 
 export const DEFAULT_ENDPOINT =
-  'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/mcp';
+  'https://otxgutlmatdihqkbsvvh.supabase.co/functions/v1/traffic-one-mcp/mcp';
 // Direct public endpoint used by read-only, opt-in get_config sync. Before
 // registration or reporting is enabled, replace this compiled default with the
 // operator-provided custom domain protected by the path-scoped WAF/rate limit.
 export const DEFAULT_PUBLIC_ENDPOINT =
-  'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/public-mcp';
+  'https://otxgutlmatdihqkbsvvh.supabase.co/functions/v1/traffic-one-mcp/public-mcp';
 
 export const ONE_MCP_SERVER_NAME = 'traffic-one-mcp';
 export const ONE_MCP_GET_CONFIG_TOOL = 'get_config';
@@ -178,11 +178,20 @@ export function oneMcpRegistrationEnabled(
   return !/^(1|true|on|yes)$/i.test(String(env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION || ''));
 }
 
+// Operator/dev env opt-in for reporting on THIS machine only. The public
+// build activation (REPORTING_ACTIVE=true) stays behind the Milestone-2
+// release procedure — WAF endpoint + fresh live-release snapshot at gen —
+// which a per-machine env cannot and must not bypass: with the build flag
+// false, gen asserts nothing and published installs keep reporting off.
+// Disable always wins over enable (fail-safe when both are set).
+export const ONE_MCP_REPORT_OPT_IN_ENV = 1;
+
 export function oneMcpReportingEnabled(
   env: NodeJS.ProcessEnv = process.env,
   buildActive: boolean = REPORTING_ACTIVE,
 ): boolean {
-  if (!buildActive) return false;
+  const envOptIn = /^(1|true|on|yes)$/i.test(String(env[ONE_MCP_REPORT_OPT_IN_ENV] || ''));
+  if (!buildActive && !envOptIn) return false;
   return !/^(1|true|on|yes)$/i.test(String(env.TRAFFIC_ONE_DISABLE_ONE_MCP || ''));
 }
 

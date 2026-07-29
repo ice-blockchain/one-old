@@ -460,6 +460,52 @@ function formatParityViolation(
   return typeof deps.prettier === 'string' ? null : { kind: 'missing-dependency', reference };
 }
 
+// Typecheck twin of the format-parity pair above. A role that owns compiled
+// TypeScript outputs but has NO reachable compiler cannot verify its own
+// `IMPLEMENTED`: observed 5co-codex, the backend wrote "tsc is not installed"
+// in its accepted digest and the 7 strict-TS errors in its repository surfaced
+// two fix cycles later in the sibling frontend's build (which also fabricated
+// an ambient module shim to compile around the unresolvable package).
+const TS_SOURCE_OUTPUT_RE = /\.(?:ts|tsx|mts|cts)$/;
+
+function roleOwnedTsOutputs(
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): string[] {
+  const outputs = [
+    ...(architecture.scaffoldOutputs || [])
+      .filter((output) => output.ownerRole === ownerRole)
+      .map((output) => output.path),
+    ...(architecture.modules || [])
+      .filter((module) => module.ownerRole === ownerRole)
+      .map((module) => module.output),
+  ];
+  return outputs.filter((output) => TS_SOURCE_OUTPUT_RE.test(output) && !output.endsWith('.d.ts'));
+}
+
+// Null when ANY manifest that governs the role's TS outputs (the root manifest
+// or the owning workspace package's) declares `typescript` or a `typecheck`
+// script. Otherwise the candidate manifest list, for the remedy text.
+function typecheckParityViolation(
+  projectRoot: string,
+  tsOutputs: readonly string[],
+): { manifests: string[] } | null {
+  const manifests = new Set<string>(['package.json']);
+  for (const output of tsOutputs) {
+    const pkg = /^((?:apps|packages|services)\/[^/]+)\//.exec(output)?.[1];
+    if (pkg) manifests.add(`${pkg}/package.json`);
+  }
+  for (const manifest of manifests) {
+    const pkg = jsoncFile(projectRoot, manifest)?.parsed || null;
+    if (!pkg) continue;
+    const deps = { ...obj(pkg.dependencies), ...obj(pkg.devDependencies) };
+    if (typeof deps.typescript === 'string') return null;
+    const scripts = obj(pkg.scripts) || {};
+    if (typeof scripts.typecheck === 'string') return null;
+  }
+  return { manifests: [...manifests].sort() };
+}
+
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
 const ROOT_MONOREPO_FLAT_RE = /^tsconfig(?!\.base\.json$)(\.[a-z0-9-]+)?\.json$/;
@@ -695,6 +741,21 @@ function thresholdsWeakened(
   return false;
 }
 
+// True when the digest CLAIMS the given verdict token. The machine-readable
+// channel is the `verdict:` line — when one exists, only its leading token
+// counts. A bare body word-match remains ONLY as the fallback for digests with
+// no verdict line at all (fail-closed: prose claiming IMPLEMENTED without the
+// contract line still triggers the completion gates). Matching the whole body
+// blocked honest failure reports: observed 5co-codex, a `verdict: BLOCKED …`
+// digest was denied by the IMPLEMENTED completion gates because its blocker
+// section said "…before this role can emit `IMPLEMENTED`" — the agent got
+// through only by rewording, so gates were selecting for phrasing, not truth.
+function digestClaimsVerdict(content: string, token: string): boolean {
+  const verdictLine = /^[ \t]*verdict:[ \t]*(.+)$/m.exec(content);
+  if (verdictLine) return new RegExp(`^${token}\\b`).test(verdictLine[1]!.trim());
+  return new RegExp(`\\b${token}\\b`).test(content);
+}
+
 function allImplementationRolesDelivered(
   projectRoot: string,
   runId: string,
@@ -710,7 +771,7 @@ function allImplementationRolesDelivered(
     const rel = `.traffic-one/digests/${runId}/${suffix}.md`;
     if (rel === proposedDigestPath) return true;
     try {
-      return /\bIMPLEMENTED\b/.test(fs.readFileSync(path.join(projectRoot, rel), 'utf8'));
+      return digestClaimsVerdict(fs.readFileSync(path.join(projectRoot, rel), 'utf8'), 'IMPLEMENTED');
     } catch {
       return false;
     }
@@ -863,7 +924,7 @@ export function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boole
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (!runId) return false;
   try {
-    return /\bPLAN_READY\b/.test(fs.readFileSync(path.join(projectRoot, T1_MEMORY_DIR, 'digests', runId, 'architect.md'), 'utf8'));
+    return digestClaimsVerdict(fs.readFileSync(path.join(projectRoot, T1_MEMORY_DIR, 'digests', runId, 'architect.md'), 'utf8'), 'PLAN_READY');
   } catch {
     return false;
   }
@@ -1118,7 +1179,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   }
 
   const architectDigest = ARCHITECT_DIGEST_RE.exec(filePath);
-  if (architectDigest && /\bPLAN_READY\b/.test(content)) {
+  if (architectDigest && digestClaimsVerdict(content, 'PLAN_READY')) {
     const runId = architectDigest[2] || '';
     const missingMemory = missingProjectMemoryBaseline(projectRoot, state);
     if (missingMemory.length > 0) {
@@ -1128,7 +1189,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     }
     if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot) && opencodeQueueBlocks(host)) {
       violations.push(block('architect-opencode-queue-gate',
-        `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
+        `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- id: <stable-unit-id> | role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
     }
     if (state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
       violations.push(block('architect-opencode-self-delegation-gate',
@@ -1165,23 +1226,27 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
             compiled,
             verification.contractHash,
           );
-          // Static queue checks only (stable ids, depends edges, parseable
-          // files, unit-kind heuristics) — everything the architect can fix
-          // from plan.md alone. The file-vs-assignment scope cross-check runs
-          // at Step-0 delegation instead: delegateFromPlan validates every
-          // unit against the published assignments and rejects out-of-scope
-          // units pre-model (`rejected_policy`, paid fallback). The compiled
-          // allowlist is born in THIS call, so validating the architect's
-          // files against it here demanded paths the architect could only
-          // guess (observed 2cl: all 5 queued units denied, PLAN_READY
-          // unreachable without deleting the queue).
+          // Full queue checks: metadata (stable ids, depends edges, parseable
+          // files, unit-kind heuristics) AND the file-vs-assignment scope
+          // cross-check. The compiled allowlist is born in THIS call, so the
+          // scope check runs against `candidateAssignments` and its deny
+          // prints the REAL in-scope file lists — the architect never has to
+          // guess compiled paths (the 2cl failure mode that once forced this
+          // check to be deferred). Deferring it to Step-0 delegation silently
+          // wasted the whole batch instead: observed 5cl-claude, 0/3 units
+          // delegable because every unit invented conventional Next paths
+          // (components/course-card.tsx, …) that the compiled scope never
+          // contained, and the run lost the entire OpenCode economy with no
+          // signal to the architect.
           const queuePolicyErrors = openCodeDelegationActive(state, host)
             && !planOnDiskMissingOpenCodeBlock(projectRoot)
-            ? planOnDiskOpenCodeQueuePolicyErrors(projectRoot)
+            ? planOnDiskOpenCodeQueuePolicyErrors(projectRoot, {
+              assignments: candidateAssignments.assignments,
+            })
             : [];
           if (queuePolicyErrors.length > 0) {
             violations.push(block('architect-opencode-queue-policy-gate',
-              `Architect completion gate: OpenCode queue metadata is unsafe: ${queuePolicyErrors.join('; ')}. Fix the queue block in \`.traffic-one/plan.md\` (stable unique ids, parseable \`files:\`, explicit \`depends:\` edges for overlaps) and re-emit \`PLAN_READY\`. Do not guess compiled paths: file-vs-assignment scope is enforced at Step-0 delegation, where out-of-scope units are rejected pre-model and fall back to paid implementers.`,
+              `Architect completion gate: OpenCode queue metadata is unsafe: ${queuePolicyErrors.join('; ')}. Fix the queue block in \`.traffic-one/plan.md\` (stable unique ids, parseable \`files:\`, explicit \`depends:\` edges for overlaps) and re-emit \`PLAN_READY\`. Scope errors above list the owning role's real compiled in-scope files — retarget each unit's \`files:\` to those exact paths, or declare the module in ArchitectureInputV1 so runtime compiles the output you need.`,
               { ERRORS: queuePolicyErrors.join('; ') }));
           } else if (modelPolicy && !canPublishRunPolicyBootstraps(
             projectRoot,
@@ -1250,7 +1315,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   // run interrupted before Phase 3 delivers a monolithic collapsed app with
   // empty scaffolded module dirs (observed 16c).
   const frontendDigest = FRONTEND_DIGEST_RE.exec(filePath);
-  if (frontendDigest && /\bIMPLEMENTED\b/.test(content)) {
+  if (frontendDigest && digestClaimsVerdict(content, 'IMPLEMENTED')) {
     const collapsed = collapsedProductSourceFile(projectRoot, state);
     if (collapsed.incomplete) {
       violations.push(block('frontend-structure-scan-incomplete',
@@ -1304,7 +1369,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   const implementedDigest = IMPLEMENTER_DIGEST_RE.exec(filePath);
   if (
     implementedDigest
-    && new RegExp('\\bIMPLEMENTED\\b').test(content)
+    && digestClaimsVerdict(content, 'IMPLEMENTED')
     && state.mode === 'new-project'
   ) {
     const runId = implementedDigest[2] || '';
@@ -1335,10 +1400,25 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
           }));
       }
     }
+    if (architecture) {
+      const tsOutputs = roleOwnedTsOutputs(architecture, ownerRole);
+      const typecheckGap = tsOutputs.length > 0
+        ? typecheckParityViolation(projectRoot, tsOutputs)
+        : null;
+      if (typecheckGap) {
+        const manifestList = typecheckGap.manifests.map((manifest) => `\`${manifest}\``).join(', ');
+        violations.push(block('implementer-typecheck-toolchain-gate',
+          `Implementer typecheck gate: role \`${ownerRole}\` owns compiled TypeScript outputs, but no \`typescript\` dependency or \`typecheck\` script exists in ${manifestList}. \`IMPLEMENTED\` without a runnable compiler is unverifiable — the type errors surface later in a sibling role's build instead. Add \`typescript\` and a \`typecheck\` script (\`tsc --noEmit\`) to the tooling root, run it clean, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            MANIFESTS: manifestList,
+          }));
+      }
+    }
   }
   if (implementedDigest
     && implementedDigest[2] === currentRunId
-    && /\bIMPLEMENTED\b/.test(content)
+    && digestClaimsVerdict(content, 'IMPLEMENTED')
     && violations.length === 0) {
     const runId = implementedDigest[2] || '';
     if (allImplementationRolesDelivered(projectRoot, runId, filePath)) {
@@ -1352,7 +1432,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   }
 
   const reviewerDigest = REVIEWER_DIGEST_RE.exec(filePath);
-  if (reviewerDigest && /\bAPPROVED\b/.test(content) && !/\bCHANGES_REQUESTED\b/.test(content)) {
+  if (reviewerDigest && digestClaimsVerdict(content, 'APPROVED') && !digestClaimsVerdict(content, 'CHANGES_REQUESTED')) {
     const runId = reviewerDigest[2] || '';
     const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
     if (architecture) {
@@ -1442,7 +1522,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
 
   if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content) && opencodeQueueBlocks(host)) {
     violations.push(block('plan-opencode-queue-gate',
-      `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
+      `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- id: <stable-unit-id> | role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
   }
 
   if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && hasOpenCodeDelegateMarker(content)) {

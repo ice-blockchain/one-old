@@ -773,14 +773,23 @@ test('preSpawnModelDirective: Claude new-project subagents → per-role spawn ma
 
     // 2cl regression: the first spawn went out without a `model` param because
     // nothing the root read carried the concrete per-role map. The directive
-    // must front-load plugin-namespaced subagent_type + the exact policy model.
+    // must front-load plugin-namespaced subagent_type + the model value the
+    // Agent tool actually ACCEPTS. 6cl regression: printing the full policy id
+    // (`model: "claude-opus-4-8"`) made the first spawn fail the host's own
+    // InputValidationError (the tool's `model` enum is sonnet|opus|haiku|fable)
+    // — so the row must carry the ALIAS, with the policy id alongside.
     const d = preSpawnModelDirective(dir, 'claude');
     assert.ok(d.includes(`run \`${runId}\``), 'names the frozen run');
     assert.ok(d.includes('subagent_type: "traffic-one:senior-architect"'), 'plugin-namespaced agent type');
+    const architectModel = policy.roles['senior-architect']!.preferredModel;
+    const expectedAlias = ['fable', 'opus', 'haiku', 'sonnet'].find((alias) => architectModel.toLowerCase().includes(alias));
+    assert.ok(expectedAlias, `policy model ${architectModel} maps to a known Agent-tool alias`);
     assert.ok(
-      d.includes(`model: "${policy.roles['senior-architect']!.preferredModel}"`),
-      'architect row carries the exact frozen model',
+      d.includes(`model: "${expectedAlias}" (policy model: ${architectModel})`),
+      'architect row passes the Agent-tool alias and names the frozen policy id',
     );
+    assert.ok(!/model: "claude-/.test(d), 'no row tells the orchestrator to pass a full model id');
+    assert.match(d, /sonnet\|opus\|haiku\|fable/, 'states the Agent tool enum explicitly');
     assert.ok(d.includes('senior-frontend') && d.includes('senior-tester'), 'map covers the team roles');
     assert.match(d, /failed to run agent/, 'explains how the host renders a model-less spawn deny');
     // The frozen policy — not live prefs — is the authority: the map keeps

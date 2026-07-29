@@ -94,18 +94,37 @@ function sedInPlaceFlag(command: string): boolean {
   return false;
 }
 
+// A nested shell body (`bash -c '…'`, `sh -lc "…"`) IS a command: its quoted
+// text must keep participating in the write-primitive scan below.
+const NESTED_SHELL_EXEC_RE = /\b(?:ba|z|da|k)?sh\b[^\n;|&]*\s-[a-zA-Z]*c\b/;
+
+// Quoted spans are DATA to the outer shell: `awk '{ if (length > m) … }'`,
+// `echo "usage: cmd > out"`, and grep patterns must not read as redirects or
+// rm/cp/tee tokens. Observed 5cl-claude: the frontend's own collapse
+// self-check (`for f in $(find …); do wc -L "$f"; done` beside an awk
+// comparison) was denied as an "implementation write via shell command" — the
+// gate blocked exactly the read-only verification the workflow asks for.
+// Replace each span with a space to preserve token boundaries; keep the scan
+// raw when the command execs a nested shell, whose quoted body is real code.
+function stripQuotedSegments(command: string): string {
+  if (NESTED_SHELL_EXEC_RE.test(command)) return command;
+  return command.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, ' ');
+}
+
 export function shellCommandHasWritePrimitive(command: string): boolean {
-  const hasOutputRedirect = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)/.test(command);
+  const scanned = stripQuotedSegments(command);
+  const hasOutputRedirect = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)/.test(scanned);
   return hasOutputRedirect
-    || /\btee\b/.test(command)
-    || /\bcat\b[\s\S]*<</.test(command)
+    || /\btee\b/.test(scanned)
+    || /\bcat\b[\s\S]*<</.test(scanned)
+    // Interpreter eval bodies live INSIDE quotes — scan the raw command.
     || INTERPRETER_EVAL_WRITE_RE.test(command)
-    || sedInPlaceFlag(command)
+    || sedInPlaceFlag(scanned)
     // mkdir creates no file content and carries no implementation ownership.
     // Treating it as a source write rejects foreground architect scaffolding in
     // Devin Local. Destructive/copying/content primitives remain gated.
-    || /(?:^|[\s;&|])(?:[^\s;&|]*\/)?(?:rm|mv|cp|ln|touch|truncate)\b/.test(command)
-    || /(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(command);
+    || /(?:^|[\s;&|])(?:[^\s;&|]*\/)?(?:rm|mv|cp|ln|touch|truncate)\b/.test(scanned)
+    || /(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(scanned);
 }
 
 export function commandAppearsToWriteFeatureSource(command: unknown): boolean {

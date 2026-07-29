@@ -403,7 +403,7 @@ test('a rejected PLAN_READY prerequisite publishes no assignments or implementat
   });
 });
 
-test('completion never denies on queue-vs-assignment scope; static queue errors deny WITHOUT persisting the compile', () => {
+test('completion denies out-of-scope queue units with the compiled lists and accepts once retargeted; static queue errors deny WITHOUT persisting the compile', () => {
   const QUEUE_STATE = {
     ...DEFAULT_STATE,
     onboardingComplete: true,
@@ -429,10 +429,14 @@ test('completion never denies on queue-vs-assignment scope; static queue errors 
       '',
     ].join('\n'), 'utf8');
   };
-  // 2cl regression: every queued file is OUTSIDE its role's compiled scope —
-  // the architect has no way to know the compiled allowlist (it is born in
-  // this same call), so scope must not gate PLAN_READY. Step-0 delegation
-  // rejects such units pre-model instead.
+  // Scope history: after 2cl this check was deferred to Step-0 because the
+  // deny left the architect guessing compiled paths. Deferring it silently
+  // wasted whole batches instead (5cl-claude: 0/3 units delegable, no signal
+  // to the architect). The check is back at completion because the deny now
+  // renders from the candidate assignments born in this same call and lists
+  // the owning role's REAL in-scope files — a denied queue is always fixable
+  // by retargeting `files:` to those exact paths. A denied completion still
+  // persists NO compiled sidecar.
   withProject((dir) => {
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir, QUEUE_STATE);
@@ -442,9 +446,19 @@ test('completion never denies on queue-vs-assignment scope; static queue errors 
       '- id: locales-en | role: frontend | kind: i18n | files: packages/i18n/src/locales/en/common.json | task: draft english copy catalog',
       '- id: readme-draft | role: docs | kind: docs | files: README.md | task: project readme draft',
     ]);
+    const denied = planReadinessViolations(digestArgs(dir));
+    assert.ok(denied.includes('architect-opencode-queue-policy-gate'),
+      `out-of-scope unit files must deny PLAN_READY with the compiled lists, got: ${denied.join(', ')}`);
+    // deny persists nothing (2cl lockout stays fixed)
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'architecture-v1.json')), false);
+    // retargeting to compiled in-scope files (named by the deny) is accepted
+    planWithQueue(dir, [
+      '- id: demo-content | role: frontend | kind: seed-data | files: packages/i18n/src/index.ts | task: self-contained demo catalog data module',
+      '- id: locales-en | role: frontend | kind: i18n | files: packages/i18n/src/locales/en/common.json | task: draft english copy catalog',
+      '- id: readme-draft | role: docs | kind: docs | files: README.md | task: project readme draft',
+    ]);
     const v = planReadinessViolations(digestArgs(dir));
-    assert.ok(!v.includes('architect-opencode-queue-policy-gate'),
-      `scope mismatches must not block PLAN_READY, got: ${v.join(', ')}`);
     assert.deepEqual(v, []);
     // full accept: compiled + assignments actually published by the gate
     assert.ok(readRuntimeAssignments(dir, 'R'));
@@ -1883,5 +1897,95 @@ test('implementer format gate T1BLOCK prose is byte-identical to both TypeScript
       }
       assert.equal(rendered, found.fallback, `${blockId} prose/fallback drift`);
     }
+  });
+});
+
+test('a BLOCKED verdict digest is not run through the IMPLEMENTED completion gates even when its body cites the token', () => {
+  withProject((dir) => {
+    // Strongest case: collapsed source on disk — the collapse gate would fire
+    // if the digest were treated as IMPLEMENTED. 5co-codex regression: an
+    // honest `verdict: BLOCKED …` report was denied because its blocker prose
+    // said "…before this role can emit `IMPLEMENTED`", so the agent got
+    // through only by rewording the truth.
+    fs.mkdirSync(path.join(dir, 'apps/web/src/pages'), { recursive: true });
+    writeFormatterToolchain(dir);
+    const collapsedLine = `function App() { ${'const x = <div className="a">hi</div>; return <section>{x}</section>; '.repeat(12)} }`;
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), `${collapsedLine}\n`, 'utf8');
+    const blocked = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: [
+        'verdict: BLOCKED verification authority excludes the lockfile',
+        '',
+        '## Open questions / blockers',
+        '- A runtime refresh is required before this role can emit `IMPLEMENTED`.',
+        '- The reviewer previously returned APPROVED for the sibling.',
+        '',
+      ].join('\n'),
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(blocked, []);
+    // No verdict line at all → the body word-match fallback stays fail-closed.
+    const proseOnly = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'The frontend is IMPLEMENTED and ready.\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(proseOnly.includes('frontend-collapse-gate'));
+  });
+});
+
+test('implementer typecheck gate: TS outputs with no reachable compiler deny IMPLEMENTED until typescript/typecheck exists', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    // format toolchain satisfied so only the typecheck gap is exercised
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0' },
+    }), 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+    // 5co-codex regression: the backend shipped `IMPLEMENTED` while writing
+    // "tsc is not installed" in the digest; its 7 strict-TS errors surfaced two
+    // fix cycles later in the sibling frontend's build.
+    assert.ok(planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0', typescript: '^5.0.0' },
+    }), 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+
+    // a typecheck script alone (e.g. tsc via workspace tooling) also satisfies
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0' },
+      scripts: { typecheck: 'tsc --noEmit' },
+    }), 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
   });
 });

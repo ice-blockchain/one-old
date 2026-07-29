@@ -507,6 +507,37 @@ test('non-Git changed-path comparison uses the same whole-project scope as its b
   });
 });
 
+test('derived artifacts (lockfiles, test-results, tsbuildinfo) never appear as changed paths', () => {
+  // 5co-codex regression: the format-parity gate demanded `prettier`,
+  // `pnpm install` wrote pnpm-lock.yaml, and the verification refresh then
+  // denied every IMPLEMENTED as "outside the frozen verification/WorkUnit
+  // authority" — with the tester's test-results/ killing the QA manifest the
+  // same way. Both sides (capture + compare) must skip these by construction.
+  withProject((cwd) => {
+    setupReact(cwd);
+    const architecture = compileArchitecture(cwd, 'R', REACT, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'mapping-service', name: 'Mapping', kind: 'service' }],
+    });
+
+    fs.writeFileSync(path.join(cwd, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
+    fs.writeFileSync(path.join(cwd, 'package-lock.json'), '{}\n');
+    fs.mkdirSync(path.join(cwd, 'test-results'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'test-results/.last-run.json'), '{}\n');
+    fs.mkdirSync(path.join(cwd, 'playwright-report'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'playwright-report/index.html'), '<html></html>\n');
+    fs.writeFileSync(path.join(cwd, 'tsconfig.tsbuildinfo'), '{}\n');
+    fs.writeFileSync(path.join(cwd, '.DS_Store'), '\n');
+    // a real source change is still visible next to the ignored artifacts
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/lib/data.ts'), 'export const x = 1;\n');
+
+    const changed = changedPathsFromBaseline(cwd, architecture);
+    assert.equal(changed.complete, true);
+    assert.deepEqual(changed.paths, ['apps/web/src/lib/data.ts']);
+  });
+});
+
 test('non-Git verification diff and source hash fail closed on a new symbolic link', () => {
   withProject((cwd) => {
     setupReact(cwd);

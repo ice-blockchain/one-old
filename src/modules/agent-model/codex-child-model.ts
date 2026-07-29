@@ -13,6 +13,7 @@ import {
   readCodexModelObservation,
   readCodexSessionMetaIdentity,
   readEffectiveState,
+  readRunAgentRegistry,
   resolveRunAgentContext,
   transcriptThreadId,
 } from '../../shared/state';
@@ -63,12 +64,46 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
         + 'Only the parent may create the run and freeze the policy; stop this child and repair/respawn it from the parent.',
       );
     }
-    const claimedRole = typeof claimed?.role === 'string' ? claimed.role : '';
+    let claimedRole = typeof claimed?.role === 'string' ? claimed.role : '';
     if (!claimedRole) {
-      return deny(
-        'traffic-one — child blocked: no parent-resolved trafficOneRole is bound to this child. '
-        + 'Stop it and respawn from the parent after the role bootstrap is published.',
-      );
+      // Deadlock break. The role-keyed reuse registry (agents.json) and this
+      // gate are both runtime-owned and could contradict each other: the reuse
+      // gate refuses a replacement spawn because the registry names this child
+      // as the role's LIVE agent, while this gate demands exactly that respawn
+      // because the child carries no claim. A child spawned before its
+      // bootstrap envelope existed lands in that state permanently — observed
+      // live: nine consecutive identical denials across Read and Bash (a bare
+      // `pwd` included), unaffected by re-announcement, and the follow-up
+      // feature could never start.
+      //
+      // The registry entry IS parent-issued evidence: only the parent's spawn
+      // recorder writes it, and it is parent-session-bound. When it names this
+      // exact child for a role whose bootstrap is published and policy-valid,
+      // adopt the binding instead of denying. Fail-closed everywhere else —
+      // no registry row, or a bootstrap that does not verify below, still
+      // denies.
+      const childIds = unique([identity.agentId, identity.sessionId, identity.threadId, transcriptThreadId(identity.transcriptPath || '')]);
+      const registry = readRunAgentRegistry(cwd, runId);
+      const registered = Object.entries(registry).find(([, entry]) => (
+        !entry.replaced
+        && childIds.some((id) => id === entry.agentId || id === entry.resumeId)
+      ));
+      const adoptId = registered ? childIds.find((id) => id === registered[1].agentId || id === registered[1].resumeId) : null;
+      if (registered && adoptId) {
+        claimedRole = registered[0];
+        claimThreadRole(cwd, state, adoptId, claimedRole, {
+          parentSessionId: registered[1].parentSessionId || identity.parentSessionId,
+          recordAgent: false,
+          model: registered[1].model,
+          transcriptPath: identity.transcriptPath,
+          refuseOccupiedRole: false,
+        });
+      } else {
+        return deny(
+          'traffic-one — child blocked: no parent-resolved trafficOneRole is bound to this child. '
+          + 'Stop it and respawn from the parent after the role bootstrap is published.',
+        );
+      }
     }
     const bootstrap = readActiveRunBootstrap(cwd, runId, claimedRole);
     if (
@@ -129,7 +164,18 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
   }
 
   if (!runId) {
-    return deny('traffic-one — Codex child blocked: currentRunId/model-policy.json is missing. The parent must create the run policy before spawning; this child may not repair or replace it.');
+    // Name the resolved root: this deny ALSO fires when path arguments
+    // re-anchored resolution outside the real project (observed 5co-codex:
+    // `pnpm --filter <pkg> exec tsc ../../packages/...` resolved to an
+    // ancestor directory with no run state, and the old wording — "the parent
+    // must create the run policy" — read as a fatal orchestration failure and
+    // was recorded as fact in the backend digest).
+    return deny(
+      `traffic-one — Codex child blocked: no currentRunId/model-policy.json under the resolved project root \`${cwd}\`. `
+      + 'If that path is NOT the project you are building, this call re-anchored root resolution via its path arguments '
+      + '(e.g. `../..` operands or an outside workdir) — re-run it with workdir set to the project root and paths inside it. '
+      + 'Otherwise the parent must create the run policy before spawning; this child may not repair or replace it.',
+    );
   }
   const childId = observation?.childId || hookChildId;
   if (!childId) {

@@ -1,6 +1,6 @@
 ---
 name: senior-reviewer
-description: Use PROACTIVELY after every capability-eligible implementation work unit reports completion, and ALWAYS before any commit, push, or deploy. Triggers on "review the changes", "before I commit", "check this PR", "is this safe to ship", "audit the diff". READ-ONLY by design — never writes or edits files. Emits `APPROVED` or `CHANGES_REQUESTED <numbered list>`. The orchestrator loops back to the owning eligible implementer on `CHANGES_REQUESTED` with a 2-cycle cap.
+description: Use PROACTIVELY after every capability-eligible implementation work unit reports completion, and ALWAYS before any commit, push, or deploy. Triggers on "review the changes", "before I commit", "check this PR", "is this safe to ship", "audit the diff". READ-ONLY by design — never writes or edits files. Emits `APPROVED` or `CHANGES_REQUESTED <numbered list>`. The orchestrator loops back to the owning eligible implementer on `CHANGES_REQUESTED` with a 5-cycle cap.
 tools: Read, Grep, Glob, Bash
 skills:
   - security-review

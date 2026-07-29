@@ -8,6 +8,7 @@ import * as path from 'path';
 import {
   canonicalTrafficOneContextLink,
   contextAliasHash,
+  isScanSkippedPath,
   stableContractJson,
   type ArchitectureBaselineV1,
   type CompiledArchitectureV1,
@@ -84,7 +85,9 @@ export interface ChangedPathSnapshot {
   reason?: string;
 }
 
-const SKIP_RE = /(^|\/)(?:\.git|\.traffic-one|node_modules|dist|build|coverage|out|\.next|\.turbo|generated|__generated__)(?:\/|$)/;
+// Path-skip authority lives in architecture-contract (`isScanSkippedPath`) so
+// baseline capture and every baseline-derived diff agree byte-for-byte about
+// derived artifacts (lockfiles, test-results/, *.tsbuildinfo, …).
 const VISUAL_RE = /\.(?:css|scss|sass|less|svg|png|jpe?g|webp|gif|ico|woff2?|ttf|otf)$/i;
 const MARKUP_RE = /\.(?:tsx|jsx|vue|svelte|astro|html|blade\.php)$/i;
 const VISUAL_PATH_RE = /(?:^|\/)(?:styles?|theme|tokens?|assets?|layout)(?:\/|[.-])/i;
@@ -250,7 +253,7 @@ function boundedGitPaths(projectRoot: string, baselineHash: string): ChangedPath
           reason: `Git diff returned an ambiguous or outside-project path`,
         };
       }
-      if (SKIP_RE.test(`/${normalized}`)) continue;
+      if (isScanSkippedPath(normalized)) continue;
       const issue = projectPathInspectionIssue(projectRoot, normalized);
       if (issue) return { paths, complete: false, reason: issue };
       paths.push(normalized);
@@ -284,7 +287,7 @@ function walkCurrentFiles(projectRoot: string, roots: string[]): ChangedPathSnap
     for (const entry of entries) {
       const absolute = path.join(current, entry.name);
       const rel = normalizeRel(path.relative(projectRoot, absolute));
-      if (!rel || SKIP_RE.test(`/${rel}`)) continue;
+      if (!rel || isScanSkippedPath(rel)) continue;
       if (entry.isSymbolicLink()) {
         // Same canonical alias exception as the immutable baseline, which keeps
         // a `symbolic-link:<target>` identity row for it (see fileHash below).
@@ -305,7 +308,8 @@ function walkCurrentFiles(projectRoot: string, roots: string[]): ChangedPathSnap
         stack.push(absolute);
         continue;
       }
-      // The non-Git baseline snapshots the whole project (subject to SKIP_RE),
+      // The non-Git baseline snapshots the whole project (subject to the shared
+      // scan-skip predicate),
       // so the comparison must use the identical scope. Restricting this side
       // to source extensions or architecture roots invents deletions and misses
       // new test/config/build-input files outside those roots.
