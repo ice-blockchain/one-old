@@ -39,6 +39,9 @@ import {  matchesScope } from '../../../shared/scope';
 import {
   isMaterialized,
   legacyStatePath,
+  readRunAssignmentsResilient,
+  resolveRunAgentContext,
+  runLedgerAdmitsClaims,
   stackFingerprint,
   statePath,
 } from '../../../shared/state';
@@ -146,8 +149,17 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       || !bootstrap.workUnit.outputs.includes(filePath)
       || !scope
       || !matchesScope(filePath, scope)) {
+      // Name WHY the role is unresolved. `Active role is unresolved` alone sent
+      // orchestrators into respawn loops chasing a spawn-ordering race, when the
+      // real cause was a closed run ledger that no respawn could fix.
+      const ledgerClosed = !runLedgerAdmitsClaims(projectRoot, currentRunId);
+      const unresolvedNote = writerRole
+        ? ''
+        : ledgerClosed
+          ? ` The run ledger for \`${currentRunId}\` is settled, so NO child can bind a role in it — respawning cannot fix this; the run must be replaced.`
+          : '';
       violations.push(block('run-artifact-work-unit-gate',
-        `Run artifact gate: \`${filePath}\` may be written only by the parent-bound \`${childArtifact.role}\` child whose current, hash-valid WorkUnitContract names this exact output. Active role is \`${writerRole || 'unresolved'}\`; no digest, QA report, or deployment claim may self-authorize or borrow another run's bootstrap.`,
+        `Run artifact gate: \`${filePath}\` may be written only by the parent-bound \`${childArtifact.role}\` child whose current, hash-valid WorkUnitContract names this exact output. Active role is \`${writerRole || 'unresolved'}\`; no digest, QA report, or deployment claim may self-authorize or borrow another run's bootstrap.${unresolvedNote}`,
         {
           TARGET: filePath,
           ROLE: writerRole || 'unresolved',

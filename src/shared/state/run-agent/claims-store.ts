@@ -77,6 +77,25 @@ export function listClaimedAgents(cwd: string, runId: string): Rec[] {
   return listClaimedAgentEntries(cwd, runId).map((entry) => entry.claim);
 }
 
+// Did a child for this ROLE actually bind (or is it mid-bind) in this run? The
+// reuse registry (agents.json) records an agent at SPAWN time and never learns
+// whether that child went on to resolve its role, so a registry row alone does
+// not prove a usable agent — the reuse gate pairs this with the ledger check to
+// tell a working agent apart from one that can never bind.
+//
+// Role-scoped rather than id-scoped on purpose: claims are keyed by the child's
+// own thread id, which does not equal the registry's agentId on every host. A
+// still-pending claim counts as bound so a child that is binding right now is
+// never treated as dead and replaced out from under itself.
+export function runRoleHasBoundClaim(cwd: string, runId: unknown, role: unknown): boolean {
+  if (typeof runId !== 'string' || !runId.trim() || typeof role !== 'string' || !role) return false;
+  const id = runId.trim();
+  const bound = listClaimedAgentEntries(cwd, id)
+    .some(({ claim }) => claim.role === role && claim.status !== 'released');
+  if (bound) return true;
+  return listPendingClaims(cwd, id).some(({ claim }) => claim.role === role);
+}
+
 // Terminal claim sweep for a settled run: pending claims are deleted, claimed
 // files get status "released" (+releasedAt/releasedReason) so hasActiveRunClaims
 // stops counting them while identity resolution (resolveRunAgentContext, the

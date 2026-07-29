@@ -27,7 +27,7 @@ import { projectRelativeHookPath } from '../../../shared/hook/paths';
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../../shared/materialize';
 import { pluginRoot } from '../../../shared/paths';
 import { makeSkillBlock } from '../../../shared/skill-block';
-import { activeAgentRole, hookSessionIdentity, isNativeState, readEffectiveState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
+import { activeAgentRole, explainUnresolvedRunAgent, hookSessionIdentity, isNativeState, readEffectiveState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
 import { capturePlanGuardDebug } from '../../../shared/state/claim-capture';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../../shared/tool-classify';
 import {
@@ -331,13 +331,19 @@ export function planWriteGate(ctx: Ctx): HookResult {
     : resolveRunAgentContext(projectRoot, state, raw, { host: ctx.host });
   const resolvedRole = registryRole
     || (typeof resolvedContext?.role === 'string' ? resolvedContext.role : null);
+  const effectiveRole = activeAgentRole(state) || resolvedRole;
   capturePlanGuardDebug(projectRoot, runId, {
     filePath,
     filePaths: writeTargetPaths,
     host: ctx.host,
     sessionId: denyIdentity.sessionId || null,
     isSubagent: denyIdentity.isSubagent || Boolean(resolvedRole),
-    role: activeAgentRole(state) || resolvedRole,
+    role: effectiveRole,
+    // WHY nothing resolved, not just that nothing did. A bare `role: null`
+    // forced transcript archaeology to tell "this child spawned before its
+    // claim was staked" from "the run's ledger is closed so no claim can ever
+    // exist" — the same log line for a transient race and a permanent deadlock.
+    ...(effectiveRole ? {} : { unresolved: explainUnresolvedRunAgent(projectRoot, state, raw) }),
     violations: violations.map((v) => (v.length > 400 ? `${v.slice(0, 400)}…` : v)),
   });
   // The trailing line prevents a real recovery failure: after a deny on a NEW

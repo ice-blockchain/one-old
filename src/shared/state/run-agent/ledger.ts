@@ -88,6 +88,21 @@ function runLedgerTransitionAllowed(from: RunLedgerStatus, to: RunLedgerStatus, 
   return false;
 }
 
+// Can a worker claim be staked in this run RIGHT NOW? Mirrors exactly what
+// ensureRunAgentClaim/claimThreadRole attempt — `ensureRunLedger({status:
+// 'active'})` with no resume reason — so callers can tell "this agent is
+// unusable because the run itself is closed" from "this agent is healthy".
+// A missing ledger reads as `planned`, which admits claims.
+export function runLedgerAdmitsClaims(cwd: string, runId: unknown): boolean {
+  if (typeof runId !== 'string' || !runId.trim()) return false;
+  const ledger = obj(readJson(runLedgerFile(cwd, runId.trim()), null));
+  // Read through the V2 rollback projection: a barrier-protected run is
+  // physically `failed` on disk while canonically still active.
+  const effective = effectiveLegacyRunStatus(ledger);
+  const status = isRunLedgerStatus(effective) ? effective : 'planned';
+  return runLedgerTransitionAllowed(status, 'active', undefined);
+}
+
 function outcomeAllowedForStatus(status: RunLedgerStatus, outcome: RunLedgerOutcome | undefined): boolean {
   if (!outcome) return status === 'planned' || status === 'active';
   if (status === 'completed') return outcome === 'verified' || outcome === 'shipped';

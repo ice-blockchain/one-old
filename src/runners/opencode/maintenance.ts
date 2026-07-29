@@ -162,9 +162,19 @@ export function recordMaintenanceDelegationOutcome(
       ? captureMaintenanceFallbackBaseline(cwd, bootstrap)
       : null;
     const fallbackBound = boundContract && Boolean(fallbackSourceBaseline);
-    const opencodeOutcome = result.ok ? 'success' : (result.action === 'skipped' ? 'skipped' : 'failed');
+    // No bound contract means the PREFLIGHT refused before anything ran: no
+    // worktree, no diff, no model call. That is a rejected delegation request,
+    // not a run outcome, so it must stay NON-terminal — `preflight-rejected` is
+    // deliberately absent from MAINTENANCE_TERMINAL_OUTCOMES. Marking it
+    // terminal settled the whole run `failed`, and since no ledger transition
+    // leaves `failed`, every later role claim was refused and the build
+    // deadlocked with the paid fallback still owed. Both `outcome` and
+    // `overallOutcome` carry it: maintenanceOutcome() falls back to `outcome`.
+    const opencodeOutcome = !boundContract
+      ? 'preflight-rejected'
+      : result.ok ? 'success' : (result.action === 'skipped' ? 'skipped' : 'failed');
     const overallOutcome = !boundContract
-      ? 'failed'
+      ? 'preflight-rejected'
       : result.ok
       ? 'code-delivered'
       : fallbackAllowed && fallbackBound
@@ -178,6 +188,7 @@ export function recordMaintenanceDelegationOutcome(
       outcome: opencodeOutcome,
       opencodeOutcome,
       overallOutcome,
+      ...(boundContract ? {} : { preflightRejected: true }),
       fallbackAllowed: fallbackBound && result.ok !== true && fallbackAllowed,
       ...(workUnitContractHash ? { workUnitContractHash } : {}),
       ...(allowlistHash ? { allowlistHash } : {}),
@@ -185,8 +196,11 @@ export function recordMaintenanceDelegationOutcome(
       action: result.action,
       failureKind: result.failureKind ?? null,
       model: result.model ?? null,
+      // Keep the SPECIFIC preflight reason (rejected allowlist, missing model
+      // policy, unbounded role). Overwriting it with the generic contract line
+      // hid which input to fix and sent orchestrators into blind retries.
       error: !boundContract
-        ? 'OpenCode maintenance delegation has no valid parent-published WorkUnitContract; fallback is forbidden.'
+        ? `${result.error ? String(result.error).slice(0, 400) : 'OpenCode maintenance contract preflight failed closed'} (no parent-published WorkUnitContract; fallback is forbidden)`
         : result.ok !== true && fallbackAllowed && !fallbackSourceBaseline
           ? 'OpenCode maintenance fallback source pre-image could not be captured completely; fallback is forbidden.'
         : result.error
@@ -196,12 +210,12 @@ export function recordMaintenanceDelegationOutcome(
       startedAt: new Date(startedAt).toISOString(),
       finishedAt: new Date().toISOString(),
     });
-    writeRunSettlement(cwd, runId, !boundContract
-      ? {
-          status: 'failed',
-          reason: 'OpenCode maintenance delegation has no valid parent-published WorkUnitContract',
-        }
-      : result.ok
+    // A preflight rejection is not a lifecycle event for the RUN — nothing was
+    // attempted — so it writes no settlement at all. Minting one here would
+    // freeze a canonical V2 sidecar (terminal settlements are immutable) for a
+    // run the orchestrator must still be able to drive with a paid worker.
+    if (!boundContract) return;
+    writeRunSettlement(cwd, runId, result.ok
       ? {
           status: 'code-delivered',
           workUnitContractHash: workUnitContractHash!,

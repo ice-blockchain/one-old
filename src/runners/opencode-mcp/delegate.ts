@@ -258,16 +258,50 @@ interface BgRun {
   projectRoot: string;
   runId: string;
   batchKey: string;
+  fingerprint: string;
   lastPolledAt: number;
   children: TrackedChild[];
   watchdog?: NodeJS.Timeout;
 }
 
 const PLAN_KEY = '__plan__';
+// A finished run is kept so an identical re-call replays its terminal result
+// instead of starting a second delegation (observed 1cu-cursor: seven
+// delegations of one unit). Nothing evicts them otherwise, so cap the map.
+const DONE_RUN_CAP = 64;
 const runs = new Map<string, BgRun>();
 
 function runKey(projectRoot: string, runId: string, key: string): string {
   return `${projectRoot}\0${runId}\0${key}`;
+}
+
+// Identity of the WORK a delegation was started with. The run key is only
+// (projectRoot, runId, role), so without this a corrected re-call — new task or
+// a fixed allowlist — silently replays the previous failure and the runner is
+// never spawned (observed: a glob allowlist rejected, then two valid exact-file
+// retries returned the byte-identical glob error). Allowlist entries are split,
+// trimmed, de-duped and SORTED so the same set written comma- or newline-
+// separated fingerprints equal and still replays rather than re-delegating.
+function delegateFingerprint(task: unknown, allowedFiles: unknown, model: unknown): string {
+  const files = String(allowedFiles ?? '')
+    .split(/[,;\n]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return [
+    String(task ?? '').trim(),
+    [...new Set(files)].sort().join(','),
+    String(model ?? '').trim(),
+  ].join('\0');
+}
+
+// Drop the oldest FINISHED runs once the cache outgrows its cap. A `running`
+// entry is never evicted: its promise, children, and watchdog are live.
+function pruneFinishedRuns(): void {
+  if (runs.size <= DONE_RUN_CAP) return;
+  const done = [...runs.entries()]
+    .filter(([, run]) => run.status === 'done')
+    .sort((a, b) => a[1].lastPolledAt - b[1].lastPolledAt);
+  for (const [key] of done.slice(0, runs.size - DONE_RUN_CAP)) runs.delete(key);
 }
 
 function parseRunKey(key: string): { projectRoot: string; runId: string; batchKey: string } | null {
@@ -306,7 +340,7 @@ function abandonPlanBatch(run: BgRun, abandonError: string): void {
   run.result = merged;
 }
 
-function getOrStart(key: string, meta: { projectRoot: string; runId: string; batchKey: string }, start: (onChild: (child: ReturnType<typeof spawn>) => void) => Promise<RunnerResult>): BgRun {
+function getOrStart(key: string, meta: { projectRoot: string; runId: string; batchKey: string; fingerprint: string }, start: (onChild: (child: ReturnType<typeof spawn>) => void) => Promise<RunnerResult>): BgRun {
   const existing = runs.get(key);
   if (existing) { existing.lastPolledAt = Date.now(); return existing; }
   const run: BgRun = {
@@ -315,6 +349,7 @@ function getOrStart(key: string, meta: { projectRoot: string; runId: string; bat
     projectRoot: meta.projectRoot,
     runId: meta.runId,
     batchKey: meta.batchKey,
+    fingerprint: meta.fingerprint,
     lastPolledAt: Date.now(),
     children: [],
   };
@@ -345,6 +380,7 @@ function getOrStart(key: string, meta: { projectRoot: string; runId: string; bat
   }, watchdogTickMs());
   run.watchdog.unref?.();
   runs.set(key, run);
+  pruneFinishedRuns();
   return run;
 }
 
@@ -374,10 +410,20 @@ export async function delegateResumable(a: DelegateArgs, waitMs = RESUME_WAIT_MS
   if (!role) return { ok: false, action: 'skipped', error: 'role is required' };
   if (!runId) return { ok: false, action: 'skipped', error: 'runId is required' };
   const key = runKey(projectRoot, runId, role);
+  const fingerprint = delegateFingerprint(a.task, allowedFiles, a.model);
+  // A FINISHED run whose work no longer matches this call is stale: the caller
+  // corrected the task or the allowlist and is asking for a real re-delegation.
+  // Evicting here (before the guards below re-assert task/allowedFiles) is what
+  // makes the retry actually spawn the runner. Only `done` runs are dropped, so
+  // a {running:true} poll can never start a second concurrent delegation.
+  const cached = runs.get(key);
+  if (cached && cached.status === 'done' && (a.task || '').trim() && cached.fingerprint !== fingerprint) {
+    runs.delete(key);
+  }
   if (!runs.has(key) && !(a.task || '').trim()) return { ok: false, action: 'skipped', error: 'task is required to start a delegation' };
   if (!runs.has(key) && !allowedFiles) return { ok: false, action: 'skipped', error: 'allowedFiles is required to start a delegation' };
 
-  const run = getOrStart(key, { projectRoot, runId, batchKey: role }, (onChild) => {
+  const run = getOrStart(key, { projectRoot, runId, batchKey: role, fingerprint }, (onChild) => {
     let dir: string | null = null;
     try {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmcp-'));
@@ -404,7 +450,10 @@ export async function delegateFromPlanResumable(a: FromPlanArgs, waitMs = RESUME
   const runId = (a.runId || '').trim();
   if (!runId) return { ok: false, error: 'runId is required' };
   const key = runKey(projectRoot, runId, PLAN_KEY);
-  const run = getOrStart(key, { projectRoot, runId, batchKey: PLAN_KEY }, (onChild) => startFromPlan(projectRoot, runId, a.model, onChild));
+  // The batch reads its units from the plan queue on disk, so a re-call carries
+  // no per-call work to compare. A constant fingerprint keeps it out of the
+  // staleness eviction above: batch behaviour is unchanged.
+  const run = getOrStart(key, { projectRoot, runId, batchKey: PLAN_KEY, fingerprint: PLAN_KEY }, (onChild) => startFromPlan(projectRoot, runId, a.model, onChild));
   const res = await waitBounded(run, waitMs);
   return res ?? stillRunning(runId, PLAN_KEY, 'opencode_delegate_from_plan');
 }

@@ -291,6 +291,72 @@ test('delegateStatus reports running → done', async () => {
   });
 });
 
+// Records every spawn (one line per invocation, naming the allowlist it got) so
+// a test can prove whether a re-call actually re-delegated or replayed a cache
+// entry, then fails terminally the way a rejected preflight does.
+const COUNT_STUB = [
+  'const a = process.argv.slice(2);',
+  'const get = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : null; };',
+  'const fs = require("fs");',
+  'const path = require("path");',
+  'fs.appendFileSync(path.join(process.cwd(), "spawns.log"), get("--allowed-files") + "\\n");',
+  'console.log(JSON.stringify({ ok: false, action: "failed", error: "stub rejected: " + get("--allowed-files"), digest: null, touched: [] }));',
+].join('\n');
+
+function spawnCount(projectRoot: string): number {
+  const log = path.join(projectRoot, 'spawns.log');
+  if (!fs.existsSync(log)) return 0;
+  return fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length;
+}
+
+test('delegateResumable re-delegates when a finished call is retried with a corrected allowlist', async () => {
+  await withStubRunner(COUNT_STUB, async (projectRoot) => {
+    const base = { role: 'senior-backend', task: 'batch update endpoint', runId: 'res-retry', projectRoot };
+    // 1) globs — the shape maintenance rejects outright.
+    const globs = (await delegateResumable({ ...base, allowedFiles: 'routes/**, app/Http/Controllers/**' }, 2000)) as Any;
+    assert.equal(globs.ok, false);
+    assert.match(globs.error, /routes\/\*\*/);
+    assert.equal(spawnCount(projectRoot), 1);
+
+    // 2) corrected to exact files — must actually run, not replay the rejection.
+    const exact = (await delegateResumable({ ...base, allowedFiles: 'routes/api.php, app/Http/Controllers/BatchController.php' }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 2, 'a corrected allowlist starts a new delegation');
+    assert.match(exact.error, /routes\/api\.php/);
+    assert.doesNotMatch(exact.error, /\*\*/, 'the stale glob rejection is not replayed');
+
+    // 3) same file SET, newline-separated instead of comma-separated → replay.
+    const reordered = (await delegateResumable({ ...base, allowedFiles: 'app/Http/Controllers/BatchController.php\nroutes/api.php' }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 2, 'separator/order changes alone must not re-delegate');
+    assert.equal(reordered.error, exact.error);
+
+    // 4) a changed task is also new work.
+    const newTask = (await delegateResumable({ ...base, task: 'batch delete endpoint', allowedFiles: 'routes/api.php, app/Http/Controllers/BatchController.php' }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 3, 'a changed task starts a new delegation');
+    assert.equal(newTask.ok, false);
+  });
+});
+
+test('delegateResumable does not start a second run while one is still in flight, even with different args', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const first = (await delegateResumable({ role: 'senior-frontend', task: 'slow unit', runId: 'res-inflight', allowedFiles: 'apps/web/src/A.tsx', projectRoot }, 100)) as Any;
+    assert.equal(first.running, true);
+    // Different allowlist while the run is still RUNNING → keep waiting on it.
+    const second = (await delegateResumable({ role: 'senior-frontend', task: 'slow unit', runId: 'res-inflight', allowedFiles: 'apps/web/src/B.tsx', projectRoot }, 2000)) as Any;
+    assert.equal(second.ok, true);
+    assert.equal(second.action, 'delegated');
+  });
+});
+
+test('delegateFromPlanResumable replays its finished batch instead of re-running it', async () => {
+  await withStubRunner(COUNT_STUB, async (projectRoot) => {
+    const first = (await delegateFromPlanResumable({ runId: 'res-plan', projectRoot }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 1);
+    const second = (await delegateFromPlanResumable({ runId: 'res-plan', projectRoot }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 1, 'the plan batch has no per-call args and must never restart');
+    assert.equal(second.error, first.error);
+  });
+});
+
 // ── attach(): newline-framed stdio transport, end to end ─────────────────────
 
 test('attach: initialize + notification + tools/call round-trip over stdio framing', async () => {

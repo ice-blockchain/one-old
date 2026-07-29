@@ -33,6 +33,7 @@ import {
   releaseRunClaims,
   runHasOrchestratedArtifacts,
   runIdNow,
+  runIsEmptyFailedHusk,
   runSettledForRotation,
   runVerificationState,
   settleTerminalRunLedger,
@@ -106,6 +107,15 @@ export function unresolvedRunDirective(cwd: string, state: Rec, promptText: stri
   if (isSubagentThread(raw) || isRuntimeControlPrompt(promptText)) return '';
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (!runId || runVerificationState(cwd, runId) !== 'nonterminal') return '';
+  // A `failed` ledger reads as 'nonterminal' above (an agent failure IS
+  // unresolved), so without this an EMPTY failed run captured every later
+  // prompt: this directive won at the caller's `unresolved || triage`, so
+  // maintenance triage — the only path that mints a fresh run id — never ran,
+  // and the resume branch below cannot reopen `failed` either. The project
+  // stayed wedged across sessions with nothing to continue. Fall through to
+  // triage so the husk is replaced; a failed run holding real work still routes
+  // here, because artifacts or live claims disqualify it.
+  if (runIsEmptyFailedHusk(cwd, runId)) return '';
   const explicitResume = isExplicitRunResumePrompt(promptText);
   if (explicitResume) {
     // A capped/environment-blocked run may resume only after the user explicitly

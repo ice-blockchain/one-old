@@ -4,7 +4,8 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { maintenanceTriageDirective } from '../triage-directive';
+import { maintenanceTriageDirective, unresolvedRunDirective } from '../triage-directive';
+import { transitionRunStatus } from '../../../shared/state';
 import { runModelPolicyPath } from '../../../shared/run-model-policy';
 import { currentHostModelTarget } from '../../../shared/current-model-tiers';
 import type { Rec } from '../../../shared/obj';
@@ -290,6 +291,66 @@ test('active claims still suppress triage on resumable hosts', () => {
     writeFreshClaim(dir);
     const directive = maintenanceTriageDirective(dir, state, 'create a new page named news', { session_id: 'cursor-parent' }, 'cursor');
     assert.equal(directive, '', 'Cursor keeps its live role session instead of splitting the active run');
+    assert.equal(state.currentRunId, 'OLD');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// ── empty failed-run husk: rotate instead of wedging ─────────────────────────
+// A `failed` ledger has no transition out, so no role can ever claim in it. When
+// the run also holds nothing, capturing every later prompt with the unresolved
+// continuation directive left the project permanently stuck.
+
+function failRun(dir: string, runId = 'OLD'): void {
+  assert.ok(transitionRunStatus(dir, runId, { status: 'active' }));
+  assert.ok(transitionRunStatus(dir, runId, { status: 'failed', outcome: 'agent-failed' }));
+}
+
+test('an EMPTY failed run yields no unresolved directive, so triage rotates it away', () => {
+  const { dir, state } = setup({});
+  try {
+    failRun(dir);
+    assert.equal(unresolvedRunDirective(dir, state, PROMPT, {}), '', 'an empty failed run has nothing to continue');
+    maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
+    assert.notEqual(state.currentRunId, 'OLD', 'the husk is replaced with a fresh run id');
+    assert.match(String(state.currentRunId), /^\d{13}$/);
+    assert.deepEqual(state.spawnIndex, {});
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('a failed run that DID produce work still routes to the unresolved continuation', () => {
+  const { dir, state } = setup({ assignments: true });
+  try {
+    failRun(dir);
+    const directive = unresolvedRunDirective(dir, state, PROMPT, {});
+    assert.match(directive, /UNRESOLVED TRAFFIC ONE RUN/, 'assignments prove real work — never discard it');
+    assert.equal(state.currentRunId, 'OLD');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('a failed run with a live claim still routes to the unresolved continuation', () => {
+  const { dir, state } = setup({});
+  try {
+    failRun(dir);
+    writeFreshClaim(dir);
+    assert.match(unresolvedRunDirective(dir, state, PROMPT, {}), /UNRESOLVED TRAFFIC ONE RUN/);
+    assert.equal(state.currentRunId, 'OLD');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('a BLOCKED run is untouched: it keeps its explicit user-authorized resume', () => {
+  const { dir, state } = setup({});
+  try {
+    assert.ok(transitionRunStatus(dir, 'OLD', { status: 'active' }));
+    assert.ok(transitionRunStatus(dir, 'OLD', { status: 'blocked', outcome: 'review-cycle-cap' }));
+    assert.match(unresolvedRunDirective(dir, state, PROMPT, {}), /UNRESOLVED TRAFFIC ONE RUN/);
     assert.equal(state.currentRunId, 'OLD');
   } finally {
     cleanup(dir);

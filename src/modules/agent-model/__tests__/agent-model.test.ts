@@ -15,7 +15,7 @@ import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architec
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
+import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext, runLedgerAdmitsClaims, transitionRunStatus } from '../../../shared/state';
 import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
@@ -4126,6 +4126,114 @@ test('reuse: replace marker without a failure reason is denied while a healthy a
       }
       assert.equal(readRunAgentRegistry(cwd, 'run-reuse-marker-guard')['senior-frontend']?.replaced, false);
     });
+  });
+});
+
+// The registry records an agent at SPAWN time, so it can name a "live" agent
+// that never bound a role and — once the run's ledger closed — never can. The
+// orchestrator has no failure vocabulary for that, so the marker was refused
+// forever and the build had no exit. Requires BOTH: no bound claim AND a ledger
+// that cannot admit one.
+test('reuse: a live agent that never bound a claim in a closed run may be replaced', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-unbindable');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-architect', model: 'opus', prompt: 'plan the feature' },
+        'agentId: architect11aa22bb33',
+        'parent-1',
+      ));
+      // The run settles terminally before the child ever bound its role.
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-unbindable', { status: 'active' }));
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-unbindable', { status: 'failed', outcome: 'agent-failed' }));
+      assert.equal(runLedgerAdmitsClaims(cwd, 'run-reuse-unbindable'), false);
+
+      const replacement = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-architect', model: 'opus', prompt: 'respawn the architect [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(replacement.kind, 'noop', 'an agent that can never bind must not block its own replacement');
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-unbindable')['senior-architect']?.replaced, true);
+    });
+  });
+});
+
+test('reuse: a claimless agent in a HEALTHY run is still protected (it may just be starting up)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-startup');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'opus', prompt: 'build UI' },
+        'agentId: frontend44cc55dd66',
+        'parent-1',
+      ));
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-startup', { status: 'active' }));
+      assert.equal(runLedgerAdmitsClaims(cwd, 'run-reuse-startup'), true);
+
+      const duplicate = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(duplicate.kind, 'deny');
+      if (duplicate.kind === 'deny') {
+        assert.ok(duplicate.reason.includes('frontend44cc55dd66'), 'denied BY THE REUSE GATE, not another gate');
+      }
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-startup')['senior-frontend']?.replaced, false);
+    });
+  });
+});
+
+test('reuse: a BOUND agent in a closed run is still protected (only unbindable ones are replaceable)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-bound');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'build the API' },
+        'agentId: backend77ee88ff99',
+        'parent-1',
+      ));
+      // Bind the role while the run is still open, THEN close it.
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-bound', { status: 'active' }));
+      assert.ok(claimThreadRole(cwd, readEffectiveState(cwd), 'backend77ee88ff99', 'senior-backend', {
+        parentSessionId: 'parent-1',
+      }));
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-bound', { status: 'failed', outcome: 'agent-failed' }));
+
+      const duplicate = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(duplicate.kind, 'deny', 'a child that DID bind still owns the role slot');
+      if (duplicate.kind === 'deny') {
+        assert.ok(duplicate.reason.includes('backend77ee88ff99'), 'denied BY THE REUSE GATE, not another gate');
+      }
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-bound')['senior-backend']?.replaced, false);
+    });
+  });
+});
+
+test('runLedgerAdmitsClaims mirrors what a worker claim actually attempts', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // No ledger at all reads as `planned` — claims are admitted.
+    assert.equal(runLedgerAdmitsClaims(cwd, 'ledger-absent'), true);
+    assert.equal(runLedgerAdmitsClaims(cwd, ''), false);
+
+    assert.ok(transitionRunStatus(cwd, 'ledger-active', { status: 'active' }));
+    assert.equal(runLedgerAdmitsClaims(cwd, 'ledger-active'), true);
+
+    assert.ok(transitionRunStatus(cwd, 'ledger-blocked', { status: 'active' }));
+    assert.ok(transitionRunStatus(cwd, 'ledger-blocked', { status: 'blocked', outcome: 'review-cycle-cap' }));
+    assert.equal(runLedgerAdmitsClaims(cwd, 'ledger-blocked'), false);
+
+    assert.ok(transitionRunStatus(cwd, 'ledger-failed', { status: 'active' }));
+    assert.ok(transitionRunStatus(cwd, 'ledger-failed', { status: 'failed', outcome: 'agent-failed' }));
+    assert.equal(runLedgerAdmitsClaims(cwd, 'ledger-failed'), false);
   });
 });
 

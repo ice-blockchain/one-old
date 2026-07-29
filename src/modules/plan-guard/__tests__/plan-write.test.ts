@@ -8,7 +8,7 @@ import { performance } from 'node:perf_hooks';
 import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
 import { writeModelChoice } from '../../agent-model/model-choice';
-import { claimThreadRole, ensureRunAgentClaim } from '../../../shared/state/run-agent';
+import { claimThreadRole, ensureRunAgentClaim, transitionRunStatus } from '../../../shared/state/run-agent';
 import { observeCodexChildModel, readEffectiveState } from '../../../shared/state';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
@@ -860,6 +860,37 @@ test('subagents project: cp asset-import cannot borrow an agent-authored legacy 
       command: 'cp /outside/a.png public/a.png && rm -rf src',
     }, raw));
     assert.equal(compound.kind, 'deny');
+  });
+});
+
+// Four identical `role: null` deny rows could not distinguish a child that
+// spawned before its claim was staked from a run whose ledger is closed so no
+// claim can EVER exist — a transient race and a permanent deadlock logged the
+// same. Record the reason, and say so in the deny itself when the run is shut.
+test('an unattributable deny records WHY the role never resolved, and names a closed ledger', () => {
+  withMaterialized({
+    currentRunId: 'run-shut',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    assert.ok(transitionRunStatus(cwd, 'run-shut', { status: 'active' }));
+    assert.ok(transitionRunStatus(cwd, 'run-shut', { status: 'failed', outcome: 'agent-failed' }));
+
+    const digest = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/digests/run-shut/architect.md',
+      content: '# architect\nPLAN_READY\n',
+    }, { session_id: 'parent-session', agent_id: 'architect-child', agent_type: 'traffic-one:senior-architect' }));
+    assert.equal(digest.kind, 'deny');
+    if (digest.kind === 'deny') {
+      assert.match(digest.reason, /Run artifact gate/);
+      assert.match(digest.reason, /settled, so NO child can bind a role in it/, 'the deny names the real blocker');
+    }
+
+    const log = path.join(cwd, '.traffic-one', 'runs', 'run-shut', 'debug', 'plan-guard-deny.jsonl');
+    const rows = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const last = rows[rows.length - 1];
+    assert.equal(last.role, null);
+    assert.ok(last.unresolved, 'the deny row carries a named unresolved reason');
+    assert.equal(typeof last.unresolved.reason, 'string');
   });
 });
 

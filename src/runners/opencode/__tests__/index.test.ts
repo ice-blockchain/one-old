@@ -9,6 +9,8 @@ import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
+import { reconcileRunSettlement } from '../../../shared/run-settlement';
+import { ensureRunAgentClaim } from '../../../shared/state';
 import { currentHostModelTarget } from '../../../shared/current-model-tiers';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 
@@ -870,19 +872,70 @@ test('maintenance delegation without a parent-published work-unit contract fails
       allowedFiles: 'README.md',
     });
 
+    // The delegation still declines — the tool-result contract is unchanged, so
+    // the orchestrator falls back to the paid role exactly as before.
     assert.equal(r.action, 'failed');
     assert.equal(r.failureKind, 'diff-rejected');
     const marker = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'maintenance.json'), 'utf8')) as any;
-    assert.equal(marker.outcome, 'failed');
+    // …but the preflight refused before anything ran, so this is NOT terminal:
+    // a terminal `failed` here settled the whole run and deadlocked every later
+    // role claim (no ledger transition leaves `failed`).
+    assert.equal(marker.outcome, 'preflight-rejected');
+    assert.equal(marker.overallOutcome, 'preflight-rejected');
+    assert.equal(marker.preflightRejected, true);
     assert.equal(marker.fallbackAllowed, false);
     assert.equal(marker.failureKind, 'diff-rejected');
-    assert.equal(marker.overallOutcome, 'failed');
     assert.equal(marker.workUnitContractHash, undefined);
     assert.equal(marker.allowlistHash, undefined);
-    assert.match(marker.error, /no valid parent-published WorkUnitContract/);
-    const settlement = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'settlement-v2.json'), 'utf8')) as any;
-    assert.equal(settlement.status, 'failed');
-    assert.match(settlement.reason, /no valid parent-published WorkUnitContract/);
+    // The SPECIFIC preflight reason survives (this fixture has no model policy).
+    assert.match(marker.error, /no immutable parent model policy/i);
+    assert.match(marker.error, /no parent-published WorkUnitContract/);
+    // No settlement is minted at all — the run stays drivable.
+    assert.equal(fs.existsSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'settlement-v2.json')), false);
+    const ledgerFile = path.join(dir, memoryDir, 'runs', 'maint-1', 'run.json');
+    if (fs.existsSync(ledgerFile)) {
+      const ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf8')) as any;
+      assert.notEqual(ledger.status, 'failed');
+    }
+  });
+});
+
+test('a preflight-rejected delegation leaves the run drivable: reconciliation stays non-terminal and role claims still bind', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('error');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    const state = {
+      version: 1,
+      mode: 'new-project',
+      currentRunId: 'maint-drivable',
+      materializedStack: 'custom-stack|other|laravel|none',
+      lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-01-01T00:00:00Z' },
+    };
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state), 'utf8');
+
+    // Globs cannot authorize a paid fallback → the preflight refuses outright.
+    const r = delegate(dir, {
+      role: 'senior-backend',
+      task: 'batch update endpoint',
+      runId: 'maint-drivable',
+      allowedFiles: 'routes/**, app/Http/Controllers/**',
+    });
+    assert.equal(r.ok, false);
+
+    const marker = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-drivable', 'maintenance.json'), 'utf8')) as any;
+    assert.equal(marker.overallOutcome, 'preflight-rejected');
+    assert.match(marker.error, /exact-file allowlist/i, 'the rejected-allowlist reason reaches the marker');
+
+    // Reconciliation must not derive a terminal `failed` from the marker.
+    const settled = reconcileRunSettlement(dir, 'maint-drivable');
+    assert.notEqual(settled?.status, 'failed');
+
+    // The decisive regression: the run's ledger still admits role claims, so the
+    // paid fallback the orchestrator now owes can actually be staked.
+    const claim = ensureRunAgentClaim(dir, state, 'senior-backend', { session_id: 'parent-1' }, { toolName: 'Task' });
+    assert.ok(claim, 'a preflight rejection must not block the paid fallback claim');
+    assert.equal(claim?.role, 'senior-backend');
   });
 });
 

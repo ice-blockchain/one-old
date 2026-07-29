@@ -17,6 +17,8 @@ import {
   refreshCursorRunAgentFromTranscriptCache,
   REPLACE_AGENT_MARKER,
   retireUnverifiedCodexRunAgent,
+  runLedgerAdmitsClaims,
+  runRoleHasBoundClaim,
   subagentContinuationAvailable,
   validateCodexLiveRunAgent,
   verdictAgentConflict,
@@ -153,11 +155,23 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
           && Boolean(liveModel)
           && modelIsExhausted(cwd, runId, role, liveModel);
         const markerCorroborated = markerJustified || durableLiveModelExhaustion;
+        // The registry records an agent when it is SPAWNED, not when it binds a
+        // role, so "live" can name a child that never resolved its role and
+        // never will — every write it attempts is denied as the main agent.
+        // When that child holds no claim AND the run itself can no longer admit
+        // one, replacement is the only move left, and the orchestrator has no
+        // failure vocabulary for it: `replacementJustified` looks for exhausted
+        // context or API limits, so the marker was refused forever and the
+        // build had no exit. BOTH conditions are required — a claimless agent in
+        // a healthy run may simply be mid-startup and stays protected.
+        const unbindableLive = Boolean(live)
+          && !runRoleHasBoundClaim(cwd, runId, role)
+          && !runLedgerAdmitsClaims(cwd, runId);
         if (cursorAwaitingResume
           && !cursorAgentPresumedDead(live, { corroborated: markerCorroborated })) {
           return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
         }
-        if (live && !cursorAwaitingResume && !markerJustified) {
+        if (live && !cursorAwaitingResume && !markerJustified && !unbindableLive) {
           if (resumeTarget) {
             const recipe = continuationRecipe(ctx.host, resumeTarget, role);
             return deny(block('agent-reuse-continue', {

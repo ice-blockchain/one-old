@@ -137,6 +137,26 @@ export function runHasOrchestratedArtifacts(cwd: string, runId: unknown): boolea
   }
 }
 
+// A run that settled `failed` while holding NOTHING: no assignments, no digest,
+// no live claim. `failed` is the one ledger status with no transition out, so
+// such a run is permanently unusable — no role can ever bind a claim in it — yet
+// nothing is lost by replacing it. The prompt-boundary router uses this to fall
+// through to maintenance triage (which mints a fresh id) instead of routing to
+// the unresolved-run continuation forever, which is how a single sub-step
+// failure used to wedge a project across sessions.
+//
+// Deliberately narrow, and deliberately NOT folded into runVerificationState:
+// that predicate must keep reporting `nonterminal` for a failed ledger (an agent
+// failure IS unresolved), and blocked runs keep their explicit user-authorized
+// resume. Only an EMPTY failed run is replaceable — the artifact and claim
+// checks are what stop this from discarding real work.
+export function runIsEmptyFailedHusk(cwd: string, runId: unknown): boolean {
+  if (typeof runId !== 'string' || !runId) return false;
+  if (runLedgerStatusRecord(cwd, runId).status !== 'failed') return false;
+  if (runHasOrchestratedArtifacts(cwd, runId)) return false;
+  return activeRunClaimCount(cwd, runId) === 0;
+}
+
 // True when ANY run dir under .traffic-one/digests has a terminal verdict. The
 // build-completion heuristic scans all run dirs (it does not assume currentRunId).
 export function anyRunReachedTerminalVerdict(cwd: string): boolean {

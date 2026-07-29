@@ -22,6 +22,7 @@ export {
   ensureRunAgentClaim,
   releaseAllRunClaims,
   releaseRunClaims,
+  runRoleHasBoundClaim,
 } from './claims-store';
 export {
   retireUnverifiedCodexRunAgent,
@@ -70,6 +71,7 @@ export {
   ensureRunLedger,
   recordRunStackDrift,
   runIdentityFrozen,
+  runLedgerAdmitsClaims,
   transitionRunStatus,
   type RunLedgerOutcome,
   type RunLedgerStatus,
@@ -108,6 +110,7 @@ export {
   anyRunProducedImplementerOutput,
   anyRunReachedTerminalVerdict,
   runHasOrchestratedArtifacts,
+  runIsEmptyFailedHusk,
   runSettledForRotation,
   settleTerminalRunLedger,
 } from './run-settle';
