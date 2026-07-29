@@ -2,7 +2,7 @@
 // The onboarding flow engine: computeOnboarding + applyAnswer over the
 // view/meta helpers in flow-view.ts.
 
-import { classifyPromptForStack,  promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
+import { classifyPromptForStack, detectStackFromCodebase, promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
 import { authEnforced, isLocallyAuthenticated } from '../auth';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
@@ -41,6 +41,16 @@ import {
   type OnboardingView,
   type WizardStep,
 } from './flow-view';
+
+// State as the preference-step router should see it: with the stamped stack, or
+// — when the stamp hasn't landed yet (ask-first same-session flow, or a wiped
+// .traffic-one) — the freshly DETECTED one. Detection returning nothing leaves
+// the state untouched, preserving the sparse-repo no-wizard behavior.
+function stackRoutingState(cwd: string, state: Rec): Rec {
+  if (typeof state.stack === 'string' && state.stack) return state;
+  const detected = detectStackFromCodebase(cwd);
+  return detected.stack ? { ...state, stack: detected.stack } : state;
+}
 
 export function computeOnboarding(
   cwd: string,
@@ -101,7 +111,16 @@ export function computeOnboarding(
       done = raw == null;
     }
   } else {
-    const raw = nextLocalPreferenceStep(state, host, localPreferenceTarget);
+    // nextLocalPreferenceStep treats a stack-less state as "no step pending",
+    // which reads a DETECTABLE codebase whose stamp hasn't landed yet as done.
+    // That state is normal in the ask-first flow: SessionStart deliberately
+    // writes nothing while the plugin-use question is pending, and the consent
+    // answer runs `--use --bootstrap-only` in the SAME session — so the whole
+    // wizard (OpenCode, performance, team, code graph) was skipped for every
+    // existing codebase on an already-authenticated machine. Route the step
+    // check through fresh detection instead; a sparse repo where detection
+    // finds nothing keeps today's no-wizard behavior.
+    const raw = nextLocalPreferenceStep(stackRoutingState(cwd, state), host, localPreferenceTarget);
     step = (raw as WizardStep) ?? null;
     done = raw == null;
   }
@@ -197,9 +216,17 @@ function attachPendingInstallTask(
   // local preference. Mid-wizard answers in a NEW project have no stack yet and
   // must never fire the install — it would block the wizard's next question on a
   // potentially minutes-long managed install.
-  const hasStack = typeof state.stack === 'string' && state.stack.trim() !== '';
+  // Same detection fallback as computeOnboarding's existing-codebase routing:
+  // in the ask-first flow the stack is detectable but not yet stamped, and
+  // without it the LAST pref answer never fires the install task. The routed
+  // state must ALSO drive nextLocalPreferenceStep, or the stack-less null would
+  // read as "last answer" on the very first one. A mid-wizard NEW project is
+  // unaffected — its directory is empty, so detection finds nothing and the
+  // install stays deferred exactly as before.
+  const routed = stackRoutingState(cwd, state);
+  const hasStack = typeof routed.stack === 'string' && routed.stack.trim() !== '';
   const target = currentLocalPreferenceTarget(host, env, cwd);
-  const terminal = step === 'finalize' || (hasStack && nextLocalPreferenceStep(state, host, target) == null);
+  const terminal = step === 'finalize' || (hasStack && nextLocalPreferenceStep(routed, host, target) == null);
   if (!terminal || !toolchainInstallPending(state, host)) return outcome;
   return { ...outcome, task: { kind: 'onboarding-toolchain' } };
 }

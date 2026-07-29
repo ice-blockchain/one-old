@@ -229,6 +229,46 @@ test('existing project: only the local-preference steps are asked, then done', (
   });
 });
 
+// The ask-first flow answers consent and runs `--use --bootstrap-only` in the
+// SAME session, before SessionStart ever stamps detection — so state has no
+// `stack` when done is computed. That must NOT read as "setup complete": it
+// skipped the entire wizard (OpenCode, performance, team, code graph) for every
+// existing codebase on an already-authenticated machine, including any project
+// whose .traffic-one was deleted for a re-setup.
+test('existing codebase with a detectable but unstamped stack still gets the wizard', () => {
+  withProject(null, (cwd) => {
+    // A real Laravel repo: composer manifest + enough source files that
+    // detectMode says existing-codebase, but NO .one.json (never stamped).
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({ require: { 'laravel/framework': '^11.0' } }), 'utf8');
+    fs.mkdirSync(path.join(cwd, 'app'), { recursive: true });
+    for (let i = 0; i < 7; i += 1) {
+      fs.writeFileSync(path.join(cwd, 'app', `Model${i}.php`), '<?php\n', 'utf8');
+    }
+    recordPluginUseChoice(cwd, true, 'command');
+
+    const view = computeOnboarding(cwd);
+    assert.equal(view.mode, 'existing-codebase');
+    assert.equal(view.done, false, 'an unstamped but detectable stack must not read as setup complete');
+    assert.equal(view.step, 'open-code', 'the wizard starts at the first local-preference step');
+  });
+});
+
+test('sparse existing dir where detection finds nothing keeps the no-wizard behavior', () => {
+  withProject(null, (cwd) => {
+    // >5 source files so detectMode says existing-codebase, but no framework
+    // manifests — detectStackFromCodebase finds no stack.
+    fs.mkdirSync(path.join(cwd, 'scripts'), { recursive: true });
+    for (let i = 0; i < 7; i += 1) {
+      fs.writeFileSync(path.join(cwd, 'scripts', `util${i}.py`), 'print(1)\n', 'utf8');
+    }
+    recordPluginUseChoice(cwd, true, 'command');
+
+    const view = computeOnboarding(cwd);
+    assert.equal(view.mode, 'existing-codebase');
+    assert.equal(view.done, true, 'nothing detectable → local prefs are not required (unchanged)');
+  });
+});
+
 test('existing project: plan/model drift reopens Performance while metadata-only advances do not', () => {
   const committed = {
     mode: 'existing-codebase', stack: 'default', frontend: 'react-vite', backend: 'supabase',
