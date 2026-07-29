@@ -2,7 +2,7 @@
 // CLI wrapper for the conservative .traffic-one retention sweep.
 
 import { sweepTrafficOneRetention } from '../../shared/retention';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 
 function usage(): string {
   return [

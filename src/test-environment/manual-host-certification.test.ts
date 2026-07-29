@@ -21,7 +21,7 @@ import { writeReport } from './reporting/aggregate-report';
 import {
   ensureRunHostCapability,
   runHostCapabilityPath,
-} from '../shared/host-capabilities';
+} from '../shared/host/capabilities';
 import { hostCapabilityReportForRun } from './host-capability-report';
 import type { CaseRunResult } from './core/types';
 

@@ -18,12 +18,12 @@ import {
   readOneMcpCache,
   writeOneMcpConfigCacheEntry,
   type OneMcpConfigCacheEntry,
-} from '../one-mcp-cache';
+} from '../one-mcp/cache';
 import {
   syncOneMcpHostForProject,
   type OneMcpSyncOptions,
   type OneMcpSyncResult,
-} from '../one-mcp-sync';
+} from '../one-mcp/sync';
 import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../onboarding/local-prefs';
 import { mergeProjectHostPrefs, readProjectPrefs } from '../state';
 import { recordPluginUseChoice } from '../state/plugin-use';

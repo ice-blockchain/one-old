@@ -43,7 +43,7 @@ import {
 } from '../codex-hook-trust';
 import { buildFindings } from '../findings';
 import { selectDoctorProjectCwd } from '../index';
-import { createPaidFallbackCompletion } from '../../../shared/maintenance-fallback-proof';
+import { createPaidFallbackCompletion } from '../../../shared/maintenance/fallback-proof';
 
 function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `t1-doctor-${prefix}-`));

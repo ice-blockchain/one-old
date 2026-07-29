@@ -15,7 +15,7 @@ import type {
   CaseRunResult,
   HostId,
 } from './types';
-import { ensureRunHostCapability } from '../../shared/host-capabilities';
+import { ensureRunHostCapability } from '../../shared/host/capabilities';
 
 const RUN_ID = '1700000000999';
 

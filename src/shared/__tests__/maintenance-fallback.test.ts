@@ -9,9 +9,9 @@ import {
   captureMaintenanceFallbackBaseline,
   finalizePaidMaintenanceFallback,
   workUnitAllowlistHash,
-} from '../maintenance-fallback';
-import { paidFallbackCompletionFromMaintenance } from '../maintenance-fallback-proof';
-import { isMaintenanceTerminal } from '../maintenance-terminal';
+} from '../maintenance/fallback';
+import { paidFallbackCompletionFromMaintenance } from '../maintenance/fallback-proof';
+import { isMaintenanceTerminal } from '../maintenance/terminal';
 import { ensureRunBootstrap, quickFixDigestPath } from '../run-bootstrap-policy';
 import { readRunSettlement, writeRunSettlement } from '../run-settlement';
 

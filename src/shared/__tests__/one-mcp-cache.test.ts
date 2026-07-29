@@ -24,7 +24,7 @@ import {
   readOneMcpCache,
   writeOneMcpConfigCacheEntry,
   type OneMcpConfigCacheEntry,
-} from '../one-mcp-cache';
+} from '../one-mcp/cache';
 
 function withCache(fn: (file: string, env: NodeJS.ProcessEnv, dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-one-mcp-cache-'));
@@ -346,7 +346,7 @@ test('an old empty One MCP cache lock left by an interrupted release is recovere
 
 test('concurrent One MCP cache writers preserve different host entries', async () => {
   await withCacheAsync(async (file, env, dir) => {
-    const modulePath = path.resolve(__dirname, '..', 'one-mcp-cache.ts');
+    const modulePath = path.resolve(__dirname, '..', 'one-mcp', 'cache.ts');
     const childSource = [
       `const { writeOneMcpConfigCacheEntry } = require(${JSON.stringify(modulePath)});`,
       'const host = process.argv[1];',

@@ -6,7 +6,7 @@ import {
   readRunHostCapability,
   runHostCapabilityPath,
   type TrafficOneHost,
-} from '../shared/host-capabilities';
+} from '../shared/host/capabilities';
 import { readJson } from '../shared/fsjson';
 import type {
   HostCapabilityEvidenceStatus,

@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { hasPluginAuthoringMarkers } from '../../shared/authoring-root';
-import { isOnboardedProjectRoot } from '../../shared/hook-paths';
+import { isOnboardedProjectRoot } from '../../shared/hook/paths';
 import { hasStateFile } from '../../shared/tool-classify';
 
 type Rec = Record<string, unknown>;

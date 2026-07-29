@@ -26,7 +26,7 @@ import {
   markPlanBatchRunningIfNeeded,
   mergeMissingQueueUnits,
   type PlanBatchResult,
-} from '../../shared/opencode-plan-batch';
+} from '../../shared/opencode-plan/batch';
 import {
   finalizeOpenCodeUnitsForBatch,
   hasRunningOpenCodeUnits,

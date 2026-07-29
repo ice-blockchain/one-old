@@ -14,7 +14,7 @@ import type { HostAdapter, RawInvocation } from '../../../adapters/types';
 import { ONE_MCP_MANAGED_TOOLS } from '../../../config/one-mcp';
 import { dispatch } from '../../../core/dispatch';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
-import { isManagedOneMcpAgentTool } from '../../../shared/one-mcp-agent-tools';
+import { isManagedOneMcpAgentTool } from '../../../shared/one-mcp/agent-tools';
 import { handlers } from '../index';
 
 interface Fixture {

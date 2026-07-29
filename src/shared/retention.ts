@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { readJson } from './fsjson';
-import { resolveProjectRoot } from './hook-paths';
+import { resolveProjectRoot } from './hook/paths';
 import { obj } from './obj';
 
 export interface RetentionPolicy {

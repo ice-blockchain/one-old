@@ -16,7 +16,7 @@ import {
 import type { HostCommandConfig } from './types';
 import {
   writeOneMcpConfigCacheEntry,
-} from '../../shared/one-mcp-cache';
+} from '../../shared/one-mcp/cache';
 import {
   oneMcpPayloadFingerprint,
 } from '../../shared/one-mcp';

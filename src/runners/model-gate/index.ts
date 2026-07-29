@@ -11,7 +11,7 @@ import { cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../sha
 import { captureCursorModels, hasFreshCursorModels } from '../../shared/materialize/cursor-models';
 import { buildCursorSpawnModelMap, formatCursorSpawnMapBlock, syncCursorSpawnAgentFiles } from '../../shared/materialize/cursor-spawn-map';
 import { AGENT_ROLES } from '../../config/performance';
-import { detectHostPlan } from '../../shared/host-plan';
+import { detectHostPlan } from '../../shared/host/plan';
 import { obj } from '../../shared/obj';
 import { ensureCurrentRunId, readEffectiveState } from '../../shared/state';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';

@@ -26,7 +26,7 @@ import { codexChildModelGate } from '../codex-child-model';
 import { captureCursorModels, freshCursorModels } from '../../../shared/materialize/cursor-models';
 import { currentHostModelTarget } from '../../../shared/current-model-tiers';
 import { modelTierSnapshot, resolveModel } from '../../../shared/model-tiers';
-import { writeOneMcpConfigCacheEntry } from '../../../shared/one-mcp-cache';
+import { writeOneMcpConfigCacheEntry } from '../../../shared/one-mcp/cache';
 import { oneMcpPayloadFingerprint } from '../../../shared/one-mcp';
 import type { OneMcpModelConfigPayload } from '../../../shared/one-mcp/types';
 import {

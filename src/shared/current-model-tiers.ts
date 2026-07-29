@@ -17,7 +17,7 @@ import {
   modelMatchesExpected,
   type HostModelSnapshot,
 } from './model-tiers';
-import { readOneMcpConfigCacheEntry, type OneMcpConfigCacheEntry } from './one-mcp-cache';
+import { readOneMcpConfigCacheEntry, type OneMcpConfigCacheEntry } from './one-mcp/cache';
 import {
   bundledOneMcpPayload,
   mapOneMcpTiers,

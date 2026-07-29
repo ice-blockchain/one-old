@@ -10,7 +10,7 @@ import { asRecord, asString } from '../adapters/coerce';
 import { computeOnboarding } from '../shared/onboarding-server/flow';
 import { prepareOnboardingServer } from '../shared/onboarding-server/bootstrap';
 import { windsurfSetupReason } from '../shared/onboarding-server/windsurf-setup';
-import { resolveProjectRoot } from '../shared/hook-paths';
+import { resolveProjectRoot } from '../shared/hook/paths';
 import { isNonProjectRoot } from '../shared/authoring-root';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
 import { devinPreToolDeny, hasValidPreToolPayload, isGatePreToolSubcommand } from './fail-closed';

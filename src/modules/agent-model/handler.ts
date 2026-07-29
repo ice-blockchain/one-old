@@ -1,9 +1,7 @@
 // src/modules/agent-model/handler.ts
-// PreToolUse spawn-agent gate (priority 40): for new-project builds, enforce
-// materialization → performance level → team approval → the per-role model
-// parameter, then stake a run-agent claim. Ported 1:1 from runCheckAgentModel
-// (gates.cjs). Spawn-specific fields (subagent_type, model, …) come from
-// ctx.input.raw (the canonical ToolInput doesn't carry them). Deny PROSE → skill.
+// The agent-model gate: agentModelGate walks spawn shape, run policy,
+// reuse/replace, claims, and model enforcement. Deny builders and spawn
+// parsing live in the sibling modules.
 
 import { asString } from '../../adapters/coerce';
 import * as fs from 'fs';
@@ -13,31 +11,13 @@ import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
-import { pluginRoot } from '../../shared/paths';
-import { detectHostPlan } from '../../shared/host-plan';
-import { modelMatchesAny, modelMatchesHostModels } from '../../shared/model-tiers';
+import { detectHostPlan } from '../../shared/host/plan';
 import { canonicalHost } from '../../shared/model-tiers';
-import { CURSOR_MODEL_FLOOR } from '../../config/model-tiers';
 import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
 import { exhaustedModelsForRole, isApiUsageLimitText, markModelExhaustionTerminal, modelIsExhausted, recordExhaustedModel } from './exhausted-models';
-import {
-  freshCursorModels,
-  pickCursorSlug,
-} from '../../shared/materialize/cursor-models';
 import { modelForRoleHost, teamModeForLevel, type PlanCtx } from '../../shared/performance';
 import { recordOpenCodeFallback } from '../../shared/opencode-queue';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
-import { AGENT_ROLES } from '../../config/performance';
-import { makeSkillBlock } from '../../shared/skill-block';
-import { modelUnavailablePromptRequest } from '../../shared/prompt-request';
-import {
-  markModelAdvisoryShown,
-  markModelChoicePrompted,
-  type ModelChoiceStatus,
-  modelAdvisoryShown,
-  modelChoicePrompted,
-  readModelChoice,
-} from './model-choice';
 import {
   markOpenCodeGateDenied,
   openCodeGateDenied,
@@ -72,7 +52,6 @@ import {
 } from '../../shared/state';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { hasRunIdPlaceholder, strayRunIdInText, substituteRunIdPlaceholder } from '../../shared/run-id-paths';
-import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
@@ -81,13 +60,12 @@ import {
   CURSOR_FAILURE_BLOCK_FALLBACKS,
 } from './cursor-failures';
 import { cursorAgentPresumedDead } from './cursor-liveness';
-import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan-directive';
+import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan/directive';
 import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
-import { acceptableSpawnTypes, canonicalHostAgentType, hostSpawnType } from '../../shared/host-spawn-types';
-import { cursorAgentTypeReason } from './cursor-agent-type';
+import { acceptableSpawnTypes, canonicalHostAgentType, hostSpawnType } from '../../shared/host/spawn-types';
 import {
   cursorRunPolicyMissingTiers,
   ensureRunModelPolicy,
@@ -102,663 +80,42 @@ import {
   ensureRunBootstrap,
   readActiveRunBootstrap,
 } from '../../shared/run-bootstrap-policy';
-import { readRunHostCapability } from '../../shared/host-capabilities';
+import { readRunHostCapability } from '../../shared/host/capabilities';
 
-const skillBlock = makeSkillBlock(pluginRoot);
-const block = (
-  name: string,
-  vars: Record<string, string | number | null | undefined> = {},
-  fallback = '',
-): string => skillBlock('agent-model', name, vars, fallback);
-const PLAN_BATCH_GATED_ROLES = new Set(['senior-frontend', 'senior-backend']);
+import {
+  ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
+  CURSOR_MODELS_CAPTURE_FALLBACK,
+  block,
+  isPlanBatchGatedRole,
+} from './handler-prose';
+import {
+  cursorAgentTypeDeny,
+  isBuiltinSubagent,
+  kiloGeneralAgentDeny,
+  modelParamEnforced,
+  modelSatisfiesTier,
+  namedOpenCodeAgentDeny,
+  quickFixScopeFromSpawn,
+  spawnAgentType,
+} from './spawn-shape';
+import {
+  absoluteTrafficOnePathDeny,
+  absoluteTrafficOnePathsOutsideProject,
+  continuationRecipe,
+  recordSpawnParentSession,
+} from './spawn-hygiene';
+import {
+  exhaustedModelRotationDeny,
+  replacementJustified,
+} from './model-rotation';
+import {
+  cursorExactModelDeny,
+  degradedToFloorDeny,
+  maybeModelAdvisory,
+  modelTierDeny,
+  preferredModelUnavailableDeny,
+} from './model-denies';
 
-export const CURSOR_MODELS_CAPTURE_FALLBACK = `Cursor model-capture gate (required before the first team spawn, run {{RUN_ID}}). The spawn is blocked until Traffic One freezes the exact model ids offered by this Cursor build.
-Missing captured tiers for this run: {{MISSING_TIERS}}.
-Do this once before retrying:
-1. List the model ids your \`Task\` tool offers for spawning subagents (the same list Cursor shows when you pick a subagent model).
-2. Run \`{{CAPTURE_CMD}}\`, replacing the placeholders with those EXACT ids verbatim (e.g. \`claude-fable-5-thinking-high\`, \`gpt-5.6-terra-medium\`, \`composer-2.5-fast\`, or \`gpt-5.4-mini\`). A valid picker id may or may not include a reasoning suffix; never invent one. Include at least one id per tier the team needs — highest + balanced + cheapest. This internal command writes only your local per-user/project Cursor preferences; do not create \`.traffic-one/cursor-models.json\`.
-3. Re-run model-gate, then retry the spawn with the exact role→model value it prints. Project \`.cursor/agents\` contracts remain model-agnostic.
-Do not retry with an uncaptured family guess and do not build the project inline because of this gate.`;
-
-// Verbatim mirror of the SKILL.md `architect-phase-incomplete` block, so a
-// missing block never softens the gate's prose (observed 8c: the orchestrator
-// mis-read this deny as a Step-0 request and burned a second dead spawn — the
-// prose must lead with the exact next action).
-export const ARCHITECT_PHASE_INCOMPLETE_FALLBACK = `Architect phase gate: \`{{ROLE}}\` cannot start yet — spawn \`senior-architect\` for run \`{{RUN_ID}}\` FIRST, in your next message. Do NOT retry \`{{ROLE}}\` unchanged and do NOT run the OpenCode Step-0 plan batch instead; neither clears this gate.
-
-Missing on disk: {{MISSING}}
-
-The architect must finish the required project-memory baseline, semantic \`.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json\`, and \`.traffic-one/digests/{{RUN_ID}}/architect.md\` containing \`PLAN_READY\`. Traffic One runtime—not the architect—then compiles and atomically publishes the architecture, verification, assignments, and child bootstraps. Only after those hash-valid contracts exist may you retry \`{{ROLE}}\` with the same task. Do not spawn other implementers or patch runtime-owned coordination artifacts yourself.`;
-
-function isPlanBatchGatedRole(role: string): boolean {
-  return PLAN_BATCH_GATED_ROLES.has(role);
-}
-
-interface QuickFixScopeInput {
-  present: boolean;
-  valid: boolean;
-  outputs: string[];
-  allowlist: string[];
-  exclude: string[];
-}
-
-function exactQuickFixPaths(value: unknown): string[] | null {
-  if (!Array.isArray(value) || value.length === 0) return null;
-  const paths: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') return null;
-    const normalized = item.trim().replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/');
-    if (!normalized
-      || normalized.startsWith('/')
-      || normalized === '.'
-      || normalized.split('/').includes('..')
-      || normalized.includes('\0')
-      || /[*?[\]{}]/.test(normalized)
-      || normalized === '.traffic-one'
-      || normalized.startsWith('.traffic-one/')) return null;
-    paths.push(normalized);
-  }
-  return [...new Set(paths)].sort();
-}
-
-function quickFixScopeFromSpawn(toolInput: Rec, prompt: string): QuickFixScopeInput {
-  const candidates = [
-    toolInput.allowedFiles,
-    toolInput.allowed_files,
-    toolInput.files,
-  ].filter((value) => value !== undefined);
-  const structured = candidates.map(exactQuickFixPaths);
-  if (structured.some((scope) => scope === null)) {
-    return { present: candidates.length > 0, valid: false, outputs: [], allowlist: [], exclude: [] };
-  }
-  const structuredScope = structured[0] || null;
-  if (structuredScope
-    && !structured.every((scope) => JSON.stringify(scope) === JSON.stringify(structuredScope))) {
-    return { present: true, valid: false, outputs: [], allowlist: [], exclude: [] };
-  }
-
-  const markerMatches = [...prompt.matchAll(
-    /^\[t1-bounded-scope:\s*(\{[^\r\n]{1,4096}\})\s*\]$/gm,
-  )];
-  if (markerMatches.length > 1) {
-    return { present: true, valid: false, outputs: [], allowlist: [], exclude: [] };
-  }
-  let markerScope: { outputs: string[]; allowlist: string[]; exclude: string[] } | null = null;
-  if (markerMatches.length === 1) {
-    try {
-      const parsed = JSON.parse(markerMatches[0]?.[1] || '') as Record<string, unknown>;
-      if (!parsed || typeof parsed !== 'object'
-        || Object.keys(parsed).some((key) => !['outputs', 'allowlist', 'exclude'].includes(key))) {
-        throw new Error('invalid marker keys');
-      }
-      const outputs = exactQuickFixPaths(parsed.outputs);
-      const allowlist = parsed.allowlist === undefined
-        ? outputs
-        : exactQuickFixPaths(parsed.allowlist);
-      const exclude = parsed.exclude === undefined
-        ? []
-        : (Array.isArray(parsed.exclude) && parsed.exclude.length === 0
-            ? []
-            : exactQuickFixPaths(parsed.exclude));
-      if (!outputs || !allowlist || !exclude
-        || outputs.some((output) => !allowlist.includes(output) || exclude.includes(output))) {
-        throw new Error('invalid marker scope');
-      }
-      markerScope = { outputs, allowlist, exclude };
-    } catch {
-      return { present: true, valid: false, outputs: [], allowlist: [], exclude: [] };
-    }
-  }
-  if (structuredScope && markerScope
-    && (JSON.stringify(structuredScope) !== JSON.stringify(markerScope.outputs)
-      || JSON.stringify(structuredScope) !== JSON.stringify(markerScope.allowlist))) {
-    return { present: true, valid: false, outputs: [], allowlist: [], exclude: [] };
-  }
-  if (markerScope) {
-    return { present: true, valid: true, ...markerScope };
-  }
-  if (structuredScope) {
-    return {
-      present: true,
-      valid: true,
-      outputs: structuredScope,
-      allowlist: structuredScope,
-      exclude: [],
-    };
-  }
-  return { present: false, valid: false, outputs: [], allowlist: [], exclude: [] };
-}
-
-// A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it on hosts
-// where Traffic One enforces stable subagent model ids (family-aware against the
-// active local snapshot's preferred-first tier array). The passed arg is authoritative there — INCLUDING Cursor:
-// the earlier design trusted the `.cursor/agents/<role>.md` frontmatter, but
-// live evidence proved Cursor does NOT honor that frontmatter when no `model` arg is passed — it
-// INHERITS THE PARENT (orchestrator) model (captured: a balanced-override frontend with
-// frontmatter `gpt-5.5-medium` ran on the parent's Opus because `subagent_model == parent model`).
-// So the per-role model only takes effect when the orchestrator PASSES it in the Task `model`
-// arg; the gate must therefore require it (the frontmatter is just the source/hint the
-// orchestrator reads, never proof the subagent will run on it).
-function modelSatisfiesTier(
-  ctx: Ctx,
-  passedModel: string,
-  expected: string,
-  policy: RunModelPolicyV1 | null = null,
-  role?: string,
-): boolean {
-  const acceptable = policy
-    ? (role && policy.roles[role]?.acceptableModels) || policyModelsForExpected(policy, expected)
-    : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
-  return ctx.host === 'codex'
-    ? acceptable.includes(passedModel)
-    : modelMatchesHostModels(passedModel, acceptable, ctx.host);
-}
-
-function modelParamEnforced(host: string): boolean {
-  // Codex collaboration accepts an explicit model too. Its parent spawn surface
-  // is not guaranteed to emit PreToolUse, so SubagentStart/child PreToolUse remain
-  // the authoritative runtime check; when the parent hook is present, validate it
-  // here as an earlier actionable deny.
-  return host === 'claude' || host === 'cursor' || host === 'codex';
-}
-
-function spawnAgentType(toolInput: Rec, opts: { includeRoleAlias?: boolean } = {}): string {
-  const includeRoleAlias = opts.includeRoleAlias !== false;
-  return asString(
-    toolInput.agent_type
-      ?? toolInput.agentType
-      ?? toolInput.subagent_type
-      ?? toolInput.subagentType
-      ?? toolInput.subagent_profile
-      ?? toolInput.subagentProfile
-      ?? toolInput.profile
-      ?? toolInput.profile_name
-      ?? toolInput.profileName
-      ?? toolInput.agent
-      ?? (includeRoleAlias ? toolInput.role : undefined)
-      ?? toolInput.name
-      ?? toolInput.agentName
-      ?? toolInput.agent_name
-      ?? toolInput.type,
-  ).trim();
-}
-
-function isBuiltinSubagent(agentType: string): boolean {
-  return /^(general|general[-_]?purpose|explore|scout)$/i.test(agentType.trim());
-}
-
-// Cursor's `Task` builds its accepted `subagent_type` set from the agent files it
-// knew about when the session started, so a role materialized during onboarding
-// can be missing from it — the spawn then fails inside Cursor's schema validation,
-// before any hook runs. The supported recovery is the built-in generic worker plus
-// the role marker, so BOTH are legitimate here; anything else is a real misroute.
-function cursorAgentTypeDeny(role: string, agentType: string): HookResult {
-  const spawn = hostSpawnType('cursor', role);
-  return deny(block('cursor-agent-type-required', {
-    ROLE: role,
-    AGENT_TYPE: agentType || 'missing',
-    EXPECTED_AGENT: spawn.primary || role,
-    FALLBACK_AGENT: spawn.fallback || 'generalPurpose',
-    AGENT_PATH: spawn.contractPath || `.cursor/agents/${role}.md`,
-  }, cursorAgentTypeReason(role, agentType, spawn.primary || role, spawn.fallback || 'generalPurpose', spawn.contractPath || `.cursor/agents/${role}.md`)));
-}
-
-function namedOpenCodeAgentDeny(cwd: string, role: string, agentType: string, expected: string): HookResult {
-  const expectedAgent = openCodeGlobalAgentName(cwd, role);
-  return deny(block('opencode-named-agent-required', {
-    HOST: 'OpenCode',
-    ROLE: role,
-    AGENT_TYPE: agentType || 'missing',
-    EXPECTED_AGENT: expectedAgent,
-    AGENT_PATH: openCodeGlobalAgentPath(cwd, role),
-    MODEL_NOTE: `Traffic One materialized this project-scoped global agent with \`model: ${expected}\`. OpenCode applies that per-role model only when Task uses \`${expectedAgent}\`; built-in agents inherit the parent session model.`,
-  }));
-}
-
-function kiloGeneralAgentDeny(role: string, agentType: string): HookResult {
-  return deny(block('kilo-general-agent-required', {
-    ROLE: role,
-    AGENT_TYPE: agentType || 'missing',
-    AGENT_PATH: `.kilo/agents/${role}.md`,
-  }));
-}
-
-function absoluteTrafficOnePathsOutsideProject(prompt: string, cwd: string): string[] {
-  if (!prompt) return [];
-  const root = path.resolve(cwd).replace(/\\/g, '/').replace(/\/+$/, '');
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const re = /\/[^\s'"`<>)]*?\.traffic-one\/(?:runs|digests|fix-cycles)\/[^\s'"`<>)]*/g;
-  for (const match of prompt.matchAll(re)) {
-    const value = match[0].replace(/\\/g, '/');
-    if (value.startsWith(`${root}/`) || value === root) continue;
-    if (seen.has(value)) continue;
-    seen.add(value);
-    out.push(value);
-  }
-  return out;
-}
-
-function absoluteTrafficOnePathDeny(paths: string[], cwd: string): HookResult {
-  return deny(block('absolute-traffic-one-path', {
-    PROJECT_ROOT: cwd,
-    BAD_PATHS: paths.join(', '),
-  }));
-}
-
-// OpenCode/Kilo do not emit SubagentStart, so the only pre-child signal is the
-// parent's Task spawn. Record that parent before staking its pending role claim.
-// Later child writes that lack the first chat.message marker can then be safely
-// attributed by their single assignment scope, while parent writes stay denied.
-function recordSpawnParentSession(cwd: string, raw: unknown): void {
-  const parentSessionId = hookSessionIdentity(raw).sessionId;
-  if (parentSessionId) recordMainOnboardingSession(cwd, parentSessionId);
-}
-
-// The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
-// orchestrator can pass a model the runner actually offers when a Cursor build does
-// not offer the preferred slug (Cursor rejects an unavailable slug as invalid). The
-// gate stays strict — a wrong-FAMILY model is still denied; only fallback ids in
-// the active local snapshot's preferred-first tier array widen what satisfies it.
-// Host-specific "continue the live agent" recipe for the agent-reuse deny. The
-// continuation primitive differs per host: Cursor RE-INVOKES the Task tool with
-// `resume` (live Cursor builds surface this field; older docs/models may say
-// `agentId`), Copilot reuses the background agent id through `task`, Codex uses
-// collaboration follow-up/message tools, and Claude uses `SendMessage`. The agentId is interpolated here so the
-// SKILL block stays a single host-agnostic template.
-function continuationRecipe(host: string, agentId: string, role: string): { call: string; tool: string } {
-  if (host === 'cursor') {
-    return {
-      call: `Re-invoke the \`Task\` tool with \`resume: "${agentId}"\` and \`prompt\` = the NEW task only — Cursor resumes the SAME subagent with full context preserved. If your Cursor build exposes \`agentId\` instead, use the same id there.`,
-      tool: 'the Task `resume` continuation',
-    };
-  }
-  if (host === 'codex') {
-    return {
-      call: `Call \`followup_task\` with \`target: "${agentId}"\` and the NEW task as \`message\` to continue the SAME Codex agent. If that agent is still running and this is only an in-flight update, use \`send_message\` with the same target instead.`,
-      tool: 'followup_task / send_message',
-    };
-  }
-  if (host === 'copilot') {
-    return {
-      call: `Call Copilot's \`task\` tool for the SAME background agent with \`agent_id: "${agentId}"\` and \`prompt\` = the NEW task only. Do NOT substitute \`name: "${agentId}"\`: live Copilot builds treat \`name\` as a fresh background task and respawn the agent. If this Copilot build rejects \`agent_id\` as unsupported, STOP and report that Copilot did not expose a reusable continuation primitive; do not spawn another same-role task.`,
-      tool: 'the Copilot `task` background-agent continuation',
-    };
-  }
-  if (host === 'windsurf') {
-    return {
-      call: `Call \`read_subagent\` with agent id \`${agentId}\` while the existing role is running. If it completed and needs a follow-up, call \`run_subagent\` with profile \`subagent_general\`; put \`[t1-role: ${role}]\` on the FIRST line, \`${REPLACE_AGENT_MARKER}\` on the next line, and immediately tell it to read \`.devin/agents/${role}/AGENT.md\`.`,
-      tool: 'read_subagent / run_subagent replacement',
-    };
-  }
-  if (host === 'opencode') {
-    return {
-      call: `OpenCode does not expose a resumable Task field in current Traffic One builds. If the existing task \`${agentId}\` is still running, wait for it. If it has already completed and you need a follow-up/fix, re-spawn the SAME named OpenCode agent with \`${REPLACE_AGENT_MARKER}\` in the prompt, keep \`[t1-role: ${role}]\` as the FIRST line, and include only the new findings/file list inline. Do NOT use \`general\`, do NOT point at a missing fix-cycle file, and do NOT write scratch logs under \`/tmp\`.`,
-      tool: 'OpenCode Task replacement',
-    };
-  }
-  if (host === 'kilo') {
-    return {
-      call: `Kilo does not expose a resumable Task field. If task \`${agentId}\` is still running, wait for it. If it completed and needs a follow-up, call \`task\` with built-in \`general\`; put \`[t1-role: ${role}]\` on the FIRST line, \`${REPLACE_AGENT_MARKER}\` on the next line, immediately read \`.kilo/agents/${role}.md\`, and pass no \`model\` field.`,
-      tool: 'Kilo general-task replacement',
-    };
-  }
-  return {
-    call: `Call \`SendMessage\` with \`to: "${agentId}"\` and \`message\` = the NEW task.`,
-    tool: 'SendMessage',
-  };
-}
-
-// API/usage-limit replacement handling for the reuse gate. When the orchestrator
-// re-spawns a role because its subagent hit a provider limit, the retired model is
-// exhausted for the session — record it, then if the new spawn tries to REUSE an
-// already-exhausted model (or passes none, which inherits the parent), DENY and name
-// the next same-tier fallback that is still untried. Returns null when the failure
-// isn't a limit (a plain stop can reuse the same model) or the spawn already picked a
-// fresh model (rotation satisfied → proceed). Cursor-and-Claude safe: the store is the
-// same ledger the transcript reconciler and PostToolUse recorder write; this retry
-// inspection is the backstop when Cursor omits its post-Task lifecycle events.
-function performanceLevelFromState(state: Rec): string {
-  const performance = obj(state.performance);
-  return performance && typeof performance.level === 'string' && PERFORMANCE_LEVEL_IDS.has(performance.level)
-    ? performance.level
-    : 'current';
-}
-
-function exhaustedModelRotationDeny(
-  ctx: Ctx,
-  cwd: string,
-  runId: string,
-  role: string,
-  live: ReturnType<typeof liveRunAgent>,
-  toolInput: Rec,
-  spawnPromptText: string,
-  state: Rec,
-  opts: { requireDurableEvidence?: boolean } = {},
-): HookResult | null {
-  if (!runId || !modelParamEnforced(ctx.host)) return null;
-  // The retired agent's model is the one that actually hit the limit — the only
-  // model we KNOW is exhausted. With no live agent (nothing recorded to be dead)
-  // there is nothing to rotate off, so a replacement passes normally.
-  const anchor = (live && typeof live.model === 'string' ? live.model : '').trim();
-  if (!anchor) return null;
-  const durableEvidence = modelIsExhausted(cwd, runId, role, anchor);
-  if (opts.requireDurableEvidence ? !durableEvidence : !isApiUsageLimitText(spawnPromptText)) return null;
-  const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-  const exhausted = opts.requireDurableEvidence
-    ? exhaustedModelsForRole(cwd, runId, role)
-    : recordExhaustedModel(cwd, runId, role, anchor);
-  if (passedModel && !modelIsExhausted(cwd, runId, role, passedModel)) return null; // already rotated → allow
-  // The next model to use: the first tier-row family that is (a) not condemned in
-  // the exhaustion ledger and (b) actually OFFERED by this build (captured slug on
-  // Cursor). Resolving each family to its OWN slug via pickCursorSlug — NOT
-  // cursorRealSlug, which resolves through the whole tier row (that row starts
-  // with the exhausted family, so it would hand back the very model we're
-  // rotating off).
-  const policy = readRunModelPolicy(cwd, runId);
-  if (!policy) {
-    return deny(
-      `traffic-one — model rotation blocked: immutable model-policy.json is missing for run ${runId}. `
-      + 'Do not resolve a replacement from mutable machine-global models; start a repaired parent run first.',
-    );
-  }
-  const captured = ctx.host === 'cursor' ? [...(policy.cursorAvailableModels || [])] : [];
-  const level = policy.performanceLevel;
-  const tier = policy.roles[role]?.tier || (role === 'quick-fix' ? 'cheapest' : null);
-  if (!tier) return null;
-  const candidate = resolveRunPolicyFallback(policy, {
-    tier,
-    exhaustedModels: exhausted,
-    ...(ctx.host === 'cursor' ? { capturedModels: captured } : {}),
-  });
-  let fallbackFamily = candidate?.family || '';
-  let fallback = candidate?.model || '';
-  // A SAME-TIER swap costs no quality, so it rotates automatically. A drop to
-  // the Composer FLOOR — or no offered model left at all — is a REAL downgrade
-  // the user owns: route it through the SAME enable/fallback choice the
-  // pre-spawn guards use (shared once-per-run marker + model-choice.json; the
-  // model-choice gate pauses the build until the reply lands). "enable" also
-  // clears the exhaustion ledger (prompt-submit), so the restored model is
-  // retried instead of re-rotated off.
-  if (ctx.host === 'cursor' && isComposerFamily(fallbackFamily) && tier !== 'cheapest') {
-    const floorSlug = (captured.length ? pickCursorSlug([CURSOR_MODEL_FLOOR], captured) : '') || CURSOR_MODEL_FLOOR;
-    const choice = fallbackAlreadyAllowed(cwd, runId);
-    if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, anchor);
-    if (choice !== 'use-fallback') {
-      markModelChoicePrompted(cwd, runId);
-      return deny(block('cursor-api-limit-composer-choice', {
-        ROLE: role,
-        RECOMMENDED: anchor,
-        FALLBACK: floorSlug,
-      }, CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-composer-choice']));
-    }
-    fallback = floorSlug; // user already accepted the fallback → prescribe the floor below
-  }
-  if (!fallbackFamily) {
-    const row = policy.tiers[tier];
-    const allActuallyLimited = row.length > 0 && row.every((family) => modelIsExhausted(cwd, runId, role, family));
-    const composerAccepted = tier === 'cheapest' || fallbackAlreadyAllowed(cwd, runId) === 'use-fallback';
-    if (allActuallyLimited && composerAccepted) {
-      markModelExhaustionTerminal(cwd, runId, role);
-      return deny(block('cursor-api-limit-terminal', {
-        ROLE: role,
-        TRIED: exhausted.join(', '),
-      }, CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-terminal']));
-    }
-    const missing = row.find((family) => !captured.some((slug) => modelMatchesAny(slug, [family]))
-      && !modelIsExhausted(cwd, runId, role, family));
-    return deny(
-      missing
-        ? `traffic-one — ${role}'s API-limit retry has no exact captured candidate left in its original ${tier} tier. Model family "${missing}" is absent from Cursor's captured list, so use the model-availability flow (Settings → Models / re-capture); do not mark all models exhausted and do not change tiers.`
-        : `traffic-one — ${role}'s API-limit retry has no eligible model left in its original ${tier} tier. Stop retrying until the user restores API budget or enables another exact tier model.`,
-    );
-  }
-  const passedNote = passedModel
-    ? `You passed model="${passedModel}", which is exhausted this session.`
-    : 'You passed no `model`, so the subagent would inherit the parent model.';
-  const fallbackNote = fallback
-    ? `Re-send the SAME ${role} task with ${REPLACE_AGENT_MARKER} on the first line and model="${fallback}" (the next same-tier model still available).`
-    : `Re-send the SAME ${role} task with ${REPLACE_AGENT_MARKER} on the first line and a DIFFERENT same-tier model — every model in this tier's chain is exhausted, so drop to the next lower tier or ask the user to enable a model.`;
-  return deny(
-    `traffic-one — model rotation: ${role}'s previous subagent stopped on an API/usage limit, so ${anchor} is exhausted for this session and must not be re-used. ${passedNote} ${fallbackNote} `
-    + 'Resume from whatever the stopped agent already completed instead of restarting from scratch.',
-  );
-}
-
-function replacementJustified(prompt: string, host = ''): boolean {
-  if ((host === 'opencode' || host === 'kilo' || host === 'windsurf')
-    && /\b(previous|existing|current)\s+(opencode\s+)?(agent|task|subagent)\s+(completed|finished|returned|ended)\b|\bfix[- ]cycle\b|\bfollow[- ]up\b|\bno\s+resum(?:e|able|able\s+task)\b|\bcontinuation\s+(unavailable|unsupported)\b/i.test(prompt)) {
-    return true;
-  }
-  if (isApiUsageLimitText(prompt)) return true;
-  // api/usage-limit vocabulary: a subagent stopped mid-run by provider limits is
-  // dead for this session — continuation would re-hit the same limit. The
-  // PostToolUse recorder also retires such agents proactively; this keeps the
-  // replace path open when the result carried no classifiable text.
-  return /\b(context exhausted|context limit|agent not found|resume failed|continuation failed|couldn'?t continue|could not continue|unresponsive|dead|stale|closed|stopped|aborted|interrupted)\b/i
-    .test(prompt);
-}
-
-// On Cursor a tier's `expected` is a bare model FAMILY (e.g. claude-fable-5). Map it to the
-// CONCRETE build slug the user's runner offers — the first captured model whose family matches
-// the family or a same-tier alternate — so deny/advisory prose names an EXACT slug Cursor
-// accepts. Falls back to the family when nothing is captured (or the build offers nothing in
-// the chain); claude/codex pass `family` straight through (their ids are already concrete).
-function cursorRealSlug(
-  ctx: Ctx,
-  cwd: string,
-  family: string,
-  policy: RunModelPolicyV1 | null = null,
-  role?: string,
-): string {
-  if (ctx.host !== 'cursor' || !family) return family;
-  const captured = policy
-    ? [...(policy.cursorAvailableModels || [])]
-    : freshCursorModels(cwd, detectHostPlan(ctx.host));
-  if (!captured.length) return family;
-  const acceptable = policy
-    ? (role && policy.roles[role]?.acceptableModels) || policyModelsForExpected(policy, family)
-    : currentAcceptableModels(family, ctx.host, detectHostPlan(ctx.host));
-  return pickCursorSlug(acceptable, captured) || family;
-}
-
-function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string, level: string, opts: { suppressAlternates?: boolean; policy?: RunModelPolicyV1 | null } = {}): HookResult {
-  const passedNote = passedModel
-    ? `You passed model="${passedModel}". `
-    : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ';
-  // `expected` + alternates are FAMILY anchors; on Cursor name the concrete build slug for each
-  // (resolved from the captured list) so the orchestrator passes an exact id Cursor offers,
-  // never an uncaptured family guess. suppressAlternates: after "enable & retry" we don't
-  // advertise fallbacks. A captured exact id may legitimately equal its family anchor.
-  const policy = opts.policy || null;
-  const shownExpected = cursorRealSlug(ctx, cwd, expected, policy, role);
-  const captured = ctx.host === 'cursor'
-    ? (policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, detectHostPlan(ctx.host)))
-    : [];
-  const acceptable = policy
-    ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
-    : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
-  const altFamilies = opts.suppressAlternates ? [] : acceptable.slice(1);
-  const altModels = altFamilies
-    .map((f) => (captured.length ? pickCursorSlug([f], captured) : f))
-    .filter((s): s is string => typeof s === 'string' && s.length > 0);
-  const altNote = altModels.length
-    ? ` If this host's subagent runner does NOT offer "${shownExpected}" (it rejects an unavailable slug as invalid), pass instead the FIRST of these same-tier models the runner DOES offer — any of them satisfies the gate: ${altModels.join(', ')}.`
-    : '';
-  return deny(block('performance-model-param', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: shownExpected, PASSED_NOTE: passedNote, ALTERNATES: altNote }));
-}
-
-function cursorExactModelDeny(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string, level: string, policy: RunModelPolicyV1 | null = null): HookResult | null {
-  if (ctx.host !== 'cursor' || !passedModel) return null;
-  const captured = policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, detectHostPlan(ctx.host));
-  if (!captured.length || captured.includes(passedModel)) return null;
-  const acceptable = policy
-    ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
-    : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
-  if (!modelMatchesAny(passedModel, acceptable)) return null;
-  const exact = pickCursorSlug(acceptable, captured) || cursorRealSlug(ctx, cwd, expected, policy, role);
-  return deny(block('cursor-exact-model-required', {
-    LEVEL: level,
-    ROLE: role,
-    PASSED: passedModel,
-    EXPECTED: exact,
-    CAPTURED: captured.join(', '),
-  }));
-}
-
-// The "next eligible" model for a tier: the concrete build slug of the first same-tier
-// alternate FAMILY (resolved from the captured list on Cursor), or the resolved expected
-// when there is no alternate.
-function fallbackModelFor(
-  ctx: Ctx,
-  cwd: string,
-  role: string,
-  expected: string,
-  policy: RunModelPolicyV1 | null = null,
-): string {
-  const acceptable = policy
-    ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
-    : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
-  const altFamilies = acceptable.slice(1);
-  if (ctx.host === 'cursor') {
-    const captured = policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, detectHostPlan(ctx.host));
-    if (captured.length) {
-      const offered = pickCursorSlug(altFamilies, captured);
-      if (offered) return offered;
-    }
-  }
-  const altFamily = altFamilies[0];
-  return altFamily
-    ? cursorRealSlug(ctx, cwd, altFamily, policy, role)
-    : cursorRealSlug(ctx, cwd, expected, policy, role);
-}
-
-// The recommended-model-unavailable choice deny (the budget/disabled CHOICE for the
-// degraded-to-Composer path). Names both possible causes (budget exhausted / disabled) and the
-// fallback; rides the deny reason on Cursor/Codex and a promptRequest modal on Claude.
-function modelChoiceDeny(ctx: Ctx, role: string, level: string, shownExpected: string, fallback: string): HookResult {
-  const reason = block('model-unavailable-choice', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: shownExpected, FALLBACK: fallback });
-  return deny(reason, { promptRequest: modelUnavailablePromptRequest(shownExpected, fallback, reason) });
-}
-
-function modelEnableRetryDeny(ctx: Ctx, role: string, level: string, passedModel: string, expected: string): HookResult {
-  const passedNote = passedModel
-    ? `You passed model="${passedModel}".`
-    : 'You passed no `model` parameter, so the subagent would inherit the parent model.';
-  return deny(block('model-choice-enable-required', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote }));
-}
-
-// Generation-agnostic on purpose: matches any Composer release, so only the
-// CURSOR_MODEL_FLOOR constant needs editing when the floor generation bumps.
-function isComposerFamily(model: string): boolean {
-  return /^composer/i.test(model.trim());
-}
-
-function fallbackAlreadyAllowed(cwd: string, runId: string): ModelChoiceStatus | null {
-  return readModelChoice(cwd, runId);
-}
-
-// A spawn whose model SATISFIES the tier (so it would be allowed) but only via the Composer
-// FLOOR while the role's tier wants a stronger family (Opus/Sonnet) = a silent DEGRADATION,
-// usually API-budget exhaustion or a disabled model. Surface the choice ONCE per run (visible
-// deny) instead of letting the team quietly run the architect/implementers on Composer. Returns
-// the deny on the first such spawn, or null to proceed (already asked/answered, free/cheapest
-// tier, or genuinely on the recommended model). Mirrors modelUnsatisfiedDeny's no-deadlock guard.
-function degradedToFloorDeny(ctx: Ctx, cwd: string, runId: string, role: string, passedModel: string, expected: string, level: string, policy: RunModelPolicyV1 | null = null): HookResult | null {
-  if (ctx.host !== 'cursor' || !runId) return null;
-  if (isComposerFamily(expected)) return null; // tier legitimately wants Composer (free / tester / quick-fix)
-  // The passed model is authoritative (the gate already required it via modelSatisfiesTier).
-  if (!modelMatchesAny(passedModel, [CURSOR_MODEL_FLOOR])) return null; // not on the floor → running fine
-  // Honor the answer precisely: fallback proceeds only after an explicit recorded choice.
-  const choice = fallbackAlreadyAllowed(cwd, runId);
-  if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, expected);
-  if (choice === 'use-fallback') return null;
-  markModelChoicePrompted(cwd, runId);
-  // The RECOMMENDED model named here is the role's TIER family verbatim (e.g. `gpt-5.6-terra`)
-  // — NOT `cursorRealSlug(expected)`. cursorRealSlug resolves through the captured/available list,
-  // which by definition EXCLUDES a disabled model, so it would collapse the recommendation to an
-  // available fallback (often the Composer floor) and tell the user to "enable composer" instead
-  // of the actually-disabled model they picked. The user must see the exact model to enable in
-  // Settings → Models. The FALLBACK is the Composer floor the spawn already degraded to (free,
-  // guaranteed available — matches the "no extra cost / available immediately" choice prose).
-  const captured = policy
-    ? [...(policy.cursorAvailableModels || [])]
-    : freshCursorModels(cwd, detectHostPlan(ctx.host));
-  const floor = (captured.length ? pickCursorSlug([CURSOR_MODEL_FLOOR], captured) : '')
-    || CURSOR_MODEL_FLOOR;
-  return modelChoiceDeny(ctx, role, level, expected, floor);
-}
-
-// The role's PREFERRED tier model (the exact one the user picked in the wizard, e.g. the
-// balanced `gpt-5.6-terra`) is NOT in the build's captured/offered model list — it's disabled
-// in Settings → Models or not on the plan. Materialization therefore fell back to a same-tier
-// ALTERNATE (e.g. `claude-sonnet-5`), which SATISFIES the tier so the spawn would pass silently. That is
-// exactly the "I wasn't asked" gap: degradedToFloorDeny only catches a drop to the Composer FLOOR,
-// not a fallback to a valid alternate. Surface the choice ONCE (enable the recommended model & re-
-// run, or accept the named fallback) so the user is never silently switched off their pick. Shares
-// the model-choice marker with degradedToFloorDeny → at most one model prompt per run (no-deadlock:
-// after one ask, proceed on the fallback). Capture-list-driven, so it fires regardless of which
-// model the orchestrator passed.
-function preferredModelUnavailableDeny(ctx: Ctx, cwd: string, runId: string, role: string, passedModel: string, expected: string, level: string, policy: RunModelPolicyV1 | null = null): HookResult | null {
-  if (ctx.host !== 'cursor' || !runId) return null;
-  if (isComposerFamily(expected)) return null; // cheapest tier wants Composer — nothing to enable
-  const captured = policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, detectHostPlan(ctx.host));
-  if (!captured.length) return null;                 // no fresh capture to judge against (capture gate covers it)
-  if (pickCursorSlug([expected], captured)) return null; // the recommended model IS offered → no downgrade
-  const choice = fallbackAlreadyAllowed(cwd, runId);
-  if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, expected);
-  if (choice === 'use-fallback') return null;
-  markModelChoicePrompted(cwd, runId);
-  return modelChoiceDeny(ctx, role, level, expected, fallbackModelFor(ctx, cwd, role, expected, policy));
-}
-
-// B2 proactive advisory (Cursor, once per run): a pinned model can SILENTLY fall back to
-// Composer at runtime (budget exhausted / disabled) with no signal the gate can read, so on the
-// FIRST passing spawn name the models the team will use + the budget/enable remedy. Returns a
-// HookResult carrying BOTH the detailed agent-facing context AND a user-visible systemMessage
-// (→ user_message on Cursor) so the user actually SEES it — not just additional_context, which
-// Cursor injects into the agent's context but never shows in chat. null when not applicable.
-function maybeModelAdvisory(
-  ctx: Ctx,
-  cwd: string,
-  runId: string,
-  level: string,
-  overrides: Rec | null,
-  modelSelections: Rec | null,
-  planCtx: PlanCtx,
-  policy: RunModelPolicyV1 | null = null,
-): HookResult | null {
-  if (ctx.host !== 'cursor' || !runId || modelAdvisoryShown(cwd, runId)) return null;
-  const models = new Set<string>();
-  for (const r of AGENT_ROLES) {
-    const fam = policy?.roles[r]?.preferredModel
-      || modelForRoleHost(level, r, ctx.host, overrides, planCtx, process.env, modelSelections);
-    if (fam) models.add(cursorRealSlug(ctx, cwd, fam, policy, r));
-  }
-  if (models.size === 0) return null;
-  markModelAdvisoryShown(cwd, runId);
-  const list = Array.from(models).join(', ');
-  return context(block('model-availability-advisory', { MODELS: list }), {
-    systemMessage: block('model-availability-banner', { MODELS: list }),
-  });
-}
-
-// NOTE: this gate FIRES and ENFORCES on Cursor — the generic before-tool-use hook
-// derives spawn-agent from tool_name=Task (cursor.ts GENERIC_PRE_ADMIT), the model is
-// passed in tool_input.model, and HOST_MODELS.cursor holds bare FAMILY anchors
-// (claude-fable-5 / gpt-5.6-terra / composer-2.5) — the concrete reasoning-suffixed
-// build slug (e.g. claude-sonnet-5-thinking-high) is account/build-specific, so it
-// is captured at onboarding (freshCursorModels) and resolved per spawn via
-// pickCursorSlug/cursorRealSlug, while modelSatisfiesTier matches family-aware against
-// the owning tier row (preferred id + same-tier fallbacks). (This replaced an earlier
-// advisory-only stopgap: HOST_MODELS.cursor used to hold Anthropic aliases
-// (opus/sonnet/haiku) that Cursor REJECTS rather than downgrading, making a hard
-// equality deny un-satisfiable.)
-// The gate also stakes the run-claim here (subagentStart is a different
-// canonical event, so no double-claim), which the subagent-team write gate needs to
-// resolve a role on Cursor. Agent REUSE/continuation is ENABLED on Cursor via the
-// Task tool's `resume` continuation field (with `agentId` accepted for older
-// docs/models); a resume Task call is allowed straight through the reuse gate.
 export function agentModelGate(ctx: Ctx): HookResult {
   if (pluginUseDeclined(ctx.cwd)) return noop();
 
@@ -1451,3 +808,5 @@ export function agentModelGate(ctx: Ctx): HookResult {
   }
   return allowSpawn(advisory ?? noop());
 }
+
+export { ARCHITECT_PHASE_INCOMPLETE_FALLBACK, CURSOR_MODELS_CAPTURE_FALLBACK } from './handler-prose';

@@ -5,7 +5,7 @@
 // the orchestrator's Phase 5). Ported 1:1 from scripts/gitnexus-runner.cjs.
 
 import { exec } from '../../shared/exec';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { nowIso } from '../../shared/text';
 import { bootstrap } from './bootstrap';
 

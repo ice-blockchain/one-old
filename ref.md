@@ -27,6 +27,25 @@ Note: the X links above are retained exactly as supplied. X may require login or
 block full post retrieval, so they are treated as inspiration links rather than
 line-verifiable source files.
 
+## Source Layout Convention
+
+Runtime TypeScript under `src/` keeps every module at or under ~500 lines.
+Larger units are split into sibling modules grouped by directory, with the
+original path preserved as the entry (`foo.ts` → `foo/index.ts` barrel, or
+`foo.ts` + `foo-<part>.ts` siblings where compiled `__dirname` depth matters:
+`shared/opencode-roles-*`, `runners/*-host/*`). Prefix families live in
+folders: `shared/one-mcp/`, `shared/opencode-plan/`, `shared/opencode-queue/`,
+`shared/opencode-roles/`, `shared/host/`, `shared/hook/`, `shared/maintenance/`,
+`shared/qa-report{,-v2}/`, `shared/qa-evidence-runtime/`,
+`shared/verification-contract/`, `shared/run-settlement/`,
+`shared/run-bootstrap-policy/`, `shared/architecture-contract/`,
+`shared/capabilities/`, `shared/state/run-agent/`, `shared/state/local-prefs/`,
+`modules/plan-guard/{plan-readiness,plan-write,react-structure}/`.
+Documented exceptions above 500: `modules/agent-model/handler.ts` (one
+692-line gate function), `runners/kilo-host/wrapper-source.ts` (a single
+emitted template literal), and dev tooling under `src/test-environment/` +
+`src/build/compiled-smoke.ts`.
+
 ## Inventory Summary
 
 - Source rules: 79 files under `rules/`.

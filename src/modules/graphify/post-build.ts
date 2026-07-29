@@ -16,7 +16,7 @@ import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, codeGraphIndexIsStale } from '../../shared/codegraph';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../runners/gitnexus';
 import { bootstrap as graphifyBootstrapImpl, graphifyGraphIsEmpty } from '../../runners/graphify';
 import { authSatisfied } from '../../shared/auth';

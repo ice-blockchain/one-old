@@ -17,7 +17,7 @@ import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { cursorPreToolDeny, hasValidPreToolPayload, isCursorPreToolSubcommand } from './fail-closed';
 import { asRecord, firstString } from '../adapters/coerce';
 import { parseJson } from '../shared/fsjson';
-import { canonicalOneMcpServerHint, isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
+import { canonicalOneMcpServerHint, isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 

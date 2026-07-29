@@ -2,7 +2,7 @@
 // because hook dispatch is synchronous while Streamable HTTP is asynchronous.
 // Every failure is advisory and exits successfully with a compact diagnostic.
 
-import { syncOneMcpHostForProject } from '../../shared/one-mcp-sync';
+import { syncOneMcpHostForProject } from '../../shared/one-mcp/sync';
 
 export async function main(): Promise<void> {
   const host = process.argv[2] || process.env.TRAFFIC_ONE_HOST || 'claude';

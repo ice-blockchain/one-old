@@ -382,7 +382,7 @@ function runPrefsChild(modulePath: string, cwd: string, prefsPath: string, opera
 test('concurrent host preference writers preserve Cursor and Codex siblings', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-prefs-concurrent-hosts-'));
   const prefsPath = path.join(dir, 'preferences.json');
-  const modulePath = path.resolve(__dirname, '..', 'local-prefs.ts');
+  const modulePath = path.resolve(__dirname, '..', 'local-prefs', 'index.ts');
   try {
     await Promise.all([
       runPrefsChild(modulePath, dir, prefsPath, 'cursor-performance'),
@@ -405,7 +405,7 @@ test('concurrent host preference writers preserve Cursor and Codex siblings', as
 test('concurrent Cursor capture and performance writes preserve both fields', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-prefs-concurrent-cursor-'));
   const prefsPath = path.join(dir, 'preferences.json');
-  const modulePath = path.resolve(__dirname, '..', 'local-prefs.ts');
+  const modulePath = path.resolve(__dirname, '..', 'local-prefs', 'index.ts');
   try {
     await Promise.all([
       runPrefsChild(modulePath, dir, prefsPath, 'cursor-performance'),
@@ -424,7 +424,7 @@ test('concurrent Cursor capture and performance writes preserve both fields', as
 test('concurrent fallback merge and host writes preserve both', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-prefs-concurrent-migration-'));
   const prefsPath = path.join(dir, 'preferences.json');
-  const modulePath = path.resolve(__dirname, '..', 'local-prefs.ts');
+  const modulePath = path.resolve(__dirname, '..', 'local-prefs', 'index.ts');
   try {
     await Promise.all([
       runPrefsChild(modulePath, dir, prefsPath, 'legacy-merge'),

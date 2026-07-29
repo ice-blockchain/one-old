@@ -20,7 +20,7 @@ import {
 import { canonicalHost } from '../../shared/model-tiers';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
 import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
-import { ensureRunHostCapability } from '../../shared/host-capabilities';
+import { ensureRunHostCapability } from '../../shared/host/capabilities';
 import { resolveToolScope } from '../../shared/tool-scope';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 

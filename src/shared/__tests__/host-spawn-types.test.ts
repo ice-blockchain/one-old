@@ -7,7 +7,7 @@ import {
   canonicalHostAgentType,
   hostSpawnType,
   spawnTypeRow,
-} from '../host-spawn-types';
+} from '../host/spawn-types';
 
 test('Cursor offers the role type first and a built-in fallback for a stale type set', () => {
   // Live failure this exists for: Cursor's Task enum held `senior-backend` but not

@@ -14,7 +14,7 @@ import { asRecord, firstString } from '../adapters/coerce';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
 import { hasValidPreToolPayload, isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
+import { isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
 
 export interface HookOutput { stdout: string; stderr: string; exitCode: number; }
 

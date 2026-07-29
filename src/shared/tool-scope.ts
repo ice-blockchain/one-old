@@ -11,7 +11,7 @@ import type { Ctx } from '../core/types';
 import { asString } from '../adapters/coerce';
 import { parseApplyPatch, patchOperationPaths, patchTextFromToolInput } from './apply-patch';
 import { isNonProjectRoot } from './authoring-root';
-import { isPathWithin, resolveProjectRoot } from './hook-paths';
+import { isPathWithin, resolveProjectRoot } from './hook/paths';
 import { obj } from './obj';
 import { canonicalToolName, commandFromToolInput, isMutatingPreToolUse, normalizedToolName, parsedToolInput } from './tool-classify';
 

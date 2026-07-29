@@ -9,7 +9,7 @@ import {
   oneMcpPayloadFingerprint,
   type OneMcpModelConfigPayload,
 } from '../../one-mcp';
-import { writeOneMcpConfigCacheEntry } from '../../one-mcp-cache';
+import { writeOneMcpConfigCacheEntry } from '../../one-mcp/cache';
 
 /** Seed the authoritative runtime sidecar from a resolved test snapshot. */
 export function writeRuntimeModelSnapshot(

@@ -13,7 +13,7 @@ import {
   resolveProjectRoot,
   stateRequiresNewProjectMonorepo,
   stripStateDirSuffix,
-} from '../hook-paths';
+} from '../hook/paths';
 
 function writeState(dir: string, json: Record<string, unknown>): void {
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });

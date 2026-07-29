@@ -10,7 +10,7 @@ import {
   DEFAULT_PUBLIC_ENDPOINT,
 } from '../../../config/one-mcp';
 import { oneMcpAppliedFingerprint, oneMcpPayloadFingerprint } from '../../one-mcp';
-import { writeOneMcpConfigCacheEntry } from '../../one-mcp-cache';
+import { writeOneMcpConfigCacheEntry } from '../../one-mcp/cache';
 import { hostModelSnapshot } from '../../model-tiers';
 import {
   currentLocalPreferenceTarget,

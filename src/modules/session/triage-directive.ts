@@ -15,7 +15,7 @@
 import { detectMode, isLikelyEditRequest, isRuntimeControlPrompt } from '../../shared/detection';
 import { canonicalHost } from '../../shared/model-tiers';
 import { currentModelForTier } from '../../shared/current-model-tiers';
-import { detectHostPlan } from '../../shared/host-plan';
+import { detectHostPlan } from '../../shared/host/plan';
 import { obj, type Rec } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';

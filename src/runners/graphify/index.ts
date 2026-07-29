@@ -16,7 +16,7 @@ import * as path from 'path';
 
 import { CODE_GRAPH_SCAN_EXCLUDES, GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, applyCodeGraphScanIgnore, codeGraphIndexIsStale, graphifyGraphIsEmpty, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import { exec } from '../../shared/exec';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { writeGraphPreview } from '../../shared/materialize';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
 import { spawnTool } from '../../shared/spawn-tool';

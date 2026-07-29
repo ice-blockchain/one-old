@@ -11,7 +11,7 @@ import {
   HOST_CAPABILITIES,
   readRunHostCapability,
   type TrafficOneHost,
-} from '../../shared/host-capabilities';
+} from '../../shared/host/capabilities';
 import { currentHostCapabilityReport } from '../host-capability-report';
 import { effState, hostProducedWork, result, str } from './util';
 

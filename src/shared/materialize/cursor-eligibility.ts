@@ -8,7 +8,7 @@
 // Cursor-scoped. Dependency-free; never throws (returns []).
 
 import { AGENT_ROLES } from '../../config/performance';
-import { detectHostPlan } from '../host-plan';
+import { detectHostPlan } from '../host/plan';
 import { currentAcceptableModels } from '../current-model-tiers';
 import { obj } from '../obj';
 import { modelForRoleHost } from '../performance';

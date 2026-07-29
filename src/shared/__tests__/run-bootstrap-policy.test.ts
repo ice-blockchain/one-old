@@ -31,7 +31,7 @@ import {
 import {
   ensureRunHostCapability,
   observeRunHostCapabilityFromHook,
-} from '../host-capabilities';
+} from '../host/capabilities';
 import { sha256 } from '../text';
 
 function withProject(fn: (cwd: string) => void): void {

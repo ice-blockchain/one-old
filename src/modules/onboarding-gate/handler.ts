@@ -18,7 +18,7 @@ import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
-import { isOnboardedProjectRoot } from '../../shared/hook-paths';
+import { isOnboardedProjectRoot } from '../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';

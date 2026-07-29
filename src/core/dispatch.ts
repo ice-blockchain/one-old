@@ -7,8 +7,8 @@ import type { Handler } from './types';
 import type { HostAdapter, RawInvocation } from '../adapters/types';
 import { buildContext } from './context';
 import { runPipeline } from './pipeline';
-import { maybeTraceHook } from '../shared/hook-trace';
-import { observeCurrentRunHostCapabilityFromHook } from '../shared/host-capabilities';
+import { maybeTraceHook } from '../shared/hook/trace';
+import { observeCurrentRunHostCapabilityFromHook } from '../shared/host/capabilities';
 import { resolveToolProjectRoot } from '../shared/tool-scope';
 
 export async function dispatch(

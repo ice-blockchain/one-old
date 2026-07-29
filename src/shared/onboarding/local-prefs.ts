@@ -7,7 +7,7 @@
 // moved into the local wizard (shared/onboarding-server).
 
 import { obj } from '../obj';
-import { detectHostPlanFresh } from '../host-plan';
+import { detectHostPlanFresh } from '../host/plan';
 import { canonicalHost } from '../model-tiers';
 import { currentHostModelTarget } from '../current-model-tiers';
 import { teamModeForLevel } from '../performance';

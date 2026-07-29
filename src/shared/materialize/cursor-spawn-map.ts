@@ -4,8 +4,8 @@
 // and model-gate (spawn map stdout). Project agent contracts stay model-agnostic.
 
 import { AGENT_ROLES } from '../../config/performance';
-import { hostSpawnType } from '../host-spawn-types';
-import { detectHostPlan } from '../host-plan';
+import { hostSpawnType } from '../host/spawn-types';
+import { detectHostPlan } from '../host/plan';
 import { currentAcceptableModels } from '../current-model-tiers';
 import { roleModelSelection } from '../performance';
 import { obj } from '../obj';

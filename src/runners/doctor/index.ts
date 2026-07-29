@@ -12,7 +12,7 @@
 
 import { buildFindings } from './findings';
 import { parseArgs } from './lib';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import {
   probeCodexHooks,
   probeGitnexus,

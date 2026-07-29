@@ -8,7 +8,7 @@ import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { authSatisfied } from '../../shared/auth';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { firstEmitThisSession } from '../../shared/once';
 import { hookSessionIdentity, isWebState, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';

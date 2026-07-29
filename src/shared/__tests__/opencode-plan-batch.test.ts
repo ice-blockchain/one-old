@@ -8,7 +8,7 @@ import {
   buildBatchResultFromUnitStatuses,
   finalizePlanBatch,
   finalizePlanBatchOnly,
-} from '../opencode-plan-batch';
+} from '../opencode-plan/batch';
 import {
   openCodePlanBatchComplete,
   pendingOpenCodePlanRoles,

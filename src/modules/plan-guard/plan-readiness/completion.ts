@@ -1,0 +1,345 @@
+// src/modules/plan-guard/plan-readiness/completion.ts
+// Digest completion gates: the frontend/implementer/reviewer/tester sections
+// of the readiness walk, extracted verbatim from planReadinessViolations.
+// Order and side effects are unchanged; the orchestrator calls this exactly
+// where the sections used to sit.
+
+import {
+  buildRuntimeAssignments,
+  capabilityProfileForRun,
+  compileArchitectureForRun,
+  persistCompiledArchitecture,
+  publishRuntimeAssignments,
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+  validateArchitectureInput,
+  webPackageRoot,
+  type CompiledArchitectureV1,
+} from '../../../shared/architecture-contract';
+import { readQaReportV2 } from '../../../shared/qa-report-v2';
+import {
+  buildVerificationContract,
+  changedPathsFromBaseline,
+  publishVerificationContract,
+  readVerificationContract,
+  type LighthouseThresholdsV1,
+  type UiImpact,
+} from '../../../shared/verification-contract';
+import {
+  ARCHITECTURE_INPUT_RE,
+  ARCHITECT_DIGEST_RE,
+  ASSIGNMENTS_FILE_RE,
+  COLLAPSE_LINE_CHARS,
+  FRONTEND_DIGEST_RE,
+  IMPLEMENTER_DIGEST_RE,
+  PLAN_FILE_RE,
+  REVIEWER_DIGEST_RE,
+  TESTER_DIGEST_RE,
+  type Block,
+  type Rec,
+  exists,
+} from './context';
+import {
+  builtAppIdentities,
+  collapsedProductSourceFile,
+  qaReportOlderThanImplementation,
+  qaReportVerifiedBuild,
+  structureFindingSummary,
+} from './checks';
+import {
+  compiledFormatToolchainForRole,
+  compiledOutputPaths,
+  crawlOriginProblem,
+  emitConfigProblems,
+  formatParityViolation,
+  roleOwnedTsOutputs,
+  skippedVerificationLine,
+  testToolchainGaps,
+  typecheckParityViolation,
+} from './toolchain';
+import {
+  allImplementationRolesDelivered,
+  architectMayWrite,
+  architectureInputErrors,
+  artifactContract,
+  assignmentScopesForRole,
+  assignmentWriterRole,
+  digestClaimsVerdict,
+  refreshVerificationAfterImplementation,
+  roleContract,
+  runFullStructureScan,
+  runtimeOwnedRunSidecar,
+  usesMainAgentTeam,
+} from './contracts';
+
+
+export function digestCompletionGates(ctx: {
+  projectRoot: string;
+  state: Rec;
+  filePath: string;
+  content: string;
+  currentRunId: string;
+  violations: string[];
+  block: Block;
+}): void {
+  const { projectRoot, state, filePath, content, currentRunId, violations, block } = ctx;
+  // Frontend completion gate: an `IMPLEMENTED` digest must not ship collapsed
+  // product source. build/typecheck/lint all pass on a one-line-per-function
+  // App.tsx, so nothing else stops it before the tester's format:check — and a
+  // run interrupted before Phase 3 delivers a monolithic collapsed app with
+  // empty scaffolded module dirs (observed 16c).
+  const frontendDigest = FRONTEND_DIGEST_RE.exec(filePath);
+  if (frontendDigest && digestClaimsVerdict(content, 'IMPLEMENTED')) {
+    const collapsed = collapsedProductSourceFile(projectRoot, state);
+    if (collapsed.incomplete) {
+      violations.push(block('frontend-structure-scan-incomplete',
+        `Frontend completion gate: STRUCT_SCAN_INCOMPLETE after ${collapsed.scanned} product source files. A truncated scan is never a pass; narrow generated/output roots or split the project contract before re-emitting \`IMPLEMENTED\`.`,
+        { SCANNED: collapsed.scanned }));
+    }
+    if (collapsed.file) {
+      violations.push(block('frontend-collapse-gate',
+        `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed.file}\` packs an entire component/route onto a single line (over ${COLLAPSE_LINE_CHARS} chars) — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
+        { FILE: collapsed.file }));
+    }
+    // Deterministic emit-config gate (new-project only; the pre-existing tsc -b
+    // choices of an existing codebase are the user's, and maintenance must
+    // never dead-end on them). Formatter parity is implementer-owner scoped
+    // below and intentionally does not share this frontend-only branch.
+    const frontendProfile = capabilityProfileForRun(projectRoot, state);
+    if (state.mode === 'new-project' && frontendProfile.profileId === 'vite-react') {
+      const emitProblems = emitConfigProblems(projectRoot, frontendProfile);
+      if (emitProblems.length > 0) {
+        const problems = emitProblems.join('; ');
+        violations.push(block('frontend-emit-config-gate',
+          `Frontend completion gate: ${problems}. The stock Vite template emits compiled \`.js\`/\`.d.ts\` next to every source on the first build, and the stale output can shadow the module at import time. Fix exactly this: set \`"noEmit": true\` in the app tsconfig, remove \`"composite": true\`, and use \`"build": "tsc --noEmit && vite build"\`, \`"typecheck": "tsc --noEmit"\`. Then re-emit \`IMPLEMENTED\`.`,
+          { PROBLEMS: problems }));
+      }
+    }
+    const runId = frontendDigest[2] || '';
+    const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
+    if (architecture) {
+      if (!readRuntimeAssignments(projectRoot, runId)) {
+        violations.push(block('frontend-structure-completion-gate',
+          'Frontend completion gate: STRUCT_ASSIGNMENT_ALLOWLIST_GAP — current-run assignments are missing, stale, or hash-invalid. A complete structural scan cannot prove that this worker stayed within its runtime-owned WorkUnitContract; recompile the run before writing `IMPLEMENTED`.',
+          { FINDINGS: 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP' }));
+      } else {
+        const report = runFullStructureScan(projectRoot, runId, architecture, 'senior-frontend');
+        const errors = report.findings.filter((finding) => finding.severity === 'error');
+        if (errors.length > 0) {
+          const summary = structureFindingSummary(errors);
+          violations.push(block('frontend-structure-completion-gate',
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module.`,
+            { FINDINGS: summary }));
+        }
+      }
+    }
+  }
+
+  // PLAN_READY is necessarily compiled before implementation exists. Refresh
+  // the runtime-owned verification contract at the first terminal implementer
+  // handoff so uiImpact, tablet risk, changed routes, and performance evidence
+  // come from the real immutable-baseline diff. Candidate assignments and every
+  // bootstrap are preflighted against the new hash before publication.
+  const implementedDigest = IMPLEMENTER_DIGEST_RE.exec(filePath);
+  if (
+    implementedDigest
+    && digestClaimsVerdict(content, 'IMPLEMENTED')
+    && state.mode === 'new-project'
+  ) {
+    const runId = implementedDigest[2] || '';
+    const ownerRole = `senior-${implementedDigest[3] || ''}`;
+    const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
+    const tooling = architecture
+      ? compiledFormatToolchainForRole(architecture, ownerRole)
+      : null;
+    if (tooling) {
+      // Reaching here means this role OWNS the compiled `.prettierrc`, so it is
+      // accountable for the script reading the whole compiled tree — not just
+      // its own share. The remedy is a one-line edit in its own manifest
+      // (`prettier --check .` plus `.prettierignore`), never formatting another
+      // role's files, so this cannot deadlock across roles.
+      const parity = formatParityViolation(
+        projectRoot,
+        tooling,
+        architecture ? compiledOutputPaths(architecture) : [],
+      );
+      if (parity?.kind === 'uncovered-outputs') {
+        const sample = parity.uncovered.map((output) => `\`${output}\``).join(', ');
+        violations.push(block('implementer-format-coverage-gate',
+          `Implementer format coverage gate: the \`${tooling.manifestPath}\` "${parity.script}" script runs \`${parity.command}\`, whose arguments never reach compiled outputs including ${sample}. A formatter that skips owned source proves nothing — it passes while those files are unformatted. Check the whole project instead (\`prettier --check .\`) and put build output, lockfiles, and \`.traffic-one\` in \`.prettierignore\`, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            MANIFEST: tooling.manifestPath,
+            SCRIPT: parity.script,
+            COMMAND: parity.command,
+            UNCOVERED: sample,
+          }));
+      } else if (parity?.kind === 'missing-dependency') {
+        violations.push(block('implementer-format-parity-gate',
+          `Implementer format parity gate: role \`${ownerRole}\` owns formatter config \`${tooling.configPath}\`, but \`prettier\` is not declared in \`${tooling.manifestPath}\` dependencies/devDependencies. A script or config that names an absent tool makes verification meaningless. Add \`prettier\` with the selected package manager at tooling root \`${tooling.toolingRoot}\`, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            CONFIG: tooling.configPath,
+            MANIFEST: tooling.manifestPath,
+            TOOLING_ROOT: tooling.toolingRoot,
+          }));
+      } else if (parity?.kind === 'missing-toolchain') {
+        violations.push(block('implementer-format-toolchain-gate',
+          `Implementer format toolchain gate: role \`${ownerRole}\` owns compiled formatter outputs at \`${tooling.toolingRoot}\`, but no Prettier config, \`format\`/\`format:check\` scripts, or \`prettier\` dependency is present. Create \`${tooling.configPath}\`, add matching scripts and the dependency to \`${tooling.manifestPath}\`, run the formatter, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            CONFIG: tooling.configPath,
+            MANIFEST: tooling.manifestPath,
+            TOOLING_ROOT: tooling.toolingRoot,
+          }));
+      }
+    }
+    if (architecture) {
+      const tsOutputs = roleOwnedTsOutputs(architecture, ownerRole);
+      const typecheckGap = tsOutputs.length > 0
+        ? typecheckParityViolation(projectRoot, tsOutputs)
+        : null;
+      if (typecheckGap) {
+        const manifestList = typecheckGap.manifests.map((manifest) => `\`${manifest}\``).join(', ');
+        violations.push(block('implementer-typecheck-toolchain-gate',
+          `Implementer typecheck gate: role \`${ownerRole}\` owns compiled TypeScript outputs, but no \`typescript\` dependency or \`typecheck\` script exists in ${manifestList}. \`IMPLEMENTED\` without a runnable compiler is unverifiable — the type errors surface later in a sibling role's build instead. Add \`typescript\` and a \`typecheck\` script (\`tsc --noEmit\`) to the tooling root, run it clean, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            MANIFESTS: manifestList,
+          }));
+      }
+    }
+    if (architecture) {
+      const origin = crawlOriginProblem(projectRoot, architecture, ownerRole);
+      if (origin) {
+        violations.push(block('implementer-crawl-origin-gate',
+          `Implementer crawl origin gate: \`${origin.file}\` ships an unusable production origin — ${origin.detail}. Crawl assets are published verbatim, so an invented origin is a live defect, not a placeholder. Generate these files from the public site-url env var (\`VITE_SITE_URL\` or the framework equivalent) and fail generation when it is unset; leave the deploy origin \`Unverified\` in project memory until the user supplies it. Then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            FILE: origin.file,
+            DETAIL: origin.detail,
+          }));
+      }
+      const testGaps = testToolchainGaps(projectRoot, architecture, ownerRole);
+      if (testGaps) {
+        const missing = testGaps.missing.join(', ');
+        violations.push(block('implementer-test-toolchain-gate',
+          `Implementer test toolchain gate: role \`${ownerRole}\` owns \`${testGaps.manifest}\`, and the contract compiles tester-owned runner configs there, but ${missing} is absent. The tester owns the configs and never the manifest, so it cannot install its own runner — it inherits a config for a tool that is not there and has no way to run the suite. Add the missing dependencies and scripts to \`${testGaps.manifest}\`, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            MANIFEST: testGaps.manifest,
+            MISSING: missing,
+          }));
+      }
+    }
+    const skipped = skippedVerificationLine(content);
+    if (skipped) {
+      violations.push(block('implementer-verification-skipped-gate',
+        `Implementer verification gate: this digest reports a required command as skipped or unavailable — "${skipped}" — directly alongside \`IMPLEMENTED\`. A verdict is a claim that the owned scope was verified, so an unrun build/typecheck/lint makes it unverifiable and the errors surface later in a sibling role's build. Install the toolchain at its owning manifest, run the command to completion, record the real outcome, then re-emit \`IMPLEMENTED\`. If the command genuinely does not apply, say why without claiming it was skipped.`,
+        { EVIDENCE: skipped }));
+    }
+  }
+  if (implementedDigest
+    && implementedDigest[2] === currentRunId
+    && digestClaimsVerdict(content, 'IMPLEMENTED')
+    && violations.length === 0) {
+    const runId = implementedDigest[2] || '';
+    if (allImplementationRolesDelivered(projectRoot, runId, filePath)) {
+      const refresh = refreshVerificationAfterImplementation(projectRoot, runId, state);
+      if (refresh.error) {
+        violations.push(block('verification-contract-refresh-gate',
+          `Verification refresh gate: \`IMPLEMENTED\` is forbidden because runtime could not rederive and atomically republish VerificationContractV2 from the immutable baseline (${refresh.error}). No stale nonvisual/behavioral classification may reach QA; repair the semantic plan/runtime prerequisite and retry the same digest.`,
+          { ERROR: refresh.error }));
+      }
+    }
+  }
+
+  const reviewerDigest = REVIEWER_DIGEST_RE.exec(filePath);
+  if (reviewerDigest && digestClaimsVerdict(content, 'APPROVED') && !digestClaimsVerdict(content, 'CHANGES_REQUESTED')) {
+    const runId = reviewerDigest[2] || '';
+    const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
+    if (architecture) {
+      if (!readRuntimeAssignments(projectRoot, runId)) {
+        violations.push(block('reviewer-structure-gate',
+          'Reviewer gate: `APPROVED` is forbidden with STRUCT_ASSIGNMENT_ALLOWLIST_GAP. Current-run assignments are missing, stale, or hash-invalid, so the complete structural scan cannot establish WorkUnit coverage.',
+          { FINDINGS: 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP' }));
+      } else {
+        const report = runFullStructureScan(projectRoot, runId, architecture);
+        const errors = report.findings.filter((finding) => finding.severity === 'error');
+        if (errors.length > 0) {
+          const summary = structureFindingSummary(errors);
+          violations.push(block('reviewer-structure-gate',
+            `Reviewer gate: \`APPROVED\` is forbidden while the complete runtime structure report contains errors (${summary}). Review the compiled architecture and request fixes.`,
+            { FINDINGS: summary }));
+        }
+      }
+    }
+    if (runId === currentRunId && violations.length === 0) {
+      const refresh = refreshVerificationAfterImplementation(projectRoot, runId, state);
+      if (refresh.error || refresh.changed) {
+        const reason = refresh.error
+          || 'runtime raised VerificationContractV2 from the final implementation diff; the current review bootstrap predates that contract';
+        violations.push(block('verification-contract-refresh-gate',
+          `Verification refresh gate: \`APPROVED\` is forbidden because ${reason}. Re-read the newly published bootstrap/verification hash and repeat the review under the final risk contract.`,
+          { ERROR: reason }));
+      }
+    }
+  }
+
+  // Tester completion gate: `TESTS_GREEN` must not rest on a QA report that predates the
+  // implementation it claims to verify. The settlement floor already REFUSES such a report
+  // (strictQaReportResult uses max(qaContractActivatedAt, frontend digest mtime)), but it
+  // refuses SILENTLY: observed live in cursor-16c the frontend re-emitted its digest 11s
+  // after the sweep ran, so reviewer APPROVED + tester TESTS_GREEN + a `passed` report still
+  // left the run non-terminal — and it only recovered by accident when an unrelated feature
+  // request triggered a fresh sweep. The orchestrator prose already tells the tester to
+  // re-run the sweep after a fix cycle; this turns "ignored instruction, silent stall" into
+  // an actionable deny at the moment the stale verdict is written.
+  const testerDigest = TESTER_DIGEST_RE.exec(filePath);
+  if (testerDigest && /\bTESTS_GREEN\b/.test(content)) {
+    const runId = testerDigest[2] || '';
+    if (runId === currentRunId && violations.length === 0) {
+      const refresh = refreshVerificationAfterImplementation(projectRoot, runId, state);
+      if (refresh.error || refresh.changed) {
+        const reason = refresh.error
+          || 'runtime raised VerificationContractV2 from the final implementation diff; the current QA report/bootstrap predates that contract';
+        violations.push(block('verification-contract-refresh-gate',
+          `Verification refresh gate: \`TESTS_GREEN\` is forbidden because ${reason}. Re-read the newly published verification hash, regenerate risk-proportional evidence, and retry the tester verdict.`,
+          { ERROR: reason }));
+      }
+    }
+    const verification = runId ? readVerificationContract(projectRoot, runId) : null;
+    if (verification) {
+      const result = readQaReportV2(projectRoot, runId);
+      if (!result.ok) {
+        violations.push(block('tester-qa-v2-gate',
+          `Tester completion gate: VerificationContractV2 rejected this verdict (${result.code}: ${result.message}). Produce fresh risk-proportional evidence for uiImpact=${verification.uiImpact}; a blocked environment is not \`TESTS_GREEN\`.`,
+          { ERROR: `${result.code}: ${result.message}` }));
+      }
+    }
+    if (!verification) {
+    const staleQa = qaReportOlderThanImplementation(projectRoot, testerDigest[2] || '');
+    if (staleQa) {
+      violations.push(block('tester-stale-qa-gate',
+        `Tester completion gate: do not write \`TESTS_GREEN\` on a stale QA report. The report was generated at ${staleQa.generatedAt} but \`${staleQa.digest}\` was re-emitted at ${staleQa.digestAt}, so the sweep did not see the current implementation and the run cannot settle. Re-run the visual QA sweep now, write the fresh report, and only then re-emit \`TESTS_GREEN\`.`,
+        { GENERATED_AT: staleQa.generatedAt, DIGEST: staleQa.digest, DIGEST_AT: staleQa.digestAt }));
+    }
+    // Every other QA freshness check is TEMPORAL, so a sweep aimed at a leftover
+    // preview server passes them all: it genuinely ran, just against another app.
+    // Only the served build identity answers "which application answered?".
+    const expectedBuilds = builtAppIdentities(projectRoot);
+    if (expectedBuilds.length > 0) {
+      const observed = qaReportVerifiedBuild(projectRoot, testerDigest[2] || '');
+      if (observed && !observed.present) {
+        violations.push(block('tester-qa-build-identity-missing',
+          `Tester completion gate: do not write \`TESTS_GREEN\` on a QA report that does not name the build it loaded. This run's fresh build is \`${expectedBuilds.join(', ')}\`, but the QA report has no \`verifiedBuild\`. Start the preview on a port THIS run owns (\`--strictPort\`, never a shared default like 4173/5173/3000), fetch the base URL, read the entry asset the served HTML references, record it as \`verifiedBuild\`, and re-run the sweep.`,
+          { EXPECTED: expectedBuilds.join(', ') }));
+      } else if (observed && observed.present && !expectedBuilds.includes(observed.value)) {
+        violations.push(block('tester-qa-build-identity-mismatch',
+          `Tester completion gate: the QA sweep validated a DIFFERENT application. The report records \`verifiedBuild: ${observed.value}\` but this run's fresh build is \`${expectedBuilds.join(', ')}\` — the base URL answered a leftover preview server (observed live: a previous project's \`vite preview\` still held the port, so every check passed against another app). Kill the foreign server or bind your own free port with \`--strictPort\`, re-run the sweep against it, and only then re-emit \`TESTS_GREEN\`.`,
+          { EXPECTED: expectedBuilds.join(', '), OBSERVED: observed.value }));
+      }
+    }
+    }
+  }
+}

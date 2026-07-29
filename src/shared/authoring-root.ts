@@ -62,7 +62,7 @@ export function hasPluginAuthoringMarkers(root: string): boolean {
     || hasGeneratedPluginTree(path.join(root, 'dist'));
 }
 
-// Mirrors MAX_ROOT_WALK in hook-paths.ts: a hook never spends unbounded fs
+// Mirrors MAX_ROOT_WALK in hook/paths.ts: a hook never spends unbounded fs
 // reads climbing toward /.
 const MAX_AUTHORING_WALK = 40;
 

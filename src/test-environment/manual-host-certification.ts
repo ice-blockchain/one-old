@@ -5,7 +5,7 @@ import { writeJson } from '../shared/fsjson';
 import {
   HOST_CAPABILITIES,
   type TrafficOneHost,
-} from '../shared/host-capabilities';
+} from '../shared/host/capabilities';
 import type { HostCapabilityReport } from './core/types';
 import {
   hostCapabilityReportForRun,

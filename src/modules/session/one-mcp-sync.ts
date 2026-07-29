@@ -17,7 +17,7 @@ import {
   claimOneMcpWarningKey,
   readOneMcpCache,
   type OneMcpLastSync,
-} from '../../shared/one-mcp-cache';
+} from '../../shared/one-mcp/cache';
 import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { pluginUseEnabled } from '../../shared/state/plugin-use';

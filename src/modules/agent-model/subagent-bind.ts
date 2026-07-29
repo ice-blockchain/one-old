@@ -8,7 +8,7 @@ import { asString } from '../../adapters/coerce';
 import { obj } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
 import {

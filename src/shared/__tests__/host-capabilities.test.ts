@@ -16,7 +16,7 @@ import {
   readRunHostCapability,
   runHostCapabilityPath,
   type TrafficOneHost,
-} from '../host-capabilities';
+} from '../host/capabilities';
 import { resetAuthoringRootCache } from '../authoring-root';
 import { sha256 } from '../text';
 import type { Handler, HookInput } from '../../core/types';

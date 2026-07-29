@@ -2367,7 +2367,7 @@ test('fallback claims serialize racing first writers so exactly one owns the pat
   const runDirectory = path.join(dir, '.traffic-one', 'runs', runId);
   const lockDir = path.join(runDirectory, '.claims.lock');
   const source = [
-    "const { tryFallbackClaim } = require('./src/shared/state/run-agent.ts');",
+    "const { tryFallbackClaim } = require('./src/shared/state/run-agent/index.ts');",
     "const [cwd, runId, holder] = process.argv.slice(1);",
     "const ctx = { source: 'child', runId, role: 'senior-frontend', spawnIndex: 1, sessionId: holder, claimId: holder };",
     "process.stdout.write(JSON.stringify(tryFallbackClaim(cwd, ctx, 'apps/web/src/race.ts')));",
@@ -3660,7 +3660,7 @@ test('Cursor spawn observation storage is bounded and reads pre-versioned state'
 test('Cursor spawn observations preserve concurrent subagentStart records', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-spawn-concurrent-'));
   const source = [
-    "const { recordCursorSpawnObservation } = require('./src/shared/state/run-agent.ts');",
+    "const { recordCursorSpawnObservation } = require('./src/shared/state/run-agent/index.ts');",
     "const [cwd, role, toolCallId, startedAtMs] = process.argv.slice(1);",
     "recordCursorSpawnObservation(cwd, 'run-concurrent', { parentSessionId: 'parent-1', toolCallId, role, requestedModel: 'gpt-5.6-terra-medium', tier: 'balanced', expectedModel: 'gpt-5.6-terra', startedAtMs: Number(startedAtMs) });",
   ].join('\n');
@@ -3696,7 +3696,7 @@ test('concurrent Cursor lifecycle processes cannot split one parent followup bat
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-followup-concurrent-'));
   const runId = 'run-followup-concurrent';
   const source = [
-    "const { claimCursorFollowupsBatch } = require('./src/shared/state/run-agent.ts');",
+    "const { claimCursorFollowupsBatch } = require('./src/shared/state/run-agent/index.ts');",
     'const [cwd, runId, encoded] = process.argv.slice(1);',
     "const requests = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));",
     'const claimed = claimCursorFollowupsBatch(cwd, runId, requests, 10000);',
@@ -4074,7 +4074,7 @@ test('recordRunAgent preserves every role across concurrent hook processes', asy
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agent-concurrent-'));
   const roles = ['senior-frontend', 'senior-backend'];
   const source = [
-    "const { recordRunAgent } = require('./src/shared/state/run-agent.ts');",
+    "const { recordRunAgent } = require('./src/shared/state/run-agent/index.ts');",
     "const [cwd, role, agentId] = process.argv.slice(1);",
     "recordRunAgent(cwd, 'run-concurrent', role, { agentId, parentSessionId: 'parent-1' });",
   ].join('\n');

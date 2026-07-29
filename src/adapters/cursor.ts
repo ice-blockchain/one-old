@@ -14,7 +14,7 @@ import { parseJson } from '../shared/fsjson';
 import { patchTextFromToolInput } from '../shared/apply-patch';
 import { asRecord, firstString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
-import { canonicalOneMcpServerHint } from '../shared/one-mcp-agent-tools';
+import { canonicalOneMcpServerHint } from '../shared/one-mcp/agent-tools';
 
 // Cursor subcommand (argv) → canonical event (+ fixed tool class for the
 // specific events). Two families:

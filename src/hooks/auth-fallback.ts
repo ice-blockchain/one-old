@@ -4,7 +4,7 @@ import { asRecord, firstString } from '../adapters/coerce';
 import { authRequiredMessage } from '../shared/auth';
 import { isNonProjectRoot } from '../shared/authoring-root';
 import { parseJson } from '../shared/fsjson';
-import { isPathWithin, resolveProjectRoot } from '../shared/hook-paths';
+import { isPathWithin, resolveProjectRoot } from '../shared/hook/paths';
 import { pluginUseDeclined } from '../shared/state/plugin-use';
 
 function workspaceRoots(value: unknown): string[] {

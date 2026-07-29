@@ -37,11 +37,11 @@ import { parseApplyPatch } from '../../shared/apply-patch';
 import { firstEmitThisSession } from '../../shared/once';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { hookSessionIdentity, isMaintenancePhase, readEffectiveState } from '../../shared/state';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { ensureOpenCodeDelegationReady } from '../session/session-start-lib';
 import { maybeFlipToMaintenance } from './build-complete';
-import { buildPostPlanReadyOpenCodeDirective } from '../../shared/opencode-plan-directive';
+import { buildPostPlanReadyOpenCodeDirective } from '../../shared/opencode-plan/directive';
 import { ONE_UID_FIELD } from '../../config/reporting';
 import {
   type MaterializeOutcome,

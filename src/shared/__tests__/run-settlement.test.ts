@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { stableContractJson } from '../architecture-contract';
-import { isMaintenanceTerminal } from '../maintenance-terminal';
+import { isMaintenanceTerminal } from '../maintenance/terminal';
 import { qaReportV2Path } from '../qa-report-v2';
 import {
   activateRunV2RollbackBarrier,

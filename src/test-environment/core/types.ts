@@ -3,7 +3,7 @@
 // MAINTAINER tool: it is never compiled into dist (see tsconfig.build.json
 // exclude) and never shipped. It is run via `tsx src/test-environment/run.ts`.
 
-import type { HostModelObservation } from '../../shared/host-capabilities';
+import type { HostModelObservation } from '../../shared/host/capabilities';
 
 export type HostId = 'claude' | 'codex' | 'cursor' | 'opencode' | 'copilot' | 'windsurf' | 'kilo';
 export type VerdictHost = HostId | 'none';

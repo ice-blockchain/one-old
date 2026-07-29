@@ -12,7 +12,7 @@ import { isKnownStack } from '../config';
 import { postWriteIncompleteWarning } from '../directives';
 import { isNonProjectRoot } from '../authoring-root';
 import { ensureRunnerShims } from '../runner-shims';
-import { isUnclaimedWorkspaceSubPackage } from '../hook-paths';
+import { isUnclaimedWorkspaceSubPackage } from '../hook/paths';
 import { detectMode } from '../detection';
 import { STACKS } from '../stacks';
 import { nowIsoNoMs } from '../text';

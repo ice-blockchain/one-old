@@ -8,7 +8,7 @@ import { detectCopilotWireSurface, makeCopilotAdapter } from '../adapters/copilo
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { copilotPreToolDeny, hasValidPreToolPayload } from './fail-closed';
 import { asRecord, firstString } from '../adapters/coerce';
-import { isManagedOneMcpAgentTool, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
+import { isManagedOneMcpAgentTool, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 

@@ -12,7 +12,7 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj, type Rec } from '../../shared/obj';
 import { parseApplyPatch, patchOperationPaths, patchTextFromToolInput } from '../../shared/apply-patch';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 import { resolveToolScope } from '../../shared/tool-scope';
 import { isNonProjectRoot } from '../../shared/authoring-root';

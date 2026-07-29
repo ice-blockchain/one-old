@@ -13,7 +13,7 @@ import { obj } from '../../shared/obj';
 import { context, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { exhaustedModelsForRole, markModelExhaustionTerminal, recordExhaustedModel } from './exhausted-models';
 import { classifyModelFailureText, type ModelFailureKind } from './failure-classify';
 import { modelMatchesExpected } from '../../shared/model-tiers';

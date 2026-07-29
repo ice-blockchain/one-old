@@ -7,7 +7,7 @@ import type { Handler } from '../../core/types';
 import {
   isManagedOneMcpAgentTool,
   ONE_MCP_AGENT_TOOL_DENY_REASON,
-} from '../../shared/one-mcp-agent-tools';
+} from '../../shared/one-mcp/agent-tools';
 
 export const handlers: Handler[] = [
   {

@@ -15,7 +15,7 @@ import {
   oneMcpPayloadFingerprint,
   type OneMcpModelConfigPayload,
 } from '../one-mcp';
-import { writeOneMcpConfigCacheEntry } from '../one-mcp-cache';
+import { writeOneMcpConfigCacheEntry } from '../one-mcp/cache';
 import {
   currentAcceptableModels,
   currentHostModelTarget,

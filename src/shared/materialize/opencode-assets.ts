@@ -23,7 +23,7 @@ import { eligibleRolesForProfile } from '../capabilities';
 import { capabilityProfileForRun } from '../architecture-contract';
 import { writeTextIfChanged } from '../fs-text';
 import { detectHost } from '../host';
-import { detectHostPlan } from '../host-plan';
+import { detectHostPlan } from '../host/plan';
 import { buildTeamLineup } from '../onboarding-server/flow';
 import { roleAgentBody } from '../skill-filters';
 import { projectRootHash } from '../state/local-prefs';

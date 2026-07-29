@@ -13,7 +13,7 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';

@@ -2,7 +2,7 @@ import { asString } from '../../adapters/coerce';
 import { deny, noop } from '../../core/result';
 import type { Ctx, Handler, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { projectRelativeHookPath } from '../../shared/hook-paths';
+import { projectRelativeHookPath } from '../../shared/hook/paths';
 import { formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';

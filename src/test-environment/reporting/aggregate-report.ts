@@ -16,7 +16,7 @@ import {
   HOST_CAPABILITIES,
   type HostModelObservation,
   type TrafficOneHost,
-} from '../../shared/host-capabilities';
+} from '../../shared/host/capabilities';
 
 const STATUS_ICON: Record<AssertionStatus, string> = {
   PASS: '✅', FAIL: '❌', SKIP: '⏭️', INCONCLUSIVE: '❓', UNSUPPORTED: '🚫',

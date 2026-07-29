@@ -16,7 +16,7 @@ import {
 } from '../../config/one-mcp';
 import { captureCursorModels } from '../materialize/cursor-models';
 import { modelTierSnapshot, resolveModel } from '../model-tiers';
-import { writeOneMcpConfigCacheEntry } from '../one-mcp-cache';
+import { writeOneMcpConfigCacheEntry } from '../one-mcp/cache';
 import { oneMcpPayloadFingerprint } from '../one-mcp';
 import {
   ensureRunModelPolicy,
