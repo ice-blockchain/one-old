@@ -71,7 +71,10 @@ function initRepo(cwd: string): void {
   }
   execFileSync('git', ['init', '-q'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['add', '-A'], { cwd, stdio: 'ignore' });
-  execFileSync('git', [...GIT_ENV, 'commit', '-qm', 'run-sim baseline'], { cwd, stdio: 'ignore' });
+  // `--allow-empty`: an existing-codebase fixture may already be committed, and
+  // a baseline step that throws when there is nothing to commit would fail the
+  // run for a non-product reason.
+  execFileSync('git', [...GIT_ENV, 'commit', '-q', '--allow-empty', '-m', 'run-sim baseline'], { cwd, stdio: 'ignore' });
 }
 
 function architectWrites(runId: string, brief: string, state: Rec): ScriptedWrite[] {

@@ -45,7 +45,8 @@ export type FixtureKind =
   | 'empty-git'
   | 'react-vite'
   | 'existing-react-vite'
-  | 'existing-node-api';
+  | 'existing-node-api'
+  | 'existing-go-api';
 
 // The onboarding selection a case declares. preseed.ts turns this into an
 // AUTHENTIC .one.json + preferences.json by calling the real source writers,

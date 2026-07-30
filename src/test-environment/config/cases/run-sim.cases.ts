@@ -71,6 +71,21 @@ const API_ARCHITECTURE = {
   ],
 };
 
+// The same brief against a repository that already exists. It plans only what
+// is NEW: the existing repo already has its own store, and a plan that declared
+// one would compile to the same path and overwrite working code that the rest
+// of the project imports. Planning around what is already there is what
+// "existing codebases must not break" means in practice — and the run proves it
+// by building the merged tree with the real Go toolchain.
+const EXISTING_API_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [],
+  modules: [
+    { id: 'products-service', name: 'Products Service', kind: 'service' as const },
+    { id: 'news-service', name: 'News Service', kind: 'service' as const },
+  ],
+};
+
 const WEB_QA = {
   mode: 'browser' as const,
   expectChecks: {
@@ -282,6 +297,48 @@ export const RUN_SIM_CASES: Case[] = [
     runSim: { brief: `${BRIEF_AGENCY} use qwik.`, architecture: AGENCY_ARCHITECTURE, qa: WEB_QA },
     assertions: WEB_ASSERTIONS,
     notes: 'Shape 6: a framework Traffic One does not model. Characterises the CURRENT contract — degrade to generic-web and still settle — so any future change to that behaviour is deliberate.',
+  },
+  {
+    id: 'sim-existing-go-api',
+    category: 'run-sim',
+    layer: 'run-sim',
+    // A real Go repo that never met Traffic One. Not seeded from the greenfield
+    // run: a copy of that output would already carry the configs phase 1 wrote,
+    // and could not prove they are WITHHELD here.
+    fixture: 'existing-go-api',
+    preSeed: {
+      mode: 'existing-codebase',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+    },
+    runSim: {
+      brief: BRIEF_API,
+      architecture: EXISTING_API_ARCHITECTURE,
+      qa: {
+        mode: 'stack',
+        expectChecks: {
+          'stack-build': 'passed',
+          'stack-test': 'passed',
+          'stack-lint': 'passed',
+        },
+      },
+    },
+    assertions: [
+      { id: 'state-matches-selection' },
+      { id: 'onboarding-complete' },
+      { id: 'run-sim-clean' },
+      { id: 'run-sim-plan-ready-artifacts' },
+      { id: 'run-sim-qa-evidence' },
+      { id: 'run-sim-settlement' },
+      { id: 'run-sim-existing-mode' },
+    ],
+    notes: 'Existing-codebase guard: no scaffolded config is written into a repo Traffic One did not create, and integration findings are advisory.',
   },
   {
     id: 'sim-new-python-api',

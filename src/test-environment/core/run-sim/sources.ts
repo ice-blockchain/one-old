@@ -109,6 +109,7 @@ function appPackageJson(): string {
     dependencies: {
       '@app/api-client': 'workspace:*',
       '@app/i18n': 'workspace:*',
+      '@app/tailwind-config': 'workspace:*',
       '@app/ui': 'workspace:*',
       i18next: '^24.0.0',
       react: '^19.0.0',
@@ -177,6 +178,9 @@ function tsconfigApp(): string {
 function mainEntry(appShell: string): string {
   const rel = `./${path.basename(appShell).replace(/\.tsx?$/, '')}`;
   return [
+    // The shared Tailwind/theme stylesheet: the UI-system check requires the
+    // application to consume the catalog's theme rather than style in isolation.
+    "import '@app/tailwind-config/src/globals.css';",
     "import { StrictMode } from 'react';",
     "import { createRoot } from 'react-dom/client';",
     "import { BrowserRouter } from 'react-router-dom';",
@@ -211,6 +215,7 @@ function vueMainEntry(ctx: ImplementContext, rel: string): string {
     `  { path: '${route.path}', component: ${componentName(route.moduleOutput)} },`
   ));
   return [
+    "import '@app/tailwind-config/src/globals.css';",
     "import { createApp } from 'vue';",
     "import { createRouter, createWebHistory } from 'vue-router';",
     "import { createI18n } from 'vue-i18n';",
@@ -256,6 +261,7 @@ function appShell(ctx: ImplementContext, rel: string): string {
 // directory — which is exactly what the entrypoint rule requires.
 function inertiaBootstrap(): string {
   return [
+    "import '@app/tailwind-config/src/globals.css';",
     "import { createInertiaApp } from '@inertiajs/react';",
     "import { createElement } from 'react';",
     "import { createRoot } from 'react-dom/client';",
@@ -273,6 +279,7 @@ function inertiaBootstrap(): string {
 // A Next root layout only wraps children: no component tree, no router.
 function nextRootLayout(): string {
   return [
+    "import '@app/tailwind-config/src/globals.css';",
     "import type { ReactNode } from 'react';",
     '',
     'export default function RootLayout({ children }: { children: ReactNode }) {',
@@ -288,8 +295,20 @@ function nextRootLayout(): string {
 
 // Nuxt routes by file (<NuxtPage />); a plain Vue SPA mounts <router-view />.
 function vueAppShell(router: string): string {
-  const outlet = router === 'nuxt-file-router' ? '<NuxtPage />' : '<router-view />';
+  const nuxt = router === 'nuxt-file-router';
+  const outlet = nuxt ? '<NuxtPage />' : '<router-view />';
   return [
+    // Nuxt has no separate bootstrap entry — app.vue IS the entrypoint, so the
+    // shared theme stylesheet is imported here. A plain Vue SPA imports it from
+    // main.ts instead.
+    ...(nuxt
+      ? [
+        '<script setup lang="ts">',
+        "import '@app/tailwind-config/src/globals.css';",
+        '</script>',
+        '',
+      ]
+      : []),
     '<template>',
     '  <main>',
     `    ${outlet}`,
@@ -1053,7 +1072,23 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
         dependencies: { i18next: '^24.0.0', 'react-i18next': '^15.2.0' },
       });
     }
-    if (rel.includes('/ui/')) return packageManifest('@app/ui');
+    if (rel.includes('/ui/')) {
+      // STRUCT_UI_SYSTEM_MISSING requires the shared UI package to be named
+      // `@app/ui` and to declare exports — application code may not deep-import
+      // its internals, so the package surface has to be explicit.
+      return json({
+        name: '@app/ui',
+        version: '0.0.0',
+        private: true,
+        type: 'module',
+        main: 'src/index.ts',
+        exports: {
+          '.': './src/index.ts',
+          './styles': './src/styles.css',
+        },
+        dependencies: { clsx: '^2.1.1', 'tailwind-merge': '^2.6.0' },
+      });
+    }
     return packageManifest(`@app/${path.basename(path.dirname(rel))}`);
   }
   if (rel === 'tsconfig.base.json') return tsconfigBase();
@@ -1161,8 +1196,41 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
     const catalog = (i18n.catalogs || []).find((entry) => entry.path === rel);
     if (catalog) return catalogBody(catalog, ctx);
   }
+  if (rel.endsWith('packages/ui/components.json')) {
+    // The shadcn adapter config the UI-system check looks for.
+    return json({
+      $schema: 'https://ui.shadcn.com/schema.json',
+      style: 'default',
+      rsc: false,
+      tsx: true,
+      tailwind: {
+        config: '',
+        css: '../tailwind-config/src/globals.css',
+        baseColor: 'slate',
+        cssVariables: true,
+      },
+      // A shared `ui` alias is required: it is what points component code at
+      // the catalog package instead of a per-app copy.
+      aliases: { ui: '@app/ui', components: '@app/ui/components', utils: '@app/ui/lib/utils' },
+    });
+  }
+  if (rel.endsWith('packages/ui/src/lib/utils.ts')) {
+    // The canonical shadcn `cn` helper; every generated component composes its
+    // classes through it rather than concatenating strings by hand.
+    return [
+      "import { clsx, type ClassValue } from 'clsx';",
+      "import { twMerge } from 'tailwind-merge';",
+      '',
+      'export function cn(...inputs: ClassValue[]): string {',
+      '  return twMerge(clsx(inputs));',
+      '}',
+      '',
+    ].join('\n');
+  }
   if (rel.endsWith('ui/src/index.ts')) {
     return [
+      "export { cn } from './lib/utils';",
+      '',
       'export interface ButtonProps {',
       '  label: string;',
       '}',

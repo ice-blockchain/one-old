@@ -64,6 +64,16 @@ export function materializeFixture(dir: string, kind: FixtureKind): string {
       writeProjectMarkers(dir, 'existing-react-vite');
       break;
     }
+    case 'existing-go-api': {
+      // A real Go project that never met Traffic One: no .traffic-one, no
+      // .golangci.yml, no generated anything. That is what lets it prove
+      // scaffold ABSENCE on existing-codebase mode — a project seeded from a
+      // greenfield run would already carry the configs phase 1 wrote.
+      const skeleton = path.join(FIXTURE_SRC_DIR, 'existing-go-api');
+      if (fs.existsSync(skeleton)) copyDir(skeleton, dir);
+      writeProjectMarkers(dir, 'existing-go-api', { git: false });
+      break;
+    }
     case 'existing-node-api': {
       const skeleton = path.join(FIXTURE_SRC_DIR, 'existing-node-api');
       if (fs.existsSync(skeleton)) copyDir(skeleton, dir);
