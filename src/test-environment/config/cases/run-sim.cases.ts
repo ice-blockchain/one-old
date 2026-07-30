@@ -95,6 +95,31 @@ const WEB_ASSERTIONS = [
   { id: 'run-sim-settlement' },
 ];
 
+// --- Laravel: NOT YET COVERED --------------------------------------------
+// Two Laravel shapes (Inertia React, and full-stack Blade) were built and then
+// withdrawn: the structural and i18n analyzers are materially incomplete for
+// Laravel, and all three gaps below are BLOCKING findings a real implementer
+// cannot clear. The generators for both shapes are kept in sources.ts
+// (laravelRoutes, bladeView, inertiaBootstrap) so the cases can be restored the
+// moment the analyzers support them.
+//
+//   1. Blade module references are invisible. importBindings (analyze.ts:25)
+//      parses only ES `import ... from`, so `@include('components.ProjectCard')`
+//      and `<x-project-card />` produce no binding and moduleReferenced can
+//      never be true — STRUCT_ORPHAN_MODULE fires on every planned Blade
+//      component, and the only way to reference a Blade partial IS a directive.
+//
+//   2. Laravel route parameters do not match the contract. A compiled route is
+//      `/courses/:slug`; Laravel's own syntax is `/courses/{slug}`. Nothing
+//      normalizes between them, so STRUCT_ROUTE_MODULE_MISMATCH fires on every
+//      parameterised route in a correct routes/web.php.
+//
+//   3. Blade directives read as user-facing copy. The markup scan's `>text<`
+//      rule captures `@include(...)` sitting between tags, so
+//      STRUCT_HARDCODED_COPY fires on idiomatic Blade.
+//
+// Reproduced end to end by this tier; see the increment 5 commit message.
+
 export const RUN_SIM_CASES: Case[] = [
   {
     id: 'sim-new-react-vite-supabase',

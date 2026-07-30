@@ -16,8 +16,18 @@ function architecture(): CompiledArchitectureV1 {
   return {
     profile: {
       profileId: 'vite-react',
+      // `framework` and `router` are read by the generators: the shell is
+      // framework-shaped, and the i18n primitive is asked of the product's own
+      // profileUsesReactI18n rather than re-derived here.
+      framework: 'react-vite',
+      router: 'react-router',
       roles: ['senior-frontend', 'senior-backend'],
       entrypoints: ['apps/web/src/main.tsx'],
+      sourceRoots: ['apps/web/src'],
+      layerRoots: { pages: [], components: [], features: [], lib: [] },
+      qaAdapters: ['playwright'],
+      surfaces: ['web-ui'],
+      skillBuckets: [],
     },
     modules: [
       { id: 'app-shell', kind: 'app-shell', name: 'App', output: 'apps/web/src/App.tsx', ownerRole: 'senior-frontend' },

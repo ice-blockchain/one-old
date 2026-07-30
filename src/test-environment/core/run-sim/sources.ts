@@ -19,6 +19,8 @@
 
 import * as path from 'path';
 
+import { profileUsesReactI18n } from '../../../shared/architecture-contract';
+
 import type { ImplementContext } from './assignments';
 
 const PM = 'pnpm@10.12.1';
@@ -227,11 +229,14 @@ function vueMainEntry(ctx: ImplementContext, rel: string): string {
   ].join('\n');
 }
 
-// True when the profile's i18n primitive is react-i18next (<Trans>/useTranslation).
-// Other web profiles are scanned as MARKUP, where any literal text between tags
-// is hardcoded copy and only expression children are accepted.
+// Which i18n primitive this profile uses. Asked of the PRODUCT rather than
+// re-derived from a profileId list: a hand-kept list said `server-rendered` was
+// not React, but Laravel+Inertia serves React pages and profileUsesReactI18n
+// says so — the generator then emitted `{t(...)}` as rendered child text, which
+// is STRUCT_I18N_REACT_TRANS. Any list I maintain here can drift from the one
+// the gate consults; this cannot.
 function usesReactI18n(ctx: ImplementContext): boolean {
-  return ['vite-react', 'next-app', 'next-pages'].includes(ctx.architecture.profile.profileId);
+  return profileUsesReactI18n(ctx.architecture.profile);
 }
 
 // The shell is framework-shaped. Emitting a react-router `<Routes>` everywhere
@@ -241,8 +246,28 @@ function usesReactI18n(ctx: ImplementContext): boolean {
 function appShell(ctx: ImplementContext, rel: string): string {
   const router = ctx.architecture.profile.router;
   if (router === 'next-app-router' || router === 'next-pages-router') return nextRootLayout();
+  if (router.startsWith('inertia')) return inertiaBootstrap();
   if (rel.endsWith('.vue')) return vueAppShell(router);
   return reactRouterShell(ctx, rel);
+}
+
+// Inertia's entrypoint mounts the page resolver and nothing else. It declares
+// no component of its own — pages are resolved by name from the Pages
+// directory — which is exactly what the entrypoint rule requires.
+function inertiaBootstrap(): string {
+  return [
+    "import { createInertiaApp } from '@inertiajs/react';",
+    "import { createElement } from 'react';",
+    "import { createRoot } from 'react-dom/client';",
+    '',
+    'void createInertiaApp({',
+    '  resolve: (name: string) => import(`./Pages/${name}.tsx`),',
+    '  setup({ el, App, props }) {',
+    '    createRoot(el).render(createElement(App, props));',
+    '  },',
+    '});',
+    '',
+  ].join('\n');
 }
 
 // A Next root layout only wraps children: no component tree, no router.
@@ -550,6 +575,20 @@ function catalogBody(
     return keys;
   };
   const namespaces = catalog.namespaces || [];
+  // Laravel keeps translations in `lang/<locale>/<ns>.php` as a returned array.
+  if (catalog.path.endsWith('.php')) {
+    const entries = namespaces.length === 1
+      ? keysFor(namespaces[0]!)
+      : Object.assign({}, ...namespaces.map((ns) => keysFor(ns))) as Record<string, string>;
+    return [
+      '<?php',
+      '',
+      'return [',
+      ...Object.entries(entries).map(([key, value]) => `    '${key}' => '${value}',`),
+      '];',
+      '',
+    ].join('\n');
+  }
   if (namespaces.length === 1) return json(keysFor(namespaces[0]!));
   const nested: Record<string, Record<string, string>> = {};
   for (const namespace of namespaces) nested[namespace] = keysFor(namespace);
@@ -866,6 +905,70 @@ function goSource(rel: string): string | null {
   return goRecord(rel);
 }
 
+// --- Laravel ---------------------------------------------------------------
+
+// Laravel binds routes to modules in `routes/web.php`, and that binding is what
+// STRUCT_ROUTE_MODULE_MISMATCH reads — Blade via `view('name')`, Inertia via
+// `Inertia::render('Name')`. Laravel's own path syntax is `{slug}`, not `:slug`.
+function laravelRoutes(ctx: ImplementContext): string {
+  const inertia = ctx.architecture.profile.router.startsWith('inertia');
+  const lines = ctx.architecture.routes
+    .filter((route) => !route.redirect)
+    .map((route) => {
+      const laravelPath = route.path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
+      const output = route.moduleOutput;
+      if (inertia) {
+        const name = /^resources\/js\/(?:Pages|pages)\/(.+)$/.exec(
+          output.replace(/\.(tsx?|jsx?|vue)$/, ''),
+        )?.[1] || path.basename(output).replace(/\.[^.]+$/, '');
+        return `Route::get('${laravelPath}', fn () => Inertia::render('${name}'));`;
+      }
+      const view = output
+        .replace(/^resources\/views\//, '')
+        .replace(/\.blade\.php$/, '')
+        .replace(/\//g, '.');
+      return `Route::get('${laravelPath}', fn () => view('${view}'));`;
+    });
+  return [
+    '<?php',
+    '',
+    'use Illuminate\\Support\\Facades\\Route;',
+    ...(inertia ? ['use Inertia\\Inertia;'] : []),
+    '',
+    ...lines,
+    '',
+  ].join('\n');
+}
+
+// A Blade view: every visible string goes through `__()`, which the markup
+// scanner accepts because `{{ }}` is an expression, not literal text.
+function bladeView(ctx: ImplementContext, rel: string, kind: string): string {
+  const namespace = 'common';
+  if (kind === 'component') {
+    return [
+      '<article class="card">',
+      '    <h2>{{ $title }}</h2>',
+      '</article>',
+      '',
+    ].join('\n');
+  }
+  const components = ctx.architecture.modules.filter((module) => module.kind === 'component');
+  const includes = components.map((module) => {
+    const name = module.output
+      .replace(/^resources\/views\//, '')
+      .replace(/\.blade\.php$/, '')
+      .replace(/\//g, '.');
+    return `    @include('${name}', ['title' => __('${namespace}.cardTitle')])`;
+  });
+  return [
+    '<main class="page">',
+    `    <h1>{{ __('${namespace}.title') }}</h1>`,
+    ...includes,
+    '</main>',
+    '',
+  ].join('\n');
+}
+
 // --- the resolver ----------------------------------------------------------
 
 /**
@@ -885,6 +988,7 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   // workspace and Go in a Go module, and the module kind alone cannot tell them
   // apart. Getting this order wrong emits TypeScript into a .go file, which the
   // real `go build ./...` in phase 3 catches — loudly, but late.
+  if (rel === 'routes/web.php') return laravelRoutes(ctx);
   if (rel.endsWith('.go')) return goSource(rel);
   if (rel.endsWith('.py')) return pySource(rel);
   if (rel === 'pyproject.toml') {
@@ -911,12 +1015,17 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
 
   if (module) {
     const name = componentName(rel);
-    if (module.kind === 'app-shell') return appShell(ctx, rel);
+    if (module.kind === 'app-shell') {
+      if (rel.endsWith('.blade.php')) return bladeView(ctx, rel, 'component');
+      return appShell(ctx, rel);
+    }
     if (module.kind === 'page') {
+      if (rel.endsWith('.blade.php')) return bladeView(ctx, rel, 'page');
       if (rel.endsWith('.vue')) return vuePage(ctx, rel, name);
       return usesReactI18n(ctx) ? pageSource(ctx, rel, name) : markupSafePage(ctx, rel, name);
     }
     if (module.kind === 'component') {
+      if (rel.endsWith('.blade.php')) return bladeView(ctx, rel, 'component');
       return rel.endsWith('.vue') ? vueComponent(name) : componentSource(name);
     }
     if (module.kind === 'feature') return featureSource();
