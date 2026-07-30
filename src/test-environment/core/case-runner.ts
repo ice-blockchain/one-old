@@ -90,16 +90,18 @@ export async function runCase(
       return { blocker, runSim };
     }
     preseed(tmpDir, testCase.preSeed);
-    if (testCase.layer === 'run-sim' && testCase.runSim) {
-      // Run-sim: onboarding is pre-completed, then the whole post-onboarding
-      // chain runs with scripted role writes against the real gates.
-      runSim = runSimulatedRun(tmpDir, testCase, caseFolder);
-      fs.writeFileSync(path.join(caseFolder, 'run-sim.json'), JSON.stringify(runSim, null, 2));
-    }
     return { blocker, runSim };
   });
   const modelCatalogBlocker = seeded.blocker;
-  const runSim = seeded.runSim;
+
+  // Run-sim: onboarding is pre-completed above, then the whole post-onboarding
+  // chain runs with scripted role writes against the real gates. Separate from
+  // the sync seeding block because the QA phase awaits the real evidence runner.
+  let runSim: RunSimTranscript | null = null;
+  if (testCase.layer === 'run-sim' && testCase.runSim) {
+    runSim = await withCaseEnvAsync(env, () => runSimulatedRun(tmpDir, testCase, caseFolder));
+    fs.writeFileSync(path.join(caseFolder, 'run-sim.json'), JSON.stringify(runSim, null, 2));
+  }
 
   // The proof file must be created by the selected host runtime, never by a
   // previous attempt or by the in-process seed/materialization phase.

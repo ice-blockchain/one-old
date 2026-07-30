@@ -15,6 +15,9 @@ export const BRIEF_LEARNING =
   'create a modern learning platform with courses for web development. '
   + 'use latest tech, make it responsive. no admin area for now.';
 
+export const BRIEF_API =
+  'i want an api project with products listing, products info, news listing and info';
+
 export const RUN_SIM_CASES: Case[] = [
   {
     id: 'sim-new-react-vite-supabase',
@@ -71,5 +74,61 @@ export const RUN_SIM_CASES: Case[] = [
       { id: 'run-sim-plan-ready-artifacts' },
     ],
     notes: 'Shape 1: default stack, React/Vite + Supabase, with auth. The reference shape.',
+  },
+  {
+    id: 'sim-new-go-api',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_API },
+    },
+    runSim: {
+      brief: BRIEF_API,
+      architecture: {
+        schemaVersion: 1,
+        // No web surface: an API-only project has no routes to compile.
+        routes: [],
+        modules: [
+          { id: 'products-service', name: 'Products Service', kind: 'service' },
+          { id: 'news-service', name: 'News Service', kind: 'service' },
+          { id: 'store', name: 'Store', kind: 'store' },
+        ],
+      },
+      // No web-ui surface → uiImpact 'none' → requiredChecks are the stack
+      // trio, which the `stack` runner produces for real. This is the shape
+      // that was UNFINISHABLE before the v1 batch added that runner: the
+      // checks had no producer, so validateQaReportV2 rejected every report
+      // and settlement could never close.
+      qa: {
+        mode: 'stack',
+        // Pinned, because stackReportStatus returns `passed` whenever nothing
+        // FAILED — an all-`not-applicable` report would otherwise read as a
+        // pass. Go has a canonical form for all three.
+        expectChecks: {
+          'stack-build': 'passed',
+          'stack-test': 'passed',
+          'stack-lint': 'passed',
+        },
+      },
+    },
+    assertions: [
+      { id: 'state-matches-selection' },
+      { id: 'onboarding-complete' },
+      { id: 'run-sim-clean' },
+      { id: 'run-sim-plan-ready-artifacts' },
+      { id: 'run-sim-qa-evidence' },
+      { id: 'run-sim-settlement' },
+    ],
+    notes: 'Shape 7: Go API only. Requires `go` on PATH; the qa-evidence assertion reports INCONCLUSIVE rather than passing if the toolchain is missing.',
   },
 ];

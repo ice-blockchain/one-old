@@ -394,6 +394,144 @@ function e2eSpec(): string {
   ].join('\n');
 }
 
+// --- Go --------------------------------------------------------------------
+// A real compilable module: `go build ./...` and `go test ./...` actually run
+// in this tier, so these have to be correct Go, not Go-shaped text.
+
+function goPackage(rel: string): string {
+  const dir = path.dirname(rel);
+  return dir === '.' ? 'main' : path.basename(dir);
+}
+
+function goStore(rel: string): string {
+  return [
+    `package ${goPackage(rel)}`,
+    '',
+    '// Store holds the in-memory catalogue the services read from.',
+    'type Store struct {',
+    '\tproducts []Product',
+    '\tnews     []NewsItem',
+    '}',
+    '',
+    '// NewStore builds a store seeded with the demo catalogue.',
+    'func NewStore() *Store {',
+    '\treturn &Store{',
+    '\t\tproducts: []Product{',
+    '\t\t\t{ID: "p-1", Slug: "desk-lamp", Title: "Desk Lamp"},',
+    '\t\t\t{ID: "p-2", Slug: "notebook", Title: "Notebook"},',
+    '\t\t},',
+    '\t\tnews: []NewsItem{',
+    '\t\t\t{ID: "n-1", Slug: "launch", Title: "We launched"},',
+    '\t\t},',
+    '\t}',
+    '}',
+    '',
+    '// Products returns every product in the catalogue.',
+    'func (s *Store) Products() []Product {',
+    '\treturn s.products',
+    '}',
+    '',
+    '// News returns every news item in the catalogue.',
+    'func (s *Store) News() []NewsItem {',
+    '\treturn s.news',
+    '}',
+    '',
+  ].join('\n');
+}
+
+function goProducts(rel: string): string {
+  return [
+    `package ${goPackage(rel)}`,
+    '',
+    '// Product is one catalogue entry.',
+    'type Product struct {',
+    '\tID    string',
+    '\tSlug  string',
+    '\tTitle string',
+    '}',
+    '',
+    '// ListProducts returns the full product listing.',
+    'func ListProducts(s *Store) []Product {',
+    '\treturn s.Products()',
+    '}',
+    '',
+    '// ProductBySlug resolves a single product by its slug.',
+    'func ProductBySlug(s *Store, slug string) (Product, bool) {',
+    '\tfor _, product := range s.Products() {',
+    '\t\tif product.Slug == slug {',
+    '\t\t\treturn product, true',
+    '\t\t}',
+    '\t}',
+    '\treturn Product{}, false',
+    '}',
+    '',
+  ].join('\n');
+}
+
+function goNews(rel: string): string {
+  return [
+    `package ${goPackage(rel)}`,
+    '',
+    '// NewsItem is one published article.',
+    'type NewsItem struct {',
+    '\tID    string',
+    '\tSlug  string',
+    '\tTitle string',
+    '}',
+    '',
+    '// ListNews returns the full news listing.',
+    'func ListNews(s *Store) []NewsItem {',
+    '\treturn s.News()',
+    '}',
+    '',
+    '// NewsBySlug resolves a single news item by its slug.',
+    'func NewsBySlug(s *Store, slug string) (NewsItem, bool) {',
+    '\tfor _, item := range s.News() {',
+    '\t\tif item.Slug == slug {',
+    '\t\t\treturn item, true',
+    '\t\t}',
+    '\t}',
+    '\treturn NewsItem{}, false',
+    '}',
+    '',
+  ].join('\n');
+}
+
+// Behaviour, not a grep over source text. Test function names are derived from
+// the file so three sibling test files cannot collide.
+function goTest(rel: string): string {
+  const suffix = path.basename(rel)
+    .replace(/_test\.go$/, '')
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+  return [
+    `package ${goPackage(rel)}`,
+    '',
+    'import "testing"',
+    '',
+    `func Test${suffix}SeedsCatalogue(t *testing.T) {`,
+    '\tstore := NewStore()',
+    '\tif len(store.Products()) == 0 {',
+    '\t\tt.Fatal("expected the store to seed products")',
+    '\t}',
+    '\tif len(store.News()) == 0 {',
+    '\t\tt.Fatal("expected the store to seed news")',
+    '\t}',
+    '}',
+    '',
+  ].join('\n');
+}
+
+function goSource(rel: string, kind: string | null): string | null {
+  const base = path.basename(rel);
+  if (/_test\.go$/.test(base)) return goTest(rel);
+  if (kind === 'store' || /store\.go$/.test(base)) return goStore(rel);
+  if (/products?_/.test(base)) return goProducts(rel);
+  if (/news_/.test(base)) return goNews(rel);
+  return null;
+}
+
 // --- the resolver ----------------------------------------------------------
 
 /**
@@ -408,6 +546,19 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   if (/(?:^|\/)(robots\.txt|sitemap\.xml)$/i.test(rel)) return null;
 
   const module = ctx.moduleAt(rel);
+
+  // Language dispatch comes FIRST: a `service` module is TypeScript in a Vite
+  // workspace and Go in a Go module, and the module kind alone cannot tell them
+  // apart. Getting this order wrong emits TypeScript into a .go file, which the
+  // real `go build ./...` in phase 3 catches — loudly, but late.
+  if (rel.endsWith('.go')) return goSource(rel, module?.kind ?? null);
+  if (rel === 'go.mod') {
+    return `module example.com/api\n\ngo 1.22\n`;
+  }
+  // No external dependencies, so there is nothing to record; an empty go.sum
+  // would be noise, not evidence.
+  if (rel === 'go.sum') return null;
+
   if (module) {
     const name = componentName(rel);
     if (module.kind === 'app-shell') return appShell(ctx, rel);

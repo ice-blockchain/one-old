@@ -19,6 +19,8 @@ import {
   readCompiledArchitecture,
   readRuntimeAssignments,
 } from '../../../shared/architecture-contract';
+import { main as qaMain } from '../../../runners/qa-evidence';
+import { readQaReportV2 } from '../../../shared/qa-report-v2';
 import { readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
 import { ensureRunHostCapability } from '../../../shared/host/capabilities';
 import type { Rec } from '../../../shared/obj';
@@ -26,7 +28,7 @@ import { readRunSettlement } from '../../../shared/run-settlement';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { materializeProjectFromState } from '../../../shared/materialize';
 import { readEffectiveState } from '../../../shared/state';
-import { ensureCurrentRunId } from '../../../shared/state/run-agent';
+import { ensureCurrentRunId, runVerificationState } from '../../../shared/state/run-agent';
 import { readVerificationContract } from '../../../shared/verification-contract';
 import type { Case } from '../types';
 
@@ -91,11 +93,11 @@ function architectWrites(runId: string, brief: string, state: Rec): ScriptedWrit
   return writes;
 }
 
-export function runSimulatedRun(
+export async function runSimulatedRun(
   cwd: string,
   testCase: Case,
   _caseFolder: string,
-): RunSimTranscript {
+): Promise<RunSimTranscript> {
   const started = Date.now();
   const spec = testCase.runSim!;
   const transcript: RunSimTranscript = {
@@ -257,7 +259,84 @@ export function runSimulatedRun(
   }
   transcript.phasesCompleted.push('implemented');
 
+  // --- Phase 3: verification ----------------------------------------------
+  // QA evidence comes from the REAL runner. For a contract with no browser
+  // surface that is the `stack` command, which spawns the project's own
+  // build/test/lint. Nothing is fabricated: if the toolchain is missing, the
+  // runner records `not-applicable` with the reason and the assertion reports
+  // an environment gap rather than a pass.
+  if (spec.qa.mode === 'stack') {
+    const qa = await runStackEvidence(cwd, runId);
+    transcript.facts.qaExitCode = qa.code;
+    transcript.facts.qaChecks = qa.checks;
+    if (qa.code !== 0) {
+      return finish(`phase-3 stack evidence failed (exit ${qa.code}): ${qa.detail}`);
+    }
+    transcript.phasesCompleted.push('qa');
+  } else {
+    // Browser evidence lands in increment 4. Until then the run legitimately
+    // stops here rather than faking a report — see the plan's QA fences.
+    transcript.facts.qaSkippedReason = 'browser evidence is not wired yet (increment 4)';
+    return finish();
+  }
+
+  // `browser` must exit 0 on a contract with no browser surface. Before the v1
+  // batch it fell through to loadRun, failed on the missing build manifest, and
+  // reported that instead of the real situation.
+  transcript.facts.browserExitCode = await runBrowserProbe(cwd, runId);
+
+  for (const [role, verdict] of [
+    ['senior-reviewer', 'APPROVED'],
+    ['senior-tester', 'TESTS_GREEN'],
+  ] as const) {
+    if (!bindRole(cwd, role)) return finish(`phase-3 could not bind a run claim for ${role}`);
+    const suffix = role.replace(/^senior-/, '');
+    const verdictDenied = applyAll(cwd, `digest:${role}`, role, [{
+      path: `.traffic-one/digests/${runId}/${suffix}.md`,
+      content: digestBody({
+        role,
+        runId,
+        verdict,
+        summary: `Reviewed the compiled work units and the published evidence for run ${runId}.`,
+      }),
+    }], transcript);
+    if (verdictDenied) return finish(`phase-3 ${verdict} denied: ${verdictDenied.reason}`);
+  }
+  transcript.phasesCompleted.push('verified');
+
+  transcript.facts.verificationState = runVerificationState(cwd, runId);
+  transcript.facts.settlementStatusFinal = readRunSettlement(cwd, runId)?.status;
   return finish();
+}
+
+// Run the real qa-evidence `stack` command in-process and report what it did.
+async function runStackEvidence(cwd: string, runId: string): Promise<{
+  code: number;
+  detail: string;
+  checks: Record<string, { status: string; summary: string }>;
+}> {
+  const code = await qaMain(
+    ['stack', '--run-id', runId, '--project-root', cwd],
+    cwd,
+  );
+  const report = readQaReportV2(cwd, runId);
+  const checks: Record<string, { status: string; summary: string }> = {};
+  let detail = '';
+  if (report.ok) {
+    // The SUMMARY is what separates "the project declares no such command"
+    // (a legitimate not-applicable) from "the command exists but could not be
+    // executed" (an environment gap that must never read as covered).
+    for (const check of report.report.checks) {
+      checks[check.id] = { status: check.status, summary: check.summary ?? '' };
+    }
+  } else {
+    detail = `${report.code}: ${report.message}`;
+  }
+  return { code, detail, checks };
+}
+
+async function runBrowserProbe(cwd: string, runId: string): Promise<number> {
+  return qaMain(['browser', '--run-id', runId, '--project-root', cwd], cwd);
 }
 
 function countAuthored(authored: Map<string, string[]>): number {
