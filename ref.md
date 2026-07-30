@@ -108,7 +108,7 @@ consumer.**
 | Codebase-graph artefact paths + read protocol | `rules/common/codebase-graph.md` | `agent-handoff-digests.md`, `project-memory.md` |
 | RED-GREEN-REFACTOR cycle, coverage tiers, AAA, test maxims | `tdd-workflow` skill | every `*-testing` / `*-tdd` skill |
 | Verification phase pipeline + VERIFICATION REPORT template | `verification-loop` skill | `*-verification` skills |
-| i18n detection, `<Trans>` vs `t()`, hardcoded-string exception | `i18n-text` skill | `create-*` skills, `rules/frontend/i18n.md` |
+| i18n detection, locale parity, React child `<Trans>` vs string-value `t()`, literal-brand exception | `i18n-text` skill | `create-*` skills, `rules/frontend/i18n.md` |
 | Design brief, anti-AI-slop, token mandate, `https://traffic.io/` setup-link contract, UI states | `rules/frontend/ui-quality.md` | `create-*`, `frontend-design`, `design-audit`, `design-system` |
 | Token-storage policy (no localStorage; httpOnly cookies) | `jwt-security` skill | `security-review`, `springboot-security` |
 | Post-deploy observability / replay-privacy / SLO / AI-fix policy | `observability` skill | `security.md`, `deployment-patterns`, frontend security rules |
@@ -279,7 +279,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `golang-patterns` | `skills/golang-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/golang-patterns/SKILL.md |
 | `golang-testing` | `skills/golang-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/golang-testing/SKILL.md |
 | `hexagonal-architecture` | `skills/hexagonal-architecture/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/hexagonal-architecture/SKILL.md |
-| `i18n-text` | `skills/i18n-text/SKILL.md` | Traffic One local i18n workflow — **canonical owner** of i18n detection, `<Trans>`/`t()`, hardcoded-string exception; `create-*` skills defer here. |
+| `i18n-text` | `skills/i18n-text/SKILL.md` | Traffic One local i18n workflow — **canonical owner** of new-UI defaults, locale parity, React child `<Trans>`/string-value `t()`, and exact literal-brand exceptions; `create-*` skills defer here. |
 | `ionic-mobile` | `skills/ionic-mobile/SKILL.md` | Traffic One local skill merging Mindrally Ionic concepts into React/Capacitor stack |
 | `java-coding-standards` | `skills/java-coding-standards/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/java-coding-standards/SKILL.md |
 | `jpa-patterns` | `skills/jpa-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/jpa-patterns/SKILL.md |

@@ -116,7 +116,7 @@ export function digestCompletionGates(ctx: {
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
           violations.push(block('frontend-structure-completion-gate',
-            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module. Integration findings block too: \`STRUCT_ORPHAN_MODULE\` (wire the planned component/feature into its page), \`STRUCT_API_CLIENT_UNUSED\` (pages must consume the planned API package, live-or-demo), \`STRUCT_TAILWIND_NO_TOOLCHAIN\` (Tailwind utilities with no tailwindcss dependency/config are inert). \`STRUCT_HARDCODED_COPY\` is advisory only.`,
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module. Integration findings block too: orphan modules, unused API packages, inert styling, and every i18n finding (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_RUNTIME\`, \`STRUCT_I18N_REACT_TRANS\`, \`STRUCT_I18N_CATALOG\`). React child copy uses \`<Trans>\` with namespace, key, and fallback; catalog keys are non-empty in every declared locale.`,
             { FINDINGS: summary }));
         }
       }

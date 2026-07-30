@@ -212,6 +212,11 @@ the architect digest. It contains semantic intent only:
   "modules": [
     { "id": "home-page", "name": "Home page", "kind": "page" }
   ],
+  "i18n": {
+    "sourceLocale": "en",
+    "locales": ["en", "ro"],
+    "literalBrands": ["Traffic One"]
+  },
   "exceptions": [
     {
       "ruleId": "<specific rule id>",
@@ -224,6 +229,10 @@ the architect digest. It contains semantic intent only:
 
 Allowed module kinds are `app-shell`, `page`, `component`, `feature`, `service`,
 `store`, and `test`. Every route target must reference a declared module.
+For a UI project, translate locale intent from the brief into `i18n`; omit it
+only when the brief is silent, in which case runtime defaults new UI projects
+to source/supported locale `en`. `literalBrands` contains only exact static
+brand strings the UI may render without a key.
 
 Declare the not-found route as the router's real catch-all, `"path": "*"`, and a
 parameterized route by its pattern, `"path": "/courses/:courseSlug"`. These are

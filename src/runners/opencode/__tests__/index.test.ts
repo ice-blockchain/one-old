@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
+import { delegate, delegateFromPlan, normalizeOpenCodeI18nScope, normalizePlanI18nUnits, normalizePlanRole, parsePlanDelegationQueue, postApplyI18n, postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { compileArchitecture, persistCompiledArchitecture } from '../../../shared/architecture-contract';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
@@ -1957,6 +1957,140 @@ test('Step-0 honours a contract that pins Tailwind before the manifest exists', 
     // A run id with no compiled contract falls back to the filesystem answer, so
     // the original 8co defect stays caught.
     assert.match(String(postApplyStyling(dir, [card], 'MISSING')), /Tailwind utilities/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode expands frontend scope with compiled locale catalogs and serializes shared catalogs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-'));
+  try {
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home', path: '/', moduleId: 'home-page' }],
+      modules: [
+        { id: 'home-page', name: 'Home', kind: 'page' },
+        { id: 'shared-card', name: 'Shared Card', kind: 'component' },
+      ],
+      i18n: { sourceLocale: 'en', locales: ['en', 'ro'] },
+    });
+    persistCompiledArchitecture(dir, architecture);
+    const home = architecture.modules.find((module) => module.id === 'home-page')!.output;
+    const card = architecture.modules.find((module) => module.id === 'shared-card')!.output;
+    const scope = normalizeOpenCodeI18nScope(dir, 'R', 'frontend', home);
+    assert.deepEqual(scope.injectedCatalogs.sort(), [
+      'packages/i18n/src/locales/en/home.json',
+      'packages/i18n/src/locales/ro/home.json',
+    ]);
+    assert.match(scope.prompt, /Every static React child string uses/);
+    assert.match(scope.prompt, /declared locales: en, ro/);
+    assert.match(scope.prompt, /Never render `\{t\(\.\.\.\)\}` as a React child/i);
+
+    const normalized = normalizePlanI18nUnits(dir, 'R', [
+      { id: 'card-a', role: 'frontend', files: card, task: 'create shared card' },
+      { id: 'card-b', role: 'frontend', files: card, task: 'refine shared card' },
+    ]);
+    assert.equal(normalized.errors.size, 0);
+    assert.ok(normalized.units[0]!.files.includes('locales/en/common.json'));
+    assert.deepEqual(normalized.units[1]!.dependsOn, ['card-a']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('postApplyI18n rejects rendered t()/hardcoded copy and accepts Trans with locale parity', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-verify-'));
+  try {
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home', path: '/', moduleId: 'home-page' }],
+      modules: [{ id: 'home-page', name: 'Home', kind: 'page' }],
+      i18n: { sourceLocale: 'en', locales: ['en', 'ro'] },
+    });
+    persistCompiledArchitecture(dir, architecture);
+    const home = architecture.modules[0]!.output;
+    fs.mkdirSync(path.dirname(path.join(dir, home)), { recursive: true });
+    fs.writeFileSync(path.join(dir, home), [
+      "import { useTranslation } from 'react-i18next';",
+      'export default function Home() {',
+      "  const { t } = useTranslation('home');",
+      '  return <main><h1>Welcome</h1><button>{t("save")}</button></main>;',
+      '}',
+    ].join('\n'));
+    assert.match(String(postApplyI18n(dir, [home], 'R', 'frontend')), /i18n contract|STRUCT_/i);
+
+    fs.writeFileSync(path.join(dir, home), [
+      "import { Trans } from 'react-i18next';",
+      'export default function Home() {',
+      '  return <main><h1><Trans ns="home" i18nKey="welcome">Welcome</Trans></h1></main>;',
+      '}',
+    ].join('\n'));
+    const catalogs = architecture.i18n!.catalogs.filter((catalog) => catalog.namespaces.includes('home'));
+    for (const catalog of catalogs) {
+      fs.mkdirSync(path.dirname(path.join(dir, catalog.path)), { recursive: true });
+      fs.writeFileSync(path.join(dir, catalog.path), JSON.stringify({
+        welcome: catalog.locales.includes('ro') ? 'Bun venit' : 'Welcome',
+      }));
+    }
+    assert.equal(postApplyI18n(
+      dir,
+      [home, ...catalogs.map((catalog) => catalog.path)],
+      'R',
+      'frontend',
+    ), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ad-hoc OpenCode reuses detected catalogs and fails closed when runtime catalogs are unknown', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-adhoc-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: {
+        react: '19.0.0',
+        vite: '7.0.0',
+        i18next: '25.0.0',
+        'react-i18next': '16.0.0',
+      },
+    }));
+    const source = 'apps/web/src/Home.tsx';
+    const en = 'apps/web/src/i18n/locales/en/common.json';
+    const ro = 'apps/web/src/i18n/locales/ro/common.json';
+    for (const [relative, body] of [
+      [source, 'export const Home = () => <h1><Trans ns="common" i18nKey="welcome">Welcome</Trans></h1>;'],
+      [en, JSON.stringify({ welcome: 'Welcome' })],
+      [ro, JSON.stringify({ welcome: 'Bun venit' })],
+    ] as const) {
+      fs.mkdirSync(path.dirname(path.join(dir, relative)), { recursive: true });
+      fs.writeFileSync(path.join(dir, relative), body);
+    }
+
+    const scope = normalizeOpenCodeI18nScope(dir, '', 'frontend', source);
+    assert.equal(scope.error, null);
+    assert.deepEqual(scope.injectedCatalogs, [en, ro]);
+    assert.match(scope.prompt, /declared locales: en, ro/);
+    assert.equal(postApplyI18n(dir, [source, en, ro], '', 'frontend'), null);
+
+    fs.writeFileSync(path.join(dir, ro), JSON.stringify({}));
+    assert.match(String(postApplyI18n(dir, [source, ro], '', 'frontend')), /STRUCT_I18N_CATALOG/);
+
+    fs.rmSync(path.join(dir, 'apps'), { recursive: true, force: true });
+    const closed = normalizeOpenCodeI18nScope(dir, '', 'frontend', 'src/Home.tsx');
+    assert.match(closed.error || '', /fails closed/);
+    assert.deepEqual(closed.injectedCatalogs, []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

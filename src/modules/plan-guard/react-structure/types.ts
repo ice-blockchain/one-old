@@ -18,6 +18,9 @@ export type StructureFindingId =
   | 'STRUCT_API_CLIENT_UNUSED'
   | 'STRUCT_TAILWIND_NO_TOOLCHAIN'
   | 'STRUCT_HARDCODED_COPY'
+  | 'STRUCT_I18N_RUNTIME'
+  | 'STRUCT_I18N_REACT_TRANS'
+  | 'STRUCT_I18N_CATALOG'
   | 'STRUCT_LAYER_MISMATCH'
   | 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP'
   | 'STRUCT_SCAN_INCOMPLETE'
@@ -123,6 +126,6 @@ export interface CacheEntry {
   analysis: SourceAnalysis;
 }
 
-export const STRUCTURAL_SOURCE_RE = /\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|html|php|css|scss)$/i;
+export const STRUCTURAL_SOURCE_RE = /\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|html|php|css|scss|swift|kt|dart)$/i;
 export const ANALYZABLE_UI_RE = /\.(?:tsx?|jsx?|mjs|cjs|vue)$/i;
 export const SKIP_RE = /(^|\/)(?:\.git|\.traffic-one|node_modules|dist|build|coverage|out|\.turbo|\.next|\.vite|generated|__generated__|tests?|__tests__|fixtures?|stories)(?:\/|$)|\.(?:test|spec|stories?)\.[^.]+$/i;

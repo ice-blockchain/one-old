@@ -20,7 +20,8 @@ runtime-compiled architecture contract. They own:
 - allowed outputs and assignment allowlists;
 - verification adapters and required QA.
 
-The architect supplies semantic routes, modules, and narrow exception requests.
+The architect supplies semantic routes, modules, optional i18n locale/exact-brand
+intent, and narrow exception requests.
 It must not write profile ids, roots, output paths, ownership, scanner limits,
 baseline data, or verification requirements into its input. If a needed output
 is absent, replan and recompile before implementation; never widen the contract
@@ -42,6 +43,9 @@ during a child run.
    source, test, config, or generated artifact is a replan, not an ad-hoc write.
 6. Run the selected verification adapters and stack-native build, lint, and test
    commands. Missing required tooling is `blocked-environment`, never verified.
+7. For every compiled UI surface, wire the profile-native i18n runtime/resources
+   before feature copy and satisfy locale key parity. Apply the selected
+   frontend profile's rendering primitive from `rules/frontend/i18n.md`.
 
 The runtime materializes a profile-specific new-project rule only when the
 selected profile has one. Read that rule before scaffolding. If no

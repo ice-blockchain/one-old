@@ -338,6 +338,7 @@ export {
   WORK_UNIT_CONTRACT_SCHEMA_VERSION,
   type ArchitectureBaselineV1,
   type ArchitectureExceptionRequestV1,
+  type ArchitectureI18nInputV1,
   type ArchitectureInputV1,
   type ArchitectureModuleInputV1,
   type ArchitectureModuleKind,
@@ -348,11 +349,21 @@ export {
   type CompiledArchitectureModuleV1,
   type CompiledArchitectureOutputV1,
   type CompiledArchitectureV1,
+  type CompiledI18nCatalogFormatV1,
+  type CompiledI18nCatalogV1,
+  type CompiledI18nContractV1,
   type CompiledOutputKindV1,
   type RuntimeAssignmentEntryV1,
   type RuntimeAssignmentsV1,
   type WorkUnitContractV1,
 } from './types';
+export {
+  architectureI18nNamespaces,
+  i18nScaffoldOutputs,
+  profileHasUi,
+  profileUsesReactI18n,
+  resolveArchitectureI18n,
+} from './i18n';
 export {
   canonicalRoutePath,
   stableContractJson,

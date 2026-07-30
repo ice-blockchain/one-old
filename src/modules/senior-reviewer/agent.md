@@ -76,9 +76,9 @@ You are read-only by design (no Write/Edit tool); your verdict is the only artef
   site-url env docs, private/admin noindex, and regression coverage.
 - `i18n-text` — when the diff touches frontend UI, copy, forms, labels,
   accessibility text, setup banners, or existing translation catalogs. Check
-  that the detected framework's i18n module is extended, same-change catalog
-  entries exist, and rich copy uses its native component/message interpolation
-  mechanism (`<Trans>` only for React profiles).
+  that the profile's i18n module is wired/extended, every declared locale has a
+  non-empty same-change entry, and every static React child uses `<Trans>` with
+  literal `ns`, `i18nKey`, and fallback. Reject rendered child `t()`.
 - `project-memory` — when `.traffic-one/` files changed or should have changed;
   check product/stack/rules/known issues/schema/agent log/ADR/deploy memory for
   accuracy, brevity, and absence of secrets.
@@ -167,10 +167,11 @@ CHANGES_REQUESTED — <one line summary>.
   changed public route. Private/admin routes are `noindex,nofollow`, and SPA
   ranking caveats are documented when no prerender/static rendering or host
   support exists.
-- New or changed UI in a project with i18n extends the existing translation
-  module automatically, uses catalog keys for user-facing copy, adds same-change
-  source-language entries, and uses the active framework's rich-message
-  mechanism instead of concatenating translated fragments.
+- New UI projects include the framework-native provider/runtime and complete
+  catalogs for every declared locale. Existing localized projects extend those
+  catalogs in the same change. React static child copy always uses
+  `<Trans ns="…" i18nKey="…">fallback</Trans>`; `t()` remains string-value-only,
+  and every referenced key is non-empty with locale parity.
 
 ## What "CHANGES_REQUESTED" means
 

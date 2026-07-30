@@ -95,7 +95,7 @@ Runtime contract gate: `.traffic-one/runs/<runId>/assignments.json` is generated
 <!-- T1BLOCK:END runtime-assignments-owner-gate -->
 
 <!-- T1BLOCK:BEGIN architecture-input-gate -->
-Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: {{ERRORS}}.
+Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, i18n locale/exact-brand intent, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: {{ERRORS}}.
 <!-- T1BLOCK:END architecture-input-gate -->
 
 <!-- T1BLOCK:BEGIN architecture-input-shell-unverified -->
@@ -107,7 +107,7 @@ Architecture assignment gate: the runtime-compiled outputs are not covered befor
 <!-- T1BLOCK:END architecture-assignment-gate -->
 
 <!-- T1BLOCK:BEGIN architecture-contract-gate -->
-Architecture contract gate: do not emit `PLAN_READY` until the run's `architecture-input-v1.json` is valid and runtime compilation succeeds. {{ERROR}}. The architect may change only semantic routes/modules/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.
+Architecture contract gate: do not emit `PLAN_READY` until the run's `architecture-input-v1.json` is valid and runtime compilation succeeds. {{ERROR}}. The architect may change only semantic routes/modules/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.
 <!-- T1BLOCK:END architecture-contract-gate -->
 
 <!-- T1BLOCK:BEGIN verification-contract-scan-gate -->
@@ -179,7 +179,7 @@ Implementer crawl origin gate: `{{FILE}}` ships an unusable production origin �
 <!-- T1BLOCK:END implementer-crawl-origin-gate -->
 
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
-Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; `STRUCT_MODULE_LOC` blocks — split the module. Integration findings block too: `STRUCT_ORPHAN_MODULE` (a planned component/feature exists but nothing imports it — wire it into its page/feature), `STRUCT_API_CLIENT_UNUSED` (the planned API package is imported nowhere — pages must consume the typed client, live-or-demo), `STRUCT_TAILWIND_NO_TOOLCHAIN` (Tailwind utilities with no tailwindcss dependency/config — the classes are inert; install Tailwind or restyle with the project's actual styling system). `STRUCT_HARDCODED_COPY` is advisory only.
+Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; `STRUCT_MODULE_LOC` blocks — split the module. Integration findings block too: orphan modules, unused API packages, inert styling, and every i18n finding (`STRUCT_HARDCODED_COPY`, `STRUCT_I18N_RUNTIME`, `STRUCT_I18N_REACT_TRANS`, `STRUCT_I18N_CATALOG`). React child copy uses `<Trans>` with namespace, key, and fallback; catalog keys are non-empty in every declared locale.
 <!-- T1BLOCK:END frontend-structure-completion-gate -->
 
 <!-- T1BLOCK:BEGIN reviewer-structure-gate -->

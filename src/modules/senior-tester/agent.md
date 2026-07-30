@@ -91,7 +91,12 @@ everyone else.
 4. Scan changed typed source for broad suppression (`@ts-nocheck`,
    `@ts-ignore`, equivalents) and fail when newly introduced.
 5. Test public metadata/i18n/accessibility only when the active capabilities
-   include those surfaces.
+   include those surfaces. For new UI projects, assert the provider/runtime,
+   exact framework-native catalog paths, and non-empty key parity across every
+   declared locale. For changed UI in an existing localized project, reject
+   hardcoded copy, rendered-child `t()`, incomplete `<Trans>` (`ns`,
+   `i18nKey`, or fallback missing), and missing catalog keys without turning
+   untouched legacy backlog into a test migration.
 6. Run canonical root test/build/lint/typecheck/format commands that exist and
    are relevant to the stack. Name exact commands and actual outcomes.
 7. Measure changed-surface coverage when configured. Never invent a percentage;

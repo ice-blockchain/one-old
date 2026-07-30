@@ -35,7 +35,7 @@ description: "Apply when orchestrating the senior role team (architect/frontend/
 - Every role spawn AND continuation prompt MUST include the structured marker `[t1-role: senior-<role>]` in a recognized task record. First-line placement is a template convention, not a parser requirement. On Codex the exact `task_name` plus line-zero session metadata is the strongest identity — always pass it when the spawn tool exposes the field; when the exposed spawn tool has NO `task_name` field, the first-line marker in the spawn message is the identity channel (child rollouts record the spawn prompt readably and the gates recover the role from it). Spawn senior roles from the ROOT orchestrator only — never nested from another senior child (hosts attribute nested edits to the spawning child, so the nested worker's writes to the role's files are denied).
 - A UI implementer prompt includes only baselines selected by its capability
   profile and work unit. Web UI may require its existing/new i18n catalog,
-  `<Trans>` for rich React copy, SEO tests for changed public routes, and
+  `<Trans>` with fallback for every static React child, SEO tests for changed public routes, and
   configured-backend degraded/demo states. Native UI uses native localization
   and emulator QA instead; API/CLI/worker/data profiles receive none of these
   browser/SEO instructions. A Supabase setup CTA and

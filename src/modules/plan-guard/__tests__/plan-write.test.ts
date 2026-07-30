@@ -161,7 +161,11 @@ test('OpenCode and Kilo documented output.args edits are reconstructed before st
     const relativeFile = 'apps/web/src/components/Greeting.tsx';
     const absoluteFile = path.join(cwd, relativeFile);
     fs.mkdirSync(path.dirname(absoluteFile), { recursive: true });
-    fs.writeFileSync(absoluteFile, 'export function Greeting() { return <p>Old</p>; }\n', 'utf8');
+    fs.writeFileSync(
+      absoluteFile,
+      'export function Greeting({ name }: { name: string }) { return <p>{name}</p>; }\n',
+      'utf8',
+    );
 
     for (const [host, adapter] of [
       ['opencode', makeOpenCodeAdapter()],
@@ -175,8 +179,8 @@ test('OpenCode and Kilo documented output.args edits are reconstructed before st
           output: {
             args: {
               file_path: relativeFile,
-              old_string: 'Old',
-              new_string: 'New',
+              old_string: 'Greeting',
+              new_string: 'WelcomeGreeting',
             },
           },
         }),

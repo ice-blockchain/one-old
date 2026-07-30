@@ -151,7 +151,9 @@ instead of creating it out of scope.
      in the shared package.
    - Wire `packages/i18n` into the app provider chain before adding generated
      page/feature UI. All starter copy, navigation labels, setup banners, and
-     state text use catalog keys; rich copy with links uses `<Trans>`.
+     state text use locale-parity catalog keys. Every static React child,
+     simple or rich, uses `<Trans ns="…" i18nKey="…">fallback</Trans>`; use
+     `t()` only for string-valued props, metadata, validation, and imperative APIs.
    - Wire Redux store with `api-client` RTK Query and one starter feature slice.
    - Set up Storybook for `packages/ui` (Vite builder).
    - Set up Playwright with one smoke spec hitting `/`, and wire the root `e2e`

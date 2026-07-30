@@ -31,6 +31,7 @@ import {
 } from './git-sandbox';
 import {
   postApplyQuality,
+  postApplyI18n,
   postApplySize,
   postApplyStyling,
   postApplyTypecheck,
@@ -211,6 +212,12 @@ export function runModel(cwd: string, bin: string, baseSha: string, model: strin
       const rollbackError = restoreApplyTargets(backups);
       const rollbackSuffix = rollbackError ? `; rollback failed: ${rollbackError}` : '';
       return { kind: 'failed', error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}${rollbackSuffix}` };
+    }
+    const i18nError = postApplyI18n(cwd, touched, policy.runId, policy.role);
+    if (i18nError) {
+      const rollbackError = restoreApplyTargets(backups);
+      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+      return { kind: 'failed', error: `delegated diff applied but violated the i18n contract${suffix}: ${i18nError}` };
     }
     const verifyError = postApplyTypecheck(cwd, touched);
     if (verifyError) {

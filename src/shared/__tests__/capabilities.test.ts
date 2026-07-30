@@ -355,6 +355,7 @@ test('Python script/CLI is backend-only and native Swift/Kotlin use emulator ada
       stack: 'custom-frontend', frontend: 'none', backend: 'none', mobile: { framework: 'swift-native' },
     });
     assert.equal(skills.has('app-launch-checklist'), true);
+    assert.equal(skills.has('i18n-text'), true);
     assert.equal(skills.has('browser-qa'), false);
   });
 
@@ -365,6 +366,9 @@ test('Python script/CLI is backend-only and native Swift/Kotlin use emulator ada
     });
     assert.equal(kotlin.profileId, 'kotlin-native');
     assert.deepEqual(kotlin.qaAdapters, ['android-emulator']);
+    assert.equal(activeSkillsForProject(cwd, {
+      stack: 'custom-frontend', frontend: 'none', backend: 'none', mobile: { framework: 'kotlin-android' },
+    }).has('i18n-text'), true);
   });
 });
 
@@ -384,6 +388,7 @@ test('React Native uses native QA skills and never receives browser-only Playwri
     assert.deepEqual(profile.qaAdapters, ['maestro']);
     const skills = activeSkillsForProject(cwd, state);
     assert.equal(skills.has('create-native-screen'), true);
+    assert.equal(skills.has('i18n-text'), true);
     assert.equal(skills.has('e2e-testing'), false);
     assert.equal(skills.has('browser-qa'), false);
   });

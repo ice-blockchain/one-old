@@ -60,7 +60,9 @@ packages/
 ├── ui/src/index.ts
 ├── i18n/package.json
 ├── i18n/src/index.ts
-├── i18n/src/locales/en/common.json
+├── i18n/src/locales/<lang>/common.json
+├── i18n/src/locales/<lang>/<route-id>.json
+├── i18n/src/locales/<lang>/<feature-id>.json
 ├── tailwind-config/package.json
 └── tailwind-config/src/globals.css
 ```

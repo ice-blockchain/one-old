@@ -38,6 +38,9 @@ import {
 } from './maintenance';
 import { delegate } from './index';
 import { normalizePlanRole } from './diff-policy';
+import {
+  normalizePlanI18nUnits,
+} from './i18n';
 
 interface PlanDelegationResult {
   total: number;
@@ -85,7 +88,9 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   const maintenanceQueueSuppressed =
     isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined) &&
     !hasFreshArchitectQueueForRun(cwd, runId);
-  const queue = maintenanceQueueSuppressed ? [] : parsePlanDelegationQueue(planText);
+  const parsedQueue = maintenanceQueueSuppressed ? [] : parsePlanDelegationQueue(planText);
+  const normalizedI18n = normalizePlanI18nUnits(cwd, runId, parsedQueue);
+  const queue = normalizedI18n.units;
   const formalQueue = buildOpenCodeQueue(cwd, runId, queue);
   writeOpenCodeQueue(cwd, formalQueue);
   let entries = queue.map((unit, index) => ({ unit, formal: formalQueue.units[index]! }));
@@ -165,7 +170,11 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
         processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
         continue;
       }
-      const unitPolicyViolations = rejectAll ? policyReport.violations : (policyReport.byUnitId.get(formal.id) || []);
+      const unitPolicyViolations = [
+        ...(rejectAll ? policyReport.violations : (policyReport.byUnitId.get(formal.id) || [])),
+      ];
+      const i18nPolicyError = normalizedI18n.errors.get(u.id || `position-${entries.indexOf(entry) + 1}`);
+      if (i18nPolicyError) unitPolicyViolations.push(i18nPolicyError);
       if (unitPolicyViolations.length > 0) {
         const error = unitPolicyViolations.join('; ');
         if (runId) {
@@ -197,7 +206,9 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
           assignmentHash: formalQueue.assignmentHash,
         });
       }
-      const task = u.files ? `${u.task}\n\nFiles/area: ${u.files}` : u.task;
+      const task = formal.allowedFiles.length > 0
+        ? `${u.task}\n\nFiles/area: ${formal.allowedFiles.join(',')}`
+        : u.task;
       let r: DelegateResult;
       try {
         r = delegate(cwd, {

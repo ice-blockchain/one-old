@@ -41,10 +41,17 @@ export interface ArchitectureExceptionRequestV1 {
   reason: string;
 }
 
+export interface ArchitectureI18nInputV1 {
+  sourceLocale: string;
+  locales: string[];
+  literalBrands?: string[];
+}
+
 export interface ArchitectureInputV1 {
   schemaVersion: typeof ARCHITECTURE_INPUT_SCHEMA_VERSION;
   routes: ArchitectureRouteInputV1[];
   modules: ArchitectureModuleInputV1[];
+  i18n?: ArchitectureI18nInputV1;
   exceptions?: ArchitectureExceptionRequestV1[];
 }
 
@@ -98,6 +105,31 @@ export interface CompiledArchitectureOutputV1 {
   kind: CompiledOutputKindV1;
 }
 
+export type CompiledI18nCatalogFormatV1 =
+  | 'json'
+  | 'xlf'
+  | 'php'
+  | 'xcstrings'
+  | 'android-xml'
+  | 'arb';
+
+export interface CompiledI18nCatalogV1 {
+  path: string;
+  format: CompiledI18nCatalogFormatV1;
+  locales: string[];
+  namespaces: string[];
+}
+
+export interface CompiledI18nContractV1 {
+  sourceLocale: string;
+  locales: string[];
+  literalBrands: string[];
+  namespaces: string[];
+  reactCatalogLayout: boolean;
+  catalogs: CompiledI18nCatalogV1[];
+  runtimeOutputs: string[];
+}
+
 export interface CompiledArchitectureV1 {
   schemaVersion: typeof COMPILED_ARCHITECTURE_SCHEMA_VERSION;
   runId: string;
@@ -108,6 +140,8 @@ export interface CompiledArchitectureV1 {
   layers: CapabilityProfileV1['layerRoots'];
   routes: CompiledArchitectureRouteV1[];
   modules: CompiledArchitectureModuleV1[];
+  /** Resolved only for UI projects whose run owns or explicitly declares i18n. */
+  i18n?: CompiledI18nContractV1;
   /**
    * Runtime-derived scaffold/test outputs. Optional on read so v1.0.19
    * sidecars remain ignorable/parseable; every newly compiled contract emits

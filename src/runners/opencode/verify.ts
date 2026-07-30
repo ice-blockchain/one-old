@@ -16,6 +16,22 @@ import {
   tailwindToolchainPresent,
   tailwindUtilityEvidence,
 } from '../../shared/tailwind-evidence';
+import {
+  capabilityProfileForProject,
+} from '../../shared/capabilities';
+import {
+  readCompiledArchitecture,
+} from '../../shared/architecture-contract';
+import {
+  analyzeI18nSourceText,
+  detectExistingI18nContract,
+  projectDeclaresI18nRuntime,
+  validateI18nCatalogs,
+  type I18nReference,
+} from '../../shared/i18n-enforcement';
+import {
+  normalizeOpenCodeRole,
+} from '../../shared/opencode-queue';
 import { spawnTool } from '../../shared/spawn-tool';
 import {  readEffectiveState } from '../../shared/state';
 
@@ -288,6 +304,64 @@ export function postApplyStyling(cwd: string, touched: string[], runId = ''): st
     }
   }
   return null;
+}
+
+/**
+ * Reject delegated UI that bypasses the same i18n contract enforced at normal
+ * write/completion gates. This runs after the atomic apply so source and every
+ * auto-added locale catalog can be judged together; the caller restores all
+ * targets on any finding.
+ */
+export function postApplyI18n(
+  cwd: string,
+  touched: string[],
+  runId = '',
+  role = 'frontend',
+): string | null {
+  if (normalizeOpenCodeRole(role) !== 'frontend') return null;
+  const contract = runId ? readCompiledArchitecture(cwd, runId) : null;
+  if (!contract?.i18n && !projectDeclaresI18nRuntime(cwd, contract || undefined)) return null;
+  const profile = contract?.profile || capabilityProfileForProject(cwd, readEffectiveState(cwd));
+  const i18n = contract?.i18n || detectExistingI18nContract(cwd);
+  const references: I18nReference[] = [];
+  const findings = [];
+  for (const rel of touched) {
+    if (!/\.(?:tsx?|jsx?|vue|svelte|astro|html|blade\.php|swift|kt|dart)$/i.test(rel)) continue;
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+    } catch {
+      continue;
+    }
+    const source = analyzeI18nSourceText(rel, text, profile, i18n);
+    references.push(...source.references);
+    findings.push(...source.findings);
+  }
+  if (i18n) {
+    const namespaces = new Set(references.map((reference) => reference.namespace));
+    for (const catalog of i18n.catalogs) {
+      if (touched.includes(catalog.path)) {
+        for (const namespace of catalog.namespaces) namespaces.add(namespace);
+      }
+    }
+    if (namespaces.size > 0) {
+      findings.push(...validateI18nCatalogs(cwd, i18n, {
+        references,
+        namespaces: [...namespaces],
+        requireAllCatalogs: true,
+      }));
+    }
+  } else {
+    findings.push({
+      id: 'STRUCT_I18N_CATALOG' as const,
+      file: '<catalog>',
+      message: 'i18n runtime is present but no existing catalog contract can be detected safely.',
+    });
+  }
+  if (findings.length === 0) return null;
+  return findings.slice(0, 4).map((finding) => (
+    `${finding.file}${finding.line ? `:${finding.line}` : ''} ${finding.id}: ${finding.message}`
+  )).join(' | ');
 }
 
 /**

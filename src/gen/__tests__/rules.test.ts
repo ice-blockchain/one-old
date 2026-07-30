@@ -86,18 +86,17 @@ test('setup-gate evaluates pluginUse first, then makes auth and local preference
   assert.doesNotMatch(existing.content, /non-blocking popup/);
 });
 
-test('i18n rule shows the link-in-sentence <Trans> case + a greppable reviewer tell (10b t()-fragment regression)', () => {
+test('i18n rule requires <Trans> with fallback for every static React child', () => {
   const docs = generatedRuleTemplates(REPO_ROOT);
   const i18n = docs.find((d) => d.relPath === path.join('rules', 'frontend', 'i18n.md'));
   assert.ok(i18n);
-  // The MOST COMMON rich case (a sentence with an inline link) must be a worked
-  // before/after example, not just a generic "links" mention — that nuance is what
-  // 10b's frontend missed (LoginPage/SignupPage split it into t() fragments).
   assert.ok(i18n.content.includes("Don't have an account?"), 'common link-in-sentence example present');
   assert.ok(i18n.content.includes('<signup>Sign up</signup>'), '<Trans> components mapping shown');
-  // A concrete, greppable reviewer tell — not just a judgment call.
-  assert.match(i18n.content, /split sentence/i, 'split-sentence anti-pattern named');
-  assert.match(i18n.content, /never imports `?Trans`?/i, 'no-Trans-import-in-rich-UI is flagged');
+  assert.ok(i18n.content.includes('<Trans ns="common" i18nKey="save">Save</Trans>'),
+    'simple rendered child uses Trans with source fallback');
+  assert.match(i18n.content, /Do not render `\{t\("save"\)\}` as a React child/i);
+  assert.match(i18n.content, /literal `ns`, literal `i18nKey`, and non-empty/i);
+  assert.match(i18n.content, /every declared locale/i);
 });
 
 test('new policy rules exist and carry their canonical text', () => {

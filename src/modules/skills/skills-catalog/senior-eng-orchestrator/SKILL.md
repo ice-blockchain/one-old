@@ -228,7 +228,8 @@ greenfield build. Scope every phase to that one feature:
   pass, or the blocker is reported with the exact unverified risk.
 - Frontend completion criteria always include the automatic baselines when
   applicable, regardless of whether the user mentioned them: existing/new i18n
-  integration with same-change catalog entries and `<Trans>` for rich copy,
+  integration with same-change entries in every locale and `<Trans>` for every
+  static React child (`t()` only for string-valued APIs),
   SEO metadata/tests for every created or changed public route, and
   `https://traffic.io/` setup CTA href regression for touched missing-config
   surfaces.

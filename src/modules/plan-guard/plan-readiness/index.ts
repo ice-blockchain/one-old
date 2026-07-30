@@ -38,6 +38,14 @@ import {
 import { readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
 import {  matchesScope } from '../../../shared/scope';
 import {
+  analyzeI18nSourceText,
+  detectExistingI18nContract,
+  I18N_CATALOG_RE,
+  I18N_SOURCE_RE,
+  projectDeclaresI18nRuntime,
+  validateI18nCatalogs,
+} from '../../../shared/i18n-enforcement';
+import {
   isMaterialized,
   legacyStatePath,
   readRunAssignmentsResilient,
@@ -188,7 +196,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       const errors = architectureInputErrors(content);
       if (errors.length > 0) {
         violations.push(block('architecture-input-gate',
-          `Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: ${errors.join('; ')}.`,
+          `Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, i18n locale/exact-brand intent, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: ${errors.join('; ')}.`,
           { ERRORS: errors.join('; ') }));
       }
     } else {
@@ -234,9 +242,16 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   // Hot structural path: analyze only the touched file against the immutable
   // compiled contract and current work-unit allowlist. Numeric limits remain
   // warnings; robust responsibility/route/assignment findings deny immediately.
-  if (writingFeatureSource && /\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|php)$/i.test(filePath)) {
+  if (
+    (writingFeatureSource || writerRole === 'senior-frontend')
+    && (
+      /\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|php)$/i.test(filePath)
+      || I18N_SOURCE_RE.test(filePath)
+      || I18N_CATALOG_RE.test(filePath)
+    )
+  ) {
     const profile = capabilityProfileForRun(projectRoot, state);
-    if (profileHasWebUi(profile)) {
+    if (profileHasWebUi(profile) || profile.surfaces.includes('native-ui')) {
       invalidateStructureCache(path.join(projectRoot, filePath));
       const architecture = currentRunId
         ? readCompiledArchitecture(projectRoot, currentRunId)
@@ -248,14 +263,33 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         ? assignmentScopesForRole(projectRoot, currentRunId, writerRole)
         : [];
       const allowlist = scopes.flatMap((scope) => scope.include);
-      const findings = (scopedArchitecture
-        ? analyzeStructureTextAgainstContract(
-            filePath,
-            content,
-            scopedArchitecture,
-            writerRole ? { allowlist } : {},
-          )
-        : analyzeStructureText(filePath, content, profile, []))
+      const structuralFindings = profileHasWebUi(profile)
+        ? (scopedArchitecture
+          ? analyzeStructureTextAgainstContract(
+              filePath,
+              content,
+              scopedArchitecture,
+              writerRole ? { allowlist } : {},
+            )
+          : analyzeStructureText(filePath, content, profile, []))
+        : [];
+      const enforceI18n = state.mode === 'new-project'
+        || projectDeclaresI18nRuntime(projectRoot, architecture || undefined);
+      const i18n = architecture?.i18n || (enforceI18n ? detectExistingI18nContract(projectRoot) : undefined);
+      const sourceI18nFindings = enforceI18n && I18N_SOURCE_RE.test(filePath)
+        ? analyzeI18nSourceText(filePath, content, profile, i18n).findings
+        : [];
+      const changedCatalog = i18n?.catalogs.find((catalog) => catalog.path === filePath);
+      const catalogI18nFindings = enforceI18n && changedCatalog
+        ? validateI18nCatalogs(projectRoot, i18n!, {
+            namespaces: changedCatalog.namespaces,
+            requireAllCatalogs: false,
+            contentOverrides: { [filePath]: content },
+          })
+        : [];
+      const i18nFindings = [...sourceI18nFindings, ...catalogI18nFindings]
+        .map((finding) => ({ ...finding, severity: 'error' as const }));
+      const findings = [...structuralFindings, ...i18nFindings]
         .filter((finding) => finding.severity === 'error');
       if (findings.length > 0) {
         // Carry each finding's own message. Reporting only `ID (file:line)`
@@ -266,7 +300,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         // are forbidden here", reported BLOCKED twice, and burned a re-plan.
         const summary = structureFindingSummary(findings);
         violations.push(block('frontend-structure-hot-gate',
-          `Structural gate: ${summary}. Entrypoints may only bootstrap the app; route pages must be separate compiled modules. Formatting the same monolith across more lines does not satisfy this gate.`,
+          `Structural/i18n gate: ${summary}. Entrypoints may only bootstrap the app; route pages must be separate compiled modules. React child copy uses <Trans ns="…" i18nKey="…">fallback</Trans>; t() is reserved for string props, metadata, and imperative APIs.`,
           { FINDINGS: summary }));
       }
     }
@@ -401,7 +435,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         violations.push(block('architecture-contract-gate',
-          `Architecture contract gate: do not emit \`PLAN_READY\` until \`.traffic-one/runs/${runId || '<runId>'}/architecture-input-v1.json\` is valid and runtime compilation succeeds. ${message}. The architect may change only semantic routes/modules/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.`,
+          `Architecture contract gate: do not emit \`PLAN_READY\` until \`.traffic-one/runs/${runId || '<runId>'}/architecture-input-v1.json\` is valid and runtime compilation succeeds. ${message}. The architect may change only semantic routes/modules/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.`,
           { ERROR: message }));
       }
     }

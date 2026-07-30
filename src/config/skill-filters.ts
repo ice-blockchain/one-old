@@ -42,7 +42,7 @@ export const SKILL_FILTERS: Readonly<Record<string, Set<string>>> = {
     'app-launch-checklist',
   ]),
   'native-ui': new Set([
-    'design-audit', 'app-launch-checklist',
+    'i18n-text', 'design-audit', 'app-launch-checklist',
   ]),
   'backend-common': new Set([
     'backend-patterns',

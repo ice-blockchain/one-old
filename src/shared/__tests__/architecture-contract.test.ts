@@ -98,6 +98,76 @@ test('architecture input is semantic and cannot choose roots or output paths', (
   assert.ok(validation.errors.some((error) => error.includes('may not choose output paths')));
 });
 
+test('architecture i18n validates locale intent and compiles locale/namespace parity outputs', () => {
+  const localized: ArchitectureInputV1 = {
+    ...INPUT,
+    modules: [
+      ...INPUT.modules,
+      { id: 'courses-feature', name: 'Courses', kind: 'feature' },
+    ],
+    i18n: {
+      sourceLocale: 'en',
+      locales: ['en', 'ro'],
+      literalBrands: ['Traffic One'],
+    },
+  };
+  assert.equal(validateArchitectureInput(localized).ok, true);
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'localized', REACT_STATE, localized);
+    assert.deepEqual(compiled.i18n?.locales, ['en', 'ro']);
+    assert.deepEqual(compiled.i18n?.literalBrands, ['Traffic One']);
+    assert.deepEqual(compiled.i18n?.namespaces, [
+      'common',
+      'courses-feature',
+      'home-route',
+      'news-route',
+    ]);
+    for (const locale of ['en', 'ro']) {
+      for (const namespace of ['common', 'courses-feature', 'home-route', 'news-route']) {
+        assertScaffoldOwner(
+          compiled,
+          `packages/i18n/src/locales/${locale}/${namespace}.json`,
+          'senior-frontend',
+        );
+      }
+    }
+  });
+
+  for (const i18n of [
+    { sourceLocale: 'en', locales: ['ro'] },
+    { sourceLocale: '../en', locales: ['../en'] },
+    { sourceLocale: 'en', locales: ['en', 'en'] },
+    { sourceLocale: 'en', locales: ['en'], literalBrands: ['<script>'] },
+  ]) {
+    assert.equal(validateArchitectureInput({ ...INPUT, i18n }).ok, false);
+  }
+});
+
+test('new UI defaults to en while existing UI opts in explicitly', () => {
+  withProject((cwd) => {
+    const greenfield = compileArchitecture(cwd, 'new-ui', REACT_STATE, INPUT);
+    assert.equal(greenfield.i18n?.sourceLocale, 'en');
+    assert.deepEqual(greenfield.i18n?.locales, ['en']);
+
+    const existing = compileArchitecture(cwd, 'existing-ui', {
+      ...REACT_STATE,
+      mode: 'existing-codebase',
+    }, INPUT);
+    assert.equal(existing.i18n, undefined);
+    assert.ok(!existing.allowedOutputs.some((output) => output.includes('/locales/')));
+
+    const explicit = compileArchitecture(cwd, 'existing-i18n-request', {
+      ...REACT_STATE,
+      mode: 'existing-codebase',
+    }, {
+      ...INPUT,
+      i18n: { sourceLocale: 'en', locales: ['en', 'ro'] },
+    });
+    assert.deepEqual(explicit.i18n?.locales, ['en', 'ro']);
+    assert.ok(explicit.allowedOutputs.includes('packages/i18n/src/locales/ro/common.json'));
+  });
+});
+
 test('vite-react+supabase compiled outputs cover the standard surfaces the rules require', () => {
   withProject((cwd) => {
     const inputPath = architectureInputPath(cwd, 'R');
@@ -129,9 +199,11 @@ test('vite-react+supabase compiled outputs cover the standard surfaces the rules
     // The package manifest is what makes it a resolvable workspace member and
     // what the typecheck gate reads.
     assert.equal(byPath.get('packages/api-client/package.json'), 'senior-backend');
-    // 3cl: README + the canonical en locale catalog were in nobody's scope.
+    // README + every compiled locale/namespace catalog have an owner.
     assert.equal(byPath.get('README.md'), 'senior-frontend');
     assert.equal(byPath.get('packages/i18n/src/locales/en/common.json'), 'senior-frontend');
+    assert.equal(byPath.get('packages/i18n/src/locales/en/home-route.json'), 'senior-frontend');
+    assert.equal(byPath.get('packages/i18n/src/locales/en/news-route.json'), 'senior-frontend');
   });
 });
 
@@ -420,53 +492,63 @@ test('every root web profile compiles its exact framework scaffold beside Node t
     frontend: string;
     profileId: string;
     frameworkScaffolds: string[];
+    expectedI18n: string;
     setupPaths?: string[];
   }> = [
     {
       frontend: 'nextjs',
       profileId: 'next-app',
       frameworkScaffolds: ['package.json', 'next.config.ts', 'tsconfig.json'],
+      expectedI18n: 'i18n/locales/en/common.json',
     },
     {
       frontend: 'nextjs',
       profileId: 'next-pages',
       frameworkScaffolds: ['package.json', 'next.config.ts', 'tsconfig.json'],
+      expectedI18n: 'i18n/locales/en/common.json',
       setupPaths: ['pages'],
     },
     {
       frontend: 'nuxt',
       profileId: 'nuxt',
       frameworkScaffolds: ['package.json', 'nuxt.config.ts', 'tsconfig.json'],
+      expectedI18n: 'i18n/locales/en.json',
     },
     {
       frontend: 'vue',
       profileId: 'vue',
       frameworkScaffolds: ['package.json', 'vite.config.ts', 'tsconfig.json'],
+      expectedI18n: 'src/locales/en.json',
     },
     {
       frontend: 'sveltekit',
       profileId: 'sveltekit',
       frameworkScaffolds: ['package.json', 'svelte.config.js', 'vite.config.ts', 'tsconfig.json'],
+      expectedI18n: 'src/lib/i18n/en.json',
     },
     {
       frontend: 'svelte',
       profileId: 'svelte',
       frameworkScaffolds: ['package.json', 'vite.config.ts', 'tsconfig.json'],
+      expectedI18n: 'src/lib/i18n/en.json',
     },
     {
       frontend: 'astro',
       profileId: 'astro',
       frameworkScaffolds: ['package.json', 'astro.config.mjs', 'tsconfig.json'],
+      expectedI18n: 'src/i18n/en.json',
     },
     {
       frontend: 'angular',
       profileId: 'angular',
       frameworkScaffolds: ['package.json', 'angular.json', 'tsconfig.json'],
+      expectedI18n: 'src/locale/messages.en.xlf',
     },
     {
       frontend: 'other',
       profileId: 'generic-web',
       frameworkScaffolds: ['package.json'],
+      expectedI18n: 'src/locales/en.json',
     },
   ];
 
@@ -487,6 +569,7 @@ test('every root web profile compiles its exact framework scaffold beside Node t
       for (const output of fixture.frameworkScaffolds) {
         assertScaffoldOwner(compiled, output, 'senior-frontend');
       }
+      assertScaffoldOwner(compiled, fixture.expectedI18n, 'senior-frontend');
       for (const output of ['.prettierrc', '.prettierignore', '.nvmrc']) {
         assertScaffoldOwner(compiled, output, 'senior-frontend');
       }
@@ -494,6 +577,46 @@ test('every root web profile compiles its exact framework scaffold beside Node t
         assert.ok(!compiled.allowedOutputs.includes(output), `${fixture.profileId} excludes ${output}`);
       }
       assertNoRuntimeContextScaffolds(compiled);
+    });
+  }
+});
+
+test('native profiles compile their platform-native localization resources', () => {
+  const fixtures = [
+    {
+      framework: 'react-native-expo',
+      profileId: 'react-native',
+      expected: ['src/i18n/index.ts', 'src/i18n/locales/en/common.json'],
+    },
+    {
+      framework: 'swift-native',
+      profileId: 'swift-native',
+      expected: ['Localizable.xcstrings'],
+    },
+    {
+      framework: 'kotlin-android',
+      profileId: 'kotlin-native',
+      expected: ['app/src/main/res/values/strings.xml'],
+    },
+    {
+      framework: 'flutter',
+      profileId: 'flutter-native',
+      expected: ['l10n.yaml', 'lib/l10n/app_en.arb'],
+    },
+  ] as const;
+  for (const fixture of fixtures) {
+    withProject((cwd) => {
+      const compiled = compileArchitecture(cwd, `i18n-${fixture.profileId}`, {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: 'none',
+        backend: 'none',
+        mobile: { framework: fixture.framework },
+      }, INPUT);
+      assert.equal(compiled.profile.profileId, fixture.profileId);
+      for (const expected of fixture.expected) {
+        assertScaffoldOwner(compiled, expected, 'senior-frontend');
+      }
     });
   }
 });
@@ -579,6 +702,7 @@ test('Laravel compiles the Node and PHP formatter/testing boundaries without sha
       mobile: { framework: 'none' },
     }, INPUT);
     assert.equal(compiled.profile.profileId, 'server-rendered');
+    assertScaffoldOwner(compiled, 'lang/en/common.php', 'senior-frontend');
     assertScaffoldOwner(compiled, 'package.json', 'senior-frontend');
     assertScaffoldOwner(compiled, '.prettierrc', 'senior-frontend');
     assertScaffoldOwner(compiled, 'composer.json', 'senior-backend');
@@ -1153,7 +1277,10 @@ test('flat next-app compiles styling/i18n homes and the workspace declaration fo
       'postcss.config.mjs',
       'next-env.d.ts',
       'app/globals.css',
-      'messages/en.json',
+      'i18n/index.ts',
+      'i18n/locales/en/common.json',
+      'i18n/locales/en/home-route.json',
+      'i18n/locales/en/news-route.json',
     ]) {
       assert.ok(paths.includes(expected), `missing frontend scaffold ${expected}`);
       assert.equal(
@@ -1186,6 +1313,7 @@ test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs'
     assert.equal(compiled.profile.profileId, 'next-app');
     assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'apps/web/app/layout.tsx');
     assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'apps/web/app/news/page.tsx');
+    assert.ok(compiled.allowedOutputs.includes('apps/web/i18n/locales/en/common.json'));
   });
 
   withProject((cwd) => {
@@ -1224,6 +1352,7 @@ test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs'
       backend: 'laravel',
     }, INPUT);
     assert.equal(compiled.profile.router, 'inertia-react-router');
+    assert.ok(compiled.allowedOutputs.includes('resources/js/i18n/locales/en/common.json'));
     assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'resources/js/app.tsx');
     assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'resources/js/Pages/News.tsx');
   });

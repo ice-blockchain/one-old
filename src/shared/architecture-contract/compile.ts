@@ -51,6 +51,10 @@ import {
   workspaceManifestOutputs,
 } from './scaffold-tests';
 import {
+  i18nScaffoldOutputs,
+  resolveArchitectureI18n,
+} from './i18n';
+import {
   validateArchitectureInput,
 } from './validate';
 import {
@@ -238,9 +242,11 @@ export function compileArchitecture(
       ? [parentBackedEntrypoints[0]!]
       : entrypointCandidates.slice(0, 1);
   const isNewProject = obj(state)?.mode === 'new-project';
+  const i18n = resolveArchitectureI18n(profile, input, isNewProject, selectedEntrypoints);
   const scaffoldOutputs = resolveInitialScaffoldOwners(profile, [
     ...(isNewProject ? frontendScaffoldOutputs(profile) : []),
     ...(isNewProject ? nativeScaffoldOutputs(profile) : []),
+    ...((isNewProject || input.i18n) ? i18nScaffoldOutputs(i18n) : []),
     ...(isNewProject ? backendScaffoldOutputs(profile) : []),
     ...routeRegistrationOutputs(profile, input.routes),
     ...testerOutputs(profile, modules),
@@ -295,6 +301,7 @@ export function compileArchitecture(
     layers: profile.layerRoots,
     routes,
     modules,
+    ...(i18n ? { i18n } : {}),
     scaffoldOutputs,
     allowedOutputs,
     exceptions: input.exceptions || [],

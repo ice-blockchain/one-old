@@ -1,0 +1,849 @@
+// Dependency-free i18n enforcement shared by write/completion gates and the
+// OpenCode post-apply verifier. It deliberately reports source occurrences,
+// never a file-wide "i18n exists, therefore pass" signal.
+
+import * as fs from 'fs';
+import * as path from 'path';
+
+import type { CapabilityProfileV1 } from './capabilities';
+import {
+  profileUsesReactI18n,
+  type CompiledArchitectureV1,
+  type CompiledI18nCatalogV1,
+  type CompiledI18nContractV1,
+} from './architecture-contract';
+
+export type I18nEnforcementFindingId =
+  | 'STRUCT_I18N_RUNTIME'
+  | 'STRUCT_HARDCODED_COPY'
+  | 'STRUCT_I18N_REACT_TRANS'
+  | 'STRUCT_I18N_CATALOG';
+
+export interface I18nEnforcementFinding {
+  id: I18nEnforcementFindingId;
+  file: string;
+  line?: number;
+  message: string;
+}
+
+export interface I18nReference {
+  namespace: string;
+  key: string;
+  line: number;
+}
+
+export interface I18nSourceAnalysis {
+  findings: I18nEnforcementFinding[];
+  references: I18nReference[];
+}
+
+export const I18N_SOURCE_RE = /\.(?:tsx?|jsx?|vue|svelte|astro|html|blade\.php|swift|kt|dart)$/i;
+export const I18N_CATALOG_RE = /\.(?:json|php|xlf|xcstrings|xml|arb)$/i;
+
+function lineAt(text: string, index: number): number {
+  let line = 1;
+  for (let i = 0; i < index; i += 1) if (text.charCodeAt(i) === 10) line += 1;
+  return line;
+}
+
+function normalizeDisplayText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function visibleLiteral(value: string): boolean {
+  const normalized = normalizeDisplayText(value);
+  return /[\p{L}]/u.test(normalized) && normalized.length > 1;
+}
+
+function exactBrand(value: string, brands: readonly string[]): boolean {
+  const normalized = normalizeDisplayText(value);
+  return brands.some((brand) => normalized === normalizeDisplayText(brand));
+}
+
+function tagName(raw: string): string {
+  return /^<\/?\s*([A-Za-z][\w.:/-]*)/.exec(raw)?.[1] || '';
+}
+
+function literalAttribute(raw: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|\\s)${escaped}\\s*=\\s*(["'])([\\s\\S]*?)\\1`).exec(raw);
+  return match?.[2] ?? null;
+}
+
+function translatableLiteralAttributes(
+  raw: string,
+): Array<{ name: string; value: string; offset: number }> {
+  const out: Array<{ name: string; value: string; offset: number }> = [];
+  const re = /\b(placeholder|aria-label|alt|title|label|accessibilityLabel|accessibilityHint|children)\s*=\s*(["'])([\s\S]*?)\2/g;
+  for (let match = re.exec(raw); match; match = re.exec(raw)) {
+    out.push({ name: match[1]!, value: match[3]!, offset: match.index });
+  }
+  return out;
+}
+
+function fileTranslationNamespace(text: string): string {
+  return /\buseTranslation\s*\(\s*(['"])([^'"]+)\1/.exec(text)?.[2] || 'common';
+}
+
+function addTReferences(text: string, namespace: string, references: I18nReference[]): void {
+  const re = /(?:^|[^\w])t\s*\(\s*(['"])([^'"]+)\1/g;
+  for (let match = re.exec(text); match; match = re.exec(text)) {
+    const rawKey = match[2]!;
+    const split = /^([^:]+):(.+)$/.exec(rawKey);
+    references.push({
+      namespace: split?.[1] || namespace,
+      key: split?.[2] || rawKey,
+      line: lineAt(text, match.index),
+    });
+  }
+}
+
+function jsxTokens(text: string): Array<{ token: string; index: number }> {
+  const tokens: Array<{ token: string; index: number }> = [];
+  let index = 0;
+  let jsxDepth = 0;
+  while (index < text.length) {
+    const start = index;
+    const opener = text[index];
+    const jsxExpression = opener === '{' && jsxDepth > 0;
+    const jsxTag = opener === '<' && /^(?:<\/?[A-Za-z]|<>|<\/>)/.test(text.slice(index));
+    if (!jsxTag && !jsxExpression) {
+      index += 1;
+      while (index < text.length) {
+        const candidate = text[index];
+        if (candidate === '<' && /^(?:<\/?[A-Za-z]|<>|<\/>)/.test(text.slice(index))) break;
+        if (candidate === '{' && jsxDepth > 0) break;
+        index += 1;
+      }
+      tokens.push({ token: text.slice(start, index), index: start });
+      continue;
+    }
+    const closer = jsxTag ? '>' : '}';
+    let braces = jsxExpression ? 1 : 0;
+    let quote: string | null = null;
+    index += 1;
+    while (index < text.length) {
+      const ch = text[index]!;
+      if (quote) {
+        if (ch === '\\') index += 2;
+        else {
+          if (ch === quote) quote = null;
+          index += 1;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') {
+        quote = ch;
+        index += 1;
+        continue;
+      }
+      if (ch === '{') braces += 1;
+      else if (ch === '}') {
+        braces -= 1;
+        if (jsxExpression && braces === 0) {
+          index += 1;
+          break;
+        }
+      } else if (ch === closer && jsxTag && braces === 0) {
+        index += 1;
+        break;
+      }
+      index += 1;
+    }
+    const token = text.slice(start, index);
+    tokens.push({ token, index: start });
+    if (jsxTag) {
+      if (/^<\//.test(token)) jsxDepth = Math.max(0, jsxDepth - 1);
+      else if (!/\/\s*>$/.test(token)) jsxDepth += 1;
+    }
+  }
+  return tokens;
+}
+
+function reactSourceAnalysis(
+  file: string,
+  text: string,
+  i18n: CompiledI18nContractV1 | undefined,
+): I18nSourceAnalysis {
+  const findings: I18nEnforcementFinding[] = [];
+  const references: I18nReference[] = [];
+  const brands = i18n?.literalBrands || [];
+  const namespace = fileTranslationNamespace(text);
+  addTReferences(text, namespace, references);
+  if (!/<\/?[A-Za-z][^>]*>/.test(text)) return { findings, references };
+
+  type StackEntry = { name: string; trans: boolean; fallback: boolean; line: number };
+  const stack: StackEntry[] = [];
+  for (const { token, index } of jsxTokens(text)) {
+    if (token.startsWith('<')) {
+      const name = tagName(token);
+      if (!name) continue;
+      if (/^<\//.test(token)) {
+        const entryIndex = stack.map((entry) => entry.name).lastIndexOf(name);
+        if (entryIndex >= 0) {
+          const [entry] = stack.splice(entryIndex, stack.length - entryIndex);
+          if (entry?.trans && !entry.fallback) {
+            findings.push({
+              id: 'STRUCT_I18N_REACT_TRANS',
+              file,
+              line: entry.line,
+              message: '<Trans> must contain a non-empty source-language children fallback.',
+            });
+          }
+        }
+        continue;
+      }
+
+      const isTrans = name === 'Trans' || name.endsWith('.Trans');
+      if (isTrans) {
+        const ns = literalAttribute(token, 'ns');
+        const key = literalAttribute(token, 'i18nKey');
+        if (!ns || !key) {
+          findings.push({
+            id: 'STRUCT_I18N_REACT_TRANS',
+            file,
+            line: lineAt(text, index),
+            message: '<Trans> requires literal `ns` and `i18nKey` attributes.',
+          });
+        } else {
+          references.push({ namespace: ns, key, line: lineAt(text, index) });
+        }
+      }
+      for (const attr of translatableLiteralAttributes(token)) {
+        if (!visibleLiteral(attr.value) || exactBrand(attr.value, brands)) continue;
+        findings.push({
+          id: 'STRUCT_HARDCODED_COPY',
+          file,
+          line: lineAt(text, index + attr.offset),
+          message: attr.name === 'children'
+            ? 'User-facing React `children` text is hardcoded; render a <Trans> child with ns, i18nKey, and fallback.'
+            : `User-facing React \`${attr.name}\` text is hardcoded; use t() for string props/attributes.`,
+        });
+      }
+      if (/\bchildren\s*=\s*\{\s*(?:[\w$.]+\.)?t\s*\(/.test(token)) {
+        findings.push({
+          id: 'STRUCT_I18N_REACT_TRANS',
+          file,
+          line: lineAt(text, index),
+          message: 'React `children={t(...)}` is rendered child text; use a nested <Trans> element with visible fallback.',
+        });
+      }
+      const selfClosing = /\/\s*>$/.test(token);
+      if (isTrans && selfClosing) {
+        findings.push({
+          id: 'STRUCT_I18N_REACT_TRANS',
+          file,
+          line: lineAt(text, index),
+          message: '<Trans> may not be self-closing; provide visible source-language fallback children.',
+        });
+      } else if (!selfClosing) {
+        stack.push({ name, trans: isTrans, fallback: false, line: lineAt(text, index) });
+      }
+      continue;
+    }
+
+    const insideIgnoredTag = stack.some((entry) => /^(?:script|style|code|pre)$/i.test(entry.name));
+    if (insideIgnoredTag || stack.length === 0) continue;
+    const transEntry = [...stack].reverse().find((entry) => entry.trans);
+    if (token.startsWith('{')) {
+      if (transEntry) {
+        const literalFallback = /^\{\s*(["'])([\s\S]*?)\1\s*\}$/.exec(token)?.[2];
+        if (literalFallback && visibleLiteral(literalFallback)) transEntry.fallback = true;
+        continue;
+      }
+      if (/^\{\s*(?:[\w$.]+\.)?t\s*\(/.test(token)) {
+        findings.push({
+          id: 'STRUCT_I18N_REACT_TRANS',
+          file,
+          line: lineAt(text, index),
+          message: 'React rendered child text must use <Trans> with fallback; reserve t() for string props, metadata, and imperative APIs.',
+        });
+        continue;
+      }
+      const literal = /^\{\s*(["'])([\s\S]*?)\1\s*\}$/.exec(token)?.[2];
+      if (literal && visibleLiteral(literal) && !exactBrand(literal, brands)) {
+        findings.push({
+          id: 'STRUCT_HARDCODED_COPY',
+          file,
+          line: lineAt(text, index),
+          message: 'User-facing React child text is hardcoded; wrap it in <Trans> with ns, i18nKey, and fallback.',
+        });
+      }
+      continue;
+    }
+
+    if (!visibleLiteral(token)) continue;
+    if (transEntry) {
+      transEntry.fallback = true;
+      continue;
+    }
+    if (exactBrand(token, brands)) continue;
+    findings.push({
+      id: 'STRUCT_HARDCODED_COPY',
+      file,
+      line: lineAt(text, index),
+      message: 'User-facing React child text is hardcoded; wrap it in <Trans> with ns, i18nKey, and fallback.',
+    });
+  }
+  return { findings, references };
+}
+
+function markupSourceAnalysis(
+  file: string,
+  text: string,
+  i18n: CompiledI18nContractV1 | undefined,
+): I18nSourceAnalysis {
+  const findings: I18nEnforcementFinding[] = [];
+  const brands = i18n?.literalBrands || [];
+  const re = />([^<>{}]+)</g;
+  for (let match = re.exec(text); match; match = re.exec(text)) {
+    const value = match[1]!;
+    const before = text.slice(Math.max(0, match.index - 20), match.index);
+    if (/<(?:script|style|code|pre)[^>]*$/i.test(before)) continue;
+    if (!visibleLiteral(value) || exactBrand(value, brands)) continue;
+    findings.push({
+      id: 'STRUCT_HARDCODED_COPY',
+      file,
+      line: lineAt(text, match.index + 1),
+      message: 'User-facing template text is hardcoded; use the active framework localization primitive.',
+    });
+  }
+  const attrRe = /\b(placeholder|aria-label|alt|title)\s*=\s*(["'])([\s\S]*?)\2/g;
+  for (let match = attrRe.exec(text); match; match = attrRe.exec(text)) {
+    const value = match[3]!;
+    if (!visibleLiteral(value) || exactBrand(value, brands)) continue;
+    findings.push({
+      id: 'STRUCT_HARDCODED_COPY',
+      file,
+      line: lineAt(text, match.index),
+      message: `User-facing \`${match[1]}\` text is hardcoded; use the active framework localization primitive.`,
+    });
+  }
+  return { findings, references: [] };
+}
+
+function nativeSourceAnalysis(
+  file: string,
+  text: string,
+  i18n: CompiledI18nContractV1 | undefined,
+): I18nSourceAnalysis {
+  const findings: I18nEnforcementFinding[] = [];
+  const brands = i18n?.literalBrands || [];
+  const patterns = file.endsWith('.swift')
+    ? [/\b(?:Text|Button|navigationTitle|accessibilityLabel|accessibilityHint)\s*\(\s*"([^"]+)"/g]
+    : file.endsWith('.kt')
+      ? [/\b(?:Text|Button|contentDescription)\s*\(\s*(?:text\s*=\s*)?"([^"]+)"/g]
+      : [/\b(?:Text|Tooltip)\s*\(\s*(['"])(.*?)\1/g];
+  for (const re of patterns) {
+    for (let match = re.exec(text); match; match = re.exec(text)) {
+      const value = file.endsWith('.dart') ? match[2]! : match[1]!;
+      if (!visibleLiteral(value) || exactBrand(value, brands)) continue;
+      findings.push({
+        id: 'STRUCT_HARDCODED_COPY',
+        file,
+        line: lineAt(text, match.index),
+        message: 'User-facing native text is hardcoded; use the platform localization resource API.',
+      });
+    }
+  }
+  return { findings, references: [] };
+}
+
+export function analyzeI18nSourceText(
+  file: string,
+  text: string,
+  profile: CapabilityProfileV1,
+  i18n?: CompiledI18nContractV1,
+): I18nSourceAnalysis {
+  if (!I18N_SOURCE_RE.test(file)) return { findings: [], references: [] };
+  if (profileUsesReactI18n(profile) && /\.(?:tsx?|jsx?)$/i.test(file)) {
+    return reactSourceAnalysis(file, text, i18n);
+  }
+  if (/\.(?:swift|kt|dart)$/i.test(file)) return nativeSourceAnalysis(file, text, i18n);
+  return markupSourceAnalysis(file, text, i18n);
+}
+
+function manifestPaths(contract?: CompiledArchitectureV1): string[] {
+  const manifests = new Set(['package.json']);
+  for (const root of contract?.sourceRoots || []) {
+    const parts = root.replace(/\\/g, '/').split('/');
+    for (let depth = 1; depth < parts.length; depth += 1) {
+      manifests.add(`${parts.slice(0, depth).join('/')}/package.json`);
+    }
+  }
+  for (const output of contract?.scaffoldOutputs || []) {
+    if (output.path === 'package.json' || output.path.endsWith('/package.json')) {
+      manifests.add(output.path);
+    }
+  }
+  return [...manifests];
+}
+
+const DISCOVERY_SKIP_DIRS = new Set([
+  '.git',
+  '.traffic-one',
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  '.next',
+  '.nuxt',
+  '.svelte-kit',
+]);
+
+function discoverProjectFiles(
+  projectRoot: string,
+  accept: (relative: string) => boolean,
+  maxFiles = 512,
+): string[] {
+  const found: string[] = [];
+  const pending: Array<{ absolute: string; depth: number }> = [{ absolute: projectRoot, depth: 0 }];
+  while (pending.length > 0 && found.length < maxFiles) {
+    const current = pending.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current.absolute, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (found.length >= maxFiles) break;
+      const absolute = path.join(current.absolute, entry.name);
+      if (entry.isDirectory()) {
+        if (current.depth < 7 && !DISCOVERY_SKIP_DIRS.has(entry.name)) {
+          pending.push({ absolute, depth: current.depth + 1 });
+        }
+      } else if (entry.isFile()) {
+        const relative = path.relative(projectRoot, absolute).replace(/\\/g, '/');
+        if (accept(relative)) found.push(relative);
+      }
+    }
+  }
+  return found.sort();
+}
+
+const I18N_DEPENDENCIES = [
+  'i18next',
+  'react-i18next',
+  'next-intl',
+  'vue-i18n',
+  '@nuxtjs/i18n',
+  'svelte-i18n',
+  '@lingui/core',
+] as const;
+
+export function projectDeclaresI18nRuntime(
+  projectRoot: string,
+  contract?: CompiledArchitectureV1,
+): boolean {
+  let dependencyPresent = false;
+  const manifests = new Set(manifestPaths(contract));
+  if (!contract) {
+    for (const rel of discoverProjectFiles(projectRoot, (candidate) => (
+      candidate === 'package.json' || candidate.endsWith('/package.json')
+    ), 96)) {
+      manifests.add(rel);
+    }
+  }
+  for (const rel of manifests) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, rel), 'utf8')) as Record<string, unknown>;
+      for (const field of ['dependencies', 'devDependencies']) {
+        const deps = manifest[field];
+        if (deps && typeof deps === 'object' && !Array.isArray(deps)
+          && I18N_DEPENDENCIES.some((name) => Object.prototype.hasOwnProperty.call(deps, name))) {
+          dependencyPresent = true;
+        }
+      }
+    } catch {
+      // keep looking
+    }
+  }
+  if (dependencyPresent) {
+    return !contract?.i18n
+      || contract.i18n.runtimeOutputs.every((rel) => fs.existsSync(path.join(projectRoot, rel)));
+  }
+  if (contract?.i18n) {
+    if (profileUsesReactI18n(contract.profile)
+      || ['nuxt', 'vue', 'svelte', 'sveltekit', 'generic-web'].includes(contract.profile.profileId)) {
+      return false;
+    }
+    return [...contract.i18n.catalogs.map((catalog) => catalog.path), ...contract.i18n.runtimeOutputs]
+      .every((rel) => fs.existsSync(path.join(projectRoot, rel)));
+  }
+  const known = [
+    'Localizable.xcstrings',
+    'l10n.yaml',
+    'lang',
+    'locales',
+    'src/locales',
+    'src/i18n',
+    'packages/i18n',
+    'app/src/main/res/values/strings.xml',
+  ];
+  return known.some((rel) => fs.existsSync(path.join(projectRoot, rel)))
+    || discoverProjectFiles(projectRoot, (candidate) => (
+      /(?:^|\/)(?:locales|messages|lang|l10n)\//i.test(candidate)
+      && /\.(?:json|php|xlf|xcstrings|xml|arb)$/i.test(candidate)
+    ), 1).length > 0;
+}
+
+function flattenJson(
+  value: unknown,
+  prefix = '',
+  out = new Map<string, string>(),
+): Map<string, string> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (key.startsWith('@')) continue;
+      flattenJson(child, prefix ? `${prefix}.${key}` : key, out);
+    }
+  } else if (prefix) {
+    out.set(prefix, typeof value === 'string' ? value : String(value ?? ''));
+  }
+  return out;
+}
+
+function catalogEntries(
+  projectRoot: string,
+  catalog: CompiledI18nCatalogV1,
+  locale?: string,
+  contentOverrides?: Readonly<Record<string, string>>,
+): Map<string, string> | null {
+  let text: string;
+  try {
+    text = Object.prototype.hasOwnProperty.call(contentOverrides || {}, catalog.path)
+      ? contentOverrides![catalog.path]!
+      : fs.readFileSync(path.join(projectRoot, catalog.path), 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    if (catalog.format === 'json' || catalog.format === 'arb') {
+      return flattenJson(JSON.parse(text) as unknown);
+    }
+    if (catalog.format === 'xcstrings') {
+      const parsed = JSON.parse(text) as {
+        strings?: Record<string, {
+          localizations?: Record<string, { stringUnit?: { value?: unknown } }>;
+        }>;
+      };
+      const entries = new Map<string, string>();
+      for (const [key, value] of Object.entries(parsed.strings || {})) {
+        const localized = locale ? value.localizations?.[locale]?.stringUnit?.value : undefined;
+        entries.set(key, typeof localized === 'string' ? localized : '');
+      }
+      return entries;
+    }
+  } catch {
+    return new Map();
+  }
+  const entries = new Map<string, string>();
+  const patterns = catalog.format === 'xlf'
+    ? [/\b(?:id|name)=["']([^"']+)["'][^>]*>[\s\S]*?<target[^>]*>([\s\S]*?)<\/target>/g]
+    : catalog.format === 'php'
+      ? [/["']([^"']+)["']\s*=>\s*["']([^"']*)["']/g]
+      : [/<string\b[^>]*\bname=["']([^"']+)["'][^>]*>([\s\S]*?)<\/string>/g];
+  for (const re of patterns) {
+    for (let match = re.exec(text); match; match = re.exec(text)) {
+      entries.set(match[1]!, normalizeDisplayText(match[2]!.replace(/<[^>]+>/g, '')));
+    }
+  }
+  return entries;
+}
+
+function entriesForNamespace(
+  entries: Map<string, string>,
+  catalog: CompiledI18nCatalogV1,
+  namespace: string,
+): Map<string, string> {
+  if (catalog.namespaces.length === 1) return entries;
+  const out = new Map<string, string>();
+  const normalizedNamespace = namespace.replace(/-/g, '_');
+  for (const [key, value] of entries) {
+    if (key.startsWith(`${namespace}.`)) out.set(key.slice(namespace.length + 1), value);
+    else if (key.startsWith(`${namespace}_`)) out.set(key.slice(namespace.length + 1), value);
+    else if (normalizedNamespace !== namespace && key.startsWith(`${normalizedNamespace}_`)) {
+      out.set(key.slice(normalizedNamespace.length + 1), value);
+    }
+    else if (namespace === 'common' && !key.includes('.')) out.set(key, value);
+  }
+  return out;
+}
+
+function inferredJsonNamespaces(projectRoot: string, relative: string): string[] {
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(projectRoot, relative), 'utf8')) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return ['common'];
+    const entries = Object.entries(value as Record<string, unknown>).filter(([key]) => !key.startsWith('@'));
+    const nested = entries
+      .filter(([, child]) => child && typeof child === 'object' && !Array.isArray(child))
+      .map(([key]) => key);
+    return nested.length > 0 && nested.length === entries.length ? nested : ['common'];
+  } catch {
+    return ['common'];
+  }
+}
+
+/**
+ * Best-effort existing-project catalog contract used by ad-hoc delegation.
+ * It never invents outputs: every returned catalog already exists on disk.
+ */
+export function detectExistingI18nContract(
+  projectRoot: string,
+): CompiledI18nContractV1 | undefined {
+  const paths = discoverProjectFiles(projectRoot, (candidate) => (
+    /\.(?:json|php|xlf|xcstrings|xml|arb)$/i.test(candidate)
+    && (
+      /(?:^|\/)(?:i18n|locales|messages|lang|l10n)\//i.test(candidate)
+      || /(?:^|\/)Localizable\.xcstrings$/i.test(candidate)
+      || /(?:^|\/)res\/values[^/]*\/strings\.xml$/i.test(candidate)
+    )
+  ));
+  const catalogs: CompiledI18nCatalogV1[] = [];
+  let xcstringsSourceLocale = '';
+  for (const relative of paths) {
+    let match = /(?:^|\/)locales\/([^/]+)\/([^/]+)\.json$/i.exec(relative);
+    if (match) {
+      catalogs.push({
+        path: relative,
+        format: 'json',
+        locales: [match[1]!],
+        namespaces: [match[2]!],
+      });
+      continue;
+    }
+    match = /(?:^|\/)(?:locales|messages)\/([^/]+)\.json$/i.exec(relative);
+    if (match) {
+      catalogs.push({
+        path: relative,
+        format: 'json',
+        locales: [match[1]!],
+        namespaces: inferredJsonNamespaces(projectRoot, relative),
+      });
+      continue;
+    }
+    match = /(?:^|\/)lang\/([^/]+)\/([^/]+)\.php$/i.exec(relative);
+    if (match) {
+      catalogs.push({ path: relative, format: 'php', locales: [match[1]!], namespaces: [match[2]!] });
+      continue;
+    }
+    match = /(?:^|\/)messages\.([A-Za-z0-9-]+)\.xlf$/i.exec(relative);
+    if (match) {
+      catalogs.push({ path: relative, format: 'xlf', locales: [match[1]!], namespaces: ['common'] });
+      continue;
+    }
+    match = /(?:^|\/)app_([A-Za-z0-9_]+)\.arb$/i.exec(relative);
+    if (match) {
+      catalogs.push({
+        path: relative,
+        format: 'arb',
+        locales: [match[1]!.replace(/_/g, '-')],
+        namespaces: ['common'],
+      });
+      continue;
+    }
+    match = /(?:^|\/)res\/values(?:-([A-Za-z0-9-]+))?\/strings\.xml$/i.exec(relative);
+    if (match) {
+      const qualifier = match[1];
+      const locale = qualifier
+        ? qualifier.replace(/-r([A-Z]{2})$/, '-$1')
+        : 'en';
+      catalogs.push({ path: relative, format: 'android-xml', locales: [locale], namespaces: ['common'] });
+      continue;
+    }
+    if (/Localizable\.xcstrings$/i.test(relative)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(path.join(projectRoot, relative), 'utf8')) as {
+          sourceLanguage?: string;
+          strings?: Record<string, { localizations?: Record<string, unknown> }>;
+        };
+        xcstringsSourceLocale = raw.sourceLanguage || 'en';
+        const locales = new Set<string>([xcstringsSourceLocale]);
+        for (const value of Object.values(raw.strings || {})) {
+          for (const locale of Object.keys(value.localizations || {})) locales.add(locale);
+        }
+        catalogs.push({
+          path: relative,
+          format: 'xcstrings',
+          locales: [...locales],
+          namespaces: ['common'],
+        });
+      } catch {
+        // Invalid existing catalog is left for the normal validator once a
+        // parseable contract can be inferred from another file.
+      }
+    }
+  }
+  if (catalogs.length === 0) return undefined;
+  const locales = [...new Set(catalogs.flatMap((catalog) => catalog.locales))].sort();
+  const namespaces = [...new Set(catalogs.flatMap((catalog) => catalog.namespaces))].sort((a, b) => (
+    a === 'common' ? -1 : b === 'common' ? 1 : a.localeCompare(b)
+  ));
+  return {
+    sourceLocale: locales.includes('en') ? 'en' : (xcstringsSourceLocale || locales[0]!),
+    locales,
+    literalBrands: [],
+    namespaces,
+    reactCatalogLayout: catalogs.some((catalog) => /\/locales\/[^/]+\/[^/]+\.json$/i.test(catalog.path)),
+    catalogs,
+    runtimeOutputs: [],
+  };
+}
+
+export function validateI18nCatalogs(
+  projectRoot: string,
+  i18n: CompiledI18nContractV1,
+  options: {
+    references?: readonly I18nReference[];
+    namespaces?: readonly string[];
+    requireAllCatalogs?: boolean;
+    contentOverrides?: Readonly<Record<string, string>>;
+  } = {},
+): I18nEnforcementFinding[] {
+  const findings: I18nEnforcementFinding[] = [];
+  const requiredNamespaces = new Set(options.namespaces || i18n.namespaces);
+  const relevant = i18n.catalogs.filter((catalog) => (
+    catalog.namespaces.some((namespace) => requiredNamespaces.has(namespace))
+  ));
+  const parsed = new Map<string, Map<string, string>>();
+  for (const catalog of relevant) {
+    let missing = false;
+    for (const locale of catalog.locales) {
+      const entries = catalogEntries(projectRoot, catalog, locale, options.contentOverrides);
+      if (!entries) {
+        missing = true;
+        continue;
+      }
+      if (entries.size === 0) {
+        findings.push({
+          id: 'STRUCT_I18N_CATALOG',
+          file: catalog.path,
+          message: 'i18n catalog is invalid or contains no translation entries.',
+        });
+      }
+      parsed.set(`${catalog.path}\0${locale}`, entries);
+    }
+    if (missing) {
+      if (options.requireAllCatalogs !== false) {
+        findings.push({
+          id: 'STRUCT_I18N_CATALOG',
+          file: catalog.path,
+          message: `Required i18n catalog is missing for ${catalog.locales.join(', ')} / ${catalog.namespaces.join(', ')}.`,
+        });
+      }
+      continue;
+    }
+  }
+
+  for (const namespace of requiredNamespaces) {
+    const byLocale = new Map<string, Map<string, string>>();
+    for (const locale of i18n.locales) {
+      const catalog = relevant.find((candidate) => (
+        candidate.locales.includes(locale) && candidate.namespaces.includes(namespace)
+      ));
+      const entries = catalog ? parsed.get(`${catalog.path}\0${locale}`) : undefined;
+      if (catalog && entries) {
+        byLocale.set(locale, entriesForNamespace(entries, catalog, namespace));
+      } else if (!catalog && options.requireAllCatalogs !== false) {
+        findings.push({
+          id: 'STRUCT_I18N_CATALOG',
+          file: '<catalog>',
+          message: `Required i18n catalog is missing for ${locale} / ${namespace}.`,
+        });
+      }
+    }
+    const source = byLocale.get(i18n.sourceLocale);
+    if (!source) continue;
+    for (const [key, value] of source) {
+      if (!value.trim()) {
+        const sourceCatalog = relevant.find((catalog) => (
+          catalog.locales.includes(i18n.sourceLocale) && catalog.namespaces.includes(namespace)
+        ));
+        findings.push({
+          id: 'STRUCT_I18N_CATALOG',
+          file: sourceCatalog?.path || '<catalog>',
+          message: `Source-locale key \`${namespace}:${key}\` has an empty value.`,
+        });
+      }
+      for (const locale of i18n.locales) {
+        const localized = byLocale.get(locale);
+        if (!localized) continue;
+        if (!localized.has(key) || !localized.get(key)?.trim()) {
+          const target = relevant.find((catalog) => (
+            catalog.locales.includes(locale) && catalog.namespaces.includes(namespace)
+          ));
+          findings.push({
+            id: 'STRUCT_I18N_CATALOG',
+            file: target?.path || '<catalog>',
+            message: `Locale \`${locale}\` is missing a non-empty \`${namespace}:${key}\` value required for catalog parity.`,
+          });
+        }
+      }
+    }
+    for (const [locale, localized] of byLocale) {
+      for (const [key, value] of localized) {
+        if (!value.trim()) {
+          const target = relevant.find((catalog) => (
+            catalog.locales.includes(locale) && catalog.namespaces.includes(namespace)
+          ));
+          findings.push({
+            id: 'STRUCT_I18N_CATALOG',
+            file: target?.path || '<catalog>',
+            message: `Locale \`${locale}\` has an empty \`${namespace}:${key}\` value.`,
+          });
+        } else if (!source.has(key)) {
+          const target = relevant.find((catalog) => (
+            catalog.locales.includes(locale) && catalog.namespaces.includes(namespace)
+          ));
+          findings.push({
+            id: 'STRUCT_I18N_CATALOG',
+            file: target?.path || '<catalog>',
+            message: `Locale \`${locale}\` has extra key \`${namespace}:${key}\`; declared locales must have identical key sets.`,
+          });
+        }
+      }
+    }
+  }
+
+  for (const reference of options.references || []) {
+    const sourceCatalog = relevant.find((catalog) => (
+      catalog.locales.includes(i18n.sourceLocale)
+      && catalog.namespaces.includes(reference.namespace)
+    ));
+    const entries = sourceCatalog
+      ? parsed.get(`${sourceCatalog.path}\0${i18n.sourceLocale}`)
+      : undefined;
+    const namespaced = sourceCatalog && entries
+      ? entriesForNamespace(entries, sourceCatalog, reference.namespace)
+      : undefined;
+    if (!namespaced?.get(reference.key)?.trim()) {
+      findings.push({
+        id: 'STRUCT_I18N_CATALOG',
+        file: sourceCatalog?.path || '<catalog>',
+        line: reference.line,
+        message: `Translation key \`${reference.namespace}:${reference.key}\` is missing or empty in the source locale catalog.`,
+      });
+    }
+  }
+  return findings;
+}
+
+export function requiredI18nNamespacesForFiles(
+  contract: CompiledArchitectureV1,
+  files: readonly string[],
+): string[] {
+  const namespaces = new Set<string>();
+  for (const file of files.map((value) => value.replace(/\\/g, '/'))) {
+    const module = contract.modules.find((candidate) => candidate.output === file);
+    if (module?.kind === 'page') {
+      const route = contract.routes.find((candidate) => candidate.moduleId === module.id && !candidate.redirect);
+      namespaces.add(route?.id || module.id);
+    } else if (module?.kind === 'feature') {
+      namespaces.add(module.id);
+    } else {
+      namespaces.add('common');
+    }
+  }
+  return [...namespaces];
+}

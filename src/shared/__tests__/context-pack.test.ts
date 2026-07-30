@@ -32,8 +32,8 @@ function compilePack(cwd: string): void {
     cwd,
     RUN_ID,
     ROLE,
-    ['common/clean-code.md', 'frontend/services.md'],
-    ['create-component'],
+    ['rules/common/clean-code.md', 'rules/frontend/services.md', 'rules/frontend/i18n.md'],
+    ['create-component', 'i18n-text'],
     compileIntegrationRequirements(ROLE, ['web-ui', 'api'], [
       'packages/api-client/src/index.ts',
       'apps/web/public/sitemap.xml',
@@ -64,7 +64,13 @@ test('pack compiles real materials into parts under the truncation budget', () =
     assert.match(index, /ONE part per command|one command per part/i);
     assert.match(index, /Integration requirements/);
     assert.match(index, /STRUCT_API_CLIENT_UNUSED/);
+    assert.match(index, /every static React child uses <Trans>/i);
     assert.match(index, /VITE_SITE_URL/);
+    const bodies = manifest!.parts.map((part) => (
+      fs.readFileSync(path.join(contextPackPartDir(cwd, RUN_ID, ROLE, part), part.file), 'utf8')
+    )).join('\n');
+    assert.match(bodies, /rule: rules\/frontend\/i18n\.md/);
+    assert.match(bodies, /skill: i18n-text/);
   });
 });
 
@@ -122,6 +128,7 @@ test('integration requirements compile per role from surfaces and outputs', () =
   ]);
   assert.ok(frontend.some((line) => line.includes('STRUCT_API_CLIENT_UNUSED')));
   assert.ok(frontend.some((line) => line.includes('STRUCT_ORPHAN_MODULE')));
+  assert.ok(frontend.some((line) => line.includes('<Trans>')));
   assert.ok(frontend.some((line) => line.includes('VITE_SITE_URL')));
 
   const backend = compileIntegrationRequirements('senior-backend', ['api'], [

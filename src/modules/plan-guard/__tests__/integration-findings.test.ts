@@ -301,7 +301,7 @@ test('plain hand-written class names never trip the tailwind gate', () => {
   });
 });
 
-test('hardcoded copy is a warning, only with an i18n runtime present', () => {
+test('hardcoded copy blocks new UI and only advises changed legacy UI with an i18n runtime', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);
     writeAppShell(cwd, contract);
@@ -327,18 +327,24 @@ test('hardcoded copy is a warning, only with an i18n runtime present', () => {
     writeHome(cwd, contract, copyHeavy);
     writeCourseCard(cwd, contract);
 
-    // No i18n runtime: no warning at all.
-    const withoutI18n = analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
+    const greenfield = analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
+      .filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
+    assert.ok(greenfield.length >= 5);
+    assert.ok(greenfield.every((finding) => finding.severity === 'error'));
+
+    // Existing project with no i18n evidence: no forced migration.
+    const existingContract = { ...contract, i18n: undefined };
+    const withoutI18n = analyzeProjectStructure(cwd, existingContract).findings
       .filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
     assert.equal(withoutI18n.length, 0);
 
-    // i18n runtime declared: warning appears, never an error.
+    // Existing localized project: untouched backlog remains advisory.
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
       dependencies: {
         react: '19.0.0', vite: '7.0.0', 'react-router-dom': '7.0.0', 'react-i18next': '15.0.0',
       },
     }));
-    const withI18n = analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
+    const withI18n = analyzeProjectStructure(cwd, existingContract).findings
       .filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
     assert.ok(withI18n.length > 0);
     assert.ok(withI18n.every((finding) => finding.severity === 'warning'));

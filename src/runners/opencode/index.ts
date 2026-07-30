@@ -60,6 +60,9 @@ import {
   writeDigest,
   runStamp,
 } from './run-model';
+import {
+  normalizeOpenCodeI18nScope,
+} from './i18n';
 
 export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): DelegateResult {
   cwd = resolveProjectRoot(cwd);
@@ -69,9 +72,11 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
     ? state.currentRunId.trim()
     : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
   const runId = (opts.runId || '').trim() || stateRunId || runStamp();
-  const policy = buildDelegatedDiffPolicy(cwd, runId, role, opts.allowedFiles, opts.expectedAssignmentHash);
+  const i18nScope = normalizeOpenCodeI18nScope(cwd, runId, role, opts.allowedFiles);
+  const effectiveAllowedFiles = i18nScope.allowedFiles.join(',');
+  const policy = buildDelegatedDiffPolicy(cwd, runId, role, effectiveAllowedFiles, opts.expectedAssignmentHash);
   const startedAt = Date.now();
-  const maintenancePreflight = maintenanceContractPreflight(cwd, state, runId, role, opts.allowedFiles);
+  const maintenancePreflight = maintenanceContractPreflight(cwd, state, runId, role, effectiveAllowedFiles);
   const maintenanceEarlyResult = (result: DelegateResult): DelegateResult => {
     const failureKind = result.failureKind ?? classifyFailureKind(result.action, result.error);
     const enriched: DelegateResult = failureKind ? { ...result, failureKind } : result;
@@ -94,6 +99,16 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       digest: null,
       touched: [],
       error: maintenancePreflight.error || 'OpenCode maintenance contract preflight failed closed',
+      failureKind: 'diff-rejected',
+    });
+  }
+  if (i18nScope.error) {
+    return maintenanceEarlyResult({
+      ok: false,
+      action: 'failed',
+      digest: null,
+      touched: [],
+      error: i18nScope.error,
       failureKind: 'diff-rejected',
     });
   }
@@ -251,7 +266,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   let lastModel = models[models.length - 1] as string;
   // Appended AFTER the task (a boundary read first competes with the work itself)
   // and below the MCP task-file layer, so the caller's recorded task text is intact.
-  const boundedTask = `${task}\n${delegationBoundaryPrompt(policy)}\n`;
+  const boundedTask = `${task}\n${i18nScope.prompt}\n${delegationBoundaryPrompt(policy)}\n`;
   for (const model of models) {
     lastModel = model;
     const outcome = runModel(cwd, bin, baseSha, model, boundedTask, policy, markCliAttempt);
@@ -367,7 +382,8 @@ if (require.main === module) {
   if (typeof code === 'number') process.exitCode = code;
 }
 
-export { postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck } from './verify';
+export { postApplyI18n, postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck } from './verify';
+export { normalizeOpenCodeI18nScope, normalizePlanI18nUnits } from './i18n';
 export { resetOpenCodeModelMemo } from './models';
 export { snapshotWorkingTree, stageExcludePathspecs } from './git-sandbox';
 import { normalizePlanRole } from './diff-policy';

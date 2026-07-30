@@ -317,7 +317,7 @@ export function compileIntegrationRequirements(
     }
     requirements.push('Every planned component/feature module must have a real call site (imported by a page or a used barrel) — dead deliverables fail STRUCT_ORPHAN_MODULE.');
     requirements.push("Style with the project's ACTUAL styling system: Tailwind utility classes without a tailwindcss dependency/config fail STRUCT_TAILWIND_NO_TOOLCHAIN.");
-    requirements.push('Route user-facing copy through the i18n catalog when the project ships one (STRUCT_HARDCODED_COPY is advisory).');
+    requirements.push('Apply the compiled/existing i18n contract: every static React child uses <Trans> with ns, i18nKey, and fallback; t() is string-value-only; every declared locale has non-empty key parity. New-project i18n findings block.');
     if (outputs.includes('eslint.config.js')) {
       requirements.push('The seeded `eslint.config.js` and `.prettierrc` are the project quality bar: install `eslint` and `prettier`, expose `lint`/`format`/`format:check` scripts that run them, and keep them green. A config with no installed tool and no script is inert — and raising a limit in it to pass your own change is a config-tamper violation, not a fix.');
     }

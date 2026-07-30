@@ -1,49 +1,51 @@
 ---
 name: i18n-text
 description: >
-  Use PROACTIVELY whenever the user asks to add, change, review, extract, translate, localize,
-  internationalize, or audit user-facing copy in React or React Native. Triggers: "i18n",
-  "translation", "translate text", "localize", "hardcoded strings", "copy keys",
-  "accessibility labels", "placeholder text".
+  Implement, change, review, extract, translate, localize, or audit user-facing
+  copy in any web or native frontend. Apply automatically to every new Traffic
+  One UI project and to changed UI in an existing project with localization.
+  Triggers include i18n, translations, hardcoded strings, copy keys, labels,
+  placeholders, accessibility text, screens, pages, and components.
 ---
 
-# Skill: i18n Text
+# i18n Text
 
-Use this for React web and Expo/React Native localization work.
+Before editing UI:
 
-Traffic One generation rule: apply this skill automatically for generated or
-changed frontend UI whenever the project already has an i18n module, and for
-new Traffic One frontend projects where `packages/i18n` is part of the
-scaffold. Do not wait for the user to mention i18n, translation, localization,
-or copy keys.
+1. Read the compiled i18n contract or detect the existing provider/catalog.
+2. State the source locale, supported locales, namespace, keys, and catalog
+   files changed.
+3. Reuse the current framework mechanism; never create a parallel i18n system.
+4. Treat only contract-declared exact brands, dynamic user/server data,
+   technical IDs, and test fixtures as literal exceptions.
 
-Before changing UI copy, state:
-1. Namespace and key pattern, defaulting to feature namespaces in `packages/i18n`.
-2. Catalog files that will receive source-language entries.
-3. Whether the component uses `useTranslation`, `t`, or `<Trans>`, preferring
-   `<Trans>` for rich copy with links, emphasis, line breaks, nested elements,
-   or React components.
-4. Any allowed hardcoded exceptions: brand names, user-generated/server-provided content, technical IDs, or test fixtures.
+For every new UI project, wire the profile-native runtime/provider before
+rendering feature UI. React uses `i18next` + `react-i18next`; Expo also reads the
+device locale with `expo-localization`. Other stacks keep their native
+localization mechanism and resource format.
 
-Implementation rules:
-- Use `i18next` + `react-i18next` for React and React Native.
-- Use `expo-localization` in React Native setup to read the device locale.
-- Detect existing i18n modules before writing UI: `packages/i18n`, `src/i18n*`,
-  `app/i18n*`, `locales/`, `public/locales/`, `messages/`, catalog JSON/TS
-  files, `i18next`, `react-i18next`, or an existing provider wrapper.
-- Extend the existing catalog/provider shape when one exists; do not create a
-  parallel i18n system.
-- Add source-language catalog entries in the same change for every key used.
-- Translate visible text, placeholders, form labels, validation errors, loading/error/empty copy, alt text, ARIA labels, accessibility labels, and accessibility hints.
-- Use `<Trans>` over `t()` when copy contains links, React elements, emphasis,
-  line breaks, nested components, or rich interpolation. Use `t()` only for simple
-  scalars — labels, attributes, validation strings, and a whole link/button whose
-  text is one scalar (`<Link to="/x">{t('nav.x')}</Link>`).
-- **The most common rich case = a sentence with an inline link.** Do NOT split it
-  into `t()` fragments: `{t('login.noAccount')} <Link>{t('login.signupLink')}</Link>`
-  ❌ → `<Trans i18nKey="login.noAccount" components={{ signup: <Link to="/signup" /> }}>Don't have an account? <signup>Sign up</signup></Trans>` ✅.
-  Tell: a `{t(...)}` fragment next to an inline `<Link>`/`<a>`/`<strong>`/`<em>` in the
-  same text node is a split sentence — make it one `<Trans>` (with source-language children).
-- Prefer complete translation phrases with interpolation values over concatenated fragments.
-- Keep route params, enum values, analytics names, and technical IDs unlocalized unless they are displayed to users.
-- In tests, assert accessible names/labels from the rendered UI; do not couple tests to private translation internals unless testing the i18n package itself.
+Add every new key with a non-empty value to every declared locale in the same
+change. Keep locale key parity, use complete phrases and named interpolation,
+and never concatenate translated fragments.
+
+For React:
+
+- Render every static child string with
+  `<Trans ns="…" i18nKey="…">source fallback</Trans>`, including simple text.
+- Require literal `ns`, literal `i18nKey`, and non-empty fallback children.
+- Use one `<Trans>` with named component placeholders for links, emphasis,
+  line breaks, and nested components.
+- Never render `{t(...)}` as a child. Use `t()` only for string props and
+  attributes, validation, metadata, or imperative APIs.
+
+```tsx
+<Trans ns="common" i18nKey="welcome">Welcome</Trans>
+
+<input
+  aria-label={t("common:searchLabel")}
+  placeholder={t("common:searchPlaceholder")}
+/>
+```
+
+In tests, assert visible behavior through accessible names and labels. Test
+catalog parsing/key parity only when testing the i18n package itself.

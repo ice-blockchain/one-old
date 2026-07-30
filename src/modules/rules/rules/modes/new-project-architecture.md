@@ -10,10 +10,15 @@ profile rule from `CompiledArchitectureV1.profile.profileId`; never infer a
 profile from a framework name, an empty repository, or this catalog.
 
 The architect supplies only semantic `ArchitectureInputV1` routes, modules,
-and narrow exception requests. Eligible implementers, not the architect,
+i18n locale/brand intent, and narrow exception requests. Eligible implementers, not the architect,
 create the exact files assigned by their `WorkUnitContractV1`. If this catalog
 describes a convention but the compiled `allowedOutputs` omit its file, replan
 and recompile instead of writing it.
+
+Every selected `web-ui` or `native-ui` profile compiles a profile-native i18n
+runtime/resource baseline. React catalogs always end in
+`i18n/locales/<lang>/<namespace>.json`; non-React profiles keep their native
+resource format. UI-free profiles compile no i18n outputs.
 
 ## Profile index
 

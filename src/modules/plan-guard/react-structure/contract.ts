@@ -15,6 +15,13 @@ import {
   tailwindToolchainPresent,
   tailwindUtilityEvidence,
 } from '../../../shared/tailwind-evidence';
+import {
+  analyzeI18nSourceText,
+  detectExistingI18nContract,
+  projectDeclaresI18nRuntime,
+  validateI18nCatalogs,
+  type I18nReference,
+} from '../../../shared/i18n-enforcement';
 
 import {
   type ImportBinding,
@@ -284,8 +291,7 @@ function apiClientUsageFindings(
 // deliberately masked by the collapse scanner). Blocking, ≥3 distinct
 // utilities per file keeps hand-written class names out (calibrated on 8co:
 // fires on the delegated CourseCard/LessonOutline; zero hits on plain-CSS
-// projects). The hardcoded-copy companion is ADVISORY (warning): the i18n
-// heuristic is inherently fuzzier, so it informs the digest without denying.
+// projects). i18n has its own occurrence-aware scanner below.
 function stylingFindings(
   projectRoot: string,
   contract: CompiledArchitectureV1,
@@ -301,11 +307,6 @@ function stylingFindings(
     }
     return toolchainByDir.get(dir)!;
   };
-  const i18nRuntimePresent = projectDeclaresI18nRuntime(projectRoot, contract);
-  const copyLayers = [
-    ...(contract.layers.pages || []),
-    ...(contract.layers.components || []),
-  ].map((layer) => normalizeRel(layer));
   for (const analysis of analyses) {
     if (!/\.(?:tsx|jsx|vue|svelte)$/i.test(analysis.file)) continue;
     const utilities = tailwindUtilityEvidence(analysis.text);
@@ -317,60 +318,53 @@ function stylingFindings(
         message: `File styles with ${utilities.count} distinct Tailwind utilities (${utilities.sample.join(', ')}) but no \`tailwindcss\` dependency or tailwind config is reachable — the classes are inert and the UI renders unstyled. Install/configure Tailwind or restyle with the project's actual styling system.`,
       });
     }
-    if (i18nRuntimePresent
-      && copyLayers.some((layer) => analysis.file.startsWith(`${layer}/`))
-      && hardcodedCopySignals(analysis.text) >= 5) {
-      findings.push({
-        id: 'STRUCT_HARDCODED_COPY',
-        severity: 'warning',
-        file: analysis.file,
-        message: 'User-facing copy is hardcoded in JSX while the project ships an i18n runtime — route the strings through the translation catalog (advisory).',
-      });
-    }
   }
   return findings;
 }
 
-function projectDeclaresI18nRuntime(
+function i18nFindings(
   projectRoot: string,
   contract: CompiledArchitectureV1,
-): boolean {
-  const manifests = new Set<string>(['package.json']);
-  for (const root of contract.sourceRoots) {
-    const parts = normalizeRel(root).split('/');
-    // apps/web/src -> apps/web/package.json
-    for (let depth = 1; depth < parts.length; depth += 1) {
-      manifests.add(`${parts.slice(0, depth).join('/')}/package.json`);
-    }
+  analyses: readonly SourceAnalysis[],
+  severity: StructureFinding['severity'],
+  greenfield: boolean,
+): StructureFinding[] {
+  const runtimePresent = projectDeclaresI18nRuntime(projectRoot, contract);
+  const i18n = contract.i18n || (runtimePresent ? detectExistingI18nContract(projectRoot) : undefined);
+  if (!i18n && !runtimePresent) return [];
+  const findings: StructureFinding[] = [];
+  if (greenfield && !runtimePresent) {
+    findings.push({
+      id: 'STRUCT_I18N_RUNTIME',
+      severity: 'error',
+      file: contract.i18n?.runtimeOutputs[0] || 'package.json',
+      message: 'New UI project is missing its profile-selected i18n runtime/provider setup.',
+    });
   }
-  for (const rel of manifests) {
-    try {
-      const manifest = JSON.parse(
-        fs.readFileSync(path.join(projectRoot, rel), 'utf8'),
-      ) as Record<string, unknown>;
-      for (const key of ['dependencies', 'devDependencies']) {
-        const deps = manifest[key];
-        if (deps && typeof deps === 'object' && !Array.isArray(deps)
-          && ['i18next', 'react-i18next', 'vue-i18n', '@lingui/core', 'next-intl'].some((name) => (
-            Object.prototype.hasOwnProperty.call(deps, name)
-          ))) {
-          return true;
-        }
-      }
-    } catch {
-      // manifest absent/unreadable — keep looking
-    }
+  const references: I18nReference[] = [];
+  for (const analysis of analyses) {
+    const source = analyzeI18nSourceText(
+      analysis.file,
+      analysis.text,
+      contract.profile,
+      i18n,
+    );
+    references.push(...source.references);
+    findings.push(...source.findings.map((finding) => ({
+      ...finding,
+      severity,
+    })));
   }
-  return false;
-}
-
-// JSX text literals of three or more words outside t()/<Trans> usage — a
-// coarse signal, which is exactly why its finding is a warning, never a deny.
-function hardcodedCopySignals(text: string): number {
-  if (/\buseTranslation\b|\b<Trans\b|\bt\(\s*['"]/.test(text)) return 0;
-  // Tokens may not contain angle brackets, so one match never spans elements.
-  const matches = text.match(/>\s*[A-Za-z][^<>{}\n]*?(?:[ \t]+[^<>\s{}]+){2,}[ \t]*</g);
-  return matches ? matches.length : 0;
+  if (i18n) {
+    findings.push(...validateI18nCatalogs(projectRoot, i18n, {
+      references,
+      requireAllCatalogs: true,
+    }).map((finding) => ({
+      ...finding,
+      severity,
+    })));
+  }
+  return findings;
 }
 
 export function contractFindings(
@@ -423,6 +417,13 @@ export function contractFindings(
   if (canCheckReferences) {
     findings.push(...apiClientUsageFindings(projectRoot, contract, analyses, integrationSeverity));
     findings.push(...stylingFindings(projectRoot, contract, analyses, integrationSeverity));
+    findings.push(...i18nFindings(
+      projectRoot,
+      contract,
+      analyses,
+      integrationSeverity,
+      greenfield,
+    ));
   }
 
   if (profileUsesExplicitRouter(contract.profile)) {
@@ -461,4 +462,3 @@ export function contractFindings(
   }
   return findings;
 }
-

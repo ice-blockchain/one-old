@@ -44,10 +44,12 @@ function validateExceptionRequest(request: ArchitectureExceptionRequestV1): stri
   return errors;
 }
 
-const ARCHITECTURE_INPUT_KEYS = new Set(['schemaVersion', 'routes', 'modules', 'exceptions']);
+const ARCHITECTURE_INPUT_KEYS = new Set(['schemaVersion', 'routes', 'modules', 'i18n', 'exceptions']);
 const ARCHITECTURE_MODULE_KEYS = new Set(['id', 'name', 'kind']);
 const ARCHITECTURE_ROUTE_KEYS = new Set(['id', 'path', 'moduleId', 'redirect']);
 const ARCHITECTURE_EXCEPTION_KEYS = new Set(['ruleId', 'glob', 'reason']);
+const ARCHITECTURE_I18N_KEYS = new Set(['sourceLocale', 'locales', 'literalBrands']);
+const LOCALE_RE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
 
 function unsupportedArchitectureFields(
   value: Rec,
@@ -79,6 +81,44 @@ export function validateArchitectureInput(input: unknown): ArchitectureValidatio
   if (!Array.isArray(raw.modules) || modules.length === 0) errors.push('modules must be a non-empty array');
   if (raw.exceptions !== undefined && !Array.isArray(raw.exceptions)) {
     errors.push('exceptions must be an array when provided');
+  }
+
+  if (raw.i18n !== undefined) {
+    const i18n = obj(raw.i18n);
+    if (!i18n) {
+      errors.push('i18n must be an object when provided');
+    } else {
+      errors.push(...unsupportedArchitectureFields(i18n, ARCHITECTURE_I18N_KEYS, 'i18n'));
+      const sourceLocale = typeof i18n.sourceLocale === 'string' ? i18n.sourceLocale.trim() : '';
+      const locales = Array.isArray(i18n.locales) ? i18n.locales : [];
+      const normalizedLocales = locales.map((locale) => typeof locale === 'string' ? locale.trim() : '');
+      if (!LOCALE_RE.test(sourceLocale)) {
+        errors.push('i18n.sourceLocale must be a safe BCP-47 language tag such as en, ro, or en-US');
+      }
+      if (!Array.isArray(i18n.locales) || locales.length === 0) {
+        errors.push('i18n.locales must be a non-empty array');
+      }
+      for (const [index, locale] of normalizedLocales.entries()) {
+        if (!LOCALE_RE.test(locale)) errors.push(`i18n.locales[${index}] is not a safe BCP-47 language tag`);
+        if (normalizedLocales.indexOf(locale) !== index) errors.push(`i18n.locales[${index}] is duplicated`);
+      }
+      if (sourceLocale && !normalizedLocales.includes(sourceLocale)) {
+        errors.push('i18n.locales must include i18n.sourceLocale');
+      }
+      if (i18n.literalBrands !== undefined && !Array.isArray(i18n.literalBrands)) {
+        errors.push('i18n.literalBrands must be an array when provided');
+      }
+      const brands = Array.isArray(i18n.literalBrands) ? i18n.literalBrands : [];
+      for (const [index, brand] of brands.entries()) {
+        const normalized = typeof brand === 'string' ? brand.trim() : '';
+        if (!normalized || normalized.length > 80 || /[\r\n<>]/.test(normalized)) {
+          errors.push(`i18n.literalBrands[${index}] must be a non-empty exact display string without markup (max 80 chars)`);
+        }
+        if (brands.findIndex((candidate) => candidate === brand) !== index) {
+          errors.push(`i18n.literalBrands[${index}] is duplicated`);
+        }
+      }
+    }
   }
 
   const moduleIds = new Set<string>();

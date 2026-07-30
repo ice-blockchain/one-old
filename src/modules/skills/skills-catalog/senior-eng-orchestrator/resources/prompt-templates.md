@@ -188,7 +188,10 @@ CLI, worker, data-only, or native-only profiles.
 Write semantic ArchitectureInputV1 to
 .traffic-one/runs/<run-id>/architecture-input-v1.json: route ids/paths and
 module ids, semantic modules (`app-shell`, `page`, `component`, `feature`,
-`service`, `store`, or `test`), and only narrowly justified exception requests.
+`service`, `store`, or `test`), optional semantic `i18n` intent
+(`sourceLocale`, supported `locales`, exact `literalBrands`), and only narrowly
+justified exception requests. New UI projects default to `en` only when the
+brief is silent.
 Do not include profile ids, roots, entrypoints, output paths, owner roles,
 assignments, scanner limits, baseline data, QA impact, or hashes.
 
@@ -278,10 +281,12 @@ before finishing: route-aware metadata, JSON-LD, robots/sitemap,
 favicon/PWA/OG assets, site-url env docs, private/admin noindex, and metadata
 regression coverage for every created or changed public route.
 
-Apply `rules/frontend/i18n.md` only when the runtime-selected rules/skills and
-work unit include a web i18n surface. Extend the selected catalog/provider; for
-React rich copy prefer `<Trans>`. Native UI follows its native localization
-contract instead.
+Apply `rules/frontend/i18n.md` whenever the work unit includes web or native UI.
+New UI projects wire the compiled profile-native baseline; existing localized
+projects extend their selected provider/catalog. Every static React child uses
+`<Trans>` with literal `ns`, literal `i18nKey`, and fallback; `t()` is only for
+string-valued props, metadata, validation, and imperative APIs. Update every
+declared locale. Native UI follows its platform localization contract.
 
 Only for a Supabase-backed web/Ionic work unit with a changed missing-env surface, apply
 `rules/frontend/react/supabase-client.md` before finishing. Create or repair the
@@ -404,7 +409,7 @@ For generated websites or changed public web routes, request changes if the SEO
 baseline from `rules/common/seo.md` is missing or only partial for any created
 or changed public route. Request changes if changed UI ignores an existing i18n
 module, ships hardcoded user-facing strings, omits catalog entries, or uses
-`t()` for rich copy that should use `<Trans>`. Request changes if any touched
+`t()` as rendered React child instead of `<Trans>` with fallback. Request changes if any touched
 missing-config setup CTA lacks `href="https://traffic.io/"`.
 
 Write your digest to:
