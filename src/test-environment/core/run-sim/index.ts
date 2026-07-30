@@ -30,6 +30,7 @@ import { materializeProjectFromState } from '../../../shared/materialize';
 import { readEffectiveState } from '../../../shared/state';
 import { listClaimedAgents, nextSpawnIndex } from '../../../shared/state/run-agent/claims-store';
 import { maybeFlipToMaintenance } from '../../../modules/materialize/build-complete';
+import { beginFreshMaintenanceRun } from '../../../modules/session/triage-directive';
 import { obj } from '../../../shared/obj';
 import {
   ensureCurrentRunId,
@@ -40,7 +41,7 @@ import {
   readVerificationContract,
   type VerificationContractV2,
 } from '../../../shared/verification-contract';
-import type { Case } from '../types';
+import type { Case, RunSimSpec } from '../types';
 
 import {
   AGENTIGNORE_BODY,
@@ -494,7 +495,124 @@ export async function runSimulatedRun(
     transcript.phasesCompleted.push('negative-gates');
   }
 
+  // --- Phase 7: the maintenance run ----------------------------------------
+  // A SECOND run in the SAME project, which is what the user's follow-up
+  // messages actually are ("add a `ro` locale", "add a news section"). It is
+  // the only leg that produces a real diff against a populated baseline, so it
+  // is the only one where uiImpact is derived from changed code rather than
+  // from "every planned module is missing" — the greenfield floor.
+  if (spec.phase2) {
+    const second = await runMaintenancePass(cwd, spec.phase2, transcript);
+    if (second) return finish(second);
+    transcript.phasesCompleted.push('phase2');
+  }
+
   return finish();
+}
+
+// One follow-up run: rotate the run id the way triage does, re-plan, implement
+// the delta, and settle again. Returns a failure string, or null on success.
+async function runMaintenancePass(
+  cwd: string,
+  phase2: NonNullable<RunSimSpec['phase2']>,
+  transcript: RunSimTranscript,
+): Promise<string | null> {
+  const state = readEffectiveState(cwd) as Rec;
+  // The REAL rotation: settles the outgoing ledger, releases its claims, mints
+  // a new id, resets spawnIndex and freezes the new run's model policy.
+  beginFreshMaintenanceRun(cwd, state, 'claude');
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
+  if (!runId) return 'phase-7 the maintenance rotation minted no run id';
+  transcript.facts.phase2RunId = runId;
+
+  if (!bindRole(cwd, 'senior-architect')) return 'phase-7 could not bind the architect';
+  const planned = applyAll(cwd, 'phase2:architect', 'senior-architect', [
+    {
+      path: `.traffic-one/runs/${runId}/architecture-input-v1.json`,
+      content: `${JSON.stringify(phase2.architecture, null, 2)}\n`,
+    },
+    {
+      path: `.traffic-one/digests/${runId}/architect.md`,
+      content: digestBody({
+        role: 'senior-architect',
+        runId,
+        verdict: 'PLAN_READY',
+        summary: `Maintenance plan: ${phase2.brief}`,
+      }),
+    },
+  ], transcript);
+  if (planned) return `phase-7 PLAN_READY denied: ${planned.reason}`;
+
+  const architecture = readCompiledArchitecture(cwd, runId);
+  const verification = readVerificationContract(cwd, runId);
+  const assignments = readRuntimeAssignments(cwd, runId);
+  if (!architecture || !verification || !assignments) {
+    return 'phase-7 the maintenance contract triple did not read back';
+  }
+  transcript.facts.phase2UiImpact = verification.uiImpact;
+  transcript.facts.phase2ChangedRoutes = verification.changedRoutes;
+
+  const implement = buildImplementContext(runId, architecture, assignments);
+  const implementers = ['senior-backend', 'senior-frontend']
+    .filter((role) => implement.outputsFor(role).length > 0);
+  const authored = new Map<string, string[]>();
+  for (const role of [...implementers, 'senior-tester']) {
+    const writes: ScriptedWrite[] = [];
+    for (const rel of implement.outputsFor(role)) {
+      const content = sourceFor(rel, implement);
+      if (content !== null) writes.push({ path: rel, content });
+    }
+    authored.set(role, writes.map((write) => write.path));
+    if (!bindRole(cwd, role)) return `phase-7 could not bind ${role}`;
+    const denied = applyAll(cwd, `phase2:implement:${role}`, role, writes, transcript);
+    if (denied) return `phase-7 ${role} denied on ${denied.path}: ${denied.reason}`;
+  }
+  for (const role of implementers) {
+    const denied = applyAll(cwd, `phase2:digest:${role}`, role, [{
+      path: `.traffic-one/digests/${runId}/${role.replace(/^senior-/, '')}.md`,
+      content: digestBody({
+        role,
+        runId,
+        verdict: 'IMPLEMENTED',
+        summary: `Delivered the maintenance work unit for ${role}.`,
+        touched: authored.get(role) ?? [],
+      }),
+    }], transcript);
+    if (denied) return `phase-7 ${role} IMPLEMENTED denied: ${denied.reason}`;
+  }
+
+  if (verification.browserRequired) {
+    const buildDir = buildDirFor(architecture);
+    writeBuildOutput(cwd, buildDir);
+    const qa = await runBrowserEvidence(cwd, runId, buildDir, verification);
+    if (qa.code !== 0) return `phase-7 browser evidence failed (exit ${qa.code}): ${qa.detail}`;
+  } else {
+    const qa = await runStackEvidence(cwd, runId);
+    if (qa.code !== 0) return `phase-7 stack evidence failed (exit ${qa.code}): ${qa.detail}`;
+  }
+
+  for (const [role, verdict] of [
+    ['senior-reviewer', 'APPROVED'],
+    ['senior-tester', 'TESTS_GREEN'],
+  ] as const) {
+    if (!bindRole(cwd, role)) return `phase-7 could not bind ${role}`;
+    const denied = applyAll(cwd, `phase2:digest:${role}`, role, [{
+      path: `.traffic-one/digests/${runId}/${role.replace(/^senior-/, '')}.md`,
+      content: digestBody({
+        role,
+        runId,
+        verdict,
+        summary: `Verified the maintenance delta for run ${runId}.`,
+      }),
+    }], transcript);
+    if (denied) return `phase-7 ${verdict} denied: ${denied.reason}`;
+  }
+
+  const settled = settleTerminalRunLedger(cwd, runId, 'verified');
+  transcript.facts.phase2Settlement = readRunSettlement(cwd, runId)?.status;
+  transcript.facts.phase2State = runVerificationState(cwd, runId);
+  if (!settled) return 'phase-7 the maintenance run could not be settled';
+  return null;
 }
 
 // Run the real qa-evidence `stack` command in-process and report what it did.

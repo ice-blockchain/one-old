@@ -52,7 +52,9 @@ function isExplicitRunResumePrompt(promptText: string): boolean {
     .test(promptText);
 }
 
-function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string): void {
+// Exported for the run-sim tier, which drives a real second run in the same
+// project. A replica in the test would drift from this; calling it is the point.
+export function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string): void {
   // Never rotate while the CURRENT run is still LIVE: it has run artifacts
   // (assignments/digests) but has NOT reached a terminal verdict. Rotating then would
   // split run state across two ids — the run-id gate resolves no scope for the in-flight

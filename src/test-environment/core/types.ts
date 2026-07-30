@@ -98,6 +98,14 @@ export interface RunSimSpec {
   // Run the adversarial rows after settlement: writes that MUST be denied, each
   // pinned to the gate that has to refuse it.
   negativeGates?: boolean;
+  // A follow-up run in the SAME project — the user's maintenance message. This
+  // is the only leg that diffs against a populated baseline, so it is where
+  // uiImpact comes from changed code rather than from the greenfield floor.
+  phase2?: {
+    brief: string;
+    architecture: ArchitectureInputV1;
+    qa: QaExpectation;
+  };
 }
 
 export interface QaExpectation {

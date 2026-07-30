@@ -33,14 +33,21 @@ export const assertion: Assertion = {
     const transcript = readRunSimTranscript(ctx);
     if (!transcript) return result(ctx, 'FAIL', 'No run-sim transcript was persisted.');
 
-    const runId = str(transcript.runId) || latestRunId(ctx.cwd, effState(ctx));
+    // When a maintenance run followed, ITS report is the one that must validate
+    // now: the first run's evidence was correct when produced and is recorded
+    // in the transcript, but the tree has legitimately moved since.
+    const phase2RunId = str(rec(transcript.facts).phase2RunId);
+    const runId = phase2RunId || str(transcript.runId) || latestRunId(ctx.cwd, effState(ctx));
     if (!runId) return result(ctx, 'FAIL', 'The simulated run recorded no run id.');
+    const expectation = phase2RunId
+      ? ctx.testCase.runSim?.phase2?.qa
+      : ctx.testCase.runSim?.qa;
 
     const contract = readVerificationContract(ctx.cwd, runId);
     if (!contract) return result(ctx, 'FAIL', 'VerificationContractV2 is missing or fails its own hash self-check.');
 
     // Fence 1 — the declaration must match reality.
-    const declared = ctx.testCase.runSim?.qa.mode;
+    const declared = expectation?.mode;
     const expectedMode = contract.browserRequired ? 'browser' : 'stack';
     if (declared !== expectedMode) {
       return result(ctx, 'FAIL', `The case declares qa.mode=\`${declared}\` but the published contract (uiImpact=${contract.uiImpact}, browserRequired=${contract.browserRequired}) needs \`${expectedMode}\`.`, {
@@ -80,7 +87,7 @@ export const assertion: Assertion = {
     }
 
     // Fence 2 — pinned statuses.
-    const pinned = ctx.testCase.runSim?.qa.expectChecks ?? {};
+    const pinned = expectation?.expectChecks ?? {};
     const wrong: string[] = [];
     for (const [id, expected] of Object.entries(pinned)) {
       const actual = byId.get(id)?.status;

@@ -11,7 +11,7 @@
 import { readRunSettlement } from '../../shared/run-settlement';
 import { runVerificationState } from '../../shared/state/run-agent';
 import type { Assertion } from '../core/types';
-import { effState, latestRunId, readRunSimTranscript, result, str } from './util';
+import { effState, latestRunId, readRunSimTranscript, rec, result, str } from './util';
 
 export const assertion: Assertion = {
   id: 'run-sim-settlement',
@@ -46,6 +46,21 @@ export const assertion: Assertion = {
         expected: 'verified',
         actual: settlement?.status ?? 'absent',
       });
+    }
+
+    // A maintenance run must close too, or the project is left with a live run
+    // that would block the next request.
+    const phase2RunId = str(rec(transcript.facts).phase2RunId);
+    if (phase2RunId) {
+      const secondState = runVerificationState(ctx.cwd, phase2RunId);
+      const secondSettlement = readRunSettlement(ctx.cwd, phase2RunId);
+      if (secondState !== 'terminal' || secondSettlement?.status !== 'verified') {
+        return result(ctx, 'FAIL', `The maintenance run ${phase2RunId} did not close: state \`${secondState}\`, settlement \`${secondSettlement?.status ?? 'absent'}\`.`, {
+          expected: 'terminal/verified',
+          actual: `${secondState}/${secondSettlement?.status ?? 'absent'}`,
+        });
+      }
+      return result(ctx, 'PASS', `Both runs closed: build ${runId} and maintenance ${phase2RunId}, each terminal with settlement=verified.`);
     }
 
     return result(ctx, 'PASS', `Run ${runId} closed: runVerificationState=terminal and canonical settlement=verified.`);

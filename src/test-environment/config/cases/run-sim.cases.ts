@@ -15,6 +15,9 @@ export const BRIEF_LEARNING =
   'create a modern learning platform with courses for web development. '
   + 'use latest tech, make it responsive. no admin area for now.';
 
+export const BRIEF_LEARNING_MAINTENANCE =
+  'add new section news with listing and news info';
+
 export const BRIEF_API =
   'i want an api project with products listing, products info, news listing and info';
 
@@ -184,6 +187,38 @@ export const RUN_SIM_CASES: Case[] = [
       // onto the cheap `stack` path.
       fixCycle: true,
       negativeGates: true,
+      // The user's follow-up message after the first integration. The delta is
+      // a news listing and a news detail page; everything already built stays.
+      phase2: {
+        brief: BRIEF_LEARNING_MAINTENANCE,
+        architecture: {
+          schemaVersion: 1,
+          routes: [
+            { id: 'home-route', path: '/', moduleId: 'home' },
+            { id: 'courses-route', path: '/courses', moduleId: 'courses' },
+            { id: 'course-detail-route', path: '/courses/:slug', moduleId: 'course-detail' },
+            { id: 'lesson-route', path: '/courses/:slug/lessons/:lessonId', moduleId: 'lesson' },
+            { id: 'login-route', path: '/login', moduleId: 'login' },
+            { id: 'news-route', path: '/news', moduleId: 'news' },
+            { id: 'news-detail-route', path: '/news/:slug', moduleId: 'news-detail' },
+          ],
+          modules: [
+            { id: 'app-shell', name: 'App', kind: 'app-shell' },
+            { id: 'home', name: 'Home', kind: 'page' },
+            { id: 'courses', name: 'Courses', kind: 'page' },
+            { id: 'course-detail', name: 'Course Detail', kind: 'page' },
+            { id: 'lesson', name: 'Lesson', kind: 'page' },
+            { id: 'login', name: 'Login', kind: 'page' },
+            { id: 'news', name: 'News', kind: 'page' },
+            { id: 'news-detail', name: 'News Detail', kind: 'page' },
+            { id: 'course-card', name: 'Course Card', kind: 'component' },
+            { id: 'lesson-list', name: 'Lesson List', kind: 'component' },
+            { id: 'auth', name: 'Auth', kind: 'feature' },
+            { id: 'courses-api', name: 'Courses API', kind: 'service' },
+          ],
+        },
+        qa: WEB_QA,
+      },
       qa: {
         mode: 'browser',
         expectChecks: {
