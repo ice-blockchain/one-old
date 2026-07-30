@@ -77,6 +77,9 @@ test('new laravel project honors the configured frontend: laravel-ui + inertia-v
     });
     assert.equal(profile.profileId, 'server-rendered');
     assert.equal(profile.router, 'inertia-vue-router');
+    assert.ok(profile.sourceRoots.includes('apps/web/resources/js'));
+    assert.equal(profile.uiSystem?.adapter, 'shadcn-vue');
+    assert.equal(profile.uiSystem?.sharedRoot, 'packages/ui');
     assert.ok(profile.surfaces.includes('web-ui'));
     assert.ok(profile.roles.includes('senior-frontend'));
   });
@@ -92,6 +95,8 @@ test('new laravel project with react frontend seeds inertia-react', () => {
     });
     assert.equal(profile.profileId, 'server-rendered');
     assert.equal(profile.router, 'inertia-react-router');
+    assert.ok(profile.sourceRoots.includes('apps/web/resources/js'));
+    assert.equal(profile.uiSystem?.adapter, 'shadcn');
     assert.ok(profile.roles.includes('senior-frontend'));
   });
 });
@@ -106,6 +111,9 @@ test('new laravel project with unspecified web UI (`other`) plans blade, not bac
     });
     assert.equal(profile.profileId, 'server-rendered');
     assert.equal(profile.router, 'laravel-router');
+    assert.ok(profile.sourceRoots.includes('resources/views'));
+    assert.equal(profile.uiSystem?.family, 'framework-native');
+    assert.equal(profile.uiSystem?.adapter, null);
     assert.ok(profile.surfaces.includes('web-ui'));
     assert.ok(profile.roles.includes('senior-frontend'));
   });

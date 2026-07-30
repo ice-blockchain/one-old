@@ -123,6 +123,12 @@ CHANGES_REQUESTED — <one line summary>.
   design rules, has a product-specific first screen, and covers meaningful
   loading, empty, error, disabled, focus, hover/press, responsive, and
   reduced-motion states.
+- Every UI need and reachable state has a catalog decision. Existing
+  `@app/ui` exports are reused; official active-adapter matches are installed
+  through its CLI in `packages/ui` and exported through the package API rather
+  than hand-rolled or duplicated app-locally. Any custom base component records
+  the official search terms, negative result, primitive composition, and
+  justification in the frontend handoff. No second UI system appears.
 - Missing backend/env config does not leave a sparse or duplicated setup UI:
   at most one shared missing-config banner pattern is visible per page, and the
   actual workflow still renders a credible demo, seeded, empty, or degraded

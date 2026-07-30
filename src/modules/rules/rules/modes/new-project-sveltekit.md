@@ -6,6 +6,11 @@ description: "Apply only when CompiledArchitectureV1 profileId=sveltekit: Svelte
 
 Apply only when `CompiledArchitectureV1.profile.profileId=sveltekit`.
 
+For a new project `<web-root>` is `apps/web`; Tailwind v4 resolves
+`shadcn-svelte` unless another UI library is explicit or detected.
+`packages/ui` owns adapter-CLI primitives and reusable compositions per
+`rules/frontend/component-system.md`. Add only compiled `uiPrimitives`.
+
 ```
 <web-root>/
 ├── package.json

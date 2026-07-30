@@ -74,10 +74,13 @@ Scores the UI against the canonical AI-slop tell list in
 
 ## Traffic One Requirements
 
-- Web tokens live as shadcn CSS variables in
+- Compatible web tokens live in
   `packages/tailwind-config/src/globals.css` (`@theme` blocks; Ionic keeps v3
-  preset extensions in `preset.ts`). Styles use Tailwind utility
-  classes + shadcn primitives in `packages/ui/src/components/ui/`.
+  preset extensions in `preset.ts`). Styles use Tailwind utility classes plus
+  the shadcn, shadcn-vue, or shadcn-svelte adapter resolved by
+  `profile.uiSystem`; official CLI primitives live in
+  `packages/ui/src/components/ui/`. External and unsupported profiles preserve
+  their selected/native token system.
 - React Native tokens live as shadcn HSL CSS variables in `global.css` and are
   consumed via NativeWind `className`; UI primitives come from React Native
   Reusables in `packages/ui-native/src/components/ui/`.

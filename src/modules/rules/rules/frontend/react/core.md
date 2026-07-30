@@ -37,15 +37,17 @@ delivering mobile with Ionic/Capacitor.
 - **Tailwind CSS v4** (CSS-first config) + **shadcn/ui**. Wire it with the
   `@tailwindcss/vite` plugin — no `tailwind.config.*`, no PostCSS/autoprefixer
   setup. (Ionic and React Native stacks stay on `^3.4` — see their core rules.)
-- shadcn primitives live in `packages/ui/src/components/ui/` (monorepo) or
-  `src/components/ui/` (single-app). Add via `npx shadcn@latest add <name>`;
-  never hand-roll a button, dialog, dropdown, input, etc.
+- shadcn primitives live only in `packages/ui/src/components/ui/`. For every UI
+  need, search the current official catalog and add the exact compiled
+  identifier through the CLI; never use a fixed batch or hand-roll a catalog
+  match. The full cross-framework contract is
+  `rules/frontend/component-system.md`.
 - Variants via `class-variance-authority` (cva). Merge classes with
   `cn()` (= `clsx` + `tailwind-merge`).
 - Theme: design tokens as CSS variables (`--background`, `--foreground`,
   `--primary`, …) declared in the shared stylesheet's `@theme` block
-  (`packages/tailwind-config/src/globals.css` in the monorepo, `src/styles/globals.css`
-  single-app); apps import that stylesheet, not a JS preset.
+  (`packages/tailwind-config/src/globals.css`); apps import that stylesheet, not
+  a JS preset.
 - Animation utilities: `tw-animate-css` (the v4-native successor to
   `tailwindcss-animate`). Icons: `lucide-react`.
 - No `.css.ts`, no vanilla-extract, no styled-components, no `@emotion`,

@@ -28,8 +28,9 @@ import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isUninstallTrafficOneIntent, uninstallDirective } from '../../shared/uninstall-intent';
-import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath } from '../../shared/state';
+import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
+import { uiLibraryFromPrompt } from '../../shared/capabilities';
 import { firstEmitThisSession } from '../../shared/once';
 import { localFallbackLine, localFallbackSection, type LocalFallback } from '../../shared/onboarding-server/wizard-links';
 import { maintenanceTriageDirective, unresolvedRunDirective } from './triage-directive';
@@ -157,11 +158,22 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // Ask-first pending: write NOTHING before the user's answer — the prompt
     // rides the yes command (--seed-prompt) inside the question the authed body
     // just emitted, and the runner seeds it after recording the yes.
-    if (!usePluginQuestionPending(cwd)) seedOriginalPrompt(cwd, promptText);
+    if (!usePluginQuestionPending(cwd)) {
+      seedOriginalPrompt(cwd, promptText);
+      const explicitUiLibrary = uiLibraryFromPrompt(promptText);
+      if (explicitUiLibrary && fs.existsSync(statePath(cwd))) {
+        writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary });
+      }
+    }
     return bootstrapped;
   }
-  const state = readEffectiveState(cwd);
+  let state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return runSessionStartAuthed(ctx);
+  const explicitUiLibrary = uiLibraryFromPrompt(promptText);
+  if (explicitUiLibrary && state.uiLibrary !== explicitUiLibrary && !isSubagentThread(raw)) {
+    writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary });
+    state = { ...state, uiLibrary: explicitUiLibrary };
+  }
   const settlementRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (settlementRunId && !isSubagentThread(raw)) {
     const fallback = finalizePaidMaintenanceFallback(cwd, settlementRunId);

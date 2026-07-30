@@ -95,7 +95,7 @@ Runtime contract gate: `.traffic-one/runs/<runId>/assignments.json` is generated
 <!-- T1BLOCK:END runtime-assignments-owner-gate -->
 
 <!-- T1BLOCK:BEGIN architecture-input-gate -->
-Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, i18n locale/exact-brand intent, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: {{ERRORS}}.
+Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules (including component placement), exact UI primitive identifiers, i18n locale/exact-brand intent, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: {{ERRORS}}.
 <!-- T1BLOCK:END architecture-input-gate -->
 
 <!-- T1BLOCK:BEGIN architecture-input-shell-unverified -->
@@ -107,7 +107,7 @@ Architecture assignment gate: the runtime-compiled outputs are not covered befor
 <!-- T1BLOCK:END architecture-assignment-gate -->
 
 <!-- T1BLOCK:BEGIN architecture-contract-gate -->
-Architecture contract gate: do not emit `PLAN_READY` until the run's `architecture-input-v1.json` is valid and runtime compilation succeeds. {{ERROR}}. The architect may change only semantic routes/modules/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.
+Architecture contract gate: do not emit `PLAN_READY` until the run's `architecture-input-v1.json` is valid and runtime compilation succeeds. {{ERROR}}. The architect may change only semantic routes/modules/component placement/uiPrimitives/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.
 <!-- T1BLOCK:END architecture-contract-gate -->
 
 <!-- T1BLOCK:BEGIN verification-contract-scan-gate -->

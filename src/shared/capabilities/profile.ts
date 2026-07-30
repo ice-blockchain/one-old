@@ -31,6 +31,10 @@ import {
   frontendProfile,
 } from './profiles-web';
 import {
+  profileSupportsShadcnWorkspace,
+  resolveWebUiSystem,
+} from './ui-system';
+import {
   architectureTarget,
   frontendSkillBucket,
   nativeProfile,
@@ -55,18 +59,13 @@ export function capabilityProfileForProject(cwd: string, input: unknown): Capabi
     'architectureTarget' | 'uiFrameworks' | 'blockingIssues'
   > = {};
 
-  const plannedViteMonorepo = frontend === 'react-vite'
-    && state.mode === 'new-project'
-    && (
-      state.stack === 'default'
-      || state.stack === 'react-realtime-monorepo'
-      || (state.frontend === 'react-vite' && !BACKEND_NONE.has(backend))
-    );
+  const plannedWebWorkspace = state.mode === 'new-project'
+    && profileSupportsShadcnWorkspace(cwd, frontend, state);
   const webStructural = hasWeb
     ? frontendProfile(
         frontend,
         cwd,
-        plannedViteMonorepo ? 'apps/web' : frontendDetection.webRoot,
+        plannedWebWorkspace ? 'apps/web' : frontendDetection.webRoot,
         // The state's configured frontend seeds the Inertia kind on a new
         // laravel project where no dependency evidence exists yet (8cl).
         stringField(state, 'frontend', ''),
@@ -154,7 +153,7 @@ export function capabilityProfileForProject(cwd: string, input: unknown): Capabi
       : []),
   ];
 
-  return {
+  const baseProfile: CapabilityProfileV1 = {
     schemaVersion: CAPABILITY_SCHEMA_VERSION,
     ...structural,
     backendFramework: backend,
@@ -163,5 +162,9 @@ export function capabilityProfileForProject(cwd: string, input: unknown): Capabi
     skillBuckets: unique(skillBuckets),
     ...profileExtras,
   };
+  const uiSystem = resolveWebUiSystem(cwd, state, baseProfile);
+  return {
+    ...baseProfile,
+    ...(uiSystem ? { uiSystem } : {}),
+  };
 }
-

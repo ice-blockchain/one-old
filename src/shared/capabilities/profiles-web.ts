@@ -161,13 +161,17 @@ export function frontendProfile(
   }
   if (frontend === 'laravel-ui') {
     const inertia = laravelInertiaKind(cwd, configuredFrontend);
-    const sourceRoots = inertia ? ['resources/js', 'resources/views'] : ['resources/views', 'resources/js'];
+    const webRoot = preferredWebRoot || '.';
+    const at = (rel: string): string => prefixed(webRoot, rel);
+    const sourceRoots = inertia
+      ? [at('resources/js'), at('resources/views')]
+      : [at('resources/views'), at('resources/js')];
     const pages = inertia
-      ? ['resources/js/Pages', 'resources/js/pages', 'resources/views']
-      : ['resources/views', 'resources/js/Pages', 'resources/js/pages'];
+      ? [at('resources/js/Pages'), at('resources/js/pages'), at('resources/views')]
+      : [at('resources/views'), at('resources/js/Pages'), at('resources/js/pages')];
     const components = inertia
-      ? ['resources/js/Components', 'resources/js/components', 'resources/views/components']
-      : ['resources/views/components', 'resources/js/Components', 'resources/js/components'];
+      ? [at('resources/js/Components'), at('resources/js/components'), at('resources/views/components')]
+      : [at('resources/views/components'), at('resources/js/Components'), at('resources/js/components')];
     return {
       profileId: 'server-rendered',
       framework: 'laravel',
@@ -179,12 +183,14 @@ export function frontendProfile(
             ? 'inertia-router'
             : 'laravel-router',
       sourceRoots,
-      entrypoints: ['resources/js/app.ts', 'resources/js/app.tsx', 'resources/js/app.js'],
+      entrypoints: inertia === 'react'
+        ? [at('resources/js/app.tsx'), at('resources/js/app.ts'), at('resources/js/app.js')]
+        : [at('resources/js/app.ts'), at('resources/js/app.js')],
       layerRoots: {
         pages,
         components,
-        features: ['resources/js/Features', 'resources/js/features'],
-        lib: ['resources/js/lib', 'app/View'],
+        features: [at('resources/js/Features'), at('resources/js/features')],
+        lib: [at('resources/js/lib'), at('app/View')],
       },
       qaAdapters: ['playwright'],
     };
@@ -229,4 +235,3 @@ export function frontendProfile(
     qaAdapters: ['playwright'],
   };
 }
-

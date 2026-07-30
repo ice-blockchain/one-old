@@ -9,7 +9,9 @@ export {
   type ArchitectureTargetSurface,
   type CapabilityProfileV1,
   type ProjectSurface,
+  type ShadcnAdapterId,
   type StructuralProfileId,
+  type WebUiSystemV1,
 } from './types';
 export {
   detectFrontendFramework,
@@ -23,6 +25,11 @@ export {
 export {
   capabilityProfileForProject,
 } from './profile';
+export {
+  profileSupportsShadcnWorkspace,
+  resolveWebUiSystem,
+  uiLibraryFromPrompt,
+} from './ui-system';
 export {
   eligibleRolesForProfile,
   profileHasNativeUi,

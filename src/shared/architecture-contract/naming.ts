@@ -94,6 +94,17 @@ function extensionFor(profile: CapabilityProfileV1, kind: ArchitectureModuleKind
   return '.tsx';
 }
 
+function sharedUiExtension(profile: CapabilityProfileV1): string {
+  if (profile.uiSystem?.adapter === 'shadcn-vue') return '.vue';
+  if (profile.uiSystem?.adapter === 'shadcn-svelte') return '.svelte';
+  if (profile.profileId === 'nuxt' || profile.profileId === 'vue' || profile.router === 'inertia-vue-router') return '.vue';
+  if (profile.profileId === 'sveltekit' || profile.profileId === 'svelte') return '.svelte';
+  if (profile.profileId === 'astro') return '.astro';
+  if (profile.profileId === 'angular') return '.ts';
+  if (profile.profileId === 'server-rendered' && !profile.router.startsWith('inertia-')) return '.blade.php';
+  return '.tsx';
+}
+
 function backendSourceRoot(
   profile: CapabilityProfileV1,
   baselinePaths: ReadonlySet<string>,
@@ -102,7 +113,11 @@ function backendSourceRoot(
     return chosenRoot(['internal', 'cmd', 'pkg', ...profile.sourceRoots], 'internal', baselinePaths);
   }
   if (['laravel', 'php'].includes(profile.backendFramework)) {
-    return chosenRoot(['app', ...profile.sourceRoots], 'app', baselinePaths);
+    const workspaceRoot = profile.sourceRoots
+      .map((candidate) => /^(apps\/[^/]+)\//.exec(candidate)?.[1])
+      .find((candidate): candidate is string => Boolean(candidate));
+    const appRoot = workspaceRoot ? `${workspaceRoot}/app` : 'app';
+    return chosenRoot([appRoot, ...profile.sourceRoots], appRoot, baselinePaths);
   }
   if (['python', 'django', 'fastapi'].includes(profile.backendFramework)) {
     return chosenRoot(['src', 'app', ...profile.sourceRoots], 'src', baselinePaths);
@@ -178,6 +193,13 @@ export function moduleOutput(
     return `${pagesRoot}/${name}${ext}`;
   }
   if (module.kind === 'component') {
+    if (module.placement === 'shared-ui') {
+      const sharedRoot = profile.uiSystem?.sharedRoot;
+      if (!sharedRoot) {
+        throw new Error(`component module ${module.id} requests shared-ui but profile ${profile.profileId} has no shared UI root`);
+      }
+      return `${sharedRoot}/src/components/${name}${sharedUiExtension(profile)}`;
+    }
     if (profile.profileId === 'angular') {
       const componentName = kebab(module.name);
       return `${componentsRoot}/${componentName}/${componentName}.component.ts`;
@@ -199,7 +221,10 @@ export function moduleOutput(
       return `services/api/${snake(module.name)}.py`;
     }
     if (['laravel', 'php'].includes(profile.backendFramework)) {
-      return `app/Services/${name}.php`;
+      const workspaceRoot = profile.sourceRoots
+        .map((candidate) => /^(apps\/[^/]+)\//.exec(candidate)?.[1])
+        .find((candidate): candidate is string => Boolean(candidate));
+      return `${workspaceRoot ? `${workspaceRoot}/` : ''}app/Services/${name}.php`;
     }
     return `services/api/src/${name}.ts`;
   }

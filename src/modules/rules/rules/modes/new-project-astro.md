@@ -6,6 +6,11 @@ description: "Apply only when CompiledArchitectureV1 profileId=astro: Astro layo
 
 Apply only when `CompiledArchitectureV1.profile.profileId=astro`.
 
+Astro uses the shadcn adapter of a detected React, Vue, or Svelte renderer and,
+for a compatible new project, `<web-root>` is `apps/web`. Renderer-free Astro
+keeps native primitives and is not forced into a UI-package port. Follow
+`rules/frontend/component-system.md` and add only compiled `uiPrimitives`.
+
 ```
 <web-root>/
 ├── package.json

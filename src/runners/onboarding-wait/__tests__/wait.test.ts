@@ -180,6 +180,29 @@ test('applyUseChoice records the yes and seeds originalPrompt at decision time (
   }
 });
 
+test('ask-first seeding persists an explicit UI library choice with the original request', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { applyUseChoice } = await import('../index');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-ui-library-')));
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    const seed = 'Build a dashboard with Tailwind and MUI components';
+    applyUseChoice(dir, ['--use', '--bootstrap-only', dir, `--seed-prompt=${seed}`]);
+    const state = JSON.parse(
+      fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.equal(state.originalPrompt, seed);
+    assert.equal(state.uiLibrary, 'mui');
+  } finally {
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('applyReconsiderChoice persists exact opt-in before synchronizing', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
@@ -349,7 +372,8 @@ test('Windsurf first-run architect directive uses the always-registered general 
     assert.doesNotMatch(directive, /profile `senior-architect`/);
     assert.match(directive, /profile `next-app`/);
     assert.match(directive, /framework `nextjs`/);
-    assert.doesNotMatch(directive, /React\/Vite app lives|Turborepo|apps\/web/);
+    assert.match(directive, /apps\/web\/app/);
+    assert.doesNotMatch(directive, /React\/Vite app lives|default React stack/);
   } finally {
     if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;

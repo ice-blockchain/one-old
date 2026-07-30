@@ -33,6 +33,7 @@ export interface ArchitectureModuleInputV1 {
   id: string;
   name: string;
   kind: ArchitectureModuleKind;
+  placement?: 'app' | 'shared-ui';
 }
 
 export interface ArchitectureExceptionRequestV1 {
@@ -52,6 +53,7 @@ export interface ArchitectureInputV1 {
   routes: ArchitectureRouteInputV1[];
   modules: ArchitectureModuleInputV1[];
   i18n?: ArchitectureI18nInputV1;
+  uiPrimitives?: string[];
   exceptions?: ArchitectureExceptionRequestV1[];
 }
 
@@ -140,6 +142,8 @@ export interface CompiledArchitectureV1 {
   layers: CapabilityProfileV1['layerRoots'];
   routes: CompiledArchitectureRouteV1[];
   modules: CompiledArchitectureModuleV1[];
+  /** Exact adapter component identifiers selected by catalog-first planning. */
+  uiPrimitives?: string[];
   /** Resolved only for UI projects whose run owns or explicitly declares i18n. */
   i18n?: CompiledI18nContractV1;
   /**

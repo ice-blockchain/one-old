@@ -188,7 +188,9 @@ CLI, worker, data-only, or native-only profiles.
 Write semantic ArchitectureInputV1 to
 .traffic-one/runs/<run-id>/architecture-input-v1.json: route ids/paths and
 module ids, semantic modules (`app-shell`, `page`, `component`, `feature`,
-`service`, `store`, or `test`), optional semantic `i18n` intent
+`service`, `store`, or `test`), exact demand-driven `uiPrimitives` identifiers
+from the active adapter's official catalog, optional `placement: "shared-ui"`
+only for reusable domain-agnostic component modules, optional semantic `i18n` intent
 (`sourceLocale`, supported `locales`, exact `literalBrands`), and only narrowly
 justified exception requests. New UI projects default to `en` only when the
 brief is silent.
@@ -280,6 +282,13 @@ Only when the work unit contains public web routes, apply `rules/common/seo.md`
 before finishing: route-aware metadata, JSON-LD, robots/sitemap,
 favicon/PWA/OG assets, site-url env docs, private/admin noindex, and metadata
 regression coverage for every created or changed public route.
+
+Apply `rules/frontend/component-system.md` to every web UI work unit. Inventory
+all controls and reachable UI states, reuse `@app/ui`, and search the active
+adapter's official catalog by name, behavior, and synonyms before creating a
+component. Add compiled `uiPrimitives` through the adapter CLI into
+`packages/ui` and export them through its package API. A custom base component
+requires recorded evidence that the official catalog has no equivalent.
 
 Apply `rules/frontend/i18n.md` whenever the work unit includes web or native UI.
 New UI projects wire the compiled profile-native baseline; existing localized
@@ -411,6 +420,11 @@ or changed public route. Request changes if changed UI ignores an existing i18n
 module, ships hardcoded user-facing strings, omits catalog entries, or uses
 `t()` as rendered React child instead of `<Trans>` with fallback. Request changes if any touched
 missing-config setup CTA lacks `href="https://traffic.io/"`.
+Request changes when the UI-needs inventory is incomplete, a component already
+exists in `@app/ui` or the active official shadcn catalog but was hand-rolled,
+an adapter primitive bypasses its CLI/package export, a second UI system was
+introduced, or a custom base component has no recorded negative lookup and
+composition justification.
 
 Write your digest to:
   .traffic-one/digests/<run-id>/reviewer.md

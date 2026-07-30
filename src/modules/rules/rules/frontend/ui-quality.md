@@ -140,10 +140,10 @@ For each visible element, before commit:
 
 ## Don't
 
-- Don't replace the detected framework, component library, or styling system
-  with a second one. React-specific Tailwind/shadcn and NativeWind/RNR
-  requirements live in their profile rules; Nuxt, Laravel, Swift, Kotlin,
-  Flutter, and custom stacks keep their native conventions.
+- Don't replace the resolved component or styling system with a second one.
+  Apply `rules/frontend/component-system.md`: compatible React, Vue, Svelte,
+  Astro-renderer, and Inertia profiles use their selected shadcn adapter;
+  unsupported web and native profiles keep their framework-native conventions.
 - Don't scatter hardcoded colours, spacing, sizes, radii, or motion values.
   Reuse the active token/theme system or add a named token.
 - Don't add motion that delays user actions.

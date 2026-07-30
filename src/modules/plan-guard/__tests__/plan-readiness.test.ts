@@ -717,6 +717,7 @@ test('frontend completion gate scans capability roots and still blocks collapsed
       projectRoot: dir,
       state: {
         ...DEFAULT_STATE,
+        mode: 'existing-codebase',
         stack: 'custom-frontend',
         frontend: 'none',
         backend: 'none',
@@ -1845,14 +1846,16 @@ test('implementer format gate resolves config, manifest, scripts, and dependency
       mobile: { framework: 'none' },
       onboardingComplete: true,
     };
-    fs.mkdirSync(path.join(dir, 'web', 'app'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'web', 'package.json'), JSON.stringify({
+    fs.mkdirSync(path.join(dir, 'apps', 'web', 'app'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'apps', 'web', 'package.json'), JSON.stringify({
       dependencies: { next: '16.0.0' },
+      devDependencies: { prettier: '^3.0.0' },
     }), 'utf8');
     writeArchitectureInputAndAssignments(dir, 'R', state);
-    fs.writeFileSync(path.join(dir, 'web', '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
-      devDependencies: { prettier: '^3.0.0' },
+      private: true,
+      workspaces: ['apps/*', 'packages/*'],
     }), 'utf8');
 
     const gateArgs = {
@@ -1867,12 +1870,13 @@ test('implementer format gate resolves config, manifest, scripts, and dependency
       .filter((violation) => violation.startsWith('implementer-format-'));
     assert.deepEqual(
       formatViolations(),
-      ['implementer-format-parity-gate:web/.prettierrc'],
-      'a root dependency cannot satisfy nested web tooling',
+      ['implementer-format-parity-gate:.prettierrc'],
+      'an app dependency cannot satisfy root workspace tooling',
     );
 
-    fs.writeFileSync(path.join(dir, 'web', 'package.json'), JSON.stringify({
-      dependencies: { next: '16.0.0' },
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      workspaces: ['apps/*', 'packages/*'],
       devDependencies: { prettier: '^3.0.0' },
     }), 'utf8');
     assert.deepEqual(formatViolations(), []);
@@ -2225,10 +2229,10 @@ test('implementer crawl origin gate: an invented or relative sitemap origin cann
         { id: 'home', name: 'Home', kind: 'page' },
       ],
     });
-    fs.mkdirSync(path.join(dir, 'public'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'apps/web/public'), { recursive: true });
     const sitemap = (loc: string): void => {
       fs.writeFileSync(
-        path.join(dir, 'public/sitemap.xml'),
+        path.join(dir, 'apps/web/public/sitemap.xml'),
         `<?xml version="1.0" encoding="UTF-8"?>\n<urlset><url><loc>${loc}</loc></url></urlset>\n`,
         'utf8',
       );
@@ -2263,7 +2267,7 @@ test('implementer crawl origin gate: an invented or relative sitemap origin cann
 
     // robots.txt carries the same directive and the same failure mode.
     fs.writeFileSync(
-      path.join(dir, 'public/robots.txt'),
+      path.join(dir, 'apps/web/public/robots.txt'),
       'User-agent: *\nAllow: /\nSitemap: https://workshop.example/sitemap.xml\n',
       'utf8',
     );

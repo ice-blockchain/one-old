@@ -18,6 +18,7 @@ import {
 } from './naming';
 import {
   selectedTargetHasWebUi,
+  webPackageRoot,
   workspaceScaffoldOutputs,
 } from './scaffold';
 
@@ -66,8 +67,9 @@ export function routeRegistrationOutputs(
     || profile.profileId !== 'server-rendered'
     || profile.framework !== 'laravel'
   ) return [];
+  const appRoot = webPackageRoot(profile);
   return [{
-    path: 'routes/web.php',
+    path: appRoot === '.' ? 'routes/web.php' : `${appRoot}/routes/web.php`,
     // This registration is the integration edge for frontend-owned page
     // modules. Keep one owner so parallel frontend/backend units never share a
     // writable route file.
@@ -89,7 +91,9 @@ function testOutputForModule(
     return `tests/test_${snake(basename)}.py`;
   }
   if (['laravel', 'php'].includes(profile.backendFramework) && module.output.endsWith('.php')) {
-    return `tests/Feature/${pascal(basename)}Test.php`;
+    const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
+    const output = `tests/Feature/${pascal(basename)}Test.php`;
+    return appRoot === '.' ? output : `${appRoot}/${output}`;
   }
   if (profile.profileId === 'swift-native') return `Tests/${pascal(basename)}Tests.swift`;
   if (profile.profileId === 'kotlin-native') return `app/src/test/${pascal(basename)}Test.kt`;
@@ -132,7 +136,12 @@ export function testerOutputs(
   } else if (['python', 'django', 'fastapi'].includes(profile.backendFramework)) {
     outputs.push({ path: 'tests/conftest.py', ownerRole: 'senior-tester', kind: 'test-infra' });
   } else if (['laravel', 'php'].includes(profile.backendFramework)) {
-    outputs.push({ path: 'phpunit.xml', ownerRole: 'senior-tester', kind: 'test-infra' });
+    const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
+    outputs.push({
+      path: appRoot === '.' ? 'phpunit.xml' : `${appRoot}/phpunit.xml`,
+      ownerRole: 'senior-tester',
+      kind: 'test-infra',
+    });
   }
   return outputs;
 }

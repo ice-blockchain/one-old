@@ -8,6 +8,11 @@ Apply only when `CompiledArchitectureV1.profile.profileId=nuxt`. Runtime
 preserves the configured Nuxt `srcDir` and web package root and selects the first
 baseline-backed candidate rather than assuming the repository root.
 
+For a new project the web package root is `apps/web`; Tailwind v4 resolves
+`shadcn-vue` unless another UI library is explicit or detected.
+`packages/ui` owns adapter-CLI primitives and reusable compositions per
+`rules/frontend/component-system.md`. Add only compiled `uiPrimitives`.
+
 ```
 <web-root>/
 ├── package.json

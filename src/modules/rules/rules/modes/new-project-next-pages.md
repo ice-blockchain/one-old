@@ -8,6 +8,11 @@ Apply only when `CompiledArchitectureV1.profile.profileId=next-pages`. The
 compiled profile preserves `<web-root>/pages` or `<web-root>/src/pages` from
 the immutable baseline.
 
+For a new project `<web-root>` is `apps/web`; Tailwind v4 resolves `shadcn`
+unless the user selected or the project detected another UI library.
+`packages/ui` owns CLI-installed primitives and reusable compositions per
+`rules/frontend/component-system.md`. Add only compiled `uiPrimitives`.
+
 ```
 <web-root>/
 ├── package.json

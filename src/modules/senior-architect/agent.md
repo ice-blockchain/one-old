@@ -210,8 +210,15 @@ the architect digest. It contains semantic intent only:
     { "id": "home", "path": "/", "moduleId": "home-page" }
   ],
   "modules": [
-    { "id": "home-page", "name": "Home page", "kind": "page" }
+    { "id": "home-page", "name": "Home page", "kind": "page" },
+    {
+      "id": "status-card",
+      "name": "Status card",
+      "kind": "component",
+      "placement": "shared-ui"
+    }
   ],
+  "uiPrimitives": ["progress", "dialog", "alert-dialog"],
   "i18n": {
     "sourceLocale": "en",
     "locales": ["en", "ro"],
@@ -229,6 +236,14 @@ the architect digest. It contains semantic intent only:
 
 Allowed module kinds are `app-shell`, `page`, `component`, `feature`, `service`,
 `store`, and `test`. Every route target must reference a declared module.
+For web UI, inventory all controls and states, inspect installed `packages/ui`
+components, and search the active adapter's official catalog by name,
+behavior, and synonyms. Put each required exact CLI identifier in
+`uiPrimitives`; runtime deduplicates it. The list is product-specific, never a
+fixed starter batch. Use `placement: "shared-ui"` only on reusable,
+domain-agnostic `component` modules; application-specific components omit it or
+use `"app"`. If no official catalog equivalent exists, document the lookup and
+custom-composition justification in the plan and frontend handoff.
 For a UI project, translate locale intent from the brief into `i18n`; omit it
 only when the brief is silent, in which case runtime defaults new UI projects
 to source/supported locale `en`. `literalBrands` contains only exact static

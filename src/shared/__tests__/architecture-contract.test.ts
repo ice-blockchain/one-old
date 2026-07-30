@@ -98,6 +98,167 @@ test('architecture input is semantic and cannot choose roots or output paths', (
   assert.ok(validation.errors.some((error) => error.includes('may not choose output paths')));
 });
 
+test('uiPrimitives are safe, deduplicated, demand-driven adapter outputs', () => {
+  const uiInput: ArchitectureInputV1 = {
+    ...INPUT,
+    uiPrimitives: [
+      'progress',
+      'dialog',
+      'alert-dialog',
+      'sheet',
+      'data-table',
+      'date-picker',
+      'combobox',
+      'progress',
+    ],
+    modules: [
+      ...INPUT.modules,
+      {
+        id: 'status-summary',
+        name: 'Status Summary',
+        kind: 'component',
+        placement: 'shared-ui',
+      },
+    ],
+  };
+  assert.equal(validateArchitectureInput(uiInput).ok, true);
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'ui-react', {
+      ...REACT_STATE,
+      backend: 'none',
+    }, uiInput);
+    assert.deepEqual(compiled.uiPrimitives, [
+      'alert-dialog',
+      'combobox',
+      'data-table',
+      'date-picker',
+      'dialog',
+      'progress',
+      'sheet',
+    ]);
+    for (const primitive of compiled.uiPrimitives || []) {
+      assertScaffoldOwner(
+        compiled,
+        `packages/ui/src/components/ui/${primitive}.tsx`,
+        'senior-frontend',
+      );
+    }
+    assertScaffoldOwner(compiled, 'packages/ui/components.json', 'senior-frontend');
+    assertScaffoldOwner(compiled, 'packages/ui/src/index.ts', 'senior-frontend');
+    assert.equal(
+      compiled.modules.find((module) => module.id === 'status-summary')?.output,
+      'packages/ui/src/components/StatusSummary.tsx',
+    );
+  });
+
+  for (const fixture of [
+    { frontend: 'vue', adapterPath: 'packages/ui/src/components/ui/progress/**', shared: 'packages/ui/src/components/StatusSummary.vue' },
+    { frontend: 'svelte', adapterPath: 'packages/ui/src/components/ui/progress/**', shared: 'packages/ui/src/components/StatusSummary.svelte' },
+  ]) {
+    withProject((cwd) => {
+      const compiled = compileArchitecture(cwd, `ui-${fixture.frontend}`, {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: fixture.frontend,
+        backend: 'none',
+        mobile: { framework: 'none' },
+      }, {
+        ...INPUT,
+        uiPrimitives: ['progress'],
+        modules: [
+          ...INPUT.modules,
+          { id: 'status-summary', name: 'Status Summary', kind: 'component', placement: 'shared-ui' },
+        ],
+      });
+      assertScaffoldOwner(compiled, fixture.adapterPath, 'senior-frontend');
+      assert.equal(
+        compiled.modules.find((module) => module.id === 'status-summary')?.output,
+        fixture.shared,
+      );
+    });
+  }
+});
+
+test('uiPrimitives and shared-ui placement reject unsafe or unsupported intent', () => {
+  for (const primitive of ['../dialog', 'Dialog', 'dialog button', '@registry/dialog', '']) {
+    assert.equal(validateArchitectureInput({
+      ...INPUT,
+      uiPrimitives: [primitive],
+    }).ok, false, primitive);
+  }
+  assert.equal(validateArchitectureInput({
+    ...INPUT,
+    modules: [{ id: 'bad', name: 'Bad', kind: 'page', placement: 'shared-ui' }],
+  }).ok, false);
+  assert.equal(validateArchitectureInput({
+    ...INPUT,
+    modules: [{ id: 'bad', name: 'Bad', kind: 'component', placement: 'package' }],
+  }).ok, false);
+
+  withProject((cwd) => {
+    assert.throws(() => compileArchitecture(cwd, 'angular-ui', {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'angular',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      ...INPUT,
+      uiPrimitives: ['progress'],
+    }), /uiPrimitives require a resolved shadcn component system/);
+  });
+});
+
+test('existing projects adopt packages/ui gradually and reuse installed primitives', () => {
+  withProject((cwd) => {
+    for (const dir of [
+      'src',
+      'packages/ui/src/components/ui',
+      'packages/ui/src/lib',
+    ]) fs.mkdirSync(path.join(cwd, dir), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    fs.writeFileSync(path.join(cwd, 'packages/ui/components.json'), JSON.stringify({
+      $schema: 'https://ui.shadcn.com/schema.json',
+      aliases: { ui: '@app/ui/components/ui' },
+    }));
+    fs.writeFileSync(
+      path.join(cwd, 'packages/ui/src/components/ui/progress.tsx'),
+      'export function Progress(){return null}\n',
+    );
+
+    const state = {
+      ...REACT_STATE,
+      mode: 'existing-codebase',
+      backend: 'none',
+    };
+    const unchanged = compileArchitecture(cwd, 'existing-unchanged', state, INPUT);
+    assert.equal(unchanged.profile.uiSystem?.source, 'detected');
+    assert.ok(!(unchanged.scaffoldOutputs || []).some((output) => (
+      output.path.startsWith('packages/ui/')
+    )));
+
+    const incremental = compileArchitecture(cwd, 'existing-incremental', state, {
+      ...INPUT,
+      uiPrimitives: ['progress', 'dialog'],
+    });
+    assertScaffoldOwner(
+      incremental,
+      'packages/ui/src/components/ui/progress.tsx',
+      'senior-frontend',
+    );
+    assertScaffoldOwner(
+      incremental,
+      'packages/ui/src/components/ui/dialog.tsx',
+      'senior-frontend',
+    );
+    assert.ok(!(incremental.scaffoldOutputs || []).some((output) => (
+      /components\/ui\/(button|card|input)\./.test(output.path)
+    )));
+  });
+});
+
 test('architecture i18n validates locale intent and compiles locale/namespace parity outputs', () => {
   const localized: ArchitectureInputV1 = {
     ...INPUT,
@@ -238,9 +399,9 @@ test('new-project scaffold baselines are stack-aware, single-owner, and keep too
     for (const output of repositoryOutputs) assertScaffoldOwner(compiled, output, 'senior-frontend');
     for (const output of nodeTooling) assertScaffoldOwner(compiled, output, 'senior-frontend');
     assertScaffoldOwner(compiled, '.env.example', 'senior-frontend');
-    for (const output of workspaceOnly) {
-      assert.ok(!compiled.allowedOutputs.includes(output), `root Next excludes workspace-only ${output}`);
-    }
+    for (const output of workspaceOnly) assertScaffoldOwner(compiled, output, 'senior-frontend');
+    assertScaffoldOwner(compiled, 'apps/web/package.json', 'senior-frontend');
+    assertScaffoldOwner(compiled, 'packages/ui/package.json', 'senior-frontend');
     assertNoRuntimeContextScaffolds(compiled);
   });
 
@@ -270,17 +431,16 @@ test('new-project scaffold baselines are stack-aware, single-owner, and keep too
       backend: 'none',
       mobile: { framework: 'none' },
     }, INPUT);
-    assert.ok(compiled.allowedOutputs.includes('web/package.json'));
-    assert.ok(!compiled.allowedOutputs.includes('package.json'));
+    assertScaffoldOwner(compiled, 'apps/web/package.json', 'senior-frontend');
+    assertScaffoldOwner(compiled, 'package.json', 'senior-frontend');
+    assert.ok(!compiled.allowedOutputs.includes('web/package.json'));
     for (const output of repositoryOutputs) assertScaffoldOwner(compiled, output, 'senior-frontend');
     for (const output of nodeTooling) {
-      assertScaffoldOwner(compiled, `web/${output}`, 'senior-frontend');
-      assert.ok(!compiled.allowedOutputs.includes(output), `nested Next keeps ${output} beside its manifest`);
+      assertScaffoldOwner(compiled, output, 'senior-frontend');
+      assert.ok(!compiled.allowedOutputs.includes(`web/${output}`));
     }
     assert.ok(!compiled.allowedOutputs.includes('.env.example'));
-    for (const output of workspaceOnly) {
-      assert.ok(!compiled.allowedOutputs.includes(output), `nested Next excludes workspace-only ${output}`);
-    }
+    for (const output of workspaceOnly) assertScaffoldOwner(compiled, output, 'senior-frontend');
     assertNoRuntimeContextScaffolds(compiled);
   });
 
@@ -300,7 +460,8 @@ test('new-project scaffold baselines are stack-aware, single-owner, and keep too
       mobile: { framework: 'none' },
     }, INPUT);
     assertScaffoldOwner(compiled, 'package.json', 'senior-frontend');
-    assertScaffoldOwner(compiled, 'web/package.json', 'senior-frontend');
+    assertScaffoldOwner(compiled, 'apps/web/package.json', 'senior-frontend');
+    assert.ok(!compiled.allowedOutputs.includes('web/package.json'));
     for (const output of nodeTooling) {
       assertScaffoldOwner(compiled, output, 'senior-frontend');
       assert.ok(!compiled.allowedOutputs.includes(`web/${output}`));
@@ -494,61 +655,71 @@ test('every root web profile compiles its exact framework scaffold beside Node t
     frameworkScaffolds: string[];
     expectedI18n: string;
     setupPaths?: string[];
+    workspace: boolean;
   }> = [
     {
       frontend: 'nextjs',
       profileId: 'next-app',
-      frameworkScaffolds: ['package.json', 'next.config.ts', 'tsconfig.json'],
-      expectedI18n: 'i18n/locales/en/common.json',
+      frameworkScaffolds: ['apps/web/package.json', 'apps/web/next.config.ts', 'apps/web/tsconfig.json'],
+      expectedI18n: 'apps/web/i18n/locales/en/common.json',
+      workspace: true,
     },
     {
       frontend: 'nextjs',
       profileId: 'next-pages',
-      frameworkScaffolds: ['package.json', 'next.config.ts', 'tsconfig.json'],
-      expectedI18n: 'i18n/locales/en/common.json',
-      setupPaths: ['pages'],
+      frameworkScaffolds: ['apps/web/package.json', 'apps/web/next.config.ts', 'apps/web/tsconfig.json'],
+      expectedI18n: 'apps/web/i18n/locales/en/common.json',
+      setupPaths: ['apps/web/pages'],
+      workspace: true,
     },
     {
       frontend: 'nuxt',
       profileId: 'nuxt',
-      frameworkScaffolds: ['package.json', 'nuxt.config.ts', 'tsconfig.json'],
-      expectedI18n: 'i18n/locales/en.json',
+      frameworkScaffolds: ['apps/web/package.json', 'apps/web/nuxt.config.ts', 'apps/web/tsconfig.json'],
+      expectedI18n: 'apps/web/i18n/locales/en.json',
+      workspace: true,
     },
     {
       frontend: 'vue',
       profileId: 'vue',
-      frameworkScaffolds: ['package.json', 'vite.config.ts', 'tsconfig.json'],
-      expectedI18n: 'src/locales/en.json',
+      frameworkScaffolds: ['apps/web/package.json', 'apps/web/vite.config.ts', 'apps/web/tsconfig.json'],
+      expectedI18n: 'apps/web/src/locales/en.json',
+      workspace: true,
     },
     {
       frontend: 'sveltekit',
       profileId: 'sveltekit',
-      frameworkScaffolds: ['package.json', 'svelte.config.js', 'vite.config.ts', 'tsconfig.json'],
-      expectedI18n: 'src/lib/i18n/en.json',
+      frameworkScaffolds: ['apps/web/package.json', 'apps/web/svelte.config.js', 'apps/web/vite.config.ts', 'apps/web/tsconfig.json'],
+      expectedI18n: 'apps/web/src/lib/i18n/en.json',
+      workspace: true,
     },
     {
       frontend: 'svelte',
       profileId: 'svelte',
-      frameworkScaffolds: ['package.json', 'vite.config.ts', 'tsconfig.json'],
-      expectedI18n: 'src/lib/i18n/en.json',
+      frameworkScaffolds: ['apps/web/package.json', 'apps/web/vite.config.ts', 'apps/web/tsconfig.json'],
+      expectedI18n: 'apps/web/src/lib/i18n/en.json',
+      workspace: true,
     },
     {
       frontend: 'astro',
       profileId: 'astro',
       frameworkScaffolds: ['package.json', 'astro.config.mjs', 'tsconfig.json'],
       expectedI18n: 'src/i18n/en.json',
+      workspace: false,
     },
     {
       frontend: 'angular',
       profileId: 'angular',
       frameworkScaffolds: ['package.json', 'angular.json', 'tsconfig.json'],
       expectedI18n: 'src/locale/messages.en.xlf',
+      workspace: false,
     },
     {
       frontend: 'other',
       profileId: 'generic-web',
       frameworkScaffolds: ['package.json'],
       expectedI18n: 'src/locales/en.json',
+      workspace: false,
     },
   ];
 
@@ -574,8 +745,10 @@ test('every root web profile compiles its exact framework scaffold beside Node t
         assertScaffoldOwner(compiled, output, 'senior-frontend');
       }
       for (const output of ['pnpm-workspace.yaml', 'turbo.json', 'tsconfig.base.json']) {
-        assert.ok(!compiled.allowedOutputs.includes(output), `${fixture.profileId} excludes ${output}`);
+        if (fixture.workspace) assertScaffoldOwner(compiled, output, 'senior-frontend');
+        else assert.ok(!compiled.allowedOutputs.includes(output), `${fixture.profileId} excludes ${output}`);
       }
+      if (fixture.workspace) assertScaffoldOwner(compiled, 'packages/ui/package.json', 'senior-frontend');
       assertNoRuntimeContextScaffolds(compiled);
     });
   }
@@ -934,13 +1107,13 @@ test('runtime compiles framework-native page conventions for Next App, Nuxt, and
       deps: { next: '16.0.0', react: '19.0.0' },
       dirs: ['app'],
       state: { ...REACT_STATE, frontend: 'nextjs' },
-      expected: 'app/news/page.tsx',
+      expected: 'apps/web/app/news/page.tsx',
     },
     {
       deps: { nuxt: '4.0.0', vue: '3.0.0' },
       dirs: ['pages'],
       state: { ...REACT_STATE, frontend: 'nuxt' },
-      expected: 'pages/news.vue',
+      expected: 'apps/web/app/pages/news.vue',
     },
   ]) {
     withProject((cwd) => {
@@ -1274,13 +1447,13 @@ test('flat next-app compiles styling/i18n homes and the workspace declaration fo
     assert.equal(compiled.profile.profileId, 'next-app');
     const paths = (compiled.scaffoldOutputs || []).map((output) => output.path);
     for (const expected of [
-      'postcss.config.mjs',
-      'next-env.d.ts',
-      'app/globals.css',
-      'i18n/index.ts',
-      'i18n/locales/en/common.json',
-      'i18n/locales/en/home-route.json',
-      'i18n/locales/en/news-route.json',
+      'apps/web/postcss.config.mjs',
+      'apps/web/next-env.d.ts',
+      'apps/web/app/globals.css',
+      'apps/web/i18n/index.ts',
+      'apps/web/i18n/locales/en/common.json',
+      'apps/web/i18n/locales/en/home-route.json',
+      'apps/web/i18n/locales/en/news-route.json',
     ]) {
       assert.ok(paths.includes(expected), `missing frontend scaffold ${expected}`);
       assert.equal(
@@ -1352,9 +1525,9 @@ test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs'
       backend: 'laravel',
     }, INPUT);
     assert.equal(compiled.profile.router, 'inertia-react-router');
-    assert.ok(compiled.allowedOutputs.includes('resources/js/i18n/locales/en/common.json'));
-    assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'resources/js/app.tsx');
-    assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'resources/js/Pages/News.tsx');
+    assert.ok(compiled.allowedOutputs.includes('apps/web/resources/js/i18n/locales/en/common.json'));
+    assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'apps/web/resources/js/app.tsx');
+    assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'apps/web/resources/js/Pages/News.tsx');
   });
 });
 

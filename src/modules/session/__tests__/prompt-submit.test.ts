@@ -570,6 +570,19 @@ test('authed + complete, materialized project, local prefs resolved → plain ac
   });
 });
 
+test('an explicit UI library choice is persisted and never copied from a subagent prompt', () => {
+  withAuthedProject(completeSharedState(), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    runUserPromptSubmit(ctx(cwd, 'Use MUI for this frontend instead of shadcn'));
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).uiLibrary, 'mui');
+
+    runUserPromptSubmit(ctxSub(cwd, 'Use Chakra UI for my assigned component'));
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).uiLibrary, 'mui');
+  });
+});
+
 test('records a pending Cursor model-choice reply before normal prompt handling', () => {
   withAuthedProject(completeSharedState({ currentRunId: 'run-choice' }), (cwd) => {
     writeLocalPrefs();

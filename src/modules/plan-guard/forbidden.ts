@@ -5,7 +5,10 @@
 
 import { dependenciesFromPackage, loadPackageJson } from '../../shared/detection';
 import { isNativeState, isWebState } from '../../shared/state';
-import { defaultStateForStack } from '../../shared/capabilities';
+import {
+  defaultStateForStack,
+  type WebUiSystemV1,
+} from '../../shared/capabilities';
 
 export const INSTALL_RE = /(npm (install|i|add)|yarn add|pnpm add|bun add)/;
 
@@ -32,7 +35,11 @@ function stateFromStackForAllowlist(stackOrState: unknown): Rec {
   return defaultStateForStack(stack || 'minimal');
 }
 
-export function forbiddenForStack(stackOrState: unknown, allowNextjs: boolean): Rule[] {
+export function forbiddenForStack(
+  stackOrState: unknown,
+  allowNextjs: boolean,
+  uiSystem?: WebUiSystemV1,
+): Rule[] {
   const state = stateFromStackForAllowlist(stackOrState);
   const common: Rule[] = [
     ['mobx', 'Use Redux Toolkit for global business state and zustand for ephemeral UI state.'],
@@ -41,16 +48,45 @@ export function forbiddenForStack(stackOrState: unknown, allowNextjs: boolean): 
     ['swr', 'Use RTK Query for cached server state.'],
     ['(?<!tanstack/)(?<!\\w)react-query(?!-)', 'Use RTK Query for cached server state.'],
   ];
-  const web: Rule[] = [
+  const shadcnStyling: Rule[] = [
     ['styled-components', 'Use Tailwind utility classes with shadcn primitives in packages/ui.'],
     ['@emotion', 'Use Tailwind utility classes with shadcn primitives in packages/ui.'],
     ['@vanilla-extract/', 'vanilla-extract is no longer in the active stack. Use Tailwind + shadcn (run `npx shadcn@latest add <name>`).'],
     ['nativewind', 'NativeWind is the React Native styling layer; the web stack uses plain Tailwind.'],
-    ['@mui/', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
-    ['antd', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
-    ['material-ui', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
-    ['chakra-ui', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
-    ['bootstrap', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
+  ];
+  const componentLibraries: Array<[string, string, string]> = [
+    ['shadcn', '(^|\\s)shadcn(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not shadcn. Reuse the selected component system instead of adding a second one.'],
+    ['shadcn-vue', '(^|\\s)shadcn-vue(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not shadcn-vue. Reuse the selected component system instead of adding a second one.'],
+    ['shadcn-svelte', '(^|\\s)shadcn-svelte(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not shadcn-svelte. Reuse the selected component system instead of adding a second one.'],
+    ['mui', '@mui/|material-ui', 'The active UI system is not MUI. Reuse the selected component system instead of adding a second one.'],
+    ['ant-design', '(^|\\s)antd(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not Ant Design. Reuse the selected component system instead of adding a second one.'],
+    ['chakra-ui', '@chakra-ui/', 'The active UI system is not Chakra UI. Reuse the selected component system instead of adding a second one.'],
+    ['mantine', '@mantine/', 'The active UI system is not Mantine. Reuse the selected component system instead of adding a second one.'],
+    ['bootstrap', '(^|\\s)(?:bootstrap|react-bootstrap)(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not Bootstrap. Reuse the selected component system instead of adding a second one.'],
+    ['vuetify', '(^|\\s)vuetify(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not Vuetify. Reuse the selected component system instead of adding a second one.'],
+    ['primevue', '(^|\\s)primevue(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not PrimeVue. Reuse the selected component system instead of adding a second one.'],
+    ['quasar', '(^|\\s)quasar(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not Quasar. Reuse the selected component system instead of adding a second one.'],
+    ['element-plus', '(^|\\s)element-plus(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not Element Plus. Reuse the selected component system instead of adding a second one.'],
+    ['naive-ui', '(^|\\s)naive-ui(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not Naive UI. Reuse the selected component system instead of adding a second one.'],
+    ['nuxt-ui', '@nuxt/ui', 'The active UI system is not Nuxt UI. Reuse the selected component system instead of adding a second one.'],
+    ['skeleton', '@skeletonlabs/skeleton', 'The active UI system is not Skeleton. Reuse the selected component system instead of adding a second one.'],
+    ['flowbite', 'flowbite(?:-react|-svelte)?', 'The active UI system is not Flowbite. Reuse the selected component system instead of adding a second one.'],
+    ['angular-material', '@angular/material', 'The active UI system is not Angular Material. Reuse the selected component system instead of adding a second one.'],
+    ['primeng', '(^|\\s)primeng(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not PrimeNG. Reuse the selected component system instead of adding a second one.'],
+    ['ng-zorro', 'ng-zorro-antd', 'The active UI system is not NG-ZORRO. Reuse the selected component system instead of adding a second one.'],
+    ['daisyui', '(^|\\s)daisyui(?:@[\\w.-]+)?(\\s|$)', 'The active UI system is not daisyUI. Reuse the selected component system instead of adding a second one.'],
+  ];
+  const activeLibrary = uiSystem?.family === 'external'
+    ? uiSystem.library
+    : uiSystem?.family === 'shadcn'
+      ? uiSystem.adapter
+      : null;
+  const componentConflicts: Rule[] = componentLibraries
+    .filter(([id]) => id !== activeLibrary)
+    .map(([, pattern, tip]) => [pattern, tip]);
+  const web: Rule[] = [
+    ...(uiSystem?.family === 'shadcn' ? shadcnStyling : []),
+    ...componentConflicts,
   ];
   if (!allowNextjs) {
     web.push([

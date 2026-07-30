@@ -8,6 +8,7 @@
 // description.
 
 import { isLikelyCodingPrompt, promptHasStackSignal } from '../detection';
+import { uiLibraryFromPrompt } from '../capabilities/ui-system';
 import { projectContextOriginalPrompt } from './project-context';
 import { readState, writeState } from '../state';
 
@@ -43,7 +44,12 @@ export function seedOriginalPrompt(cwd: string, prompt: string): void {
   if (typeof state.originalPrompt === 'string' && state.originalPrompt.trim()) return;
   if (projectContextOriginalPrompt(state)) return;
   try {
-    writeState(cwd, { ...state, originalPrompt: text });
+    const uiLibrary = uiLibraryFromPrompt(text);
+    writeState(cwd, {
+      ...state,
+      originalPrompt: text,
+      ...(uiLibrary ? { uiLibrary } : {}),
+    });
   } catch {
     // best-effort; the wizard still runs, just without prompt-tailored defaults
   }

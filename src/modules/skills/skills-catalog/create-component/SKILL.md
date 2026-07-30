@@ -12,19 +12,28 @@ description: >
    architecture before choosing a path.
 2. Place the component in the compiled component or feature output. Never add a
    new root, move it into the entrypoint, or widen the allowlist yourself.
-3. Prefer an existing framework/design-system primitive. Use shadcn only when
-   the active React profile already uses it; use the native framework primitive
-   for Nuxt, Laravel, or another custom web stack.
-4. Give the component one responsibility. Split coordinated compound-family
+3. Inventory the component's controls, overlays, feedback, loading, empty, and
+   error states. Inspect `@app/ui` first, then search the official catalog of
+   the adapter selected by `profile.uiSystem` by name, behavior, and synonyms.
+   If a match exists, add its exact `uiPrimitives` identifier through the
+   adapter CLI into `packages/ui`, export it from the package API, and compose
+   it here. Never hand-roll or duplicate a catalog primitive.
+4. If no direct catalog match exists, compose active catalog primitives. A new
+   custom base component is allowed only after the official lookup confirms no
+   equivalent; record search terms, result, and justification in the handoff.
+   Reusable domain-agnostic compositions use compiled
+   `placement: "shared-ui"` outputs; feature-specific components remain in the
+   application.
+5. Give the component one responsibility. Split coordinated compound-family
    files only under the controlled same-prefix/packages-ui exception.
-5. Type its public inputs, keep data access in an existing hook/service layer,
+6. Type its public inputs, keep data access in an existing hook/service layer,
    and cover loading, empty, error, disabled, focus, and reduced-motion states
    that callers can reach.
-6. Reuse tokens and existing i18n/accessibility conventions. Do not introduce a
+7. Reuse tokens and existing i18n/accessibility conventions. Do not introduce a
    parallel styling, translation, state, or form system.
-7. Keep heavy optional dependencies out of shared/root bundles; lazy-load them
+8. Keep heavy optional dependencies out of shared/root bundles; lazy-load them
    at the usage boundary.
-8. Add focused component tests. Use Storybook or screenshots only when the
+9. Add focused component tests. Use Storybook or screenshots only when the
    verification contract classifies the change as visual.
 
 Before handoff, run the touched-file structural analyzer and relevant

@@ -107,7 +107,9 @@ function reactCatalogRoot(
       || 'src';
     return joined(sourceRoot, 'i18n/locales');
   }
-  if (profile.router === 'inertia-react-router') return 'resources/js/i18n/locales';
+  if (profile.router === 'inertia-react-router') {
+    return joined(webPackageRoot(profile), 'resources/js/i18n/locales');
+  }
   return joined(firstRoot(profile, 'src'), 'i18n/locales');
 }
 
@@ -199,10 +201,11 @@ function frameworkCatalogs(
     };
   }
   if (profile.profileId === 'server-rendered' && profile.framework === 'laravel') {
+    const appRoot = webPackageRoot(profile);
     return {
       reactCatalogLayout: false,
       catalogs: locales.flatMap((locale) => namespaces.map((namespace) => ({
-        path: `lang/${locale}/${namespace}.php`,
+        path: joined(appRoot, `lang/${locale}/${namespace}.php`),
         format: 'php' as const,
         locales: [locale],
         namespaces: [namespace],

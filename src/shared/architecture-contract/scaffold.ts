@@ -80,8 +80,9 @@ export function backendQualityOutputs(
 ): CompiledArchitectureOutputV1[] {
   if (!profile.roles.includes('senior-backend')) return [];
   const outputs = BACKEND_QUALITY_OUTPUT_BY_FRAMEWORK[profile.backendFramework || ''] || [];
+  const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
   return outputs.map((output) => ({
-    path: output,
+    path: appRoot === '.' ? output : `${appRoot}/${output}`,
     ownerRole: 'senior-backend',
     kind: 'scaffold' as const,
   }));
@@ -118,8 +119,9 @@ export function environmentScaffoldOutputs(profile: CapabilityProfileV1): Compil
           ? 'senior-frontend'
           : null
       );
+  const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
   return ownerRole
-    ? [{ path: '.env.example', ownerRole, kind: 'scaffold' }]
+    ? [{ path: appRoot === '.' ? '.env.example' : `${appRoot}/.env.example`, ownerRole, kind: 'scaffold' }]
     : [];
 }
 
@@ -252,9 +254,11 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
   const webRoot = webPackageRoot(profile);
   const at = (rel: string): string => webRoot === '.' ? rel : `${webRoot}/${rel}`;
   const common = workspaceScaffoldOutputs(webRoot);
+  const sharedUi = sharedUiScaffoldOutputs(profile);
   if (profile.profileId === 'vite-react') {
     return [
       ...common,
+      ...sharedUi,
       ...[
         at('package.json'),
         at('index.html'),
@@ -262,12 +266,8 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
         at('tsconfig.json'),
         at('src/vite-env.d.ts'),
         ...PUBLIC_CRAWL_ASSETS.map(at),
-        'packages/ui/package.json',
-        'packages/ui/src/index.ts',
         'packages/i18n/package.json',
         'packages/i18n/src/index.ts',
-        'packages/tailwind-config/package.json',
-        'packages/tailwind-config/src/globals.css',
       ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const })),
     ];
   }
@@ -287,6 +287,7 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
       : at('styles');
     return [
       ...common,
+      ...sharedUi,
       ...[
         at('package.json'),
         at('next.config.ts'),
@@ -301,6 +302,7 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
   if (profile.profileId === 'nuxt') {
     return [
       ...common,
+      ...sharedUi,
       ...[
         at('package.json'),
         at('nuxt.config.ts'),
@@ -312,6 +314,7 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
   if (profile.profileId === 'vue' || profile.profileId === 'svelte') {
     return [
       ...common,
+      ...sharedUi,
       ...[
         at('package.json'),
         at('vite.config.ts'),
@@ -323,6 +326,7 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
   if (profile.profileId === 'sveltekit') {
     return [
       ...common,
+      ...sharedUi,
       ...[
         at('package.json'),
         at('svelte.config.js'),
@@ -334,6 +338,7 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
   if (profile.profileId === 'astro') {
     return [
       ...common,
+      ...sharedUi,
       ...[
         at('package.json'),
         at('astro.config.mjs'),
@@ -344,6 +349,7 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
   if (profile.profileId === 'angular') {
     return [
       ...common,
+      ...sharedUi,
       ...[
         at('package.json'),
         at('angular.json'),
@@ -353,14 +359,58 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
   }
   if (profile.profileId === 'server-rendered') {
     return [
-      'package.json',
-      'vite.config.ts',
-      'resources/css/app.css',
-    ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const }));
+      ...common,
+      ...sharedUi,
+      ...[
+        at('package.json'),
+        at('vite.config.ts'),
+        at('resources/css/app.css'),
+      ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const })),
+    ];
   }
   return [
-    at('package.json'),
-  ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const }));
+    ...sharedUi,
+    { path: at('package.json'), ownerRole: 'senior-frontend', kind: 'scaffold' as const },
+  ];
+}
+
+export function sharedUiScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitectureOutputV1[] {
+  const sharedRoot = profile.uiSystem?.sharedRoot;
+  if (!sharedRoot) return [];
+  const common = [
+    `${sharedRoot}/package.json`,
+    `${sharedRoot}/tsconfig.json`,
+    `${sharedRoot}/src/index.ts`,
+  ];
+  const shadcn = profile.uiSystem?.family === 'shadcn'
+    ? [
+        `${sharedRoot}/components.json`,
+        `${sharedRoot}/src/lib/utils.ts`,
+        'packages/tailwind-config/package.json',
+        'packages/tailwind-config/src/globals.css',
+      ]
+    : [];
+  return [...common, ...shadcn].map((output) => ({
+    path: output,
+    ownerRole: 'senior-frontend',
+    kind: 'scaffold' as const,
+  }));
+}
+
+export function uiPrimitiveScaffoldOutputs(
+  profile: CapabilityProfileV1,
+  primitiveNames: readonly string[],
+): CompiledArchitectureOutputV1[] {
+  if (profile.uiSystem?.family !== 'shadcn' || !profile.uiSystem.sharedRoot) return [];
+  const root = `${profile.uiSystem.sharedRoot}/src/components/ui`;
+  const names = [...new Set(primitiveNames.map((name) => name.trim()).filter(Boolean))].sort();
+  return names.map((name) => ({
+    path: profile.uiSystem?.adapter === 'shadcn'
+      ? `${root}/${name}.tsx`
+      : `${root}/${name}/**`,
+    ownerRole: 'senior-frontend',
+    kind: 'scaffold',
+  }));
 }
 
 export function nativeScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitectureOutputV1[] {
@@ -389,7 +439,12 @@ export function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledAr
   let outputs: string[] = [];
   if (profile.backendFramework === 'go') outputs = ['go.mod', 'go.sum'];
   else if (['python', 'django', 'fastapi'].includes(profile.backendFramework)) outputs = ['pyproject.toml'];
-  else if (['laravel', 'php'].includes(profile.backendFramework)) outputs = ['composer.json', 'artisan'];
+  else if (['laravel', 'php'].includes(profile.backendFramework)) {
+    const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
+    outputs = ['composer.json', 'artisan'].map((output) => (
+      appRoot === '.' ? output : `${appRoot}/${output}`
+    ));
+  }
   else if (profile.backendFramework === 'rust') outputs = ['Cargo.toml'];
   else if (profile.backendFramework === 'java') outputs = ['pom.xml'];
   else if (profile.backendFramework === 'kotlin') outputs = ['build.gradle.kts'];

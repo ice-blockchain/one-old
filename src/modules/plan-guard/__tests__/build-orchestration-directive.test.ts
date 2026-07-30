@@ -212,7 +212,7 @@ test('native Kilo directive selects only frontend role and native emulator QA', 
   });
 });
 
-test('custom Next OpenCode directive preserves the detected framework roots', () => {
+test('custom Next OpenCode directive uses the shared new-project web workspace', () => {
   withProject((dir) => {
     fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
@@ -230,7 +230,7 @@ test('custom Next OpenCode directive preserves the detected framework roots', ()
     const directive = buildOrchestrationDirective(dir, 'opencode', state);
     assert.match(directive, /profile=next-app/);
     assert.match(directive, /framework=nextjs/);
-    assert.match(directive, /source roots=app, src\/app/);
-    assert.doesNotMatch(directive, /React\/Vite|Turborepo|apps\/web/);
+    assert.match(directive, /source roots=apps\/web\/app, apps\/web\/src\/app/);
+    assert.doesNotMatch(directive, /React\/Vite|Turborepo/);
   });
 });

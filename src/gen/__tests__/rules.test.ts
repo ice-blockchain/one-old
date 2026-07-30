@@ -27,12 +27,13 @@ const STRUCTURAL_PROFILE_IDS = [
 
 test('generatedRuleTemplates re-gathers the full nested rules tree', () => {
   const docs = generatedRuleTemplates(REPO_ROOT);
-  assert.equal(docs.length, 96); // Previous 80 + 16 new profile-specific architecture rules.
+  assert.equal(docs.length, 97); // Includes the shared catalog-first component-system rule.
   const paths = new Set(docs.map((d) => d.relPath));
   // Root, common, and deeply-nested rule paths are all preserved exactly.
   assert.ok(paths.has(path.join('rules', 'core.md')));
   assert.ok(paths.has(path.join('rules', 'common', 'auth-gate.md')));
   assert.ok(paths.has(path.join('rules', 'common', 'setup-gate.md')));
+  assert.ok(paths.has(path.join('rules', 'frontend', 'component-system.md')));
   assert.ok([...paths].some((p) => p.startsWith(path.join('rules', 'frontend', 'react'))));
   // Output is sorted + every doc carries content.
   const sorted = [...docs].map((d) => d.relPath).sort((a, b) => a.localeCompare(b));
@@ -115,6 +116,19 @@ test('new policy rules exist and carry their canonical text', () => {
   // skill-precedence carries the precedence policy moved off every skill.
   assert.match(precedence.content, /take precedence/);
   assert.match(precedence.content, /Do not implement via any skill until the setup gate/);
+});
+
+test('component-system policy is catalog-first, demand-driven, and requires justified fallback', () => {
+  const docs = generatedRuleTemplates(REPO_ROOT);
+  const componentSystem = docs.find((doc) => (
+    doc.relPath === path.join('rules', 'frontend', 'component-system.md')
+  ))?.content || '';
+  assert.match(componentSystem, /Search the official catalog and CLI of the active adapter/i);
+  assert.match(componentSystem, /do not copy a fixed component allowlist/i);
+  assert.match(componentSystem, /Create a custom base component only after/i);
+  assert.match(componentSystem, /Record the searched terms, catalog result/i);
+  assert.match(componentSystem, /progress bar → the adapter's `progress`/i);
+  assert.match(componentSystem, /destructive confirmation → `alert-dialog`/i);
 });
 
 test('new-project architecture catalog is exhaustive and keeps cross-profile overlays honest', () => {

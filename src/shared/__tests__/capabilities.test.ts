@@ -13,6 +13,7 @@ import {
   capabilityProfileForProject,
   defaultStateForStack,
   runtimeCapabilityState,
+  uiLibraryFromPrompt,
 } from '../capabilities';
 import { activeSkillsFor, activeSkillsForProject } from '../skill-filters';
 
@@ -56,6 +57,142 @@ test('blank default new projects freeze the registry-owned apps/web Vite root', 
     assert.equal(profile.profileId, 'vite-react');
     assert.deepEqual(profile.sourceRoots, ['apps/web/src']);
     assert.ok(profile.entrypoints.includes('apps/web/src/main.tsx'));
+    assert.deepEqual(profile.uiSystem, {
+      family: 'shadcn',
+      adapter: 'shadcn',
+      library: 'shadcn',
+      source: 'default',
+      sharedRoot: 'packages/ui',
+    });
+  });
+});
+
+test('compatible web profiles resolve their framework-specific shadcn adapter and workspace root', () => {
+  const fixtures = [
+    { frontend: 'react-vite', profileId: 'vite-react', adapter: 'shadcn', sourceRoot: 'apps/web/src' },
+    { frontend: 'nextjs', profileId: 'next-app', adapter: 'shadcn', sourceRoot: 'apps/web/app' },
+    { frontend: 'vue', profileId: 'vue', adapter: 'shadcn-vue', sourceRoot: 'apps/web/src' },
+    { frontend: 'nuxt', profileId: 'nuxt', adapter: 'shadcn-vue', sourceRoot: 'apps/web/app' },
+    { frontend: 'svelte', profileId: 'svelte', adapter: 'shadcn-svelte', sourceRoot: 'apps/web/src' },
+    { frontend: 'sveltekit', profileId: 'sveltekit', adapter: 'shadcn-svelte', sourceRoot: 'apps/web/src' },
+  ] as const;
+  for (const fixture of fixtures) {
+    withProject((cwd) => {
+      const profile = capabilityProfileForProject(cwd, {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: fixture.frontend,
+        backend: 'none',
+        mobile: { framework: 'none' },
+      });
+      assert.equal(profile.profileId, fixture.profileId);
+      assert.ok(profile.sourceRoots.includes(fixture.sourceRoot));
+      assert.equal(profile.uiSystem?.family, 'shadcn');
+      assert.equal(profile.uiSystem?.adapter, fixture.adapter);
+      assert.equal(profile.uiSystem?.source, 'default');
+      assert.equal(profile.uiSystem?.sharedRoot, 'packages/ui');
+    });
+  }
+});
+
+test('Astro follows its renderer while unsupported web profiles remain framework-native', () => {
+  withProject((cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { astro: '5.0.0', react: '19.0.0', '@astrojs/react': '4.0.0' },
+    }));
+    const profile = capabilityProfileForProject(cwd, {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'astro',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    });
+    assert.equal(profile.profileId, 'astro');
+    assert.ok(profile.sourceRoots.includes('apps/web/src'));
+    assert.equal(profile.uiSystem?.adapter, 'shadcn');
+  });
+
+  for (const frontend of ['astro', 'angular', 'other']) {
+    withProject((cwd) => {
+      const profile = capabilityProfileForProject(cwd, {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend,
+        backend: 'none',
+        mobile: { framework: 'none' },
+      });
+      assert.equal(profile.uiSystem?.family, 'framework-native');
+      assert.equal(profile.uiSystem?.adapter, null);
+      assert.equal(profile.uiSystem?.source, 'unsupported');
+      assert.equal(profile.uiSystem?.sharedRoot, null);
+    });
+  }
+});
+
+test('UI-system priority is explicit choice, detected library, compatible default', () => {
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0', '@mui/material': '7.0.0' },
+    }));
+    const explicit = capabilityProfileForProject(cwd, {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      uiLibrary: 'chakra-ui',
+      mobile: { framework: 'none' },
+    });
+    assert.equal(explicit.uiSystem?.library, 'chakra-ui');
+    assert.equal(explicit.uiSystem?.source, 'explicit');
+
+    const detected = capabilityProfileForProject(cwd, {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    });
+    assert.equal(detected.uiSystem?.family, 'external');
+    assert.equal(detected.uiSystem?.library, 'mui');
+    assert.equal(detected.uiSystem?.source, 'detected');
+  });
+});
+
+test('UI-library prompt extraction preserves explicit alternatives and negation', () => {
+  assert.equal(uiLibraryFromPrompt('Use Tailwind with Vuetify for the UI'), 'vuetify');
+  assert.equal(uiLibraryFromPrompt('Use Headless UI, not shadcn'), 'headless-ui');
+  assert.equal(uiLibraryFromPrompt('Do not use MUI; use the default components'), null);
+  assert.equal(uiLibraryFromPrompt('Use no component library'), 'framework-native');
+  assert.equal(uiLibraryFromPrompt('Use Tailwind, but do not use shadcn'), 'framework-native');
+});
+
+test('an incompatible shadcn adapter is never forced onto a framework', () => {
+  withProject((cwd) => {
+    const angular = capabilityProfileForProject(cwd, {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'angular',
+      backend: 'none',
+      uiLibrary: 'shadcn',
+      mobile: { framework: 'none' },
+    });
+    assert.equal(angular.uiSystem?.family, 'framework-native');
+    assert.equal(angular.uiSystem?.adapter, null);
+    assert.equal(angular.uiSystem?.source, 'unsupported');
+    assert.equal(angular.uiSystem?.library, 'shadcn');
+
+    const react = capabilityProfileForProject(cwd, {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      uiLibrary: 'shadcn-vue',
+      mobile: { framework: 'none' },
+    });
+    assert.equal(react.uiSystem?.family, 'framework-native');
+    assert.equal(react.uiSystem?.adapter, null);
+    assert.equal(react.uiSystem?.source, 'unsupported');
   });
 });
 

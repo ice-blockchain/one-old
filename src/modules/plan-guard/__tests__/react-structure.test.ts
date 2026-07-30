@@ -61,6 +61,72 @@ function ids(report: ReturnType<typeof analyzeProjectStructure>): string[] {
   return [...new Set(report.findings.filter((finding) => finding.severity === 'error').map((finding) => finding.id))].sort();
 }
 
+function writeResolvedUiSystem(
+  cwd: string,
+  primitive: string,
+  consumerSource: string,
+): void {
+  for (const dir of [
+    'packages/ui/src/components/ui',
+    'packages/ui/src/lib',
+    'packages/tailwind-config/src',
+    'apps/web/src/components',
+  ]) fs.mkdirSync(path.join(cwd, dir), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'packages/ui/package.json'), JSON.stringify({
+    name: '@app/ui',
+    exports: { '.': './src/index.ts' },
+  }));
+  fs.writeFileSync(path.join(cwd, 'packages/ui/components.json'), JSON.stringify({
+    $schema: 'https://ui.shadcn.com/schema.json',
+    aliases: { ui: '@app/ui/components/ui' },
+  }));
+  fs.writeFileSync(path.join(cwd, 'packages/ui/src/lib/utils.ts'), 'export const cn = (...values: string[]) => values.join(" ");\n');
+  fs.writeFileSync(
+    path.join(cwd, 'packages/ui/src/index.ts'),
+    `export * from "./components/ui/${primitive}";\n`,
+  );
+  const componentName = primitive
+    .split('-')
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join('');
+  fs.writeFileSync(
+    path.join(cwd, `packages/ui/src/components/ui/${primitive}.tsx`),
+    `export function ${componentName}(){return <div />}\n`,
+  );
+  fs.writeFileSync(path.join(cwd, 'packages/tailwind-config/package.json'), JSON.stringify({
+    name: '@app/tailwind-config',
+  }));
+  fs.writeFileSync(path.join(cwd, 'packages/tailwind-config/src/globals.css'), '@import "tailwindcss";\n');
+  fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+    dependencies: {
+      '@app/ui': 'workspace:*',
+      react: '19.0.0',
+      tailwindcss: '4.0.0',
+      vite: '7.0.0',
+    },
+  }));
+  fs.writeFileSync(
+    path.join(cwd, `apps/web/src/components/${componentName}Demo.tsx`),
+    `import "@app/tailwind-config/globals.css";\n${consumerSource}`,
+  );
+}
+
+function writeCompiledModules(cwd: string, contract: CompiledArchitectureV1): void {
+  for (const module of contract.modules) {
+    fs.mkdirSync(path.dirname(path.join(cwd, module.output)), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, module.output),
+      module.kind === 'app-shell'
+        ? 'export function App(){return <main />}\n'
+        : `export function ${module.name}(){return <main />}\n`,
+    );
+  }
+  for (const entrypoint of contract.entrypoints) {
+    fs.mkdirSync(path.dirname(path.join(cwd, entrypoint)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, entrypoint), 'export {};\n');
+  }
+}
+
 function prepareLaravel(
   cwd: string,
   inertia = false,
@@ -146,6 +212,48 @@ test('minifying a 600-line entrypoint monolith hides no blocking ID and adds the
       'collapse is the only difference minification may introduce',
     );
   });
+});
+
+test('catalog-selected primitives must be installed, exported, and consumed through @app/ui', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd, { ...INPUT, uiPrimitives: ['progress'] });
+    writeCompiledModules(cwd, contract);
+    const missing = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
+    assert.ok(missing.includes('STRUCT_UI_SYSTEM_MISSING'));
+    assert.ok(missing.includes('STRUCT_UI_PRIMITIVE_NOT_SHARED'));
+
+    writeResolvedUiSystem(
+      cwd,
+      'progress',
+      'import { Progress } from "@app/ui";\nexport function ProgressDemo(){return <Progress />}\n',
+    );
+    const resolved = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
+    assert.ok(!resolved.includes('STRUCT_UI_SYSTEM_MISSING'));
+    assert.ok(!resolved.includes('STRUCT_UI_PRIMITIVE_NOT_SHARED'));
+  });
+});
+
+test('manual progress/dialog primitives and app-local CLI copies are rejected', () => {
+  for (const primitive of ['progress', 'dialog']) {
+    withProject((cwd) => {
+      const componentName = primitive.charAt(0).toUpperCase() + primitive.slice(1);
+      const contract = prepare(cwd, { ...INPUT, uiPrimitives: [primitive] });
+      writeCompiledModules(cwd, contract);
+      writeResolvedUiSystem(
+        cwd,
+        primitive,
+        `export function ${componentName}(){return <div role="${primitive === 'dialog' ? 'dialog' : 'progressbar'}" />}\n`,
+      );
+      const handRolled = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
+      assert.ok(handRolled.includes('STRUCT_UI_PRIMITIVE_NOT_SHARED'), primitive);
+
+      const duplicatePath = path.join(cwd, `apps/web/src/components/ui/${primitive}.tsx`);
+      fs.mkdirSync(path.dirname(duplicatePath), { recursive: true });
+      fs.writeFileSync(duplicatePath, `export function ${componentName}(){return <div />}\n`);
+      const duplicated = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
+      assert.ok(duplicated.includes('STRUCT_UI_PRIMITIVE_DUPLICATE'), primitive);
+    });
+  }
 });
 
 test('pretty and minified direct or anonymous entrypoint JSX is blocking', () => {

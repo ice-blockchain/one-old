@@ -168,6 +168,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `rules/frontend/services.md` | Traffic One local service-layer rule, inspired by ECC TypeScript/service patterns: https://github.com/affaan-m/everything-claude-code/tree/main/rules/typescript |
 | `rules/frontend/testing.md` | Traffic One local frontend testing rule, paired with ECC testing skills: https://github.com/affaan-m/everything-claude-code/tree/main/skills |
 | `rules/frontend/typography.md` | Traffic One local typography rule, inspired by bencium design guidance and UI quality rule. |
+| `rules/frontend/component-system.md` | Traffic One canonical UI-system resolution and catalog-first rule: framework-specific shadcn adapters, demand-driven `uiPrimitives`, shared `packages/ui`, CLI-only primitives, and justified custom fallback. |
 | `rules/frontend/ui-quality.md` | Distilled from bencium-marketplace `impact-designer` and `controlled-ux-designer`; also inspired by the supplied X posts. — **canonical owner** of the design brief, anti-AI-slop list, token mandate, `https://traffic.io/` setup-link contract, and UI states; `create-*`/`frontend-design`/`design-audit`/`design-system` defer here. |
 | `rules/frontend/ui-quality-reference.md` | Traffic One local UI-quality reference checklists; companion to `ui-quality.md`. |
 | `rules/frontend/react/components.md` | Traffic One React component rule, inspired by ECC web/typescript rules: https://github.com/affaan-m/everything-claude-code/tree/main/rules/web |

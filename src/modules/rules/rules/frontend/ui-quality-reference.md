@@ -42,10 +42,11 @@ Don't converge on a single safe formula. Each project deserves a distinct finger
   user is likely to act from a phone.
 - **Mobile navigation must be designed for touch, not auto-shrunk from desktop.**
   Use the detected design system's drawer/sheet/navigation primitive. The
-  React profile may select shadcn `Sheet`; React Native may select RNR; Nuxt,
-  Laravel, Swift, Kotlin, Flutter, and custom profiles keep their native
-  primitives. Bottom tabs are an alternative for app-shell flows with at most
-  five destinations; do not use both patterns at once.
+  active shadcn, shadcn-vue, or shadcn-svelte profile may select its catalog
+  `Sheet`; React Native may select RNR; Blade, unsupported web, and native
+  profiles keep their native primitives. Bottom tabs are an alternative for
+  app-shell flows with at most five destinations; do not use both patterns at
+  once.
 - Important content and the primary action must appear before excessive mobile
   scrolling. Fixed bottom actions must respect safe areas and keyboards.
 - Text must fit inside controls and containers at desktop and mobile sizes.

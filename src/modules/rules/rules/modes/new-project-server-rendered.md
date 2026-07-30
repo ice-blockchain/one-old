@@ -8,6 +8,14 @@ Apply only when `CompiledArchitectureV1.profile.profileId=server-rendered`.
 Runtime distinguishes Blade from detected Inertia React/Vue through
 `profile.router`; preserve that selection.
 
+Inertia React resolves `shadcn` and Inertia Vue resolves `shadcn-vue` when no
+other UI library is explicit or detected; their reusable primitives and
+compositions live in `packages/ui` per
+`rules/frontend/component-system.md`. A new compatible Inertia application is
+rooted at `apps/web`; existing Laravel roots remain in place. Blade remains
+framework-native and never receives a forced shadcn port. Add only compiled
+`uiPrimitives`.
+
 ```
 <repo-root>/
 ├── composer.json                         backend scaffold

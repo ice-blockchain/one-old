@@ -111,7 +111,11 @@ If a design improvement requires a functional change, flag it explicitly:
 
 ## Hard rules
 - The Tailwind/shadcn token mandate and styling-system constraints are owned by `rules/frontend/ui-quality.md` — every proposal must reference Tailwind tokens, no hardcoded colours/spacing/sizes.
-- If a primitive doesn't exist in `packages/ui` / `packages/ui-native`, install it via `npx shadcn@latest add <name>` (web/Ionic) or `npx @react-native-reusables/cli@latest add <name>` (RN). Never hand-roll a button / dialog / dropdown / form control.
+- If a primitive doesn't exist in `packages/ui` / `packages/ui-native`, search
+  the active adapter's official catalog by name, behavior, and synonyms, then
+  install the exact match through its CLI (or the RNR CLI for native). Never
+  hand-roll or duplicate a catalog match; justify a custom fallback with the
+  negative lookup evidence.
 - The audit is the deliverable on Step 3. Implementation is gated on Step 4 approval.
 
 ## After implementation

@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   canonicalRoutePath,
+  webPackageRoot,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import type { CapabilityProfileV1 } from '../../../shared/capabilities';
@@ -183,10 +184,10 @@ function routeUsesModule(
       .replace(/\./g, '/');
     if (!normalizedName || normalizedName.includes('::')) return false;
     if (target.kind === 'view') {
-      return normalizedOutput === `resources/views/${normalizedName}.blade.php`;
+      return normalizedOutput.endsWith(`resources/views/${normalizedName}.blade.php`);
     }
     const outputStem = normalizedOutput.replace(/\.(?:tsx?|jsx?|vue)$/, '');
-    const inertiaStem = /^resources\/js\/(?:Pages|pages)\/(.+)$/.exec(outputStem)?.[1] || '';
+    const inertiaStem = /(?:^|\/)resources\/js\/(?:Pages|pages)\/(.+)$/.exec(outputStem)?.[1] || '';
     return inertiaStem === normalizedName;
   })) {
     return true;
@@ -322,6 +323,188 @@ function stylingFindings(
   return findings;
 }
 
+function uiSystemFindings(
+  projectRoot: string,
+  contract: CompiledArchitectureV1,
+  analyses: readonly SourceAnalysis[],
+  severity: StructureFinding['severity'],
+): StructureFinding[] {
+  const uiSystem = contract.profile.uiSystem;
+  if (uiSystem?.family !== 'shadcn' || !uiSystem.sharedRoot) return [];
+  const findings: StructureFinding[] = [];
+  const addMissing = (file: string, message: string): void => {
+    findings.push({
+      id: 'STRUCT_UI_SYSTEM_MISSING',
+      severity,
+      file,
+      message,
+    });
+  };
+  const required = [
+    `${uiSystem.sharedRoot}/package.json`,
+    `${uiSystem.sharedRoot}/components.json`,
+    `${uiSystem.sharedRoot}/src/index.ts`,
+    `${uiSystem.sharedRoot}/src/lib/utils.ts`,
+    'packages/tailwind-config/package.json',
+    'packages/tailwind-config/src/globals.css',
+  ];
+  for (const rel of required) {
+    if (fs.existsSync(path.join(projectRoot, rel))) continue;
+    addMissing(
+      rel,
+      `Resolved ${uiSystem.adapter} UI system is missing required shared scaffold ${rel}. Initialize the adapter in ${uiSystem.sharedRoot} before reporting completion.`,
+    );
+  }
+
+  const packageManifestPath = `${uiSystem.sharedRoot}/package.json`;
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, packageManifestPath), 'utf8'),
+    ) as { name?: unknown; exports?: unknown };
+    if (manifest.name !== '@app/ui' || !manifest.exports) {
+      addMissing(
+        packageManifestPath,
+        'The shared UI package must be named `@app/ui` and declare package exports; application code may not deep-import its internals.',
+      );
+    }
+  } catch {
+    if (fs.existsSync(path.join(projectRoot, packageManifestPath))) {
+      addMissing(packageManifestPath, 'The @app/ui package manifest must be valid JSON.');
+    }
+  }
+
+  const componentsPath = `${uiSystem.sharedRoot}/components.json`;
+  try {
+    const config = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, componentsPath), 'utf8'),
+    ) as { $schema?: unknown; aliases?: unknown };
+    const aliases = config.aliases && typeof config.aliases === 'object'
+      ? config.aliases as Record<string, unknown>
+      : {};
+    if (typeof config.$schema !== 'string' || typeof aliases.ui !== 'string') {
+      addMissing(
+        componentsPath,
+        `Canonical ${uiSystem.adapter} components.json must declare the official schema and a shared \`ui\` alias.`,
+      );
+    }
+  } catch {
+    if (fs.existsSync(path.join(projectRoot, componentsPath))) {
+      addMissing(componentsPath, `Canonical ${uiSystem.adapter} components.json must be valid JSON.`);
+    }
+  }
+
+  const appManifestPath = `${webPackageRoot(contract.profile)}/package.json`
+    .replace(/^\.\//, '');
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, appManifestPath), 'utf8'),
+    ) as Record<string, unknown>;
+    const dependencies = {
+      ...(manifest.dependencies && typeof manifest.dependencies === 'object'
+        ? manifest.dependencies as Record<string, unknown>
+        : {}),
+      ...(manifest.devDependencies && typeof manifest.devDependencies === 'object'
+        ? manifest.devDependencies as Record<string, unknown>
+        : {}),
+    };
+    if (!dependencies['@app/ui']) {
+      addMissing(
+        appManifestPath,
+        'The web application must declare the shared `@app/ui` workspace dependency.',
+      );
+    }
+    if (!tailwindToolchainPresent(projectRoot, appManifestPath)) {
+      addMissing(
+        appManifestPath,
+        `Resolved ${uiSystem.adapter} requires the profile-compatible Tailwind toolchain.`,
+      );
+    }
+  } catch {
+    // The framework scaffold owns a missing application manifest.
+  }
+  if (!analyses.some((analysis) => (
+    /(?:@app\/tailwind-config|packages\/tailwind-config)\/(?:src\/)?globals\.css/.test(analysis.text)
+  ))) {
+    addMissing(
+      appManifestPath,
+      'The web application does not import the shared Tailwind/theme stylesheet from @app/tailwind-config.',
+    );
+  }
+
+  let publicApi = '';
+  try {
+    publicApi = fs.readFileSync(
+      path.join(projectRoot, uiSystem.sharedRoot, 'src', 'index.ts'),
+      'utf8',
+    );
+  } catch {
+    // Missing public API is already covered above.
+  }
+  for (const primitive of contract.uiPrimitives || []) {
+    const primitivePath = uiSystem.adapter === 'shadcn'
+      ? `${uiSystem.sharedRoot}/src/components/ui/${primitive}.tsx`
+      : `${uiSystem.sharedRoot}/src/components/ui/${primitive}`;
+    if (!fs.existsSync(path.join(projectRoot, primitivePath))) {
+      addMissing(
+        primitivePath,
+        `Catalog-selected shadcn primitive \`${primitive}\` is missing from ${uiSystem.sharedRoot}; add it with the active adapter CLI instead of hand-rolling it in the app.`,
+      );
+    }
+    const componentName = primitive
+      .split('-')
+      .filter(Boolean)
+      .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+      .join('');
+    const escapedPrimitive = primitive.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (
+      publicApi
+      && !new RegExp(`components/ui/${escapedPrimitive}(?:['"]|/|$)`, 'i').test(publicApi)
+      && !new RegExp(`\\b${componentName}\\b`).test(publicApi)
+    ) {
+      addMissing(
+        `${uiSystem.sharedRoot}/src/index.ts`,
+        `Catalog-selected primitive \`${primitive}\` is not exported by the @app/ui public API.`,
+      );
+    }
+    const localDuplicate = analyses.find((analysis) => (
+      !normalizeRel(analysis.file).startsWith(`${uiSystem.sharedRoot}/`)
+      && new RegExp(`(?:^|/)components/ui/${escapedPrimitive}(?:[./]|$)`, 'i')
+        .test(normalizeRel(analysis.file))
+    ));
+    if (localDuplicate) {
+      findings.push({
+        id: 'STRUCT_UI_PRIMITIVE_DUPLICATE',
+        severity,
+        file: localDuplicate.file,
+        message: `App-local \`${primitive}\` duplicates the catalog-selected primitive in ${uiSystem.sharedRoot}. Import it through @app/ui instead.`,
+      });
+    }
+    const sharedImport = analyses.some((analysis) => analysis.imports.some((binding) => (
+      (binding.source === '@app/ui' || binding.source.startsWith('@app/ui/'))
+      && (
+        binding.imported === '*'
+        || binding.imported === componentName
+        || binding.local === componentName
+      )
+    )));
+    if (!sharedImport) {
+      const handRolled = analyses.find((analysis) => (
+        !normalizeRel(analysis.file).startsWith(`${uiSystem.sharedRoot}/`)
+        && analysis.components.some((component) => component.name === componentName)
+      ));
+      findings.push({
+        id: 'STRUCT_UI_PRIMITIVE_NOT_SHARED',
+        severity,
+        file: handRolled?.file || primitivePath,
+        message: handRolled
+          ? `Component \`${componentName}\` hand-rolls the catalog-selected \`${primitive}\` primitive. Import it from @app/ui instead.`
+          : `Catalog-selected primitive \`${primitive}\` is not consumed through the @app/ui package API.`,
+      });
+    }
+  }
+  return findings;
+}
+
 function i18nFindings(
   projectRoot: string,
   contract: CompiledArchitectureV1,
@@ -417,6 +600,7 @@ export function contractFindings(
   if (canCheckReferences) {
     findings.push(...apiClientUsageFindings(projectRoot, contract, analyses, integrationSeverity));
     findings.push(...stylingFindings(projectRoot, contract, analyses, integrationSeverity));
+    findings.push(...uiSystemFindings(projectRoot, contract, analyses, integrationSeverity));
     findings.push(...i18nFindings(
       projectRoot,
       contract,

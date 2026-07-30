@@ -42,6 +42,54 @@ test('web stack: allows an approved library install', () => {
   });
 });
 
+test('resolved shadcn adapter is allowed while a second UI system is denied', () => {
+  withProject({ mode: 'new-project', stack: 'default', frontend: 'react-vite' }, (cwd) => {
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D shadcn')).kind, 'noop');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add @mui/material')).kind, 'deny');
+  });
+  withProject({ mode: 'new-project', stack: 'custom-frontend', frontend: 'vue' }, (cwd) => {
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D shadcn-vue')).kind, 'noop');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D shadcn')).kind, 'deny');
+  });
+});
+
+test('explicit or detected external UI library wins and blocks parallel shadcn', () => {
+  withProject({
+    mode: 'new-project',
+    stack: 'custom-frontend',
+    frontend: 'react-vite',
+    uiLibrary: 'mui',
+  }, (cwd) => {
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add @mui/material @emotion/react')).kind, 'noop');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D shadcn')).kind, 'deny');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add @chakra-ui/react')).kind, 'deny');
+  });
+
+  withProject({
+    mode: 'existing-codebase',
+    stack: 'custom-frontend',
+    frontend: 'react-vite',
+  }, (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0', '@mui/material': '7.0.0' },
+    }));
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add @mui/material')).kind, 'noop');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D shadcn')).kind, 'deny');
+  });
+});
+
+test('explicit framework-native choice rejects adding a component library', () => {
+  withProject({
+    mode: 'new-project',
+    stack: 'custom-frontend',
+    frontend: 'angular',
+    uiLibrary: 'framework-native',
+  }, (cwd) => {
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add @angular/material')).kind, 'deny');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D shadcn')).kind, 'deny');
+  });
+});
+
 test('ignores non-install commands', () => {
   withProject({ stack: 'default', frontend: 'react-vite' }, (cwd) => {
     assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm build')).kind, 'noop');

@@ -44,6 +44,8 @@ import {
   repositoryScaffoldOutputs,
   resolveInitialScaffoldOwners,
   selectedImplementationOwner,
+  sharedUiScaffoldOutputs,
+  uiPrimitiveScaffoldOutputs,
 } from './scaffold';
 import {
   routeRegistrationOutputs,
@@ -180,6 +182,7 @@ export function compileArchitecture(
   if (!validation.ok) throw new Error(validation.errors.join('; '));
   if (!runId || /[\\/]/.test(runId)) throw new Error('runId is invalid');
   const profile = frozenProfile || capabilityProfileForProject(projectRoot, state);
+  const uiPrimitives = [...new Set((input.uiPrimitives || []).map((name) => name.trim()))].sort();
   if (profile.profileId === 'unsupported-hybrid' || (profile.blockingIssues?.length || 0) > 0) {
     const issue = profile.blockingIssues?.[0];
     throw new Error(
@@ -190,6 +193,12 @@ export function compileArchitecture(
     );
   }
   const hasUi = profile.surfaces.includes('web-ui') || profile.surfaces.includes('native-ui');
+  if (uiPrimitives.length > 0 && profile.uiSystem?.family !== 'shadcn') {
+    throw new Error(`uiPrimitives require a resolved shadcn component system; profile ${profile.profileId} selected ${profile.uiSystem?.family || 'none'}`);
+  }
+  if (input.modules.some((module) => module.placement === 'shared-ui') && !profile.uiSystem?.sharedRoot) {
+    throw new Error(`shared-ui component placement requires a resolved shared UI root for profile ${profile.profileId}`);
+  }
   const uiOnlyModules = input.modules.filter((module) => (
     module.kind === 'app-shell' || module.kind === 'page' || module.kind === 'component'
   ));
@@ -245,6 +254,11 @@ export function compileArchitecture(
   const i18n = resolveArchitectureI18n(profile, input, isNewProject, selectedEntrypoints);
   const scaffoldOutputs = resolveInitialScaffoldOwners(profile, [
     ...(isNewProject ? frontendScaffoldOutputs(profile) : []),
+    ...(!isNewProject && (
+      uiPrimitives.length > 0
+      || input.modules.some((module) => module.placement === 'shared-ui')
+    ) ? sharedUiScaffoldOutputs(profile) : []),
+    ...uiPrimitiveScaffoldOutputs(profile, uiPrimitives),
     ...(isNewProject ? nativeScaffoldOutputs(profile) : []),
     ...((isNewProject || input.i18n) ? i18nScaffoldOutputs(i18n) : []),
     ...(isNewProject ? backendScaffoldOutputs(profile) : []),
@@ -301,6 +315,7 @@ export function compileArchitecture(
     layers: profile.layerRoots,
     routes,
     modules,
+    ...(uiPrimitives.length > 0 ? { uiPrimitives } : {}),
     ...(i18n ? { i18n } : {}),
     scaffoldOutputs,
     allowedOutputs,

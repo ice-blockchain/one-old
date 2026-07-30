@@ -196,7 +196,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       const errors = architectureInputErrors(content);
       if (errors.length > 0) {
         violations.push(block('architecture-input-gate',
-          `Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules, i18n locale/exact-brand intent, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: ${errors.join('; ')}.`,
+          `Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules (including component placement), exact UI primitive identifiers, i18n locale/exact-brand intent, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: ${errors.join('; ')}.`,
           { ERRORS: errors.join('; ') }));
       }
     } else {
@@ -435,7 +435,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         violations.push(block('architecture-contract-gate',
-          `Architecture contract gate: do not emit \`PLAN_READY\` until \`.traffic-one/runs/${runId || '<runId>'}/architecture-input-v1.json\` is valid and runtime compilation succeeds. ${message}. The architect may change only semantic routes/modules/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.`,
+          `Architecture contract gate: do not emit \`PLAN_READY\` until \`.traffic-one/runs/${runId || '<runId>'}/architecture-input-v1.json\` is valid and runtime compilation succeeds. ${message}. The architect may change only semantic routes/modules/component placement/uiPrimitives/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.`,
           { ERROR: message }));
       }
     }

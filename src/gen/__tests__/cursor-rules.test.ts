@@ -61,8 +61,8 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
   try {
     runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const docs = generatedCursorRules(dir);
-    // 96 rule templates (including all 17 structural profiles) + 7 agents.
-    assert.equal(docs.length, 103);
+    // 97 rule templates (including all 17 structural profiles) + 7 agents.
+    assert.equal(docs.length, 104);
     const byPath = new Map(docs.map((d) => [d.relPath, d.content]));
 
     // common/auth-gate.md -> auth-required.mdc (special slug, always-on kernel).

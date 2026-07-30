@@ -44,12 +44,13 @@ function validateExceptionRequest(request: ArchitectureExceptionRequestV1): stri
   return errors;
 }
 
-const ARCHITECTURE_INPUT_KEYS = new Set(['schemaVersion', 'routes', 'modules', 'i18n', 'exceptions']);
-const ARCHITECTURE_MODULE_KEYS = new Set(['id', 'name', 'kind']);
+const ARCHITECTURE_INPUT_KEYS = new Set(['schemaVersion', 'routes', 'modules', 'i18n', 'uiPrimitives', 'exceptions']);
+const ARCHITECTURE_MODULE_KEYS = new Set(['id', 'name', 'kind', 'placement']);
 const ARCHITECTURE_ROUTE_KEYS = new Set(['id', 'path', 'moduleId', 'redirect']);
 const ARCHITECTURE_EXCEPTION_KEYS = new Set(['ruleId', 'glob', 'reason']);
 const ARCHITECTURE_I18N_KEYS = new Set(['sourceLocale', 'locales', 'literalBrands']);
 const LOCALE_RE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
+const UI_PRIMITIVE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 function unsupportedArchitectureFields(
   value: Rec,
@@ -81,6 +82,16 @@ export function validateArchitectureInput(input: unknown): ArchitectureValidatio
   if (!Array.isArray(raw.modules) || modules.length === 0) errors.push('modules must be a non-empty array');
   if (raw.exceptions !== undefined && !Array.isArray(raw.exceptions)) {
     errors.push('exceptions must be an array when provided');
+  }
+  if (raw.uiPrimitives !== undefined && !Array.isArray(raw.uiPrimitives)) {
+    errors.push('uiPrimitives must be an array when provided');
+  }
+  const uiPrimitives = Array.isArray(raw.uiPrimitives) ? raw.uiPrimitives : [];
+  for (const [index, primitive] of uiPrimitives.entries()) {
+    const normalized = typeof primitive === 'string' ? primitive.trim() : '';
+    if (!UI_PRIMITIVE_RE.test(normalized) || normalized.length > 64) {
+      errors.push(`uiPrimitives[${index}] is invalid (expected a safe kebab-case shadcn CLI identifier, max 64 chars)`);
+    }
   }
 
   if (raw.i18n !== undefined) {
@@ -139,6 +150,13 @@ export function validateArchitectureInput(input: unknown): ArchitectureValidatio
     if (!SAFE_NAME_RE.test(name)) errors.push(`modules[${index}].name is invalid (expected a letter first, then letters/digits/spaces and , . ( ) & + ' : - punctuation, max 80 chars — no slashes, quotes, or angle brackets)`);
     if (!['app-shell', 'page', 'component', 'feature', 'service', 'store', 'test'].includes(kind)) {
       errors.push(`modules[${index}].kind is invalid`);
+    }
+    const placement = typeof module?.placement === 'string' ? module.placement : '';
+    if (placement && placement !== 'app' && placement !== 'shared-ui') {
+      errors.push(`modules[${index}].placement is invalid (expected app or shared-ui)`);
+    }
+    if (placement && kind !== 'component') {
+      errors.push(`modules[${index}].placement is valid only for component modules`);
     }
     if (
       'output' in (module || {})

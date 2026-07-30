@@ -97,10 +97,14 @@ instead of creating it out of scope.
    - `packages/utils` — empty barrel; populate as needed.
    - `packages/api-client` — Supabase browser client, axios instance, AppError type, RTK Query baseQuery.
    - `packages/ws-client` — transport + protocol scaffolding (per `rules/frontend/realtime.md`).
-   - `packages/ui` — run `npx shadcn@latest init` here, then add the first batch:
-     `npx shadcn@latest add button input label card dialog dropdown-menu form sheet tabs select sonner badge separator`.
-     The CLI populates `src/components/ui/` and `src/lib/utils.ts` (`cn()`).
-     Storybook stories cover the primitives.
+   - `packages/ui` — initialize the active adapter using its official monorepo
+     CLI/configuration, then add exactly the deduplicated
+     `CompiledArchitectureV1.uiPrimitives`. There is no fixed starter batch:
+     every identifier comes from the product's catalog-first lookup. The CLI
+     alone populates `src/components/ui/`; reusable domain-agnostic
+     compositions live in `src/components/`, and `src/index.ts` exposes the
+     `@app/ui` API. Storybook stories cover the installed primitives and shared
+     compositions.
 
 4. **Supabase backend baseline**
    - Add `@supabase/supabase-js` and validate `VITE_SUPABASE_URL` /
@@ -146,9 +150,10 @@ instead of creating it out of scope.
      import `@app/tailwind-config/globals.css` from `src/main.tsx`. No
      `tailwind.config.*`, no PostCSS config, no autoprefixer — v4 handles
      prefixing and content scanning itself.
-   - `components.json` (shadcn CLI config) points the alias `ui` at
-     `@app/ui/components/ui` so future `npx shadcn add` calls in the app land
-     in the shared package.
+   - `packages/ui/components.json` is the one canonical shadcn CLI config and
+     points its aliases at the `@app/ui` package. Run catalog-selected add
+     commands against that package; do not create a second app-local
+     `components.json`.
    - Wire `packages/i18n` into the app provider chain before adding generated
      page/feature UI. All starter copy, navigation labels, setup banners, and
      state text use locale-parity catalog keys. Every static React child,

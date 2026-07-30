@@ -9,6 +9,11 @@ compiled profile chooses `<web-root>/app` or `<web-root>/src/app` from immutable
 baseline evidence; the absence of Pages Router evidence selects App Router for
 a new project.
 
+For a new project `<web-root>` is `apps/web`; Tailwind v4 resolves `shadcn`
+unless the user selected or the project detected another UI library.
+`packages/ui` owns CLI-installed primitives and reusable compositions per
+`rules/frontend/component-system.md`. Add only compiled `uiPrimitives`.
+
 ```
 <web-root>/
 ├── package.json

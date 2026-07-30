@@ -44,6 +44,7 @@ const TYPESCRIPT_CORE = ['rules/core.md'];
 
 const FRONTEND_SHARED = [
   'rules/frontend/i18n.md',
+  'rules/frontend/component-system.md',
   'rules/frontend/ui-quality.md',
   'rules/frontend/typography.md',
 ];
@@ -183,7 +184,7 @@ export const AGENT_ROLE_BASE_RULES: Readonly<Record<string, string[]>> = {
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
     'rules/common/security.md', 'rules/common/codebase-graph.md', 'rules/common/agent-handoff-digests.md',
     'rules/common/quality-tooling.md',
-    'rules/frontend/i18n.md', 'rules/frontend/ui-quality.md', 'rules/frontend/typography.md',
+    'rules/frontend/i18n.md', 'rules/frontend/component-system.md', 'rules/frontend/ui-quality.md', 'rules/frontend/typography.md',
   ],
   'senior-backend': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',

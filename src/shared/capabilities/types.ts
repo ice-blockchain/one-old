@@ -26,6 +26,15 @@ export const STRUCTURAL_PROFILE_IDS = [
 export type StructuralProfileId = typeof STRUCTURAL_PROFILE_IDS[number];
 type QaAdapterId = 'playwright' | 'maestro' | 'xcode-simulator' | 'android-emulator' | 'flutter-driver';
 export type ArchitectureTargetSurface = 'web-ui' | 'native-ui';
+export type ShadcnAdapterId = 'shadcn' | 'shadcn-vue' | 'shadcn-svelte';
+
+export interface WebUiSystemV1 {
+  family: 'shadcn' | 'external' | 'framework-native';
+  adapter: ShadcnAdapterId | null;
+  library: string;
+  source: 'explicit' | 'detected' | 'default' | 'unsupported';
+  sharedRoot: string | null;
+}
 
 interface CapabilityBlockingIssueV1 {
   code: 'CAPABILITY_HYBRID_UI_TARGET_REQUIRED';
@@ -50,6 +59,8 @@ export interface CapabilityProfileV1 {
   roles: string[];
   skillBuckets: string[];
   qaAdapters: QaAdapterId[];
+  /** Resolved component-system policy for the selected web surface. */
+  uiSystem?: WebUiSystemV1;
   /** Runtime/user-owned selection for a project that exposes both UI domains. */
   architectureTarget?: ArchitectureTargetSurface;
   /** Detected frameworks are retained when the selected structural profile represents only one UI domain. */

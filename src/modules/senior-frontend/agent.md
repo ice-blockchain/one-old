@@ -126,10 +126,14 @@ You do **not** touch backend modules (`apps/*/server/`, `packages/api*`, `servic
    action, first-screen hierarchy, visual direction, token plan, motion plan,
    responsive behavior, and state coverage.
 4. Pick the contract-applicable scaffolder skill based on the artifact type.
-5. Reuse the detected project's component primitives and design system. Use
-   shadcn/RNR and their CLIs only when the active React profile selects them;
-   use framework-native components for Nuxt, Laravel, Swift, Kotlin, Flutter,
-   or a custom stack. Do not introduce a second component system.
+5. Obey `profile.uiSystem` and
+   `rules/frontend/component-system.md`. Inventory all UI needs and states,
+   inspect `@app/ui`, then search the official catalog of the active shadcn,
+   shadcn-vue, or shadcn-svelte adapter by name, behavior, and synonyms. Add
+   missing matches through that adapter's CLI into `packages/ui`, export them
+   from the package API, and compose them in the feature. Use framework-native
+   primitives only when the profile has no compatible adapter. Do not
+   introduce a second component system.
 6. Pull values from the active token/theme system. Add a named token when
    needed; do not scatter hardcoded visual constants.
 7. For generated or changed web routes, implement the SEO baseline from
@@ -186,7 +190,8 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
   contract blocks you, report a replan need; do not create a guessed mock path
   or invent backend behavior outside the allowlist.
 - Preserve the active framework, component library, styling system, and tokens.
-  React-specific Tailwind/shadcn rules apply only to profiles that select them.
+  The framework-specific adapter and catalog-first rules apply exactly when
+  `profile.uiSystem` selects them.
 - Every visible string uses the active localization mechanism with a
   same-change entry in every declared locale. Every static React child string
   uses `<Trans ns="…" i18nKey="…">fallback</Trans>`; rendered child `t()` is
