@@ -44,6 +44,7 @@ function context(
   const config = defaultConfig();
   return {
     cwd,
+    caseFolder: cwd,
     env: {},
     host,
     testCase: testCase(params),

@@ -45,6 +45,22 @@ export function effState(ctx: AssertionContext): Rec {
   return readEffectiveState(ctx.cwd, ctx.env);
 }
 
+// The run-sim transcript for this case, or null for any other layer. Read from
+// ctx.caseFolder rather than resolved off cwd so `--reassert` works identically.
+export function readRunSimTranscript(ctx: AssertionContext): Rec | null {
+  if (ctx.testCase.layer !== 'run-sim') return null;
+  return readJsonFile(path.join(ctx.caseFolder, 'run-sim.json'));
+}
+
+// A case "produced work" if a host ran the agent, OR if a run-sim executed. The
+// run-sim arm matters because its target is 'pure-node' and its hostResult is
+// synthesized — without this, every hostProducedWork-gated assertion would SKIP,
+// which result-policy escalates to a strict-mode failure.
+export function producedWork(ctx: AssertionContext): boolean {
+  if (ctx.testCase.layer === 'run-sim') return Boolean(readRunSimTranscript(ctx));
+  return hostProducedWork(ctx.hostResult.status);
+}
+
 export function rec(value: unknown): Rec {
   return obj(value) ?? {};
 }

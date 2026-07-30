@@ -11,13 +11,16 @@ import type { FixtureKind } from './types';
 
 const FIXTURE_SRC_DIR = path.resolve(__dirname, '..', 'fixtures');
 
-function writeProjectMarkers(dir: string, name: string): void {
+function writeProjectMarkers(dir: string, name: string, opts: { git?: boolean } = {}): void {
   const pkg = path.join(dir, 'package.json');
   if (!fs.existsSync(pkg)) {
     fs.writeFileSync(pkg, JSON.stringify({ name, version: '0.0.0', private: true }, null, 2) + '\n', 'utf8');
   }
   // A .git directory makes findUp()/projectRoot() stop here. We avoid a real
   // `git init` (slow, needs git) — an empty marker dir is enough for path logic.
+  // Fixtures whose case needs real diff evidence opt out and let the run-sim
+  // driver create an actual repository instead.
+  if (opts.git === false) return;
   const gitDir = path.join(dir, '.git');
   if (!fs.existsSync(gitDir)) fs.mkdirSync(gitDir, { recursive: true });
 }
@@ -40,6 +43,14 @@ export function materializeFixture(dir: string, kind: FixtureKind): string {
     case 'empty':
       // A brand-new project: just enough to be a real root for new-project flows.
       writeProjectMarkers(dir, 'test-new-project');
+      break;
+    case 'empty-git':
+      // Same, minus the fake `.git` marker: run-sim replaces it with a REAL
+      // repository so captureArchitectureBaseline yields kind 'git-head'. An
+      // empty `.git` directory would make the driver's init step delete-then-
+      // recreate for no reason, and a half-real repo is the one dangerous state
+      // (baselinePathSet throws on a git dir with no readable tree).
+      writeProjectMarkers(dir, 'test-new-project', { git: false });
       break;
     case 'react-vite': {
       const skeleton = path.join(FIXTURE_SRC_DIR, 'react-vite');

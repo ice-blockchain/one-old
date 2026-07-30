@@ -43,6 +43,7 @@ function context(project: string, dist: string): AssertionContext {
   const config = defaultConfig();
   return {
     cwd: project,
+    caseFolder: project,
     env: {
       TRAFFIC_ONE_PLUGIN_ROOT: dist,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(project, 'preferences.json'),

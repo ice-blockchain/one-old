@@ -3,6 +3,7 @@
 // MAINTAINER tool: it is never compiled into dist (see tsconfig.build.json
 // exclude) and never shipped. It is run via `tsx src/test-environment/run.ts`.
 
+import type { ArchitectureInputV1 } from '../../shared/architecture-contract';
 import type { HostModelObservation } from '../../shared/host/capabilities';
 
 export type HostId = 'claude' | 'codex' | 'cursor' | 'opencode' | 'copilot' | 'windsurf' | 'kilo';
@@ -13,11 +14,15 @@ export type Category =
   | 'project-lifecycle'
   | 'existing-project'
   | 'feature-auth'
-  | 'feature-onboarding';
+  | 'feature-onboarding'
+  | 'run-sim';
 
 // pure-node  → fully deterministic, no host CLI, reuses src/ functions directly.
 // host-e2e   → drives a real host CLI headlessly against a seeded temp project.
-export type RunLayer = 'host-e2e' | 'pure-node';
+// run-sim    → pure-node too, but drives a FULL post-onboarding run: scripted role
+//              writes go through the real plan-write gate and the real runtime
+//              reacts, so the composition of the chain is exercised without an LLM.
+export type RunLayer = 'host-e2e' | 'pure-node' | 'run-sim';
 
 // How a host-e2e run proves that it is exercising the freshly built dist.
 // `host-install` runs installArgs against a content-addressed marketplace before
@@ -37,6 +42,7 @@ export type ProjectMode = 'new-project' | 'existing-codebase';
 
 export type FixtureKind =
   | 'empty'
+  | 'empty-git'
   | 'react-vite'
   | 'existing-react-vite'
   | 'existing-node-api';
@@ -66,6 +72,34 @@ export interface ScriptedAnswer {
   value: unknown;
 }
 
+// What a `layer: 'run-sim'` case declares. The case supplies SEMANTICS (the
+// brief, the semantic architecture input, per-module content overrides); the
+// compiled contract supplies every PATH. Nothing here may name a compiled
+// output — those are born inside the PLAN_READY transaction, so hardcoding one
+// would make every compiler change an N-case edit.
+export interface RunSimSpec {
+  // The user-facing brief this shape simulates. Also seeds projectContext.
+  brief: string;
+  // Semantic routes/modules only — runtime owns roots, roles, outputs, hashes.
+  architecture: ArchitectureInputV1;
+  // Optional overrides for the architect's project-memory bodies. Anything not
+  // named here gets a generated body that satisfies missingProjectMemoryBaseline.
+  memory?: Record<string, string>;
+  // Optional `.traffic-one/plan.md` body (generated when absent).
+  plan?: string;
+  // How QA evidence is produced. Cross-checked against the PUBLISHED
+  // contract.browserRequired so a shape can never silently take the cheap path.
+  qa: QaExpectation;
+}
+
+export interface QaExpectation {
+  mode: 'stack' | 'browser';
+  // Pins each required check's status. `stackReportStatus` returns `passed`
+  // whenever nothing FAILED, so an all-`not-applicable` report would otherwise
+  // read as a pass.
+  expectChecks?: Record<string, 'passed' | 'not-applicable'>;
+}
+
 export interface AssertionSpec {
   id: string;
   params?: Record<string, unknown>;
@@ -80,6 +114,8 @@ export interface Case {
   preSeed: PreSeed;
   // pure-node onboarding-flow simulation: scripted answers fed to applyAnswer().
   scriptedAnswers?: ScriptedAnswer[];
+  // Required when layer === 'run-sim': the shape this simulated run builds.
+  runSim?: RunSimSpec;
   prompt?: string; // host-e2e: inline build/edit prompt
   promptFile?: string; // host-e2e: alt, path relative to the case file's dir
   phase2Prompt?: string; // host-e2e lifecycle: a follow-up edit in the same project
@@ -243,6 +279,11 @@ export interface HostDriver {
 
 export interface AssertionContext {
   cwd: string; // temp project root
+  // The per-case folder that OWNS `cwd` (<runDir>/projects/<caseId>__<target>).
+  // Holds isolated state, logs, and the run-sim transcript. Passing it explicitly
+  // — rather than resolving `cwd/..` — is what makes `--reassert` work for
+  // transcript-reading assertions.
+  caseFolder: string;
   env: Record<string, string>; // per-case env (PREFS_PATH, XDG_STATE_HOME, ...)
   host: HostId | 'pure-node';
   testCase: Case;

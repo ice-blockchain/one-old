@@ -21,6 +21,8 @@ import {
 import { materializeFixture } from './fixtures';
 import { preseed } from './preseed';
 import { driveOnboarding } from './onboarding-sim';
+import { runSimulatedRun } from './run-sim';
+import type { RunSimTranscript } from './run-sim/types';
 import { prepareCaseHostIntegration } from './host-integration';
 import { DRIVERS } from '../drivers';
 import { currentHostCapabilityReport } from '../host-capability-report';
@@ -68,9 +70,10 @@ export async function runCase(
 
   const env: CaseEnv = buildCaseEnv(config, caseFolder, distRoot, target);
 
-  // --- seed / onboard (in-process, isolated) ---
-  const modelCatalogBlocker = withCaseEnv(env, () => {
+  // --- seed / onboard / simulate (in-process, isolated) ---
+  const seeded = withCaseEnv(env, (): { blocker: string; runSim: RunSimTranscript | null } => {
     let blocker = '';
+    let runSim: RunSimTranscript | null = null;
     if (target === 'codex') {
       try {
         seedCodexE2eModelCatalog(config.hosts.codex, env);
@@ -84,11 +87,19 @@ export async function runCase(
       writeState(tmpDir, { mode: testCase.preSeed.mode });
       const sim = driveOnboarding(tmpDir, testCase.scriptedAnswers);
       fs.writeFileSync(path.join(caseFolder, 'onboarding-sim.json'), JSON.stringify(sim, null, 2));
-    } else {
-      preseed(tmpDir, testCase.preSeed);
+      return { blocker, runSim };
     }
-    return blocker;
+    preseed(tmpDir, testCase.preSeed);
+    if (testCase.layer === 'run-sim' && testCase.runSim) {
+      // Run-sim: onboarding is pre-completed, then the whole post-onboarding
+      // chain runs with scripted role writes against the real gates.
+      runSim = runSimulatedRun(tmpDir, testCase, caseFolder);
+      fs.writeFileSync(path.join(caseFolder, 'run-sim.json'), JSON.stringify(runSim, null, 2));
+    }
+    return { blocker, runSim };
   });
+  const modelCatalogBlocker = seeded.blocker;
+  const runSim = seeded.runSim;
 
   // The proof file must be created by the selected host runtime, never by a
   // previous attempt or by the in-process seed/materialization phase.
@@ -96,7 +107,21 @@ export async function runCase(
   if (runtimeProofFile) fs.rmSync(runtimeProofFile, { force: true });
 
   // --- optional host run ---
-  let hostResult: HostRunResult = { status: 'NOT_RUN', exitCode: null, durationMs: 0 };
+  // A run-sim case really executed work, so it reports COMPLETED/ERROR rather
+  // than NOT_RUN. This is not a fiction dressed up as a host run: the target
+  // stays 'pure-node', so no hostCapability sidecar is attached below and no
+  // synthetic prevention certification can reach the release report. Leaving it
+  // NOT_RUN would make every hostProducedWork-gated assertion SKIP, which
+  // result-policy turns into a strict-mode failure.
+  let hostResult: HostRunResult = runSim
+    ? {
+      status: runSim.ok ? 'COMPLETED' : 'ERROR',
+      exitCode: runSim.ok ? 0 : 1,
+      durationMs: runSim.durationMs,
+      stdoutPath: path.join(caseFolder, 'run-sim.json'),
+      ...(runSim.failure ? { skippedReason: runSim.failure } : {}),
+    }
+    : { status: 'NOT_RUN', exitCode: null, durationMs: 0 };
   if (target !== 'pure-node' && testCase.layer === 'host-e2e') {
     const driver = DRIVERS[target];
     const cfg = config.hosts[target];
@@ -142,6 +167,7 @@ export async function runCase(
     testCase,
     target,
     tmpDir,
+    caseFolder,
     env,
     hostResult,
     assertions,
@@ -188,6 +214,7 @@ async function runAssertions(
   testCase: Case,
   target: HostId | 'pure-node',
   cwd: string,
+  caseFolder: string,
   env: CaseEnv,
   hostResult: HostRunResult,
   assertions: Map<string, Assertion>,
@@ -207,6 +234,7 @@ async function runAssertions(
     }
     const ctx: AssertionContext = {
       cwd,
+      caseFolder,
       env,
       host: target,
       testCase,
@@ -267,6 +295,7 @@ export async function reassertCase(
     testCase,
     target,
     projectDir,
+    caseFolder,
     env,
     effectiveHostResult,
     assertions,

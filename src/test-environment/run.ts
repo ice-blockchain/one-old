@@ -140,7 +140,10 @@ function selectRuns(config: RootTestConfig): PlannedRun[] {
     if (config.caseFilter && !config.caseFilter.includes(c.id)) continue;
     if (c.layer === 'host-e2e' && !config.includeHostE2E) continue;
 
-    if (c.layer === 'pure-node') {
+    // run-sim keeps the 'pure-node' TARGET on purpose: aggregate-report skips
+    // exactly that id before indexing HOST_CAPABILITIES, so a new target id
+    // would surface as a phantom host with undefined contract rows.
+    if (c.layer === 'pure-node' || c.layer === 'run-sim') {
       runs.push({ caseId: c.id, targets: ['pure-node'] });
     } else {
       const hosts = (c.hostFilter ?? config.enabledHosts).filter((h) => (
@@ -239,7 +242,13 @@ async function main(): Promise<number> {
   const e2eHosts = new Set<HostId>();
   for (const p of planned) for (const t of p.targets) if (t !== 'pure-node') e2eHosts.add(t);
   const selectedManualHosts = selectedManualCertificationHosts(config.enabledHosts);
-  const releasePreparationRequired = anyE2E || (
+  // run-sim needs a BUILT dist even though it never launches a host:
+  // materializeProjectAssets reads rules from pluginRoot()/rules/** and skills
+  // from pluginRoot()/skills-catalog/*/SKILL.md with no src/ fallback, and
+  // filters both by existsSync — against an unbuilt tree it silently
+  // materializes nothing.
+  const anyRunSim = planned.some((p) => caseById.get(p.caseId)?.layer === 'run-sim');
+  const releasePreparationRequired = anyE2E || anyRunSim || (
     selectedManualHosts.length > 0
     && (config.includeHostE2E || config.strict || config.manualCertDir !== undefined)
   );

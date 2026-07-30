@@ -19,6 +19,10 @@ export const ALL_CATEGORIES: Category[] = [
   'existing-project',
   'feature-auth',
   'feature-onboarding',
+  // Deterministic full-run simulation. MUST be listed here: run.ts filters
+  // --category values against this array and silently drops anything missing,
+  // which would turn `--category=run-sim` into "run the whole matrix".
+  'run-sim',
 ];
 
 export function defaultConfig(): RootTestConfig {
