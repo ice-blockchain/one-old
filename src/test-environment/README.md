@@ -4,6 +4,41 @@ A config-driven, multi-host test harness for the Traffic One plugin. It lives
 entirely under `src/test-environment`, is **never compiled into `dist`** (it is
 excluded in `tsconfig.build.json`), and runs via `tsx` from `package.json`.
 
+## Layers
+
+| layer | what it drives | cost |
+|---|---|---|
+| `pure-node` | onboarding state machine + real state writers | free |
+| `run-sim` | a COMPLETE post-onboarding run: scripted role writes through the real plan-write gate, the real PLAN_READY transaction, real QA evidence, real settlement | free |
+| `host-e2e` | a real host CLI against a seeded temp project | real LLM spend |
+
+### run-sim
+
+Everything after onboarding is a pure function over filesystem state, so it is
+simulatable: script the writes a competent role would make, let the runtime
+react, assert the artifacts. Writing `.traffic-one/digests/<runId>/architect.md`
+with `PLAN_READY` is not bookkeeping — it IS the runtime transaction (compile →
+verification → assignments → rollback barrier → persist → scaffold seed →
+publish ×2 → settlement → bootstraps), so one allowed write exercises the whole
+chain.
+
+A case declares SEMANTICS only — a brief and a semantic `ArchitectureInputV1`.
+Every compiled PATH is read back from the published assignments, because those
+paths are born inside the PLAN_READY transaction; hardcoding one would make each
+compiler change an N-case edit.
+
+**Requirements.** `dist` must be built (materialization resolves rules and
+skills from the plugin root with no `src/` fallback — the runner builds it for
+you), plus `go`, `pytest`, `ruff`, and `@playwright/test` + Chromium installed
+once at the runs root, where `createRequire` resolves it from every case
+project. A missing toolchain is reported INCONCLUSIVE, never PASS.
+
+**What it does not prove.** Whether a real agent understands a deny, installs
+what a gate asks for, or writes compliant code — that is model behaviour and
+needs `--e2e`. And the scripts are authored to pass, so the suite proves gates
+ACCEPT correct work; the `run-sim-negative-gates` rows are what prove they still
+REJECT. Any gate change should land with a negative row in the same commit.
+
 ## Run it
 
 ```bash

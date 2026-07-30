@@ -44,7 +44,17 @@ npm run build
 npm run golden:update    # refreshes tests/golden/generated-manifest.sha256
 npm run plugin:check     # gen:check + build:verify
 npm run smoke
+npm run test:env -- --strict   # deterministic full-run simulations (free, no host)
 ```
+
+`test:env --strict` drives complete post-onboarding runs for every supported
+project shape with scripted role writes against the real gates: no host CLI, no
+LLM, no spend. It builds `dist` first (materialization resolves rules and skills
+from the plugin root, with no `src/` fallback) and needs `go`, `pytest`, `ruff`
+and a Playwright Chromium at the runs root; a missing toolchain is reported
+INCONCLUSIVE rather than passing. Run it after any change to gates, the
+architecture compiler, the QA runner, or settlement — it is the only test that
+exercises their COMPOSITION.
 
 `tests/golden/generated-manifest.sha256` is a byte snapshot of the full emitted
 tree (additions-aware); `npm run golden:update` is the only supported way to

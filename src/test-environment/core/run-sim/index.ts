@@ -28,6 +28,9 @@ import { readRunSettlement } from '../../../shared/run-settlement';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { materializeProjectFromState } from '../../../shared/materialize';
 import { readEffectiveState } from '../../../shared/state';
+import { listClaimedAgents, nextSpawnIndex } from '../../../shared/state/run-agent/claims-store';
+import { maybeFlipToMaintenance } from '../../../modules/materialize/build-complete';
+import { obj } from '../../../shared/obj';
 import {
   ensureCurrentRunId,
   runVerificationState,
@@ -49,7 +52,7 @@ import {
   memoryBody,
   planBody,
 } from './content';
-import { buildImplementContext } from './assignments';
+import { buildImplementContext, type ImplementContext } from './assignments';
 import { buildDirFor, scenarioFor, writeBuildOutput } from './build-output';
 import { sourceFor } from './sources';
 import type { RunSimTranscript, ScriptedWrite } from './types';
@@ -102,6 +105,77 @@ function architectWrites(runId: string, brief: string, state: Rec): ScriptedWrit
   }
   writes.push({ path: '.traffic-one/plan.md', content: planBody(brief, state) });
   return writes;
+}
+
+
+// The on-disk facts that distinguish a REUSED agent from a respawned one:
+// nextSpawnIndex (max of the state counter and the claim count on disk) and the
+// identity of the claims themselves.
+function claimSnapshot(cwd: string, runId: string, role: string): {
+  spawnIndex: number;
+  claimIds: string[];
+} {
+  const state = readEffectiveState(cwd);
+  const claims = listClaimedAgents(cwd, runId)
+    .filter((claim: Rec) => claim.role === role)
+    .map((claim: Rec) => String(claim.claimId ?? claim.sessionId ?? ''))
+    .filter(Boolean)
+    .sort();
+  return { spawnIndex: nextSpawnIndex(cwd, state, runId, role), claimIds: claims };
+}
+
+
+// --- negative rows ---------------------------------------------------------
+// The suite proves gates ACCEPT correct work across every shape. These prove
+// they still REJECT the specific defects they exist for. Without them a gate
+// that quietly turned permissive would keep the whole suite green — the failure
+// mode we agreed a run-sim tier must not have.
+//
+// Every row runs AFTER settlement, so a row that wrongly succeeds cannot
+// corrupt the verified run it is checking. `denyMatch` pins WHICH gate refused:
+// "something denied it" is not evidence that the right thing did.
+function negativeRows(cwd: string, runId: string, implement: ImplementContext): ScriptedWrite[] {
+  const rows: ScriptedWrite[] = [];
+
+  rows.push({
+    path: `.traffic-one/runs/${runId}/assignments.json`,
+    content: '{"schemaVersion":1,"assignments":[]}\n',
+    expectDeny: true,
+    denyMatch: 'generated atomically from CompiledArchitectureV1',
+  });
+
+  rows.push({
+    path: `.traffic-one/runs/${runId}/verification-v2.json`,
+    content: '{"schemaVersion":2}\n',
+    expectDeny: true,
+    denyMatch: 'generated and atomically published by Traffic One runtime',
+  });
+
+  // A role reaching into another role's compiled output.
+  const backendOutput = implement.outputsFor('senior-backend')
+    .find((rel) => /\.(ts|go|py)$/.test(rel));
+  if (backendOutput) {
+    rows.push({
+      path: backendOutput,
+      content: '// not mine to write\n',
+      expectDeny: true,
+      denyMatch: 'Run-team enforcement gate',
+    });
+  }
+
+  // The architect may not choose output paths, roots or roles.
+  rows.push({
+    path: `.traffic-one/runs/${runId}/architecture-input-v1.json`,
+    content: `${JSON.stringify({
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'x', name: 'X', kind: 'page', ownerRole: 'senior-frontend' }],
+    })}\n`,
+    expectDeny: true,
+    denyMatch: 'may not choose output paths, roots, or roles',
+  });
+
+  return rows;
 }
 
 export async function runSimulatedRun(
@@ -270,6 +344,58 @@ export async function runSimulatedRun(
   }
   transcript.phasesCompleted.push('implemented');
 
+  // --- Phase 4: fix cycle --------------------------------------------------
+  // A review round-trip must REUSE the live implementer, not respawn it. The
+  // orchestrator prose says so (v1.0.14 made continuation the default and
+  // respawn the fallback), but nothing verified the state that proves it. The
+  // measurement: bind nothing new, re-write an owned file through the same
+  // session id, and require spawnIndex and the claim set to be unchanged.
+  if (spec.fixCycle) {
+    const owner = implementers[implementers.length - 1];
+    if (owner) {
+      const before = claimSnapshot(cwd, runId, owner);
+      const reviewerSession = bindRole(cwd, 'senior-reviewer');
+      if (!reviewerSession) return finish('phase-4 could not bind the reviewer');
+      const changes = applyAll(cwd, 'fix-cycle:review', 'senior-reviewer', [{
+        path: `.traffic-one/digests/${runId}/reviewer.md`,
+        content: digestBody({
+          role: 'senior-reviewer',
+          runId,
+          verdict: 'CHANGES_REQUESTED',
+          summary: '1. Tighten the catalogue listing before approval.',
+        }),
+      }], transcript);
+      if (changes) return finish(`phase-4 CHANGES_REQUESTED denied: ${changes.reason}`);
+
+      // The implementer continues in its EXISTING session: no bindRole here,
+      // which is exactly what "reuse, do not respawn" means on disk.
+      const owned = implement.outputsFor(owner)
+        .find((rel) => sourceFor(rel, implement) !== null);
+      if (owned) {
+        const fixWrite = applyAll(cwd, 'fix-cycle:implement', owner, [{
+          path: owned,
+          content: `${sourceFor(owned, implement)!}\n`,
+        }], transcript);
+        if (fixWrite) return finish(`phase-4 fix write denied: ${fixWrite.reason}`);
+      }
+      const reFixed = applyAll(cwd, 'fix-cycle:digest', owner, [{
+        path: `.traffic-one/digests/${runId}/${owner.replace(/^senior-/, '')}.md`,
+        content: digestBody({
+          role: owner,
+          runId,
+          verdict: 'IMPLEMENTED',
+          summary: 'Addressed the reviewer findings in the owned work unit.',
+          touched: owned ? [owned] : [],
+        }),
+      }], transcript);
+      if (reFixed) return finish(`phase-4 re-IMPLEMENTED denied: ${reFixed.reason}`);
+
+      const after = claimSnapshot(cwd, runId, owner);
+      transcript.facts.fixCycle = { role: owner, before, after };
+      transcript.phasesCompleted.push('fix-cycle');
+    }
+  }
+
   // --- Phase 3: verification ----------------------------------------------
   // QA evidence comes from the REAL runner. For a contract with no browser
   // surface that is the `stack` command, which spawns the project's own
@@ -338,6 +464,36 @@ export async function runSimulatedRun(
     return finish('phase-3 settleTerminalRunLedger refused despite APPROVED + TESTS_GREEN + validated evidence');
   }
   transcript.phasesCompleted.push('settled');
+
+  // --- Phase 5: maintenance flip -------------------------------------------
+  // The real function the post-build boundary calls. A new project that has
+  // been built and verified moves to `maintenance`, which is what routes the
+  // NEXT request through post-build triage instead of a fresh architect run.
+  // Existing codebases are already maintenance from detection, so the flip is
+  // only meaningful — and only asserted — on a new project.
+  const flipped = maybeFlipToMaintenance(cwd, readEffectiveState(cwd), {
+    atPromptBoundary: true,
+  });
+  const lifecycle = obj((readEffectiveState(cwd) as Rec).lifecycle);
+  transcript.facts.maintenanceFlipped = Boolean(flipped);
+  transcript.facts.lifecyclePhase = typeof lifecycle?.phase === 'string' ? lifecycle.phase : null;
+  transcript.facts.lifecycleSource = typeof lifecycle?.source === 'string' ? lifecycle.source : null;
+  transcript.phasesCompleted.push('maintenance');
+
+  // --- Phase 6: negative rows ----------------------------------------------
+  if (spec.negativeGates) {
+    // The reviewer session is a bound role that owns none of these paths, which
+    // is the realistic actor for every row here.
+    bindRole(cwd, 'senior-reviewer');
+    const rows = negativeRows(cwd, runId, implement);
+    const leaked = applyAll(cwd, 'negative', 'senior-reviewer', rows, transcript);
+    if (leaked) {
+      return finish(`phase-6 a gate that must deny allowed ${leaked.path}`);
+    }
+    transcript.facts.negativeRows = rows.length;
+    transcript.phasesCompleted.push('negative-gates');
+  }
+
   return finish();
 }
 

@@ -182,6 +182,8 @@ export const RUN_SIM_CASES: Case[] = [
       // evidence. The assertion cross-checks this declaration against the
       // PUBLISHED contract.browserRequired — a shape can never quietly slide
       // onto the cheap `stack` path.
+      fixCycle: true,
+      negativeGates: true,
       qa: {
         mode: 'browser',
         expectChecks: {
@@ -204,6 +206,9 @@ export const RUN_SIM_CASES: Case[] = [
       { id: 'run-sim-plan-ready-artifacts' },
       { id: 'run-sim-qa-evidence' },
       { id: 'run-sim-settlement' },
+      { id: 'run-sim-subagent-reuse' },
+      { id: 'run-sim-maintenance-flip' },
+      { id: 'run-sim-negative-gates' },
     ],
     notes: 'Shape 1: default stack, React/Vite + Supabase, with auth. The reference shape.',
   },

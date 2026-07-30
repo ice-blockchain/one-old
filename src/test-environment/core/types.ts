@@ -91,6 +91,13 @@ export interface RunSimSpec {
   // How QA evidence is produced. Cross-checked against the PUBLISHED
   // contract.browserRequired so a shape can never silently take the cheap path.
   qa: QaExpectation;
+  // Run a review round-trip (CHANGES_REQUESTED → re-implement → APPROVED) and
+  // record the claim state either side of it. Off by default: one shape proves
+  // the mechanism, and running it everywhere would only add wall-clock.
+  fixCycle?: boolean;
+  // Run the adversarial rows after settlement: writes that MUST be denied, each
+  // pinned to the gate that has to refuse it.
+  negativeGates?: boolean;
 }
 
 export interface QaExpectation {

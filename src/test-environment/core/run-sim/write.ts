@@ -97,6 +97,7 @@ export function applyScriptedWrite(
     denied,
     ...(denied ? { reason: (result as { reason: string }).reason } : {}),
     ...(write.expectDeny ? { expected: true } : {}),
+    ...(write.denyMatch ? { denyMatch: write.denyMatch } : {}),
   };
   transcript.writes.push(outcome);
 

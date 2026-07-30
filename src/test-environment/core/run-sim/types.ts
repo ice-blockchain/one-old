@@ -17,6 +17,8 @@ export interface WriteOutcome {
   // Set when the case EXPECTED this deny (negative-gate rows). An expected deny
   // is not a failure; an unexpected one is.
   expected?: boolean;
+  /** The phrase the deny was required to contain, echoed for the assertion. */
+  denyMatch?: string;
 }
 
 // A fact snapshot taken between phases. Assertions read these rather than
@@ -60,4 +62,10 @@ export interface ScriptedWrite {
   // Negative-gate rows set this: the write MUST be denied, and the transcript
   // records the deny as expected rather than as a failure.
   expectDeny?: boolean;
+  /**
+   * A distinctive phrase the deny must contain. Without it a row proves only
+   * that SOMETHING refused the write — the wrong gate firing for the wrong
+   * reason would still look green.
+   */
+  denyMatch?: string;
 }
