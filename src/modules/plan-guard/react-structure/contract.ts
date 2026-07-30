@@ -117,13 +117,26 @@ export function analyzeStructureTextAgainstContract(
 
 
 function withoutModuleExtension(value: string): string {
-  return normalizeRel(value).replace(/\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|html)$/, '');
+  return normalizeRel(value).replace(/\.(?:blade\.php|tsx?|jsx?|mjs|cjs|vue|svelte|astro|html)$/, '');
 }
 
 // Shared with the architecture contract so a route declared as `*` (or `/*`)
 // matches the `path="*"` every router uses in code. Comparing the two spellings
 // literally made the catch-all unsatisfiable from both directions.
-const normalizedRoutePath = canonicalRoutePath;
+// Frameworks spell the same route parameter differently: react-router and
+// vue-router use `:slug`, Laravel uses `{slug}` (or `{slug?}`), Next uses
+// `[slug]`. The COMPILED contract always holds `:slug` — the input validator
+// accepts nothing else — so an observed route had to be normalized to it or a
+// correct routes/web.php could never match its own contract. Deliberately local
+// to this comparison rather than added to the shared canonicalizer: contract
+// route paths are hashed, and nothing authored may contain the other spellings
+// anyway, so widening the shared function would risk hash churn for no gain.
+function normalizedRoutePath(value: string): string {
+  return canonicalRoutePath(value)
+    // `{slug}` / `{slug?}` (Laravel) and `[slug]` / `[...slug]` (Next).
+    .replace(/\{\.{0,3}([A-Za-z0-9_]+)\??\}/g, ':$1')
+    .replace(/\[\.{0,3}([A-Za-z0-9_]+)\]/g, ':$1');
+}
 
 function sourceMatchesModule(
   importerFile: string,

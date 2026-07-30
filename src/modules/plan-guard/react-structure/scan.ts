@@ -180,6 +180,21 @@ function walkSourceFiles(
 }
 
 
+
+// Laravel declares its route→module bindings in `routes/web.php`, so that file
+// has to be in the scan or no Inertia page and no Blade view can ever bind to
+// its route. The directory sits beside the app, and the compiler legitimately
+// NESTS a Laravel app under a web root (apps/web/...), where a literal `routes`
+// resolves to nothing and is silently dropped as an unresolved root.
+function laravelRoutesRoots(contract: CompiledArchitectureV1): string[] {
+  const roots = new Set<string>(['routes']);
+  for (const root of contract.sourceRoots) {
+    const marker = root.indexOf('/resources/');
+    if (marker > 0) roots.add(`${root.slice(0, marker)}/routes`);
+  }
+  return [...roots];
+}
+
 export function analyzeProjectStructure(
   projectRoot: string,
   contract: CompiledArchitectureV1,
@@ -188,7 +203,7 @@ export function analyzeProjectStructure(
   const maxFiles = Math.max(1, Math.floor(options.maxFiles || STRUCTURE_SCAN_DEFAULT_MAX_FILES));
   const laravelRouteRoots = contract.profile.profileId === 'server-rendered'
     && contract.profile.framework === 'laravel'
-    ? ['routes']
+    ? laravelRoutesRoots(contract)
     : [];
   const walked = walkSourceFiles(
     projectRoot,

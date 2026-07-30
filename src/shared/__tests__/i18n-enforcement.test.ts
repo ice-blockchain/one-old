@@ -398,3 +398,43 @@ test('bound attributes are expressions, not hardcoded copy', () => {
   assert.equal(findings.length, 1);
   assert.equal(findings[0]!.id, 'STRUCT_HARDCODED_COPY');
 });
+
+// Regression: Blade directives are CODE sitting between tags, so the markup
+// scanner's `>text<` rule captured `@include('components.Card')` and reported
+// idiomatic Blade as hardcoded copy. Blanked for the same reason as a script
+// block. Found by the run-sim tier's Laravel Blade shape.
+test('Blade directives are code, not user-facing copy', () => {
+  const profile = {
+    profileId: 'server-rendered',
+    framework: 'laravel',
+    router: 'laravel-router',
+    sourceRoots: ['resources/views'],
+    entrypoints: [],
+    layerRoots: { pages: [], components: [], features: [], lib: [] },
+    qaAdapters: [],
+    surfaces: ['web-ui'],
+    roles: [],
+    skillBuckets: [],
+  } as unknown as Parameters<typeof analyzeI18nSourceText>[2];
+
+  const view = [
+    '<main class="page">',
+    "    <h1>{{ __('common.title') }}</h1>",
+    "    @include('components.Card', ['title' => __('common.cardTitle')])",
+    '    @if ($featured)',
+    "        @include('components.Featured')",
+    '    @endif',
+    '</main>',
+  ].join('\n');
+  assert.deepEqual(
+    analyzeI18nSourceText('resources/views/home.blade.php', view, profile).findings,
+    [],
+    'directives and __() calls are not rendered copy',
+  );
+
+  // And a real hardcoded string in the same template is still reported.
+  const withCopy = view.replace("{{ __('common.title') }}", 'Our latest projects');
+  const findings = analyzeI18nSourceText('resources/views/home.blade.php', withCopy, profile).findings;
+  assert.equal(findings.length, 1, 'exactly the real template copy');
+  assert.equal(findings[0]!.id, 'STRUCT_HARDCODED_COPY');
+});

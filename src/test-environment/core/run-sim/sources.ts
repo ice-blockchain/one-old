@@ -1007,7 +1007,9 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   // workspace and Go in a Go module, and the module kind alone cannot tell them
   // apart. Getting this order wrong emits TypeScript into a .go file, which the
   // real `go build ./...` in phase 3 catches — loudly, but late.
-  if (rel === 'routes/web.php') return laravelRoutes(ctx);
+  // Anchored on the suffix: the compiler nests a Laravel app under a web root
+  // (apps/web/routes/web.php), so an exact root match authored nothing at all.
+  if (rel.endsWith('routes/web.php')) return laravelRoutes(ctx);
   if (rel.endsWith('.go')) return goSource(rel);
   if (rel.endsWith('.py')) return pySource(rel);
   if (rel === 'pyproject.toml') {

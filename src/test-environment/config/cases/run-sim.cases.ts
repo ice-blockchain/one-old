@@ -160,31 +160,6 @@ const WEB_ASSERTIONS = [
   { id: 'run-sim-settlement' },
 ];
 
-// --- Laravel: NOT YET COVERED --------------------------------------------
-// Two Laravel shapes (Inertia React, and full-stack Blade) were built and then
-// withdrawn: the structural and i18n analyzers are materially incomplete for
-// Laravel, and all three gaps below are BLOCKING findings a real implementer
-// cannot clear. The generators for both shapes are kept in sources.ts
-// (laravelRoutes, bladeView, inertiaBootstrap) so the cases can be restored the
-// moment the analyzers support them.
-//
-//   1. Blade module references are invisible. importBindings (analyze.ts:25)
-//      parses only ES `import ... from`, so `@include('components.ProjectCard')`
-//      and `<x-project-card />` produce no binding and moduleReferenced can
-//      never be true — STRUCT_ORPHAN_MODULE fires on every planned Blade
-//      component, and the only way to reference a Blade partial IS a directive.
-//
-//   2. Laravel route parameters do not match the contract. A compiled route is
-//      `/courses/:slug`; Laravel's own syntax is `/courses/{slug}`. Nothing
-//      normalizes between them, so STRUCT_ROUTE_MODULE_MISMATCH fires on every
-//      parameterised route in a correct routes/web.php.
-//
-//   3. Blade directives read as user-facing copy. The markup scan's `>text<`
-//      rule captures `@include(...)` sitting between tags, so
-//      STRUCT_HARDCODED_COPY fires on idiomatic Blade.
-//
-// Reproduced end to end by this tier; see the increment 5 commit message.
-
 export const RUN_SIM_CASES: Case[] = [
   {
     id: 'sim-new-react-vite-supabase',
@@ -447,6 +422,54 @@ export const RUN_SIM_CASES: Case[] = [
       { id: 'run-sim-existing-mode' },
     ],
     notes: 'Existing-codebase guard: no scaffolded config is written into a repo Traffic One did not create, and integration findings are advisory.',
+  },
+  {
+    id: 'sim-new-laravel-inertia',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      // Laravel + a named JS framework is Inertia territory: detect-frontend
+      // returns `laravel-ui` for ANY configured frontend when the backend is
+      // laravel (the 8cl regression — "laravel with vuejs" had compiled
+      // backend-only and the requested UI vanished).
+      frontend: 'react-vite',
+      backend: 'laravel',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_LEARNING },
+    },
+    runSim: { brief: BRIEF_LEARNING, architecture: LEARNING_ARCHITECTURE, qa: WEB_QA },
+    assertions: WEB_ASSERTIONS,
+    notes: 'Shape 2: Laravel backend with an Inertia React UI — the server-rendered profile.',
+  },
+  {
+    id: 'sim-new-laravel-blade',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      // `other` + laravel is how the wizard encodes "a UI is wanted but no JS
+      // framework was named" — Laravel's own Blade UI.
+      frontend: 'other',
+      backend: 'laravel',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_AGENCY },
+    },
+    runSim: { brief: BRIEF_AGENCY, architecture: AGENCY_ARCHITECTURE, qa: WEB_QA },
+    assertions: WEB_ASSERTIONS,
+    notes: 'Shape 9: Laravel full-stack Blade — @include references, {slug} routes, and directives that are code rather than copy.',
   },
   {
     id: 'sim-new-python-api',

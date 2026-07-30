@@ -329,10 +329,20 @@ function reactSourceAnalysis(
 // every modern Vue SFC was scanned as markup and `defineProps<{…}>` read as
 // hardcoded copy. `<script setup lang="ts">` is the standard Vue 3 idiom.
 function blankEmbeddedCode(text: string): string {
-  return text.replace(
-    /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
-    (block) => block.replace(/[^\n]/g, ' '),
-  );
+  return text
+    .replace(
+      /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
+      (block) => block.replace(/[^\n]/g, ' '),
+    )
+    // Blade directives are CODE sitting between tags, so the `>text<` rule read
+    // `@include('components.Card')` as user-facing copy and denied idiomatic
+    // Blade. Blanked for the same reason and in the same way as a script block:
+    // it is not rendered text. `{{ }}` and `{!! !!}` already fall out of the
+    // scan because the capture excludes braces.
+    .replace(
+      /@[A-Za-z]+(?:\s*\([^)]*\))?/g,
+      (directive) => directive.replace(/[^\n]/g, ' '),
+    );
 }
 
 function markupSourceAnalysis(
