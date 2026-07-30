@@ -21,6 +21,12 @@ export const BRIEF_LEARNING_MAINTENANCE =
 export const BRIEF_API =
   'i want an api project with products listing, products info, news listing and info';
 
+export const BRIEF_API_MAINTENANCE =
+  'add new endpoint with config (languages, payment options)';
+
+export const BRIEF_AGENCY_MAINTENANCE =
+  'add new section contact';
+
 export const BRIEF_AGENCY =
   'create a modern agency presentation website. one landing page with projects '
   + 'listing, latest news, reviews.';
@@ -86,6 +92,47 @@ const EXISTING_API_ARCHITECTURE = {
   modules: [
     { id: 'products-service', name: 'Products Service', kind: 'service' as const },
     { id: 'news-service', name: 'News Service', kind: 'service' as const },
+  ],
+};
+
+
+// The api maintenance delta: one new endpoint alongside what exists.
+const API_MAINTENANCE_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [],
+  modules: [
+    { id: 'products-service', name: 'Products Service', kind: 'service' as const },
+    { id: 'news-service', name: 'News Service', kind: 'service' as const },
+    { id: 'store', name: 'Store', kind: 'store' as const },
+    { id: 'config-service', name: 'Config Service', kind: 'service' as const },
+  ],
+};
+
+// The same delta against the EXISTING repo, which keeps its own store.
+const EXISTING_API_MAINTENANCE_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [],
+  modules: [
+    { id: 'products-service', name: 'Products Service', kind: 'service' as const },
+    { id: 'news-service', name: 'News Service', kind: 'service' as const },
+    { id: 'config-service', name: 'Config Service', kind: 'service' as const },
+  ],
+};
+
+// The agency site gains a contact section: a new route and page on a site that
+// deliberately had exactly one.
+const AGENCY_MAINTENANCE_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [
+    { id: 'home-route', path: '/', moduleId: 'home' },
+    { id: 'contact-route', path: '/contact', moduleId: 'contact' },
+  ],
+  modules: [
+    { id: 'app-shell', name: 'App', kind: 'app-shell' as const },
+    { id: 'home', name: 'Home', kind: 'page' as const },
+    { id: 'contact', name: 'Contact', kind: 'page' as const },
+    { id: 'project-card', name: 'Project Card', kind: 'component' as const },
+    { id: 'review-card', name: 'Review Card', kind: 'component' as const },
   ],
 };
 
@@ -288,7 +335,16 @@ export const RUN_SIM_CASES: Case[] = [
       codeGraphProvider: 'gitnexus',
       projectContext: { originalPrompt: BRIEF_AGENCY },
     },
-    runSim: { brief: BRIEF_AGENCY, architecture: AGENCY_ARCHITECTURE, qa: WEB_QA },
+    runSim: {
+      brief: BRIEF_AGENCY,
+      architecture: AGENCY_ARCHITECTURE,
+      qa: WEB_QA,
+      phase2: {
+        brief: BRIEF_AGENCY_MAINTENANCE,
+        architecture: AGENCY_MAINTENANCE_ARCHITECTURE,
+        qa: WEB_QA,
+      },
+    },
     assertions: WEB_ASSERTIONS,
     notes: 'Shape 3: Nuxt, no backend. Also the single-page guard, and the profile whose build output (.output/public) builtAppIdentities had to learn.',
   },
@@ -366,6 +422,18 @@ export const RUN_SIM_CASES: Case[] = [
           'stack-build': 'passed',
           'stack-test': 'passed',
           'stack-lint': 'passed',
+        },
+      },
+      phase2: {
+        brief: BRIEF_API_MAINTENANCE,
+        architecture: EXISTING_API_MAINTENANCE_ARCHITECTURE,
+        qa: {
+          mode: 'stack',
+          expectChecks: {
+            'stack-build': 'passed',
+            'stack-test': 'passed',
+            'stack-lint': 'passed',
+          },
         },
       },
     },
@@ -468,6 +536,18 @@ export const RUN_SIM_CASES: Case[] = [
           'stack-build': 'passed',
           'stack-test': 'passed',
           'stack-lint': 'passed',
+        },
+      },
+      phase2: {
+        brief: BRIEF_API_MAINTENANCE,
+        architecture: API_MAINTENANCE_ARCHITECTURE,
+        qa: {
+          mode: 'stack',
+          expectChecks: {
+            'stack-build': 'passed',
+            'stack-test': 'passed',
+            'stack-lint': 'passed',
+          },
         },
       },
     },
