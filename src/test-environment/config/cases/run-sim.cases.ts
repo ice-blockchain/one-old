@@ -18,6 +18,83 @@ export const BRIEF_LEARNING =
 export const BRIEF_API =
   'i want an api project with products listing, products info, news listing and info';
 
+export const BRIEF_AGENCY =
+  'create a modern agency presentation website. one landing page with projects '
+  + 'listing, latest news, reviews.';
+
+// The learning-platform architecture, reused by every full-stack web shape. The
+// COMPILED paths differ per framework — that is the point — but the semantics
+// the architect declares do not.
+const LEARNING_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [
+    { id: 'home-route', path: '/', moduleId: 'home' },
+    { id: 'courses-route', path: '/courses', moduleId: 'courses' },
+    { id: 'course-detail-route', path: '/courses/:slug', moduleId: 'course-detail' },
+    { id: 'login-route', path: '/login', moduleId: 'login' },
+  ],
+  modules: [
+    { id: 'app-shell', name: 'App', kind: 'app-shell' as const },
+    { id: 'home', name: 'Home', kind: 'page' as const },
+    { id: 'courses', name: 'Courses', kind: 'page' as const },
+    { id: 'course-detail', name: 'Course Detail', kind: 'page' as const },
+    { id: 'login', name: 'Login', kind: 'page' as const },
+    { id: 'course-card', name: 'Course Card', kind: 'component' as const },
+    { id: 'auth', name: 'Auth', kind: 'feature' as const },
+    { id: 'courses-api', name: 'Courses API', kind: 'service' as const },
+  ],
+};
+
+// The agency site: a single landing page. Deliberately one route — it guards the
+// opposite failure from the learning platform, that a legitimately single-page
+// app is not flagged by the structural rules that replaced the retired
+// multi-page/inline-page heuristics.
+const AGENCY_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+  modules: [
+    { id: 'app-shell', name: 'App', kind: 'app-shell' as const },
+    { id: 'home', name: 'Home', kind: 'page' as const },
+    { id: 'project-card', name: 'Project Card', kind: 'component' as const },
+    { id: 'review-card', name: 'Review Card', kind: 'component' as const },
+  ],
+};
+
+// api-only: no routes, no web surface.
+const API_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [],
+  modules: [
+    { id: 'products-service', name: 'Products Service', kind: 'service' as const },
+    { id: 'news-service', name: 'News Service', kind: 'service' as const },
+    { id: 'store', name: 'Store', kind: 'store' as const },
+  ],
+};
+
+const WEB_QA = {
+  mode: 'browser' as const,
+  expectChecks: {
+    'stack-build': 'passed' as const,
+    'playwright-local': 'passed' as const,
+    'dom-assertions': 'passed' as const,
+    actions: 'passed' as const,
+    routing: 'passed' as const,
+    hydration: 'passed' as const,
+    'console-errors': 'passed' as const,
+    'network-errors': 'passed' as const,
+    'responsive-screenshots': 'passed' as const,
+  },
+};
+
+const WEB_ASSERTIONS = [
+  { id: 'state-matches-selection' },
+  { id: 'onboarding-complete' },
+  { id: 'run-sim-clean' },
+  { id: 'run-sim-plan-ready-artifacts' },
+  { id: 'run-sim-qa-evidence' },
+  { id: 'run-sim-settlement' },
+];
+
 export const RUN_SIM_CASES: Case[] = [
   {
     id: 'sim-new-react-vite-supabase',
@@ -89,6 +166,97 @@ export const RUN_SIM_CASES: Case[] = [
       { id: 'run-sim-settlement' },
     ],
     notes: 'Shape 1: default stack, React/Vite + Supabase, with auth. The reference shape.',
+  },
+  {
+    id: 'sim-new-nextjs-supabase',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_LEARNING },
+    },
+    runSim: { brief: BRIEF_LEARNING, architecture: LEARNING_ARCHITECTURE, qa: WEB_QA },
+    assertions: WEB_ASSERTIONS,
+    notes: 'Shape 4: Next.js + Supabase, with auth. App-router layout and its own scaffold table.',
+  },
+  {
+    id: 'sim-new-nuxt-nobackend',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      // NOT 'custom-backend': detect-frontend suppresses the configured-frontend
+      // fallback for that id (it means "React frontend, bring your own backend"),
+      // which compiles a backend-only profile and rejects the routes.
+      stack: 'custom-frontend',
+      frontend: 'nuxt',
+      backend: 'none',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_AGENCY },
+    },
+    runSim: { brief: BRIEF_AGENCY, architecture: AGENCY_ARCHITECTURE, qa: WEB_QA },
+    assertions: WEB_ASSERTIONS,
+    notes: 'Shape 3: Nuxt, no backend. Also the single-page guard, and the profile whose build output (.output/public) builtAppIdentities had to learn.',
+  },
+  {
+    id: 'sim-new-vue-go-api',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'vue',
+      backend: 'go',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_LEARNING },
+    },
+    runSim: { brief: BRIEF_LEARNING, architecture: LEARNING_ARCHITECTURE, qa: WEB_QA },
+    assertions: WEB_ASSERTIONS,
+    notes: 'Shape 5: Vue SPA with a Go API backend — two languages in one run.',
+  },
+  {
+    id: 'sim-new-unsupported-framework',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      // Qwik is not in FRONTEND_IDS and state validation REJECTS unknown values,
+      // which would make materialization incomplete. `other` is the escape hatch
+      // onboarding offers, and it compiles to the generic-web profile. The brief
+      // names the framework the user actually asked for.
+      frontend: 'other',
+      backend: 'none',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: `${BRIEF_AGENCY} use qwik.` },
+    },
+    runSim: { brief: `${BRIEF_AGENCY} use qwik.`, architecture: AGENCY_ARCHITECTURE, qa: WEB_QA },
+    assertions: WEB_ASSERTIONS,
+    notes: 'Shape 6: a framework Traffic One does not model. Characterises the CURRENT contract — degrade to generic-web and still settle — so any future change to that behaviour is deliberate.',
   },
   {
     id: 'sim-new-go-api',

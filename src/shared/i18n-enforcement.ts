@@ -319,6 +319,22 @@ function reactSourceAnalysis(
   return { findings, references };
 }
 
+// Blank the BODY of embedded code blocks so it is never read as template text,
+// replacing each character with a space so every offset — and therefore every
+// reported line number — is preserved.
+//
+// This replaces a 20-character lookbehind that could not see past the opening
+// tag it was testing for: `<script>` (8 chars) was skipped correctly, but
+// `<script setup lang="ts">` (23 chars) overran the window, so the code inside
+// every modern Vue SFC was scanned as markup and `defineProps<{…}>` read as
+// hardcoded copy. `<script setup lang="ts">` is the standard Vue 3 idiom.
+function blankEmbeddedCode(text: string): string {
+  return text.replace(
+    /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
+    (block) => block.replace(/[^\n]/g, ' '),
+  );
+}
+
 function markupSourceAnalysis(
   file: string,
   text: string,
@@ -330,10 +346,11 @@ function markupSourceAnalysis(
   // profiles (Vue, Svelte, generic-web) route their .ts files here.
   if (SCRIPT_ONLY_RE.test(file)) return { findings, references: [] };
   const brands = i18n?.literalBrands || [];
+  const scannable = blankEmbeddedCode(text);
   const re = />([^<>{}]+)</g;
-  for (let match = re.exec(text); match; match = re.exec(text)) {
+  for (let match = re.exec(scannable); match; match = re.exec(scannable)) {
     const value = match[1]!;
-    const before = text.slice(Math.max(0, match.index - 20), match.index);
+    const before = scannable.slice(Math.max(0, match.index - 20), match.index);
     if (/<(?:script|style|code|pre)[^>]*$/i.test(before)) continue;
     if (!visibleLiteral(value) || exactBrand(value, brands)) continue;
     findings.push({
@@ -343,8 +360,14 @@ function markupSourceAnalysis(
       message: 'User-facing template text is hardcoded; use the active framework localization primitive.',
     });
   }
-  const attrRe = /\b(placeholder|aria-label|alt|title)\s*=\s*(["'])([\s\S]*?)\2/g;
-  for (let match = attrRe.exec(text); match; match = attrRe.exec(text)) {
+  // `(?<![:\w\-[])` excludes BINDINGS, whose value is an expression rather than
+  // literal copy: Vue's `:title="t('x')"` and `v-bind:title`, Angular's
+  // `[title]`, and any `data-title`. `\b` matched the name inside `:title`, so
+  // the idiomatic way to localize an attribute was itself reported as hardcoded.
+  const attrRe = /(?<![:\w\-[])(placeholder|aria-label|alt|title)\s*=\s*(["'])([\s\S]*?)\2/g;
+  // Same blanked text: a `title:` key inside a script block is not a template
+  // attribute, and reading one as user-facing copy is the same class of error.
+  for (let match = attrRe.exec(scannable); match; match = attrRe.exec(scannable)) {
     const value = match[3]!;
     if (!visibleLiteral(value) || exactBrand(value, brands)) continue;
     findings.push({

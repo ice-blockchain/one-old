@@ -141,6 +141,27 @@ function walkSourceFiles(
       const rel = normalizeRel(path.relative(projectRoot, absolute));
       if (SKIP_RE.test(`/${rel}`)) continue;
       if (entry.isSymbolicLink()) {
+        // A DIRECTORY link can graft an untracked subtree into a source root —
+        // source the contract does not govern, laundered in through a link — so
+        // it still makes the scan incomplete. Same for a link whose target
+        // cannot be resolved at all.
+        //
+        // A link to a file that is not structural source cannot contribute
+        // source, so it is skipped exactly like any other non-source file.
+        // Traffic One's own materialization writes one: root
+        // `CLAUDE.md -> AGENTS.md`. Treating it as fatal meant every profile
+        // whose source root is the project root (Nuxt, and any `.`-rooted
+        // profile) reported STRUCT_SCAN_INCOMPLETE and could never emit
+        // IMPLEMENTED — a dead end no implementer can clear, because the file
+        // is generated.
+        let targetIsDirectory = true;
+        try {
+          targetIsDirectory = fs.statSync(absolute).isDirectory();
+        } catch {
+          // Broken link: nothing to scan and nothing to account for.
+          continue;
+        }
+        if (!targetIsDirectory && !STRUCTURAL_SOURCE_RE.test(entry.name)) continue;
         return { files, incomplete: `source scan encountered symbolic link: ${rel}` };
       }
       if (entry.isDirectory()) {

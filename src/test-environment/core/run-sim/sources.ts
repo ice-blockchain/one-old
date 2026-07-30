@@ -36,7 +36,23 @@ function componentName(rel: string): string {
 // The workspace root. It owns the compiled `.prettierrc`, the TypeScript
 // outputs, and the tester's runner configs, so every tool those name must be
 // declared here — that is precisely what the three parity gates check.
-function rootPackageJson(): string {
+// The i18n runtime each profile actually uses. projectDeclaresI18nRuntime looks
+// for one of these in a manifest it can reach, and the root manifest is always
+// reachable — so declaring it here covers every layout the compiler picks.
+function i18nRuntimeDependencies(ctx: ImplementContext): Record<string, string> {
+  const { profileId, framework } = ctx.architecture.profile;
+  if (framework === 'nuxt') return { '@nuxtjs/i18n': '^9.1.0', 'vue-i18n': '^11.0.0' };
+  if (framework === 'vue') return { 'vue-i18n': '^11.0.0' };
+  if (['sveltekit', 'svelte'].includes(profileId)) return { 'svelte-i18n': '^4.0.1' };
+  if (['vite-react', 'next-app', 'next-pages'].includes(profileId)) {
+    return { i18next: '^24.0.0', 'react-i18next': '^15.2.0' };
+  }
+  // generic-web and anything else Traffic One does not model: i18next is the
+  // framework-agnostic choice, and it is what the compiled runtime module imports.
+  return { i18next: '^24.0.0' };
+}
+
+function rootPackageJson(ctx: ImplementContext): string {
   return json({
     name: 'learning-platform',
     version: '0.0.0',
@@ -67,6 +83,11 @@ function rootPackageJson(): string {
       prettier: '^3.4.2',
       typescript: '^5.7.2',
       vitest: '^2.1.8',
+      // Reachable from every styled file: tailwindToolchainPresent walks from
+      // the file's directory up to the project root. Profiles without an
+      // apps/web package (generic-web, Nuxt) have no other reachable manifest.
+      tailwindcss: '^4.0.0',
+      ...i18nRuntimeDependencies(ctx),
     },
   });
 }
@@ -173,9 +194,87 @@ function mainEntry(appShell: string): string {
   ].join('\n');
 }
 
-// The shell composes the router and nothing else: route pages must be separate
-// compiled modules, which is what the structural gate checks.
+// A Vue SPA declares its route table where the app is bootstrapped. That is
+// wiring, not UI: the entrypoint rule forbids DECLARING components inline, and
+// a `component:` reference to a compiled page module is exactly the binding
+// STRUCT_ROUTE_MODULE_MISMATCH looks for.
+function vueMainEntry(ctx: ImplementContext, rel: string): string {
+  const dir = path.dirname(rel);
+  const routes = ctx.architecture.routes.filter((route) => !route.redirect);
+  const shell = ctx.architecture.modules.find((module) => module.kind === 'app-shell');
+  const imports = routes.map((route) => (
+    `import ${componentName(route.moduleOutput)} from '${`./${path.relative(dir, route.moduleOutput)}`}';`
+  ));
+  const table = routes.map((route) => (
+    `  { path: '${route.path}', component: ${componentName(route.moduleOutput)} },`
+  ));
+  return [
+    "import { createApp } from 'vue';",
+    "import { createRouter, createWebHistory } from 'vue-router';",
+    "import { createI18n } from 'vue-i18n';",
+    ...(shell ? [`import App from '${`./${path.relative(dir, shell.output)}`}';`] : []),
+    ...imports,
+    '',
+    'const routes = [',
+    ...table,
+    '];',
+    '',
+    'const router = createRouter({ history: createWebHistory(), routes });',
+    "const i18n = createI18n({ legacy: false, locale: 'en' });",
+    '',
+    ...(shell ? ["createApp(App).use(router).use(i18n).mount('#app');"] : []),
+    '',
+  ].join('\n');
+}
+
+// True when the profile's i18n primitive is react-i18next (<Trans>/useTranslation).
+// Other web profiles are scanned as MARKUP, where any literal text between tags
+// is hardcoded copy and only expression children are accepted.
+function usesReactI18n(ctx: ImplementContext): boolean {
+  return ['vite-react', 'next-app', 'next-pages'].includes(ctx.architecture.profile.profileId);
+}
+
+// The shell is framework-shaped. Emitting a react-router `<Routes>` everywhere
+// put a routerSignal inside Next's `app/layout.tsx`, which IS a declared
+// entrypoint — STRUCT_ENTRYPOINT_COMPONENT, correctly: Next routes by file, so
+// a router in the root layout is a real mistake, not a cosmetic one.
 function appShell(ctx: ImplementContext, rel: string): string {
+  const router = ctx.architecture.profile.router;
+  if (router === 'next-app-router' || router === 'next-pages-router') return nextRootLayout();
+  if (rel.endsWith('.vue')) return vueAppShell(router);
+  return reactRouterShell(ctx, rel);
+}
+
+// A Next root layout only wraps children: no component tree, no router.
+function nextRootLayout(): string {
+  return [
+    "import type { ReactNode } from 'react';",
+    '',
+    'export default function RootLayout({ children }: { children: ReactNode }) {',
+    '  return (',
+    '    <html lang="en">',
+    '      <body>{children}</body>',
+    '    </html>',
+    '  );',
+    '}',
+    '',
+  ].join('\n');
+}
+
+// Nuxt routes by file (<NuxtPage />); a plain Vue SPA mounts <router-view />.
+function vueAppShell(router: string): string {
+  const outlet = router === 'nuxt-file-router' ? '<NuxtPage />' : '<router-view />';
+  return [
+    '<template>',
+    '  <main>',
+    `    ${outlet}`,
+    '  </main>',
+    '</template>',
+    '',
+  ].join('\n');
+}
+
+function reactRouterShell(ctx: ImplementContext, rel: string): string {
   const dir = path.dirname(rel);
   const routes = ctx.architecture.routes.filter((route) => !route.redirect);
   const imports = routes.map((route) => {
@@ -247,11 +346,24 @@ function pageSource(ctx: ImplementContext, rel: string, name: string): string {
   const usage = components.map((module) => (
     `      <${componentName(module.output)} title={t('cardTitle')} />`
   ));
+  const features = featureModulesFor(ctx, rel);
+  const featureImports = features.map((module) => {
+    const target = `./${path.relative(dir, module.output).replace(/\.(tsx?|jsx?)$/, '')}`;
+    return `import { signOut } from '${target}';`;
+  });
+  const featureButton = features.length > 0
+    ? [
+      '      <button type="button" onClick={() => void signOut()}>',
+      `        <Trans ns="${namespace}" i18nKey="signOut">Sign out</Trans>`,
+      '      </button>',
+    ]
+    : [];
   return [
     "import { useEffect, useState } from 'react';",
     "import { Trans, useTranslation } from 'react-i18next';",
     "import { listCourses, type Course } from '@app/api-client';",
     ...imports,
+    ...featureImports,
     '',
     `export default function ${name}() {`,
     `  const { t } = useTranslation('${namespace}');`,
@@ -273,6 +385,7 @@ function pageSource(ctx: ImplementContext, rel: string, name: string): string {
     `        <Trans ns="${namespace}" i18nKey="title">${name}</Trans>`,
     '      </h1>',
     '      <p className="text-slate-600">{courses.length}</p>',
+    ...featureButton,
     ...usage,
     '    </main>',
     '  );',
@@ -281,30 +394,166 @@ function pageSource(ctx: ImplementContext, rel: string, name: string): string {
   ].join('\n');
 }
 
+// A Vue single-file component. Every piece of visible text is an expression
+// (`{{ t(...) }}`), which is what the markup scanner requires: its rule is that
+// literal text between tags is hardcoded copy, and an interpolation is not
+// literal text.
+function vuePage(ctx: ImplementContext, rel: string, name: string): string {
+  const dir = path.dirname(rel);
+  const components = ctx.architecture.modules.filter((module) => module.kind === 'component');
+  const imports = components.map((module) => (
+    `import ${componentName(module.output)} from '${`./${path.relative(dir, module.output)}`}';`
+  ));
+  const usage = components.map((module) => (
+    `    <${componentName(module.output)} :title="t('cardTitle')" />`
+  ));
+  const features = featureModulesFor(ctx, rel);
+  const featureImports = features.map((module) => (
+    `import { signOut } from '${`./${path.relative(dir, module.output)}`.replace(/\.ts$/, '')}';`
+  ));
+  const featureUse = features.length > 0
+    ? ['', 'function handleSignOut(): void {', '  void signOut();', '}']
+    : [];
+  const featureButton = features.length > 0
+    ? ['    <button type="button" @click="handleSignOut">{{ t("signOut") }}</button>']
+    : [];
+  return [
+    '<script setup lang="ts">',
+    "import { useI18n } from 'vue-i18n';",
+    ...imports,
+    ...featureImports,
+    '',
+    'const { t } = useI18n();',
+    ...featureUse,
+    '</script>',
+    '',
+    '<template>',
+    `  <section class="page-${name.toLowerCase()}">`,
+    '    <h1>{{ t("title") }}</h1>',
+    ...featureButton,
+    ...usage,
+    '  </section>',
+    '</template>',
+    '',
+  ].join('\n');
+}
+
+function vueComponent(name: string): string {
+  return [
+    '<script setup lang="ts">',
+    'defineProps<{ title: string }>();',
+    '</script>',
+    '',
+    '<template>',
+    `  <article class="card-${name.toLowerCase()}">`,
+    '    <h2>{{ title }}</h2>',
+    '  </article>',
+    '</template>',
+    '',
+  ].join('\n');
+}
+
+// A React page for a profile whose i18n primitive is NOT react-i18next
+// (generic-web). <Trans> means nothing there, and the markup scanner reads the
+// file as template text — so every visible child is an expression instead.
+function markupSafePage(ctx: ImplementContext, rel: string, name: string): string {
+  const dir = path.dirname(rel);
+  const components = ctx.architecture.modules.filter((module) => module.kind === 'component');
+  const imports = components.map((module) => {
+    const target = `./${path.relative(dir, module.output).replace(/\.tsx?$/, '')}`;
+    return `import { ${componentName(module.output)} } from '${target}';`;
+  });
+  const usage = components.map((module) => (
+    `      <${componentName(module.output)} title={t('cardTitle')} />`
+  ));
+  const features = featureModulesFor(ctx, rel);
+  const featureImports = features.map((module) => {
+    const target = `./${path.relative(dir, module.output).replace(/\.(tsx?|jsx?)$/, '')}`;
+    return `import { signOut } from '${target}';`;
+  });
+  const featureButton = features.length > 0
+    ? ["      <button type=\"button\" onClick={() => void signOut()}>{t('signOut')}</button>"]
+    : [];
+  return [
+    "import { t } from '@app/i18n';",
+    ...imports,
+    ...featureImports,
+    '',
+    `export default function ${name}() {`,
+    '  return (',
+    '    <main>',
+    "      <h1>{t('title')}</h1>",
+    ...featureButton,
+    ...usage,
+    '    </main>',
+    '  );',
+    '}',
+    '',
+  ].join('\n');
+}
+
+
+// A planned FEATURE module imported nowhere is dead code — STRUCT_ORPHAN_MODULE,
+// correctly. The react-router shell wires them, but a Next root layout and a
+// Vue/Nuxt shell must not (they only bootstrap), so the first planned page
+// hosts them instead. That is where a login/auth feature naturally attaches.
+function featureModulesFor(ctx: ImplementContext, rel: string): typeof ctx.architecture.modules {
+  const pages = ctx.architecture.modules.filter((module) => module.kind === 'page');
+  const host = pages[0];
+  if (!host || host.output !== rel) return [];
+  return ctx.architecture.modules.filter((module) => module.kind === 'feature');
+}
+
 // The namespace the compiled contract assigns to this page's route.
 function pageNamespace(ctx: ImplementContext, rel: string): string {
   const route = ctx.architecture.routes.find((entry) => entry.moduleOutput === rel);
   return route?.id || 'common';
 }
 
-// Every key referenced above, per namespace. Catalog validation checks BOTH
-// directions — a missing key and an extra one are both findings — so these are
-// generated from the same facts the sources use, never hand-listed.
-export function catalogFor(rel: string, ctx: ImplementContext): string | null {
-  const namespace = path.basename(rel).replace(/\.json$/, '');
-  if (namespace === 'common') {
-    return json({ signOut: 'Sign out' });
-  }
-  if (namespace === 'auth') {
-    return json({ signInFailed: 'Sign in failed' });
-  }
-  const route = ctx.architecture.routes.find((entry) => entry.id === namespace);
-  if (!route) return null;
-  const page = ctx.moduleAt(route.moduleOutput);
-  return json({
-    title: page?.name || 'Page',
-    cardTitle: page?.name || 'Card',
-  });
+// The runtime module the contract expects at this path. Its job is to expose
+// `t` — projectDeclaresI18nRuntime wants the file present AND a known runtime
+// dependency declared in a manifest.
+function i18nRuntimeModule(rel: string): string {
+  if (rel.endsWith('.json')) return json({ name: '@app/i18n', private: true });
+  return [
+    "import i18next from 'i18next';",
+    '',
+    'export function t(key: string): string {',
+    '  return i18next.t(key);',
+    '}',
+    '',
+    'export default i18next;',
+    '',
+  ].join('\n');
+}
+
+// Keys for one catalog. Validation checks BOTH directions — a missing key and an
+// extra one are each a finding — so the body is generated from the same facts
+// the sources reference, never hand-listed. A catalog that covers several
+// namespaces nests them; a single-namespace catalog is flat.
+function catalogBody(
+  catalog: { path: string; namespaces: string[] },
+  ctx: ImplementContext,
+): string {
+  const keysFor = (namespace: string): Record<string, string> => {
+    if (namespace === 'common') return { signOut: 'Sign out' };
+    if (namespace === 'auth') return { signInFailed: 'Sign in failed' };
+    const route = ctx.architecture.routes.find((entry) => entry.id === namespace);
+    const page = route ? ctx.moduleAt(route.moduleOutput) : null;
+    const keys: Record<string, string> = {
+      title: page?.name || 'Page',
+      cardTitle: page?.name || 'Card',
+    };
+    // Only the page that HOSTS the feature references signOut. Adding it to
+    // every namespace would leave an unreferenced key, which validation reports.
+    if (route && featureModulesFor(ctx, route.moduleOutput).length > 0) keys.signOut = 'Sign out';
+    return keys;
+  };
+  const namespaces = catalog.namespaces || [];
+  if (namespaces.length === 1) return json(keysFor(namespaces[0]!));
+  const nested: Record<string, Record<string, string>> = {};
+  for (const namespace of namespaces) nested[namespace] = keysFor(namespace);
+  return json(nested);
 }
 
 function componentSource(name: string): string {
@@ -455,133 +704,78 @@ function goPackage(rel: string): string {
   return dir === '.' ? 'main' : path.basename(dir);
 }
 
-function goStore(rel: string): string {
-  return [
-    `package ${goPackage(rel)}`,
-    '',
-    '// Store holds the in-memory catalogue the services read from.',
-    'type Store struct {',
-    '\tproducts []Product',
-    '\tnews     []NewsItem',
-    '}',
-    '',
-    '// NewStore builds a store seeded with the demo catalogue.',
-    'func NewStore() *Store {',
-    '\treturn &Store{',
-    '\t\tproducts: []Product{',
-    '\t\t\t{ID: "p-1", Slug: "desk-lamp", Title: "Desk Lamp"},',
-    '\t\t\t{ID: "p-2", Slug: "notebook", Title: "Notebook"},',
-    '\t\t},',
-    '\t\tnews: []NewsItem{',
-    '\t\t\t{ID: "n-1", Slug: "launch", Title: "We launched"},',
-    '\t\t},',
-    '\t}',
-    '}',
-    '',
-    '// Products returns every product in the catalogue.',
-    'func (s *Store) Products() []Product {',
-    '\treturn s.products',
-    '}',
-    '',
-    '// News returns every news item in the catalogue.',
-    'func (s *Store) News() []NewsItem {',
-    '\treturn s.news',
-    '}',
-    '',
-  ].join('\n');
+// Go modules are SELF-CONTAINED and named from their compiled filename. An
+// earlier version keyed on filename patterns (`products_`, `news_`), so a
+// service the architect happened to call `courses-api` was never authored at
+// all — the module simply went missing and only the reviewer's full scan caught
+// it. Deriving everything from the path means any planned service compiles.
+function goSymbol(rel: string): string {
+  return path.basename(rel)
+    .replace(/\.go$/, '')
+    .replace(/_test$/, '')
+    .split(/[_-]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
 }
 
-function goProducts(rel: string): string {
+function goRecord(rel: string): string {
+  const symbol = goSymbol(rel);
   return [
     `package ${goPackage(rel)}`,
     '',
-    '// Product is one catalogue entry.',
-    'type Product struct {',
+    `// ${symbol}Item is one record served by this module.`,
+    `type ${symbol}Item struct {`,
     '\tID    string',
     '\tSlug  string',
     '\tTitle string',
     '}',
     '',
-    '// ListProducts returns the full product listing.',
-    'func ListProducts(s *Store) []Product {',
-    '\treturn s.Products()',
-    '}',
-    '',
-    '// ProductBySlug resolves a single product by its slug.',
-    'func ProductBySlug(s *Store, slug string) (Product, bool) {',
-    '\tfor _, product := range s.Products() {',
-    '\t\tif product.Slug == slug {',
-    '\t\t\treturn product, true',
-    '\t\t}',
+    `// List${symbol} returns every record.`,
+    `func List${symbol}() []${symbol}Item {`,
+    `\treturn []${symbol}Item{`,
+    '\t\t{ID: "1", Slug: "first", Title: "First"},',
+    '\t\t{ID: "2", Slug: "second", Title: "Second"},',
     '\t}',
-    '\treturn Product{}, false',
     '}',
     '',
-  ].join('\n');
-}
-
-function goNews(rel: string): string {
-  return [
-    `package ${goPackage(rel)}`,
-    '',
-    '// NewsItem is one published article.',
-    'type NewsItem struct {',
-    '\tID    string',
-    '\tSlug  string',
-    '\tTitle string',
-    '}',
-    '',
-    '// ListNews returns the full news listing.',
-    'func ListNews(s *Store) []NewsItem {',
-    '\treturn s.News()',
-    '}',
-    '',
-    '// NewsBySlug resolves a single news item by its slug.',
-    'func NewsBySlug(s *Store, slug string) (NewsItem, bool) {',
-    '\tfor _, item := range s.News() {',
+    `// ${symbol}BySlug resolves a single record by its slug.`,
+    `func ${symbol}BySlug(slug string) (${symbol}Item, bool) {`,
+    `\tfor _, item := range List${symbol}() {`,
     '\t\tif item.Slug == slug {',
     '\t\t\treturn item, true',
     '\t\t}',
     '\t}',
-    '\treturn NewsItem{}, false',
+    `\treturn ${symbol}Item{}, false`,
     '}',
     '',
   ].join('\n');
 }
 
-// Behaviour, not a grep over source text. Test function names are derived from
-// the file so three sibling test files cannot collide.
+// Behaviour, not a grep over source text. Names derive from the file so sibling
+// test files in one package cannot collide.
 function goTest(rel: string): string {
-  const suffix = path.basename(rel)
-    .replace(/_test\.go$/, '')
-    .split('_')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join('');
+  const symbol = goSymbol(rel);
   return [
     `package ${goPackage(rel)}`,
     '',
     'import "testing"',
     '',
-    `func Test${suffix}SeedsCatalogue(t *testing.T) {`,
-    '\tstore := NewStore()',
-    '\tif len(store.Products()) == 0 {',
-    '\t\tt.Fatal("expected the store to seed products")',
+    `func Test${symbol}ListsRecords(t *testing.T) {`,
+    `\tif len(List${symbol}()) == 0 {`,
+    `\t\tt.Fatal("expected ${symbol} to list records")`,
     '\t}',
-    '\tif len(store.News()) == 0 {',
-    '\t\tt.Fatal("expected the store to seed news")',
+    `\tif _, ok := ${symbol}BySlug("first"); !ok {`,
+    '\t\tt.Fatal("expected a record with slug \\"first\\"")',
     '\t}',
     '}',
     '',
   ].join('\n');
 }
 
-function goSource(rel: string, kind: string | null): string | null {
-  const base = path.basename(rel);
-  if (/_test\.go$/.test(base)) return goTest(rel);
-  if (kind === 'store' || /store\.go$/.test(base)) return goStore(rel);
-  if (/products?_/.test(base)) return goProducts(rel);
-  if (/news_/.test(base)) return goNews(rel);
-  return null;
+function goSource(rel: string): string | null {
+  if (/_test\.go$/.test(path.basename(rel))) return goTest(rel);
+  return goRecord(rel);
 }
 
 // --- the resolver ----------------------------------------------------------
@@ -603,7 +797,7 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   // workspace and Go in a Go module, and the module kind alone cannot tell them
   // apart. Getting this order wrong emits TypeScript into a .go file, which the
   // real `go build ./...` in phase 3 catches — loudly, but late.
-  if (rel.endsWith('.go')) return goSource(rel, module?.kind ?? null);
+  if (rel.endsWith('.go')) return goSource(rel);
   if (rel === 'go.mod') {
     return `module example.com/api\n\ngo 1.22\n`;
   }
@@ -614,14 +808,19 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   if (module) {
     const name = componentName(rel);
     if (module.kind === 'app-shell') return appShell(ctx, rel);
-    if (module.kind === 'page') return pageSource(ctx, rel, name);
-    if (module.kind === 'component') return componentSource(name);
+    if (module.kind === 'page') {
+      if (rel.endsWith('.vue')) return vuePage(ctx, rel, name);
+      return usesReactI18n(ctx) ? pageSource(ctx, rel, name) : markupSafePage(ctx, rel, name);
+    }
+    if (module.kind === 'component') {
+      return rel.endsWith('.vue') ? vueComponent(name) : componentSource(name);
+    }
     if (module.kind === 'feature') return featureSource();
     if (module.kind === 'service') return serviceSource(name);
   }
 
   const base = path.basename(rel);
-  if (rel === 'package.json') return rootPackageJson();
+  if (rel === 'package.json') return rootPackageJson(ctx);
   if (base === 'package.json') {
     if (rel.startsWith('apps/')) return appPackageJson();
     if (rel.includes('tailwind-config')) {
@@ -702,6 +901,10 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
       '',
     ].join('\n');
   }
+  if (base === 'main.ts' || base === 'main.js') {
+    // Vue's entrypoint: bootstraps the app, the router and the i18n plugin.
+    return vueMainEntry(ctx, rel);
+  }
   if (base === 'main.tsx' || base === 'main.jsx') {
     const shell = ctx.architecture.modules.find((m) => m.kind === 'app-shell');
     return mainEntry(shell?.output ?? 'apps/web/src/App.tsx');
@@ -736,7 +939,15 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
       '',
     ].join('\n');
   }
-  if (/locales\/[a-z-]+\/[a-z-]+\.json$/i.test(rel)) return catalogFor(rel, ctx);
+  // i18n runtime + catalogs come from the COMPILED contract, not a path guess:
+  // every profile puts them somewhere different (packages/i18n/src/index.ts,
+  // i18n/index.ts, src/locales/en.json), and the contract already says where.
+  const i18n = ctx.architecture.i18n;
+  if (i18n) {
+    if ((i18n.runtimeOutputs || []).includes(rel)) return i18nRuntimeModule(rel);
+    const catalog = (i18n.catalogs || []).find((entry) => entry.path === rel);
+    if (catalog) return catalogBody(catalog, ctx);
+  }
   if (rel.endsWith('ui/src/index.ts')) {
     return [
       'export interface ButtonProps {',

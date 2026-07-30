@@ -315,3 +315,86 @@ test('hardcoded copy is still caught in a .tsx file that also uses generics', ()
     assert.ok(copy[0]!.message.includes('child text'));
   });
 });
+
+// Regression: the markup scanner skipped embedded code via a 20-character
+// lookbehind, which could not see past the opening tag it was testing for.
+// `<script>` (8 chars) was skipped correctly, but `<script setup lang="ts">`
+// (23 chars) overran the window — so the CODE inside every modern Vue SFC was
+// scanned as template text and `defineProps<{ title: string }>()` was reported
+// as hardcoded copy. That is the standard Vue 3 idiom, so it denied every Vue
+// and Nuxt component. Found by the run-sim tier's Vue and Nuxt shapes.
+test('Vue SFC script blocks are not scanned as template text', () => {
+  const profile = {
+    profileId: 'vue',
+    framework: 'vue',
+    router: 'vue-router',
+    sourceRoots: ['src'],
+    entrypoints: [],
+    layerRoots: { pages: [], components: [], features: [], lib: [] },
+    qaAdapters: [],
+    surfaces: ['web-ui'],
+    roles: [],
+    skillBuckets: [],
+  } as unknown as Parameters<typeof analyzeI18nSourceText>[2];
+
+  const sfc = [
+    '<script setup lang="ts">',
+    'defineProps<{ title: string }>();',
+    "const label = 'internal only';",
+    '</script>',
+    '',
+    '<template>',
+    '  <article>',
+    '    <h2>{{ title }}</h2>',
+    '  </article>',
+    '</template>',
+  ].join('\n');
+  assert.deepEqual(
+    analyzeI18nSourceText('src/components/Card.vue', sfc, profile).findings,
+    [],
+    'script-block code is not user-facing template text',
+  );
+
+  // And the scanner still sees real hardcoded copy in the template.
+  const withCopy = sfc.replace('{{ title }}', 'Our latest projects');
+  const findings = analyzeI18nSourceText('src/components/Card.vue', withCopy, profile).findings;
+  assert.equal(findings.length, 1, 'exactly the real template copy');
+  assert.equal(findings[0]!.id, 'STRUCT_HARDCODED_COPY');
+});
+
+// Regression: the attribute scan matched the name inside a BINDING. Vue's
+// `:title="t('cardTitle')"` — the idiomatic way to localize an attribute — was
+// reported as hardcoded copy, as were `v-bind:title` and Angular's `[title]`.
+// The value of a binding is an expression, not literal text.
+test('bound attributes are expressions, not hardcoded copy', () => {
+  const profile = {
+    profileId: 'vue',
+    framework: 'vue',
+    router: 'vue-router',
+    sourceRoots: ['src'],
+    entrypoints: [],
+    layerRoots: { pages: [], components: [], features: [], lib: [] },
+    qaAdapters: [],
+    surfaces: ['web-ui'],
+    roles: [],
+    skillBuckets: [],
+  } as unknown as Parameters<typeof analyzeI18nSourceText>[2];
+
+  for (const bound of [
+    '<template><Card :title="t(\'cardTitle\')" /></template>',
+    '<template><Card v-bind:title="heading" /></template>',
+    '<template><Card [title]="heading" /></template>',
+  ]) {
+    assert.deepEqual(
+      analyzeI18nSourceText('src/pages/Home.vue', bound, profile).findings,
+      [],
+      `bound attribute must not be copy: ${bound}`,
+    );
+  }
+
+  // A literal attribute value is still user-facing copy.
+  const literal = '<template><Card title="Our latest projects" /></template>';
+  const findings = analyzeI18nSourceText('src/pages/Home.vue', literal, profile).findings;
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]!.id, 'STRUCT_HARDCODED_COPY');
+});

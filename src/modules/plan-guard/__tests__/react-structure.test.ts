@@ -941,3 +941,63 @@ test('React.lazy route bindings are imports, not inline pages', () => {
     );
   });
 });
+
+// Regression: the source scan treated ANY symbolic link as a fatal incomplete
+// scan. Traffic One's own materialization writes root `CLAUDE.md -> AGENTS.md`,
+// so every profile whose source root is the project root (Nuxt, and any
+// `.`-rooted profile) reported STRUCT_SCAN_INCOMPLETE and could never emit
+// IMPLEMENTED — a dead end the implementer cannot clear, because the file is
+// generated. A link resolving inside the project is a duplicate or an alias of
+// something the walk already covers; a link ESCAPING the project still makes
+// the scan incomplete, which is the case the guard exists for.
+// Found by the run-sim tier's Nuxt shape.
+test('an in-project symlink does not make the source scan incomplete', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){return <main>Home</main>}\n');
+    // Exactly what materializeProjectAssets writes at the project root.
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# generated\n');
+    fs.symlinkSync('AGENTS.md', path.join(cwd, 'CLAUDE.md'));
+
+    const report = analyzeProjectStructure(cwd, contract);
+    assert.ok(
+      !report.findings.some((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE'),
+      `in-project symlink must not truncate the scan: ${JSON.stringify(report.findings)}`,
+    );
+  });
+});
+
+test('a directory symlink still makes the scan incomplete', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){return <main>Home</main>}\n');
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 't1-outside-'));
+    try {
+      fs.writeFileSync(path.join(outside, 'Elsewhere.tsx'), 'export const x = 1;\n');
+      fs.symlinkSync(outside, path.join(cwd, 'apps/web/src/linked'));
+      const report = analyzeProjectStructure(cwd, contract);
+      assert.ok(
+        report.findings.some((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE'),
+        'a directory link can graft source the contract does not govern',
+      );
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
