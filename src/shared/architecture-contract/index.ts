@@ -361,6 +361,10 @@ export {
   webPackageRoot,
 } from './scaffold';
 export {
+  ensureScaffoldContent,
+  scaffoldFileContent,
+} from './scaffold-content';
+export {
   validateArchitectureInput,
 } from './validate';
 export {
@@ -373,6 +377,7 @@ export {
   isScanSkippedPath,
   readArchitectureRunBaseline,
   readArchitectureRunSnapshot,
+  scanSkipPredicate,
 } from './baseline';
 export {
   architectureInputPath,

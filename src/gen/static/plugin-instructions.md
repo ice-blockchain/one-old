@@ -22,6 +22,16 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 ## Active Rules
 
+Read rule and skill files ONE per shell command — NEVER concatenate several
+into one command (`for f in …; do cat …` / multi-file `sed`): host exec output
+is truncated middle-out (~10K tokens on Codex) and the middle files vanish
+silently (observed live: 7 of 25 files survived one batched read). Senior
+roles with a compiled context pack use the pager instead:
+`node ~/.traffic-one/bin/rules-ack.cjs --run-id <id> --role <role>` then
+`--part <n>`, one part per command in separate turns. Batching the pager calls
+in a loop or `Promise.all` truncates the combined output and defeats the point
+(measured live: every part "served", 11k-28k tokens still truncated).
+
 - .traffic-one/rules/common/auth-gate.md
 - .traffic-one/rules/common/setup-gate.md
 - .traffic-one/rules/common/project-routing.md

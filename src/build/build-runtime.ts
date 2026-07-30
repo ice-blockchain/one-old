@@ -41,6 +41,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'traffic-one-cleanup.cjs': './runners/traffic-one-cleanup/index.js',
   'traffic-one-uninstall.cjs': './runners/traffic-one-uninstall/index.js',
   'run-status.cjs': './runners/run-status/index.js',
+  'rules-ack.cjs': './runners/rules-ack/index.js',
   'qa-evidence-runner.cjs': './runners/qa-evidence/index.js',
   'gitnexus-runner.cjs': './runners/gitnexus/index.js',
   'graphify-runner.cjs': './runners/graphify/index.js',

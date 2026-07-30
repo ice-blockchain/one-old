@@ -9,6 +9,7 @@ import {
   buildRuntimeAssignments,
   capabilityProfileForRun,
   compileArchitectureForRun,
+  ensureScaffoldContent,
   persistCompiledArchitecture,
   publishRuntimeAssignments,
   readCompiledArchitecture,
@@ -369,6 +370,10 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
               // its contractHash, and ensureRunPolicyBootstraps re-reads it
               // from disk at the end of this same call.
               persistCompiledArchitecture(projectRoot, compiled);
+              // Seed canonical content for scaffold files whose body is runtime
+              // knowledge (.prettierignore skip list, .env.example VITE_SITE_URL
+              // contract) — only when missing/blank, never over agent content.
+              ensureScaffoldContent(projectRoot, compiled.scaffoldOutputs || []);
               publishVerificationContract(projectRoot, verification);
               const assignments = publishRuntimeAssignments(
                 projectRoot,

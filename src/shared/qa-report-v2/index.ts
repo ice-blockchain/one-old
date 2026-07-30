@@ -135,7 +135,7 @@ export function validateQaReportV2(
 
   const requiresBuildIdentity = contract.buildIdentityRequired
     || contract.performance.required
-    || Boolean(report.lighthouse);
+    || Boolean(report.lighthouse?.evidencePath);
   let machineEvidence: QaMachineEvidenceV1 | null = null;
   if (contract.browserRequired) {
     const machine = validateMachineEvidence(report, contract, source.hash, projectRoot);
@@ -245,7 +245,7 @@ export function validateQaReportV2(
     if (exactFailures.length > 0) {
       return reject(projectRoot, runId, 'lighthouse-threshold-failed', exactFailures.join('; '), report, contract);
     }
-  } else if (report.lighthouse) {
+  } else if (report.lighthouse?.evidencePath) {
     const lighthouse = validateLighthouseEvidence(
       report,
       contract,

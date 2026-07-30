@@ -28,10 +28,11 @@ import {
 } from './types';
 import {
   ensureProjectDirectory,
-  loadNativeRun,
+  type LoadedNativeRun,
   outputPath,
   qaDir,
 } from './run-context';
+import { wholesaleCheckStatuses } from './report-publish';
 import {
   androidResultFiles,
   androidResultRoots,
@@ -182,7 +183,7 @@ function boundedNativeSummary(value: string): string {
 
 function publishNativeResult(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadNativeRun>>,
+  loaded: LoadedNativeRun,
   out: { absolute: string; relative: string },
   startedAt: string,
   status: 'passed' | 'failed' | 'blocked-environment',
@@ -216,11 +217,7 @@ function publishNativeResult(
     producer: 'parent-runner',
     status,
     sourceHash: loaded.sourceHash,
-    checks: loaded.contract.requiredChecks.map((id) => ({
-      id,
-      status: status === 'passed' ? 'passed' : 'failed',
-      ...(blockerSummary ? { summary: blockerSummary } : {}),
-    })),
+    checks: wholesaleCheckStatuses(loaded.contract.requiredChecks, status, blockerSummary),
     routes: [],
     native: { evidencePath: out.relative },
     ...(blockerSummary ? { blockerSummary } : {}),
@@ -243,7 +240,7 @@ function publishNativeResult(
 
 export async function nativeCommand(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadNativeRun>>,
+  loaded: LoadedNativeRun,
 ): Promise<number> {
   const out = outputPath(args, 'native-evidence-v1.json');
   if (!out) {

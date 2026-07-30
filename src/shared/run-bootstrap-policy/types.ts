@@ -51,6 +51,13 @@ export interface RunBootstrapEnvelopeV2 {
   role: BootstrapMaterialRefV2;
   rules: BootstrapMaterialRefV2[];
   skills: BootstrapMaterialRefV2[];
+  /**
+   * Compiled "definition of done" for the role (1.0.37, additive): the
+   * integration facts the deterministic gates verify at IMPLEMENTED, stated
+   * at spawn instead of discovered by the reviewer. Absent on pre-1.0.37
+   * envelopes; the stored hash covers whatever shape was stored.
+   */
+  integrationRequirements?: string[];
   workUnit: WorkUnitContractV1;
   createdAt: string;
   envelopeHash: string;

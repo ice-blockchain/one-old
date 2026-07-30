@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyQuality, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
+import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyQuality, postApplyStyling, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
@@ -1867,4 +1867,43 @@ test('delegateFromPlan honors opts.roles with senior- prefix normalization', () 
     assert.equal(normalizePlanRole('senior-tester'), 'tester');
     assert.equal(normalizePlanRole('Tester'), 'tester');
   });
+});
+
+test('postApplyStyling rejects Tailwind utilities without a toolchain and passes with one', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocs-'));
+  const write = (rel: string, body: string): string => {
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), body, 'utf8');
+    return rel;
+  };
+  const card = write('src/CourseCard.tsx', [
+    'export function CourseCard() {',
+    '  return (',
+    '    <article className="flex flex-col gap-3 rounded-xl bg-white p-6 shadow-sm">',
+    '      <h2 className="text-lg font-semibold">Course</h2>',
+    '    </article>',
+    '  )',
+    '}',
+  ].join('\n'));
+  // No tailwindcss anywhere: the delegated output styles with an absent system.
+  write('package.json', JSON.stringify({ name: 'fixture', dependencies: {} }));
+  assert.match(String(postApplyStyling(dir, [card])), /Tailwind utilities/);
+
+  // Declaring the dependency legitimizes the same markup.
+  write('package.json', JSON.stringify({ name: 'fixture', devDependencies: { tailwindcss: '4.0.0' } }));
+  assert.equal(postApplyStyling(dir, [card]), null);
+
+  // Plain hand-written class names never trip it, with or without Tailwind.
+  write('package.json', JSON.stringify({ name: 'fixture', dependencies: {} }));
+  const plain = write('src/Plain.tsx', [
+    'export function Plain() {',
+    '  return (',
+    '    <article className="card card-elevated">',
+    '      <h2 className="card-title">Course</h2>',
+    '    </article>',
+    '  )',
+    '}',
+  ].join('\n'));
+  assert.equal(postApplyStyling(dir, [plain]), null);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

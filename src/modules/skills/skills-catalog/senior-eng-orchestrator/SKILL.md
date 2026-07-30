@@ -411,7 +411,11 @@ outcomes below.
 
 When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
 
-**Continuation-first** (the protocol in "Agent reuse" above governs — do not restate its host mechanics here): with a live role agent, a fix cycle is ONE continuation message carrying the reviewer findings verbatim (`file:line` + concrete change per item) plus "apply ONLY these fixes, update your digest, end with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>`)" — plus one caution unique to fix cycles: "re-read any files OTHER roles changed since your last turn" (the live agent's memory of shared files may be stale). Still write the fix-cycle context file (step 1 below) for the audit trail. Steps 2–3 (spawnIndex bump + re-spawn) apply ONLY when no live agent can be continued; on OpenCode, that re-spawn must use the same named role agent plus `[t1-replace-agent]`, and the prompt must include the exact findings inline so the role is not blocked if a fix-cycle context file is missing.
+**Continuation-first** (the protocol in "Agent reuse" above governs — do not restate its host mechanics here): with a live role agent, a fix cycle is ONE continuation message carrying the reviewer findings verbatim (`file:line` + concrete change per item) plus the completion contract below — plus one caution unique to fix cycles: "re-read any files OTHER roles changed since your last turn" (the live agent's memory of shared files may be stale). Still write the fix-cycle context file (step 1 below) for the audit trail. Steps 2–3 (spawnIndex bump + re-spawn) apply ONLY when no live agent can be continued; on OpenCode, that re-spawn must use the same named role agent plus `[t1-replace-agent]`, and the prompt must include the exact findings inline so the role is not blocked if a fix-cycle context file is missing.
+
+**ONE continuation = the WHOLE cycle.** The continuation message must state, verbatim: "Apply ALL of the findings above in this one turn — do not stop after a slice. Then rerun your verification commands (install/format/typecheck/build/tests), RE-EMIT your digest (verdict stays `IMPLEMENTED`, fresh `finished_at`), and only then end your reply with `FIXES_APPLIED`, or `FIXES_FAILING <numbered list>` listing ONLY findings that are genuinely impossible to complete (with the reason each). Partial progress is not `FIXES_FAILING` — keep working." `FIXES_APPLIED`/`FIXES_FAILING` are REPLY tokens, never digest verdicts; the digest verdict remains `IMPLEMENTED`/`BLOCKED`. (Measured 8co: without this contract one review round became 32 dispatches — 19 micro-slice `FIXES_FAILING` replies against a digest that never changed.)
+
+**Root semantics for `FIXES_FAILING`:** on the FIRST `FIXES_FAILING`, read its numbered list; if the items are completable, send ONE consolidated clarifying continuation (never a re-send of the same message). On a SECOND consecutive `FIXES_FAILING` with no digest change, stop the cycle: record `node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome review-cycle-cap` and surface the unresolved findings to the user. Nothing in the runtime counts these dispatches for you — re-sending the same message at an implementer whose digest has not changed is always your own error, and dispatching the re-review before the implementer digest is re-emitted wastes a whole review round on pre-fix state (measured 8co: 32 dispatches, 19 micro-slice replies, one unchanged digest).
 
 **Never send a fix cycle to a fresh generic worker** (`generalPurpose`/`general-purpose`, bare `general`, or `subagent_general` without the role marker): a generic child cannot bind the senior role, its writes are blocked, and on Cursor it dies as "New subagent — Couldn't start" (observed live: two generic "Fix CHANGES_REQUESTED items owned by senior-…" spawns dead before the orchestrator fell back to resume). The spawn gate now resolves that ownership phrasing to the role and denies the generic spawn with the live agent's continuation recipe — follow the recipe; do not retry the generic spawn.
 
@@ -436,11 +440,11 @@ When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-
 
 3. **Spawn the subagent with a tight task description**:
 
-   > "You are continuing as `<role>` in run `<currentRunId>`, fix cycle #N. Read your prior digest at `.traffic-one/digests/<runId>/<role-name>.md` to recall your previous work, then apply ONLY the exact fixes listed in `.traffic-one/fix-cycles/<runId>/<role>-fix-<n>.md`. Do not re-read source files except those the fix-cycle context names. Re-emit your digest when done. End with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>` on partial failure)."
+   > "You are continuing as `<role>` in run `<currentRunId>`, fix cycle #N. Read your prior digest at `.traffic-one/digests/<runId>/<role-name>.md` to recall your previous work, then apply ALL of the exact fixes listed in `.traffic-one/fix-cycles/<runId>/<role>-fix-<n>.md` in this one turn — do not stop after a slice. Do not re-read source files except those the fix-cycle context names. Rerun your verification commands, RE-EMIT your digest (verdict stays `IMPLEMENTED`, fresh `finished_at`), and only then end with `FIXES_APPLIED` — or `FIXES_FAILING <numbered list>` listing ONLY findings that are genuinely impossible, with the reason each. Partial progress is not `FIXES_FAILING`."
 
-4. **After the fix-cycle reply returns**, loop back to `senior-reviewer` — continuation-first there too: the host-specific continuation call to the live reviewer agent with "re-review ONLY the fixes for findings <list>" (fresh re-spawn with `spawnIndex[senior-reviewer]++` only when no live reviewer agent exists).
+4. **After the fix-cycle reply returns**, verify the digest was RE-EMITTED yourself (fresh `finished_at`) before dispatching anything — an unchanged digest means the fixes did not land, and the re-review would read pre-fix state — then loop back to `senior-reviewer` — continuation-first there too: the host-specific continuation call to the live reviewer agent with "re-review ONLY the fixes for findings <list>" (fresh re-spawn with `spawnIndex[senior-reviewer]++` only when no live reviewer agent exists).
 
-The 5-cycle reviewer cap (architect / orchestrator level) still applies — if the fifth fix cycle also gets `CHANGES_REQUESTED`, stop and surface the unresolved findings to the user.
+The 2-cycle reviewer cap (Phase 3a) still applies — if the second fix cycle also gets `CHANGES_REQUESTED`, stop, record `review-cycle-cap`, and surface the unresolved findings to the user.
 
 ### Phase 1 — Architect (subagents mode, sequential, blocking)
 
@@ -535,7 +539,7 @@ satisfy functional QA.
 
 ### Phase 3a — Reviewer fix loop (capped at 2 cycles)
 
-Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way and require an updated `reviewer.md` digest. Repeat until `APPROVED` or the 5-cycle cap.
+Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way and require an updated `reviewer.md` digest. Repeat until `APPROVED` or the 2-cycle cap.
 
 After 2 unsuccessful cycles, record the cap before escalating to the user with
 both diffs and the latest review:
@@ -551,7 +555,7 @@ Send actual failing tests or failed QA matrix entries to the relevant
 implementer (continuation-first, as above). After their reply, send the re-test
 to the live `senior-tester` and require an updated `tester.md` digest and QA
 report. Repeat until the evidence-valid `TESTS_GREEN` combination above or the
-5-cycle cap.
+2-cycle cap.
 
 `blocked-environment` is `TESTS_FAILING`, never green, and does not consume a
 fix cycle because no implementation changed. A missing browser blocks only a

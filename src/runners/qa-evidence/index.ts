@@ -20,6 +20,7 @@ import {
 } from './lighthouse';
 import { browserCommand } from './browser';
 import { nativeCommand } from './native';
+import { acquireQaRunLock, releaseQaRunLock } from './lock';
 
 export async function main(
   argv: readonly string[] = process.argv.slice(2),
@@ -30,35 +31,54 @@ export async function main(
     process.stdout.write(`${usage()}\n`);
     return args ? 0 : 2;
   }
-  if (args.command === 'native') {
-    const native = loadNativeRun(args);
-    if (!native) {
-      process.stderr.write('qa-evidence: native run, VerificationContractV2, or source scan is invalid.\n');
+  // Browser and native runs write the whole artifact set for the run
+  // directory; two concurrent instances interleave their outputs (observed
+  // 8co: four runners over one run dir). One instance at a time, the loser
+  // reports the holder and exits with code 3 instead of competing.
+  const needsLock = args.command === 'native' || args.command === 'browser';
+  const lock = needsLock ? acquireQaRunLock(args.projectRoot, args.runId) : null;
+  if (lock && !lock.ok) {
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      status: 'already-running',
+      ...(lock.holder ? { lockPid: lock.holder.pid, lockStartedAt: lock.holder.startedAt } : {}),
+    })}\n`);
+    return 3;
+  }
+  try {
+    if (args.command === 'native') {
+      const native = loadNativeRun(args);
+      if (!native.ok) {
+        process.stderr.write(`qa-evidence: cannot load native run — ${native.reason}\n`);
+        return 2;
+      }
+      return await nativeCommand(args, native.run);
+    }
+    const result = loadRun(args);
+    if (!result.ok) {
+      process.stderr.write(`qa-evidence: cannot load run — ${result.reason}\n`);
       return 2;
     }
-    return nativeCommand(args, native);
+    const loaded = result.run;
+    if (args.command === 'manifest') {
+      process.stdout.write(`${JSON.stringify({
+        ok: true,
+        runId: args.runId,
+        verificationContractHash: loaded.contract.contractHash,
+        sourceHash: loaded.sourceHash,
+        outputRoot: loaded.manifest.outputRoot,
+        buildHash: loaded.manifest.manifestHash,
+        fingerprint: loaded.fingerprint,
+        fileCount: loaded.manifest.fileCount,
+        totalBytes: loaded.manifest.totalBytes,
+      })}\n`);
+      return 0;
+    }
+    if (args.command === 'lighthouse') return await lighthouseCommand(args, loaded);
+    return await browserCommand(args, loaded);
+  } finally {
+    if (lock?.ok) releaseQaRunLock(lock.lockPath);
   }
-  const loaded = loadRun(args);
-  if (!loaded) {
-    process.stderr.write('qa-evidence: run, VerificationContractV2, source scan, or build output manifest is invalid.\n');
-    return 2;
-  }
-  if (args.command === 'manifest') {
-    process.stdout.write(`${JSON.stringify({
-      ok: true,
-      runId: args.runId,
-      verificationContractHash: loaded.contract.contractHash,
-      sourceHash: loaded.sourceHash,
-      outputRoot: loaded.manifest.outputRoot,
-      buildHash: loaded.manifest.manifestHash,
-      fingerprint: loaded.fingerprint,
-      fileCount: loaded.manifest.fileCount,
-      totalBytes: loaded.manifest.totalBytes,
-    })}\n`);
-    return 0;
-  }
-  if (args.command === 'lighthouse') return lighthouseCommand(args, loaded);
-  return browserCommand(args, loaded);
 }
 
 if (require.main === module) {

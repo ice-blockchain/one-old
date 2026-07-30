@@ -182,7 +182,18 @@ function strictQaReportResult(cwd: string, runId: string): QaReportValidationRes
   if (frontendFile) {
     try { frontendDigestMtimeMs = Math.floor(fs.statSync(frontendFile).mtimeMs); } catch { /* missing digest */ }
   }
-  const freshnessFloorMs = Math.max(activatedAtMs, frontendDigestMtimeMs);
+  // Plan-unit delegated writes land in opencode-frontend.md; a QA report older
+  // than that delegated change validated stale UI (8co). The floor takes the
+  // newest implementer-side digest of either spelling. (Deliberately NOT part
+  // of digestCandidates: verdict resolution must never treat DELEGATED_OK as
+  // a competing frontend verdict.)
+  let opencodeDigestMtimeMs = 0;
+  try {
+    opencodeDigestMtimeMs = Math.floor(
+      fs.statSync(path.join(digestDir(cwd, runId), 'opencode-frontend.md')).mtimeMs,
+    );
+  } catch { /* no delegated digest */ }
+  const freshnessFloorMs = Math.max(activatedAtMs, frontendDigestMtimeMs, opencodeDigestMtimeMs);
   return readQaReportV1(cwd, runId, {
     ...(freshnessFloorMs > 0 ? { minimumGeneratedAtMs: freshnessFloorMs } : {}),
   });

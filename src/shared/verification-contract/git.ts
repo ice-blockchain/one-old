@@ -10,6 +10,7 @@ import {
   canonicalTrafficOneContextLink,
   contextAliasHash,
   isScanSkippedPath,
+  scanSkipPredicate,
   type ArchitectureBaselineV1,
   type CompiledArchitectureV1,
 } from '../architecture-contract';
@@ -190,6 +191,9 @@ function boundedGitPaths(projectRoot: string, baselineHash: string): ChangedPath
 function walkCurrentFiles(projectRoot: string, roots: string[]): ChangedPathSnapshot {
   const files: string[] = [];
   const seen = new Set<string>();
+  // Same per-scan predicate the immutable capture uses, so a gitignored path is
+  // invisible to BOTH sides of a file-manifest comparison.
+  const skipped = scanSkipPredicate(projectRoot);
   const stack = roots.map((root) => path.resolve(projectRoot, root));
   while (stack.length > 0) {
     const current = stack.pop()!;
@@ -210,7 +214,7 @@ function walkCurrentFiles(projectRoot: string, roots: string[]): ChangedPathSnap
     for (const entry of entries) {
       const absolute = path.join(current, entry.name);
       const rel = normalizeRel(path.relative(projectRoot, absolute));
-      if (!rel || isScanSkippedPath(rel)) continue;
+      if (!rel || skipped(rel)) continue;
       if (entry.isSymbolicLink()) {
         // Same canonical alias exception as the immutable baseline, which keeps
         // a `symbolic-link:<target>` identity row for it (see fileHash below).

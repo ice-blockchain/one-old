@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { collapsedLineNumber, isCollapseCandidate } from '../../shared/collapsed-source';
+import { tailwindToolchainPresent, tailwindUtilityEvidence } from '../../shared/tailwind-evidence';
 import { spawnTool } from '../../shared/spawn-tool';
 import {  readEffectiveState } from '../../shared/state';
 
@@ -242,6 +243,33 @@ export function postApplyQuality(cwd: string, touched: string[]): string | null 
     const line = collapsedLineNumber(rel, text);
     if (line !== null) {
       return `${rel}:${line} packs an entire function/component onto one line`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Styling-system gate for delegated output: Tailwind utility classes in a
+ * project with no reachable `tailwindcss` dependency or config are inert —
+ * the component compiles, typechecks, and renders as unstyled text. Observed
+ * 8co: a free model produced CourseCard/LessonOutline styled entirely with
+ * Tailwind utilities in a plain-CSS project; DELEGATED_OK was recorded and
+ * the breakage only surfaced in QA screenshots. Same rollback contract as
+ * postApplyQuality: an error string reverts the apply and the unit falls
+ * back to the paid implementer.
+ */
+export function postApplyStyling(cwd: string, touched: string[]): string | null {
+  for (const rel of touched) {
+    if (!/\.(?:tsx|jsx|vue|svelte)$/i.test(rel)) continue;
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+    } catch {
+      continue; // deleted or unreadable — not this check's concern
+    }
+    const utilities = tailwindUtilityEvidence(text);
+    if (utilities.count >= 3 && !tailwindToolchainPresent(cwd, rel)) {
+      return `${rel} styles with ${utilities.count} distinct Tailwind utilities (${utilities.sample.join(', ')}) but the project has no tailwindcss dependency or config — the classes are inert`;
     }
   }
   return null;

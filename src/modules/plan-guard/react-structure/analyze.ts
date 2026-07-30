@@ -57,6 +57,15 @@ function importBindings(text: string): ImportBinding[] {
     if (syntax.slice(match.index, match.index + match[0].indexOf(match[1]!)).trim() === '') continue;
     bindings.push({ local: match[1]!, imported: 'default', source: match[3]! });
   }
+
+  // Re-exports count as references: a barrel's `export { X } from './x'` /
+  // `export * from './x'` keeps the target module reachable. Without these
+  // bindings the orphan-module check would flag every barrel-routed module.
+  const reExport = /\bexport\s+(?:\*(?:\s+as\s+[A-Za-z_$][A-Za-z0-9_$]*)?|\{[\s\S]*?\})\s*from\s*(['"])([^'"\r\n]+)\1/g;
+  while ((match = reExport.exec(source))) {
+    if (syntax.slice(match.index, match.index + 6) !== 'export') continue;
+    bindings.push({ local: '*', imported: '*', source: match[2]! });
+  }
   return bindings;
 }
 

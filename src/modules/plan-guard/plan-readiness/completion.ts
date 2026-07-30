@@ -104,7 +104,7 @@ export function digestCompletionGates(ctx: {
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
           violations.push(block('frontend-structure-completion-gate',
-            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module.`,
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module. Integration findings block too: \`STRUCT_ORPHAN_MODULE\` (wire the planned component/feature into its page), \`STRUCT_API_CLIENT_UNUSED\` (pages must consume the planned API package, live-or-demo), \`STRUCT_TAILWIND_NO_TOOLCHAIN\` (Tailwind utilities with no tailwindcss dependency/config are inert). \`STRUCT_HARDCODED_COPY\` is advisory only.`,
             { FINDINGS: summary }));
         }
       }
@@ -124,6 +124,16 @@ export function digestCompletionGates(ctx: {
   ) {
     const runId = implementedDigest[2] || '';
     const ownerRole = `senior-${implementedDigest[3] || ''}`;
+    // NO read-receipt gate here, by measurement. A gate keyed on rules-ack
+    // receipts was written and REMOVED after 9co proved the receipts are not
+    // evidence of ingestion: every role satisfied it by batching the pager
+    // (`Promise.all(Array.from({length:10}, i => exec(... --part ${i})))` with
+    // `max_output_tokens: 3000`), so all parts were "served", the ack was
+    // complete — and the aggregated exec output was still truncated
+    // (11k-28k tokens across five role children). The receipt proves the
+    // runner ran, not that the agent read it. A serve-order chain the agent
+    // cannot satisfy in parallel (part N+1 requires a nonce printed in part N)
+    // is the prerequisite for re-introducing enforcement here.
     const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
     const tooling = architecture
       ? compiledFormatToolchainForRole(architecture, ownerRole)
@@ -196,11 +206,14 @@ export function digestCompletionGates(ctx: {
             DETAIL: origin.detail,
           }));
       }
-      const testGaps = testToolchainGaps(projectRoot, architecture, ownerRole);
+      const performanceRequired = Boolean(
+        readVerificationContract(projectRoot, implementedDigest[2] || '')?.performance.required,
+      );
+      const testGaps = testToolchainGaps(projectRoot, architecture, ownerRole, performanceRequired);
       if (testGaps) {
         const missing = testGaps.missing.join(', ');
         violations.push(block('implementer-test-toolchain-gate',
-          `Implementer test toolchain gate: role \`${ownerRole}\` owns \`${testGaps.manifest}\`, and the contract compiles tester-owned runner configs there, but ${missing} is absent. The tester owns the configs and never the manifest, so it cannot install its own runner — it inherits a config for a tool that is not there and has no way to run the suite. Add the missing dependencies and scripts to \`${testGaps.manifest}\`, then re-emit \`IMPLEMENTED\`.`,
+          `Implementer test toolchain gate: role \`${ownerRole}\` owns \`${testGaps.manifest}\`, and the contract compiles tester-owned runner configs there, but ${missing} is absent. The tester owns the configs and never the manifest, so it cannot install its own runner — it inherits a config for a tool that is not there and has no way to run the suite. When the verification contract requires performance evidence, project-local \`lighthouse\` belongs in the same manifest for the same reason. Add the missing dependencies and scripts to \`${testGaps.manifest}\`, then re-emit \`IMPLEMENTED\`.`,
           {
             ROLE: ownerRole,
             MANIFEST: testGaps.manifest,

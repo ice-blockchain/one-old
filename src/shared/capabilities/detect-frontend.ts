@@ -183,6 +183,22 @@ export function detectFrontendFramework(
     if (evidence.length > 0) {
       return { frontend: 'laravel-ui', hasWebUi: true, evidence, webRoot: '.' };
     }
+    // New project with a configured web frontend: nothing is on disk yet, so the
+    // configured intent IS the truth — the laravel-reachable mirror of the tail
+    // configured-state fallback below (unreachable here because of this early
+    // return). Without it, "laravel with vuejs" compiled a backend-only profile
+    // and the requested Vue UI vanished (observed 8cl). `other` counts too: the
+    // wizard derives laravel+`other` exactly when a UI is wanted but no JS
+    // framework was named — that is laravel's own server-rendered UI, not an
+    // API-only project.
+    if (state.mode === 'new-project' && configured !== 'none' && configured !== '') {
+      return {
+        frontend: 'laravel-ui',
+        hasWebUi: true,
+        evidence: [`state:${configured}`],
+        webRoot: '.',
+      };
+    }
     // `app/`, welcome.blade.php, resources/js/bootstrap.js/app.js and the
     // laravel-vite-plugin/vite dependency are ordinary Laravel scaffolding.
     return { frontend: 'none', hasWebUi: false, evidence: ['laravel:api-or-default-scaffold'] };

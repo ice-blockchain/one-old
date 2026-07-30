@@ -25,6 +25,11 @@ import {
   type OwnedServer,
   type RunnerArgs,
 } from './types';
+import {
+  computeBrowserCheckStatuses,
+  wholesaleCheckStatuses,
+  type CheckEvidenceInput,
+} from './report-publish';
 
 export function strictRelative(value: string): string | null {
   if (!value
@@ -109,40 +114,85 @@ export function outputPath(
   return { absolute, relative };
 }
 
-export function loadRun(
-  args: RunnerArgs,
-): {
+export interface LoadedRun {
   contract: VerificationContractV2;
   sourceHash: string;
   manifest: BuildOutputManifestV1;
   fingerprint: string;
-} | null {
-  if (!SAFE_ID_RE.test(args.runId) || !args.buildDir) return null;
+}
+
+export interface LoadedNativeRun {
+  contract: VerificationContractV2;
+  sourceHash: string;
+}
+
+// Every load failure names WHICH precondition failed. The previous shape
+// collapsed four distinct causes into one `null`, and the caller printed a
+// message listing all four — so an agent holding the precise answer
+// (`currentVerificationSourceHash` already computes it) learned nothing. Two
+// roles each burned minutes on that, and neither ever identified the cause.
+export type LoadResult<T> = { ok: true; run: T } | { ok: false; reason: string };
+
+export function loadRun(args: RunnerArgs): LoadResult<LoadedRun> {
+  if (!SAFE_ID_RE.test(args.runId)) {
+    return { ok: false, reason: `run id is not a safe identifier: ${args.runId}` };
+  }
+  if (!args.buildDir) return { ok: false, reason: 'no --build-dir was provided' };
   const contract = readVerificationContract(args.projectRoot, args.runId);
-  if (!contract) return null;
+  if (!contract) {
+    return {
+      ok: false,
+      reason: `VerificationContractV2 for run ${args.runId} is missing, malformed, `
+        + 'or fails its own hash self-check',
+    };
+  }
   const source = currentVerificationSourceHash(args.projectRoot, contract);
+  if (!source.complete || !source.hash) {
+    return { ok: false, reason: source.reason || 'source identity scan is incomplete' };
+  }
   const manifest = computeBuildOutputManifest(args.projectRoot, args.buildDir);
-  if (!source.complete || !source.hash || !manifest) return null;
+  if (!manifest) {
+    return {
+      ok: false,
+      reason: `build output manifest could not be computed from ${args.buildDir} `
+        + '(missing, empty, or over the manifest size limits)',
+    };
+  }
   return {
-    contract,
-    sourceHash: source.hash,
-    manifest,
-    fingerprint: expectedBuildFingerprint(args.runId, source.hash, manifest.manifestHash),
+    ok: true,
+    run: {
+      contract,
+      sourceHash: source.hash,
+      manifest,
+      fingerprint: expectedBuildFingerprint(args.runId, source.hash, manifest.manifestHash),
+    },
   };
 }
 
-export function loadNativeRun(
-  args: RunnerArgs,
-): {
-  contract: VerificationContractV2;
-  sourceHash: string;
-} | null {
-  if (!SAFE_ID_RE.test(args.runId)) return null;
+export function loadNativeRun(args: RunnerArgs): LoadResult<LoadedNativeRun> {
+  if (!SAFE_ID_RE.test(args.runId)) {
+    return { ok: false, reason: `run id is not a safe identifier: ${args.runId}` };
+  }
   const contract = readVerificationContract(args.projectRoot, args.runId);
-  if (!contract || contract.uiImpact !== 'native-ui' || !contract.nativeAdapter) return null;
+  if (!contract) {
+    return {
+      ok: false,
+      reason: `VerificationContractV2 for run ${args.runId} is missing, malformed, `
+        + 'or fails its own hash self-check',
+    };
+  }
+  if (contract.uiImpact !== 'native-ui' || !contract.nativeAdapter) {
+    return {
+      ok: false,
+      reason: `active contract does not require native evidence (uiImpact=${contract.uiImpact}, `
+        + `nativeAdapter=${contract.nativeAdapter ?? 'null'})`,
+    };
+  }
   const source = currentVerificationSourceHash(args.projectRoot, contract);
-  if (!source.complete || !source.hash) return null;
-  return { contract, sourceHash: source.hash };
+  if (!source.complete || !source.hash) {
+    return { ok: false, reason: source.reason || 'source identity scan is incomplete' };
+  }
+  return { ok: true, run: { contract, sourceHash: source.hash } };
 }
 
 function reportLighthousePath(args: RunnerArgs): string | null {
@@ -152,15 +202,23 @@ function reportLighthousePath(args: RunnerArgs): string | null {
 
 export function publishAndValidateReport(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadRun>>,
+  loaded: LoadedRun,
   owned: OwnedServer,
   machineEvidencePath: string,
   status: QaReportV2['status'],
   routes: QaReportV2['routes'],
   blockerSummary?: string,
-  lighthouseEvidencePath?: string,
+  lighthouse?: QaReportV2['lighthouse'] | string,
+  checkInput?: CheckEvidenceInput,
 ): { report: QaReportV2; ok: boolean; code?: string; message?: string } {
-  const lighthousePath = lighthouseEvidencePath || reportLighthousePath(args);
+  // Back-compat: a bare string is the evidence path (pre-1.0.37 call shape).
+  const lighthouseField: QaReportV2['lighthouse'] | undefined = typeof lighthouse === 'string'
+    ? { evidencePath: lighthouse }
+    : lighthouse && (lighthouse.evidencePath || lighthouse.status)
+      ? lighthouse
+      : reportLighthousePath(args)
+        ? { evidencePath: reportLighthousePath(args)! }
+        : undefined;
   const report: QaReportV2 = {
     schemaVersion: 2,
     runId: args.runId,
@@ -169,13 +227,9 @@ export function publishAndValidateReport(
     producer: 'parent-runner',
     status,
     sourceHash: loaded.sourceHash,
-    checks: loaded.contract.requiredChecks.map((id) => ({
-      id,
-      status: status === 'passed' ? 'passed' : 'failed',
-      summary: status === 'passed'
-        ? 'Executed by traffic-one-qa-runner.'
-        : blockerSummary || 'Runtime QA evidence did not pass.',
-    })),
+    checks: checkInput
+      ? computeBrowserCheckStatuses(loaded.contract.requiredChecks, checkInput)
+      : wholesaleCheckStatuses(loaded.contract.requiredChecks, status, blockerSummary),
     routes,
     machineEvidencePath,
     build: {
@@ -190,7 +244,7 @@ export function publishAndValidateReport(
       fingerprint: loaded.fingerprint,
       servedFingerprint: loaded.fingerprint,
     },
-    ...(lighthousePath ? { lighthouse: { evidencePath: lighthousePath } } : {}),
+    ...(lighthouseField ? { lighthouse: lighthouseField } : {}),
     ...(blockerSummary ? { blockerSummary } : {}),
   };
   writeJson(qaReportV2Path(args.projectRoot, args.runId), report);

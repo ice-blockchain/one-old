@@ -17,6 +17,7 @@ import {
   exists,
   postgresEvidencePresent,
   pythonCliEvidencePresent,
+  stringField,
   unique,
 } from './fs-probe';
 import {
@@ -66,6 +67,9 @@ export function capabilityProfileForProject(cwd: string, input: unknown): Capabi
         frontend,
         cwd,
         plannedViteMonorepo ? 'apps/web' : frontendDetection.webRoot,
+        // The state's configured frontend seeds the Inertia kind on a new
+        // laravel project where no dependency evidence exists yet (8cl).
+        stringField(state, 'frontend', ''),
       )
     : null;
   const nativeStructural = hasNative

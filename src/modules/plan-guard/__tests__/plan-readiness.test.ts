@@ -2248,8 +2248,18 @@ test('implementer test toolchain gate: the manifest owner must ship the runner t
     writeManifest({ scripts: { test: 'vitest run', 'test:e2e': 'playwright test' } });
     assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
 
+    // 8co: this visual contract requires performance evidence, so the manifest
+    // owner must also ship project-local `lighthouse` — the tester does not
+    // own the manifest and cannot install it (the canonical runner refuses a
+    // global binary).
     writeManifest({
       devDependencies: { vitest: '3.2.2', '@playwright/test': '1.52.0' },
+      scripts: { test: 'vitest run', 'test:e2e': 'playwright test' },
+    });
+    assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
+
+    writeManifest({
+      devDependencies: { vitest: '3.2.2', '@playwright/test': '1.52.0', lighthouse: '12.0.0' },
       scripts: { test: 'vitest run', 'test:e2e': 'playwright test' },
     });
     assert.deepEqual(gate(), []);

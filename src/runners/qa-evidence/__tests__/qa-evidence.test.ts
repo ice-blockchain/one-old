@@ -26,6 +26,8 @@ import {
   type VerificationContractV2,
 } from '../../../shared/verification-contract';
 import { main } from '../index';
+import { loadRun } from '../run-context';
+import { type RunnerArgs } from '../types';
 
 const STATE = {
   mode: 'existing-codebase',
@@ -34,6 +36,57 @@ const STATE = {
   backend: 'none',
   mobile: { framework: 'none' },
 };
+
+function runnerArgs(cwd: string, overrides: Partial<RunnerArgs> = {}): RunnerArgs {
+  return {
+    command: 'manifest',
+    projectRoot: cwd,
+    runId: 'R',
+    buildDir: 'dist',
+    withLighthouse: false,
+    timeoutMs: 30_000,
+    ...overrides,
+  };
+}
+
+test('every load failure names its own precondition instead of listing all four', async () => {
+  await withProject(async (cwd) => {
+    // No contract on disk yet.
+    const noContract = loadRun(runnerArgs(cwd));
+    assert.equal(noContract.ok, false);
+    assert.match(
+      noContract.ok ? '' : noContract.reason,
+      /VerificationContractV2 for run R is missing, malformed/,
+    );
+
+    // An unsafe run id must not be confused with a missing contract.
+    const badId = loadRun(runnerArgs(cwd, { runId: '../escape' }));
+    assert.equal(badId.ok, false);
+    assert.match(badId.ok ? '' : badId.reason, /run id is not a safe identifier/);
+
+    // A missing --build-dir is its own, separately actionable cause.
+    const noBuildDir = loadRun(runnerArgs(cwd, { buildDir: '' }));
+    assert.equal(noBuildDir.ok, false);
+    assert.match(noBuildDir.ok ? '' : noBuildDir.reason, /no --build-dir was provided/);
+
+    // With a valid contract, an unauthorized changed path must surface the
+    // offending path itself — this is the message two roles never saw.
+    setupProject(cwd);
+    fs.writeFileSync(path.join(cwd, 'stray-host-file.json'), '{}\n');
+    const strayPath = loadRun(runnerArgs(cwd));
+    assert.equal(strayPath.ok, false);
+    assert.match(
+      strayPath.ok ? '' : strayPath.reason,
+      /changed paths outside verification contract:.*stray-host-file\.json/,
+    );
+
+    // And a clean tree with no build output blames the manifest, not the scan.
+    fs.rmSync(path.join(cwd, 'stray-host-file.json'));
+    const noManifest = loadRun(runnerArgs(cwd));
+    assert.equal(noManifest.ok, false);
+    assert.match(noManifest.ok ? '' : noManifest.reason, /build output manifest could not be computed/);
+  });
+});
 
 async function withProject(fn: (cwd: string) => Promise<void>): Promise<void> {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-runner-'));

@@ -163,7 +163,7 @@ Implementer verification gate: this digest reports a required command as skipped
 <!-- T1BLOCK:END implementer-verification-skipped-gate -->
 
 <!-- T1BLOCK:BEGIN implementer-test-toolchain-gate -->
-Implementer test toolchain gate: role `{{ROLE}}` owns `{{MANIFEST}}`, and the contract compiles tester-owned runner configs there, but {{MISSING}} is absent. The tester owns the configs and never the manifest, so it cannot install its own runner — it inherits a config for a tool that is not there and has no way to run the suite. Add the missing dependencies and scripts to `{{MANIFEST}}`, then re-emit `IMPLEMENTED`.
+Implementer test toolchain gate: role `{{ROLE}}` owns `{{MANIFEST}}`, and the contract compiles tester-owned runner configs there, but {{MISSING}} is absent. The tester owns the configs and never the manifest, so it cannot install its own runner — it inherits a config for a tool that is not there and has no way to run the suite. When the verification contract requires performance evidence, project-local `lighthouse` belongs in the same manifest for the same reason. Add the missing dependencies and scripts to `{{MANIFEST}}`, then re-emit `IMPLEMENTED`.
 <!-- T1BLOCK:END implementer-test-toolchain-gate -->
 
 <!-- T1BLOCK:BEGIN implementer-crawl-origin-gate -->
@@ -171,7 +171,7 @@ Implementer crawl origin gate: `{{FILE}}` ships an unusable production origin �
 <!-- T1BLOCK:END implementer-crawl-origin-gate -->
 
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
-Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; `STRUCT_MODULE_LOC` blocks — split the module.
+Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; `STRUCT_MODULE_LOC` blocks — split the module. Integration findings block too: `STRUCT_ORPHAN_MODULE` (a planned component/feature exists but nothing imports it — wire it into its page/feature), `STRUCT_API_CLIENT_UNUSED` (the planned API package is imported nowhere — pages must consume the typed client, live-or-demo), `STRUCT_TAILWIND_NO_TOOLCHAIN` (Tailwind utilities with no tailwindcss dependency/config — the classes are inert; install Tailwind or restyle with the project's actual styling system). `STRUCT_HARDCODED_COPY` is advisory only.
 <!-- T1BLOCK:END frontend-structure-completion-gate -->
 
 <!-- T1BLOCK:BEGIN reviewer-structure-gate -->

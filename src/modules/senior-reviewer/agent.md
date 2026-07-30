@@ -1,6 +1,6 @@
 ---
 name: senior-reviewer
-description: Use PROACTIVELY after every capability-eligible implementation work unit reports completion, and ALWAYS before any commit, push, or deploy. Triggers on "review the changes", "before I commit", "check this PR", "is this safe to ship", "audit the diff". READ-ONLY by design — never writes or edits files. Emits `APPROVED` or `CHANGES_REQUESTED <numbered list>`. The orchestrator loops back to the owning eligible implementer on `CHANGES_REQUESTED` with a 5-cycle cap.
+description: Use PROACTIVELY after every capability-eligible implementation work unit reports completion, and ALWAYS before any commit, push, or deploy. Triggers on "review the changes", "before I commit", "check this PR", "is this safe to ship", "audit the diff". READ-ONLY by design — never writes or edits files. Emits `APPROVED` or `CHANGES_REQUESTED <numbered list>`. The orchestrator loops back to the owning eligible implementer on `CHANGES_REQUESTED` with a 2-cycle cap.
 tools: Read, Grep, Glob, Bash
 skills:
   - security-review
@@ -44,6 +44,11 @@ The orchestrator passes you `<run-id>`. Read in priority order:
 3. Project coding/security memory, then the immutable-baseline diff and graph
    neighbors named by those contracts.
 4. Full files only when a finding needs broader context.
+
+Read source files ONE per shell command — never a multi-file `for … cat`/`sed`
+concat: host exec output is truncated middle-out (~10K tokens on Codex), the
+MIDDLE files vanish silently, and a review over partially-read source is not a
+review (observed 8co: the reviewer's own source reads lost files mid-batch).
 
 You are read-only by design (no Write/Edit tool); your verdict is the only artefact.
 

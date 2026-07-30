@@ -22,7 +22,7 @@ import {
   type RunnerArgs,
 } from './types';
 import {
-  loadRun,
+  type LoadedRun,
   safeProjectRelative,
 } from './run-context';
 
@@ -60,7 +60,7 @@ function closeServer(server: Server): Promise<void> {
 
 function identityBody(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadRun>>,
+  loaded: LoadedRun,
   port: number,
   startedAt: string,
 ): Rec {
@@ -79,7 +79,7 @@ function identityBody(
 
 export async function startStaticServer(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadRun>>,
+  loaded: LoadedRun,
 ): Promise<OwnedServer> {
   const outputRoot = path.resolve(args.projectRoot, loaded.manifest.outputRoot);
   const knownFiles = new Map(loaded.manifest.files.map((file) => [file.path, file.sha256]));
@@ -202,7 +202,7 @@ function readRequestBody(request: import('http').IncomingMessage): Promise<Buffe
 
 export async function startCommandServer(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadRun>>,
+  loaded: LoadedRun,
 ): Promise<OwnedServer> {
   const targetPort = await freePort();
   const command = parseServerCommand(args.serverCommandJson, targetPort);

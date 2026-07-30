@@ -267,6 +267,8 @@ export {
   SOURCE_EXTS,
   countSourceFiles,
   dependenciesFromPackage,
+  detectBackendFromText,
+  detectFrontendFromText,
   detectGoBackendArtifacts,
   detectMode,
   detectStackFromCodebase,

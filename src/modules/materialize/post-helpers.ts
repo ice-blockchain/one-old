@@ -16,7 +16,11 @@ type Rec = Record<string, unknown>;
 
 // PostToolUse dispatch route patterns.
 export const FUNCTION_PATH_RE = /\/supabase\/functions\/([^/]+)\/(index|deno)\.(ts|tsx|mts|js)$/;
-export const DIGEST_PATH_RE = /(?:^|\/)\.traffic-one\/digests\/[^/]+\/(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
+// Accepts the senior-/opencode- spellings too: the finished_at host-stamp and
+// size warning must cover every digest spelling the runtime can produce —
+// an unstamped opencode-frontend.md kept a stale finished_at through a whole
+// fix cycle (observed 8co).
+export const DIGEST_PATH_RE = /(?:^|\/)\.traffic-one\/digests\/[^/]+\/(?:senior-|opencode-)?(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
 export const DIGEST_HARD_BYTES = 3 * 1024; // warn over 3 KB; target is ≤2 KB
 const DIGEST_RUN_ID_RE = /\/\.traffic-one\/digests\/([^/]+)\//;
 

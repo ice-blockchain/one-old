@@ -31,6 +31,7 @@ import {
 } from './git-sandbox';
 import {
   postApplyQuality,
+  postApplyStyling,
   postApplyTypecheck,
 } from './verify';
 import {
@@ -221,6 +222,12 @@ export function runModel(cwd: string, bin: string, baseSha: string, model: strin
       const rollbackError = restoreApplyTargets(backups);
       const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
       return { kind: 'failed', error: `delegated diff applied but landed collapsed source${suffix}: ${qualityError}` };
+    }
+    const stylingError = postApplyStyling(cwd, touched);
+    if (stylingError) {
+      const rollbackError = restoreApplyTargets(backups);
+      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+      return { kind: 'failed', error: `delegated diff applied but used a styling system the project does not have${suffix}: ${stylingError}` };
     }
     return { kind: 'delegated', touched, summary };
   } finally {

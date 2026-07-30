@@ -36,6 +36,9 @@ export interface QaMachineViewportEvidenceV1 {
   hydrationPassed: boolean;
   consoleErrors: string[];
   networkErrors: string[];
+  // Playwright step/navigation failures (timeouts, unreachable locators);
+  // absent means []. Mirrors QaViewportV2.actionErrors.
+  actionErrors?: string[];
   artifactAt: string;
   tracePath: string;
   traceHash: string;

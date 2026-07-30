@@ -22,7 +22,7 @@ import {
   type RunnerArgs,
 } from './types';
 import {
-  loadRun,
+  type LoadedRun,
   outputPath,
   qaDir,
   safeProjectRelative,
@@ -99,7 +99,7 @@ function runBoundedCommand(
 
 export async function runLighthouseOnOwnedServer(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadRun>>,
+  loaded: LoadedRun,
   owned: OwnedServer,
 ): Promise<LighthouseRunResult> {
   const binary = projectLighthouseBin(args);
@@ -184,7 +184,7 @@ export async function runLighthouseOnOwnedServer(
 
 export function lighthouseCommand(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadRun>>,
+  loaded: LoadedRun,
 ): number {
   if (!args.artifact) {
     process.stderr.write('qa-evidence: --artifact is required for Lighthouse conversion.\n');

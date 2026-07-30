@@ -79,6 +79,10 @@ in `frontend/react/testing.md` apply only to Jest-based projects.
   `node ~/.traffic-one/bin/qa-evidence-runner.cjs browser --run-id "$RUN_ID" --build-dir <output-root> --scenario-file ".traffic-one/reports/qa/$RUN_ID/scenario-v1.json"`.
   The scenario must exercise an interactive action. Do not hand-author
   `report-v2.json` booleans.
+- The runner takes minutes and prints `qa-evidence:` heartbeats on stderr; run
+  it in the foreground with a long timeout and wait for the terminal JSON line.
+  Never launch a second instance — the per-run lock exits it with
+  `already-running` (code 3); wait for the running instance instead.
 - Required Lighthouse runs inside that same command against its runner-owned
   live origin/port. Never reuse a report from another listener or run.
 - Report the audited route, build mode, Lighthouse Performance score, LCP, CLS, INP/TBT where available, and the top blocking opportunities.

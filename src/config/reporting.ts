@@ -60,8 +60,55 @@ export const ONE_MCP_REPORTED_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   'vb', 'vue', 'xml', 'yaml', 'yml', 'zig', 'zsh',
 ]);
 
+// Dependency, build-output, cache, and host/editor directories across every
+// ecosystem Traffic One supports. This is the SINGLE skip authority: the code
+// graph, the immutable baseline capture, and every baseline-derived diff all
+// read it, so the two scan sides can never disagree about a derived artifact
+// (see `isScanSkippedPath` in shared/architecture-contract/baseline.ts).
+//
+// Deliberately conservative — a name here becomes invisible to the verification
+// diff, so over-skipping would HIDE real changes. `bin` and bare `lib` are
+// excluded for exactly that reason: both are ordinary source directories in
+// enough ecosystems to make the trade a net loss.
 export const SKIP_DIRS = new Set([
-  '.cache', '.git', '.gitnexus', '.next', '.nuxt', '.traffic-one', '.turbo',
-  'build', 'coverage', 'dist', 'graphify-out', 'node_modules', 'out', 'Pods', 'target', 'vendor',
+  // Git, Traffic One, and its own generated caches
+  '.git', '.gitnexus', '.traffic-one', 'graphify-out',
+  // JS/TS dependency + build output + tooling caches
+  '.astro', '.cache', '.next', '.nuxt', '.output', '.svelte-kit', '.turbo', '.vite',
+  'build', 'coverage', 'dist', 'node_modules', 'out',
+  '__generated__', 'generated', 'playwright-report', 'test-results',
+  // PHP (Composer) and Go — the Laravel run hashed 8,569 `vendor/**` files
+  // into a 1.63 MB baseline, 400 short of the hard scan cap.
+  'vendor',
+  // Python
+  '__pycache__', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.tox', '.venv', 'venv',
+  // JVM / Android / Rust — `target` is Cargo and Maven
+  '.gradle', 'target',
+  // Dart / Flutter
+  '.dart_tool',
+  // Ruby
+  '.bundle',
+  // Elixir / OCaml
+  '_build', 'deps',
+  // .NET — `obj` only; `bin` is too often real source
+  'obj',
+  // Swift / iOS
+  'Carthage', 'Pods',
+  // Haskell
+  '.stack-work',
+  // Terraform
+  '.terraform',
+  // Agent host and editor local config. These are written by tooling — the
+  // plugin itself writes `.claude/settings.local.json` — and a single one
+  // appearing after baseline capture blocked ALL QA settlement on a green run.
+  '.claude', '.codex', '.cursor', '.devin', '.kilo', '.idea', '.vscode',
 ]);
-export const SKIP_FILES = new Set(['.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']);
+
+// Lockfiles and OS/editor droppings. A lockfile appears the moment an
+// implementer installs the dependency a completion gate itself demanded, so it
+// must never read as an unauthorized changed path.
+export const SKIP_FILES = new Set([
+  '.DS_Store', 'Thumbs.db',
+  'bun.lockb', 'bun.lock', 'Cargo.lock', 'composer.lock', 'deno.lock', 'Gemfile.lock',
+  'package-lock.json', 'pnpm-lock.yaml', 'poetry.lock', 'uv.lock', 'yarn.lock',
+]);

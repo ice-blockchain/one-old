@@ -67,15 +67,18 @@ export function includesAny(text: string, patterns: readonly RegExp[]): boolean 
 }
 
 export function detectFrontendFromText(text: string): string | null {
+  // Every framework accepts the glued/dotted "js" spelling ("vuejs", "vue.js"):
+  // \bvue\b alone never matches "vuejs" (no word boundary before a word char),
+  // and a real run derived frontend `other` from "use laravel with vuejs" (8cl).
   if (/\b(next\.?js|nextjs)\b/.test(text)) return 'nextjs';
   if (/\bnuxt(?:\.?js)?\b/.test(text)) return 'nuxt';
-  if (/\bvue\b/.test(text)) return 'vue';
-  if (/\bsvelte\b|\bsveltekit\b/.test(text)) return 'svelte';
-  if (/\bangular\b/.test(text)) return 'angular';
+  if (/\bvue(?:\.?js)?\b/.test(text)) return 'vue';
+  if (/\bsvelte(?:\.?js)?\b|\bsveltekit\b/.test(text)) return 'svelte';
+  if (/\bangular(?:\.?js)?\b/.test(text)) return 'angular';
   if (/\bastro\b/.test(text)) return 'astro';
-  if (/\bsolid\b/.test(text)) return 'solid';
-  if (/\bremix\b/.test(text)) return 'remix';
-  if (/\breact\b|\bvite\b/.test(text)) return 'react-vite';
+  if (/\bsolid(?:\.?js)?\b/.test(text)) return 'solid';
+  if (/\bremix(?:\.?js)?\b/.test(text)) return 'remix';
+  if (/\breact(?:\.?js)?\b|\bvite(?:\.?js)?\b/.test(text)) return 'react-vite';
   return null;
 }
 
@@ -104,12 +107,12 @@ export function detectBackendFromText(text: string): string | null {
   if (hasBackendLanguagePhrase(text, ['python']) || /\bpython backend\b/.test(text)) return 'python';
   if (/\bgolang\b/.test(text) || hasBackendLanguagePhrase(text, ['go'])) return 'go';
   if (hasBackendLanguagePhrase(text, ['rust'])) return 'rust';
-  if (/\bspring\b|\bspring boot\b/.test(text) || hasBackendLanguagePhrase(text, ['java'])) return 'java';
+  if (/\bspring\b|\bspring ?boot\b/.test(text) || hasBackendLanguagePhrase(text, ['java'])) return 'java';
   if (/\bktor\b/.test(text) || hasBackendLanguagePhrase(text, ['kotlin'])) return 'kotlin';
   if (/\blaravel\b/.test(text)) return 'laravel';
   if (hasBackendLanguagePhrase(text, ['php'])) return 'php';
   if (/\b\.net\b|\bdotnet\b|\bc#\b/.test(text) || hasBackendLanguagePhrase(text, ['dotnet', '.net', 'c#'])) return 'dotnet';
-  if (/\bexpress\b|\btypescript backend\b/.test(text) || hasBackendLanguagePhrase(text, ['node', 'node.js', 'nodejs', 'typescript'])) return 'node';
+  if (/\bexpress(?:\.?js)?\b|\btypescript backend\b/.test(text) || hasBackendLanguagePhrase(text, ['node', 'node.js', 'nodejs', 'typescript'])) return 'node';
   if (/\bown api\b|\bexisting api\b|\bexternal api\b/.test(text)) return 'external-api';
   if (/\bno backend\b|\bfrontend[- ]only\b|\bstatic only\b/.test(text)) return 'none';
   return null;

@@ -40,7 +40,17 @@ export interface VerificationContractV2 {
   uiImpactSource: 'runtime' | 'agent-raised';
   uiImpactReason?: string;
   changedPaths: string[];
+  // Additive honesty split (1.0.37): changedPaths is the AUTHORIZATION union
+  // (observed diff + every compiled output) and stays load-bearing for the
+  // post-implementation refresh. observedChangedPaths is the real baseline
+  // diff alone; plannedOutputs is the compiled-output list. Optional so
+  // pre-1.0.37 contracts keep parsing.
+  observedChangedPaths?: string[];
+  plannedOutputs?: string[];
   changedRoutes: string[];
+  // Diff-SCAN completion only: the walk finished within bounds. It does NOT
+  // assert that every changedPaths entry exists on disk — planned outputs are
+  // legal members before implementation.
   scanComplete: boolean;
   scanReason?: string;
   requiredChecks: string[];

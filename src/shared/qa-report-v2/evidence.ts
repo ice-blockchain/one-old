@@ -45,7 +45,8 @@ export function viewportPassed(viewport: QaViewportV2): boolean {
     && viewport.routingPassed
     && viewport.hydrationPassed
     && viewport.consoleErrors.length === 0
-    && viewport.networkErrors.length === 0;
+    && viewport.networkErrors.length === 0
+    && (viewport.actionErrors ?? []).length === 0;
 }
 
 function machineViewportMatchesReport(
@@ -61,7 +62,8 @@ function machineViewportMatchesReport(
     && machine.artifactAt === report.artifactAt
     && machine.screenshotPath === report.screenshotPath
     && JSON.stringify(machine.consoleErrors) === JSON.stringify(report.consoleErrors)
-    && JSON.stringify(machine.networkErrors) === JSON.stringify(report.networkErrors);
+    && JSON.stringify(machine.networkErrors) === JSON.stringify(report.networkErrors)
+    && JSON.stringify(machine.actionErrors ?? []) === JSON.stringify(report.actionErrors ?? []);
 }
 
 export function validateMachineEvidence(
@@ -321,8 +323,16 @@ export function validateLighthouseEvidence(
   projectRoot: string,
   machineEvidence?: QaMachineEvidenceV1 | null,
 ): { evidence: QaLighthouseEvidenceV1 | null; error: string | null } {
-  if (!report.lighthouse) return { evidence: null, error: 'Required Lighthouse evidence is missing.' };
-  const absolute = qaArtifactAbsolute(projectRoot, report.runId, report.lighthouse.evidencePath);
+  const lighthousePath = report.lighthouse?.evidencePath;
+  if (!lighthousePath) {
+    return {
+      evidence: null,
+      error: report.lighthouse?.status === 'skipped-scenario-failed'
+        ? `Lighthouse was skipped: ${report.lighthouse.reason || 'the browser scenario failed before the audit could run'}.`
+        : 'Required Lighthouse evidence is missing.',
+    };
+  }
+  const absolute = qaArtifactAbsolute(projectRoot, report.runId, lighthousePath);
   const evidence = absolute ? parseQaLighthouseEvidence(readJsonFile(absolute)) : null;
   const build = report.build;
   if (!absolute || !evidence) {
@@ -343,7 +353,7 @@ export function validateLighthouseEvidence(
     || !artifactValid(
       projectRoot,
       report.runId,
-      report.lighthouse.evidencePath,
+      lighthousePath,
       generatedAt,
       Date.parse(report.generatedAt),
     )) {

@@ -123,6 +123,13 @@ export function buildVerificationContract(
     uiImpactSource: impact !== runtimeImpact ? 'agent-raised' as const : 'runtime' as const,
     ...(derived.reason ? { uiImpactReason: derived.reason } : {}),
     changedPaths: paths,
+    // Honesty split (additive; changedPaths stays the authorization union the
+    // refresh path depends on): observedChangedPaths is the REAL baseline
+    // diff, plannedOutputs is what the architecture compiled — an entry in
+    // changedPaths that never existed on disk is a planned output, not a
+    // change (8co listed 11 never-created test files under scanComplete:true).
+    observedChangedPaths: baselineDiff.paths,
+    plannedOutputs: [...architecture.allowedOutputs],
     changedRoutes: changedRoutes(architecture, paths, impact),
     scanComplete: baselineDiff.complete,
     ...(baselineDiff.reason ? { scanReason: baselineDiff.reason } : {}),

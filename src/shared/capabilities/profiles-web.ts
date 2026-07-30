@@ -10,7 +10,12 @@ import {
 import { frameworkWebRoot, laravelInertiaKind, nuxtSourceRoot } from './web-roots';
 import { prefixed } from './fs-probe';
 
-export function frontendProfile(frontend: string, cwd: string, preferredWebRoot?: string): Pick<
+export function frontendProfile(
+  frontend: string,
+  cwd: string,
+  preferredWebRoot?: string,
+  configuredFrontend?: string | null,
+): Pick<
   CapabilityProfileV1,
   'profileId' | 'framework' | 'router' | 'sourceRoots' | 'entrypoints' | 'layerRoots' | 'qaAdapters'
 > {
@@ -155,7 +160,7 @@ export function frontendProfile(frontend: string, cwd: string, preferredWebRoot?
     };
   }
   if (frontend === 'laravel-ui') {
-    const inertia = laravelInertiaKind(cwd);
+    const inertia = laravelInertiaKind(cwd, configuredFrontend);
     const sourceRoots = inertia ? ['resources/js', 'resources/views'] : ['resources/views', 'resources/js'];
     const pages = inertia
       ? ['resources/js/Pages', 'resources/js/pages', 'resources/views']

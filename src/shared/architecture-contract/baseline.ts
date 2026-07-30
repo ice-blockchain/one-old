@@ -8,6 +8,7 @@ import { execFileSync } from 'child_process';
 import {
   type CapabilityProfileV1,
 } from '../capabilities';
+import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
 import { readJson } from '../fsjson';
 import { sha256 } from '../text';
 
@@ -173,8 +174,6 @@ function gitHead(projectRoot: string): string | null {
   return null;
 }
 
-const BASELINE_SKIP_RE = /(^|\/)(?:\.git|\.traffic-one|node_modules|dist|build|coverage|out|\.next|\.turbo|generated|__generated__|test-results|playwright-report)(?:\/|$)/;
-
 // Package-manager and toolchain by-products of the MANDATORY workflow steps —
 // not authored source. A lockfile appears the moment an implementer installs
 // the dependency a completion gate itself demanded (observed 5co-codex: the
@@ -186,8 +185,11 @@ const BASELINE_SKIP_RE = /(^|\/)(?:\.git|\.traffic-one|node_modules|dist|build|c
 // runner rejected the whole manifest). These files are excluded from BOTH the
 // immutable baseline capture and every later scan, so they can never appear
 // as unauthorized changed paths — keep the two sides in exact agreement.
-const DERIVED_ARTIFACT_FILE_RE =
-  /(^|\/)(?:pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|deno\.lock|composer\.lock|Cargo\.lock|Gemfile\.lock|poetry\.lock|uv\.lock|[^/]*\.tsbuildinfo|\.DS_Store)$/;
+//
+// The NAME sets live in `config/reporting` (SKIP_DIRS / SKIP_FILES) so the code
+// graph and both scan sides share one authority. Only glob-shaped artifacts a
+// name set cannot express stay here.
+const DERIVED_ARTIFACT_GLOB_RE = /(^|\/)[^/]*\.tsbuildinfo$/;
 
 /**
  * True when `relativePath` must be invisible to baseline capture and to every
@@ -196,8 +198,83 @@ const DERIVED_ARTIFACT_FILE_RE =
  * the two scans can never disagree about a derived artifact.
  */
 export function isScanSkippedPath(relativePath: string): boolean {
-  return BASELINE_SKIP_RE.test(`/${relativePath}`)
-    || DERIVED_ARTIFACT_FILE_RE.test(`/${relativePath}`);
+  const normalized = relativePath.replace(/\\/g, '/');
+  if (DERIVED_ARTIFACT_GLOB_RE.test(`/${normalized}`)) return true;
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments.length === 0) return false;
+  if (SKIP_FILES.has(segments[segments.length - 1]!)) return true;
+  return segments.some((segment) => SKIP_DIRS.has(segment));
+}
+
+/**
+ * Paths this project's own Git configuration already ignores, as a set that
+ * also covers descendants of an ignored directory.
+ *
+ * The two scan sides disagreed without this. `boundedGitPaths` asks Git with
+ * `--exclude-standard`, so a gitignored file is invisible on a `git-head`
+ * baseline; the filesystem walks below knew only the static name sets, so the
+ * SAME file was an unauthorized changed path on a `file-manifest` baseline.
+ * Observed twice: `.claude/settings.local.json` (written by the plugin itself)
+ * blocked all QA settlement, and a Laravel run captured 8,569 `vendor/**` files
+ * that `.gitignore:1` already excluded.
+ *
+ * Returns null when the answer cannot be trusted — no work tree, Git
+ * unavailable, or a degenerate result that would hide the whole project — and
+ * callers then fall back to the static name sets alone.
+ */
+function gitPaths(projectRoot: string, args: string[]): string[] | null {
+  let output: string;
+  try {
+    output = execFileSync('git', ['-C', projectRoot, 'ls-files', '-z', ...args], {
+      encoding: 'utf8',
+      timeout: 3_000,
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+  return output.split('\0')
+    .map((raw) => raw.replace(/\\/g, '/').replace(/\/+$/, ''))
+    .filter(Boolean);
+}
+
+function ignoredProjectPaths(projectRoot: string): Set<string> | null {
+  const entries = gitPaths(projectRoot, ['--others', '--ignored', '--exclude-standard', '--directory']);
+  if (!entries || entries.length === 0) return null;
+  // Degenerate-rule guard, same shape as `wouldIgnoreAllSource` in codegraph:
+  // a pattern broad enough to ignore everything (`*` in a fresh repo) would
+  // hide every source file from BOTH scan sides, which is a worse failure than
+  // the stray path this exists to skip. If nothing survives the rules, distrust
+  // them entirely and fall back to the static name sets.
+  const visible = gitPaths(projectRoot, ['--cached', '--others', '--exclude-standard']);
+  if (!visible || visible.length === 0) return null;
+  const ignored = new Set<string>();
+  for (const entry of entries) {
+    if (entry === '.' || entry === '/' || entry.startsWith('../')) return null;
+    ignored.add(entry);
+  }
+  return ignored;
+}
+
+/**
+ * Per-scan skip predicate: the shared static name sets plus this project's own
+ * Git ignore rules. Build it ONCE per scan — it costs a single `git` call — and
+ * use it for every entry so capture and compare stay byte-identical.
+ */
+export function scanSkipPredicate(projectRoot: string): (relativePath: string) => boolean {
+  const ignored = ignoredProjectPaths(projectRoot);
+  if (!ignored || ignored.size === 0) return isScanSkippedPath;
+  return (relativePath: string): boolean => {
+    if (isScanSkippedPath(relativePath)) return true;
+    let probe = relativePath.replace(/\\/g, '/');
+    for (;;) {
+      if (ignored.has(probe)) return true;
+      const cut = probe.lastIndexOf('/');
+      if (cut < 0) return false;
+      probe = probe.slice(0, cut);
+    }
+  };
 }
 
 const CONTEXT_ALIAS_PATH = 'CLAUDE.md';
@@ -254,6 +331,7 @@ export function canonicalTrafficOneContextLink(
 function fileManifestBaseline(projectRoot: string, roots: string[]): ArchitectureBaselineV1 {
   const rows: Array<[string, string]> = [];
   const directories: string[] = [];
+  const skipped = scanSkipPredicate(projectRoot);
   const stack = roots
     .map((root) => normalizeRelative(root))
     .filter((root): root is string => Boolean(root))
@@ -271,7 +349,7 @@ function fileManifestBaseline(projectRoot: string, roots: string[]): Architectur
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       const rel = path.relative(projectRoot, full).replace(/\\/g, '/');
-      if (isScanSkippedPath(rel)) continue;
+      if (skipped(rel)) continue;
       if (entry.isSymbolicLink()) {
         const target = canonicalTrafficOneContextLink(projectRoot, full, rel);
         if (target) {

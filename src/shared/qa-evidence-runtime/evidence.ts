@@ -56,6 +56,8 @@ function parseMachineViewport(value: unknown): QaMachineViewportEvidenceV1 | nul
   const consoleErrors = stringArray(value.consoleErrors);
   const networkErrors = stringArray(value.networkErrors);
   if (!consoleErrors || !networkErrors) return null;
+  const actionErrors = value.actionErrors === undefined ? undefined : stringArray(value.actionErrors);
+  if (value.actionErrors !== undefined && !actionErrors) return null;
   return {
     width: Number(value.width),
     status: value.status as QaMachineViewportEvidenceV1['status'],
@@ -65,6 +67,7 @@ function parseMachineViewport(value: unknown): QaMachineViewportEvidenceV1 | nul
     hydrationPassed: value.hydrationPassed,
     consoleErrors,
     networkErrors,
+    ...(actionErrors ? { actionErrors } : {}),
     artifactAt: value.artifactAt,
     tracePath: value.tracePath,
     traceHash: value.traceHash as string,

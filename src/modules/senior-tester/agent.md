@@ -152,6 +152,17 @@ hand-write pass booleans, fingerprints, screenshots, or Lighthouse summaries.
 Visual evidence is decoded and width-checked; behavioral failures receive a
 failure screenshot.
 
+**The runner takes MINUTES, not seconds** — screenshots × widths × routes plus
+a Lighthouse audit on performance-required runs. It prints `qa-evidence: …`
+heartbeat lines on stderr (`route 3/6 /courses @390`, `running Lighthouse
+audit`); run it in the FOREGROUND with a generous shell timeout and wait for
+the single terminal JSON line on stdout. Silence between heartbeats is not
+death. **NEVER launch a second instance**: the per-run lock makes the second
+one exit with `{"status":"already-running","lockPid":…}` (code 3) — if you see
+that, a runner is still working; wait for it instead of retrying (a real run
+was invalidated by four overlapping runners racing the same artifacts). Read
+the final report from disk only after the terminal JSON line appears.
+
 The runner must reserve a free port and bind it strictly for this run; never
 reuse a familiar preview port. It compares the expected fingerprint from the
 run-owned output manifest with the served fingerprint observed over HTTP.

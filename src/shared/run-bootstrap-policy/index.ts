@@ -37,6 +37,10 @@ import {
   pruneBootstrapHistory,
   readActiveRunBootstrap,
 } from './envelope-io';
+import {
+  compileIntegrationRequirements,
+  compileRoleContextPack,
+} from './context-pack';
 
 export function ensureRunBootstrap(
   cwd: string,
@@ -70,6 +74,11 @@ export function ensureRunBootstrap(
   const roleSource = options.hostAgentType
     ? 'host-native' as const
     : 'plugin-injected-fallback' as const;
+  const integrationRequirements = compileIntegrationRequirements(
+    role,
+    snapshot.profile.surfaces,
+    workUnit.outputs,
+  );
   const canonical = {
     schemaVersion: RUN_BOOTSTRAP_SCHEMA_VERSION,
     runId,
@@ -78,6 +87,7 @@ export function ensureRunBootstrap(
     hostAgentType,
     roleSource,
     evidenceSource: options.evidenceSource || 'runtime-resolved',
+    ...(integrationRequirements.length ? { integrationRequirements } : {}),
     hostCapability: {
       sidecar: RUN_HOST_CAPABILITY_RELATIVE_FILE as typeof RUN_HOST_CAPABILITY_RELATIVE_FILE,
       capabilityHash: hostCapability.capabilityHash,
@@ -106,6 +116,17 @@ export function ensureRunBootstrap(
   writeJson(activeRunBootstrapPath(cwd, runId, role), envelope);
   const verified = readActiveRunBootstrap(cwd, runId, role);
   if (!verified || verified.envelopeHash !== envelopeHash) return null;
+  // Compile the readable context pack beside the envelope (best effort — a
+  // pack failure never fails the publish; the rules-ack completion gate keys
+  // on the manifest's existence).
+  compileRoleContextPack(
+    cwd,
+    runId,
+    role,
+    resolved.rules.map((rule) => rule.id),
+    resolved.skills.map((skill) => skill.id),
+    integrationRequirements,
+  );
   pruneBootstrapHistory(cwd, runId);
   return verified;
 }
@@ -192,3 +213,17 @@ export {
   canResolveRunBootstrapSet,
   readActiveRunBootstrap,
 } from './envelope-io';
+
+export {
+  CONTEXT_PACK_PART_MAX_CHARS,
+  compileIntegrationRequirements,
+  compileRoleContextPack,
+  contextPackDir,
+  contextPackManifestPath,
+  readContextPackManifest,
+  readRulesAck,
+  rulesAckComplete,
+  rulesAckPath,
+  type ContextPackManifestV1,
+  type RulesAckV1,
+} from './context-pack';

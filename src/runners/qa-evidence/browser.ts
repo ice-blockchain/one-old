@@ -16,6 +16,7 @@ import {
 } from '../../shared/qa-evidence-runtime';
 import {
   qaReportV2Path,
+  type QaReportV2,
 } from '../../shared/qa-report-v2';
 import { sha256 } from '../../shared/text';
 import {
@@ -34,7 +35,7 @@ import {
   isRecord,
 } from './cli';
 import {
-  loadRun,
+  type LoadedRun,
   outputPath,
   publishAndValidateReport,
 } from './run-context';
@@ -42,6 +43,7 @@ import {
   loadScenario,
 } from './scenario';
 import { startCommandServer, startStaticServer, stopOwnedServer } from './server';
+import { emitProgress } from './report-publish';
 import { runLighthouseOnOwnedServer } from './lighthouse';
 import { RUNTIME_PROBE_INIT_SCRIPT, eventText, executeStep, httpNetworkUrl, routeSlug } from './browser-steps';
 
@@ -77,6 +79,7 @@ async function runViewport(
 ): Promise<QaMachineViewportEvidenceV1> {
   const consoleErrors: string[] = [];
   const networkErrors: string[] = [];
+  const actionErrors: string[] = [];
   const context = await browser.newContext({ viewport: { width, height: 900 } });
   const traceName = `${routeSlug(scenario.route)}-${width}.trace.zip`;
   const traceAbsolute = path.join(outDir, traceName);
@@ -179,10 +182,21 @@ async function runViewport(
       || !hydrationPassed
       || consoleErrors.length > 0
       || networkErrors.length > 0
+      || actionErrors.length > 0
       || (contract.uiImpact === 'visual' && !screenshotHash)) status = 'failed';
   } catch (error) {
     status = 'failed';
-    consoleErrors.push(error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000));
+    const message = error instanceof Error
+      ? error.message.slice(0, 2_000)
+      : String(error).slice(0, 2_000);
+    // Playwright step/navigation failures (locator timeouts, goto errors) are
+    // ACTION evidence, not page console output — filing them under
+    // consoleErrors misread a click timeout as an application error (8co).
+    if (/^(?:locator|page|frame|mouse|keyboard)\.\w+:|timeout \d+ms exceeded|net::ERR/i.test(message)) {
+      actionErrors.push(message);
+    } else {
+      consoleErrors.push(message);
+    }
     if (page && !screenshotPath) {
       try {
         await page.screenshot({ path: screenshotAbsolute, fullPage: true });
@@ -211,6 +225,7 @@ async function runViewport(
     hydrationPassed,
     consoleErrors,
     networkErrors,
+    ...(actionErrors.length > 0 ? { actionErrors } : {}),
     artifactAt: new Date().toISOString(),
     tracePath: traceName,
     traceHash,
@@ -220,7 +235,7 @@ async function runViewport(
 
 export async function browserCommand(
   args: RunnerArgs,
-  loaded: NonNullable<ReturnType<typeof loadRun>>,
+  loaded: LoadedRun,
 ): Promise<number> {
   if (!loaded.contract.browserRequired) {
     process.stderr.write('qa-evidence: active VerificationContractV2 does not require browser evidence.\n');
@@ -234,9 +249,11 @@ export async function browserCommand(
   }
   fs.mkdirSync(path.dirname(out.absolute), { recursive: true });
   const scenarioHash = sha256(stableContractJson(scenario));
+  emitProgress(`preflight ok — run ${args.runId}, ${scenario.routes.length} route(s), build ${loaded.manifest.fileCount} file(s)`);
   const owned = args.serverCommandJson
     ? await startCommandServer(args, loaded)
     : await startStaticServer(args, loaded);
+  emitProgress(`serving ${owned.url} (${owned.mode})`);
   let stopped = false;
   const stopOnce = async (): Promise<void> => {
     if (stopped) return;
@@ -249,6 +266,7 @@ export async function browserCommand(
   if (!playwright) {
     const blockerSummary =
       'Project-local Playwright is unavailable. Install @playwright/test and its browser binary.';
+    emitProgress(`blocked: ${blockerSummary}`);
     const evidence = createQaMachineEvidence({
       runnerVersion: pluginVersion(),
       playwrightVersion: 'unavailable',
@@ -282,6 +300,15 @@ export async function browserCommand(
         'blocked-environment',
         [],
         blockerSummary,
+        undefined,
+        {
+          routes: [],
+          visual: loaded.contract.uiImpact === 'visual',
+          playwrightOk: false,
+          launchBlocker: null,
+          servedOk: false,
+          blockerSummary,
+        },
       );
     } finally {
       await stopOnce();
@@ -309,9 +336,12 @@ export async function browserCommand(
     const widths = loaded.contract.requiredScreenshotWidths.length > 0
       ? loaded.contract.requiredScreenshotWidths
       : [1440];
+    let routeIndex = 0;
     for (const route of scenario.routes) {
+      routeIndex += 1;
       const viewports: QaMachineViewportEvidenceV1[] = [];
       for (const width of widths) {
+        emitProgress(`route ${routeIndex}/${scenario.routes.length} ${route.route} @${width}`);
         viewports.push(await runViewport(
           browser,
           owned,
@@ -332,9 +362,25 @@ export async function browserCommand(
   const browserScenarioFailed = Boolean(blocker)
     || routes.some((route) => route.viewports.some((viewport) => viewport.status !== 'passed'));
   const lighthouseRequested = loaded.contract.performance.required || args.withLighthouse;
+  if (lighthouseRequested) {
+    emitProgress(browserScenarioFailed
+      ? 'skipping Lighthouse: browser scenario failed'
+      : 'running Lighthouse audit (can take minutes)');
+  }
   const lighthouse = lighthouseRequested && !browserScenarioFailed
     ? await runLighthouseOnOwnedServer(args, loaded, owned)
     : null;
+  // A performance-required run whose scenario failed must SAY Lighthouse was
+  // skipped — a silently absent section reads as "nobody thought about
+  // performance" (observed 8co).
+  const lighthouseReportField: QaReportV2['lighthouse'] | undefined = lighthouse?.evidencePath
+    ? { evidencePath: lighthouse.evidencePath }
+    : lighthouseRequested && browserScenarioFailed
+      ? {
+          status: 'skipped-scenario-failed' as const,
+          reason: 'browser scenario failed; Lighthouse was not attempted',
+        }
+      : undefined;
   const servedAssetHashes = [...owned.servedAssetHashes].sort();
   const failed = browserScenarioFailed
     || servedAssetHashes.length === 0
@@ -385,10 +431,14 @@ export async function browserCommand(
       hydrationPassed: viewport.hydrationPassed,
       consoleErrors: viewport.consoleErrors,
       networkErrors: viewport.networkErrors,
+      ...(viewport.actionErrors && viewport.actionErrors.length > 0
+        ? { actionErrors: viewport.actionErrors }
+        : {}),
       artifactAt: viewport.artifactAt,
       ...(viewport.screenshotPath ? { screenshotPath: viewport.screenshotPath } : {}),
     })),
   }));
+  emitProgress('publishing report-v2.json');
   let published: ReturnType<typeof publishAndValidateReport>;
   try {
     published = publishAndValidateReport(
@@ -399,7 +449,15 @@ export async function browserCommand(
       status,
       reportRoutes,
       evidence.blockerSummary,
-      lighthouse?.evidencePath,
+      lighthouseReportField,
+      {
+        routes: reportRoutes,
+        visual: loaded.contract.uiImpact === 'visual',
+        playwrightOk: true,
+        launchBlocker: blocker,
+        servedOk: servedAssetHashes.length > 0,
+        ...(evidence.blockerSummary ? { blockerSummary: evidence.blockerSummary } : {}),
+      },
     );
   } finally {
     await stopOnce();

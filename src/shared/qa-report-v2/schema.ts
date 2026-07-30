@@ -55,6 +55,10 @@ export interface QaViewportV2 {
   hydrationPassed: boolean;
   consoleErrors: string[];
   networkErrors: string[];
+  // Playwright step/navigation failures (timeouts, unreachable locators).
+  // Optional and absent on pre-1.0.37 reports; absent means []. Kept separate
+  // from consoleErrors so a click timeout is not misread as a page error.
+  actionErrors?: string[];
   artifactAt: string;
   screenshotPath?: string;
 }
@@ -68,8 +72,15 @@ interface NativeQaEvidenceV2 {
   evidencePath: string;
 }
 
+// Either a real evidence sidecar, or an explicit skip record: when the
+// browser scenario fails, Lighthouse is not attempted — the report must SAY
+// so instead of silently omitting the section (observed 8co: a
+// performance-required run ended with no performance evidence and no trace of
+// why). A skip record never satisfies `performance.required`.
 interface LighthouseEvidenceV2 {
-  evidencePath: string;
+  evidencePath?: string;
+  status?: 'skipped-scenario-failed';
+  reason?: string;
 }
 
 export interface QaReportV2 {
@@ -211,6 +222,8 @@ function parseViewport(value: unknown): QaViewportV2 | null {
   const consoleErrors = stringArray(value.consoleErrors);
   const networkErrors = stringArray(value.networkErrors);
   if (!consoleErrors || !networkErrors) return null;
+  const actionErrors = value.actionErrors === undefined ? undefined : stringArray(value.actionErrors);
+  if (value.actionErrors !== undefined && !actionErrors) return null;
   if (value.screenshotPath !== undefined && !safeRelativePath(value.screenshotPath)) return null;
   return {
     width: Number(value.width),
@@ -221,6 +234,7 @@ function parseViewport(value: unknown): QaViewportV2 | null {
     hydrationPassed: value.hydrationPassed,
     consoleErrors,
     networkErrors,
+    ...(actionErrors ? { actionErrors } : {}),
     artifactAt: value.artifactAt as string,
     ...(typeof value.screenshotPath === 'string' ? { screenshotPath: value.screenshotPath } : {}),
   };
@@ -282,10 +296,20 @@ function parseNative(value: unknown): NativeQaEvidenceV2 | null {
 }
 
 function parseLighthouse(value: unknown): LighthouseEvidenceV2 | null {
-  if (!isRecord(value)
-    || Object.keys(value).length !== 1
-    || !safeRelativePath(value.evidencePath)) return null;
-  return { evidencePath: value.evidencePath };
+  if (!isRecord(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.some((key) => !['evidencePath', 'status', 'reason'].includes(key))) return null;
+  const hasPath = value.evidencePath !== undefined;
+  const hasStatus = value.status !== undefined;
+  if (!hasPath && !hasStatus) return null;
+  if (hasPath && !safeRelativePath(value.evidencePath)) return null;
+  if (hasStatus && value.status !== 'skipped-scenario-failed') return null;
+  if (value.reason !== undefined && (!hasStatus || !safeString(value.reason))) return null;
+  return {
+    ...(hasPath ? { evidencePath: value.evidencePath as string } : {}),
+    ...(hasStatus ? { status: 'skipped-scenario-failed' as const } : {}),
+    ...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
+  };
 }
 
 export function parseReport(value: unknown): QaReportV2 | null {

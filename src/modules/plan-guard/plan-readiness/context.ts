@@ -13,15 +13,22 @@ export const PLAN_FILE_RE = /(^|\/)\.traffic-one\/plan\.md$/;
 export const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json$/;
 export const ARCHITECTURE_INPUT_RE = /(^|\/)\.traffic-one\/runs\/([^/]+)\/architecture-input-v1\.json$/;
 export const RUN_RUNTIME_SIDECAR_RE = /^\.traffic-one\/runs\/([^/]+)\/(.+)$/;
+// NOTE: RUN_DIGEST_ARTIFACT_RE deliberately does NOT accept the `opencode-`
+// prefix: it feeds the run-artifact OWNERSHIP gate, and the orchestrator's
+// one-line normalize edit (DELEGATED_OK -> IMPLEMENTED) on a plan-unit digest
+// must stay writable by the parent. The COMPLETION regexes below DO accept
+// `opencode-` so that same normalize edit runs the full implementer gate
+// battery — that is the enforcement `normalize_to` never had (observed 8co:
+// `opencode-frontend.md` matched no digest regex and bypassed every gate).
 export const RUN_DIGEST_ARTIFACT_RE =
   /^\.traffic-one\/digests\/([^/]+)\/(?:senior-)?(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
 export const QA_REPORT_ARTIFACT_RE = /^\.traffic-one\/reports\/qa\/([^/]+)\/report-v2\.json$/;
 export const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/architect\.md$/;
-export const FRONTEND_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?frontend\.md$/;
+export const FRONTEND_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-|opencode-)?frontend\.md$/;
 export const IMPLEMENTER_DIGEST_RE =
-  /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?(frontend|backend)\.md$/;
+  /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-|opencode-)?(frontend|backend)\.md$/;
 export const REVIEWER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?reviewer\.md$/;
-export const TESTER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-)?tester\.md$/;
+export const TESTER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senior-|opencode-)?tester\.md$/;
 // Collapsed-source delivery guard. A single source line packing an entire
 // component/route (observed 16c: apps/web/src/App.tsx held the whole app —
 // Catalog, CoursePage, LessonPage, Dashboard, routing, data — as one-line

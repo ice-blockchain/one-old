@@ -48,7 +48,10 @@ export function nuxtSourceRoot(cwd: string, webRoot: string): string {
   return webRoot;
 }
 
-export function laravelInertiaKind(cwd: string): 'react' | 'vue' | 'unknown' | null {
+export function laravelInertiaKind(
+  cwd: string,
+  configuredFrontend?: string | null,
+): 'react' | 'vue' | 'unknown' | null {
   const composer = composerPackages(cwd);
   const deps = packageDependencies(cwd);
   const hasPages = [
@@ -56,7 +59,19 @@ export function laravelInertiaKind(cwd: string): 'react' | 'vue' | 'unknown' | n
     'resources/js/pages',
   ].some((root) => exists(cwd, root));
   if (!composer['inertiajs/inertia-laravel'] && !deps['@inertiajs/react'] && !deps['@inertiajs/vue3'] && !hasPages) {
-    return null;
+    // No Inertia evidence on disk. On a new project the configured frontend is
+    // the only signal there is — "laravel with vuejs" plans Inertia+Vue, not
+    // Blade (observed 8cl: the configured Vue intent was silently dropped).
+    switch (configuredFrontend || '') {
+      case 'vue':
+      case 'nuxt':
+        return 'vue';
+      case 'react-vite':
+      case 'nextjs':
+        return 'react';
+      default:
+        return null;
+    }
   }
   if (deps['@inertiajs/react'] || deps.react) return 'react';
   if (deps['@inertiajs/vue3'] || deps.vue) return 'vue';

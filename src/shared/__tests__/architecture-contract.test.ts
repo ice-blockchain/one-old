@@ -3,15 +3,18 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 
 import {
   architectureInputPath,
+  captureArchitectureBaseline,
   compileArchitecture,
   compileArchitectureForRun,
   compiledArchitecturePath,
   createWorkUnitContract,
   ensureArchitectureRunSnapshot,
   isDeletableStrayArtifact,
+  isScanSkippedPath,
   publishRuntimeAssignments,
   readArchitectureRunBaseline,
   legacyCustomBackendMigration,
@@ -19,6 +22,7 @@ import {
   readCompiledArchitecture,
   readRuntimeAssignments,
   runtimeAssignmentsPath,
+  scanSkipPredicate,
   stableContractJson,
   validateArchitectureInput,
   type ArchitectureInputV1,
@@ -1543,6 +1547,112 @@ test('isDeletableStrayArtifact permits only untracked, uncompiled, non-baseline 
     assert.equal(isDeletableStrayArtifact(dir, '.traffic-one/runs/R/run.json', architecture), false);
     assert.equal(isDeletableStrayArtifact(dir, '../outside.png', architecture), false);
     assert.equal(isDeletableStrayArtifact(dir, 'public/icons/favicon.svg.png', null), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('scan skip covers every ecosystem dependency root plus host config', () => {
+  // Each of these blocked or nearly blocked a real run. `vendor` is the Laravel
+  // incident (8,569 files hashed into the baseline); `.claude` is the plugin's
+  // own host-permission file blocking all QA settlement.
+  for (const skipped of [
+    'vendor/autoload.php', 'vendor/github.com/x/y.go',
+    '.claude/settings.local.json', '.cursor/rules/x.md', '.codex/config.toml',
+    '.vscode/settings.json', '.idea/workspace.xml',
+    '__pycache__/mod.cpython-312.pyc', '.venv/lib/python3.12/site.py', 'venv/bin/activate',
+    '.pytest_cache/v/cache/lastfailed', '.mypy_cache/3.12/x.json', '.tox/py312/log',
+    'target/debug/app', '.gradle/caches/x.bin', '.dart_tool/package_config.json',
+    '.bundle/config', '_build/dev/lib/app.beam', 'deps/phoenix/mix.exs',
+    'obj/Debug/app.dll', 'Pods/Manifest.lock', 'Carthage/Build/x',
+    '.stack-work/dist/x', '.terraform/providers/x',
+    '.svelte-kit/generated/root.svelte', '.astro/types.d.ts', '.output/server/index.mjs',
+    '.vite/deps/react.js', 'composer.lock', 'Cargo.lock', 'poetry.lock', 'uv.lock',
+    'apps/web/tsconfig.tsbuildinfo', 'Thumbs.db',
+  ]) {
+    assert.equal(isScanSkippedPath(skipped), true, `expected skip: ${skipped}`);
+  }
+
+  // Real source must stay visible — over-skipping would HIDE changes, which is
+  // worse than the stray path the skip exists for. `bin` and `lib` are source
+  // directory names in enough ecosystems to stay off the list.
+  for (const kept of [
+    'src/main.ts', 'app/Models/User.php', 'cmd/server/main.go', 'lib/util.rb',
+    'bin/console', 'internal/api/handler.go', 'packages/ui/src/Button.tsx',
+    'resources/views/home.blade.php', 'supabase/migrations/0001_init.sql',
+  ]) {
+    assert.equal(isScanSkippedPath(kept), false, `expected keep: ${kept}`);
+  }
+});
+
+test('a file-manifest baseline honours the project gitignore and agrees with the git side', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-baseline-ignore-'));
+  try {
+    // `git init` with no commit is the greenfield shape: `gitHead()` finds no
+    // sha so capture takes the file-manifest walk, while `git ls-files` still
+    // answers ignore questions.
+    execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'secrets/\nbuild-cache.txt\n');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# ctx\n');
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src/main.ts'), 'export const a = 1;\n');
+    // Ignored by the project but named in no static skip list.
+    fs.mkdirSync(path.join(dir, 'secrets'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'secrets/key.pem'), 'x\n');
+    fs.writeFileSync(path.join(dir, 'build-cache.txt'), 'x\n');
+    // Covered by the static list, so it must be skipped with or without git.
+    fs.mkdirSync(path.join(dir, 'vendor/pkg'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'vendor/pkg/autoload.php'), '<?php\n');
+
+    const baseline = captureArchitectureBaseline(dir, {} as never);
+    assert.equal(baseline.kind, 'file-manifest');
+    const captured = (baseline.files || []).map((entry) => entry.path).sort();
+    assert.deepEqual(captured, ['.gitignore', 'AGENTS.md', 'src/main.ts']);
+
+    // The predicate a scan builds must agree with the static one on static
+    // names and additionally cover whatever the project ignores.
+    const skipped = scanSkipPredicate(dir);
+    assert.equal(skipped('secrets/key.pem'), true);
+    assert.equal(skipped('build-cache.txt'), true);
+    assert.equal(skipped('vendor/pkg/autoload.php'), true);
+    assert.equal(skipped('src/main.ts'), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a gitignore broad enough to hide the project falls back to the static skip list', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-baseline-degenerate-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+    // `*` makes git report the root itself as ignored. Trusting that would hide
+    // every source file — a worse failure than the stray path being skipped.
+    fs.writeFileSync(path.join(dir, '.gitignore'), '*\n');
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src/main.ts'), 'export const a = 1;\n');
+
+    const skipped = scanSkipPredicate(dir);
+    assert.equal(skipped('src/main.ts'), false);
+    assert.equal(skipped('node_modules/react/index.js'), true);
+
+    const baseline = captureArchitectureBaseline(dir, {} as never);
+    const captured = (baseline.files || []).map((entry) => entry.path);
+    assert.ok(captured.includes('src/main.ts'), 'source must survive a degenerate ignore rule');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('scan skip works outside a work tree, where git cannot be consulted', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-baseline-nogit-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'main.go'), 'package main\n');
+    fs.mkdirSync(path.join(dir, 'vendor/x'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'vendor/x/y.go'), 'package x\n');
+
+    const baseline = captureArchitectureBaseline(dir, {} as never);
+    assert.equal(baseline.kind, 'file-manifest');
+    assert.deepEqual((baseline.files || []).map((entry) => entry.path), ['main.go']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

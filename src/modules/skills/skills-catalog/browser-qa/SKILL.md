@@ -121,6 +121,15 @@ fails. `visual` captures and decodes the contract widths and rejects horizontal
 overflow. Evidence paths containing dot/traversal segments, globs, control
 characters, or symlink escapes are invalid.
 
+The run takes MINUTES (screenshots × widths × routes, plus Lighthouse when
+performance is required). Run it in the foreground with a long timeout and
+watch the `qa-evidence: …` heartbeat lines on stderr; the single JSON line on
+stdout is the completion signal. NEVER start a second instance while one is
+running — a per-run lock makes the second exit immediately with
+`{"status":"already-running","lockPid":…}` (exit code 3); treat that as "a
+runner is already working: wait", not as an error to retry. Overlapping
+runners once interleaved artifacts and invalidated an entire QA pass.
+
 The command produces:
 
 - `.traffic-one/reports/qa/$RUN_ID/machine-evidence-v1.json`;
