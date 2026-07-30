@@ -259,6 +259,51 @@ export const RUN_SIM_CASES: Case[] = [
     notes: 'Shape 6: a framework Traffic One does not model. Characterises the CURRENT contract — degrade to generic-web and still settle — so any future change to that behaviour is deliberate.',
   },
   {
+    id: 'sim-new-python-api',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'python',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_API },
+    },
+    runSim: {
+      brief: BRIEF_API,
+      architecture: API_ARCHITECTURE,
+      qa: {
+        mode: 'stack',
+        // All three run for real: byte-compile, pytest, ruff. validateQaReportV2
+        // refuses a justified `not-applicable` for stack-build ("a backend that
+        // does not build is broken"), and byte-compiling IS Python's build — it
+        // is what turns source into the artifact the interpreter runs, and it
+        // fails on a syntax error anywhere in the tree. Pinned so a shape can
+        // never quietly settle on checks that did not execute.
+        expectChecks: {
+          'stack-build': 'passed',
+          'stack-test': 'passed',
+          'stack-lint': 'passed',
+        },
+      },
+    },
+    assertions: [
+      { id: 'state-matches-selection' },
+      { id: 'onboarding-complete' },
+      { id: 'run-sim-clean' },
+      { id: 'run-sim-plan-ready-artifacts' },
+      { id: 'run-sim-qa-evidence' },
+      { id: 'run-sim-settlement' },
+    ],
+    notes: 'Shape 8: Python API only. Requires pytest + ruff on PATH; stack-build is legitimately not-applicable.',
+  },
+  {
     id: 'sim-new-go-api',
     category: 'run-sim',
     layer: 'run-sim',

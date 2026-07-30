@@ -773,6 +773,94 @@ function goTest(rel: string): string {
   ].join('\n');
 }
 
+// --- Python ----------------------------------------------------------------
+// `python -m compileall` and `pytest` really run in this tier, so these have to
+// be valid Python that passes ruff, not Python-shaped text.
+
+function pySymbol(rel: string): string {
+  return path.basename(rel)
+    .replace(/\.py$/, '')
+    .replace(/^test_/, '')
+    .split(/[_-]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+}
+
+function pyModule(rel: string): string {
+  const symbol = pySymbol(rel);
+  const snake = path.basename(rel).replace(/\.py$/, '');
+  return [
+    `"""${symbol} records served by this module."""`,
+    '',
+    'from dataclasses import dataclass',
+    '',
+    '',
+    '@dataclass(frozen=True)',
+    `class ${symbol}Item:`,
+    `    """One ${snake} record."""`,
+    '',
+    '    id: str',
+    '    slug: str',
+    '    title: str',
+    '',
+    '',
+    `def list_${snake}() -> list[${symbol}Item]:`,
+    '    """Return every record."""',
+    '    return [',
+    `        ${symbol}Item(id="1", slug="first", title="First"),`,
+    `        ${symbol}Item(id="2", slug="second", title="Second"),`,
+    '    ]',
+    '',
+    '',
+    `def ${snake}_by_slug(slug: str) -> ${symbol}Item | None:`,
+    '    """Resolve a single record by its slug."""',
+    `    for item in list_${snake}():`,
+    '        if item.slug == slug:',
+    '            return item',
+    '    return None',
+    '',
+  ].join('\n');
+}
+
+function pyTest(rel: string): string {
+  const snake = path.basename(rel).replace(/\.py$/, '').replace(/^test_/, '');
+  return [
+    `"""Behavioural coverage for ${snake}."""`,
+    '',
+    // Members sorted: the compiled ruff.toml selects "I", so an unsorted
+    // import block is a real lint failure.
+    `from ${snake} import ${[`list_${snake}`, `${snake}_by_slug`].sort().join(', ')}`,
+    '',
+    '',
+    `def test_${snake}_lists_records() -> None:`,
+    `    assert list_${snake}()`,
+    '',
+    '',
+    `def test_${snake}_resolves_by_slug() -> None:`,
+    `    assert ${snake}_by_slug("first") is not None`,
+    `    assert ${snake}_by_slug("missing") is None`,
+    '',
+  ].join('\n');
+}
+
+function pySource(rel: string): string | null {
+  const base = path.basename(rel);
+  if (base === 'conftest.py') {
+    return [
+      '"""Make the project modules importable from the test suite."""',
+      '',
+      'import sys',
+      'from pathlib import Path',
+      '',
+      'sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))',
+      '',
+    ].join('\n');
+  }
+  if (/^test_/.test(base)) return pyTest(rel);
+  return pyModule(rel);
+}
+
 function goSource(rel: string): string | null {
   if (/_test\.go$/.test(path.basename(rel))) return goTest(rel);
   return goRecord(rel);
@@ -798,6 +886,22 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   // apart. Getting this order wrong emits TypeScript into a .go file, which the
   // real `go build ./...` in phase 3 catches — loudly, but late.
   if (rel.endsWith('.go')) return goSource(rel);
+  if (rel.endsWith('.py')) return pySource(rel);
+  if (rel === 'pyproject.toml') {
+    // Presence of this file is what resolveStackCommand keys on for the Python
+    // byte-compile build AND for pytest; without it neither check resolves and
+    // the run cannot settle.
+    return [
+      '[project]',
+      'name = "api"',
+      'version = "0.0.0"',
+      'requires-python = ">=3.11"',
+      '',
+      '[tool.pytest.ini_options]',
+      'testpaths = ["tests"]',
+      '',
+    ].join('\n');
+  }
   if (rel === 'go.mod') {
     return `module example.com/api\n\ngo 1.22\n`;
   }

@@ -129,7 +129,24 @@ export function resolveStackCommand(
     }
   }
 
-  // Python: only what the project pinned. There is no universal build step.
+  // Python. `validateQaReportV2` deliberately refuses a justified
+  // `not-applicable` for stack-build — "a backend that does not build is broken,
+  // and every supported backend has a build form" — but no Python build form was
+  // resolved here, so an api-only Python project could never satisfy the check
+  // and could never settle. Byte-compiling the tree IS Python's build: it is the
+  // step that turns source into the artifact the interpreter runs, and it fails
+  // loudly on a syntax error anywhere in the project.
+  if (check === 'stack-build'
+    && (exists(cwd, 'pyproject.toml') || exists(cwd, 'setup.py') || exists(cwd, 'setup.cfg'))) {
+    return {
+      command: 'python3',
+      // `-q` keeps the output to errors only; the trailing `.` compiles the
+      // whole project tree, which is the equivalent of `go build ./...`.
+      args: ['-m', 'compileall', '-q', '.'],
+      cwd,
+      source: 'python byte-compile',
+    };
+  }
   if (check === 'stack-test' && (exists(cwd, 'pytest.ini') || exists(cwd, 'pyproject.toml') || exists(cwd, 'tox.ini'))) {
     return { command: 'pytest', args: ['-q'], cwd, source: 'pytest configuration' };
   }

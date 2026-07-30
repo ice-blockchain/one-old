@@ -28,6 +28,7 @@ import {
 import { main } from '../index';
 import { loadRun } from '../run-context';
 import { type RunnerArgs } from '../types';
+import { resolveStackCommand } from '../stack';
 
 const STATE = {
   mode: 'existing-codebase',
@@ -1033,4 +1034,37 @@ test('an api-only run reaches a valid settled report', async () => {
     assert.equal(report.status, 'passed');
     assert.deepEqual(report.routes, []);
   });
+});
+
+// Regression: validateQaReportV2 deliberately refuses a justified
+// `not-applicable` for stack-build — "a backend that does not build is broken,
+// and every supported backend has a build form" — but no Python build form was
+// resolved, so an api-only Python project could never satisfy the check and
+// could never settle. That is the same gap the stack runner closed for Go.
+// Byte-compiling IS Python's build: it turns source into the artifact the
+// interpreter runs, and it fails on a syntax error anywhere in the tree.
+// Found by the run-sim tier's Python shape.
+test('resolveStackCommand gives a Python project a real build form', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-pystack-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'pyproject.toml'), '[project]\nname = "api"\n');
+    const build = resolveStackCommand(dir, 'stack-build');
+    assert.ok(!('unavailable' in build), 'a Python project must resolve a build command');
+    if ('unavailable' in build) return;
+    assert.equal(build.command, 'python3');
+    assert.deepEqual(build.args, ['-m', 'compileall', '-q', '.']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a project with no Python markers still declares no build command', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-nostack-'));
+  try {
+    // No manifest, no go.mod, no pyproject: the runner must NOT invent one.
+    const build = resolveStackCommand(dir, 'stack-build');
+    assert.ok('unavailable' in build, 'never invent a command the project does not declare');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
