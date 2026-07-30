@@ -87,8 +87,10 @@ function appPackageJson(): string {
       '@app/api-client': 'workspace:*',
       '@app/i18n': 'workspace:*',
       '@app/ui': 'workspace:*',
+      i18next: '^24.0.0',
       react: '^19.0.0',
       'react-dom': '^19.0.0',
+      'react-i18next': '^15.2.0',
       'react-router-dom': '^7.1.0',
     },
     devDependencies: {
@@ -239,16 +241,21 @@ function pageSource(ctx: ImplementContext, rel: string, name: string): string {
     const target = `./${path.relative(dir, module.output).replace(/\.tsx?$/, '')}`;
     return `import { ${componentName(module.output)} } from '${target}';`;
   });
-  const usage = components.map((module) => `      <${componentName(module.output)} title={heading} />`);
+  // Each route owns a namespace in the compiled i18n contract; a page uses its
+  // own. Component props take t(), rendered text takes <Trans>.
+  const namespace = pageNamespace(ctx, rel);
+  const usage = components.map((module) => (
+    `      <${componentName(module.output)} title={t('cardTitle')} />`
+  ));
   return [
     "import { useEffect, useState } from 'react';",
+    "import { Trans, useTranslation } from 'react-i18next';",
     "import { listCourses, type Course } from '@app/api-client';",
-    "import { t } from '@app/i18n';",
     ...imports,
     '',
     `export default function ${name}() {`,
+    `  const { t } = useTranslation('${namespace}');`,
     '  const [courses, setCourses] = useState<Course[]>([]);',
-    `  const heading = t('${name.toLowerCase()}.title');`,
     '',
     '  useEffect(() => {',
     '    let active = true;',
@@ -262,14 +269,42 @@ function pageSource(ctx: ImplementContext, rel: string, name: string): string {
     '',
     '  return (',
     '    <main className="mx-auto flex max-w-5xl flex-col gap-6 p-6">',
-    '      <h1 className="text-3xl font-semibold">{heading}</h1>',
-    '      <p className="text-slate-600">{courses.length} available</p>',
+    '      <h1 className="text-3xl font-semibold">',
+    `        <Trans ns="${namespace}" i18nKey="title">${name}</Trans>`,
+    '      </h1>',
+    '      <p className="text-slate-600">{courses.length}</p>',
     ...usage,
     '    </main>',
     '  );',
     '}',
     '',
   ].join('\n');
+}
+
+// The namespace the compiled contract assigns to this page's route.
+function pageNamespace(ctx: ImplementContext, rel: string): string {
+  const route = ctx.architecture.routes.find((entry) => entry.moduleOutput === rel);
+  return route?.id || 'common';
+}
+
+// Every key referenced above, per namespace. Catalog validation checks BOTH
+// directions — a missing key and an extra one are both findings — so these are
+// generated from the same facts the sources use, never hand-listed.
+export function catalogFor(rel: string, ctx: ImplementContext): string | null {
+  const namespace = path.basename(rel).replace(/\.json$/, '');
+  if (namespace === 'common') {
+    return json({ signOut: 'Sign out' });
+  }
+  if (namespace === 'auth') {
+    return json({ signInFailed: 'Sign in failed' });
+  }
+  const route = ctx.architecture.routes.find((entry) => entry.id === namespace);
+  if (!route) return null;
+  const page = ctx.moduleAt(route.moduleOutput);
+  return json({
+    title: page?.name || 'Page',
+    cardTitle: page?.name || 'Card',
+  });
 }
 
 function componentSource(name: string): string {
@@ -292,6 +327,9 @@ function componentSource(name: string): string {
 function featureSource(): string {
   return [
     "import { supabase } from '@app/api-client';",
+    "import { t } from '@app/i18n';",
+    '',
+    "export const SIGN_IN_FAILED = t('auth:signInFailed');",
     '',
     'export interface Session {',
     '  userId: string;',
@@ -594,7 +632,15 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
       });
     }
     if (rel.includes('api-client')) return packageManifest('@app/api-client');
-    if (rel.includes('i18n')) return packageManifest('@app/i18n');
+    if (rel.includes('i18n')) {
+      // projectDeclaresI18nRuntime looks for one of the known runtimes in a
+      // manifest AND for every runtimeOutput on disk. Without the dependency,
+      // STRUCT_I18N_RUNTIME blocks IMPLEMENTED — correctly: catalogs with no
+      // runtime to read them are inert.
+      return packageManifest('@app/i18n', {
+        dependencies: { i18next: '^24.0.0', 'react-i18next': '^15.2.0' },
+      });
+    }
     if (rel.includes('/ui/')) return packageManifest('@app/ui');
     return packageManifest(`@app/${path.basename(path.dirname(rel))}`);
   }
@@ -690,15 +736,7 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
       '',
     ].join('\n');
   }
-  if (rel.endsWith('locales/en/common.json')) {
-    return json({
-      'home.title': 'Learn web development',
-      'courses.title': 'Courses',
-      'coursedetail.title': 'Course',
-      'lesson.title': 'Lesson',
-      'login.title': 'Sign in',
-    });
-  }
+  if (/locales\/[a-z-]+\/[a-z-]+\.json$/i.test(rel)) return catalogFor(rel, ctx);
   if (rel.endsWith('ui/src/index.ts')) {
     return [
       'export interface ButtonProps {',

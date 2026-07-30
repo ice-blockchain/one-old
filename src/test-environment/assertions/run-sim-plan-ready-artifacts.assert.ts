@@ -15,7 +15,7 @@ import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
 import { readRunSettlement } from '../../shared/run-settlement';
 import { readVerificationContract } from '../../shared/verification-contract';
 import type { Assertion } from '../core/types';
-import { effState, latestRunId, readRunSimTranscript, result, str } from './util';
+import { effState, latestRunId, readRunSimTranscript, rec, result, str } from './util';
 
 export const assertion: Assertion = {
   id: 'run-sim-plan-ready-artifacts',
@@ -61,10 +61,15 @@ export const assertion: Assertion = {
       return result(ctx, 'FAIL', `The published contract set is internally inconsistent: ${mismatches.join('; ')}.`);
     }
 
-    if (settlement.status !== 'active') {
-      return result(ctx, 'FAIL', `Run settlement is \`${settlement.status}\`; PLAN_READY must leave the run \`active\`.`, {
+    // Point-in-time: PLAN_READY must ACTIVATE the run. Read it from the
+    // transcript snapshot taken immediately after the transaction, not from
+    // disk — a run that goes on to finish legitimately advances to `verified`,
+    // and asserting the live value here would fail every complete run.
+    const atPlanReady = str(rec(transcript.facts).settlementStatus);
+    if (atPlanReady !== 'active') {
+      return result(ctx, 'FAIL', `PLAN_READY left settlement \`${atPlanReady ?? 'absent'}\`; the transaction must activate the run.`, {
         expected: 'active',
-        actual: settlement.status,
+        actual: atPlanReady,
       });
     }
 
