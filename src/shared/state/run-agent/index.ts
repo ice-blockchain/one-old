@@ -11,6 +11,7 @@ export {
   type RunManifest,
 } from './assignments';
 export {
+  activeClaimForOtherThread,
   claimThreadRole,
   disownConflictedRoleAgent,
 } from './claim-thread-role';
@@ -121,6 +122,7 @@ export {
 export {
   runHasEnvironmentBlockedQaOutcome,
   runHasExplicitBlockedQaOutcome,
+  runLedgerStatusRecord,
   runReachedTerminalVerdict,
   runVerificationState,
 } from './terminal-verdict';

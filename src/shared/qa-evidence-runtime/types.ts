@@ -87,6 +87,8 @@ export interface LighthouseArtifactSummaryV1 {
   lcpMs: number;
   cls: number;
   inpMs?: number;
+  fcpMs?: number;
+  tbtMs?: number;
   artifactHash: string;
 }
 
@@ -109,6 +111,12 @@ export interface QaLighthouseEvidenceV1 {
   lcpMs: number;
   cls: number;
   inpMs?: number;
+  // Optional because a partial audit may omit them, and because pre-1.0.39
+  // evidence predates the fields. Recorded so a DECLARED `fcpMaxMs`/`tbtMaxMs`
+  // budget is judgeable on the canonical path instead of only inside the
+  // standalone runner — the split that let 10co pass QA and then fail the gate.
+  fcpMs?: number;
+  tbtMs?: number;
   evidenceHash: string;
 }
 

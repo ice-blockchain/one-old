@@ -130,12 +130,28 @@ export type QaV2FailureCode =
   | 'native-evidence-invalid'
   | 'lighthouse-threshold-failed';
 
+export type QaDimensionStatus = 'passed' | 'failed' | 'advisory-warning' | 'not-required' | 'unknown';
+
+/**
+ * The QA verdict, split by what actually failed. Derived — never producer-
+ * written — so the tester and the final gate cannot report contradictory
+ * statuses for the same run.
+ */
+export interface QaDimensionsV1 {
+  functionalQaStatus: QaDimensionStatus;
+  accessibilityStatus: QaDimensionStatus;
+  responsiveStatus: QaDimensionStatus;
+  lighthouseStatus: QaDimensionStatus;
+  overallStatus: 'passed' | 'failed';
+}
+
 interface QaV2ValidationAccepted {
   ok: true;
   report: QaReportV2;
   contract: VerificationContractV2;
   reportPath: string;
   advisories: string[];
+  dimensions: QaDimensionsV1;
 }
 
 export interface QaV2ValidationRejected {
@@ -145,6 +161,7 @@ export interface QaV2ValidationRejected {
   reportPath: string;
   report?: QaReportV2;
   contract?: VerificationContractV2;
+  dimensions: QaDimensionsV1;
 }
 
 export type QaV2ValidationResult = QaV2ValidationAccepted | QaV2ValidationRejected;

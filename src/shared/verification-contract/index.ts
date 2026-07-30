@@ -14,6 +14,7 @@ import { readJson, writeJson } from '../fsjson';
 import { sha256 } from '../text';
 
 import {
+  DEFAULT_LIGHTHOUSE_THRESHOLDS,
   VERIFICATION_CONTRACT_SCHEMA_VERSION,
   type PerformanceContractV1,
   type VerificationCompileOptions,
@@ -103,8 +104,16 @@ export function buildVerificationContract(
     || plannedImportantVisualChange(projectRoot, architecture)
     || baselineDiff.paths.some((file) => IMPORTANT_VISUAL_PATH_RE.test(file))
   );
+  // A page-speed budget BLOCKS only when someone declared one: an explicit
+  // threshold from the user/plan, an architect `performanceRisk`, or a redesign.
+  // `visual-risk` used to be in this list, which meant any meaningful UI change
+  // silently opted the run into a synthetic budget nobody asked for — observed
+  // 10co, where FCP 1.65s vs a 1.5s default ended a run whose Performance score
+  // was 99. It now yields an ADVISORY contract: still measured, still reported,
+  // never blocking.
   const performanceRequired = webUi
-    && Boolean(explicit || options.redesign || options.performanceRisk || visualRisk);
+    && Boolean(explicit || options.redesign || options.performanceRisk);
+  const performanceAdvisory = webUi && !performanceRequired && visualRisk;
   const performanceReason: PerformanceContractV1['reason'] = explicit
     ? 'explicit'
     : options.redesign
@@ -141,7 +150,12 @@ export function buildVerificationContract(
     buildIdentityRequired: impact === 'behavioral' || impact === 'visual',
     performance: {
       required: performanceRequired,
-      reason: performanceRequired ? performanceReason : 'not-required' as const,
+      advisory: performanceAdvisory,
+      reason: performanceRequired || performanceAdvisory ? performanceReason : 'not-required' as const,
+      // The effective budget is published on the contract so the QA report and
+      // the standalone runner judge the SAME numbers. Without this the runner's
+      // own defaults were a second, invisible authority.
+      thresholds: { ...DEFAULT_LIGHTHOUSE_THRESHOLDS, ...(explicit || {}) },
       ...(explicit ? { explicitThresholds: explicit } : {}),
       ...(options.advisoryLighthouse ? { advisoryThresholds: options.advisoryLighthouse } : {}),
       advisoryTolerancePercent: 3 as const,
@@ -248,6 +262,7 @@ export function currentVerificationSourceHash(
 }
 
 export {
+  DEFAULT_LIGHTHOUSE_THRESHOLDS,
   VERIFICATION_CONTRACT_SCHEMA_VERSION,
   VERIFICATION_SCAN_MAX_FILES,
   type ChangedPathSnapshot,

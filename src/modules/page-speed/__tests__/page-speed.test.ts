@@ -122,6 +122,37 @@ test('page-speed surfaces structured Lighthouse blocked statuses after runner ca
   });
 });
 
+test('a lighthouse runner call sweeps superseded reports for that route', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    // Retention capped these correctly, but its only trigger was SessionStart,
+    // so a run that measured repeatedly kept every pair (observed 10co: six
+    // pairs for `home`, a 14.7 MB reports dir, inside one session).
+    const t1 = '.traffic' + '-one';
+    const lh = path.join(cwd, t1, 'reports', 'lighthouse');
+    fs.mkdirSync(lh, { recursive: true });
+    fs.writeFileSync(path.join(cwd, t1, 'retention.json'),
+      JSON.stringify({ lighthouseKeepPerRoute: 2, orphanTtlDays: 3650 }), 'utf8');
+    const stamps = [
+      '2026-07-30T12-15-01-470Z', '2026-07-30T12-16-24-888Z',
+      '2026-07-30T12-56-15-024Z', '2026-07-30T13-06-29-955Z',
+    ];
+    for (const stamp of stamps) {
+      for (const ext of ['report.json', 'report.html']) {
+        fs.writeFileSync(path.join(lh, `home-${stamp}.${ext}`), 'x', 'utf8');
+      }
+    }
+    assert.equal(fs.readdirSync(lh).length, 8);
+
+    postBuildPageSpeed(ctxFor(cwd, 'node ~/.traffic-one/bin/lighthouse-runner.cjs --route /'));
+
+    const left = fs.readdirSync(lh).sort();
+    assert.equal(left.length, 4, 'the sweep runs at the lighthouse boundary, not only at SessionStart');
+    for (const stamp of stamps.slice(-2)) {
+      assert.ok(left.includes(`home-${stamp}.report.json`), 'the newest pairs survive');
+    }
+  });
+});
+
 test('codex blocked:sandbox prescribes the escalated re-run recipe', () => {
   withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
     const runnerOutput = JSON.stringify({

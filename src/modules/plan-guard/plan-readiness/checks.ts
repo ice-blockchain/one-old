@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   capabilityProfileForRun,
+  readCompiledArchitecture,
 } from '../../../shared/architecture-contract';
 import {
   type StructureFinding,
@@ -18,6 +19,32 @@ import {
   COLLAPSE_SOURCE_RE,
   type Rec,
 } from './context';
+
+/**
+ * Compiled modules a given role owns that do not exist on disk — the same
+ * existence test `contractFindings` reports as `STRUCT_MISSING_PLANNED_MODULE`,
+ * scoped to one owner so a completion gate can raise it against the role that
+ * can actually fix it.
+ *
+ * The full structure scan only runs at the reviewer's `APPROVED`, which is far
+ * too late: a missing planned module discovered there costs a whole fix cycle
+ * (observed 10co, where it hit the two-cycle cap and needed a user
+ * authorization to recover).
+ */
+export function missingPlannedModulesForRole(
+  projectRoot: string,
+  runId: string,
+  ownerRole: string,
+): string[] {
+  if (!runId) return [];
+  const architecture = readCompiledArchitecture(projectRoot, runId);
+  if (!architecture) return [];
+  return (architecture.modules || [])
+    .filter((module) => module.ownerRole === ownerRole)
+    .map((module) => module.output)
+    .filter((output) => output && !fs.existsSync(path.join(projectRoot, output)))
+    .sort();
+}
 
 export /**
  * A QA report that predates the newest implementer digest, i.e. a sweep that did not see
@@ -76,13 +103,52 @@ export function builtAppIdentities(projectRoot: string): string[] {
   }
   const found = new Set<string>();
   for (const root of roots) {
-    for (const outDir of ['dist', 'out']) {
+    // HTML-entry layouts. Only Vite/CRA `dist|out` were recognized before, so
+    // Nuxt, SvelteKit, Angular and Laravel returned NO identity at all — which
+    // silently disabled the `tester-qa-build-identity-*` gates instead of failing
+    // them. A gate that cannot see a build is worse than one that denies.
+    for (const outDir of [
+      'dist', 'out',
+      '.output/public', // Nuxt
+      'build', // SvelteKit adapter-static
+      'public/build', // Laravel + Vite
+    ]) {
       try {
         const html = fs.readFileSync(path.join(root, outDir, 'index.html'), 'utf8');
-        const match = /<script[^>]+src="([^"]*\/assets\/[^"]+\.js)"/.exec(html);
+        const match = /<script[^>]+src="([^"]+\.js)"/.exec(html);
         if (match?.[1]) found.add(path.basename(match[1]));
       } catch {
         // not built with this layout
+      }
+    }
+    // Angular nests one directory per app under dist/, with the entry in browser/.
+    try {
+      for (const entry of fs.readdirSync(path.join(root, 'dist'), { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        for (const nested of [path.join(entry.name, 'browser'), entry.name]) {
+          try {
+            const html = fs.readFileSync(path.join(root, 'dist', nested, 'index.html'), 'utf8');
+            const match = /<script[^>]+src="([^"]+\.js)"/.exec(html);
+            if (match?.[1]) found.add(path.basename(match[1]));
+          } catch {
+            // not this nesting
+          }
+        }
+      }
+    } catch {
+      // no dist/ dir
+    }
+    // Manifest-only builds: Laravel/Vite emits no index.html, and the manifest
+    // names the hashed entry files.
+    for (const manifestPath of ['public/build/manifest.json', 'public/build/.vite/manifest.json']) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(path.join(root, manifestPath), 'utf8')) as
+          Record<string, { file?: unknown }>;
+        for (const entry of Object.values(manifest)) {
+          if (typeof entry?.file === 'string' && entry.file) found.add(path.basename(entry.file));
+        }
+      } catch {
+        // not a Vite manifest build
       }
     }
     try {

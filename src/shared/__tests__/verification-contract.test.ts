@@ -6,12 +6,14 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
+  captureArchitectureBaseline,
   compileArchitecture,
   type ArchitectureInputV1,
 } from '../architecture-contract';
 import {
   changedPathsFromBaseline,
   compileVerificationContract,
+  DEFAULT_LIGHTHOUSE_THRESHOLDS,
   currentVerificationSourceHash,
   deriveUiImpact,
 } from '../verification-contract';
@@ -320,7 +322,11 @@ test('a compiled page missing from the immutable baseline is mechanically a new 
     assert.equal(contract.uiImpact, 'visual');
     assert.deepEqual(contract.changedRoutes, ['/']);
     assert.deepEqual(contract.requiredScreenshotWidths, [390, 1440]);
-    assert.equal(contract.performance.required, true);
+    // A UI change is a reason to MEASURE page speed, not to block a run against
+    // a budget nobody declared (10co died on FCP 1.65s vs a 1.5s default while
+    // scoring Performance 99). Advisory keeps the audit and drops the veto.
+    assert.equal(contract.performance.required, false);
+    assert.equal(contract.performance.advisory, true);
     assert.equal(contract.performance.reason, 'visual-risk');
     assert.equal(contract.performance.explicitThresholds?.seoMin, undefined);
   });
@@ -370,7 +376,8 @@ test('global visual changes cover every compiled route and advisory performance 
       advisoryLighthouse: { performanceMin: 90 },
     });
     assert.deepEqual(contract.changedRoutes, ['/', '/news']);
-    assert.equal(contract.performance.required, true);
+    assert.equal(contract.performance.required, false);
+    assert.equal(contract.performance.advisory, true);
     assert.equal(contract.performance.reason, 'visual-risk');
   });
 });
@@ -408,7 +415,8 @@ test('Tailwind breakpoints and shared component edits are visual and cover every
     assert.equal(contract.tabletRisk, true);
     assert.deepEqual(contract.requiredScreenshotWidths, [390, 768, 1440]);
     assert.deepEqual(contract.changedRoutes, ['/', '/news']);
-    assert.equal(contract.performance.required, true);
+    assert.equal(contract.performance.required, false);
+    assert.equal(contract.performance.advisory, true);
     assert.equal(contract.performance.reason, 'visual-risk');
   });
 });
@@ -739,5 +747,134 @@ test('a missing project scan root is incomplete instead of silently passing', ()
     const changed = changedPathsFromBaseline(cwd, architecture);
     assert.equal(changed.complete, false);
     assert.match(changed.reason || '', /cannot resolve/);
+  });
+});
+
+test('handler-only edits are behavioral in every framework, not just React', () => {
+  withProject((cwd) => {
+    setupReact(cwd);
+    const profile = capabilityProfileForProject(cwd, REACT);
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/pages'), { recursive: true });
+
+    // Handler syntax per framework, with the value it starts from and the value
+    // the edit changes it to. Only React's `on[A-Z]` form was recognized before,
+    // so a handler-only hunk in any of the others read as VISUAL and paid for a
+    // three-viewport screenshot sweep plus Lighthouse.
+    const cases: Array<[string, string, string]> = [
+      ['React.tsx', '<button onClick={() => save(1)}>Go</button>', '<button onClick={() => save(1, 2)}>Go</button>'],
+      ['Vue.vue', '<button @click="save(1)">Go</button>', '<button @click="save(1, 2)">Go</button>'],
+      ['Directive.vue', '<button v-on:click="save(1)">Go</button>', '<button v-on:click="save(1, 2)">Go</button>'],
+      ['Alpine.html', '<button x-on:click="save(1)">Go</button>', '<button x-on:click="save(1, 2)">Go</button>'],
+      ['Live.blade.php', '<button wire:click="save(1)">Go</button>', '<button wire:click="save(1, 2)">Go</button>'],
+      ['Svelte.svelte', '<button on:click={() => save(1)}>Go</button>', '<button on:click={() => save(1, 2)}>Go</button>'],
+      ['Ng.html', '<button (click)="save(1)">Go</button>', '<button (click)="save(1, 2)">Go</button>'],
+    ];
+
+    for (const [name, before] of cases) {
+      fs.writeFileSync(path.join(cwd, `apps/web/src/pages/${name}`), `${before}\n`);
+    }
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Styled.vue'), '<button class="p-6">Go</button>\n');
+    execFileSync('git', ['init', '-q'], { cwd, stdio: 'ignore' });
+    execFileSync('git', ['add', '-A'], { cwd, stdio: 'ignore' });
+    execFileSync('git', [
+      '-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-qm', 'base',
+    ], { cwd, stdio: 'ignore' });
+    const baseline = captureArchitectureBaseline(cwd, profile);
+    assert.equal(baseline.kind, 'git-head', 'fixture guard: hunk evidence needs a git baseline');
+
+    for (const [name, , after] of cases) {
+      const rel = `apps/web/src/pages/${name}`;
+      fs.writeFileSync(path.join(cwd, rel), `${after}\n`);
+      const impact = deriveUiImpact(cwd, profile, [rel], baseline).impact;
+      assert.equal(impact, 'behavioral', `${name}: a handler-only change must not be visual`);
+    }
+
+    // A styling change in the same file shape stays visual.
+    const styled = 'apps/web/src/pages/Styled.vue';
+    fs.writeFileSync(path.join(cwd, styled), '<button class="rounded-xl bg-white p-6 shadow">Go</button>\n');
+    assert.equal(deriveUiImpact(cwd, profile, [styled], baseline).impact, 'visual');
+  });
+});
+
+test('a bare 768 in backend code does not force the tablet viewport', () => {
+  withProject((cwd) => {
+    setupReact(cwd);
+    const profile = capabilityProfileForProject(cwd, REACT);
+    const rel = 'apps/web/src/lib/ports.ts';
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/lib'), { recursive: true });
+    // A literal 768 that is not a breakpoint: it used to add a whole viewport to
+    // every route in the sweep.
+    fs.writeFileSync(path.join(cwd, rel), 'export const MAX_FRAME_BYTES = 768;\n');
+    assert.equal(deriveUiImpact(cwd, profile, [rel]).tabletRisk, false);
+
+    const responsive = 'apps/web/src/pages/Responsive.tsx';
+    fs.writeFileSync(
+      path.join(cwd, responsive),
+      'export const R = () => <main className="md:flex lg:block">x</main>;\n',
+    );
+    assert.equal(deriveUiImpact(cwd, profile, [responsive]).tabletRisk, true);
+  });
+});
+
+// A page-speed budget may only BLOCK when someone declared one. Observed 10co:
+// `visual-risk` silently opted every UI change into a synthetic budget, and the
+// run ended on FCP 1.65s vs a 1.5s default while scoring Performance 99.
+test('only a declared budget makes Lighthouse a required gate; visual risk is advisory', () => {
+  withProject((cwd) => {
+    setupReact(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/styles.css'), 'body { color: black; }\n');
+    const architecture = compileArchitecture(cwd, 'R', REACT, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+    });
+    const compile = (options: Record<string, unknown>): ReturnType<typeof compileVerificationContract> =>
+      compileVerificationContract(cwd, 'R', REACT, architecture, {
+        changedPaths: ['apps/web/src/styles.css'],
+        ...options,
+      });
+
+    const advisory = compile({});
+    assert.equal(advisory.performance.required, false);
+    assert.equal(advisory.performance.advisory, true);
+    assert.equal(advisory.performance.reason, 'visual-risk');
+
+    for (const [label, options] of [
+      ['explicit', { explicitLighthouse: { performanceMin: 95 } }],
+      ['performance-risk', { performanceRisk: true }],
+      ['redesign', { redesign: true }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      const declared = compile(options);
+      assert.equal(declared.performance.required, true, `${label} must block`);
+      assert.equal(declared.performance.advisory, false, `${label} is not advisory`);
+    }
+  });
+});
+
+// One authority: the contract publishes the EFFECTIVE budget so the QA report
+// and the standalone runner cannot reach opposite verdicts on the same audit.
+test('the contract publishes an effective Lighthouse budget, defaults included', () => {
+  withProject((cwd) => {
+    setupReact(cwd);
+    const architecture = compileArchitecture(cwd, 'R', REACT, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+    });
+
+    const fallback = compileVerificationContract(cwd, 'R', REACT, architecture, { changedPaths: [] });
+    // No first-paint budget by default — that is the number that ended 10co.
+    // Checked before the deepEqual below, whose assertion signature would
+    // narrow `thresholds` to the defaults' literal type.
+    assert.equal(fallback.performance.thresholds.fcpMaxMs, undefined);
+    assert.deepEqual(fallback.performance.thresholds, { ...DEFAULT_LIGHTHOUSE_THRESHOLDS });
+
+    const declared = compileVerificationContract(cwd, 'R', REACT, architecture, {
+      changedPaths: [],
+      explicitLighthouse: { performanceMin: 95, fcpMaxMs: 1800 },
+    });
+    assert.equal(declared.performance.thresholds.performanceMin, 95, 'a declared value overrides the default');
+    assert.equal(declared.performance.thresholds.fcpMaxMs, 1800, 'a declared FCP budget is published');
+    assert.equal(declared.performance.thresholds.clsMax, DEFAULT_LIGHTHOUSE_THRESHOLDS.clsMax, 'undeclared keys keep the default');
   });
 });

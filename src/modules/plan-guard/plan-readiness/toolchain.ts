@@ -424,7 +424,7 @@ export function testToolchainGaps(
   projectRoot: string,
   architecture: CompiledArchitectureV1,
   ownerRole: string,
-  performanceRequired = false,
+  performanceAudited = false,
 ): { manifest: string; missing: string[] } | null {
   const infra = (architecture.scaffoldOutputs || []).filter((output) => output.kind === 'test-infra');
   if (infra.length === 0) return null;
@@ -450,13 +450,13 @@ export function testToolchainGaps(
       missing.push(`\`${requirement.script}\` script (${requirement.label})`);
     }
   }
-  // A performance-required verification contract runs project-local Lighthouse
-  // (the canonical runner refuses a global binary). Nothing compiled the
-  // dependency in 8co, so the tester — who does NOT own the manifest — was
-  // blocked and had to route a review finding at the implementer. The manifest
-  // owner ships it up front instead.
-  if (performanceRequired && typeof deps.lighthouse !== 'string') {
-    missing.push('`lighthouse` dependency (performance-required QA)');
+  // A contract that AUDITS page speed — required or advisory — runs
+  // project-local Lighthouse (the canonical runner refuses a global binary).
+  // Nothing compiled the dependency in 8co, so the tester — who does NOT own the
+  // manifest — was blocked and had to route a review finding at the implementer.
+  // The manifest owner ships it up front instead.
+  if (performanceAudited && typeof deps.lighthouse !== 'string') {
+    missing.push('`lighthouse` dependency (page-speed QA)');
   }
   return missing.length > 0 ? { manifest: manifestPath, missing } : null;
 }

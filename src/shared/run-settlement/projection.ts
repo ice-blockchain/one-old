@@ -174,18 +174,34 @@ function legacyProjection(
   return { status: 'active' };
 }
 
+const BLOCKED_OUTCOMES = ['review-cycle-cap', 'test-cycle-cap', 'environment-blocked'];
+
 export function writeLegacyProjection(projectRoot: string, settlement: RunSettlementV2): void {
   const file = path.join(runDir(projectRoot, settlement.runId), 'run.json');
   const existing = readJson<Rec>(file, {});
   const rollbackProtected = existing.qaContractVersion === 2
     || fs.existsSync(path.join(runDir(projectRoot, settlement.runId), 'verification-v2.json'));
   const effectiveExistingOutcome = effectiveLegacyRunOutcome(existing);
+  // `settlement-v2.json` is the canonical, hash-protected record; `run.json` is
+  // only its projection. So the settlement's own `reason` outranks anything
+  // derived from the projection. Without this, projecting a blocked settlement
+  // while `run.json` is transiently non-blocked makes
+  // `effectiveLegacyRunOutcome` short-circuit to '' (it returns '' for
+  // active/planned), `canonicalOutcome` becomes undefined, and
+  // `projectRunLedgerForV2Rollback` defaults it to `environment-blocked` —
+  // silently rewriting a `review-cycle-cap` run as an environment failure
+  // (observed 10co).
+  const settlementBlockedOutcome = settlement.status === 'blocked'
+    && BLOCKED_OUTCOMES.includes(String(settlement.reason || ''))
+    ? settlement.reason
+    : undefined;
   const canonicalOutcome = settlement.status === 'verified' && effectiveExistingOutcome === 'shipped'
     ? 'shipped'
-    : settlement.status === 'blocked'
-      && ['review-cycle-cap', 'test-cycle-cap', 'environment-blocked'].includes(effectiveExistingOutcome)
-      ? effectiveExistingOutcome
-      : undefined;
+    : settlementBlockedOutcome
+      ?? (settlement.status === 'blocked'
+        && BLOCKED_OUTCOMES.includes(effectiveExistingOutcome)
+        ? effectiveExistingOutcome
+        : undefined);
   const projection = rollbackProtected
     ? projectRunLedgerForV2Rollback(
         existing,

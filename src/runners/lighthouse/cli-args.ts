@@ -47,6 +47,85 @@ export interface LighthouseArgs {
   skipPreview?: boolean;
 }
 
+const THRESHOLD_FLAGS = new Set([
+  '--performance-min', '--fcp-max', '--lcp-max', '--tbt-max', '--cls-max',
+]);
+
+/**
+ * The run's verification contract is the single threshold authority. When one
+ * exists, its budget REPLACES this CLI's defaults wholesale — a metric the
+ * contract does not declare is not gated at all.
+ *
+ * Observed 10co: the canonical QA path enforced nothing (no declared budget)
+ * while this runner applied its own `fcpMax: 1500`, so the same audit passed the
+ * tester and then failed the parent gate. An explicit `--fcp-max` on the command
+ * line still wins — that is a human deliberately overriding the contract.
+ *
+ * Best-effort and dependency-free: plain JSON reads, no shared imports (this
+ * runner is ESM-only and cannot require the CJS runtime).
+ */
+export function contractThresholds(rootDir: string): Partial<LighthouseArgs> | null {
+  const readJson = (file: string): Rec | null => {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
+      return parsed && typeof parsed === 'object' ? parsed as Rec : null;
+    } catch {
+      return null;
+    }
+  };
+  const memory = join(rootDir, '.traffic-one');
+  const state = readJson(join(memory, '.one.json'));
+  const runId = typeof state?.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (!runId || /[\\/]/.test(runId)) return null;
+  const contract = readJson(join(memory, 'runs', runId, 'verification-v2.json'));
+  const performance = contract?.performance;
+  if (!performance || typeof performance !== 'object') return null;
+  const thresholds = (performance as Rec).thresholds;
+  if (!thresholds || typeof thresholds !== 'object') return null;
+  const t = thresholds as Rec;
+  const num = (value: unknown): number | null => (
+    typeof value === 'number' && Number.isFinite(value) ? value : null
+  );
+  // Undeclared metrics become unreachable bounds rather than the CLI defaults,
+  // so "the contract set no first-paint budget" reads as "do not gate FCP".
+  return {
+    performanceMin: num(t.performanceMin) ?? 0,
+    fcpMax: num(t.fcpMaxMs) ?? Number.POSITIVE_INFINITY,
+    lcpMax: num(t.lcpMaxMs) ?? Number.POSITIVE_INFINITY,
+    tbtMax: num(t.tbtMaxMs) ?? Number.POSITIVE_INFINITY,
+    clsMax: num(t.clsMax) ?? Number.POSITIVE_INFINITY,
+  };
+}
+
+const CLI_FLAG_FOR_THRESHOLD: Record<string, string> = {
+  performanceMin: '--performance-min',
+  fcpMax: '--fcp-max',
+  lcpMax: '--lcp-max',
+  tbtMax: '--tbt-max',
+  clsMax: '--cls-max',
+};
+
+/**
+ * Merge the run contract's budget into parsed args. A threshold the operator
+ * passed on the command line always wins; everything else defers to the
+ * contract. No contract (or no Traffic One project) leaves `args` untouched.
+ */
+export function applyContractThresholds(
+  args: LighthouseArgs,
+  rootDir: string,
+  argv: string[],
+): LighthouseArgs {
+  const fromContract = contractThresholds(rootDir);
+  if (!fromContract) return args;
+  const cliFlags = new Set(argv.filter((item) => THRESHOLD_FLAGS.has(item)));
+  const merged = { ...args };
+  for (const [key, value] of Object.entries(fromContract)) {
+    if (cliFlags.has(CLI_FLAG_FOR_THRESHOLD[key] || '')) continue;
+    (merged as unknown as Rec)[key] = value;
+  }
+  return merged;
+}
+
 export function parseArgs(argv: string[]): LighthouseArgs {
   const args: LighthouseArgs = { ...DEFAULTS, build: true, preview: true, localOnly: false };
   for (let index = 0; index < argv.length; index += 1) {

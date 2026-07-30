@@ -23,6 +23,7 @@ import {
   type QaV2ValidationRejected,
   type QaV2ValidationResult,
 } from './schema';
+import { qaDimensions } from './dimensions';
 import {
   acceptanceAttests,
   artifactValid,
@@ -69,6 +70,10 @@ function thresholdFailures(
     ['lcpMaxMs', 'lcpMs'],
     ['clsMax', 'cls'],
     ['inpMaxMs', 'inpMs'],
+    // Judgeable on the canonical path so a declared first-paint / blocking-time
+    // budget is enforced HERE and not only inside the standalone runner.
+    ['fcpMaxMs', 'fcpMs'],
+    ['tbtMaxMs', 'tbtMs'],
   ];
   for (const [thresholdKey, evidenceKey] of maxes) {
     const threshold = thresholds[thresholdKey];
@@ -87,8 +92,20 @@ function reject(
   message: string,
   report?: QaReportV2,
   contract?: VerificationContractV2,
+  lighthouse?: { hasEvidence: boolean; thresholdFailures: string[] },
 ): QaV2ValidationRejected {
-  return { ok: false, code, message, reportPath: qaReportV2Path(projectRoot, runId), ...(report ? { report } : {}), ...(contract ? { contract } : {}) };
+  return {
+    ok: false,
+    code,
+    message,
+    reportPath: qaReportV2Path(projectRoot, runId),
+    ...(report ? { report } : {}),
+    ...(contract ? { contract } : {}),
+    // Carried on the failure path too: "which dimension failed" is exactly what
+    // a rejected run needs to report, and it is what tells a fix cycle whether
+    // it has anything blocking to fix at all.
+    dimensions: qaDimensions(report, contract, lighthouse),
+  };
 }
 
 export function validateQaReportV2(
@@ -125,7 +142,18 @@ export function validateQaReportV2(
         || /\bdoes(?:\s+not|n't)\s+(?:render|touch|create|use|produce|affect)\b.{0,60}\bDOM\b/i.test(check.summary)
         || /\bDOM\b.{0,60}\b(?:is\s+)?(?:absent|not\s+present|unaffected)\b/i.test(check.summary)
       );
-    if (check?.status !== 'passed' && !justifiedNoDom) {
+    // A quality command the project does not declare is honestly reported, not
+    // silently passed. `stack-build` is deliberately excluded: a backend that
+    // does not build is broken, and every supported backend has a build form.
+    // Test and lint coverage is still guarded independently by the tester's own
+    // completion gate, so this cannot become the only thing standing between an
+    // untested service and settlement.
+    const justifiedNoStackCommand = (required === 'stack-test' || required === 'stack-lint' || required === 'stack-performance')
+      && check?.status === 'not-applicable'
+      && typeof check.summary === 'string'
+      && /\bnot run:/i.test(check.summary)
+      && /\b(?:declares no|could not be executed)\b/i.test(check.summary);
+    if (check?.status !== 'passed' && !justifiedNoDom && !justifiedNoStackCommand) {
       return reject(projectRoot, runId, 'required-check-failed', `Required check ${required} did not pass.`, report, contract);
     }
   }
@@ -241,9 +269,22 @@ export function validateQaReportV2(
       );
     }
     lighthouseEvidence = lighthouse.evidence;
-    const exactFailures = thresholdFailures(lighthouseEvidence, contract.performance.explicitThresholds || {}, 0);
+    // Judge the contract's EFFECTIVE budget, not just what the plan declared.
+    // `explicitThresholds || {}` meant a required performance contract with no
+    // declared numbers enforced nothing here, while the standalone runner
+    // applied its own defaults — the two paths reached opposite verdicts on the
+    // same audit (observed 10co).
+    const exactFailures = thresholdFailures(lighthouseEvidence, contract.performance.thresholds || {}, 0);
     if (exactFailures.length > 0) {
-      return reject(projectRoot, runId, 'lighthouse-threshold-failed', exactFailures.join('; '), report, contract);
+      return reject(
+        projectRoot,
+        runId,
+        'lighthouse-threshold-failed',
+        exactFailures.join('; '),
+        report,
+        contract,
+        { hasEvidence: true, thresholdFailures: exactFailures },
+      );
     }
   } else if (report.lighthouse?.evidencePath) {
     const lighthouse = validateLighthouseEvidence(
@@ -272,6 +313,21 @@ export function validateQaReportV2(
       contract.performance.advisoryTolerancePercent,
     ));
   }
+  // An ADVISORY performance contract is measured against the same effective
+  // budget as a required one, but a miss is a warning: it is reported, it never
+  // rejects the run, and it must never start a fix cycle.
+  const advisoryThresholdFailures = lighthouseEvidence && contract.performance.advisory
+    ? thresholdFailures(
+      lighthouseEvidence,
+      contract.performance.thresholds || {},
+      contract.performance.advisoryTolerancePercent,
+    )
+    : [];
+  advisories.push(...advisoryThresholdFailures.map((failure) => `advisory page-speed: ${failure}`));
+  const lighthouseSummary = {
+    hasEvidence: Boolean(lighthouseEvidence),
+    thresholdFailures: advisoryThresholdFailures,
+  };
   if (requiresBuildIdentity
     && !previouslyAttested
     && !writeAcceptanceAttestation(projectRoot, runId, report, contract, source.hash)) {
@@ -282,9 +338,17 @@ export function validateQaReportV2(
       'Live build identity passed, but its durable QA acceptance attestation could not be persisted.',
       report,
       contract,
+      lighthouseSummary,
     );
   }
-  return { ok: true, report, contract, reportPath: qaReportV2Path(projectRoot, runId), advisories };
+  return {
+    ok: true,
+    report,
+    contract,
+    reportPath: qaReportV2Path(projectRoot, runId),
+    advisories,
+    dimensions: qaDimensions(report, contract, lighthouseSummary),
+  };
 }
 
 export function readQaReportV2(projectRoot: string, runId: string): QaV2ValidationResult {
@@ -308,10 +372,13 @@ export {
   qaReportV2Path,
   type QaAcceptanceAttestationV1,
   type QaBuildIdentityV2,
+  type QaDimensionStatus,
+  type QaDimensionsV1,
   type QaReportV2,
   type QaV2FailureCode,
   type QaV2ValidationRejected,
   type QaV2ValidationResult,
   type QaViewportV2,
 } from './schema';
+export { qaDimensions } from './dimensions';
 export { qaReportV2ContentHash } from './artifacts';

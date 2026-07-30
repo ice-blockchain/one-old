@@ -12,6 +12,7 @@ import { withProjectStateLock } from '../state/project-state-lock';
 import { strictRunVerificationEvidence } from '../strict-verification-evidence';
 
 import {
+  RUN_RESUME_AUTHORIZATION,
   RUN_SETTLEMENT_MIN_RUNTIME_VERSION,
   RUN_SETTLEMENT_SCHEMA_VERSION,
   runDir,
@@ -121,7 +122,20 @@ export function writeRunSettlement(
       // Canonical terminal settlements are immutable for this run. A delayed
       // projection/reconciliation pass may have read an older active ledger,
       // but it must never reopen verified, failed, or blocked work.
-      if (previous && ['verified', 'failed', 'blocked'].includes(previous.status)) {
+      //
+      // The single exception is the ledger's own resume edge: transitionRunStatus
+      // sets `authorizedResume` only after the run-ledger state machine accepted
+      // the exact user-authorized reason. Without it, `writeLegacyProjection`
+      // re-projected the STALE blocked settlement over the run.json the ledger
+      // had just advanced, silently reverting an authorized resume and stranding
+      // every newly spawned child with an unclaimable role (observed 10co).
+      // `verified` and `failed` are unreachable from here, and the requested
+      // status is pinned to `active`, so this expresses `blocked -> active` and
+      // nothing else.
+      const authorizedResume = update.authorizedResume === RUN_RESUME_AUTHORIZATION
+        && update.status === 'active'
+        && previous?.status === 'blocked';
+      if (previous && !authorizedResume && ['verified', 'failed', 'blocked'].includes(previous.status)) {
         written = previous;
         writeLegacyProjection(projectRoot, previous);
         return;

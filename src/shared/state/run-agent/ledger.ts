@@ -13,6 +13,7 @@ import {
   UNKNOWN_STACK_FINGERPRINT,
 } from '../materialization';
 import {
+  RUN_RESUME_AUTHORIZATION,
   effectiveLegacyRunOutcome,
   effectiveLegacyRunStatus,
   projectRunLedgerForV2Rollback,
@@ -84,8 +85,22 @@ function runLedgerTransitionAllowed(from: RunLedgerStatus, to: RunLedgerStatus, 
   if (from === to) return true;
   if (from === 'planned') return to === 'active' || to === 'blocked' || to === 'failed' || to === 'completed';
   if (from === 'active') return to === 'completed' || to === 'blocked' || to === 'failed';
-  if (from === 'blocked') return to === 'active' && reason === 'user-authorized-extra-cycle';
+  if (from === 'blocked') return to === 'active' && reason === RUN_RESUME_AUTHORIZATION;
   return false;
+}
+
+// Did the record just persisted actually END on a user-authorized
+// `blocked -> active` resume? Read from the immutable transition entry rather
+// than the caller's request, so only a transition this state machine already
+// accepted can unlock the canonical settlement's blocked edge. This works
+// because `writeRunLedgerTransition` deletes `next.reason` but keeps it on the
+// history entry — the history entry is the only durable proof.
+function ledgerRecordsAuthorizedResume(ledger: Rec): boolean {
+  const history = Array.isArray(ledger.transitionHistory) ? ledger.transitionHistory : [];
+  const last = obj(history[history.length - 1]);
+  return last?.from === 'blocked'
+    && last?.to === 'active'
+    && last?.reason === RUN_RESUME_AUTHORIZATION;
 }
 
 // Can a worker claim be staked in this run RIGHT NOW? Mirrors exactly what
@@ -361,8 +376,20 @@ export function transitionRunStatus(
     result = writeRunLedgerTransition(cwd, id, options as unknown as Rec, { requireValidTransition: true });
   });
   if (!locked || !result) return null;
-  const settlement = syncCanonicalSettlementFromLedger(cwd, id, result, true);
-  if (options.status === 'completed' && settlement !== 'verified') return null;
+  // Two independent conjuncts: the caller must ASK for the authorized resume,
+  // and the persisted ledger must SHOW the state machine granted it. A stale
+  // reconciliation pass satisfies neither.
+  const resumeAuthorized = options.status === 'active'
+    && options.reason === RUN_RESUME_AUTHORIZATION
+    && ledgerRecordsAuthorizedResume(result);
+  const settlement = syncCanonicalSettlementFromLedger(cwd, id, result, true, resumeAuthorized);
+  // The ledger write and the canonical settlement write are two different files.
+  // A settlement that did NOT reach the requested canonical status means the run
+  // did not advance: writeLegacyProjection has already re-projected run.json from
+  // the settlement, so returning the ledger record hands the caller a success the
+  // very next read contradicts (observed 10co on an authorized resume).
+  const requested: CanonicalRunStatus = options.status === 'completed' ? 'verified' : options.status;
+  if (settlement !== requested) return null;
   return result;
 }
 
@@ -371,6 +398,7 @@ function syncCanonicalSettlementFromLedger(
   runId: string,
   ledger: Rec,
   explicitStatus: boolean,
+  authorizedResume = false,
 ): CanonicalRunStatus | null {
   const ledgerStatus = isRunLedgerStatus(ledger.status) ? ledger.status : 'planned';
   const previous = readRunSettlement(cwd, runId);
@@ -391,6 +419,8 @@ function syncCanonicalSettlementFromLedger(
 
   // A metadata-only legacy-ledger refresh must not regress a richer canonical
   // lifecycle stage that was already written by the OpenCode runner/verifier.
+  // Only `ensureRunLedger` passes `explicitStatus: false`; `transitionRunStatus`
+  // always passes true, so its strict post-sync status check never sees a clamp.
   if (!explicitStatus
     && status === 'active'
     && (previous?.status === 'code-delivered' || previous?.status === 'validating')) {
@@ -414,6 +444,9 @@ function syncCanonicalSettlementFromLedger(
     ...(previous?.workUnitContractHash ? { workUnitContractHash: previous.workUnitContractHash } : {}),
     ...(previous?.allowlistHash ? { allowlistHash: previous.allowlistHash } : {}),
     ...(fallback ? { fallback } : {}),
+    ...(authorizedResume && status === 'active'
+      ? { authorizedResume: RUN_RESUME_AUTHORIZATION }
+      : {}),
     incompleteChecks,
   });
   return settlement?.status || null;

@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { pruneTrafficOneBackups, sweepTrafficOneRetention } from '../retention';
+import { reportBaseName } from '../../runners/lighthouse/lib';
 
 function withProject(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-retention-'));
@@ -146,5 +147,75 @@ test('pruneTrafficOneBackups never drops the snapshot the caller may restore fro
     const left = fs.readdirSync(path.join(dir, t1, 'backups')).sort();
     assert.ok(left.includes('001'), 'the live snapshot is never a prune candidate');
     assert.ok(left.length >= 1);
+  });
+});
+
+// The per-route Lighthouse rule had NO coverage at all, which is how it shipped
+// correct but effectively dead: its only trigger was SessionStart, so a long
+// build session accumulated six report pairs for one route (~14.7 MB reports
+// dir, observed 10co) and nothing ever noticed.
+function lighthouseReport(dir: string, t1: string, route: string, stamp: string): void {
+  const base = path.join(dir, t1, 'reports', 'lighthouse');
+  fs.mkdirSync(base, { recursive: true });
+  for (const ext of ['report.json', 'report.html']) {
+    fs.writeFileSync(path.join(base, `${route}-${stamp}.${ext}`), 'x', 'utf8');
+  }
+}
+
+test('lighthouse reports are capped per ROUTE, keeping the newest pairs', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    fs.writeFileSync(
+      path.join(dir, t1, 'retention.json'),
+      JSON.stringify({ lighthouseKeepPerRoute: 2, orphanTtlDays: 3650 }),
+      'utf8',
+    );
+    // Synthetic names must match what the runner actually writes; the shape is
+    // pinned against reportBaseName so a rename there breaks this test.
+    const shape = reportBaseName('http://127.0.0.1:4173/');
+    assert.match(shape, /^home-\d{4}-\d{2}-\d{2}T[\d-]+Z$/, 'reportBaseName shape changed');
+
+    const homeStamps = [
+      '2026-07-30T12-15-01-470Z', '2026-07-30T12-16-24-888Z', '2026-07-30T12-56-15-024Z',
+      '2026-07-30T13-06-29-955Z', '2026-07-30T13-28-07-823Z', '2026-07-30T13-34-52-417Z',
+    ];
+    for (const stamp of homeStamps) lighthouseReport(dir, t1, 'home', stamp);
+    lighthouseReport(dir, t1, 'courses', '2026-07-30T12-20-00-000Z');
+    lighthouseReport(dir, t1, 'courses', '2026-07-30T12-40-00-000Z');
+    assert.equal(fs.readdirSync(path.join(dir, t1, 'reports', 'lighthouse')).length, 16);
+
+    sweepTrafficOneRetention(dir, { dryRun: false });
+
+    const left = fs.readdirSync(path.join(dir, t1, 'reports', 'lighthouse')).sort();
+    // Two pairs per route, and the survivors are the NEWEST — a run that keeps
+    // measuring must not lose the report it just produced.
+    assert.equal(left.filter((name) => name.startsWith('home-')).length, 4);
+    assert.equal(left.filter((name) => name.startsWith('courses-')).length, 4);
+    for (const stamp of homeStamps.slice(-2)) {
+      assert.ok(left.includes(`home-${stamp}.report.json`), `newest home ${stamp} must survive`);
+      assert.ok(left.includes(`home-${stamp}.report.html`), `newest home ${stamp} must survive`);
+    }
+    for (const stamp of homeStamps.slice(0, 4)) {
+      assert.ok(!left.includes(`home-${stamp}.report.json`), `superseded home ${stamp} must go`);
+    }
+  });
+});
+
+test('a dry-run sweep never deletes a lighthouse report', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    fs.writeFileSync(
+      path.join(dir, t1, 'retention.json'),
+      JSON.stringify({ lighthouseKeepPerRoute: 1, orphanTtlDays: 3650 }),
+      'utf8',
+    );
+    for (const stamp of ['2026-07-30T12-15-01-470Z', '2026-07-30T12-16-24-888Z']) {
+      lighthouseReport(dir, t1, 'home', stamp);
+    }
+    const before = fs.readdirSync(path.join(dir, t1, 'reports', 'lighthouse')).sort();
+    const result = sweepTrafficOneRetention(dir);
+    assert.equal(result.removed, 0);
+    assert.ok(result.actions.length > 0, 'the superseded pair is still reported as a candidate');
+    assert.deepEqual(fs.readdirSync(path.join(dir, t1, 'reports', 'lighthouse')).sort(), before);
   });
 });

@@ -104,11 +104,23 @@ export const SKIP_DIRS = new Set([
   '.claude', '.codex', '.cursor', '.devin', '.kilo', '.idea', '.vscode',
 ]);
 
-// Lockfiles and OS/editor droppings. A lockfile appears the moment an
-// implementer installs the dependency a completion gate itself demanded, so it
-// must never read as an unauthorized changed path.
-export const SKIP_FILES = new Set([
+// OS/editor droppings. Noise for every consumer, git included.
+export const SKIP_OS_FILES = new Set([
   '.DS_Store', 'Thumbs.db',
+]);
+
+// Lockfiles. A lockfile appears the moment an implementer installs the
+// dependency a completion gate itself demanded, so it must never read as an
+// unauthorized changed path.
+//
+// SCAN-ONLY. Git must TRACK these: a project that does not commit its lockfile
+// cannot reproduce its install. Kept separate from `SKIP_OS_FILES` so the
+// generated `.gitignore` can reuse this authority without inheriting a rule
+// that is only correct for the verifier (observed 10co: the emitted
+// `.gitignore` hid a 175 KB `pnpm-lock.yaml` from git entirely).
+export const SKIP_LOCKFILES = new Set([
   'bun.lockb', 'bun.lock', 'Cargo.lock', 'composer.lock', 'deno.lock', 'Gemfile.lock',
   'package-lock.json', 'pnpm-lock.yaml', 'poetry.lock', 'uv.lock', 'yarn.lock',
 ]);
+
+export const SKIP_FILES = new Set([...SKIP_OS_FILES, ...SKIP_LOCKFILES]);

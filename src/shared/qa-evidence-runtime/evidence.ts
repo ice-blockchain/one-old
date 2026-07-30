@@ -417,6 +417,8 @@ export function readLighthouseArtifact(filePath: string): LighthouseArtifactSumm
     'interaction-to-next-paint',
     'experimental-interaction-to-next-paint',
   ]);
+  const fcpMs = auditNumeric(parsed.audits, ['first-contentful-paint']);
+  const tbtMs = auditNumeric(parsed.audits, ['total-blocking-time']);
   if (performance === null
     || accessibility === null
     || bestPractices === null
@@ -433,6 +435,8 @@ export function readLighthouseArtifact(filePath: string): LighthouseArtifactSumm
     lcpMs,
     cls,
     ...(inpMs === null ? {} : { inpMs }),
+    ...(fcpMs === null ? {} : { fcpMs }),
+    ...(tbtMs === null ? {} : { tbtMs }),
     artifactHash: sha256Bytes(buffer),
   };
 }

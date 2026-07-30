@@ -557,6 +557,22 @@ to the live `senior-tester` and require an updated `tester.md` digest and QA
 report. Repeat until the evidence-valid `TESTS_GREEN` combination above or the
 2-cycle cap.
 
+An `advisory-warning` dimension is NOT a failure. The QA verdict is reported per
+dimension — `functionalQaStatus`, `accessibilityStatus`, `responsiveStatus`,
+`lighthouseStatus`, `overallStatus` — and only a `failed` dimension is a reason
+to act. Never send an advisory page-speed warning to an implementer, never spawn
+a fix or replacement agent for one, and never count it against the 2-cycle cap:
+no gate is failing, so there is nothing a fix cycle can settle. Report the
+warning to the user alongside the green result. A page-speed budget blocks only
+when the plan declared one (`explicitLighthouse`, `performanceRisk`, or a
+redesign); a synthetic threshold missed by ~100-200ms with an otherwise passing
+audit is a warning, not a run-ender (measured 10co: a run died on FCP 1.65s
+against a 1.5s default while scoring Performance 99).
+
+When a dimension IS `failed`, re-run only that dimension — the affected routes
+and the viewports where the problem appeared — not the whole matrix. Reserve one
+full QA sweep for the final verification.
+
 `blocked-environment` is `TESTS_FAILING`, never green, and does not consume a
 fix cycle because no implementation changed. A missing browser blocks only a
 `behavioral` or `visual` web contract; it cannot block `none` or `nonvisual`.

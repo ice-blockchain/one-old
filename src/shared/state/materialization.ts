@@ -68,6 +68,17 @@ export function activeAgentRole(state: unknown): string | null {
   return typeof role === 'string' && VALID_AGENT_ROLES.has(role) ? role : null;
 }
 
+// Secondary input to `nextSpawnIndex` only, and 0 on any host that binds roles
+// through `bindThreadRole` (Codex, Claude agent-teams): that path deliberately
+// declines `writeState()` so parallel subagents cannot clobber the shared
+// `.one.json`, so `state.spawnIndex` is simply never written there. The
+// authoritative count is the on-disk claim files — see `nextSpawnIndex`, which
+// takes `Math.max(stateIndex, diskIndex, 1)`.
+//
+// Do NOT build a gate on this alone. `isFixCycleSession()` did exactly that and
+// was silently `false` for every Codex run; it was deleted rather than fixed
+// because it had no production callers. Read `spawnIndex` off the resolved
+// `RunAgentContext` instead, the way `subagentRoleContext` does.
 export function getSpawnIndex(state: unknown, role: string): number {
   const s = obj(state);
   if (!s) return 0;
@@ -75,11 +86,4 @@ export function getSpawnIndex(state: unknown, role: string): number {
   if (!map) return 0;
   const n = map[role];
   return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0;
-}
-
-export function isFixCycleSession(state: unknown): boolean {
-  if (!isSubagentSession(state)) return false;
-  const role = activeAgentRole(state);
-  if (!role) return false;
-  return getSpawnIndex(state, role) > 1;
 }

@@ -16,6 +16,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   DEFAULTS,
+  applyContractThresholds,
   type PackageManager,
   classifyBlockedStatus,
   createAuditUrl,
@@ -270,7 +271,7 @@ function closePreview(preview: PreviewHandle | null): void {
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  let args = parseArgs(process.argv.slice(2));
   if (args.help) {
     process.stdout.write(`${usage()}\n`);
     return;
@@ -281,6 +282,9 @@ async function main(): Promise<void> {
 
   const rootPackage = findUp('package.json', process.cwd());
   const rootDir = rootPackage ? resolve(rootPackage, '..') : process.cwd();
+  // The run's verification contract outranks this CLI's own defaults, so the
+  // tester and the final gate judge the same audit against the same budget.
+  args = applyContractThresholds(args, rootDir, process.argv.slice(2));
   const frontendApp = findFrontendApp(rootDir);
   const appDir = frontendApp.appDir;
   const packageManager = detectPackageManager(rootDir);

@@ -317,6 +317,8 @@ export {
   classifyBlockedStatus,
   detectPackageManager,
   findUp,
+  applyContractThresholds,
+  contractThresholds,
   lighthouseMissingMessage,
   parseArgs,
   readJson,

@@ -38,6 +38,14 @@ export interface RunSettlementV2 {
   settlementHash: string;
 }
 
+/**
+ * The one machine-verifiable resume authorization. Must stay identical to the
+ * reason `runLedgerTransitionAllowed` requires for `blocked -> active`, because
+ * the settlement guard and the ledger state machine are two enforcement points
+ * for the SAME rule — not two rules that can disagree.
+ */
+export const RUN_RESUME_AUTHORIZATION = 'user-authorized-extra-cycle' as const;
+
 export interface SettlementUpdate {
   status: CanonicalRunStatus;
   reason?: string;
@@ -45,6 +53,17 @@ export interface SettlementUpdate {
   allowlistHash?: string;
   fallback?: RunSettlementV2['fallback'];
   incompleteChecks?: string[];
+  /**
+   * Set ONLY by `transitionRunStatus`, and only after `writeRunLedgerTransition`
+   * actually recorded a user-authorized `blocked -> active` entry. Unlocks
+   * exactly one edge of the terminal-immutability guard; `verified` and `failed`
+   * stay absolutely immutable for every caller.
+   *
+   * A string-literal type rather than a boolean on purpose: no generic truthy
+   * flag can widen the hatch, and grepping the constant enumerates every
+   * producer.
+   */
+  authorizedResume?: typeof RUN_RESUME_AUTHORIZATION;
 }
 
 export interface RunV2RollbackBarrierProjection {

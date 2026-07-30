@@ -44,6 +44,7 @@ import {
   roleForRunSessionId,
   runHasOrchestratedArtifacts,
   runIdNow,
+  runLedgerAdmitsClaims,
   runReachedTerminalVerdict,
   runSettledForRotation,
   runVerificationState,
@@ -64,6 +65,9 @@ import { observeCodexChildModel } from '../codex-model-observation';
 import {
   activateRunV2RollbackBarrier,
   effectiveLegacyRunStatus,
+  readRunSettlement,
+  reconcileRunSettlement,
+  writeRunSettlement,
 } from '../../run-settlement';
 
 function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
@@ -956,6 +960,112 @@ test('current V2 ledger writes preserve the irreversible raw rollback projection
     assert.equal(raw.outcome, 'agent-failed');
     assert.equal(effectiveLegacyRunStatus(raw, '1.0.19'), 'failed');
     assert.equal(effectiveLegacyRunStatus(raw, '1.0.20'), 'active');
+  });
+});
+
+// Regression for the 10co deadlock. Every prior blocked-resume test built a V1
+// ledger, so `syncCanonicalSettlementFromLedger` bailed before it ever reached
+// `writeRunSettlement` and the sidecar never existed. With a V2 ledger AND a
+// canonical settlement, the settlement's terminal-immutability guard treated
+// `blocked` as absorbing, re-projected the stale settlement over the run.json
+// the ledger had just advanced, and reported success anyway — so the run stayed
+// canonically blocked and no NEW child could ever claim a role in it.
+function seedBlockedV2Run(dir: string, runId: string): void {
+  assert.ok(transitionRunStatus(dir, runId, { status: 'active', kind: 'orchestration' }));
+  assert.ok(activateRunV2RollbackBarrier(dir, runId));
+  // Mirrors plan-readiness: barrier activation is always followed by the first
+  // canonical settlement write, which is what creates the sidecar.
+  assert.ok(writeRunSettlement(dir, runId, {
+    status: 'active',
+    incompleteChecks: ['verification-not-started'],
+  }));
+  assert.ok(transitionRunStatus(dir, runId, { status: 'blocked', outcome: 'review-cycle-cap' }));
+  const blocked = readRunSettlement(dir, runId);
+  assert.equal(blocked?.status, 'blocked');
+  assert.equal(blocked?.reason, 'review-cycle-cap');
+}
+
+function rawLedger(dir: string, runId: string): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(
+    path.join(dir, '.traffic-one', 'runs', runId, 'run.json'),
+    'utf8',
+  ));
+}
+
+test('an authorized resume of a V2 blocked run advances the canonical settlement and lets a new child claim', () => {
+  withPrefs((dir) => {
+    const runId = 'v2-authorized-resume';
+    seedBlockedV2Run(dir, runId);
+    const blockedRevision = readRunSettlement(dir, runId)!.revision;
+    assert.equal(rawLedger(dir, runId).canonicalStatus, 'blocked');
+
+    const resumed = transitionRunStatus(dir, runId, {
+      status: 'active',
+      reason: 'user-authorized-extra-cycle',
+    });
+    assert.ok(resumed, 'an authorized resume must not report failure');
+    assert.equal(resumed!.status, 'active');
+
+    const settlement = readRunSettlement(dir, runId);
+    assert.equal(settlement?.status, 'active', 'the canonical settlement must actually advance');
+    assert.equal(settlement!.revision, blockedRevision + 1);
+
+    const raw = rawLedger(dir, runId);
+    assert.equal(raw.canonicalStatus, 'active');
+    assert.equal(
+      (raw.runtimeV2RollbackGuard as Record<string, unknown>).canonicalStatus,
+      'active',
+    );
+    // The rollback barrier itself must survive the resume untouched: runtime
+    // 1.0.19 still has to read an irreversible failed run.
+    assert.equal(raw.status, 'failed');
+    assert.equal(raw.outcome, 'agent-failed');
+    assert.equal(effectiveLegacyRunStatus(raw, '1.0.19'), 'failed');
+
+    // Exactly one resume entry — the live defect produced two, the second still
+    // reading `from: "blocked"`, which is what proved the status never advanced.
+    const history = raw.transitionHistory as Array<Record<string, unknown>>;
+    const resumes = history.filter((entry) => entry.from === 'blocked' && entry.to === 'active');
+    assert.equal(resumes.length, 1);
+    assert.equal(resumes[0]!.reason, 'user-authorized-extra-cycle');
+
+    // The user-visible symptom: this is the exact call claim-thread-role makes.
+    assert.equal(runLedgerAdmitsClaims(dir, runId), true);
+    const claimLedger = ensureRunLedger(dir, runId, { status: 'active', kind: 'agent-claim' });
+    assert.equal(claimLedger?.status, 'active', 'a new child must be able to stake a claim');
+  });
+});
+
+test('a blocked V2 run stays blocked for every writer that lacks the resume authorization', () => {
+  withPrefs((dir) => {
+    const runId = 'v2-resume-hatch';
+    seedBlockedV2Run(dir, runId);
+    const before = readRunSettlement(dir, runId)!;
+
+    assert.equal(transitionRunStatus(dir, runId, { status: 'active' }), null,
+      'a resume without the authorization reason must fail');
+    assert.equal(ensureRunLedger(dir, runId, { status: 'active', kind: 'agent-claim' }), null,
+      'a claim attempt must never double as a resume');
+    assert.equal(reconcileRunSettlement(dir, runId)?.status, 'blocked',
+      'a prompt-boundary reconciliation must not reopen blocked work');
+    // A stale writer must not be able to launder the authorization into a
+    // non-`active` target either.
+    assert.ok(writeRunSettlement(dir, runId, {
+      status: 'verified',
+      authorizedResume: 'user-authorized-extra-cycle',
+    }));
+
+    const after = readRunSettlement(dir, runId)!;
+    assert.equal(after.status, 'blocked');
+    assert.equal(after.reason, 'review-cycle-cap');
+    assert.equal(after.revision, before.revision);
+    assert.equal(after.settlementHash, before.settlementHash);
+    assert.equal(rawLedger(dir, runId).canonicalStatus, 'blocked');
+    // And the blocked outcome must not decay into the generic environment one.
+    assert.equal(
+      (rawLedger(dir, runId).runtimeV2RollbackGuard as Record<string, unknown>).canonicalOutcome,
+      'review-cycle-cap',
+    );
   });
 });
 

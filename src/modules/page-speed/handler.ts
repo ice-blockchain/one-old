@@ -10,6 +10,7 @@ import { authSatisfied } from '../../shared/auth';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { firstEmitThisSession } from '../../shared/once';
+import { sweepTrafficOneRetention } from '../../shared/retention';
 import { hookSessionIdentity, isWebState, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { logToolUse } from '../../shared/token-logger';
@@ -112,6 +113,18 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
   logToolUse(cwd, ctx.input.raw && typeof ctx.input.raw === 'object' ? (ctx.input.raw as Record<string, unknown>) : null);
   const command = ctx.input.tool?.command ?? '';
   if (LIGHTHOUSE_COMMAND_RE.test(command)) {
+    // The runner just wrote another ~1.3 MB report pair into
+    // `.traffic-one/reports/lighthouse/`. Retention already caps those at
+    // `lighthouseKeepPerRoute`, but its only trigger was SessionStart, so a long
+    // build session never swept: observed 10co, six pairs for the single `home`
+    // route and a 14.7 MB reports dir inside one run. This is the natural
+    // boundary — the files exist, and we are already parsing this command.
+    // Best-effort: retention must never turn a page-speed hook into a failure.
+    try {
+      sweepTrafficOneRetention(cwd, { dryRun: false });
+    } catch {
+      // ignore — a busy or partially-written report dir is swept next time
+    }
     const blocked = lighthouseBlockedStatus(ctx.input.raw);
     if (blocked) {
       const label = blocked.status === 'blocked:sandbox'

@@ -121,12 +121,25 @@ export function unresolvedRunDirective(cwd: string, state: Rec, promptText: stri
     // A capped/environment-blocked run may resume only after the user explicitly
     // authorizes another cycle. This exact transition reason is the ledger's
     // machine-verifiable authorization; it also activates/upgrades legacy runs.
-    transitionRunStatus(cwd, runId, {
+    const resumed = transitionRunStatus(cwd, runId, {
       status: 'active',
       reason: 'user-authorized-extra-cycle',
       kind: 'unresolved-resume',
       stackFingerprint: stackFingerprint(state),
     });
+    // A resume that did NOT take effect must not read as one. Observed 10co: the
+    // ledger recorded the authorization while the canonical settlement stayed
+    // blocked, so the orchestrator spawned a fix cycle into a run whose every
+    // NEW child was denied its role claim for the rest of the session. Say so
+    // instead of emitting the ordinary continue directive.
+    if (!resumed) {
+      return [
+        `[TRAFFIC ONE RUN "${runId}" COULD NOT BE RESUMED]`,
+        `The user-authorized resume did not take effect: \`.traffic-one/runs/${runId}/settlement-v2.json\` did not reach \`"status": "active"\`.`,
+        'Do NOT spawn or replace child agents in this run — a new child cannot bind a role in it, so every one of its tool calls will be denied.',
+        'Report the blocked settlement to the user and settle this run before starting another cycle.',
+      ].join('\n');
+    }
   } else if (isLikelyEditRequest(promptText)) {
     // This prompt is resuming implementation/verification, not merely asking for
     // status. Activate the existing ledger so a legacy run upgrades to QaReportV1;

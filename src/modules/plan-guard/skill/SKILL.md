@@ -118,6 +118,14 @@ Verification contract gate: STRUCT_SCAN_INCOMPLETE ({{ERROR}}). Runtime could no
 Verification refresh gate: `IMPLEMENTED` is forbidden because runtime could not rederive and atomically republish VerificationContractV2 from the immutable baseline ({{ERROR}}). Repair the semantic plan or runtime prerequisite and retry the same digest; stale UI-impact requirements never reach QA.
 <!-- T1BLOCK:END verification-contract-refresh-gate -->
 
+<!-- T1BLOCK:BEGIN verification-contract-refresh-gate-approved -->
+Verification refresh gate: `APPROVED` is forbidden because {{ERROR}}. Re-read the newly published bootstrap/verification hash and repeat the review under the final risk contract.
+<!-- T1BLOCK:END verification-contract-refresh-gate-approved -->
+
+<!-- T1BLOCK:BEGIN verification-contract-refresh-gate-tests-green -->
+Verification refresh gate: `TESTS_GREEN` is forbidden because {{ERROR}}. Re-read the newly published verification hash, regenerate risk-proportional evidence, and retry the tester verdict.
+<!-- T1BLOCK:END verification-contract-refresh-gate-tests-green -->
+
 <!-- T1BLOCK:BEGIN bootstrap-publication-gate -->
 Bootstrap gate: the parent could not atomically refresh the role/rule/skill and work-unit envelopes against the compiled architecture and verification contracts. No implementer may spawn until the immutable envelopes are published.
 <!-- T1BLOCK:END bootstrap-publication-gate -->
@@ -178,8 +186,12 @@ Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fi
 Reviewer gate: `APPROVED` is forbidden while the complete runtime structure report contains errors ({{FINDINGS}}). Review the compiled architecture and request fixes.
 <!-- T1BLOCK:END reviewer-structure-gate -->
 
+<!-- T1BLOCK:BEGIN tester-planned-module-gate -->
+Tester completion gate: `TESTS_GREEN` is forbidden while a compiled test module the tester owns is missing ({{MISSING}}). The complete structure scan blocks the reviewer's `APPROVED` on the same finding, so writing this verdict now spends a fix cycle to discover it. Create the module, run it, then re-emit `TESTS_GREEN`.
+<!-- T1BLOCK:END tester-planned-module-gate -->
+
 <!-- T1BLOCK:BEGIN tester-qa-v2-gate -->
-Tester completion gate: VerificationContractV2 rejected this verdict ({{ERROR}}). Produce fresh risk-proportional evidence; a blocked environment is not `TESTS_GREEN`.
+Tester completion gate: VerificationContractV2 rejected this verdict ({{ERROR}}). Dimensions: {{DIMENSIONS}}. Re-run only the failing dimension; a blocked environment is not `TESTS_GREEN`, and an `advisory-warning` is never the thing to fix.
 <!-- T1BLOCK:END tester-qa-v2-gate -->
 
 <!-- T1BLOCK:BEGIN tester-stale-qa-gate -->

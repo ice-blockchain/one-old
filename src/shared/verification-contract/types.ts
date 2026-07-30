@@ -13,19 +13,52 @@ export const VERIFICATION_SCAN_MAX_FILES = 10_000;
 
 export type UiImpact = 'none' | 'nonvisual' | 'behavioral' | 'visual' | 'native-ui';
 
+/**
+ * The default budget a Lighthouse audit is judged against when nobody declared
+ * one. It is the SINGLE authority: the QA report and the standalone runner both
+ * read it, so the tester and the final gate cannot disagree.
+ *
+ * Observed 10co: `explicitThresholds` was absent, so the canonical QA path
+ * enforced NOTHING while the standalone runner applied its own hardcoded
+ * `fcpMax: 1500`. The run went reviewer-APPROVED + tester-TESTS_GREEN and was
+ * then failed by a threshold that existed in only one of the two paths and that
+ * no one had declared.
+ *
+ * Deliberately limited to metrics the canonical QA evidence ALWAYS carries.
+ * `fcpMaxMs`/`tbtMaxMs` are judgeable (the evidence records them) but are not
+ * defaulted: a synthetic first-paint budget nobody declared is exactly what
+ * ended the 10co run at FCP 1.65s against a Performance score of 99.
+ */
+export const DEFAULT_LIGHTHOUSE_THRESHOLDS = {
+  performanceMin: 90,
+  lcpMaxMs: 2500,
+  clsMax: 0.1,
+} as const;
+
 export interface LighthouseThresholdsV1 {
   performanceMin?: number;
   accessibilityMin?: number;
   bestPracticesMin?: number;
   seoMin?: number;
+  fcpMaxMs?: number;
   lcpMaxMs?: number;
+  tbtMaxMs?: number;
   clsMax?: number;
   inpMaxMs?: number;
 }
 
 export interface PerformanceContractV1 {
+  /** A failed threshold BLOCKS the run. Only a declared budget earns this. */
   required: boolean;
+  /**
+   * Audit and report, but never block. `visual-risk` lands here: a UI change is
+   * a reason to MEASURE page speed, not a reason to fail a run against a
+   * synthetic budget the user never asked for.
+   */
+  advisory: boolean;
   reason: 'not-required' | 'redesign' | 'visual-risk' | 'performance-risk' | 'explicit';
+  /** Effective budget for this run — declared thresholds, else the defaults. */
+  thresholds: LighthouseThresholdsV1;
   explicitThresholds?: LighthouseThresholdsV1;
   advisoryThresholds?: LighthouseThresholdsV1;
   advisoryTolerancePercent: 3;

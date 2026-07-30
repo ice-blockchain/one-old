@@ -9,6 +9,7 @@ import {
   architectureInputPath,
   captureArchitectureBaseline,
   compileArchitecture,
+  ensureScaffoldContent,
   compileArchitectureForRun,
   compiledArchitecturePath,
   createWorkUnitContract,
@@ -1656,4 +1657,89 @@ test('scan skip works outside a work tree, where git cannot be consulted', () =>
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('the quality toolchain is compiled per stack and seeded before implementers run', () => {
+  withProject((cwd) => {
+    // Web stack: prettier makes collapsed source impossible and eslint owns the
+    // size and boundary rules that used to be regex heuristics in the write gate.
+    const web = compileArchitecture(cwd, 'R', REACT_STATE, INPUT);
+    const webPaths = (web.scaffoldOutputs || []).map((output) => output.path);
+    for (const expected of ['eslint.config.js', '.prettierrc', '.prettierignore']) {
+      assert.ok(webPaths.includes(expected), `web stack must scaffold ${expected}`);
+    }
+
+    // Seeding happens from the compiled outputs, so the configs exist on disk the
+    // moment the architecture is compiled — i.e. at PLAN_READY, before any
+    // implementer writes a line.
+    const written = ensureScaffoldContent(cwd, web.scaffoldOutputs || []);
+    assert.ok(written.includes('eslint.config.js'));
+    const eslintBody = fs.readFileSync(path.join(cwd, 'eslint.config.js'), 'utf8');
+    assert.match(eslintBody, /max-lines/, 'the retired STRUCT_MODULE_LOC budget must live here now');
+    assert.match(eslintBody, /no-restricted-imports/, 'page/layer boundaries must be expressed as import rules');
+    const prettierBody = fs.readFileSync(path.join(cwd, '.prettierrc'), 'utf8');
+    assert.match(prettierBody, /printWidth/);
+  });
+});
+
+test('non-npm backends get their own formatter and linter config', () => {
+  for (const [backend, expected] of [
+    ['python', 'ruff.toml'],
+    ['go', '.golangci.yml'],
+    ['rust', 'rustfmt.toml'],
+  ] as Array<[string, string]>) {
+    withProject((cwd) => {
+      const state = {
+        mode: 'new-project',
+        stack: 'custom-stack',
+        frontend: 'none',
+        backend,
+        mobile: { framework: 'none' },
+      };
+      const architecture = compileArchitecture(cwd, 'R', state, SERVICE_INPUT);
+      const paths = (architecture.scaffoldOutputs || []).map((output) => output.path);
+      assert.ok(paths.includes(expected), `${backend} must scaffold ${expected}`);
+      const written = ensureScaffoldContent(cwd, architecture.scaffoldOutputs || []);
+      assert.ok(written.includes(expected), `${expected} must be seeded with canonical content`);
+    });
+  }
+});
+
+test('.gitignore is written from the shared skip authority, keeping digests', () => {
+  withProject((cwd) => {
+    const architecture = compileArchitecture(cwd, 'R', REACT_STATE, INPUT);
+    const paths = (architecture.scaffoldOutputs || []).map((output) => output.path);
+    assert.ok(paths.includes('.gitignore'));
+    ensureScaffoldContent(cwd, architecture.scaffoldOutputs || []);
+    const body = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8');
+    // Ignoring what the verifier already skips is the whole point: the two lists
+    // cannot drift because they come from the same authority.
+    for (const expected of ['node_modules/', 'vendor/', '__pycache__/', 'target/', '.claude/']) {
+      assert.ok(body.includes(expected), `.gitignore must cover ${expected}`);
+    }
+    // The prose this replaces was inverted — it omitted `runs/` (the real churn)
+    // and named `digests/` (the handoff record worth committing).
+    assert.ok(body.includes('.traffic-one/runs/'));
+    assert.ok(body.includes('.traffic-one/reports/'));
+    assert.ok(!body.includes('.traffic-one/digests/'), 'digests must stay committed');
+    assert.ok(body.includes('!.env.example'));
+
+    // Git semantics are not verifier semantics. Observed 10co: a bare
+    // `.traffic-one/` line shadowed the explicit run-state rules above (git
+    // never descends into an ignored directory), so `rules/`, `skills/`,
+    // `digests/` and `.one.json` were all ignored while the committed
+    // AGENTS.md kept pointing at them. Asserting the absence of the digests
+    // substring is not enough — the parent rule must be gone too.
+    const lines = body.split('\n').map((line) => line.trim());
+    assert.ok(!lines.includes('.traffic-one/'), 'the .traffic-one tree must stay committed');
+    for (const tracked of ['.traffic-one/rules/', '.traffic-one/skills/', '.traffic-one/.one.json']) {
+      assert.ok(!lines.includes(tracked), `${tracked} must stay committed`);
+    }
+    // A project that does not commit its lockfile cannot reproduce its install.
+    for (const lockfile of ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'Cargo.lock', 'composer.lock']) {
+      assert.ok(!lines.includes(lockfile), `${lockfile} must stay committed`);
+    }
+    // OS droppings are the one part of SKIP_FILES git should still ignore.
+    assert.ok(lines.includes('.DS_Store'));
+  });
 });

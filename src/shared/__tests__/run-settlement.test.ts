@@ -16,7 +16,7 @@ import {
   writeRunSettlement,
 } from '../run-settlement';
 import { sha256 } from '../text';
-import { currentVerificationSourceHash, verificationContractPath, type VerificationContractV2 } from '../verification-contract';
+import { DEFAULT_LIGHTHOUSE_THRESHOLDS, currentVerificationSourceHash, verificationContractPath, type VerificationContractV2 } from '../verification-contract';
 import { runtime1019AcceptsTransition } from './fixtures/runtime-1.0.19-run-ledger';
 
 function withProject(run: (cwd: string) => void): void {
@@ -56,7 +56,9 @@ function writeStrictVerificationEvidence(cwd: string, runId = 'R'): Verification
     buildIdentityRequired: false,
     performance: {
       required: false,
+      advisory: false,
       reason: 'not-required' as const,
+      thresholds: { ...DEFAULT_LIGHTHOUSE_THRESHOLDS },
       advisoryTolerancePercent: 3 as const,
     },
     generatedAt: now,

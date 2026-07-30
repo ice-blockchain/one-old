@@ -26,6 +26,7 @@ import {
 import {
   builtAppIdentities,
   collapsedProductSourceFile,
+  missingPlannedModulesForRole,
   qaReportOlderThanImplementation,
   qaReportVerifiedBuild,
   structureFindingSummary,
@@ -99,7 +100,18 @@ export function digestCompletionGates(ctx: {
           'Frontend completion gate: STRUCT_ASSIGNMENT_ALLOWLIST_GAP — current-run assignments are missing, stale, or hash-invalid. A complete structural scan cannot prove that this worker stayed within its runtime-owned WorkUnitContract; recompile the run before writing `IMPLEMENTED`.',
           { FINDINGS: 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP' }));
       } else {
-        const report = runFullStructureScan(projectRoot, runId, architecture, 'senior-frontend');
+        // `greenfield` decides whether the integration findings block or advise.
+        // Left unwired it defaulted to false, which silently demoted
+        // STRUCT_ORPHAN_MODULE, STRUCT_API_CLIENT_UNUSED and
+        // STRUCT_TAILWIND_NO_TOOLCHAIN to warnings on NEW projects too — the very
+        // case Traffic One owns the structure and must block.
+        const report = runFullStructureScan(
+          projectRoot,
+          runId,
+          architecture,
+          'senior-frontend',
+          state.mode === 'new-project',
+        );
         const errors = report.findings.filter((finding) => finding.severity === 'error');
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
@@ -206,10 +218,16 @@ export function digestCompletionGates(ctx: {
             DETAIL: origin.detail,
           }));
       }
-      const performanceRequired = Boolean(
-        readVerificationContract(projectRoot, implementedDigest[2] || '')?.performance.required,
-      );
-      const testGaps = testToolchainGaps(projectRoot, architecture, ownerRole, performanceRequired);
+      // Advisory counts too: an advisory contract still AUDITS page speed, it
+      // just does not veto the run. Keying this on `required` alone would drop
+      // `lighthouse` from the manifest and silently lose the measurement — the
+      // one thing the advisory reclassification must not do.
+      const performanceContract = readVerificationContract(
+        projectRoot,
+        implementedDigest[2] || '',
+      )?.performance;
+      const performanceAudited = Boolean(performanceContract?.required || performanceContract?.advisory);
+      const testGaps = testToolchainGaps(projectRoot, architecture, ownerRole, performanceAudited);
       if (testGaps) {
         const missing = testGaps.missing.join(', ');
         violations.push(block('implementer-test-toolchain-gate',
@@ -253,7 +271,15 @@ export function digestCompletionGates(ctx: {
           'Reviewer gate: `APPROVED` is forbidden with STRUCT_ASSIGNMENT_ALLOWLIST_GAP. Current-run assignments are missing, stale, or hash-invalid, so the complete structural scan cannot establish WorkUnit coverage.',
           { FINDINGS: 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP' }));
       } else {
-        const report = runFullStructureScan(projectRoot, runId, architecture);
+        // Same mode gate as the frontend branch: Traffic One owns the structure of
+        // a project it scaffolded, and only advises on one it did not.
+        const report = runFullStructureScan(
+          projectRoot,
+          runId,
+          architecture,
+          undefined,
+          state.mode === 'new-project',
+        );
         const errors = report.findings.filter((finding) => finding.severity === 'error');
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
@@ -268,7 +294,7 @@ export function digestCompletionGates(ctx: {
       if (refresh.error || refresh.changed) {
         const reason = refresh.error
           || 'runtime raised VerificationContractV2 from the final implementation diff; the current review bootstrap predates that contract';
-        violations.push(block('verification-contract-refresh-gate',
+        violations.push(block('verification-contract-refresh-gate-approved',
           `Verification refresh gate: \`APPROVED\` is forbidden because ${reason}. Re-read the newly published bootstrap/verification hash and repeat the review under the final risk contract.`,
           { ERROR: reason }));
       }
@@ -292,18 +318,36 @@ export function digestCompletionGates(ctx: {
       if (refresh.error || refresh.changed) {
         const reason = refresh.error
           || 'runtime raised VerificationContractV2 from the final implementation diff; the current QA report/bootstrap predates that contract';
-        violations.push(block('verification-contract-refresh-gate',
+        violations.push(block('verification-contract-refresh-gate-tests-green',
           `Verification refresh gate: \`TESTS_GREEN\` is forbidden because ${reason}. Re-read the newly published verification hash, regenerate risk-proportional evidence, and retry the tester verdict.`,
           { ERROR: reason }));
       }
+    }
+    // Planned test modules are known from PLAN_READY, but the only gate that
+    // checked their existence ran at the reviewer's `APPROVED` — i.e. after both
+    // fix cycles were already spent. Observed 10co: a single missing
+    // `tests/route-smoke.test.ts` surfaced at the last approval, hit the
+    // two-cycle cap, and cost a user authorization to recover. The tester owns
+    // these paths, so raise it here while budget remains.
+    const missingTestModules = missingPlannedModulesForRole(projectRoot, runId, 'senior-tester');
+    if (missingTestModules.length > 0) {
+      const list = missingTestModules.join(', ');
+      violations.push(block('tester-planned-module-gate',
+        `Tester completion gate: \`TESTS_GREEN\` is forbidden while a compiled test module the tester owns is missing (${list}). The complete structure scan blocks the reviewer's \`APPROVED\` on the same finding, so writing this verdict now spends a fix cycle to discover it. Create the module, run it, then re-emit \`TESTS_GREEN\`.`,
+        { MISSING: list }));
     }
     const verification = runId ? readVerificationContract(projectRoot, runId) : null;
     if (verification) {
       const result = readQaReportV2(projectRoot, runId);
       if (!result.ok) {
+        // Name WHICH dimension failed. A single aggregate verdict sent roles
+        // re-running the whole matrix to find out (observed 10co: 4 QA cycles,
+        // 27m44s of tester activity for 2m24s of actual browser time).
+        const d = result.dimensions;
+        const breakdown = `functional=${d.functionalQaStatus} accessibility=${d.accessibilityStatus} responsive=${d.responsiveStatus} lighthouse=${d.lighthouseStatus}`;
         violations.push(block('tester-qa-v2-gate',
-          `Tester completion gate: VerificationContractV2 rejected this verdict (${result.code}: ${result.message}). Produce fresh risk-proportional evidence for uiImpact=${verification.uiImpact}; a blocked environment is not \`TESTS_GREEN\`.`,
-          { ERROR: `${result.code}: ${result.message}` }));
+          `Tester completion gate: VerificationContractV2 rejected this verdict (${result.code}: ${result.message}). Dimensions: ${breakdown}. Re-run only the failing dimension for uiImpact=${verification.uiImpact}; a blocked environment is not \`TESTS_GREEN\`, and an \`advisory-warning\` is never the thing to fix.`,
+          { ERROR: `${result.code}: ${result.message}`, DIMENSIONS: breakdown }));
       }
     }
     if (!verification) {

@@ -12,14 +12,26 @@ live in `frontend/react/performance.md`.
 
 ## Lighthouse standard
 
-- Lighthouse is not part of every functional QA run. Run it only when
-  `VerificationContractV2.performance.required` is true (redesign, substantial
-  visual change, detected performance risk, or an explicit requirement).
-- When required, use the Traffic One runner against a built production preview:
+- Lighthouse is not part of every functional QA run. Run it when
+  `VerificationContractV2.performance.required` OR `.advisory` is true.
+  - `required` (a declared budget: explicit thresholds, architect
+    `performanceRisk`, or a redesign) — a missed threshold BLOCKS the run.
+  - `advisory` (a substantial visual change) — measure and report, but a missed
+    threshold is a warning. It never fails the run, never goes to an
+    implementer, and never starts or consumes a fix cycle.
+- The budget lives on the contract (`performance.thresholds`) and is the single
+  authority: the QA report and the standalone runner both judge it, so they
+  cannot disagree. A metric the contract does not declare is not gated at all —
+  do not reintroduce a local default. An explicit `--fcp-max`-style flag still
+  overrides, for a human deliberately tightening one run.
+- When auditing, use the Traffic One runner against a built production preview:
   `node ~/.traffic-one/bin/lighthouse-runner.cjs --route /`.
   The runner builds the app, starts production preview, runs Lighthouse mobile,
   writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
-  non-zero below the default thresholds.
+  non-zero below the contract's thresholds.
+- Do not re-audit an unchanged build. If the same production build was already
+  audited in this run, reuse that result; a change confined to tests, reports or
+  documentation is not a reason to re-run Lighthouse.
 - Install `lighthouse` as a workspace devDependency at scaffold time so the
   runner always finds a local binary. Without one it falls back to a network
   install (`pnpm dlx lighthouse@…`), and approval layers that deny

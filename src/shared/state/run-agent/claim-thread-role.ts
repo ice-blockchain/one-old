@@ -172,11 +172,14 @@ export function claimThreadRole(
       ? pending.claim.spawnIndex
       : nextSpawnIndex(cwd, source, runId, role);
     const now = stateTimestamp();
+    const nextClaimId = pending && typeof pending.claim.claimId === 'string'
+      ? pending.claim.claimId
+      : `${role}-${spawnIndex}-${id.slice(-8)}`;
     claim = {
       ...(pending ? pending.claim : {}),
       version: pending && typeof pending.claim.version === 'number' ? pending.claim.version : 1,
       runId: pending && typeof pending.claim.runId === 'string' ? pending.claim.runId : runId,
-      claimId: pending && typeof pending.claim.claimId === 'string' ? pending.claim.claimId : `${role}-${spawnIndex}-${id.slice(-8)}`,
+      claimId: nextClaimId,
       role,
       spawnIndex,
       status: 'claimed',
@@ -198,7 +201,14 @@ export function claimThreadRole(
       transcriptPath: transcriptPath
         || (pending && typeof pending.claim.transcriptPath === 'string' ? pending.claim.transcriptPath : null)
         || (prior && typeof prior.transcriptPath === 'string' ? prior.transcriptPath : null),
-      ...(prior && typeof prior.claimId === 'string' ? { previousClaimId: prior.claimId } : {}),
+      // Lineage only when there IS lineage. On a same-thread re-claim with no
+      // pending row, `claimId` above is rebuilt deterministically from
+      // `${role}-${spawnIndex}-${id.slice(-8)}` and lands on the prior value, so
+      // an unguarded copy made the field point at itself — carrying nothing in
+      // exactly the case it exists for (observed 10co).
+      ...(prior && typeof prior.claimId === 'string' && prior.claimId !== nextClaimId
+        ? { previousClaimId: prior.claimId }
+        : {}),
     };
     fs.mkdirSync(runDir(cwd, runId), { recursive: true });
     writeJson(runAgentFile(cwd, runId, id), claim);

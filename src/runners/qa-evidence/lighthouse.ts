@@ -28,6 +28,7 @@ import {
   safeProjectRelative,
   strictRelative,
 } from './run-context';
+import { isConcreteRoutePath, loadScenario } from './scenario';
 
 interface LighthouseRunResult {
   status: 'passed' | 'failed' | 'blocked-environment';
@@ -97,6 +98,27 @@ function runBoundedCommand(
   });
 }
 
+/**
+ * The concrete URL path Lighthouse should measure.
+ *
+ * `contract.changedRoutes` holds route IDENTITIES — `*` and `/courses/:slug`
+ * among them — and taking `[0]` verbatim resolved `*` to the literal path `/*`,
+ * which is the SPA fallback. The scenario already carries a concrete `startPath`
+ * per route for exactly this reason, so prefer it; `/` wins when present because
+ * it is the page a performance budget is actually about.
+ */
+export function lighthouseProbePath(args: RunnerArgs, loaded: LoadedRun): string {
+  const candidates: string[] = [];
+  const scenario = loadScenario(args, loaded.contract);
+  for (const route of scenario?.routes || []) {
+    if (isConcreteRoutePath(route.startPath)) candidates.push(route.startPath);
+  }
+  for (const route of loaded.contract.changedRoutes) {
+    if (isConcreteRoutePath(route)) candidates.push(route);
+  }
+  return candidates.find((candidate) => candidate === '/') || candidates[0] || '/';
+}
+
 export async function runLighthouseOnOwnedServer(
   args: RunnerArgs,
   loaded: LoadedRun,
@@ -125,8 +147,8 @@ export async function runLighthouseOnOwnedServer(
       }
       fs.unlinkSync(rawOut.absolute);
     }
-    const route = loaded.contract.changedRoutes[0] || '/';
-    const target = new URL(route, `${owned.url}/`).href;
+    const probe = lighthouseProbePath(args, loaded);
+    const target = new URL(probe.replace(/^\//, ''), `${owned.url}/`).href;
     await runBoundedCommand(binary, [
       target,
       '--only-categories=performance,accessibility,best-practices,seo',
@@ -151,6 +173,17 @@ export async function runLighthouseOnOwnedServer(
         blockerSummary: 'Lighthouse artifact does not belong to the runner-owned live build listener.',
       };
     }
+    // Origin alone let a 404 pass. The catch-all route resolved to the literal
+    // path `/*`, which every SPA serves as its not-found page, so the single
+    // canonical performance and SEO measurement described a page no user visits
+    // (observed 9co: perf 88 / SEO 66 on `/*` while the real home scored 98/100).
+    if (finalUrl.pathname !== probe) {
+      return {
+        status: 'failed',
+        blockerSummary: `Lighthouse measured ${finalUrl.pathname} instead of the intended ${probe}; `
+          + 'the target must be a concrete route, never a catch-all.',
+      };
+    }
     const evidence = createQaLighthouseEvidence({
       runId: args.runId,
       verificationContractHash: loaded.contract.contractHash,
@@ -168,6 +201,8 @@ export async function runLighthouseOnOwnedServer(
       lcpMs: summary.lcpMs,
       cls: summary.cls,
       ...(summary.inpMs === undefined ? {} : { inpMs: summary.inpMs }),
+      ...(summary.fcpMs === undefined ? {} : { fcpMs: summary.fcpMs }),
+      ...(summary.tbtMs === undefined ? {} : { tbtMs: summary.tbtMs }),
     });
     writeJson(evidenceOut.absolute, evidence);
     return { status: 'passed', evidencePath: evidenceOut.relative };
@@ -239,6 +274,8 @@ export function lighthouseCommand(
     lcpMs: summary.lcpMs,
     cls: summary.cls,
     ...(summary.inpMs === undefined ? {} : { inpMs: summary.inpMs }),
+    ...(summary.fcpMs === undefined ? {} : { fcpMs: summary.fcpMs }),
+    ...(summary.tbtMs === undefined ? {} : { tbtMs: summary.tbtMs }),
   });
   writeJson(out.absolute, evidence);
   const existing = readQaReportV2(args.projectRoot, args.runId);

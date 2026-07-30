@@ -3,6 +3,8 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
 import {
+  REPLACE_AGENT_MARKER,
+  activeClaimForOtherThread,
   claimThreadRole,
   correctCodexChildObservationRole,
   disownConflictedRoleAgent,
@@ -15,6 +17,8 @@ import {
   readEffectiveState,
   readRunAgentRegistry,
   resolveRunAgentContext,
+  runLedgerAdmitsClaims,
+  runLedgerStatusRecord,
   transcriptThreadId,
 } from '../../shared/state';
 import { canonicalHost } from '../../shared/model-tiers';
@@ -272,7 +276,36 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     refuseOccupiedRole: true,
   });
   if (!claimed) {
-    return deny('traffic-one — Codex child blocked: model verification passed but the verified role claim could not be persisted atomically. Retry this tool once; if it repeats, replace the child from the parent.');
+    // Name WHY the claim failed. `claimThreadRole` collapses a closed ledger, an
+    // occupied role and a lock failure into one `null`, and the single generic
+    // "retry once / replace the child" message was wrong for the first two:
+    // observed 10co, where a blocked run made every replacement child unclaimable
+    // and the parent replaced it in a loop, each new thread hitting the same wall.
+    // Probe in remedy order — closed ledger first, because it is the only cause
+    // no respawn can fix.
+    if (!runLedgerAdmitsClaims(cwd, runId)) {
+      const ledger = runLedgerStatusRecord(cwd, runId);
+      return deny(`traffic-one — Codex child blocked: the run ledger for \`${runId}\` is \`${ledger.status || 'unreadable'}\``
+        + `${ledger.outcome ? ` (${ledger.outcome})` : ''}, so NO child can bind a role in it and every tool call from `
+        + 'this thread stays denied. Respawning does not fix this — the run itself is closed. ROOT orchestrator: if the '
+        + 'user has authorized another cycle, resume the RUN first with '
+        + `\`node ~/.traffic-one/bin/run-status.cjs --run-id "${runId}" --status active --reason user-authorized-extra-cycle\`, `
+        + `then confirm \`.traffic-one/runs/${runId}/settlement-v2.json\` reads \`"status": "active"\` before respawning `
+        + 'this child. If it still reads `"status": "blocked"`, the resume did NOT take effect — do not spawn into this '
+        + 'run; settle it and mint a new one.');
+    }
+    const rival = obj(activeClaimForOtherThread(cwd, state, runId, role, childId));
+    if (rival) {
+      return deny(`traffic-one — Codex child blocked: role \`${role}\` in run \`${runId}\` is already held by live thread `
+        + `\`${String(rival.sessionId || 'unknown')}\` (claim \`${String(rival.claimId || 'unknown')}\`), and a verified `
+        + 'child never displaces another live thread. Retrying this tool cannot succeed. ROOT orchestrator: keep the '
+        + `incumbent and stop this duplicate, or retire the incumbent with a \`${REPLACE_AGENT_MARKER}\` spawn for `
+        + `\`${role}\` and let exactly ONE replacement bind.`);
+    }
+    return deny(`traffic-one — Codex child blocked: model verification passed but the verified role claim could not be `
+      + `persisted atomically. The run ledger for \`${runId}\` still admits claims and role \`${role}\` is free, so this `
+      + 'is a claim-lock or filesystem failure, not a closed run. Retry this tool once; if it repeats, replace the '
+      + 'child from the parent.');
   }
   if (!ensureRunHostCapability(cwd, runId, 'codex', {
     point: 'first-tool-model-check',

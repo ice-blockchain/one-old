@@ -4237,6 +4237,44 @@ test('runLedgerAdmitsClaims mirrors what a worker claim actually attempts', () =
   });
 });
 
+test('an unclaimable Codex child is told WHY: a closed ledger is not a retryable atomic failure', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      freezeRunPolicy(cwd, 'codex');
+      const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+      const child = '019f8fa1-4444-7000-8000-00000000004a';
+      const transcript = path.join(cwd, `rollout-unclaimable-${child}.jsonl`);
+      fs.writeFileSync(
+        transcript,
+        `${JSON.stringify(codexSessionMeta(child, parentThread, '/root/senior_tester'))}\n`,
+        'utf8',
+      );
+
+      // Close the run the way a review-cycle cap does, then let a fresh child in.
+      assert.ok(transitionRunStatus(cwd, 'run-test', { status: 'active' }));
+      assert.ok(transitionRunStatus(cwd, 'run-test', { status: 'blocked', outcome: 'review-cycle-cap' }));
+
+      const denied = codexChildModelGate(
+        codexChildPreToolCtx(cwd, child, parentThread, transcript, 'gpt-5.6-terra'),
+      );
+      assert.equal(denied.kind, 'deny');
+      if (denied.kind === 'deny') {
+        // Observed 10co: the generic "could not be persisted atomically / replace
+        // the child" wording sent the parent into an unbounded replacement loop,
+        // because every new thread hit the same closed ledger.
+        assert.ok(denied.reason.includes('run ledger'), 'the deny must name the ledger as the cause');
+        assert.ok(denied.reason.includes('review-cycle-cap'), 'the deny must name the blocking outcome');
+        assert.ok(denied.reason.includes('settlement-v2.json'), 'the deny must name the artefact to check');
+        assert.ok(!denied.reason.includes('Retry this tool once'), 'a closed run is not retryable');
+        assert.ok(
+          !denied.reason.includes('model verification passed but'),
+          'a closed run must not be reported as an atomicity failure',
+        );
+      }
+    });
+  });
+});
+
 test('reuse: without the teams env flag the gate and recorder are inert (non-teams hosts unchanged)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prev = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;

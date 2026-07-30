@@ -665,8 +665,13 @@ test('PLAN_READY consumes strict verification intent and IMPLEMENTED refreshes u
       writingFeatureSource: false,
       block: names,
     });
-    assert.ok(review.includes('verification-contract-refresh-gate'),
+    // Verdict-specific id: one block per verdict, so the reviewer is never told
+    // that `IMPLEMENTED` is forbidden (observed 10co, where the tester writing
+    // TESTS_GREEN received the IMPLEMENTED wording from the shared block).
+    assert.ok(review.includes('verification-contract-refresh-gate-approved'),
       'an unplanned source path must require replanning before review');
+    assert.ok(!review.includes('verification-contract-refresh-gate'),
+      'the reviewer must not render the IMPLEMENTED-worded block');
   });
 });
 
@@ -734,6 +739,50 @@ test('frontend completion gate scans capability roots and still blocks collapsed
       ...gateArgs,
       content: 'verdict: IMPLEMENTED\nTouched: frontend/src/styles/app.scss\n',
     }).includes('frontend-collapse-gate'));
+  });
+});
+
+// REGRESSION (observed live, 10co): the compiled `tests/route-smoke.test.ts` was never
+// written, but the ONLY gate checking planned-module existence ran at the reviewer's
+// APPROVED — after both fix cycles were spent. The run hit the two-cycle cap and needed a
+// user authorization to recover. The tester owns that path, so it must fail here first.
+test('tester completion gate: TESTS_GREEN is denied while a tester-owned planned module is missing', () => {
+  withProject((dir) => {
+    const runId = 'R';
+    // Exactly the 10co shape: the architect declares a `test` module and the
+    // compiler assigns it `ownerRole: senior-tester` + `tests/<kebab>.test.ts`.
+    writeArchitectureInputAndAssignments(dir, runId, DEFAULT_STATE, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'route-smoke', name: 'Route smoke', kind: 'test' },
+      ],
+    });
+    const compiled = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'architecture-v1.json'),
+      'utf8',
+    )) as { modules: Array<Record<string, unknown>> };
+    const testerModule = compiled.modules.find((module) => module.ownerRole === 'senior-tester');
+    assert.ok(testerModule, 'the compiler must own the declared test module to senior-tester');
+    const testerOutput = String(testerModule!.output);
+
+    const gateArgs = {
+      filePath: `.traffic-one/digests/${runId}/tester.md`,
+      content: 'verdict: TESTS_GREEN\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    assert.ok(planReadinessViolations(gateArgs).includes('tester-planned-module-gate'),
+      'a missing tester-owned module must be caught at the tester verdict, not at APPROVED');
+
+    // Writing the module clears the gate — the tester can self-serve the fix.
+    fs.mkdirSync(path.join(dir, path.dirname(testerOutput)), { recursive: true });
+    fs.writeFileSync(path.join(dir, testerOutput), 'export {};\n', 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('tester-planned-module-gate'));
   });
 });
 
@@ -1967,6 +2016,32 @@ test('implementer format gate T1BLOCK prose is byte-identical to both TypeScript
       assert.equal(rendered, found.fallback, `${blockId} prose/fallback drift`);
     }
   });
+});
+
+test('each verification-refresh verdict renders its own T1BLOCK, never another verdict token', () => {
+  // Observed 10co: completion.ts emitted three carefully-worded fallbacks for
+  // IMPLEMENTED / APPROVED / TESTS_GREEN but reused ONE block id, so deny prose
+  // always rendered the IMPLEMENTED wording from SKILL.md and the three
+  // fallbacks were dead. The tester, writing TESTS_GREEN, was told
+  // "`IMPLEMENTED` is forbidden". One semantic, one block id.
+  const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+  const cases: Array<[string, string, string[]]> = [
+    ['verification-contract-refresh-gate', 'IMPLEMENTED', ['APPROVED', 'TESTS_GREEN']],
+    ['verification-contract-refresh-gate-approved', 'APPROVED', ['IMPLEMENTED', 'TESTS_GREEN']],
+    ['verification-contract-refresh-gate-tests-green', 'TESTS_GREEN', ['IMPLEMENTED', 'APPROVED']],
+  ];
+  for (const [blockId, verdict, foreign] of cases) {
+    const begin = `<!-- T1BLOCK:BEGIN ${blockId} -->`;
+    const end = `<!-- T1BLOCK:END ${blockId} -->`;
+    const beginAt = skill.indexOf(begin);
+    const endAt = skill.indexOf(end);
+    assert.ok(beginAt >= 0 && endAt > beginAt, `missing T1BLOCK ${blockId}`);
+    const body = skill.slice(beginAt + begin.length, endAt);
+    assert.ok(body.includes(`\`${verdict}\``), `${blockId} must name ${verdict}`);
+    for (const other of foreign) {
+      assert.ok(!body.includes(`\`${other}\``), `${blockId} must not name ${other}`);
+    }
+  }
 });
 
 test('a BLOCKED verdict digest is not run through the IMPLEMENTED completion gates even when its body cites the token', () => {
