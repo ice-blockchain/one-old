@@ -34,7 +34,7 @@ export interface ScenarioV1 {
 }
 
 export interface RunnerArgs {
-  command: 'manifest' | 'browser' | 'lighthouse' | 'native' | 'help';
+  command: 'manifest' | 'browser' | 'lighthouse' | 'native' | 'stack' | 'help';
   projectRoot: string;
   runId: string;
   buildDir: string;

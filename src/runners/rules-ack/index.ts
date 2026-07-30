@@ -16,6 +16,7 @@ import { writeJson } from '../../shared/fsjson';
 import {
   CONTEXT_PACK_SCHEMA_VERSION,
   contextPackDir,
+  contextPackPartDir,
   readContextPackManifest,
   readRulesAck,
   rulesAckPath,
@@ -93,7 +94,11 @@ export function main(
   }
   let body: string;
   try {
-    body = fs.readFileSync(path.join(dir, entry.file), 'utf8');
+    // Shared parts live in the run-level content-addressed store. The directory
+    // is computed here, never taken from the manifest, so a manifest can never
+    // redirect this read at an arbitrary path.
+    const partDir = contextPackPartDir(cwd, args.runId, args.role, entry);
+    body = fs.readFileSync(path.join(partDir, entry.file), 'utf8');
   } catch {
     process.stderr.write(`rules-ack: pack file ${entry.file} is missing — recompile the run bootstrap.\n`);
     return 2;

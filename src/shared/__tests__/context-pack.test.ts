@@ -12,6 +12,7 @@ import {
   compileIntegrationRequirements,
   compileRoleContextPack,
   contextPackDir,
+  contextPackPartDir,
   readContextPackManifest,
   readRulesAck,
   rulesAckComplete,
@@ -50,7 +51,13 @@ test('pack compiles real materials into parts under the truncation budget', () =
     assert.ok(manifest!.parts.length >= 1);
     for (const part of manifest!.parts) {
       assert.ok(part.chars <= CONTEXT_PACK_PART_MAX_CHARS + 512, `${part.file} over budget: ${part.chars}`);
-      const body = fs.readFileSync(path.join(contextPackDir(cwd, RUN_ID, ROLE), part.file), 'utf8');
+      // Part bodies are content-addressed in the run-level shared store, so the
+      // always-on rules every role loads are written once instead of per role.
+      // The directory is resolved by code, never from the manifest.
+      assert.equal(part.shared, true, `${part.file} must live in the shared store`);
+      assert.equal(part.file, `${part.sha256}.md`, 'a part filename is its content hash');
+      const partDir = contextPackPartDir(cwd, RUN_ID, ROLE, part);
+      const body = fs.readFileSync(path.join(partDir, part.file), 'utf8');
       assert.equal(body.length, part.chars);
     }
     const index = fs.readFileSync(path.join(contextPackDir(cwd, RUN_ID, ROLE), 'part-00.md'), 'utf8');

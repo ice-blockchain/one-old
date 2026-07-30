@@ -123,7 +123,7 @@ and CrUX/RUM field data; mark field data `UNVERIFIED` when unavailable.
   that need a backend. Use Supabase Auth for auth, Supabase Storage for app
   files, Supabase Realtime when real-time is needed, and RLS-backed
   authorization. Keep Traffic One's RTK Query/Redux, **Tailwind v4 + shadcn/ui**
-  (Radix + CVA + tailwind-merge + lucide-react), Jest, and React Hook Form + Zod
+  (Radix + CVA + tailwind-merge + lucide-react), Vitest, and React Hook Form + Zod
   rules unless the user explicitly chooses another stack. Add new UI primitives
   via `npx shadcn@latest add <name>` — never hand-roll a button/dialog/input.
 - React Native + Expo: NativeWind v4 + React Native Reusables (`rn-primitives`)

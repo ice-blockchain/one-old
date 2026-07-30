@@ -3,7 +3,7 @@
 // component declarations, logical LOC, brace/JSX scanning primitives.
 
 import * as path from 'path';
-import {  lexicalMask } from '../../../shared/collapsed-source';
+import { lexicalMask, logicalLoc } from '../../../shared/collapsed-source';
 
 import {
   type ComponentDeclaration,
@@ -106,14 +106,10 @@ export function firstInlineHostUi(text: string): { index: number; line: number }
   return { index, line: lineAt(text, index) };
 }
 
-export function logicalLoc(segment: string): number {
-  const withoutWhitespace = segment.trim();
-  if (!withoutWhitespace) return 0;
-  const physical = withoutWhitespace.split(/\r?\n/).filter((line) => line.trim()).length;
-  const statements = (withoutWhitespace.match(/;/g) || []).length + 1;
-  const jsxNodes = (withoutWhitespace.match(/<\/[A-Za-z][^>]*>/g) || []).length;
-  return Math.max(physical, statements, jsxNodes);
-}
+// Re-exported so existing `./parse` importers keep working. The single
+// definition lives in `shared/collapsed-source` because the OpenCode runner
+// needs the identical measure and may not import from `modules/`.
+export { logicalLoc };
 
 export function declaredComponents(text: string): ComponentDeclaration[] {
   const masked = lexicalMask(text, true);

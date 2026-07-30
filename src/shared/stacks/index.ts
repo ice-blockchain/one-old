@@ -63,6 +63,11 @@ const REACT_VITE_MANDATORY = [
   'rules/frontend/react/core.md',
   ...FRONTEND_SHARED,
   'rules/frontend/react/design-quality.md',
+  // Mandatory, not optional: runtime compiles `vitest.config.ts` for this stack,
+  // and the ONLY place the jsdom/RTL setup is written down is here. While it was
+  // optional the tester shipped `environment: 'node'` and 11 of 16 files asserted
+  // on source text instead of behaviour (observed 9co).
+  'rules/frontend/react/testing.md',
 ];
 
 const REACT_VITE_OPTIONAL = [
@@ -73,7 +78,8 @@ const REACT_VITE_OPTIONAL = [
   'rules/frontend/react/services.md',
   'rules/frontend/react/realtime.md',
   'rules/frontend/react/performance.md',
-  'rules/frontend/react/testing.md',
+  // `react/testing.md` moved to REACT_VITE_MANDATORY — it carries the jsdom/RTL
+  // runner setup, which is not optional for a stack whose test config is compiled.
   'rules/frontend/react/security.md',
 ];
 
@@ -160,15 +166,23 @@ function stateUsesPostgres(state: Rec, backend: string): boolean {
 }
 
 export const AGENT_ROLE_BASE_RULES: Readonly<Record<string, string[]>> = {
+  // `quality-tooling.md` is base for EVERY implementing role, not only the
+  // backend. The architect now compiles the project's formatter/linter config as
+  // scaffold output, and the frontend owns and works under it — yet neither
+  // loaded the rule that forbids weakening it. Observed 9co: senior-frontend hit
+  // a blocking structural finding and disabled `noUncheckedIndexedAccess` for the
+  // whole monorepo, which is exactly what this rule's "Config tamper guard"
+  // section prohibits. The rule was there; the role never saw it.
   'senior-architect': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/project-routing.md', 'rules/common/onboarding.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
     'rules/common/stack-recommendations.md', 'rules/common/library-catalog.md', 'rules/common/project-memory.md',
     'rules/common/documentation.md', 'rules/common/senior-engineer-team.md', 'rules/common/codebase-graph.md',
-    'rules/common/security.md', 'rules/common/agent-handoff-digests.md',
+    'rules/common/security.md', 'rules/common/agent-handoff-digests.md', 'rules/common/quality-tooling.md',
   ],
   'senior-frontend': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
     'rules/common/security.md', 'rules/common/codebase-graph.md', 'rules/common/agent-handoff-digests.md',
+    'rules/common/quality-tooling.md',
     'rules/frontend/i18n.md', 'rules/frontend/ui-quality.md', 'rules/frontend/typography.md',
   ],
   'senior-backend': [
@@ -184,6 +198,9 @@ export const AGENT_ROLE_BASE_RULES: Readonly<Record<string, string[]>> = {
   'senior-tester': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/quality-tooling.md', 'rules/common/execution-discipline.md',
     'rules/common/agent-handoff-digests.md', 'rules/common/codebase-graph.md',
+    // The tester writes source too — test source — and the same "written
+    // formatted, never collapsed" bar applies to it.
+    'rules/common/clean-code.md',
   ],
   'senior-shipper': [
     'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/security.md', 'rules/common/git.md',

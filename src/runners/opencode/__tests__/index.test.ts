@@ -5,7 +5,8 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyQuality, postApplyStyling, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
+import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
+import { compileArchitecture, persistCompiledArchitecture } from '../../../shared/architecture-contract';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
@@ -1906,4 +1907,79 @@ test('postApplyStyling rejects Tailwind utilities without a toolchain and passes
   ].join('\n'));
   assert.equal(postApplyStyling(dir, [plain]), null);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Step-0 honours a contract that pins Tailwind before the manifest exists', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocpin-'));
+  try {
+    const card = 'src/CourseCard.tsx';
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, card), [
+      'export function CourseCard() {',
+      '  return (',
+      '    <article className="flex flex-col gap-3 rounded-xl bg-white p-6 shadow-sm">',
+      '      <h2 className="text-lg font-semibold">Course</h2>',
+      '    </article>',
+      '  )',
+      '}',
+    ].join('\n'), 'utf8');
+
+    // The greenfield Step-0 tree: no manifest anywhere, so the filesystem probe
+    // can only say "no Tailwind" — and a unit's allowlist may never add one.
+    assert.match(String(postApplyStyling(dir, [card])), /Tailwind utilities/);
+
+    // Compile the vite-react contract, whose scaffold outputs include the
+    // Tailwind home. The stack pins Tailwind, so the same markup is correct.
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+    });
+    assert.ok(
+      (architecture.scaffoldOutputs || []).some((output) => output.path.includes('tailwind-config')),
+      'fixture guard: the vite-react contract must scaffold a Tailwind home',
+    );
+    // Step-0 runs after the architect phase, so the compiled contract is on disk
+    // by then — that is where the pinned-stack answer comes from.
+    persistCompiledArchitecture(dir, architecture);
+    assert.equal(
+      postApplyStyling(dir, [card], 'R'),
+      null,
+      'a pinned Tailwind stack must not reject Tailwind-composed output at Step-0',
+    );
+
+    // A run id with no compiled contract falls back to the filesystem answer, so
+    // the original 8co defect stays caught.
+    assert.match(String(postApplyStyling(dir, [card], 'MISSING')), /Tailwind utilities/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Step-0 rejects a module the structural write gate would refuse to edit', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocsize-'));
+  try {
+    const rel = 'src/features/demo-catalog/index.ts';
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    // 9co: Step-0 accepted an oversized data module and the write gate then
+    // refused every edit to it, leaving its owner unable to fix a 5-character
+    // type error.
+    const oversized = `export const rows = [\n${Array.from({ length: 500 }, (_, i) => `  { id: ${i} },`).join('\n')}\n];\n`
+      + Array.from({ length: 60 }, (_, i) => `export const v${i} = ${i};`).join('\n');
+    fs.writeFileSync(path.join(dir, rel), oversized, 'utf8');
+    assert.match(String(postApplySize(dir, [rel])), /logical lines, over the 400 limit/);
+
+    const small = 'src/features/ok/index.ts';
+    fs.mkdirSync(path.join(dir, path.dirname(small)), { recursive: true });
+    fs.writeFileSync(path.join(dir, small), 'export const a = 1;\n', 'utf8');
+    assert.equal(postApplySize(dir, [small]), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

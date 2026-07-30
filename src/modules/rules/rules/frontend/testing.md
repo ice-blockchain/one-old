@@ -24,9 +24,21 @@ Three test layers, each with a distinct job. Framework-specific testing helpers
 | Integration | stack-native UI test tooling | components rendered with real app state + mocked network |
 | E2E | @playwright/test | full app in a real browser, real navigations, mocked back-end at the network edge |
 
-Preserve the project's runner: Vitest/Jest for JavaScript frameworks, PHPUnit
-for Laravel, and the native platform runner for native UI. The Jest specifics
-in `frontend/react/testing.md` apply only to Jest-based projects.
+Preserve the project's runner: Vitest for Vite-based JS stacks (its config is
+compiled by runtime), jest-expo for React Native, PHPUnit/Pest for Laravel, and
+the native platform runner for native UI.
+
+**A test asserts behaviour, never source text.** Reading a production file and
+checking that it contains a string is a grep: it passes for a file whose entire
+body is a comment, it breaks on any harmless rename, and it proves nothing about
+what the code does. This includes SQL and infrastructure — `toContain('revoke …')`
+on a migration cannot establish the final effective permissions, because SQL is
+cumulative and a later statement may grant them back.
+
+If the runtime a real test needs is unavailable — no DOM, no database, no
+simulator — write the test and skip it with the reason in its title. A skipped
+test is visible in the report and in CI; a passing grep is indistinguishable from
+genuine coverage, and it outlives the digest that honestly declared the gap.
 
 ## What to test
 

@@ -1,13 +1,20 @@
 // src/modules/plan-guard/react-structure/findings.ts
-// Per-file structural findings: entrypoint/page/collapse/module-LOC rules
-// with the architect exception filter.
+// Per-file structural findings: entrypoint and collapse rules with the architect
+// exception filter.
+//
+// Numeric size budgets and page/layer placement used to live here as regex
+// heuristics. They are now the project's own compiled eslint/prettier/ruff config
+// (see architecture-contract/scaffold-content.ts), seeded at PLAN_READY so every
+// implementer inherits the bar before writing. What remains here is what a linter
+// cannot know: collapse on a tree with no node_modules yet, and — in contract.ts —
+// agreement with the compiled architecture.
 
 import * as path from 'path';
 import {
   type ArchitectureExceptionRequestV1,
 } from '../../../shared/architecture-contract';
 import type { CapabilityProfileV1 } from '../../../shared/capabilities';
-import { collapsedLineNumber, lexicalMask } from '../../../shared/collapsed-source';
+import { collapsedLineNumber } from '../../../shared/collapsed-source';
 import { matchesPattern } from '../../../shared/scope';
 
 import {
@@ -15,45 +22,15 @@ import {
   type StructureFinding,
   type StructureFindingId,
 } from './types';
-import {
-  logicalLoc,
-  normalizeRel,
-  unique,
-} from './parse';
+import { normalizeRel } from './parse';
 
 const EXCEPTIONABLE_IDS = new Set<StructureFindingId>([
-  'STRUCT_COMPONENT_LOC',
-  'STRUCT_FUNCTION_COUNT',
-  'STRUCT_COMPONENTS_PER_FILE',
-  'STRUCT_MODULE_LOC',
-  // Advisory, not blocking: dynamic route paths (`path={ROUTES.x}`,
-  // `routes.map(...)`) are legitimate patterns the contract simply cannot
-  // verify. The blocking signal stays STRUCT_ROUTE_MODULE_MISMATCH, whose
-  // message now carries this cause.
-  'STRUCT_ROUTE_PATH_UNRESOLVED',
+  // Deliberately NOT listed: STRUCT_ROUTE_PATH_UNRESOLVED. It is advisory, so an
+  // exception would suppress nothing, and `validateExceptionRequest` rejects it
+  // as ineligible anyway — keeping it here only made the two lists disagree
+  // about the same vocabulary. Any id added here must also appear in
+  // `architecture-contract/core.ts` EXCEPTION_RULES to be declarable.
 ]);
-const ADVISORY_FUNCTION_COUNT = 12;
-// The one numeric threshold that BLOCKS. Per-component LOC and
-// components-per-file stay advisory (rules/common/clean-code.md: numeric
-// thresholds wait on a <1% false-positive fixture validation), but a module
-// that packs an entire feature into one file is unambiguous: observed 6co,
-// `pages/Catalog.tsx` shipped 515 logical lines / 7 components with all nine
-// structural signals raised as non-blocking warnings, so `IMPLEMENTED` was
-// accepted. Calibrated against that project: Catalog 515, next-largest module
-// 307 — 400 separates the monolith from merely-large modules.
-//
-// It counts LOGICAL lines (the same collapse-resistant measure as
-// STRUCT_COMPONENT_LOC), so minifying the module onto a handful of lines does
-// not evade it — this is also the only size signal that runs on every scanned
-// write rather than only at the frontend's `IMPLEMENTED` digest.
-const BLOCKING_MODULE_LOC = 400;
-// Generated declaration/type modules are legitimately enormous and nobody
-// authored them: a Supabase `database.types.ts` is 198 logical lines from 85
-// physical ones in 6co alone, and scales with the schema. Blocking those would
-// be an unescapable deadlock on a file the implementer cannot shrink.
-const GENERATED_MODULE_RE = /\.(?:d|types|generated)\.[cm]?[jt]sx?$/i;
-
-
 function isEntrypoint(file: string, profile: CapabilityProfileV1): boolean {
   const normalized = normalizeRel(file);
   return profile.entrypoints.some((entry) => normalizeRel(entry) === normalized)
@@ -65,19 +42,6 @@ function isBootstrapEntrypoint(file: string, profile: CapabilityProfileV1): bool
   if (/(^|\/)(?:main|client)\.(?:tsx?|jsx?|mjs|cjs)$/.test(normalized)) return true;
   return ['vite-react', 'generic-web'].includes(profile.profileId)
     && profile.entrypoints.some((entry) => normalizeRel(entry) === normalized);
-}
-
-function underAny(file: string, roots: string[]): boolean {
-  const normalized = normalizeRel(file);
-  return roots.some((root) => {
-    const normalizedRoot = normalizeRel(root).replace(/\/+$/, '');
-    return normalized === normalizedRoot || normalized.startsWith(`${normalizedRoot}/`);
-  });
-}
-
-function pageLike(name: string): boolean {
-  return /(?:Page|Screen|View)$/.test(name)
-    || /^(?:Home|Catalog|CourseDetail|Lesson|Learning|News|Dashboard|Profile|Settings)$/.test(name);
 }
 
 function exceptionCovers(
@@ -97,23 +61,12 @@ export function localFindings(
   exceptions: ArchitectureExceptionRequestV1[],
 ): StructureFinding[] {
   const findings: StructureFinding[] = [];
-  const componentNames = new Set(analysis.components.map((component) => component.name));
-  const localTargets = unique(analysis.routes.flatMap((route) => (
-    route.targetNames
-      .map((name) => name.split('.')[0]!)
-      .filter((name) => componentNames.has(name))
-  )));
-  const localRouteUnits = unique(analysis.routes.flatMap((route) => {
-    const named = route.targetNames
-      .map((name) => name.split('.')[0]!)
-      .filter((name) => componentNames.has(name))
-      .map((name) => `component:${name}`);
-    return route.inlineUi ? [...named, `inline:${route.index}`] : named;
-  }));
   const inlineRoutes = analysis.routes.filter((route) => route.inlineUi);
-  const pageComponents = analysis.components.filter((component) => (
-    localTargets.includes(component.name) || pageLike(component.name)
-  ));
+  // Entrypoint evidence grading: the compiled profile naming this file is
+  // evidence; matching the `main|client` filename regex is a convention that
+  // happens to hold for Vite-shaped stacks and not for others.
+  const declaredEntrypoint = profile.entrypoints
+    .some((entry) => normalizeRel(entry) === normalizeRel(analysis.file));
 
   if (
     isEntrypoint(analysis.file, profile)
@@ -129,7 +82,7 @@ export function localFindings(
     const direct = analysis.inlineHostUi;
     findings.push({
       id: 'STRUCT_ENTRYPOINT_COMPONENT',
-      severity: 'error',
+      severity: declaredEntrypoint ? 'error' : 'warning',
       file: analysis.file,
       line: first?.line || inline?.line || direct?.line,
       message: first
@@ -140,42 +93,22 @@ export function localFindings(
     });
   }
 
-  const appShell = /(^|\/)App\.(?:tsx?|jsx?)$/.test(analysis.file);
-  if (appShell && localRouteUnits.length >= 1) {
-    const first = analysis.components.find((component) => localTargets.includes(component.name));
-    findings.push({
-      id: 'STRUCT_APP_INLINE_PAGE',
-      severity: 'error',
-      file: analysis.file,
-      line: first?.line || inlineRoutes[0]?.line,
-      message: 'Application shell declares a route page inline; pages must live in their compiled page modules.',
-    });
-  }
-
-  if (localRouteUnits.length >= 2) {
-    findings.push({
-      id: 'STRUCT_MULTI_PAGE_MODULE',
-      severity: 'error',
-      file: analysis.file,
-      line: pageComponents[0]?.line || inlineRoutes[0]?.line,
-      message: `Module contains multiple inline page/route targets (${localTargets.length > 0 ? localTargets.join(', ') : inlineRoutes.map((route) => route.path).join(', ')}).`,
-    });
-  }
-
-  if (
-    pageComponents.length > 0
-    && !underAny(analysis.file, profile.layerRoots.pages)
-    && !isEntrypoint(analysis.file, profile)
-    && !appShell
-  ) {
-    findings.push({
-      id: 'STRUCT_LAYER_MISMATCH',
-      severity: 'error',
-      file: analysis.file,
-      line: pageComponents[0]?.line,
-      message: 'Route page is outside the runtime-compiled page roots.',
-    });
-  }
+  // RETIRED — page/layer PLACEMENT is now the project's own lint config:
+  //   STRUCT_APP_INLINE_PAGE, STRUCT_MULTI_PAGE_MODULE, STRUCT_LAYER_MISMATCH
+  //     -> eslint `no-restricted-imports` path groups (and eslint-plugin-boundaries
+  //        where a project wants stricter layering)
+  // These three were the worst offenders in the whole scanner because they could
+  // only ever guess. `pageLike` carried a hardcoded product name list
+  // (`Home|Catalog|CourseDetail|Lesson|…`), the app-shell test was a literal
+  // `App.tsx` regex that silently never matched Vue `App.vue`, Nuxt `app.vue`,
+  // Next `layout.tsx` or SvelteKit `+layout.svelte`, and a `React.lazy` binding
+  // read as a locally declared page — so the canonical code-splitting idiom was
+  // denied while the identical file with static imports passed.
+  //
+  // A lint config states the boundary in import paths, which is what the rule was
+  // always about, and it works for every stack without a name table.
+  // Route↔module correctness itself is NOT retired: `contractFindings` still
+  // proves it against the compiled architecture, which no linter can know.
 
   // Comments and string bodies are masked first: a module is "too long" by its
   // code, not its documentation, and counting comment lines would also break the
@@ -192,45 +125,20 @@ export function localFindings(
     });
   }
 
-  const moduleLoc = GENERATED_MODULE_RE.test(analysis.file)
-    ? 0
-    : logicalLoc(lexicalMask(analysis.text, true));
-  if (moduleLoc > BLOCKING_MODULE_LOC) {
-    findings.push({
-      id: 'STRUCT_MODULE_LOC',
-      severity: 'error',
-      file: analysis.file,
-      message: `Module is approximately ${moduleLoc} logical lines, over the ${BLOCKING_MODULE_LOC} limit. Split it along its own seams — routes, pages, features, and shared components each belong in their own module under the compiled layer roots.`,
-    });
-  }
-
-  if (analysis.components.length > 1) {
-    findings.push({
-      id: 'STRUCT_COMPONENTS_PER_FILE',
-      severity: 'warning',
-      file: analysis.file,
-      line: analysis.components[1]?.line,
-      message: `Module declares ${analysis.components.length} UI components; the numeric one-component-per-file limit is advisory during rollout.`,
-    });
-  }
-  for (const component of analysis.components) {
-    if (component.logicalLoc <= 150) continue;
-    findings.push({
-      id: 'STRUCT_COMPONENT_LOC',
-      severity: 'warning',
-      file: analysis.file,
-      line: component.line,
-      message: `${component.name} is approximately ${component.logicalLoc} logical lines; the 150 LOC threshold is advisory during rollout.`,
-    });
-  }
-  if (analysis.functionCount > ADVISORY_FUNCTION_COUNT) {
-    findings.push({
-      id: 'STRUCT_FUNCTION_COUNT',
-      severity: 'warning',
-      file: analysis.file,
-      message: `Module declares ${analysis.functionCount} top-level functions; the ${ADVISORY_FUNCTION_COUNT}-function threshold is advisory during rollout.`,
-    });
-  }
+  // RETIRED — the project's own toolchain owns every numeric size budget now:
+  //   STRUCT_MODULE_LOC          -> eslint `max-lines` (400), ruff, golangci funlen
+  //   STRUCT_COMPONENT_LOC       -> eslint `max-lines-per-function`
+  //   STRUCT_FUNCTION_COUNT      -> eslint `complexity` / max-lines-per-function
+  //   STRUCT_COMPONENTS_PER_FILE -> the same config, per project taste
+  // Runtime compiles those configs per stack and seeds them at PLAN_READY, so
+  // every implementer inherits the bar before it writes a line. Keeping a second,
+  // regex-based copy here bought nothing and cost repeatedly: the statement
+  // counter read string bodies as code and reported 1233 logical lines for a
+  // 358-line file, which made a module its owning role could not legally edit.
+  //
+  // STRUCT_COLLAPSED_LINE above deliberately stays: prettier makes collapse
+  // impossible, but the write gate and the OpenCode post-apply check both run on
+  // trees that have no node_modules yet, so the formatter cannot be reached there.
   if (analysis.unresolvedRoutes.length > 0) {
     const first = analysis.unresolvedRoutes[0]!;
     findings.push({

@@ -100,6 +100,7 @@ export function runFullStructureScan(
   runId: string,
   contract: CompiledArchitectureV1,
   role?: string,
+  greenfield = false,
 ): ReturnType<typeof analyzeProjectStructure> {
   const scopedContract = role ? roleContract(contract, role) : contract;
   const scopes = role ? assignmentScopesForRole(projectRoot, runId, role) : [];
@@ -108,6 +109,9 @@ export function runFullStructureScan(
   const allowlist = scopes.flatMap((scope) => scope.include);
   const report = analyzeProjectStructure(projectRoot, scopedContract, {
     allowlist: role && allowlist.length > 0 ? allowlist : undefined,
+    // Integration findings block only where Traffic One owns the structure;
+    // on an existing codebase they stay advisory (StructureScanOptions).
+    greenfield,
   });
   writeStructureReport(projectRoot, runId, report);
   return report;

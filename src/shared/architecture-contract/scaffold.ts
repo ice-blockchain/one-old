@@ -49,11 +49,43 @@ export const REPOSITORY_SCAFFOLD_OUTPUTS = [
   '.github/workflows/ci.yml',
 ] as const;
 
+// The project's own quality toolchain, compiled per stack and seeded with
+// canonical content at PLAN_READY (see scaffold-content.ts). These replace
+// hand-rolled structural heuristics: prettier makes collapsed source impossible
+// rather than detectable, and eslint owns module size and layer boundaries with a
+// config the project owner can read and edit — which a hook heuristic never was.
+// CI enforces them after the run ends, which no gate of ours can.
 const NODE_TOOLING_OUTPUTS = [
   '.prettierrc',
   '.prettierignore',
   '.nvmrc',
+  'eslint.config.js',
 ] as const;
+
+const BACKEND_QUALITY_OUTPUT_BY_FRAMEWORK: Record<string, readonly string[]> = {
+  python: ['ruff.toml'],
+  go: ['.golangci.yml'],
+  laravel: ['pint.json'],
+  php: ['pint.json'],
+  rust: ['rustfmt.toml'],
+};
+
+/**
+ * Formatter/linter config for backends whose toolchain is not npm-based. Owned by
+ * `senior-backend` so the role that writes the code also owns the bar it is held
+ * to.
+ */
+export function backendQualityOutputs(
+  profile: CapabilityProfileV1,
+): CompiledArchitectureOutputV1[] {
+  if (!profile.roles.includes('senior-backend')) return [];
+  const outputs = BACKEND_QUALITY_OUTPUT_BY_FRAMEWORK[profile.backendFramework || ''] || [];
+  return outputs.map((output) => ({
+    path: output,
+    ownerRole: 'senior-backend',
+    kind: 'scaffold' as const,
+  }));
+}
 
 export function selectedImplementationOwner(profile: CapabilityProfileV1): string | null {
   const selectedUi = profile.surfaces.includes('web-ui') || profile.surfaces.includes('native-ui');

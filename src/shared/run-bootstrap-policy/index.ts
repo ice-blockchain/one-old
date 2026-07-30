@@ -219,6 +219,8 @@ export {
   compileIntegrationRequirements,
   compileRoleContextPack,
   contextPackDir,
+  contextPackPartDir,
+  sharedContextPackDir,
   contextPackManifestPath,
   readContextPackManifest,
   readRulesAck,

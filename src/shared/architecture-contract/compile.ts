@@ -35,6 +35,7 @@ import {
 import {
   REPOSITORY_SCAFFOLD_OUTPUTS,
   appendUniqueScaffoldOutputs,
+  backendQualityOutputs,
   backendScaffoldOutputs,
   environmentScaffoldOutputs,
   frontendScaffoldOutputs,
@@ -252,6 +253,7 @@ export function compileArchitecture(
       scaffoldOutputs,
       nodeToolingScaffoldOutputs(profile, scaffoldOutputs, immutablePaths),
     );
+    appendUniqueScaffoldOutputs(scaffoldOutputs, backendQualityOutputs(profile));
     const duplicateScaffold = scaffoldOutputs.find((output, index) => (
       scaffoldOutputs.findIndex((candidate) => candidate.path === output.path) !== index
     ));

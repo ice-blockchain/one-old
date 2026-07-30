@@ -36,19 +36,22 @@ and `frontend/<flavour>/core.md`.
 ## File & function size
 - Keep modules cohesive and functions focused. Split them when they combine
   unrelated routes, screens, commands, jobs, or domain responsibilities.
-- During the current one-version rollout, per-component LOC, function-size,
-  top-level-function-count, and component-per-file thresholds are advisory
-  `WARN` signals only. They are not standalone blockers until fixture
-  validation demonstrates a false-positive rate below 1%.
-- One numeric threshold DOES block: a single module over ~400 logical lines
-  (`STRUCT_MODULE_LOC`). A module that large is packing a whole feature into one
-  file regardless of how its components are counted. Split it along its own
-  seams. Generated declaration/type modules (`*.d.ts`, `*.types.ts`,
-  `*.generated.ts`) are exempt, and the architect may declare a narrow
-  `STRUCT_MODULE_LOC` exception with a glob and a reason.
-- Runtime structural findings remain blocking independently of LOC:
-  entrypoints containing inline UI/routes, multiple pages in one module,
-  route/contract mismatches, allowlist gaps, and incomplete scans.
+- **Every numeric size budget lives in the project's own linter config** —
+  `max-lines` and `max-lines-per-function` in `eslint.config.js`, `max-statements`
+  in `ruff.toml`, `funlen` in `.golangci.yml`. On a new project runtime seeds that
+  config at `PLAN_READY`; on an existing codebase the repository's own config is
+  authoritative and is never replaced. Either way, read it: it is the answer for
+  this project, it is what CI enforces, and it is editable by the project owner.
+  Do not weaken it to pass your own change (see `quality-tooling.md`, "Config
+  tamper guard").
+- Layer and placement rules are likewise expressed in that config as import
+  boundaries, not inferred from file or component names.
+- Runtime structural findings remain blocking where a linter cannot see them,
+  because they compare against the compiled architecture rather than the source
+  alone: entrypoints containing inline UI/routes, route/contract mismatches,
+  work-unit allowlist gaps, planned-module gaps, orphan modules, and incomplete
+  scans. Collapsed source is also still rejected at the write, because the
+  formatter is not installed yet when the first files land.
 - Prefer the active language's clear control-flow idioms. Avoid unexplained
   literals; use named values or domain types where that improves meaning.
 

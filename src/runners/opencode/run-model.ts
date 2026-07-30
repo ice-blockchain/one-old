@@ -31,6 +31,7 @@ import {
 } from './git-sandbox';
 import {
   postApplyQuality,
+  postApplySize,
   postApplyStyling,
   postApplyTypecheck,
 } from './verify';
@@ -223,11 +224,20 @@ export function runModel(cwd: string, bin: string, baseSha: string, model: strin
       const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
       return { kind: 'failed', error: `delegated diff applied but landed collapsed source${suffix}: ${qualityError}` };
     }
-    const stylingError = postApplyStyling(cwd, touched);
+    const stylingError = postApplyStyling(cwd, touched, policy.runId);
     if (stylingError) {
       const rollbackError = restoreApplyTargets(backups);
       const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
       return { kind: 'failed', error: `delegated diff applied but used a styling system the project does not have${suffix}: ${stylingError}` };
+    }
+    // Enforced here as well as at write time: a module Step-0 accepts but the
+    // structural gate refuses leaves its owning role holding a file it cannot
+    // legally edit.
+    const sizeError = postApplySize(cwd, touched);
+    if (sizeError) {
+      const rollbackError = restoreApplyTargets(backups);
+      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+      return { kind: 'failed', error: `delegated diff applied but landed an oversized module${suffix}: ${sizeError}` };
     }
     return { kind: 'delegated', touched, summary };
   } finally {

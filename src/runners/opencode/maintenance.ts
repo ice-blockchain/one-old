@@ -35,7 +35,13 @@ export function classifyFailureKind(action: DelegateResult['action'], error: str
   if (action === 'no-changes') return 'no-changes';
   const msg = error || '';
   if (/\bETIMEDOUT\b|timed out|stalled/i.test(msg)) return 'provider-timeout';
-  if (/typecheck failed/i.test(msg)) return 'verification-failed';
+  // Post-apply VERIFICATION failures are not scope rejections. All three used to
+  // fall through to `diff-rejected` — indistinguishable from "wrote outside its
+  // allowlist" — while their status was `failed`, so the two fields contradicted
+  // each other and a real quality signal read as a policy violation.
+  if (/typecheck failed|landed collapsed source|styling system the project does not have|landed an oversized module/i.test(msg)) {
+    return 'verification-failed';
+  }
   if (/outside|apply|delegated diff|assignment scope|generated\/internal/i.test(msg)) return 'diff-rejected';
   if (/opencode/i.test(msg)) return 'opencode-error';
   return 'environment';

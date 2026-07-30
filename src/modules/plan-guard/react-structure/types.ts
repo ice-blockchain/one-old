@@ -50,6 +50,17 @@ export interface StructureScanOptions {
   allowlist?: string[];
   assignmentScope?: AssignedScope;
   generatedAt?: string;
+  /**
+   * True only for `mode: "new-project"`, where Traffic One owns the whole
+   * structure and may block on its own conventions. On an EXISTING codebase the
+   * plugin does not own the conventions, so integration findings whose accuracy
+   * depends on them (orphan module, unused API package, styling system) degrade
+   * to warnings: a maintenance run must never deadlock on a repo the plugin did
+   * not create — a component reached by a dynamic string import, an API package
+   * consumed from a source root outside the contract, or Tailwind arriving via
+   * a preset are all legitimate shapes this scanner cannot see.
+   */
+  greenfield?: boolean;
 }
 
 export interface ComponentDeclaration {

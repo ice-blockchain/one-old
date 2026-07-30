@@ -141,14 +141,29 @@ test('common rules stay stack-native and defer classification to runtime contrac
   const common = path.resolve(__dirname, '../../../modules/rules/rules/common');
   const clean = fs.readFileSync(path.join(common, 'clean-code.md'), 'utf8');
   assert.doesNotMatch(clean, /`const` by default|`camelCase` vars|800 hard cap|~50 lines max/);
-  assert.match(clean, /per-component LOC, function-size,[\s\S]*top-level-function-count,[\s\S]*advisory[\s\S]*`WARN`/);
-  assert.match(clean, /false-positive[\s\S]*below 1%/);
-  // The one numeric threshold that blocks, and the escapes that keep it from
-  // deadlocking a legitimately large or generated module.
-  assert.match(clean, /400 logical lines[\s\S]*`STRUCT_MODULE_LOC`/);
-  assert.match(clean, /`\*\.types\.ts`[\s\S]*are exempt/);
+  // Numeric size budgets moved out of hook heuristics into the project's own
+  // compiled linter config, so the prose must point at that config rather than
+  // restate thresholds the scanner no longer owns.
+  assert.match(clean, /numeric size budget lives in the project's own linter config/);
+  assert.match(clean, /max-lines[\s\S]*eslint\.config\.js[\s\S]*ruff\.toml[\s\S]*\.golangci\.yml/);
+  assert.match(clean, /Do not weaken it to pass your own change/);
+  // What stays blocking is only what a linter cannot see, because it compares
+  // against the compiled architecture rather than the source alone.
+  assert.match(clean, /Runtime structural findings remain blocking where a linter cannot see them/);
+  assert.match(clean, /route\/contract mismatches[\s\S]*allowlist gaps/);
+  assert.match(clean, /Collapsed source is also still rejected at the write/);
 
   const tooling = fs.readFileSync(path.join(common, 'quality-tooling.md'), 'utf8');
+  // The compiled config is the single expression of the quality bar, and the
+  // tamper guard is what stops a role from raising a limit to pass its own change.
+  assert.match(tooling, /quality config is the bar — read it before you write/);
+  assert.match(tooling, /eslint\.config\.js[\s\S]*ruff\.toml[\s\S]*\.golangci\.yml/);
+  assert.match(tooling, /Do not author a competing config/);
+  assert.match(tooling, /Config tamper guard/);
+  // Mode-aware by construction: runtime seeds the config only on a new project and
+  // never replaces an existing repository's own configuration.
+  assert.match(tooling, /`new-project`[\s\S]*seeds canonical content at `PLAN_READY`/);
+  assert.match(tooling, /`existing-codebase`[\s\S]*Runtime scaffolds nothing and overwrites nothing/);
   assert.match(tooling, /JavaScript\/TypeScript only/);
   assert.match(tooling, /Go:[\s\S]*go test/);
   assert.match(tooling, /Python:[\s\S]*pytest/);
@@ -178,4 +193,32 @@ test('onboarding-only rules drop out of maintenance-phase manifests', () => {
   assert.ok(!existing.mandatory.includes('rules/common/onboarding.md'));
   assert.ok(!existing.mandatory.includes('rules/common/stack-recommendations.md'));
   assert.ok(existing.mandatory.includes('rules/common/library-catalog.md'), 'library-catalog stays useful post-setup');
+});
+
+test('every implementing role loads the quality-tooling and clean-code baselines', () => {
+  // The gap this guards: senior-frontend did NOT load `quality-tooling.md`, whose
+  // "Config tamper guard" section forbids weakening a config to hide a failure —
+  // and in 9co that role disabled `noUncheckedIndexedAccess` for the whole
+  // monorepo to get past a blocking finding. The rule existed; the role never
+  // received it. The architect needs it too now that runtime compiles the
+  // project's formatter/linter config as scaffold output.
+  for (const role of [
+    'senior-architect',
+    'senior-frontend',
+    'senior-backend',
+    'senior-reviewer',
+    'senior-tester',
+    'quick-fix',
+  ]) {
+    const rules = AGENT_ROLE_BASE_RULES[role];
+    assert.ok(rules, `${role} must have a base rule set`);
+    assert.ok(
+      rules.includes('rules/common/quality-tooling.md'),
+      `${role} must load quality-tooling.md`,
+    );
+    assert.ok(
+      rules.includes('rules/common/clean-code.md'),
+      `${role} must load clean-code.md`,
+    );
+  }
 });

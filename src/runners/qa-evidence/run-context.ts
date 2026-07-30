@@ -169,6 +169,68 @@ export function loadRun(args: RunnerArgs): LoadResult<LoadedRun> {
   };
 }
 
+export interface LoadedStackRun {
+  contract: VerificationContractV2;
+  sourceHash: string;
+}
+
+/**
+ * Load for the `stack` command: contract plus source identity, and NO build
+ * manifest. An api-only project (Go, Python, Rust, a Laravel API) has no JS
+ * build output, so requiring `--build-dir` here made the only path that could
+ * ever satisfy its `stack-*` checks unreachable.
+ */
+export function loadStackRun(args: RunnerArgs): LoadResult<LoadedStackRun> {
+  if (!SAFE_ID_RE.test(args.runId)) {
+    return { ok: false, reason: `run id is not a safe identifier: ${args.runId}` };
+  }
+  const contract = readVerificationContract(args.projectRoot, args.runId);
+  if (!contract) {
+    return {
+      ok: false,
+      reason: `VerificationContractV2 for run ${args.runId} is missing, malformed, `
+        + 'or fails its own hash self-check',
+    };
+  }
+  if (contract.browserRequired || contract.uiImpact === 'native-ui') {
+    return {
+      ok: false,
+      reason: `active contract requires ${contract.uiImpact === 'native-ui' ? 'native' : 'browser'} `
+        + 'evidence, so stack checks alone cannot satisfy it',
+    };
+  }
+  const source = currentVerificationSourceHash(args.projectRoot, contract);
+  if (!source.complete || !source.hash) {
+    return { ok: false, reason: source.reason || 'source identity scan is incomplete' };
+  }
+  return { ok: true, run: { contract, sourceHash: source.hash } };
+}
+
+/** Publish a stack-only v2 report: no server, no build identity, no routes. */
+export function publishStackReport(
+  args: RunnerArgs,
+  loaded: LoadedStackRun,
+  status: QaReportV2['status'],
+  checks: QaReportV2['checks'],
+): { report: QaReportV2; ok: boolean; code?: string; message?: string } {
+  const report: QaReportV2 = {
+    schemaVersion: 2,
+    runId: args.runId,
+    verificationContractHash: loaded.contract.contractHash,
+    generatedAt: new Date().toISOString(),
+    producer: 'parent-runner',
+    status,
+    sourceHash: loaded.sourceHash,
+    checks,
+    routes: [],
+  };
+  writeJson(qaReportV2Path(args.projectRoot, args.runId), report);
+  const validation = validateQaReportV2(report, args.projectRoot, args.runId, loaded.contract);
+  return validation.ok
+    ? { report, ok: true }
+    : { report, ok: false, code: validation.code, message: validation.message };
+}
+
 export function loadNativeRun(args: RunnerArgs): LoadResult<LoadedNativeRun> {
   if (!SAFE_ID_RE.test(args.runId)) {
     return { ok: false, reason: `run id is not a safe identifier: ${args.runId}` };

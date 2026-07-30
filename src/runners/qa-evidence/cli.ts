@@ -19,7 +19,7 @@ function valueAfter(argv: readonly string[], flag: string): string {
 
 export function parseArgs(argv: readonly string[], cwd: string): RunnerArgs | null {
   const first = argv[0] || '';
-  const command = first === 'manifest' || first === 'browser' || first === 'lighthouse' || first === 'native'
+  const command = first === 'manifest' || first === 'browser' || first === 'lighthouse' || first === 'native' || first === 'stack'
     ? first
     : first === 'help' || first === '--help' || first === '-h'
       ? 'help'

@@ -53,7 +53,11 @@ delivering mobile with Ionic/Capacitor.
   (animation, computed positioning) — never for static styling.
 
 ### Testing
-- jest + @testing-library/react + @testing-library/user-event
+- Vitest + @testing-library/react + @testing-library/user-event, with
+  `environment: 'jsdom'` — the runtime compiles `vitest.config.ts` for this stack,
+  so Vitest is the runner. A `node` environment cannot render a component, and a
+  suite that cannot render falls back to asserting on source text, which proves
+  nothing. See `frontend/react/testing.md` for the full recipe.
 - @playwright/test (E2E)
 - msw + in-memory WS fake
 - Storybook (@storybook/react-vite)

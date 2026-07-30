@@ -28,7 +28,7 @@ still decide whether a package can be added.
 - HTTP and server data: `axios` in services, RTK Query for cached server state.
 - UI and motion: `lucide-react`, `framer-motion`, Storybook.
 - i18n: `i18next`, `react-i18next`.
-- Testing and mocks: Jest in Traffic One React/Expo stacks, Playwright for E2E,
+- Testing and mocks: Vitest + jsdom in Traffic One Vite-based stacks (Jest in Expo), Playwright for E2E,
   MSW for HTTP mocks.
 - CLI/config: `commander` or `yargs`, `dotenv`, `envalid` or Zod schemas.
 - Observability: `@sentry/react` for React SPAs, Sentry Capacitor/Expo/native
@@ -49,7 +49,7 @@ still decide whether a package can be added.
 - React/Vite: keep Traffic One defaults: RTK Query/Redux, **Tailwind v4 +
   shadcn/ui** (Radix primitives, `class-variance-authority`, `clsx`,
   `tailwind-merge`, `tw-animate-css`), `lucide-react`, React Hook Form
-  + Zod, Jest, Playwright, MSW. Add new UI primitives via
+  + Zod, Vitest, Playwright, MSW. Add new UI primitives via
   `npx shadcn@latest add <name>`; do not hand-roll buttons / dialogs / etc.
   Versions come from the stack rules — never probe the npm registry to pick
   them; "latest tech" means latest within this contract.

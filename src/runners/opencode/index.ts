@@ -367,7 +367,7 @@ if (require.main === module) {
   if (typeof code === 'number') process.exitCode = code;
 }
 
-export { postApplyQuality, postApplyStyling, postApplyTypecheck } from './verify';
+export { postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck } from './verify';
 export { resetOpenCodeModelMemo } from './models';
 export { snapshotWorkingTree, stageExcludePathspecs } from './git-sandbox';
 import { normalizePlanRole } from './diff-policy';

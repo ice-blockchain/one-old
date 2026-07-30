@@ -105,7 +105,7 @@ function writeCourseCard(cwd: string, contract: CompiledArchitectureV1, body?: s
 
 function errorIds(cwd: string, contract: CompiledArchitectureV1): string[] {
   return [...new Set(
-    analyzeProjectStructure(cwd, contract).findings
+    analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
       .filter((finding) => finding.severity === 'error')
       .map((finding) => finding.id),
   )].sort();
@@ -328,7 +328,7 @@ test('hardcoded copy is a warning, only with an i18n runtime present', () => {
     writeCourseCard(cwd, contract);
 
     // No i18n runtime: no warning at all.
-    const withoutI18n = analyzeProjectStructure(cwd, contract).findings
+    const withoutI18n = analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
       .filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
     assert.equal(withoutI18n.length, 0);
 
@@ -338,9 +338,32 @@ test('hardcoded copy is a warning, only with an i18n runtime present', () => {
         react: '19.0.0', vite: '7.0.0', 'react-router-dom': '7.0.0', 'react-i18next': '15.0.0',
       },
     }));
-    const withI18n = analyzeProjectStructure(cwd, contract).findings
+    const withI18n = analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
       .filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
     assert.ok(withI18n.length > 0);
     assert.ok(withI18n.every((finding) => finding.severity === 'warning'));
+  });
+});
+
+test('integration findings block on a new project and only advise on an existing codebase', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    writeAppShell(cwd, contract);
+    writeHome(cwd, contract, 'export default function Home() {\n  return <main>Home</main>;\n}\n');
+    writeCourseCard(cwd, contract);
+
+    // The regression this guards: `greenfield` was added as a parameter and left
+    // unwired at both production call sites, so it defaulted to false and these
+    // three findings were advisory EVERYWHERE — including projects Traffic One
+    // scaffolded itself and therefore owns.
+    const greenfield = analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
+      .filter((finding) => finding.id === 'STRUCT_ORPHAN_MODULE');
+    assert.equal(greenfield.length, 1);
+    assert.equal(greenfield[0]!.severity, 'error', 'a scaffolded project blocks');
+
+    const existing = analyzeProjectStructure(cwd, contract).findings
+      .filter((finding) => finding.id === 'STRUCT_ORPHAN_MODULE');
+    assert.equal(existing.length, 1);
+    assert.equal(existing[0]!.severity, 'warning', 'a pre-existing repo is only advised');
   });
 });

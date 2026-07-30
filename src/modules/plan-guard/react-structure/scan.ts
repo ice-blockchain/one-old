@@ -187,7 +187,14 @@ export function analyzeProjectStructure(
   const findings = analyses.flatMap((analysis) => (
     localFindings(analysis, contract.profile, contract.exceptions)
   ));
-  findings.push(...contractFindings(projectRoot, contract, analyses, options.allowlist, options.assignmentScope));
+  findings.push(...contractFindings(
+    projectRoot,
+    contract,
+    analyses,
+    options.allowlist,
+    options.assignmentScope,
+    options.greenfield === true,
+  ));
   if (incomplete) {
     findings.push({
       id: 'STRUCT_SCAN_INCOMPLETE',

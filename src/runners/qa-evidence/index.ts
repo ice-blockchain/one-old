@@ -4,6 +4,7 @@
 // shim calls main(); the require.main guard stays here.
 
 import {
+  readVerificationContract,
   type VerificationContractV2,
 } from '../../shared/verification-contract';
 
@@ -14,12 +15,16 @@ import {
 import {
   loadNativeRun,
   loadRun,
+  loadStackRun,
+  publishStackReport,
 } from './run-context';
 import {
   lighthouseCommand,
 } from './lighthouse';
 import { browserCommand } from './browser';
 import { nativeCommand } from './native';
+import { runStackChecks, stackReportStatus } from './stack';
+import { qaReportV2Path } from '../../shared/qa-report-v2';
 import { acquireQaRunLock, releaseQaRunLock } from './lock';
 
 export async function main(
@@ -53,6 +58,39 @@ export async function main(
         return 2;
       }
       return await nativeCommand(args, native.run);
+    }
+    if (args.command === 'stack') {
+      const stack = loadStackRun(args);
+      if (!stack.ok) {
+        process.stderr.write(`qa-evidence: cannot load run — ${stack.reason}\n`);
+        return 2;
+      }
+      const checks = runStackChecks(args, stack.run.contract.requiredChecks);
+      const status = stackReportStatus(checks);
+      const published = publishStackReport(args, stack.run, status, checks);
+      process.stdout.write(`${JSON.stringify({
+        ok: published.ok,
+        status: published.report.status,
+        reportPath: qaReportV2Path(args.projectRoot, args.runId),
+        checks: checks.map((check) => ({ id: check.id, status: check.status })),
+        ...(published.ok ? {} : { validation: { code: published.code, message: published.message } }),
+      })}\n`);
+      return published.ok ? 0 : 1;
+    }
+    // Answer "does this contract even want browser evidence?" BEFORE demanding a
+    // build manifest: an api-only project has no JS build output, so `loadRun`
+    // would fail on the manifest and report that instead of the real situation.
+    if (args.command === 'browser') {
+      const contract = readVerificationContract(args.projectRoot, args.runId);
+      if (contract && !contract.browserRequired) {
+        process.stdout.write(`${JSON.stringify({
+          ok: true,
+          status: 'not-required',
+          uiImpact: contract.uiImpact,
+          hint: 'run `stack` for build/test/lint evidence on contracts with no browser surface',
+        })}\n`);
+        return 0;
+      }
     }
     const result = loadRun(args);
     if (!result.ok) {

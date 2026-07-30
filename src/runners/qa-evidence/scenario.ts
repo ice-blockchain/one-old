@@ -46,7 +46,7 @@ function parseStep(value: unknown): ScenarioStep | null {
 // `/404` just to get a passing sweep, and the app shipped with no reachable
 // not-found route at all) while `:param` routes were "verified" by visiting the
 // literal path `/courses/:courseSlug`. `startPath` carries the concrete probe.
-function isConcreteRoutePath(value: string): boolean {
+export function isConcreteRoutePath(value: string): boolean {
   return value.startsWith('/')
     && !value.split('/').some((segment) => segment.startsWith(':') || segment === '*');
 }

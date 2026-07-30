@@ -14,6 +14,8 @@ interface RetentionPolicy {
   keepRuns: number;
   backupKeep: number;
   orphanTtlDays: number;
+  /** Newest Lighthouse runs kept per route; older ones are superseded copies. */
+  lighthouseKeepPerRoute: number;
 }
 
 interface RetentionAction {
@@ -35,6 +37,7 @@ const DEFAULT_POLICY: RetentionPolicy = {
   keepRuns: 5,
   backupKeep: 3,
   orphanTtlDays: 7,
+  lighthouseKeepPerRoute: 2,
 };
 
 function readPolicy(cwd: string): RetentionPolicy {
@@ -43,10 +46,14 @@ function readPolicy(cwd: string): RetentionPolicy {
   const keepRuns = Number(raw.keepRuns);
   const backupKeep = Number(raw.backupKeep);
   const orphanTtlDays = Number(raw.orphanTtlDays);
+  const lighthouseKeepPerRoute = Number(raw.lighthouseKeepPerRoute);
   return {
     keepRuns: Number.isFinite(keepRuns) && keepRuns >= 1 ? Math.floor(keepRuns) : DEFAULT_POLICY.keepRuns,
     backupKeep: Number.isFinite(backupKeep) && backupKeep >= 0 ? Math.floor(backupKeep) : DEFAULT_POLICY.backupKeep,
     orphanTtlDays: Number.isFinite(orphanTtlDays) && orphanTtlDays >= 0 ? orphanTtlDays : DEFAULT_POLICY.orphanTtlDays,
+    lighthouseKeepPerRoute: Number.isFinite(lighthouseKeepPerRoute) && lighthouseKeepPerRoute >= 1
+      ? Math.floor(lighthouseKeepPerRoute)
+      : DEFAULT_POLICY.lighthouseKeepPerRoute,
   };
 }
 
@@ -177,6 +184,23 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
     }
   }
 
+  // Runs that never reached a compiled architecture are not runs — they were
+  // minted, captured a baseline, and abandoned. Observed 8cl: a run minted 3.5
+  // minutes AFTER the previous one settled `agent-failed`, holding a 1.63 MB
+  // baseline, still `status: active`, while `currentRunId` stayed on the earlier
+  // run. Nothing reclaimed it because the keep-set counts it as one of the five
+  // most recent. The TTL keeps an in-flight pre-PLAN_READY run untouched.
+  const ttl = policy.orphanTtlDays * 24 * 60 * 60 * 1000;
+  const currentRunId = readCurrentRunId(cwd);
+  for (const id of listDirs(path.join(t1, 'runs'))) {
+    if (id === '.once' || id === currentRunId) continue;
+    const runDir = path.join(t1, 'runs', id);
+    if (actions.some((action) => action.path === runDir)) continue;
+    if (fs.existsSync(path.join(runDir, 'architecture-v1.json'))) continue;
+    if (!isOlderThan(runDir, ttl, nowMs)) continue;
+    maybeAction(actions, runDir, `abandoned before architecture compilation and older than ${policy.orphanTtlDays} days`);
+  }
+
   const backups = listDirs(path.join(t1, 'backups')).sort(numericDesc);
   for (const name of backups.slice(policy.backupKeep)) {
     maybeAction(actions, path.join(t1, 'backups', name), `older than retained backup set (${policy.backupKeep})`);
@@ -229,6 +253,33 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
       if (ttlMs === 0 || isOlderThan(target, ttlMs, nowMs)) {
         maybeAction(actions, target, `stale ${rel} artefact older than ${policy.orphanTtlDays} days`);
       }
+    }
+  }
+
+  // Lighthouse reports carry a timestamp in their filename, so no run ever
+  // supersedes the previous one and a TTL-only sweep keeps every copy inside the
+  // window. Observed 9co: 10 HTML+JSON pairs, 13.6 MB, one run — while the actual
+  // evidence artefact is an 863-byte `lighthouse-evidence-v1.json` in the QA dir.
+  // Keep the newest few per route; the rest are superseded duplicates.
+  const lighthouseRoot = path.join(t1, 'reports', 'lighthouse');
+  const byRoute = new Map<string, string[]>();
+  for (const name of listFiles(lighthouseRoot)) {
+    if (actions.some((action) => action.path === path.join(lighthouseRoot, name))) continue;
+    // `<route>-<ISO timestamp>.report.{json,html}` — group on the route prefix.
+    const match = /^(.*?)-\d{4}-\d{2}-\d{2}T[\d-]+Z\.report\.(?:json|html)$/.exec(name);
+    if (!match) continue;
+    const bucket = byRoute.get(match[1]!) || [];
+    bucket.push(name);
+    byRoute.set(match[1]!, bucket);
+  }
+  for (const [, names] of byRoute) {
+    // Two files per run (json + html), so keeping 2 runs means 4 files.
+    for (const name of names.sort().reverse().slice(policy.lighthouseKeepPerRoute * 2)) {
+      maybeAction(
+        actions,
+        path.join(lighthouseRoot, name),
+        `superseded Lighthouse report (keeping ${policy.lighthouseKeepPerRoute} per route)`,
+      );
     }
   }
 

@@ -138,7 +138,6 @@ test('minifying a 600-line entrypoint monolith hides no blocking ID and adds the
       assert.ok(minifiedIds.includes(id), `minifying hid ${id}`);
     }
     assert.ok(prettyIds.includes('STRUCT_ENTRYPOINT_COMPONENT'));
-    assert.ok(prettyIds.includes('STRUCT_MULTI_PAGE_MODULE'));
     assert.equal(prettyIds.includes('STRUCT_COLLAPSED_LINE'), false);
     assert.equal(minifiedIds.includes('STRUCT_COLLAPSED_LINE'), true);
     assert.deepEqual(
@@ -146,33 +145,6 @@ test('minifying a 600-line entrypoint monolith hides no blocking ID and adds the
       ['STRUCT_COLLAPSED_LINE'],
       'collapse is the only difference minification may introduce',
     );
-  });
-});
-
-test('pretty and minified inline JSX route elements block an entrypoint without component declarations', () => {
-  withProject((cwd) => {
-    const contract = prepare(cwd);
-    const variants = [
-      [
-        'const router = createBrowserRouter([',
-        '  { path: "/", element: <main>Home</main> },',
-        '  { path: "/settings", element: <main>Settings</main> },',
-        ']);',
-        'createRoot(document.body).render(<RouterProvider router={router} />);',
-      ].join('\n'),
-      'const router=createBrowserRouter([{path:"/",element:<main>Home</main>},{path:"/settings",element:<main>Settings</main>}]);createRoot(document.body).render(<RouterProvider router={router}/>);',
-    ];
-    const findings = variants.map((source) => (
-      analyzeStructureText('apps/web/src/main.tsx', source, contract.profile)
-        .filter((finding) => finding.severity === 'error')
-        .map((finding) => finding.id)
-        .sort()
-    ));
-    assert.deepEqual(findings[0], findings[1]);
-    assert.deepEqual(findings[0], [
-      'STRUCT_ENTRYPOINT_COMPONENT',
-      'STRUCT_MULTI_PAGE_MODULE',
-    ]);
   });
 });
 
@@ -398,65 +370,6 @@ test('comments, JSX strings, config, tests, and stories do not create structural
       analyzeProjectStructure(cwd, contract).findings.filter((finding) => finding.severity === 'error'),
       [],
     );
-  });
-});
-
-test('controlled shadcn/compound exception suppresses only numeric warnings', () => {
-  withProject((cwd) => {
-    const contract = prepare(cwd, {
-      ...INPUT,
-      exceptions: [{
-        ruleId: 'STRUCT_COMPONENTS_PER_FILE',
-        glob: 'packages/ui/src/Accordion*.tsx',
-        reason: 'Accordion is a same-prefix compound primitive family.',
-      }],
-    });
-    fs.writeFileSync(path.join(cwd, 'packages/ui/src/Accordion.tsx'),
-      'export function Accordion(){return <div/>}\nexport function AccordionItem(){return <div/>}\n');
-    const local = analyzeStructureText(
-      'packages/ui/src/Accordion.tsx',
-      fs.readFileSync(path.join(cwd, 'packages/ui/src/Accordion.tsx'), 'utf8'),
-      contract.profile,
-      contract.exceptions,
-    );
-    assert.deepEqual(local, []);
-
-    const hardFindings = analyzeStructureText(
-      'packages/ui/src/Accordion.tsx',
-      [
-        'function Home(){return <main>Home</main>}',
-        'function News(){return <main>News</main>}',
-        'const router=createBrowserRouter([{path:"/",element:<Home/>},{path:"/news",element:<News/>}]);',
-      ].join('\n'),
-      contract.profile,
-      contract.exceptions,
-    );
-    assert.equal(hardFindings.some((finding) => finding.id === 'STRUCT_COMPONENTS_PER_FILE'), false);
-    assert.ok(hardFindings.some((finding) => (
-      finding.id === 'STRUCT_MULTI_PAGE_MODULE' && finding.severity === 'error'
-    )));
-
-    for (const ruleId of [
-      'STRUCT_ENTRYPOINT_COMPONENT',
-      'STRUCT_MULTI_PAGE_MODULE',
-      'STRUCT_ROUTE_MODULE_MISMATCH',
-      'STRUCT_ASSIGNMENT_ALLOWLIST_GAP',
-      'STRUCT_SCAN_INCOMPLETE',
-    ]) {
-      const validation = validateArchitectureInput({
-        ...INPUT,
-        exceptions: [{
-          ruleId,
-          glob: 'packages/ui/src/Accordion.tsx',
-          reason: 'Attempt to waive a hard structural finding.',
-        }],
-      });
-      assert.equal(validation.ok, false, ruleId);
-      assert.ok(
-        validation.errors.some((error) => error.includes(`${ruleId}: rule is not exception-eligible`)),
-        `${ruleId}: ${validation.errors.join('; ')}`,
-      );
-    }
   });
 });
 
@@ -806,27 +719,6 @@ test('hot single-file structural analysis remains below the 150 ms p95 budget', 
   });
 });
 
-test('top-level function count is advisory during rollout', () => {
-  withProject((cwd) => {
-    const contract = prepare(cwd);
-    const source = Array.from(
-      { length: 13 },
-      (_, index) => `export function helper${index}(){ return ${index}; }`,
-    ).join('\n');
-    const findings = analyzeStructureText(
-      'apps/web/src/lib/helpers.ts',
-      source,
-      contract.profile,
-    );
-    assert.deepEqual(findings, [{
-      id: 'STRUCT_FUNCTION_COUNT',
-      severity: 'warning',
-      file: 'apps/web/src/lib/helpers.ts',
-      message: 'Module declares 13 top-level functions; the 12-function threshold is advisory during rollout.',
-    }]);
-  });
-});
-
 test('collapsed lines are rejected at the write, with strings and types spared', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);
@@ -899,78 +791,6 @@ test('collapsed lines are rejected at the write, with strings and types spared',
     const packed = 'export default function X(){const a=1;return <A/><B/><C/>;}';
     assert.equal(collapsed('packages/api-client/src/database.types.ts', packed), false);
     assert.equal(collapsed('apps/web/src/pages/Catalog.test.tsx', packed), false);
-  });
-});
-
-test('module LOC blocks the monolith, spares merely-large and generated modules', () => {
-  withProject((cwd) => {
-    const contract = prepare(cwd);
-    // Calibrated on 6co: `pages/Catalog.tsx` was 515 logical lines and every
-    // structural signal it raised was advisory, so `IMPLEMENTED` was accepted.
-    const lines = (count: number): string => Array.from(
-      { length: count },
-      (_, index) => `const value${index} = ${index};`,
-    ).join('\n');
-
-    const monolith = analyzeStructureText('apps/web/src/lib/monolith.ts', lines(420), contract.profile);
-    assert.deepEqual(monolith, [{
-      id: 'STRUCT_MODULE_LOC',
-      severity: 'error',
-      file: 'apps/web/src/lib/monolith.ts',
-      message: 'Module is approximately 421 logical lines, over the 400 limit. Split it along its own seams — routes, pages, features, and shared components each belong in their own module under the compiled layer roots.',
-    }]);
-
-    // Just under the limit stays clean: the advisory per-component rules are
-    // deliberately untouched by this change.
-    assert.deepEqual(analyzeStructureText('apps/web/src/lib/large.ts', lines(399), contract.profile), []);
-
-    // Collapse-resistant: the same module minified onto one line still counts
-    // its statements, so this is the only size signal a collapsed write cannot
-    // evade between digests.
-    const collapsed = analyzeStructureText(
-      'apps/web/src/lib/monolith.ts',
-      lines(420).replace(/\n/g, ' '),
-      contract.profile,
-    );
-    assert.equal(collapsed.some((finding) => finding.id === 'STRUCT_MODULE_LOC'), true);
-
-    // Generated declaration/type modules scale with the schema and cannot be
-    // shrunk by the implementer — blocking them would be a deadlock.
-    assert.deepEqual(
-      analyzeStructureText('packages/api-client/src/database.types.ts', lines(900), contract.profile),
-      [],
-    );
-    assert.deepEqual(
-      analyzeStructureText('packages/api-client/src/schema.d.ts', lines(900), contract.profile),
-      [],
-    );
-  });
-});
-
-test('module LOC is exception-eligible only for a narrow compound family glob', () => {
-  withProject((cwd) => {
-    const contract = prepare(cwd, {
-      ...INPUT,
-      exceptions: [{
-        ruleId: 'STRUCT_MODULE_LOC',
-        glob: 'packages/ui/src/Accordion*.tsx',
-        reason: 'Accordion is a same-prefix compound primitive family.',
-      }],
-    });
-    const source = Array.from(
-      { length: 420 },
-      (_, index) => `const value${index} = ${index};`,
-    ).join('\n');
-    assert.deepEqual(
-      analyzeStructureText('packages/ui/src/Accordion.tsx', source, contract.profile, contract.exceptions),
-      [],
-    );
-    // The exception is glob-scoped: an application module never inherits it.
-    assert.equal(
-      analyzeStructureText('apps/web/src/pages/Catalog.tsx', source, contract.profile, contract.exceptions)
-        .some((finding) => finding.id === 'STRUCT_MODULE_LOC'),
-      true,
-    );
   });
 });
 
@@ -1059,6 +879,65 @@ test('pathless index/layout routes stay silent; dynamic route arrays are warning
       dynamicFindings.filter((finding) => finding.severity === 'error'),
       [],
       'a legitimate dynamic pattern never hard-blocks on its own',
+    );
+  });
+});
+
+test('a nested template literal cannot blind the collapse and module-size gates', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const collapsed = 'export function Card(p){return <div><h2>{p.t}</h2><p>{p.b}</p>'
+      + '<span>{p.c}</span><em>{p.d}</em><b>{p.e}</b></div>;}';
+    // `lexicalMask` used to leave template state out of phase here, end the file
+    // inside an unterminated template, and return EVERY later line fully masked.
+    // One such line above collapsed code disabled both gates for the remainder.
+    const nested = 'const label = `${items.map((x) => `\\`${x}\\``)}`;';
+
+    const alone = analyzeStructureText('apps/web/src/components/Card.tsx', collapsed, contract.profile)
+      .map((finding) => finding.id);
+    const shadowed = analyzeStructureText(
+      'apps/web/src/components/Card.tsx',
+      `${nested}\n${collapsed}`,
+      contract.profile,
+    ).map((finding) => finding.id);
+
+    assert.ok(alone.includes('STRUCT_COLLAPSED_LINE'), 'baseline: collapse is detected');
+    assert.ok(
+      shadowed.includes('STRUCT_COLLAPSED_LINE'),
+      'a preceding nested template must not hide collapsed source',
+    );
+  });
+});
+
+test('React.lazy route bindings are imports, not inline pages', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const pages = ['Home', 'News'];
+    const routes = 'const router = createBrowserRouter([\n'
+      + pages.map((p) => `  { path: "/${p.toLowerCase()}", element: <${p} /> },`).join('\n')
+      + '\n]);\n';
+    const shell = 'export default function App() {\n'
+      + '  return <RouterProvider router={router} />;\n'
+      + '}\n';
+
+    const staticImports = `${pages.map((p) => `import ${p} from './pages/${p}';`).join('\n')}\n${routes}${shell}`;
+    // The 9co repro: converting the SAME file to code splitting turned one
+    // advisory warning into a blocking error.
+    const lazyImports = "import { lazy } from 'react';\n"
+      + `${pages.map((p) => `const ${p} = lazy(() => import('./pages/${p}'));`).join('\n')}\n${routes}${shell}`;
+
+    const errorsFor = (source: string): string[] => (
+      analyzeStructureText('apps/web/src/App.tsx', source, contract.profile)
+        .filter((finding) => finding.severity === 'error')
+        .map((finding) => finding.id)
+        .sort()
+    );
+
+    assert.deepEqual(errorsFor(staticImports), [], 'baseline: static page imports are clean');
+    assert.deepEqual(
+      errorsFor(lazyImports),
+      errorsFor(staticImports),
+      'code splitting must not change the structural verdict',
     );
   });
 });

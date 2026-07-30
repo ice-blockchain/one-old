@@ -29,19 +29,36 @@ import {
 } from './git';
 
 const VISUAL_RE = /\.(?:css|scss|sass|less|svg|png|jpe?g|webp|gif|ico|woff2?|ttf|otf)$/i;
-const MARKUP_RE = /\.(?:tsx|jsx|vue|svelte|astro|html|blade\.php)$/i;
+const MARKUP_RE = /\.(?:tsx|jsx|vue|svelte|astro|html|blade\.php|php|erb|twig|hbs|handlebars|ejs|razor|cshtml|templ)$/i;
 const VISUAL_PATH_RE = /(?:^|\/)(?:styles?|theme|tokens?|assets?|layout)(?:\/|[.-])/i;
 const VISUAL_CONFIG_RE = /(?:^|\/)(?:tailwind|uno|windi)\.config\.(?:[cm]?[jt]s|ts)$/i;
 const NONVISUAL_RE = /(?:^|\/)(?:types?|mappers?|schemas?|data|config|constants?|utils?|lib)(?:\/|[.-])|\.d\.ts$|(?:^|\/)[^/]+\.config\.[^.]+$/i;
 const BEHAVIOR_RE = /(?:^|\/)(?:routes?|router|navigation|forms?|state|stores?|features?)(?:\/|[.-])|(?:route|router|navigation|handler|controller)\.[^.]+$/i;
-const TABLET_RISK_RE = /(?:tablet|breakpoint|@media|768|md:|min-width|max-width)/i;
+// `768` on its own matched any unrelated literal — a port, a byte size, an id in
+// backend code — and every match forced a third viewport through the whole sweep.
+// Require it to look like a breakpoint.
+const TABLET_RISK_RE = /(?:tablet|breakpoint|@media|\bmd:|min-width|max-width|\b768px\b|\bmd\b\s*:\s*['"]?768)/i;
 export const IMPORTANT_VISUAL_PATH_RE =
   /(?:^|\/)(?:packages\/ui|design-system|theme|tokens?|layouts?)(?:\/|[.-])|(?:^|\/)(?:globals?|app|styles?)\.(?:css|scss|sass|less)$|(?:^|\/)(?:tailwind|uno|windi)\.config\.(?:[cm]?[jt]s|ts)$/i;
+
+// Every framework's handler-attribute syntax, not only React's. When only these
+// are recognized as behavior, a handler-only edit in a Vue SFC or a Blade
+// template reads as VISUAL and pays for the full three-viewport screenshot sweep
+// plus Lighthouse — pure token and wall-clock cost on every non-React run.
+//   React     onClick={…}          Svelte   on:click={…}
+//   Vue       @click="…"  v-on:…   Alpine   x-on:click="…"  @click="…"
+//   Livewire  wire:click="…"       Angular  (click)="…"
+const EVENT_ATTR_RE = new RegExp([
+  '\\bon[A-Z][A-Za-z0-9_$]*\\s*=',
+  '\\b(?:v-on|x-on|on|wire|hx):[A-Za-z][A-Za-z0-9_.:|-]*\\s*=',
+  '@[A-Za-z][A-Za-z0-9_.:-]*\\s*=',
+  '\\([A-Za-z][A-Za-z0-9_.]*\\)\\s*=',
+].join('|'));
 
 function stripEventHandlers(tag: string): string {
   let output = '';
   for (let cursor = 0; cursor < tag.length;) {
-    const event = /\bon[A-Z][A-Za-z0-9_$]*\s*=/.exec(tag.slice(cursor));
+    const event = EVENT_ATTR_RE.exec(tag.slice(cursor));
     if (!event) {
       output += tag.slice(cursor);
       break;
@@ -50,7 +67,17 @@ function stripEventHandlers(tag: string): string {
     output += tag.slice(cursor, start);
     let valueStart = start + event[0].length;
     while (valueStart < tag.length && /\s/.test(tag[valueStart] || '')) valueStart += 1;
-    if (tag[valueStart] !== '{') {
+    const opener = tag[valueStart];
+    // Quoted values are the norm outside JSX and may contain spaces
+    // (`@click="save(a, b)"`). Skipping to the next whitespace left the tail of
+    // the expression in the tag, where it read as visual content.
+    if (opener === '"' || opener === '\'') {
+      cursor = valueStart + 1;
+      while (cursor < tag.length && tag[cursor] !== opener) cursor += 1;
+      cursor += 1;
+      continue;
+    }
+    if (opener !== '{') {
       cursor = valueStart;
       while (cursor < tag.length && !/[\s>]/.test(tag[cursor] || '')) cursor += 1;
       continue;

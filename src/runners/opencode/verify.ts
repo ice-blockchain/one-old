@@ -4,8 +4,18 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { collapsedLineNumber, isCollapseCandidate } from '../../shared/collapsed-source';
-import { tailwindToolchainPresent, tailwindUtilityEvidence } from '../../shared/tailwind-evidence';
+import {
+  BLOCKING_MODULE_LOC,
+  collapsedLineNumber,
+  isCollapseCandidate,
+  lexicalMask,
+  logicalLoc,
+} from '../../shared/collapsed-source';
+import {
+  tailwindPinnedByContract,
+  tailwindToolchainPresent,
+  tailwindUtilityEvidence,
+} from '../../shared/tailwind-evidence';
 import { spawnTool } from '../../shared/spawn-tool';
 import {  readEffectiveState } from '../../shared/state';
 
@@ -258,7 +268,12 @@ export function postApplyQuality(cwd: string, touched: string[]): string | null 
  * postApplyQuality: an error string reverts the apply and the unit falls
  * back to the paid implementer.
  */
-export function postApplyStyling(cwd: string, touched: string[]): string | null {
+export function postApplyStyling(cwd: string, touched: string[], runId = ''): string | null {
+  // Contract before tree: when the run's pinned stack scaffolds a Tailwind home,
+  // Tailwind IS the project's styling system even before the manifest lands, and
+  // a Step-0 unit could never make it land. Only projects with no pinned Tailwind
+  // are judged by what is reachable on disk.
+  if (tailwindPinnedByContract(cwd, runId)) return null;
   for (const rel of touched) {
     if (!/\.(?:tsx|jsx|vue|svelte)$/i.test(rel)) continue;
     let text: string;
@@ -270,6 +285,33 @@ export function postApplyStyling(cwd: string, touched: string[]): string | null 
     const utilities = tailwindUtilityEvidence(text);
     if (utilities.count >= 3 && !tailwindToolchainPresent(cwd, rel)) {
       return `${rel} styles with ${utilities.count} distinct Tailwind utilities (${utilities.sample.join(', ')}) but the project has no tailwindcss dependency or config — the classes are inert`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Module-size gate for delegated output, mirroring the write-time
+ * `STRUCT_MODULE_LOC` limit.
+ *
+ * Without it the two paths applied opposite standards to the same file: Step-0
+ * had NO size rule, so it accepted a 1233-logical-line module, and the write gate
+ * then refused every edit to it — leaving the owning role holding a file it could
+ * not legally touch. Observed 9co, where the role worked around the deadlock by
+ * disabling `noUncheckedIndexedAccess` for the whole monorepo.
+ */
+export function postApplySize(cwd: string, touched: string[]): string | null {
+  for (const rel of touched) {
+    if (!isCollapseCandidate(rel)) continue;
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+    } catch {
+      continue;
+    }
+    const loc = logicalLoc(lexicalMask(text, true));
+    if (loc > BLOCKING_MODULE_LOC) {
+      return `${rel} is approximately ${loc} logical lines, over the ${BLOCKING_MODULE_LOC} limit the structural write gate enforces — the owning role would be unable to edit it`;
     }
   }
   return null;

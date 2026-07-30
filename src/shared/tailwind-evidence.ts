@@ -15,6 +15,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { readCompiledArchitecture } from './architecture-contract';
+
 // Canonical, unambiguous Tailwind utilities. Deliberately narrow: generic
 // words that appear in hand-written CSS class names (`container`, `card`,
 // `button`) must not count. Spacing/color/typography scales with numeric
@@ -120,4 +122,36 @@ export function tailwindToolchainPresent(projectRoot: string, fileRel: string): 
     dir = parent;
   }
   return false;
+}
+
+const TAILWIND_SCAFFOLD_RE = /(^|\/)(?:tailwind-config\/|tailwind\.config\.[cm]?[jt]s$)/;
+
+/**
+ * True when the run's COMPILED contract pins Tailwind — its scaffold outputs
+ * include a Tailwind home — regardless of whether that home is on disk yet.
+ *
+ * The filesystem probe above answers "is Tailwind reachable now?", which is the
+ * wrong question at Step-0. OpenCode units run BEFORE the role that scaffolds
+ * the manifest (the spawn gate guarantees that ordering), and a unit's file
+ * allowlist may never include a manifest or lockfile. So a unit briefed to
+ * "compose with Tailwind" — which the pinned stack requires — could not satisfy
+ * the probe by any legal action. Observed 9co: 3 of 4 units rolled back after
+ * 14m24s, and the identical components were written without complaint by the
+ * paid role five minutes later once the manifest existed.
+ *
+ * Stacks whose contract does NOT pin Tailwind keep the filesystem answer, so the
+ * original 8co defect (inert utilities in a plain-CSS project) stays caught.
+ */
+export function tailwindPinnedByContract(projectRoot: string, runId: string): boolean {
+  if (!runId) return false;
+  let architecture: { scaffoldOutputs?: ReadonlyArray<{ path?: unknown }> } | null;
+  try {
+    architecture = readCompiledArchitecture(projectRoot, runId);
+  } catch {
+    return false;
+  }
+  if (!architecture) return false;
+  return (architecture.scaffoldOutputs || []).some((output) => (
+    typeof output.path === 'string' && TAILWIND_SCAFFOLD_RE.test(output.path.replace(/\\/g, '/'))
+  ));
 }

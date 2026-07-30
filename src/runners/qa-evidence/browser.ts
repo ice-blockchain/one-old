@@ -47,17 +47,40 @@ import { emitProgress } from './report-publish';
 import { runLighthouseOnOwnedServer } from './lighthouse';
 import { RUNTIME_PROBE_INIT_SCRIPT, eventText, executeStep, httpNetworkUrl, routeSlug } from './browser-steps';
 
-function projectPlaywright(projectRoot: string): { api: PlaywrightLike; version: string } | null {
-  const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
-  for (const packageName of ['@playwright/test', 'playwright']) {
-    try {
-      const api = projectRequire(packageName) as Partial<PlaywrightLike>;
-      const pkg = projectRequire(`${packageName}/package.json`) as { version?: unknown };
-      if (typeof api.chromium?.launch === 'function' && typeof pkg.version === 'string') {
-        return { api: api as PlaywrightLike, version: pkg.version };
+/**
+ * Resolve project-local Playwright from every plausible anchor, not only the
+ * project root's `package.json`.
+ *
+ * A Laravel, Go, or Python repo has no root manifest, and a pnpm monorepo keeps
+ * Playwright in `apps/web` — both reported `playwright-missing` and exited 2 even
+ * with Playwright installed. `projectLighthouseBin` already consults
+ * `serverCwd`; these two now agree.
+ */
+function projectPlaywright(
+  projectRoot: string,
+  serverCwd?: string,
+): { api: PlaywrightLike; version: string } | null {
+  const anchors = [
+    ...(serverCwd ? [path.resolve(projectRoot, serverCwd)] : []),
+    projectRoot,
+    path.join(projectRoot, 'apps/web'),
+  ];
+  for (const anchor of anchors) {
+    // createRequire needs an existing anchor file; fall back to the directory
+    // itself so a manifest-less root still resolves through node_modules.
+    const manifest = path.join(anchor, 'package.json');
+    const from = fs.existsSync(manifest) ? manifest : path.join(anchor, 'noop.js');
+    const projectRequire = createRequire(from);
+    for (const packageName of ['@playwright/test', 'playwright']) {
+      try {
+        const api = projectRequire(packageName) as Partial<PlaywrightLike>;
+        const pkg = projectRequire(`${packageName}/package.json`) as { version?: unknown };
+        if (typeof api.chromium?.launch === 'function' && typeof pkg.version === 'string') {
+          return { api: api as PlaywrightLike, version: pkg.version };
+        }
+      } catch {
+        // try the other local package, then the next anchor
       }
-    } catch {
-      // try the other local package
     }
   }
   return null;
@@ -93,7 +116,16 @@ async function runViewport(
   let screenshotPath: string | undefined;
   let screenshotHash: string | undefined;
   let page: PageLike | null = null;
-  await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+  // DOM snapshots are the bulk of a trace and the only part a passing run never
+  // needs: 18 traces on one green 9co run cost ~6 MB, and everything a failure
+  // actually needs is captured separately — the failure screenshot, plus console,
+  // network and action errors on the viewport record.
+  //
+  // Deliberately NOT deleting traces after the fact. `qa-report-v2/evidence.ts`
+  // re-hashes `viewport.tracePath` and `artifacts.ts` folds it into the acceptance
+  // attestation, so a post-hoc sweep would invalidate the report it is pruning.
+  // Shrinking the payload keeps the evidence chain byte-verifiable.
+  await context.tracing.start({ screenshots: true, snapshots: false, sources: false });
   try {
     await context.addInitScript(RUNTIME_PROBE_INIT_SCRIPT);
     page = await context.newPage();
@@ -238,8 +270,16 @@ export async function browserCommand(
   loaded: LoadedRun,
 ): Promise<number> {
   if (!loaded.contract.browserRequired) {
-    process.stderr.write('qa-evidence: active VerificationContractV2 does not require browser evidence.\n');
-    return 2;
+    // Not an error: a correct state for every no-web-surface contract. Exiting 2
+    // here made "this run needs no browser" indistinguishable from a real
+    // failure, and an api-only run had nothing else to call.
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      status: 'not-required',
+      uiImpact: loaded.contract.uiImpact,
+      hint: 'run `stack` for build/test/lint evidence on contracts with no browser surface',
+    })}\n`);
+    return 0;
   }
   const scenario = loadScenario(args, loaded.contract);
   const out = outputPath(args, 'machine-evidence-v1.json');
@@ -262,7 +302,7 @@ export async function browserCommand(
   };
   try {
   const startedAt = new Date().toISOString();
-  const playwright = projectPlaywright(args.projectRoot);
+  const playwright = projectPlaywright(args.projectRoot, args.serverCwd);
   if (!playwright) {
     const blockerSummary =
       'Project-local Playwright is unavailable. Install @playwright/test and its browser binary.';

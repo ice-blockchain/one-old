@@ -19,7 +19,7 @@ import { writeJson } from '../fsjson';
 import { roleAgentBody } from '../skill-filters';
 
 import { ruleContent, skillContent } from './materials';
-import { roleBootstrapDir } from './types';
+import { roleBootstrapDir, runBootstrapDir } from './types';
 
 // ~6K tokens per part: safely below the ~10K-token middle-out truncation
 // observed on Codex exec output, with headroom for the runner's own footer.
@@ -31,6 +31,18 @@ export interface ContextPackPartV1 {
   ids: string[];
   chars: number;
   sha256: string;
+  /**
+   * When true, `file` lives in the RUN-level shared store rather than this role's
+   * own directory. Always-on rules are identical for every role, so a
+   * deterministic packer produced byte-identical parts per role — ~890 KB per run
+   * where ~450 KB was unique, with `part-02` triplicated across three roles.
+   *
+   * Only a boolean is persisted, never a path fragment: the reader computes both
+   * candidate directories itself, so a manifest can never point a hook at an
+   * arbitrary location. Absent on pre-existing manifests, which keep resolving
+   * against the role directory.
+   */
+  shared?: boolean;
 }
 
 export interface ContextPackManifestV1 {
@@ -52,6 +64,21 @@ export interface RulesAckV1 {
 
 export function contextPackDir(cwd: string, runId: string, role: string): string {
   return path.join(roleBootstrapDir(cwd, runId, role), 'context-pack');
+}
+
+/** Run-level content-addressed store for part bodies shared between roles. */
+export function sharedContextPackDir(cwd: string, runId: string): string {
+  return path.join(runBootstrapDir(cwd, runId), 'context-pack');
+}
+
+/** Directory a manifest part's `file` resolves against. Never manifest-supplied. */
+export function contextPackPartDir(
+  cwd: string,
+  runId: string,
+  role: string,
+  part: ContextPackPartV1,
+): string {
+  return part.shared ? sharedContextPackDir(cwd, runId) : contextPackDir(cwd, runId, role);
 }
 
 export function contextPackManifestPath(cwd: string, runId: string, role: string): string {
@@ -190,18 +217,33 @@ export function compileRoleContextPack(
     const parts = packParts(items);
     const dir = contextPackDir(cwd, runId, role);
     fs.mkdirSync(dir, { recursive: true });
-    const manifestParts: ContextPackPartV1[] = [];
-    for (const [index, part] of parts.entries()) {
-      const file = `part-${String(index + 1).padStart(2, '0')}.md`;
-      fs.writeFileSync(path.join(dir, file), part.text);
-      manifestParts.push({
-        file,
+    // Content-addressed and shared across roles: the always-on rules are the same
+    // for every role, so a deterministic packer emitted identical bodies per role.
+    const manifestParts: ContextPackPartV1[] = parts.map((part) => {
+      const hash = sha256(part.text);
+      return {
+        file: `${hash}.md`,
         ids: part.ids,
         chars: part.text.length,
-        sha256: sha256(part.text),
-      });
-    }
+        sha256: hash,
+        shared: true,
+      };
+    });
     const packHash = sha256(manifestParts.map((part) => part.sha256).join('\n'));
+    // This runs on EVERY envelope publish, and the pack only changes when the
+    // role's rule/skill set does. Rewriting all parts each time churned for
+    // identical bytes — and the receipts protocol already keys on `packHash`, so
+    // an unchanged hash means the served parts are still valid.
+    const existing = readContextPackManifest(cwd, runId, role);
+    const sharedDir = sharedContextPackDir(cwd, runId);
+    fs.mkdirSync(sharedDir, { recursive: true });
+    for (const [index, part] of parts.entries()) {
+      const target = path.join(sharedDir, manifestParts[index]!.file);
+      // Content-addressed: identical bytes are already there, from this role's
+      // previous publish or from another role's pack.
+      if (!fs.existsSync(target)) fs.writeFileSync(target, part.text);
+    }
+    if (existing?.packHash === packHash) return existing;
     const requirements = integrationRequirements.length
       ? ['', '## Integration requirements (deterministic gates verify these)', '', ...integrationRequirements.map((line) => `- ${line}`)]
       : [];
@@ -247,6 +289,21 @@ export function compileRoleContextPack(
  * capability surfaces — the "definition of done" the reviewer kept
  * re-discovering in 8co, delivered at spawn instead.
  */
+/**
+ * The public site-URL variable for the compiled stack. Each framework only exposes
+ * env vars with its own prefix, so naming `VITE_SITE_URL` at a Nuxt or Next project
+ * asked the role for a variable its bundler would never read.
+ */
+function siteUrlEnvVar(outputs: readonly string[]): string {
+  const has = (re: RegExp): boolean => outputs.some((output) => re.test(output));
+  if (has(/(?:^|\/)nuxt\.config\.[cm]?[jt]s$/)) return 'NUXT_PUBLIC_SITE_URL';
+  if (has(/(?:^|\/)next\.config\.[cm]?[jt]s$/) || has(/(?:^|\/)app\/layout\.tsx$/)) return 'NEXT_PUBLIC_SITE_URL';
+  if (has(/(?:^|\/)svelte\.config\.[cm]?[jt]s$/)) return 'PUBLIC_SITE_URL';
+  if (has(/(?:^|\/)artisan$/) || has(/(?:^|\/)resources\/views\//)) return 'APP_URL';
+  if (has(/(?:^|\/)angular\.json$/)) return 'SITE_URL';
+  return 'VITE_SITE_URL';
+}
+
 export function compileIntegrationRequirements(
   role: string,
   surfaces: readonly string[],
@@ -261,8 +318,11 @@ export function compileIntegrationRequirements(
     requirements.push('Every planned component/feature module must have a real call site (imported by a page or a used barrel) — dead deliverables fail STRUCT_ORPHAN_MODULE.');
     requirements.push("Style with the project's ACTUAL styling system: Tailwind utility classes without a tailwindcss dependency/config fail STRUCT_TAILWIND_NO_TOOLCHAIN.");
     requirements.push('Route user-facing copy through the i18n catalog when the project ships one (STRUCT_HARDCODED_COPY is advisory).');
+    if (outputs.includes('eslint.config.js')) {
+      requirements.push('The seeded `eslint.config.js` and `.prettierrc` are the project quality bar: install `eslint` and `prettier`, expose `lint`/`format`/`format:check` scripts that run them, and keep them green. A config with no installed tool and no script is inert — and raising a limit in it to pass your own change is a config-tamper violation, not a fix.');
+    }
     if (outputs.some((output) => /public\/(?:sitemap\.xml|robots\.txt)$/.test(output))) {
-      requirements.push('Generate crawl assets (sitemap.xml, robots.txt) from `VITE_SITE_URL` (seeded in .env.example) and fail generation when it is unset — invented or relative origins fail the crawl-origin gate.');
+      requirements.push(`Generate crawl assets (sitemap.xml, robots.txt) from \`${siteUrlEnvVar(outputs)}\` (seeded in .env.example) and fail generation when it is unset — invented or relative origins fail the crawl-origin gate.`);
     }
   }
   if (role === 'senior-backend') {

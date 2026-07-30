@@ -33,6 +33,35 @@ paths:
 Code-quality automation must be deterministic, local to the project, and hard
 to bypass accidentally.
 
+## The project's quality config is the bar — read it before you write
+
+Where that config comes from depends on the mode:
+
+- **`new-project`** — runtime compiles it for the selected stack as scaffold output
+  and seeds canonical content at `PLAN_READY`, before any implementer writes a
+  line: `eslint.config.js` + `.prettierrc` for JS/TS, `ruff.toml` for Python,
+  `.golangci.yml` for Go, `pint.json` for PHP/Laravel, `rustfmt.toml` for Rust.
+  Install the matching tools and expose the `format`/`lint` scripts that run them —
+  a config with no installed tool and no script is inert.
+- **`existing-codebase`** — the repository already has its own configuration and it
+  is authoritative. Runtime scaffolds nothing and overwrites nothing. Read what is
+  there and match it; do not migrate the project to a different toolchain, and do
+  not add a second linter beside the one it uses.
+
+Either way the config in the repository is the ONLY place the quality bar is
+expressed:
+
+- **Do not author a competing config.** If one already exists, extend it; do not
+  add a second linter or a parallel ruleset.
+- **Do not weaken it to make your own change pass.** Size limits, boundary rules,
+  and strictness flags exist because the plan asked for them. Raising a limit or
+  disabling a compiler flag to get past your own finding is a config-tamper
+  violation, not a fix — split the module or correct the code instead.
+- **Run it.** A config nobody runs proves nothing: the format and lint commands
+  belong in the scripts you expose and in CI.
+- If a rule in it is genuinely wrong for this project, say so in your digest with
+  the failing rule and the reason, and leave the config alone.
+
 ## Capability-derived checks
 
 Read the immutable capability profile, the baseline, and existing project

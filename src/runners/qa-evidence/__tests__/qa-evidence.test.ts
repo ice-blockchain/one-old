@@ -975,3 +975,62 @@ test('visual browser CLI treats horizontal overflow as a functional failure', as
     )));
   });
 });
+
+test('an api-only run reaches a valid settled report', async () => {
+  await withProject(async (cwd) => {
+    // A Go service: no web surface, no JS build output. Before the `stack`
+    // command this run was unfinishable — `stack-test`/`stack-lint` were
+    // required and nothing in the repo produced them.
+    fs.writeFileSync(path.join(cwd, 'go.mod'), 'module example.com/api\n\ngo 1.23\n');
+    fs.mkdirSync(path.join(cwd, 'internal/api'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'internal/api/handler.go'), 'package api\n');
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-stack',
+      frontend: 'none',
+      backend: 'golang',
+      mobile: { framework: 'none' },
+    };
+    const architecture = compileArchitecture(cwd, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'api', name: 'Api', kind: 'feature' }],
+    });
+    const contract = compileVerificationContract(cwd, 'R', state, architecture, {
+      changedPaths: ['internal/api/handler.go'],
+    });
+    assert.equal(contract.uiImpact, 'none', 'fixture guard: no UI surface');
+    assert.equal(contract.browserRequired, false);
+    assert.ok(contract.requiredChecks.includes('stack-build'));
+
+    // `browser` must now say "not required" cleanly rather than erroring.
+    assert.equal(
+      await main(['browser', '--project-root', cwd, '--run-id', 'R', '--build-dir', 'dist']),
+      0,
+      'a no-browser contract is a correct state, not a failure',
+    );
+
+    const code = await main(['stack', '--project-root', cwd, '--run-id', 'R']);
+    const report = JSON.parse(fs.readFileSync(qaReportV2Path(cwd, 'R'), 'utf8'));
+    type Check = { id: string; status: string; summary?: string };
+    const byId = new Map<string, Check>(
+      (report.checks as Check[]).map((check) => [check.id, check]),
+    );
+    // `go build ./...` runs for real when Go is installed; when it is not, the
+    // check is honestly not-applicable rather than silently green.
+    assert.ok(['passed', 'not-applicable'].includes(byId.get('stack-build')!.status));
+    for (const id of ['stack-test', 'stack-lint']) {
+      const check = byId.get(id)!;
+      assert.ok(
+        ['passed', 'not-applicable'].includes(check.status),
+        `${id} must be honestly reported, was ${check.status}`,
+      );
+      if (check.status === 'not-applicable') {
+        assert.match(String(check.summary), /not run:/, 'a skipped check must state why');
+      }
+    }
+    assert.equal(code, 0, 'the report must validate against the active contract');
+    assert.equal(report.status, 'passed');
+    assert.deepEqual(report.routes, []);
+  });
+});

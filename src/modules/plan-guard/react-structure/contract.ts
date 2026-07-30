@@ -242,6 +242,7 @@ function apiClientUsageFindings(
   projectRoot: string,
   contract: CompiledArchitectureV1,
   analyses: readonly SourceAnalysis[],
+  severity: StructureFinding['severity'],
 ): StructureFinding[] {
   if (!contract.profile.surfaces.includes('web-ui')) return [];
   const packageDirs = new Set<string>();
@@ -269,7 +270,7 @@ function apiClientUsageFindings(
     if (!used) {
       findings.push({
         id: 'STRUCT_API_CLIENT_UNUSED',
-        severity: 'error',
+        severity,
         file: dir,
         message: `Planned API package \`${packageName}\` (${dir}) is imported nowhere in the scanned source — the UI cannot be consuming the backend contract. Wire pages/features to it (live-or-demo) before reporting completion.`,
       });
@@ -289,6 +290,7 @@ function stylingFindings(
   projectRoot: string,
   contract: CompiledArchitectureV1,
   analyses: readonly SourceAnalysis[],
+  severity: StructureFinding['severity'],
 ): StructureFinding[] {
   const findings: StructureFinding[] = [];
   const toolchainByDir = new Map<string, boolean>();
@@ -310,7 +312,7 @@ function stylingFindings(
     if (utilities.count >= 3 && !toolchainFor(analysis.file)) {
       findings.push({
         id: 'STRUCT_TAILWIND_NO_TOOLCHAIN',
-        severity: 'error',
+        severity,
         file: analysis.file,
         message: `File styles with ${utilities.count} distinct Tailwind utilities (${utilities.sample.join(', ')}) but no \`tailwindcss\` dependency or tailwind config is reachable — the classes are inert and the UI renders unstyled. Install/configure Tailwind or restyle with the project's actual styling system.`,
       });
@@ -377,7 +379,13 @@ export function contractFindings(
   analyses: SourceAnalysis[],
   allowlist: string[] | undefined,
   assignmentScope: AssignedScope | undefined,
+  greenfield = false,
 ): StructureFinding[] {
+  // Integration severity: blocking only where Traffic One owns the structure.
+  // See StructureScanOptions.greenfield — on an existing codebase these stay
+  // advisory so a maintenance run cannot deadlock on conventions the plugin
+  // did not author.
+  const integrationSeverity: StructureFinding['severity'] = greenfield ? 'error' : 'warning';
   const findings: StructureFinding[] = [];
   const routeOutputs = new Set(contract.routes.map((route) => normalizeRel(route.moduleOutput)));
   const entrypointOutputs = new Set(contract.entrypoints.map((entry) => normalizeRel(entry)));
@@ -406,15 +414,15 @@ export function contractFindings(
     if (!moduleReferenced(module.output, analyses)) {
       findings.push({
         id: 'STRUCT_ORPHAN_MODULE',
-        severity: 'error',
+        severity: integrationSeverity,
         file: module.output,
         message: `Planned ${module.kind} module exists but is imported nowhere in the scanned source — it is dead code, not an integrated deliverable. Import it from the page/feature that the plan pairs it with (or re-export it from a barrel that IS used).`,
       });
     }
   }
   if (canCheckReferences) {
-    findings.push(...apiClientUsageFindings(projectRoot, contract, analyses));
-    findings.push(...stylingFindings(projectRoot, contract, analyses));
+    findings.push(...apiClientUsageFindings(projectRoot, contract, analyses, integrationSeverity));
+    findings.push(...stylingFindings(projectRoot, contract, analyses, integrationSeverity));
   }
 
   if (profileUsesExplicitRouter(contract.profile)) {

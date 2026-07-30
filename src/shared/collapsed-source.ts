@@ -12,6 +12,13 @@ export function lexicalMask(text: string, maskStrings: boolean): string {
   const chars = [...text];
   let state: 'code' | 'line' | 'block' | 'single' | 'double' | 'template' = 'code';
   let escaped = false;
+  // Brace depth of each open `${…}` inside the template being masked, innermost
+  // last. Without it a template holding an inner template put the backtick count
+  // out of phase, the file ended inside an unterminated template, and EVERY
+  // later line came back fully masked — which silently blinded both
+  // `collapsedLineNumber` and `logicalLoc` for the whole remainder of the file.
+  // One nested template above collapsed code was enough to bypass the gate.
+  const interpolations: number[] = [];
   for (let i = 0; i < chars.length; i += 1) {
     const current = chars[i]!;
     const next = chars[i + 1] || '';
@@ -39,6 +46,27 @@ export function lexicalMask(text: string, maskStrings: boolean): string {
       if (current === '\\') {
         escaped = true;
         continue;
+      }
+      // Interpolation bodies stay masked exactly as before — only the state
+      // tracking changes — so the collapse calibration is untouched. Braces
+      // balance, so an inner template's own `${…}` cancels out and a nested
+      // backtick needs no separate state.
+      if (state === 'template') {
+        const open = interpolations.length - 1;
+        if (open >= 0) {
+          if (current === '{') interpolations[open] = interpolations[open]! + 1;
+          else if (current === '}') {
+            if (interpolations[open] === 0) interpolations.pop();
+            else interpolations[open] = interpolations[open]! - 1;
+          }
+          continue;
+        }
+        if (current === '$' && next === '{') {
+          interpolations.push(0);
+          if (maskStrings) chars[i + 1] = ' ';
+          i += 1;
+          continue;
+        }
       }
       if (current === closing) state = 'code';
       continue;
@@ -104,10 +132,35 @@ const COLLAPSE_EXEMPT_RE =
 const COLLAPSE_SOURCE_RE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i;
 
 /**
- * Blank `${…}` spans. `lexicalMask` does not track interpolation nesting, so a
- * template containing an inner template (`` `${xs.map((x) => `\`${x}\``)}` ``)
- * makes it leave template state early and report the remainder as code. Real
- * collapse is unaffected — a JSX expression container is `{x}`, not `${x}`.
+ * Collapse-resistant size measure: the max of physical non-blank lines,
+ * statement count, and closing-JSX count over MASKED text. Minifying a module
+ * onto a handful of lines therefore cannot shrink it below the real figure.
+ *
+ * Lives here, beside `lexicalMask`, because both the structural write gate and
+ * the OpenCode delegation runner must reach the identical number and the runner
+ * may not import from `modules/`. Step-0 previously had no size rule at all, so
+ * it accepted a module the write gate then refused every edit to.
+ */
+export function logicalLoc(segment: string): number {
+  const withoutWhitespace = segment.trim();
+  if (!withoutWhitespace) return 0;
+  const physical = withoutWhitespace.split(/\r?\n/).filter((line) => line.trim()).length;
+  const statements = (withoutWhitespace.match(/;/g) || []).length + 1;
+  const jsxNodes = (withoutWhitespace.match(/<\/[A-Za-z][^>]*>/g) || []).length;
+  return Math.max(physical, statements, jsxNodes);
+}
+
+/**
+ * The one numeric size threshold that BLOCKS, shared by the write gate
+ * (`STRUCT_MODULE_LOC`) and the delegation runner so the two can never disagree
+ * about the same file. Calibrated on 6co: `pages/Catalog.tsx` 515 logical lines,
+ * next-largest module 307.
+ */
+export const BLOCKING_MODULE_LOC = 400;
+
+/**
+ * Blank `${…}` spans. Real collapse is unaffected — a JSX expression container
+ * is `{x}`, not `${x}` — but interpolation content is not the line's own code.
  */
 function blankInterpolations(line: string): string {
   if (!line.includes('${')) return line;
