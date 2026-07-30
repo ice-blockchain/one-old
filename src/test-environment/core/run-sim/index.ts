@@ -40,8 +40,10 @@ import {
   memoryBody,
   planBody,
 } from './content';
+import { buildImplementContext } from './assignments';
+import { sourceFor } from './sources';
 import type { RunSimTranscript, ScriptedWrite } from './types';
-import { applyAll, setActiveRole } from './write';
+import { applyAll, bindRole } from './write';
 
 const GIT_ENV = ['-c', 'user.email=run-sim@traffic.one', '-c', 'user.name=run-sim'];
 
@@ -149,7 +151,9 @@ export function runSimulatedRun(
   transcript.phasesCompleted.push('bootstrap');
 
   // --- Phase 1: architect --------------------------------------------------
-  setActiveRole(cwd, 'senior-architect');
+  if (!bindRole(cwd, 'senior-architect')) {
+    return finish('phase-1 could not bind a run claim for senior-architect');
+  }
   const state = readEffectiveState(cwd) as Rec;
   const denied = applyAll(
     cwd,
@@ -204,7 +208,62 @@ export function runSimulatedRun(
   if (!architecture || !verification || !assignments) {
     return finish('PLAN_READY was allowed but the contract triple did not read back');
   }
+
+  // --- Phase 2: implementers ----------------------------------------------
+  // Every path comes from the published assignments; nothing here is literal.
+  const implement = buildImplementContext(runId, architecture, assignments);
+  // Backend first: the frontend's IMPLEMENTED gate runs the COMPLETE structure
+  // scan, which requires every planned module to exist — including the service
+  // module the backend owns. A run where the frontend lands last is the normal
+  // ordering anyway.
+  const implementers = ['senior-backend', 'senior-frontend']
+    .filter((role) => implement.outputsFor(role).length > 0);
+
+  const authored = new Map<string, string[]>();
+  for (const role of [...implementers, 'senior-tester']) {
+    const writes: ScriptedWrite[] = [];
+    for (const rel of implement.outputsFor(role)) {
+      const content = sourceFor(rel, implement);
+      if (content !== null) writes.push({ path: rel, content });
+    }
+    authored.set(role, writes.map((write) => write.path));
+    if (!bindRole(cwd, role)) return finish(`phase-2 could not bind a run claim for ${role}`);
+    const roleDenied = applyAll(cwd, `implement:${role}`, role, writes, transcript);
+    if (roleDenied) {
+      return finish(`phase-2 ${role} denied on ${roleDenied.path}: ${roleDenied.reason}`);
+    }
+  }
+  transcript.facts.sourceFileCount = countAuthored(authored);
+  transcript.phasesCompleted.push('implement');
+
+  // Digests last, in the same order: each IMPLEMENTED fires the completion
+  // gates (collapse scan, emit config, format/typecheck/test toolchain parity,
+  // crawl origin, full structure scan) against the finished tree.
+  for (const role of implementers) {
+    const suffix = role.replace(/^senior-/, '');
+    const digestDenied = applyAll(cwd, `digest:${role}`, role, [{
+      path: `.traffic-one/digests/${runId}/${suffix}.md`,
+      content: digestBody({
+        role,
+        runId,
+        verdict: 'IMPLEMENTED',
+        summary: `Delivered the compiled work unit for ${role}.`,
+        touched: authored.get(role) ?? [],
+      }),
+    }], transcript);
+    if (digestDenied) {
+      return finish(`phase-2 ${role} IMPLEMENTED denied: ${digestDenied.reason}`);
+    }
+  }
+  transcript.phasesCompleted.push('implemented');
+
   return finish();
+}
+
+function countAuthored(authored: Map<string, string[]>): number {
+  let total = 0;
+  for (const files of authored.values()) total += files.length;
+  return total;
 }
 
 export type { RunSimTranscript } from './types';

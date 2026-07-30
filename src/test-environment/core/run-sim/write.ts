@@ -19,7 +19,7 @@ import * as path from 'path';
 import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
 import { planWriteGate } from '../../../modules/plan-guard/plan-write';
 import { readEffectiveState } from '../../../shared/state';
-import { writeState } from '../../../shared/state/normalize';
+import { claimThreadRole } from '../../../shared/state/run-agent';
 
 import type { RunSimTranscript, ScriptedWrite, WriteOutcome } from './types';
 
@@ -43,16 +43,30 @@ export function writeCtx(
   return { input, host, cwd, now: () => 'run-sim' } as unknown as Ctx;
 }
 
-// Bind the acting role for subsequent writes. Real parallel subagents bind via
-// bindThreadRole (which deliberately declines writeState so siblings cannot
-// clobber .one.json); a serial simulator has no such contention, so it uses the
-// activeAgentRole fallback branch of assignmentWriterRole. That difference is a
-// documented limit of this tier, not an accident — see the plan's risk 3.
-export function setActiveRole(cwd: string, role: string | null): void {
-  const state = readEffectiveState(cwd) as Record<string, unknown>;
-  if (role) state.activeAgentRole = role;
-  else delete state.activeAgentRole;
-  writeState(cwd, state);
+// Bind a role the way a real spawned child does: a per-agent run claim keyed by
+// a thread/session id, which subsequent writes carry as `session_id`.
+//
+// This is NOT decoration. runTeamEnforcementViolation refuses feature-source
+// writes on a `team.mode: "subagents"` project unless they come from a session
+// holding a claim — setting `state.activeAgentRole` alone is treated (correctly)
+// as the parent editing owned artifacts, and is denied. Binding for real means
+// the tier exercises resolveRunAgentContext / roleForRunSessionId / the claims
+// store rather than only the activeAgentRole fallback.
+//
+// The session id is deterministic per role so a fix cycle re-binding the SAME
+// thread is distinguishable from a respawn — which is exactly what the
+// subagent-reuse assertion measures.
+export function sessionIdFor(role: string): string {
+  return `run-sim-${role}`;
+}
+
+export function bindRole(cwd: string, role: string): string | null {
+  const state = readEffectiveState(cwd);
+  const claimed = claimThreadRole(cwd, state, sessionIdFor(role), role, {
+    parentSessionId: 'run-sim-orchestrator',
+    recordAgent: true,
+  });
+  return claimed ? sessionIdFor(role) : null;
 }
 
 export function applyScriptedWrite(
@@ -68,8 +82,11 @@ export function applyScriptedWrite(
   const toolInput = toolName === 'Edit'
     ? { file_path: write.path, new_string: write.content }
     : { file_path: write.path, content: write.content };
+  // The child session id is what binds this write to its claim, exactly as a
+  // real host hook payload carries it.
+  const rawExtra = role ? { session_id: sessionIdFor(role) } : {};
 
-  const result = planWriteGate(writeCtx(cwd, toolName, toolClass, toolInput, {}, host));
+  const result = planWriteGate(writeCtx(cwd, toolName, toolClass, toolInput, rawExtra, host));
   const denied = result.kind === 'deny';
   const outcome: WriteOutcome = {
     ordinal: transcript.writes.length + 1,

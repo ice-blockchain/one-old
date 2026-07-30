@@ -67,6 +67,7 @@ export const RUN_SIM_CASES: Case[] = [
     assertions: [
       { id: 'state-matches-selection' },
       { id: 'onboarding-complete' },
+      { id: 'run-sim-clean' },
       { id: 'run-sim-plan-ready-artifacts' },
     ],
     notes: 'Shape 1: default stack, React/Vite + Supabase, with auth. The reference shape.',

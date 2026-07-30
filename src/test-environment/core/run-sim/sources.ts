@@ -1,0 +1,584 @@
+// src/test-environment/core/run-sim/sources.ts
+// Deterministic bodies for the files an implementer would author, keyed by the
+// COMPILED path (never a hardcoded one — see assignments.ts for why).
+//
+// The content is shaped to satisfy the real completion gates for the right
+// reasons, not to dodge them:
+//   - pages import their planned components and the API client, so
+//     STRUCT_ORPHAN_MODULE / STRUCT_API_CLIENT_UNUSED are satisfied by real
+//     references rather than by suppression
+//   - manifests declare the tools their scripts name (implementer-format-parity,
+//     -typecheck-toolchain, -test-toolchain all read the manifest)
+//   - tsconfigs set `noEmit: true` and never `composite` (frontend-emit-config)
+//   - every body is multi-line and well under COLLAPSE_LINE_CHARS
+//
+// Crawl assets (robots.txt / sitemap.xml) are deliberately NOT authored here:
+// crawlOriginProblem only judges files that exist, a project legitimately may
+// have none, and a fabricated origin belongs in the negative-gate rows where it
+// must produce a deny.
+
+import * as path from 'path';
+
+import type { ImplementContext } from './assignments';
+
+const PM = 'pnpm@10.12.1';
+
+function json(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function componentName(rel: string): string {
+  return path.basename(rel).replace(/\.[^.]+$/, '');
+}
+
+// --- manifests -------------------------------------------------------------
+
+// The workspace root. It owns the compiled `.prettierrc`, the TypeScript
+// outputs, and the tester's runner configs, so every tool those name must be
+// declared here — that is precisely what the three parity gates check.
+function rootPackageJson(): string {
+  return json({
+    name: 'learning-platform',
+    version: '0.0.0',
+    private: true,
+    packageManager: PM,
+    workspaces: ['apps/*', 'packages/*'],
+    scripts: {
+      build: 'tsc --noEmit && vite build',
+      typecheck: 'tsc --noEmit',
+      lint: 'eslint .',
+      test: 'vitest run',
+      // The tester owns playwright.config.ts but never this manifest, so it
+      // cannot install its own runner — implementer-test-toolchain-gate makes
+      // the manifest owner accountable for the script AND the dependency.
+      'test:e2e': 'playwright test',
+      format: 'prettier --write .',
+      // Must reach every compiled output, or implementer-format-coverage-gate
+      // fires: a formatter that skips owned source proves nothing.
+      'format:check': 'prettier --check .',
+    },
+    devDependencies: {
+      '@eslint/js': '^9.17.0',
+      '@playwright/test': '^1.49.0',
+      eslint: '^9.17.0',
+      // Project-local, for the same reason as the Playwright runner: the
+      // page-speed QA path shells out to the project's own lighthouse.
+      lighthouse: '^12.2.1',
+      prettier: '^3.4.2',
+      typescript: '^5.7.2',
+      vitest: '^2.1.8',
+    },
+  });
+}
+
+function appPackageJson(): string {
+  return json({
+    name: '@app/web',
+    version: '0.0.0',
+    private: true,
+    type: 'module',
+    scripts: {
+      build: 'tsc --noEmit && vite build',
+      typecheck: 'tsc --noEmit',
+      dev: 'vite',
+      preview: 'vite preview --strictPort',
+    },
+    dependencies: {
+      '@app/api-client': 'workspace:*',
+      '@app/i18n': 'workspace:*',
+      '@app/ui': 'workspace:*',
+      react: '^19.0.0',
+      'react-dom': '^19.0.0',
+      'react-router-dom': '^7.1.0',
+    },
+    devDependencies: {
+      // Reachability is what STRUCT_TAILWIND_NO_TOOLCHAIN checks:
+      // tailwindToolchainPresent walks from the styled file's directory up to
+      // the project root looking for the dependency or a tailwind config. The
+      // app package is where these utilities are actually consumed.
+      tailwindcss: '^4.0.0',
+      typescript: '^5.7.2',
+      vite: '^6.0.0',
+    },
+  });
+}
+
+function packageManifest(name: string, extra: Record<string, unknown> = {}): string {
+  return json({
+    name,
+    version: '0.0.0',
+    private: true,
+    type: 'module',
+    main: 'src/index.ts',
+    ...extra,
+  });
+}
+
+// --- tsconfig --------------------------------------------------------------
+// `noEmit: true` and no `composite`: the stock Vite template emits compiled
+// .js/.d.ts next to every source on first build, and the stale output shadows
+// the module at import time (frontend-emit-config-gate).
+
+function tsconfigBase(): string {
+  return json({
+    compilerOptions: {
+      target: 'ES2022',
+      lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+      module: 'ESNext',
+      moduleResolution: 'bundler',
+      jsx: 'react-jsx',
+      strict: true,
+      noEmit: true,
+      noUncheckedIndexedAccess: true,
+      exactOptionalPropertyTypes: true,
+      skipLibCheck: true,
+      resolveJsonModule: true,
+      isolatedModules: true,
+      verbatimModuleSyntax: true,
+    },
+  });
+}
+
+function tsconfigApp(): string {
+  return json({
+    extends: '../../tsconfig.base.json',
+    compilerOptions: { noEmit: true },
+    include: ['src'],
+  });
+}
+
+// --- app source ------------------------------------------------------------
+
+function mainEntry(appShell: string): string {
+  const rel = `./${path.basename(appShell).replace(/\.tsx?$/, '')}`;
+  return [
+    "import { StrictMode } from 'react';",
+    "import { createRoot } from 'react-dom/client';",
+    "import { BrowserRouter } from 'react-router-dom';",
+    `import App from '${rel}';`,
+    '',
+    "const container = document.getElementById('root');",
+    "if (!container) throw new Error('root container is missing');",
+    '',
+    'createRoot(container).render(',
+    '  <StrictMode>',
+    '    <BrowserRouter>',
+    '      <App />',
+    '    </BrowserRouter>',
+    '  </StrictMode>,',
+    ');',
+    '',
+  ].join('\n');
+}
+
+// The shell composes the router and nothing else: route pages must be separate
+// compiled modules, which is what the structural gate checks.
+function appShell(ctx: ImplementContext, rel: string): string {
+  const dir = path.dirname(rel);
+  const routes = ctx.architecture.routes.filter((route) => !route.redirect);
+  const imports = routes.map((route) => {
+    const target = `./${path.relative(dir, route.moduleOutput).replace(/\.tsx?$/, '')}`;
+    return `import ${componentName(route.moduleOutput)} from '${target}';`;
+  });
+  // Planned FEATURE modules are wired in here. A feature that exists but is
+  // imported nowhere is dead code, and STRUCT_ORPHAN_MODULE says so — correctly.
+  // The shell is where cross-cutting features (auth, theming) legitimately
+  // attach, so this is a real integration, not a reference added to placate.
+  const features = ctx.architecture.modules.filter((module) => module.kind === 'feature');
+  const featureImports = features.map((module) => {
+    const target = `./${path.relative(dir, module.output).replace(/\.(tsx?|jsx?)$/, '')}`;
+    return `import { signOut } from '${target}';`;
+  });
+  const featureUse = features.length > 0
+    ? [
+      '  const handleSignOut = () => {',
+      '    void signOut();',
+      '  };',
+      '',
+    ]
+    : [];
+  const nav = features.length > 0
+    ? ['      <button type="button" onClick={handleSignOut}>Sign out</button>']
+    : [];
+  return [
+    "import { Route, Routes } from 'react-router-dom';",
+    ...imports,
+    ...featureImports,
+    '',
+    'export default function App() {',
+    ...featureUse,
+    '  return (',
+    '    <>',
+    ...nav,
+    '      <Routes>',
+    ...routes.map((route) => (
+      `        <Route path="${route.path}" element={<${componentName(route.moduleOutput)} />} />`
+    )),
+    '      </Routes>',
+    '    </>',
+    '  );',
+    '}',
+    '',
+  ].join('\n');
+}
+
+// A page renders real markup, consumes the planned API client, and references
+// the planned components — the three things the integration findings look for.
+function pageSource(ctx: ImplementContext, rel: string, name: string): string {
+  const dir = path.dirname(rel);
+  const components = ctx.architecture.modules.filter((module) => module.kind === 'component');
+  const imports = components.map((module) => {
+    const target = `./${path.relative(dir, module.output).replace(/\.tsx?$/, '')}`;
+    return `import { ${componentName(module.output)} } from '${target}';`;
+  });
+  const usage = components.map((module) => `      <${componentName(module.output)} title={heading} />`);
+  return [
+    "import { useEffect, useState } from 'react';",
+    "import { listCourses, type Course } from '@app/api-client';",
+    "import { t } from '@app/i18n';",
+    ...imports,
+    '',
+    `export default function ${name}() {`,
+    '  const [courses, setCourses] = useState<Course[]>([]);',
+    `  const heading = t('${name.toLowerCase()}.title');`,
+    '',
+    '  useEffect(() => {',
+    '    let active = true;',
+    '    listCourses().then((next) => {',
+    '      if (active) setCourses(next);',
+    '    });',
+    '    return () => {',
+    '      active = false;',
+    '    };',
+    '  }, []);',
+    '',
+    '  return (',
+    '    <main className="mx-auto flex max-w-5xl flex-col gap-6 p-6">',
+    '      <h1 className="text-3xl font-semibold">{heading}</h1>',
+    '      <p className="text-slate-600">{courses.length} available</p>',
+    ...usage,
+    '    </main>',
+    '  );',
+    '}',
+    '',
+  ].join('\n');
+}
+
+function componentSource(name: string): string {
+  return [
+    'interface Props {',
+    '  title: string;',
+    '}',
+    '',
+    `export function ${name}({ title }: Props) {`,
+    '  return (',
+    '    <section className="rounded-xl border border-slate-200 p-4">',
+    '      <h2 className="text-lg font-medium">{title}</h2>',
+    '    </section>',
+    '  );',
+    '}',
+    '',
+  ].join('\n');
+}
+
+function featureSource(): string {
+  return [
+    "import { supabase } from '@app/api-client';",
+    '',
+    'export interface Session {',
+    '  userId: string;',
+    '}',
+    '',
+    'export async function signIn(email: string, password: string): Promise<Session | null> {',
+    '  const result = await supabase.auth.signInWithPassword({ email, password });',
+    '  return result.userId ? { userId: result.userId } : null;',
+    '}',
+    '',
+    'export async function signOut(): Promise<void> {',
+    '  await supabase.auth.signOut();',
+    '}',
+    '',
+  ].join('\n');
+}
+
+// --- backend ---------------------------------------------------------------
+
+function serviceSource(name: string): string {
+  return [
+    "import { supabase } from './supabase';",
+    '',
+    'export interface Course {',
+    '  id: string;',
+    '  slug: string;',
+    '  title: string;',
+    '}',
+    '',
+    `export class ${name} {`,
+    '  async list(): Promise<Course[]> {',
+    "    return supabase.from<Course>('courses').select();",
+    '  }',
+    '',
+    '  async bySlug(slug: string): Promise<Course | null> {',
+    "    const rows = await supabase.from<Course>('courses').select();",
+    '    return rows.find((row) => row.slug === slug) ?? null;',
+    '  }',
+    '}',
+    '',
+  ].join('\n');
+}
+
+function apiClientIndex(serviceRel: string): string {
+  const name = componentName(serviceRel);
+  return [
+    `import { ${name}, type Course } from './${name}';`,
+    '',
+    `export { ${name} };`,
+    "export { supabase } from './supabase';",
+    'export type { Course };',
+    '',
+    `const client = new ${name}();`,
+    '',
+    'export function listCourses(): Promise<Course[]> {',
+    '  return client.list();',
+    '}',
+    '',
+    'export function courseBySlug(slug: string): Promise<Course | null> {',
+    '  return client.bySlug(slug);',
+    '}',
+    '',
+  ].join('\n');
+}
+
+function supabaseClient(): string {
+  return [
+    'const url = import.meta.env.VITE_SUPABASE_URL;',
+    'const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;',
+    '',
+    'if (!url || !anonKey) {',
+    "  throw new Error('VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY must be set');",
+    '}',
+    '',
+    'export const supabase = createClient(url, anonKey);',
+    '',
+  ].join('\n');
+}
+
+// --- tests -----------------------------------------------------------------
+// Behaviour, never a grep over source text: a test that asserts on source
+// strings passes while the app is broken (the rule frontend/testing.md states).
+
+function unitTest(rel: string): string {
+  const name = componentName(rel).replace(/\.test$/, '');
+  return [
+    "import { describe, expect, it } from 'vitest';",
+    '',
+    `describe('${name}', () => {`,
+    "  it('exposes the course listing contract', async () => {",
+    "    const api = await import('@app/api-client');",
+    "    expect(typeof api.listCourses).toBe('function');",
+    '  });',
+    '});',
+    '',
+  ].join('\n');
+}
+
+function e2eSpec(): string {
+  return [
+    "import { expect, test } from '@playwright/test';",
+    '',
+    "test('home renders its heading', async ({ page }) => {",
+    "  await page.goto('/');",
+    "  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();",
+    '});',
+    '',
+  ].join('\n');
+}
+
+// --- the resolver ----------------------------------------------------------
+
+/**
+ * Body for one compiled output, or null when this tier deliberately does not
+ * author it (binary assets, crawl files). Ordered most-specific first: a module
+ * output always wins over a filename pattern.
+ */
+export function sourceFor(rel: string, ctx: ImplementContext): string | null {
+  // Never author binaries; nothing requires them and a text stub would be a lie.
+  if (/\.(png|ico|jpg|jpeg|webp|woff2?)$/i.test(rel)) return null;
+  // Crawl assets: see the header comment.
+  if (/(?:^|\/)(robots\.txt|sitemap\.xml)$/i.test(rel)) return null;
+
+  const module = ctx.moduleAt(rel);
+  if (module) {
+    const name = componentName(rel);
+    if (module.kind === 'app-shell') return appShell(ctx, rel);
+    if (module.kind === 'page') return pageSource(ctx, rel, name);
+    if (module.kind === 'component') return componentSource(name);
+    if (module.kind === 'feature') return featureSource();
+    if (module.kind === 'service') return serviceSource(name);
+  }
+
+  const base = path.basename(rel);
+  if (rel === 'package.json') return rootPackageJson();
+  if (base === 'package.json') {
+    if (rel.startsWith('apps/')) return appPackageJson();
+    if (rel.includes('tailwind-config')) {
+      // The dependency that makes the Tailwind utilities in globals.css real —
+      // without it STRUCT_TAILWIND_NO_TOOLCHAIN fires, and correctly so.
+      return packageManifest('@app/tailwind-config', {
+        dependencies: { tailwindcss: '^4.0.0' },
+      });
+    }
+    if (rel.includes('api-client')) return packageManifest('@app/api-client');
+    if (rel.includes('i18n')) return packageManifest('@app/i18n');
+    if (rel.includes('/ui/')) return packageManifest('@app/ui');
+    return packageManifest(`@app/${path.basename(path.dirname(rel))}`);
+  }
+  if (rel === 'tsconfig.base.json') return tsconfigBase();
+  if (base === 'tsconfig.json') return tsconfigApp();
+  if (rel === 'pnpm-workspace.yaml') return 'packages:\n  - "apps/*"\n  - "packages/*"\n';
+  if (rel === 'turbo.json') return json({ $schema: 'https://turbo.build/schema.json', tasks: { build: { dependsOn: ['^build'] } } });
+  if (base === 'vite.config.ts') {
+    return [
+      "import { defineConfig } from 'vite';",
+      "import react from '@vitejs/plugin-react';",
+      '',
+      'export default defineConfig({',
+      '  plugins: [react()],',
+      '  build: { outDir: "dist" },',
+      '});',
+      '',
+    ].join('\n');
+  }
+  if (base === 'vitest.config.ts') {
+    return [
+      "import { defineConfig } from 'vitest/config';",
+      '',
+      'export default defineConfig({',
+      "  test: { environment: 'jsdom', globals: true },",
+      '});',
+      '',
+    ].join('\n');
+  }
+  if (base === 'playwright.config.ts') {
+    return [
+      "import { defineConfig } from '@playwright/test';",
+      '',
+      'export default defineConfig({',
+      "  testDir: './tests/e2e',",
+      "  use: { baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4321' },",
+      '});',
+      '',
+    ].join('\n');
+  }
+  if (base === 'index.html') {
+    return [
+      '<!doctype html>',
+      '<html lang="en">',
+      '  <head>',
+      '    <meta charset="utf-8" />',
+      '    <meta name="viewport" content="width=device-width, initial-scale=1" />',
+      '    <title>Learning Platform</title>',
+      '  </head>',
+      '  <body>',
+      '    <div id="root"></div>',
+      '    <script type="module" src="/src/main.tsx"></script>',
+      '  </body>',
+      '</html>',
+      '',
+    ].join('\n');
+  }
+  if (base === 'main.tsx' || base === 'main.jsx') {
+    const shell = ctx.architecture.modules.find((m) => m.kind === 'app-shell');
+    return mainEntry(shell?.output ?? 'apps/web/src/App.tsx');
+  }
+  if (base === 'vite-env.d.ts') return '/// <reference types="vite/client" />\n';
+  if (base === 'supabase.ts') return supabaseClient();
+  if (base === 'database.types.ts') {
+    return [
+      'export interface Database {',
+      '  courses: {',
+      '    id: string;',
+      '    slug: string;',
+      '    title: string;',
+      '  };',
+      '}',
+      '',
+    ].join('\n');
+  }
+  if (rel.endsWith('api-client/src/index.ts')) {
+    const service = ctx.architecture.modules.find((m) => m.kind === 'service');
+    return apiClientIndex(service?.output ?? 'CoursesAPI.ts');
+  }
+  if (rel.endsWith('i18n/src/index.ts')) {
+    return [
+      "import common from './locales/en/common.json';",
+      '',
+      'const dictionary: Record<string, string> = common;',
+      '',
+      'export function t(key: string): string {',
+      '  return dictionary[key] ?? key;',
+      '}',
+      '',
+    ].join('\n');
+  }
+  if (rel.endsWith('locales/en/common.json')) {
+    return json({
+      'home.title': 'Learn web development',
+      'courses.title': 'Courses',
+      'coursedetail.title': 'Course',
+      'lesson.title': 'Lesson',
+      'login.title': 'Sign in',
+    });
+  }
+  if (rel.endsWith('ui/src/index.ts')) {
+    return [
+      'export interface ButtonProps {',
+      '  label: string;',
+      '}',
+      '',
+      'export function buttonClass(): string {',
+      "  return 'rounded-lg px-4 py-2 font-medium';",
+      '}',
+      '',
+    ].join('\n');
+  }
+  if (base === 'globals.css') {
+    return '@import "tailwindcss";\n\n:root {\n  color-scheme: light dark;\n}\n';
+  }
+  if (rel.endsWith('.sql')) {
+    return [
+      'create table if not exists courses (',
+      '  id uuid primary key default gen_random_uuid(),',
+      '  slug text not null unique,',
+      '  title text not null',
+      ');',
+      '',
+    ].join('\n');
+  }
+  if (base === 'config.toml') {
+    return '[api]\nenabled = true\nport = 54321\n';
+  }
+  if (rel.includes('/e2e/') && rel.endsWith('.spec.ts')) return e2eSpec();
+  if (/\.test\.ts$/.test(rel)) return unitTest(rel);
+  if (base === 'manifest.webmanifest') {
+    return json({ name: 'Learning Platform', short_name: 'Learn', start_url: '/', display: 'standalone' });
+  }
+  if (base === '.editorconfig') return 'root = true\n\n[*]\nindent_style = space\nindent_size = 2\n';
+  if (base === '.nvmrc') return '22\n';
+  if (base === 'README.md') return '# Learning Platform\n\nCourses for web development.\n';
+  if (rel.endsWith('ci.yml')) {
+    return [
+      'name: ci',
+      'on: [push, pull_request]',
+      'jobs:',
+      '  check:',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '      - run: pnpm install --frozen-lockfile',
+      '      - run: pnpm typecheck && pnpm test',
+      '',
+    ].join('\n');
+  }
+  return null;
+}
