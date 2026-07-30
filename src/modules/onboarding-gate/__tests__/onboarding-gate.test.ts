@@ -9,7 +9,7 @@ import { recordMainOnboardingSession } from '../../../shared/onboarding-server/o
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { onboardingBootstrapCommand, onboardingDeclineCommand, onboardingUseBootstrapCommand, onboardingUseCommand, onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
-import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
+import type { Ctx, HookInput, HookResult, HostId, ToolClass } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
@@ -32,6 +32,9 @@ process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
 // in the fragment; default dashboard base since no TRAFFIC_ONE_DASHBOARD_URL is set).
 const DASH_URL = 'https://traffic.io/onboarding/agent#p=55222&t=tok';
 const LOCAL_URL = 'http://127.0.0.1:55222/local?t=tok';
+
+// `noop` carries no meta, so narrow before reading the user-facing channel.
+const sysMsg = (r: HookResult): string => ('systemMessage' in r ? r.systemMessage ?? '' : '');
 
 function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
@@ -218,7 +221,13 @@ test('ask-first: mutating work is denied with the host-chat question — no wiza
       if (denied.kind === 'deny') {
         assert.match(denied.reason, /Do you want to use the Traffic One plugin/);
         assert.ok(denied.reason.includes("'--use' '--bootstrap-only'"), 'yes path leads with the link-first bootstrap command');
-        assert.ok(denied.reason.includes('IN THE BACKGROUND'), 'yes path tells the agent to background the waiter');
+        // Foreground, deliberately: backgrounding the waiter sends its output —
+        // including the setup link it re-prints — to a task file the user never
+        // opens, which is how a turn ended with the user waiting on a link they had
+        // never been shown. Must agree with the SKILL block's own wording.
+        assert.match(denied.reason, /in the FOREGROUND of this turn, never as a background task/,
+          'yes path keeps the waiter in the visible turn');
+        assert.ok(!denied.reason.includes('IN THE BACKGROUND'), 'no contradictory background instruction');
         assert.ok(denied.reason.includes('--decline'), 'no path names the --decline command');
         assert.ok(!denied.reason.includes('http://127.0.0.1'), 'NO setup URL before the user says yes');
       }
@@ -498,13 +507,25 @@ test('existing project with missing local prefs: claude orientation flows; the f
   withProject(existingState(), (cwd) => {
     // Claude renders a denied read as a failed tool card and its prompt-hook
     // context is reliable, so read-only orientation flows during setup and the
-    // one-time full recipe lands on the first mutating call instead.
-    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    // one-time full recipe lands on the first mutating call instead. The release
+    // now RIDES the setup link in the user-facing systemMessage: a session that only
+    // reads used to produce no visible surface at all, leaving the link in a
+    // collapsed tool result the user never saw.
+    const orientation = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.notEqual(orientation.kind, 'deny', 'orientation is never blocked');
+    assert.match(sysMsg(orientation), /setup required/, 'the user sees the link');
+    assert.ok(sysMsg(orientation).includes(DASH_URL));
+    if (orientation.kind === 'context') {
+      assert.equal(orientation.context, '', 'empty context → zero prompt tokens on Claude');
+    }
     const first = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(first.kind, 'deny');
     if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
-    // Recipe delivered this session → read-only orientation still flows.
-    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    // Recipe delivered this session → read-only orientation still flows, and the
+    // nudge is rate-limited so a read burst yields one line, not one per call.
+    const again = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.notEqual(again.kind, 'deny');
+    assert.equal(sysMsg(again), '', 'within the TTL the nudge stays quiet');
   });
 });
 
@@ -537,13 +558,17 @@ test('existing project with complete local prefs: mutating tools proceed normall
 
 test('incomplete new project: claude orientation (ls) flows, the first write gets the recipe, later writes get the repeat', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
-    // Read-only orientation flows on claude even before any deny was delivered.
-    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    // Read-only orientation flows on claude even before any deny was delivered —
+    // and carries the setup link in the user-facing systemMessage, so a read-only
+    // opening turn still shows the user something clickable.
+    const orientation = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.notEqual(orientation.kind, 'deny', 'orientation is never blocked');
+    assert.ok(sysMsg(orientation).includes(DASH_URL), 'the release carries the link');
     // fd/discard redirects on a compound orientation command are not writes (B6):
     // this exact shape was denied as "setup still pending" in tests/claude/3.
-    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', {
+    assert.notEqual(onboardingGate(ctx(cwd, 'Bash', 'shell', {
       command: `ls -la ${cwd} 2>/dev/null; echo "---"; ls -la ${cwd}/.traffic-one 2>/dev/null | head -40`,
-    })).kind, 'noop');
+    })).kind, 'deny');
     const first = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(first.kind, 'deny');
     if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
@@ -551,6 +576,45 @@ test('incomplete new project: claude orientation (ls) flows, the first write get
     const write = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(write.kind, 'deny');
     if (write.kind === 'deny') assert.ok(write.reason.includes(DASH_URL));
+  });
+});
+
+// A session that only READS used to produce no user-visible surface at all while
+// setup was pending: the link lived in a collapsed tool result and a background task
+// output file, so the user had nothing to click and setup could never complete.
+// The waiter is often the LAST tool call of the turn — the agent runs it and blocks
+// for minutes, frequently as a background task whose banner lands in a file the user
+// never opens. Observed live: "Ran 2 commands → Waiting for setup completion", four
+// minutes, no link anywhere visible. After this call there are no more PreToolUse
+// events, so it is the final chance to put the link in front of the user.
+test('claude: the wait command itself carries the link, since nothing fires after it', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    const r = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: wait }));
+    assert.notEqual(r.kind, 'deny', 'the waiter must never be blocked');
+    assert.ok(sysMsg(r).includes(DASH_URL), 'the user gets the link at the moment the agent blocks');
+  });
+});
+
+test('claude: read-only orientation stops nudging once the browser demonstrably arrives', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const before = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.ok(sysMsg(before).includes(DASH_URL), 'the link is offered while setup is pending');
+
+    // The wizard actually loaded in the user's browser → re-offering would read as
+    // "start over" mid-setup, so the nudge stands down.
+    noteBrowserArrival(cwd, 'tok', process.env, 'claude');
+    const after = onboardingGate(ctx(cwd, 'Read', 'file-read', { file_path: 'src/app.ts' }));
+    assert.equal(after.kind, 'noop', 'no surface once the user has it open');
+  });
+});
+
+test('a wizard record with no usable URL never nudges (no placeholder links)', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    // Port 0 / tokenless → agentOnboardingUrls yields an empty dashboard URL.
+    writeServerRecord(cwd, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/', startedAt: 'x' }, process.env, 'claude');
+    const r = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.equal(sysMsg(r), '', 'never emit a placeholder URL');
   });
 });
 

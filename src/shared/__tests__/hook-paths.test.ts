@@ -5,10 +5,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  dirOwnsProject,
   findProjectRootForHookFile,
   isOnboardedProjectRoot,
   isUnclaimedWorkspaceSubPackage,
   packageJsonDeclaresWorkspace,
+  projectMembershipRoot,
   projectRelativeHookPath,
   resolveProjectRoot,
   stateRequiresNewProjectMonorepo,
@@ -403,5 +405,161 @@ test('resolveProjectRoot skips an authoring repo with a stray onboarded state fi
     assert.equal(fs.realpathSync(resolved), fs.realpathSync(parent), 'must skip the authoring repo and adopt the parent workspace');
   } finally {
     fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+// ── membership: which project does a directory BELONG to? ────────────────────
+// The resolver used to ask only "is an ancestor onboarded / does one declare npm
+// workspaces", then fall back to the directory itself. In a Go/polyglot tree with no
+// npm workspace that fallback made whatever dir a tool touched its own project:
+// observed live, `mercury/strategies` and `agora/handlers/strategies` each got a full
+// new-project wizard (detectMode counts files in the RESOLVED root, and a small
+// package reads as `new-project`).
+
+function writeFile(file: string, body = 'x'): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body, 'utf8');
+}
+
+test('dirOwnsProject: VCS or a language manifest, and never Traffic One state', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-owns-')));
+  try {
+    assert.equal(dirOwnsProject(root), false, 'a bare dir owns nothing');
+
+    // `.git` as a DIRECTORY (ordinary clone) and as a FILE (worktree/submodule).
+    const asDir = path.join(root, 'clone');
+    fs.mkdirSync(path.join(asDir, '.git'), { recursive: true });
+    assert.equal(dirOwnsProject(asDir), true);
+    const asFile = path.join(root, 'worktree');
+    writeFile(path.join(asFile, '.git'), 'gitdir: /elsewhere/.git/worktrees/wt');
+    assert.equal(dirOwnsProject(asFile), true, '.git is a FILE in a worktree/submodule');
+
+    for (const manifest of ['go.mod', 'package.json', 'composer.json', 'pyproject.toml',
+      'Cargo.toml', 'Gemfile', 'pubspec.yaml', 'deno.json']) {
+      const dir = path.join(root, `m-${manifest}`);
+      writeFile(path.join(dir, manifest));
+      assert.equal(dirOwnsProject(dir), true, `${manifest} marks an owned project`);
+    }
+
+    // Traffic One state must NOT count: it would make membership self-confirming, so
+    // a dir that once accrued stray state would own a project forever and never heal.
+    const stateOnly = path.join(root, 'state-only');
+    writeState(stateOnly, { mode: 'new-project' });
+    assert.equal(dirOwnsProject(stateOnly), false, 'project state is not ownership');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('projectMembershipRoot: a package belongs to its repo; a repo belongs to itself', () => {
+  const container = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-member-')));
+  try {
+    const repo = path.join(container, 'mercury');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    writeFile(path.join(repo, 'go.mod'), 'module mercury\n');
+    const pkg = path.join(repo, 'strategies');
+    writeFile(path.join(pkg, 'strategy.go'), 'package strategies\n');
+    const deep = path.join(repo, 'handlers', 'strategies');
+    writeFile(path.join(deep, 'h.go'), 'package strategies\n');
+
+    assert.equal(projectMembershipRoot(pkg), repo, 'a package belongs to its repo');
+    assert.equal(projectMembershipRoot(deep), repo, 'depth does not matter');
+    assert.equal(projectMembershipRoot(repo), repo, 'a repo belongs to itself');
+
+    // A nested module owning its own marker is NEVER absorbed into the parent.
+    const nested = path.join(repo, 'tools', 'cli');
+    writeFile(path.join(nested, 'go.mod'), 'module cli\n');
+    assert.equal(projectMembershipRoot(nested), nested, 'a nested module is its own project');
+
+    // The container owns nothing and belongs to nothing — its ancestors are temp
+    // roots, where the machine-config guard stops the walk.
+    assert.equal(projectMembershipRoot(container), null, 'a marker-less container belongs to nothing');
+
+    // The ceiling is honoured: never climb out of the host workspace root.
+    assert.equal(projectMembershipRoot(pkg, pkg), null, 'a ceiling AT the package blocks the climb');
+    assert.equal(projectMembershipRoot(pkg, repo), repo, 'a ceiling at the repo still resolves it');
+  } finally {
+    fs.rmSync(container, { recursive: true, force: true });
+  }
+});
+
+// A manifest says "this dir is a module"; it is NOT authority over everything below
+// it. Only version control marks a repository boundary. Observed live: a leftover
+// `go.mod` in ~/Documents and ~/Documents/projects made an unrelated multi-repo
+// workspace resolve to ~/Documents/projects, so every command into it was gated.
+test('projectMembershipRoot: a stray manifest in an ancestor never absorbs a child', () => {
+  const outer = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-stray-manifest-')));
+  try {
+    // A junk manifest high in the tree, with NO version control.
+    writeFile(path.join(outer, 'go.mod'), 'module leftover\n');
+    const workspace = path.join(outer, 'workspace');
+    fs.mkdirSync(workspace, { recursive: true });
+
+    assert.equal(projectMembershipRoot(workspace), null,
+      'a manifest-only ancestor is not a repository boundary');
+    assert.equal(resolveProjectRoot(workspace, ''), workspace,
+      'the marker-less dir stays its own root');
+
+    // Version control in the same place DOES absorb it — that is the intended signal.
+    fs.mkdirSync(path.join(outer, '.git'), { recursive: true });
+    assert.equal(projectMembershipRoot(workspace), outer, '.git is the repository boundary');
+
+    // And a manifest still marks the START dir itself as a project.
+    const module = path.join(outer, 'svc');
+    writeFile(path.join(module, 'go.mod'), 'module svc\n');
+    assert.equal(projectMembershipRoot(module), module, 'a module root is its own project');
+  } finally {
+    fs.rmSync(outer, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: an un-onboarded package resolves to its repo, not itself', () => {
+  const container = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-member-resolve-')));
+  try {
+    // Two sibling Go repos under a marker-less container — the Hermatic shape.
+    const mercury = path.join(container, 'mercury');
+    const agora = path.join(container, 'agora');
+    for (const repo of [mercury, agora]) {
+      fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+      writeFile(path.join(repo, 'go.mod'), 'module m\n');
+    }
+    const pkg = path.join(mercury, 'strategies');
+    const pkgFile = path.join(pkg, 'strategy.go');
+    writeFile(pkgFile, 'package strategies\n');
+    const deep = path.join(agora, 'handlers', 'strategies');
+    const deepFile = path.join(deep, 'h.go');
+    writeFile(deepFile, 'package strategies\n');
+
+    // NOTHING is onboarded anywhere — the window the old resolver got wrong.
+    assert.equal(resolveProjectRoot(pkg, pkgFile), mercury);
+    assert.equal(resolveProjectRoot(pkg, ''), mercury, 'no file hint (bash-style) resolves too');
+    assert.equal(resolveProjectRoot(deep, deepFile), agora);
+    // Per-repo isolation is preserved: each repo stays its own project.
+    assert.equal(resolveProjectRoot(mercury, path.join(mercury, 'main.go')), mercury);
+    assert.equal(resolveProjectRoot(agora, path.join(agora, 'main.go')), agora);
+    // A cross-repo target still climbs to ITS OWN repo, never the toucher's.
+    assert.equal(resolveProjectRoot(pkg, deepFile), agora, 'the file hint resolves to its own repo');
+  } finally {
+    fs.rmSync(container, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: membership runs AFTER the workspace anchor (monorepo unchanged)', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-member-order-')));
+  try {
+    // A monorepo sub-package owns a package.json of its own. If membership ran before
+    // the workspace anchor it would become its own root and defeat the packages/*
+    // leak rule.
+    writePkg(root, { name: 'mono', private: true, workspaces: ['packages/*'] });
+    fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+    const ui = path.join(root, 'packages', 'ui');
+    writePkg(ui, { name: 'ui' });
+    const uiFile = path.join(ui, 'src', 'index.ts');
+    writeFile(uiFile);
+
+    assert.equal(resolveProjectRoot(ui, uiFile), root, 'the workspace root still wins');
+    assert.equal(resolveProjectRoot(root, uiFile), root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

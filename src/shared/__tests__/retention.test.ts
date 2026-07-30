@@ -120,6 +120,47 @@ test('sweepTrafficOneRetention never deletes an independent nested onboarded pro
   });
 });
 
+// Membership heal + its data-loss fence. Stray state inside a real repo (observed:
+// mercury/strategies got a full new-project state inside a Go repo) must become a
+// cleanup candidate, while every genuine repo root must be structurally unsweepable.
+test('sweepTrafficOneRetention heals stray state inside a repo but never touches a repo root', () => {
+  const container = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-retention-member-')));
+  const memoryDir = '.traffic' + '-one';
+  try {
+    // Two independently-onboarded sibling repos under a marker-less container.
+    const repos = ['mercury', 'agora'].map((name) => {
+      const repo = path.join(container, name);
+      fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'go.mod'), `module ${name}\n`, 'utf8');
+      fs.mkdirSync(path.join(repo, memoryDir), { recursive: true });
+      fs.writeFileSync(path.join(repo, memoryDir, '.one.json'),
+        JSON.stringify({ mode: 'existing-codebase', stack: 'custom-backend' }), 'utf8');
+      return repo;
+    });
+    // A stray root inside one of them: owns no marker, belongs to `mercury`.
+    const stray = path.join(repos[0]!, 'strategies', memoryDir);
+    fs.mkdirSync(path.join(stray, 'runs', '9001'), { recursive: true });
+    fs.writeFileSync(path.join(stray, '.one.json'), JSON.stringify({ mode: 'new-project' }), 'utf8');
+
+    const dry = sweepTrafficOneRetention(container, { dryRun: true });
+    assert.ok(dry.actions.some((a) => a.path === stray), 'stray state inside a repo IS a candidate');
+    for (const repo of repos) {
+      const own = path.join(repo, memoryDir);
+      assert.ok(!dry.actions.some((a) => a.path === own),
+        `${path.basename(repo)} owns .git — it must never be a candidate`);
+    }
+
+    sweepTrafficOneRetention(container, { dryRun: false });
+    assert.equal(fs.existsSync(stray), false, 'the stray root is healed away');
+    for (const repo of repos) {
+      assert.equal(fs.existsSync(path.join(repo, memoryDir, '.one.json')), true,
+        `${path.basename(repo)} state preserved`);
+    }
+  } finally {
+    fs.rmSync(container, { recursive: true, force: true });
+  }
+});
+
 // A gitnexus bootstrap can run many times in one session and each run snapshots the
 // same unchanged files; the SessionStart sweep is far too late to cap that.
 test('pruneTrafficOneBackups enforces the cap at write time', () => {

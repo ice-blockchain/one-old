@@ -17,6 +17,8 @@
 // markers still gate the FULL walkthrough so it lands once per session, which is
 // what keeps prose from spamming. This file gates only the URL itself.
 
+import { createHash } from 'crypto';
+
 import { readDashboardHealth } from './dashboard-health';
 import { wizardOpenedByUser } from './browser-arrival';
 
@@ -38,6 +40,19 @@ export function wizardOpened(
   host?: unknown,
 ): boolean {
   return wizardOpenedByUser(cwd, token, env, host);
+}
+
+// How often the gate may re-offer the link on a read-only tool call. Between the
+// waiter's own 90s banner reprint and the 15-minute browser-arrival TTL: a read-heavy
+// orientation burst yields ONE line, while a user who never opened the wizard is
+// reminded a few times inside the window where it is still actionable.
+export const SETUP_LINK_NUDGE_TTL_MS = 5 * 60 * 1000;
+
+// Deliberately a DIFFERENT marker from the waiter's `bannerMarkerLabel`: that one
+// tracks a banner which lands in a background task file the user never reads, so
+// letting it silence this surface would reproduce the original bug.
+export function setupLinkNudgeLabel(token: string): string {
+  return `setup-link-nudge:${createHash('sha256').update(token || 'pending', 'utf8').digest('hex').slice(0, 20)}`;
 }
 
 // Should this message carry the loopback wizard alongside the hosted link?
