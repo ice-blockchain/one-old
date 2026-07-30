@@ -38,6 +38,16 @@ export const assertion: Assertion = {
       });
     }
 
-    return result(ctx, 'PASS', `Run ${runId} settled: runVerificationState=terminal, settlement status \`${settlement?.status ?? 'unknown'}\`.`);
+    // The canonical settlement must have advanced too. `terminal` alone is the
+    // digest-derived verdict; `verified` is the ledger actually closing, which
+    // is what lets the next run start clean.
+    if (settlement?.status !== 'verified') {
+      return result(ctx, 'FAIL', `runVerificationState is terminal but the canonical settlement is \`${settlement?.status ?? 'absent'}\` — settleTerminalRunLedger did not close the ledger.`, {
+        expected: 'verified',
+        actual: settlement?.status ?? 'absent',
+      });
+    }
+
+    return result(ctx, 'PASS', `Run ${runId} closed: runVerificationState=terminal and canonical settlement=verified.`);
   },
 };

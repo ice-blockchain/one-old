@@ -43,6 +43,7 @@ import {
   writeState,
 } from '../../shared/state';
 import { initializeToolchainState } from '../../shared/state/toolchain';
+import { applyExistingCodebaseDetection } from '../../shared/onboarding/detection-stamp';
 import { nowIsoNoMs } from '../../shared/text';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
@@ -335,42 +336,15 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
         systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
       });
     }
-    const detected = detectStackFromCodebase(cwd);
-    if (!detected.stack) {
-      detected.stack = 'minimal';
-      detected.backend = detected.backend || 'other';
-      detected.realtime = detected.realtime || 'none';
-      detected.evidence.push('existing codebase detected → apply minimal stack baseline');
-    }
-    // A run in flight owns the project's stack identity until it settles.
-    // Detection reads the project's OWN files, so the team building what it was
-    // asked to build moves the fingerprint under itself (an empty dir that
-    // becomes Laravel gains `resources/views`, flipping `frontend: none ->
-    // other`) — and re-stamping it mid-run used to invalidate every live role
-    // claim at once. Mirrors the `activeRun` guard in
-    // shared/detection/reconcileStackFromArtifacts. The drift is recorded on
-    // the ledger; the next run mints with the new identity.
-    const identityFrozen = runIdentityFrozen(cwd, state);
-    if (identityFrozen) recordRunStackDrift(cwd, state, stackFingerprint(detected));
-    Object.assign(state, {
-      mode,
-      ...(identityFrozen ? {} : {
-        stack: detected.stack,
-        backend: detected.backend || 'other',
-        frontend: detected.frontend || 'none',
-        ...(detected.mobile ? { mobile: detected.mobile } : {}),
-        realtime: detected.realtime || 'none',
-      }),
-      confirmed: true,
-      onboardingComplete: true,
-      confirmedAt: nowIsoNoMs(),
-      autoDetected: true,
-      evidence: detected.evidence,
-      // An existing codebase is already built → maintenance phase from first
-      // detection, so post-build triage applies to the user's first prompt.
-      lifecycle: maintenanceLifecycle('existing-detected'),
-    });
-    normalizeState(state, mode);
+    // The stamp itself lives in shared/onboarding/detection-stamp so the
+    // onboarding-wait runner can apply the SAME write at consent time (SessionStart
+    // cannot: it writes nothing while the use-plugin question is pending). Mutates
+    // `state` in place; persistence stays with the single writeState below, after
+    // stampMaterialization has added its fields. `floorMinimal` keeps this flow's
+    // historical behavior of inventing `minimal` when detection finds nothing —
+    // runners deliberately do not, so a sparse repo gains no wizard.
+    // Non-null: `floorMinimal` guarantees a stack, so it only returns null without it.
+    const detected = applyExistingCodebaseDetection(cwd, state, mode, { floorMinimal: true })!;
 
     const capabilityState = capabilityStateForRun(cwd, state);
     const spec = stackSpecForState(capabilityState);

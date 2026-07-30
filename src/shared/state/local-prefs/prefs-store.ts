@@ -6,6 +6,7 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { readJson } from '../../fsjson';
+import { dirOwnsProject, projectMembershipRoot } from '../../project-membership';
 import { sha256 } from '../../text';
 import {
   globalTrafficOneDir,
@@ -293,6 +294,17 @@ export function updateProjectPrefs(
   update: (current: Rec) => Rec,
 ): Rec {
   const prefsPath = projectPrefsPath(cwd, env);
+  // Never CREATE a per-project prefs root for a directory that belongs to an
+  // enclosing project. These live outside the repo keyed by a hash of the directory,
+  // so a mis-resolved root leaves an invisible stray: observed live, a Go PACKAGE
+  // (`mercury/strategies`) accrued its own consent + wizard answers. Creation-time
+  // only — an existing prefs file keeps updating, so a legitimately nested project
+  // and an already-strayed root are both left writable.
+  if (!fs.existsSync(prefsPath)
+    && !dirOwnsProject(cwd)
+    && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) {
+    return readProjectPrefs(cwd, env);
+  }
   const next = withProjectPrefsLock(prefsPath, () => {
     // Re-read only after acquiring the cross-process lock. This is the
     // load-bearing part of the read-merge-write protocol: reading beforehand

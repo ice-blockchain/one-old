@@ -6,6 +6,7 @@
 import { detectHost } from '../../shared/host';
 import { materializeProjectIfNeeded, writeOpenCodeHostAssets } from '../../shared/materialize';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { stampExistingCodebaseDetection } from '../../shared/onboarding/detection-stamp';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import {
   isOnboardingPermissionError,
@@ -66,6 +67,14 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     process.stdout.write(consentPhaseFailureOutput(cwd, host, argv, error));
     process.exit(2);
   }
+  // Stamp an existing codebase's detected identity as soon as consent is on record.
+  // SessionStart cannot: it writes nothing while the use-plugin question is pending,
+  // so a project onboarded in ONE sitting used to keep a bare seed `.one.json` — which
+  // makes materializeProjectIfNeeded bail forever, so the wizard completes and the
+  // build is still blocked on "materialization not complete". Deliberately NOT gated
+  // on `!alreadyDone`: that is what repairs a project already stuck in the seed state.
+  // No `floorMinimal` here, so an undetectable repo is left exactly as it is today.
+  stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
   if (reconsider) {
     process.stdout.write(
       'TRAFFIC_ONE_RECONSIDER\n'
@@ -193,6 +202,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     // Materializing here makes the bundle ready at SETUP_COMPLETE, so the first spawn
     // is clean. Idempotent + best-effort (the gate still self-heals if this is skipped).
     try {
+      // Idempotent re-assert: the process that reaches completion may not be the one
+      // that stamped at consent time (the `--use --bootstrap-only` process exits
+      // early), and both materialize and postSetupTriage below need `stack`/`mode`.
+      stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
       materializeProjectIfNeeded(cwd, { trigger: 'onboarding-wait setup-complete (pre-spawn materialize)' });
       if (host === 'opencode') writeOpenCodeHostAssets(cwd, readEffectiveState(cwd), []);
     } catch {

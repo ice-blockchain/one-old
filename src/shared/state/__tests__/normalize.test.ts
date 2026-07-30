@@ -221,3 +221,51 @@ test('requireAddon gate reflects supabaseAddons status', () => {
   assert.equal(requireAddon({}, 'storage').status, 'pending');
   assert.equal(requireAddon({}, 'bogus').known, false);
 });
+
+// writeState is the single funnel for 30+ writers, including ones no resolver sees
+// (the onboarding-wait runners take cwd from argv). Observed live: a Go PACKAGE
+// inside a repo was initialized as its own project with a full new-project state.
+test('writeState refuses to CREATE state in a directory that belongs to an enclosing project', () => {
+  const container = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-veto-')));
+  try {
+    const repo = path.join(container, 'mercury');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'go.mod'), 'module mercury\n', 'utf8');
+    const pkg = path.join(repo, 'strategies');
+    fs.mkdirSync(pkg, { recursive: true });
+
+    // A package inside the repo: belongs to `mercury`, owns nothing → refused.
+    writeState(pkg, { mode: 'new-project', stack: 'default' });
+    assert.equal(fs.existsSync(statePath(pkg)), false, 'no state may be created inside a repo');
+
+    // The repo root itself owns .git → always writable.
+    writeState(repo, { mode: 'existing-codebase' });
+    assert.equal(fs.existsSync(statePath(repo)), true, 'the repo root is a real project');
+
+    // A nested module owning its own marker is its own project → writable.
+    const nested = path.join(repo, 'tools', 'cli');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, 'go.mod'), 'module cli\n', 'utf8');
+    writeState(nested, { mode: 'existing-codebase' });
+    assert.equal(fs.existsSync(statePath(nested)), true, 'a nested module is its own project');
+
+    // Creation-time only: a dir that ALREADY owns state keeps updating, so an
+    // already-strayed root stays writable until the retention sweep heals it.
+    const strayed = path.join(repo, 'handlers');
+    fs.mkdirSync(path.join(strayed, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(statePath(strayed), JSON.stringify({ mode: 'new-project' }), 'utf8');
+    writeState(strayed, { mode: 'existing-codebase', stack: 'custom-backend' });
+    assert.equal(readState(strayed).mode, 'existing-codebase', 'existing state still updates');
+
+    // A standalone dir belonging to nothing is unaffected (today's behavior).
+    const solo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-veto-solo-')));
+    try {
+      writeState(solo, { mode: 'new-project' });
+      assert.equal(fs.existsSync(statePath(solo)), true, 'a standalone dir is still its own project');
+    } finally {
+      fs.rmSync(solo, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(container, { recursive: true, force: true });
+  }
+});

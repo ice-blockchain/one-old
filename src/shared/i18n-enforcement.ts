@@ -38,6 +38,11 @@ export interface I18nSourceAnalysis {
 }
 
 export const I18N_SOURCE_RE = /\.(?:tsx?|jsx?|vue|svelte|astro|html|blade\.php|swift|kt|dart)$/i;
+// Files that may legally contain JSX. `.ts`/`.js` may not — TypeScript rejects
+// JSX outside `.tsx` — so element-shaped text there is a generic type argument.
+const JSX_CAPABLE_RE = /\.(?:tsx|jsx)$/i;
+// Plain script files: no markup children, only `t()` references worth reading.
+const SCRIPT_ONLY_RE = /\.(?:ts|js|mjs|cjs)$/i;
 export const I18N_CATALOG_RE = /\.(?:json|php|xlf|xcstrings|xml|arb)$/i;
 
 function lineAt(text: string, index: number): number {
@@ -98,6 +103,23 @@ function addTReferences(text: string, namespace: string, references: I18nReferen
   }
 }
 
+// `<Course[]>` in `useState<Course[]>([])` matches every shape test for a JSX
+// opening tag, so a generic type argument opened an element and the code that
+// followed was collected as rendered child text. `useState<T[]>` is the most
+// common idiom in React+TypeScript, so this denied ordinary components.
+//
+// The discriminator is position, and it is exact: JSX only appears where an
+// EXPRESSION may start — after `(`, `{`, `}`, `>`, `,`, an operator, a keyword
+// plus whitespace, or at the beginning of the file. A generic type argument
+// only appears glued to the identifier it parameterises (`useState<`,
+// `Promise<`, `Array<`, `.from<`). So a `<` immediately preceded by an
+// identifier character is a type argument, never a tag.
+function jsxTagAt(text: string, index: number): boolean {
+  if (!/^(?:<\/?[A-Za-z]|<>|<\/>)/.test(text.slice(index))) return false;
+  const previous = index > 0 ? text[index - 1]! : '';
+  return !/[\w$]/.test(previous);
+}
+
 function jsxTokens(text: string): Array<{ token: string; index: number }> {
   const tokens: Array<{ token: string; index: number }> = [];
   let index = 0;
@@ -106,12 +128,12 @@ function jsxTokens(text: string): Array<{ token: string; index: number }> {
     const start = index;
     const opener = text[index];
     const jsxExpression = opener === '{' && jsxDepth > 0;
-    const jsxTag = opener === '<' && /^(?:<\/?[A-Za-z]|<>|<\/>)/.test(text.slice(index));
+    const jsxTag = opener === '<' && jsxTagAt(text, index);
     if (!jsxTag && !jsxExpression) {
       index += 1;
       while (index < text.length) {
         const candidate = text[index];
-        if (candidate === '<' && /^(?:<\/?[A-Za-z]|<>|<\/>)/.test(text.slice(index))) break;
+        if (candidate === '<' && jsxTagAt(text, index)) break;
         if (candidate === '{' && jsxDepth > 0) break;
         index += 1;
       }
@@ -170,6 +192,15 @@ function reactSourceAnalysis(
   const brands = i18n?.literalBrands || [];
   const namespace = fileTranslationNamespace(text);
   addTReferences(text, namespace, references);
+  // JSX child-text analysis is only valid where JSX itself is valid. TypeScript
+  // REJECTS JSX in `.ts` (it is `.tsx` or nothing), so every "element" found in
+  // a .ts file is really a generic type argument — `Promise<Course[]>` opens a
+  // `<Course[]>` tag and the code that follows reads as rendered child text.
+  // Two generics in one file were enough to deny a plain backend service with
+  // STRUCT_HARDCODED_COPY on a line holding nothing but a closing brace.
+  // `t()` references are collected above and stay available to catalog
+  // validation, which is the part that IS meaningful in a .ts file.
+  if (!JSX_CAPABLE_RE.test(file)) return { findings, references };
   if (!/<\/?[A-Za-z][^>]*>/.test(text)) return { findings, references };
 
   type StackEntry = { name: string; trans: boolean; fallback: boolean; line: number };
@@ -294,6 +325,10 @@ function markupSourceAnalysis(
   i18n: CompiledI18nContractV1 | undefined,
 ): I18nSourceAnalysis {
   const findings: I18nEnforcementFinding[] = [];
+  // Same rule as the React path: a plain script file has no markup children, so
+  // the `>text<` scan below can only misread generic type arguments. Non-React
+  // profiles (Vue, Svelte, generic-web) route their .ts files here.
+  if (SCRIPT_ONLY_RE.test(file)) return { findings, references: [] };
   const brands = i18n?.literalBrands || [];
   const re = />([^<>{}]+)</g;
   for (let match = re.exec(text); match; match = re.exec(text)) {

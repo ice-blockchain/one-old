@@ -49,12 +49,6 @@ export const assertion: Assertion = {
       });
     }
 
-    if (declared === 'browser') {
-      // Increment 4 wires real browser evidence. Until then this is an honest
-      // gap recorded in the transcript, never a pass.
-      return result(ctx, 'INCONCLUSIVE', `This shape's contract requires browser evidence (uiImpact=${contract.uiImpact}); ${str(transcript.facts && rec(transcript.facts).qaSkippedReason) || 'browser evidence is not wired yet'}.`);
-    }
-
     const report = readQaReportV2(ctx.cwd, runId);
     if (!report.ok) {
       return result(ctx, 'FAIL', `The published QA report was rejected by its own validator (${report.code}: ${report.message}).`);
@@ -100,8 +94,9 @@ export const assertion: Assertion = {
     }
 
     // `browser` must exit 0 on a contract with no browser surface, rather than
-    // failing on a build manifest an api-only project will never have.
-    const browserExit = rec(transcript.facts).browserExitCode;
+    // failing on a build manifest an api-only project will never have. Only
+    // meaningful for stack shapes; browser shapes ran it for real above.
+    const browserExit = declared === 'stack' ? rec(transcript.facts).browserExitCode : undefined;
     if (typeof browserExit === 'number' && browserExit !== 0) {
       return result(ctx, 'FAIL', `\`browser\` exited ${browserExit} on a contract with browserRequired=false; it must exit 0 and point at the stack runner.`, {
         expected: 0,

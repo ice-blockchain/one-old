@@ -173,3 +173,145 @@ test('catalog validation requires referenced keys and non-empty locale parity', 
     assert.ok(invalid.some((finding) => finding.message.includes('extra key')));
   });
 });
+
+// Regression: JSX child-text analysis ran on `.ts` files, where TypeScript
+// REJECTS JSX. Generic type arguments were parsed as elements — `Promise<X>`
+// opened a `<X>` tag and the following code read as rendered child text — so
+// two generics in one plain backend service produced STRUCT_HARDCODED_COPY on
+// a line holding nothing but a closing brace. Because plan-readiness force-maps
+// every i18n finding to `error` on a new project, that DENIED the write: no
+// backend implementer could author a typed service on a greenfield React app.
+// Found by the run-sim tier on its first end-to-end React shape.
+test('generic type arguments in a .ts file are not React child copy', () => {
+  withContract((_cwd, contract) => {
+    const service = [
+      "import { supabase } from './supabase';",
+      'export interface Course { id: string; slug: string }',
+      'export class CoursesAPI {',
+      '  async list(): Promise<Course[]> {',
+      "    const rows: Course[] = await supabase.from('courses').select();",
+      '    return rows;',
+      '  }',
+      '  async bySlug(slug: string): Promise<Course | null> {',
+      "    const rows: Course[] = await supabase.from('courses').select();",
+      '    return rows.find((row) => row.slug === slug) ?? null;',
+      '  }',
+      '}',
+    ].join('\n');
+    const analysis = analyzeI18nSourceText(
+      'packages/api-client/src/CoursesAPI.ts',
+      service,
+      contract.profile,
+      contract.i18n,
+    );
+    assert.deepEqual(analysis.findings, [], 'a .ts service cannot contain JSX, so it has no child copy');
+  });
+});
+
+// The other direction: narrowing the scan must not make it blind. The same
+// hardcoded copy in a `.tsx` file is still a finding.
+test('hardcoded child copy in a .tsx file is still reported', () => {
+  withContract((_cwd, contract) => {
+    const page = [
+      'export function Page() {',
+      '  return (',
+      '    <main>',
+      '      <h1>Learn web development</h1>',
+      '    </main>',
+      '  );',
+      '}',
+    ].join('\n');
+    const analysis = analyzeI18nSourceText(
+      'apps/web/src/pages/Page.tsx',
+      page,
+      contract.profile,
+      contract.i18n,
+    );
+    assert.ok(
+      analysis.findings.some((finding) => finding.id === 'STRUCT_HARDCODED_COPY'),
+      'JSX child text in a .tsx file must still be flagged',
+    );
+  });
+});
+
+// `t()` references are what catalog validation reads, and they are valid in a
+// plain .ts file. Returning early must not drop them.
+test('t() references are still collected from a .ts file', () => {
+  withContract((_cwd, contract) => {
+    const helper = [
+      "import { t } from '@app/i18n';",
+      'export function label(): string {',
+      "  return t('common:courseCount');",
+      '}',
+    ].join('\n');
+    const analysis = analyzeI18nSourceText(
+      'packages/i18n/src/labels.ts',
+      helper,
+      contract.profile,
+      contract.i18n,
+    );
+    assert.deepEqual(analysis.findings, []);
+    assert.ok(
+      analysis.references.some((reference) => reference.key === 'courseCount'),
+      't() references must survive the non-JSX early return',
+    );
+  });
+});
+
+// The same generic-vs-JSX confusion also fired in `.tsx`, where the language
+// rule cannot excuse it: `useState<Course[]>([])` is the most common idiom in
+// React+TypeScript and it opened a `<Course[]>` element, collecting the code
+// that followed as rendered child text. The discriminator is position — JSX
+// only starts an expression, a type argument is glued to its identifier.
+test('generic type arguments in a .tsx file are not JSX elements', () => {
+  withContract((_cwd, contract) => {
+    const component = [
+      "import { useState } from 'react';",
+      "import { Trans } from 'react-i18next';",
+      'export function Courses() {',
+      '  const [courses, setCourses] = useState<Course[]>([]);',
+      '  const [news, setNews] = useState<NewsItem[]>([]);',
+      '  return (',
+      '    <main>',
+      '      <h1><Trans ns="common" i18nKey="coursesTitle">Courses</Trans></h1>',
+      '      <p>{courses.length + news.length}</p>',
+      '    </main>',
+      '  );',
+      '}',
+    ].join('\n');
+    const analysis = analyzeI18nSourceText(
+      'apps/web/src/pages/Courses.tsx',
+      component,
+      contract.profile,
+      contract.i18n,
+    );
+    assert.deepEqual(analysis.findings, [], 'useState<T[]> must not read as a JSX element');
+  });
+});
+
+// Narrowing must not blind the scanner in the file type that matters most:
+// real hardcoded child text sitting next to generics is still reported.
+test('hardcoded copy is still caught in a .tsx file that also uses generics', () => {
+  withContract((_cwd, contract) => {
+    const component = [
+      "import { useState } from 'react';",
+      'export function Courses() {',
+      '  const [courses] = useState<Course[]>([]);',
+      '  return (',
+      '    <main>',
+      '      <h1>Browse every course</h1>',
+      '    </main>',
+      '  );',
+      '}',
+    ].join('\n');
+    const analysis = analyzeI18nSourceText(
+      'apps/web/src/pages/Courses.tsx',
+      component,
+      contract.profile,
+      contract.i18n,
+    );
+    const copy = analysis.findings.filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
+    assert.equal(copy.length, 1, 'exactly the real hardcoded heading, and nothing from the generic');
+    assert.ok(copy[0]!.message.includes('child text'));
+  });
+});

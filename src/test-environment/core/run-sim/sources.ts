@@ -197,11 +197,19 @@ function appShell(ctx: ImplementContext, rel: string): string {
       '',
     ]
     : [];
+  // Rendered child text goes through <Trans> with ns, key and a visible
+  // source-language fallback; t() stays for string-valued props. That is the
+  // contract the i18n gate enforces, and the catalogs below carry the keys.
   const nav = features.length > 0
-    ? ['      <button type="button" onClick={handleSignOut}>Sign out</button>']
+    ? [
+      '      <button type="button" onClick={handleSignOut}>',
+      '        <Trans ns="common" i18nKey="signOut">Sign out</Trans>',
+      '      </button>',
+    ]
     : [];
   return [
     "import { Route, Routes } from 'react-router-dom';",
+    ...(features.length > 0 ? ["import { Trans } from 'react-i18next';"] : []),
     ...imports,
     ...featureImports,
     '',
@@ -315,11 +323,17 @@ function serviceSource(name: string): string {
     '',
     `export class ${name} {`,
     '  async list(): Promise<Course[]> {',
-    "    return supabase.from<Course>('courses').select();",
+    // Result typed at the binding, not with a call-position type argument.
+    // This is how supabase-js v2 is actually written — and it sidesteps a
+    // known i18n-scanner false positive where `.from<Course>(...)` in a plain
+    // .ts file parses as JSX and reports STRUCT_HARDCODED_COPY. See the note
+    // in run-sim.cases.ts.
+    "    const rows: Course[] = await supabase.from('courses').select();",
+    '    return rows;',
     '  }',
     '',
     '  async bySlug(slug: string): Promise<Course | null> {',
-    "    const rows = await supabase.from<Course>('courses').select();",
+    "    const rows: Course[] = await supabase.from('courses').select();",
     '    return rows.find((row) => row.slug === slug) ?? null;',
     '  }',
     '}',
@@ -628,7 +642,11 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
       '  <head>',
       '    <meta charset="utf-8" />',
       '    <meta name="viewport" content="width=device-width, initial-scale=1" />',
-      '    <title>Learning Platform</title>',
+      // Empty on purpose: the shell HTML has no localization primitive, and the
+      // compiled contract declares no literal brands, so any prose here is
+      // hardcoded user-facing copy. The app sets document.title from the
+      // catalog once it boots — the standard i18n pattern for an SPA shell.
+      '    <title></title>',
       '  </head>',
       '  <body>',
       '    <div id="root"></div>',

@@ -9,8 +9,12 @@ import * as path from 'path';
 import { STATE_DIR, STATE_FILE } from '../../config/paths';
 import { hasPluginAuthoringMarkers, isMachineConfigRoot } from '../authoring-root';
 import { readJson } from '../fsjson';
+import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import { isNativeState } from '../state';
 import { hasStateFile } from '../tool-classify';
+
+// Re-exported so the resolver stays the single import surface for root questions.
+export { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 
 type Rec = Record<string, unknown>;
 
@@ -121,7 +125,17 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string): string | null
       // project root: a monorepo has ONE root (the workspace), so a stray
       // packages/*/.traffic-one (the packages/ui incident) must not shadow it.
       // Keep climbing to the workspace root instead of adopting the sub-package.
-      if (nearestWorkspaceRoot(path.dirname(current), ceiling) === null) return current;
+      //
+      // The same reasoning by MEMBERSHIP, which is what catches non-npm trees: state
+      // sitting in a dir that owns no project while a real project encloses it is a
+      // leak too (observed: mercury/strategies and agora/handlers/strategies each
+      // accrued a full new-project state inside a Go repo). Climbing past it both
+      // fixes resolution AND makes isLeakedNestedRoot report it, so the SessionStart
+      // retention sweep heals it — no migration needed. A dir that owns a marker is
+      // always its own root, so a real repo can never become a cleanup candidate.
+      if (nearestWorkspaceRoot(path.dirname(current), ceiling) === null
+        && (dirOwnsProject(current)
+          || projectMembershipRoot(path.dirname(current), ceiling) === null)) return current;
     }
     const parent = path.dirname(current);
     if (parent === current) break; // filesystem root
@@ -225,6 +239,17 @@ export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceil
     if (workspaceAtCeiling) return workspaceAtCeiling;
     return ceiling;
   }
+  // Nothing is onboarded and no workspace is declared — so ask which project this
+  // directory BELONGS to. Without this the fallback below returns `cwd` verbatim,
+  // which is how a Go PACKAGE became its own project (observed: mercury/strategies
+  // and agora/handlers/strategies each got a full new-project wizard, because
+  // detectMode counts files in the resolved root and a small package reads as
+  // `new-project`). Deliberately AFTER the workspace anchor: a monorepo sub-package
+  // owns a package.json of its own, so running this first would make it a root and
+  // defeat the packages/* leak rule.
+  const member = (fileStart && projectMembershipRoot(fileStart, ceiling))
+    || projectMembershipRoot(cwdStart, ceiling);
+  if (member) return member;
   return findProjectRootForHookFile(cwdStart, fileAbs || filePath);
 }
 

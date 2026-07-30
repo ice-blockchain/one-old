@@ -28,8 +28,15 @@ import { readRunSettlement } from '../../../shared/run-settlement';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { materializeProjectFromState } from '../../../shared/materialize';
 import { readEffectiveState } from '../../../shared/state';
-import { ensureCurrentRunId, runVerificationState } from '../../../shared/state/run-agent';
-import { readVerificationContract } from '../../../shared/verification-contract';
+import {
+  ensureCurrentRunId,
+  runVerificationState,
+  settleTerminalRunLedger,
+} from '../../../shared/state/run-agent';
+import {
+  readVerificationContract,
+  type VerificationContractV2,
+} from '../../../shared/verification-contract';
 import type { Case } from '../types';
 
 import {
@@ -43,6 +50,7 @@ import {
   planBody,
 } from './content';
 import { buildImplementContext } from './assignments';
+import { buildDirFor, scenarioFor, writeBuildOutput } from './build-output';
 import { sourceFor } from './sources';
 import type { RunSimTranscript, ScriptedWrite } from './types';
 import { applyAll, bindRole } from './write';
@@ -274,10 +282,19 @@ export async function runSimulatedRun(
     }
     transcript.phasesCompleted.push('qa');
   } else {
-    // Browser evidence lands in increment 4. Until then the run legitimately
-    // stops here rather than faking a report — see the plan's QA fences.
-    transcript.facts.qaSkippedReason = 'browser evidence is not wired yet (increment 4)';
-    return finish();
+    // Real Chromium against the scripted production build. The runner serves
+    // the build dir itself, so no dev server and no bundler are involved.
+    const buildDir = buildDirFor(architecture);
+    const asset = writeBuildOutput(cwd, buildDir);
+    transcript.facts.buildDir = buildDir;
+    transcript.facts.buildAsset = asset;
+    const qa = await runBrowserEvidence(cwd, runId, buildDir, verification);
+    transcript.facts.qaExitCode = qa.code;
+    transcript.facts.qaChecks = qa.checks;
+    if (qa.code !== 0) {
+      return finish(`phase-3 browser evidence failed (exit ${qa.code}): ${qa.detail}`);
+    }
+    transcript.phasesCompleted.push('qa');
   }
 
   // `browser` must exit 0 on a contract with no browser surface. Before the v1
@@ -304,8 +321,20 @@ export async function runSimulatedRun(
   }
   transcript.phasesCompleted.push('verified');
 
+  // Lifecycle settlement: the real function the orchestrator calls once the
+  // evidence is in. It re-checks reviewer APPROVED + tester TESTS_GREEN +
+  // runHasQaEvidence itself and refuses if any is missing, so calling it here
+  // asserts the whole chain rather than declaring victory — a run that reached
+  // `terminal` but cannot be settled is exactly the silent stall that cost
+  // cursor-16c and codex-10co their budgets.
+  const settled = settleTerminalRunLedger(cwd, runId, 'verified');
+  transcript.facts.ledgerSettled = Boolean(settled);
   transcript.facts.verificationState = runVerificationState(cwd, runId);
   transcript.facts.settlementStatusFinal = readRunSettlement(cwd, runId)?.status;
+  if (!settled) {
+    return finish('phase-3 settleTerminalRunLedger refused despite APPROVED + TESTS_GREEN + validated evidence');
+  }
+  transcript.phasesCompleted.push('settled');
   return finish();
 }
 
@@ -337,6 +366,42 @@ async function runStackEvidence(cwd: string, runId: string): Promise<{
 
 async function runBrowserProbe(cwd: string, runId: string): Promise<number> {
   return qaMain(['browser', '--run-id', runId, '--project-root', cwd], cwd);
+}
+
+// The real `browser` command: it serves the build dir, launches Chromium, walks
+// every changed route, and captures DOM/action/console/network/screenshot
+// evidence. Nothing here is simulated except the build artifact itself.
+async function runBrowserEvidence(
+  cwd: string,
+  runId: string,
+  buildDir: string,
+  verification: VerificationContractV2,
+): Promise<{
+  code: number;
+  detail: string;
+  checks: Record<string, { status: string; summary: string }>;
+}> {
+  const code = await qaMain([
+    'browser',
+    '--run-id', runId,
+    '--project-root', cwd,
+    '--build-dir', buildDir,
+    '--scenario-json', JSON.stringify(scenarioFor(verification)),
+  ], cwd);
+  const report = readQaReportV2(cwd, runId);
+  const checks: Record<string, { status: string; summary: string }> = {};
+  let detail = '';
+  if (report.ok) {
+    for (const check of report.report.checks) {
+      checks[check.id] = { status: check.status, summary: check.summary ?? '' };
+    }
+  } else {
+    detail = `${report.code}: ${report.message}`;
+    for (const check of report.report?.checks ?? []) {
+      checks[check.id] = { status: check.status, summary: check.summary ?? '' };
+    }
+  }
+  return { code, detail, checks };
 }
 
 function countAuthored(authored: Map<string, string[]>): number {

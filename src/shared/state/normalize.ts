@@ -12,6 +12,7 @@ import { LEGACY_STACK_ALIASES, STACK_IDS } from '../../config/stacks';
 import { LEGACY_LOCK_FILE, LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { isNonProjectRoot } from '../authoring-root';
 import { readJson, readText, writeJson } from '../fsjson';
+import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import {
   canonicalizeStateShape,
   canonicalMobileSource,
@@ -125,6 +126,19 @@ export function writeState(cwd: string, state: unknown): void {
   // no-op here covers every state writer (onboarding server, run claims, session
   // flows) in one place. See authoring-root.test.ts + normalize tests.
   if (isNonProjectRoot(cwd)) return;
+  // Never CREATE state in a directory that belongs to an enclosing project. Same
+  // single-funnel reasoning as above: 30+ writers land here, including ones the
+  // resolver never sees (the onboarding-wait runners take their cwd from argv, and
+  // post-stack-setup's digestRoot bypasses resolveProjectRoot outright). Without
+  // this, a Go package could still be initialized as its own project.
+  //
+  // Creation-time only — a dir that already owns state keeps updating, so a
+  // legitimately nested project is untouched and an already-strayed root can still
+  // be written until the retention sweep heals it.
+  const ownsState = fs.existsSync(statePath(cwd)) || fs.existsSync(legacyStatePath(cwd));
+  if (!ownsState
+    && !dirOwnsProject(cwd)
+    && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) return;
   let source: Rec = obj(state) ? { ...(state as Rec) } : {};
   delete source.pluginVersion;
   if (source.stack) {

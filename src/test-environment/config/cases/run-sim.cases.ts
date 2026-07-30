@@ -65,13 +65,28 @@ export const RUN_SIM_CASES: Case[] = [
       // evidence. The assertion cross-checks this declaration against the
       // PUBLISHED contract.browserRequired — a shape can never quietly slide
       // onto the cheap `stack` path.
-      qa: { mode: 'browser' },
+      qa: {
+        mode: 'browser',
+        expectChecks: {
+          'stack-build': 'passed',
+          'playwright-local': 'passed',
+          'dom-assertions': 'passed',
+          actions: 'passed',
+          routing: 'passed',
+          hydration: 'passed',
+          'console-errors': 'passed',
+          'network-errors': 'passed',
+          'responsive-screenshots': 'passed',
+        },
+      },
     },
     assertions: [
       { id: 'state-matches-selection' },
       { id: 'onboarding-complete' },
       { id: 'run-sim-clean' },
       { id: 'run-sim-plan-ready-artifacts' },
+      { id: 'run-sim-qa-evidence' },
+      { id: 'run-sim-settlement' },
     ],
     notes: 'Shape 1: default stack, React/Vite + Supabase, with auth. The reference shape.',
   },

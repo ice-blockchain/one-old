@@ -29,7 +29,18 @@ import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onb
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
 import { firstEmitThisSession } from '../../shared/once';
-import { localFallbackLine, localFallbackSection, wizardOpened } from '../../shared/onboarding-server/wizard-links';
+import {
+  localFallbackLine,
+  localFallbackSection,
+  SETUP_LINK_NUDGE_TTL_MS,
+  setupLinkNudgeLabel,
+  type LocalFallback,
+  wizardOpened,
+} from '../../shared/onboarding-server/wizard-links';
+import { formatWizardBanner, processAlive } from '../../shared/onboarding-server/ensure';
+import { readServerRecord } from '../../shared/onboarding-server/registry';
+import { agentOnboardingUrls } from '../../config/dashboard';
+import { emittedWithin, stampEmitMarker } from '../../shared/once';
 import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
@@ -51,6 +62,53 @@ import { resolveToolScope } from '../../shared/tool-scope';
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
+
+// Read-only orientation is deliberately NOT denied while setup is pending — but a
+// bare noop() meant a session that only reads produced no user-visible surface at
+// all, so the link existed only in a collapsed tool result and a background task
+// file. Observed live: the user never received a link and setup could not complete.
+//
+// Ride a `systemMessage` on the release instead. It is the USER-facing channel
+// (→ user_message on Cursor) and an empty `context` costs zero prompt tokens on
+// Claude, so this stays free and never blocks the tool. Same wording every other
+// surface uses, so no new prose and no T1BLOCK.
+// Read a LIVE wizard link without spawning anything. prepareOnboardingServer would
+// launch a server as a side effect, which a nudge must never do.
+function liveWizardLink(root: string, host: string): { dashboardUrl: string; token: string; localFallback: LocalFallback } | null {
+  const rec = readServerRecord(root, process.env, host);
+  if (!rec || rec.url.includes(':0/') || !processAlive(rec.pid)) return null;
+  const urls = agentOnboardingUrls(process.env, rec.port, rec.token);
+  const dashboardUrl = urls.dashboardUrl || urls.localWizardUrl;
+  if (!dashboardUrl) return null;
+  return {
+    dashboardUrl,
+    token: rec.token,
+    localFallback: localFallbackSection(root, urls.localWizardUrl, process.env, host),
+  };
+}
+
+function setupLinkNudge(
+  root: string,
+  host: string,
+  dashboardUrl: string,
+  token: string,
+  localFallback: LocalFallback,
+): HookResult {
+  // Only where an empty context is genuinely free and systemMessage is the user's
+  // channel. Codex emits additionalContext unconditionally (so an empty context is
+  // not free), and Windsurf/OpenCode already carry the recipe on their own surfaces.
+  if (host !== 'claude' && host !== 'cursor') return noop();
+  // Never emit a placeholder, and stand down once a browser demonstrably has the
+  // wizard open — re-offering then reads as "start over" mid-setup.
+  if (!dashboardUrl) return noop();
+  if (wizardOpened(root, token, process.env, host)) return noop();
+  // Cross-process TTL: the waiter and every hook process are separate PIDs.
+  if (emittedWithin(root, setupLinkNudgeLabel(token), SETUP_LINK_NUDGE_TTL_MS)) return noop();
+  stampEmitMarker(root, setupLinkNudgeLabel(token));
+  return context('', {
+    systemMessage: formatWizardBanner(host, dashboardUrl, localFallback, 'traffic-one [setup required]'),
+  });
+}
 
 
 export function onboardingGate(ctx: Ctx): HookResult {
@@ -175,6 +233,19 @@ export function onboardingGate(ctx: Ctx): HookResult {
           }, cursorWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
         }
       }
+      // The waiter is the LAST tool call before the agent blocks — often for
+      // minutes, and frequently as a background task whose banner lands in a file
+      // the user never opens. So this is the final chance to put the link in front
+      // of them: after this there are no more PreToolUse events to ride on.
+      // Observed live: "Ran 2 commands → Waiting for setup completion", 4 minutes,
+      // no link anywhere the user could see it.
+      // Not on Cursor: its branch above owns a purpose-built link deny, and reaching
+      // here means it deliberately stayed quiet (wizard already open, or the link
+      // was delivered this session). A second surface would just double-post.
+      const waitLink = ctx.host === 'cursor' ? null : liveWizardLink(root, ctx.host);
+      if (waitLink) {
+        return setupLinkNudge(root, ctx.host, waitLink.dashboardUrl, waitLink.token, waitLink.localFallback);
+      }
       return noop();
     }
     // Ask-first: the user has not said whether this project uses Traffic One.
@@ -254,7 +325,9 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // reliable (the ask-first question already landed through it) and a denied
     // read renders as a red failed-tool card, so orientation flows like on
     // Windsurf and the walkthrough lands on the first mutating call instead.
-    if (ctx.host === 'claude' && isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+    if (ctx.host === 'claude' && isReadOnlyOrientationToolUse(toolName, toolInput)) {
+      return setupLinkNudge(root, ctx.host, server.dashboardUrl, server.token, localFallback);
+    }
     // The user has the wizard open in a browser — the server watched it arrive, so
     // re-posting the link now would read as "start over" while they are mid-setup.
     // This variant is truthful because it is backed by that observation; the old
@@ -270,7 +343,9 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // non-orientation / mutating attempt repeats only the URL + wait-command. The
     // URL rides EVERY repeat until the wizard is open: the full walkthrough is what
     // must not repeat, not the link itself.
-    if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+    if (isReadOnlyOrientationToolUse(toolName, toolInput)) {
+      return setupLinkNudge(root, ctx.host, server.dashboardUrl, server.token, localFallback);
+    }
     return deny(wizardIsOpen
       ? block('server-deny-reason-links-shown', vars)
       : block('server-deny-reason-repeat', vars));
