@@ -24,6 +24,7 @@ import {
 import {
   type LoadedRun,
   outputPath,
+  publishQaReportV2,
   qaDir,
   safeProjectRelative,
   strictRelative,
@@ -299,7 +300,7 @@ export function lighthouseCommand(
     generatedAt: new Date(Math.max(Date.now(), Date.parse(summary.generatedAt))).toISOString(),
     lighthouse: { evidencePath: out.relative },
   };
-  writeJson(qaReportV2Path(args.projectRoot, args.runId), updated);
+  publishQaReportV2(args.projectRoot, args.runId, updated);
   const validation = validateQaReportV2(
     updated,
     args.projectRoot,

@@ -14,4 +14,5 @@ export * from './materialization';
 export * from './run-agent';
 export * from './claim-capture';
 export * from './codex-model-observation';
+export * from './delegated-model-observation';
 export * from './web';

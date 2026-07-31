@@ -4,6 +4,7 @@
 
 import * as path from 'path';
 import {
+  isRuntimeMaintainedContextPath,
   stableContractJson,
   type CompiledArchitectureV1,
 } from '../architecture-contract';
@@ -65,13 +66,23 @@ export function buildVerificationContract(
   )) {
     throw new Error('Lighthouse options require a web-ui capability profile');
   }
-  const baselineDiff = options.changedPaths
+  const rawBaselineDiff = options.changedPaths
     ? {
         paths: options.changedPaths.map(normalizeRel).filter((value): value is string => Boolean(value)),
         complete: options.scanComplete !== false,
         ...(options.scanReason ? { reason: options.scanReason } : {}),
       }
     : changedPathsFromBaseline(projectRoot, architecture);
+  // Runtime-maintained root context (AGENTS.md/CLAUDE.md) is rewritten by
+  // materialization on every session. Keeping it OUT of the contract identity
+  // means the runtime's own re-append can never churn the verification hash,
+  // invalidate QA evidence, or surface as an unauthorized changed path
+  // (observed 13cl: a verdict gate made the frontend fight the runtime's own
+  // hook). The raw scans still see the files; only the judgment ignores them.
+  const baselineDiff = {
+    ...rawBaselineDiff,
+    paths: rawBaselineDiff.paths.filter((entry) => !isRuntimeMaintainedContextPath(entry)),
+  };
   // Every runtime-compiled output is part of the verification identity before
   // implementation: sources, entrypoints, scaffold/config, tests and test
   // infrastructure. Using modules alone would make the final whole-project
@@ -235,7 +246,12 @@ export function currentVerificationSourceHash(
     };
   }
   const contracted = new Set(contract.changedPaths);
-  const extraPaths = currentDiff.paths.filter((file) => !contracted.has(file));
+  // Runtime-maintained root context is excluded from the contract identity
+  // (see buildVerificationContract), so its re-append must not read as an
+  // out-of-contract change here either — the two sides share one predicate.
+  const extraPaths = currentDiff.paths.filter((file) => (
+    !contracted.has(file) && !isRuntimeMaintainedContextPath(file)
+  ));
   if (extraPaths.length > 0) {
     return {
       hash: '',

@@ -631,6 +631,45 @@ function componentSource(name: string): string {
   ].join('\n');
 }
 
+// A Vue feature entry. `feature` compiles to the PROFILE-NATIVE extension, so on
+// a Vue profile this file is an SFC, not a plain module — emitting TypeScript
+// into a `.vue` path is the same class of defect as the `.ts` React entry this
+// replaced. The helpers the hosting page imports live in the plain `<script>`
+// block: `<script setup>` alone can only default-export, and an SFC may carry
+// both blocks. Visible text is an interpolation, which the markup scanner
+// requires (its `>text<` capture excludes braces).
+function vueFeature(): string {
+  return [
+    '<script lang="ts">',
+    "import { supabase } from '@app/api-client';",
+    '',
+    'export interface Session {',
+    '  userId: string;',
+    '}',
+    '',
+    'export async function signIn(email: string, password: string): Promise<Session | null> {',
+    '  const result = await supabase.auth.signInWithPassword({ email, password });',
+    '  return result.userId ? { userId: result.userId } : null;',
+    '}',
+    '',
+    'export async function signOut(): Promise<void> {',
+    '  await supabase.auth.signOut();',
+    '}',
+    '</script>',
+    '',
+    '<script setup lang="ts">',
+    "import { useI18n } from 'vue-i18n';",
+    '',
+    'const { t } = useI18n();',
+    '</script>',
+    '',
+    '<template>',
+    '  <p class="feature-auth">{{ t("signInFailed") }}</p>',
+    '</template>',
+    '',
+  ].join('\n');
+}
+
 function featureSource(): string {
   return [
     "import { supabase } from '@app/api-client';",
@@ -1049,7 +1088,14 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
       if (rel.endsWith('.blade.php')) return bladeView(ctx, rel, 'component');
       return rel.endsWith('.vue') ? vueComponent(name) : componentSource(name);
     }
-    if (module.kind === 'feature') return featureSource();
+    if (module.kind === 'feature') {
+      // Dispatched by compiled extension exactly like page/component above.
+      // `.svelte`/`.astro` have no branch because those profiles have no
+      // run-sim shape at all — their page/component generators do not exist
+      // either, so a feature-only generator would be untested dead weight.
+      // Add all three together when a Svelte/Astro shape lands.
+      return rel.endsWith('.vue') ? vueFeature() : featureSource();
+    }
     if (module.kind === 'service') return serviceSource(name);
   }
 

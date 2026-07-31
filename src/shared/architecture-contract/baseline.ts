@@ -27,6 +27,9 @@ import {
   normalizeRelative,
   baselineContains,
 } from './core';
+import {
+  moduleOutputVariants,
+} from './naming';
 
 export function baselinePathSet(
   projectRoot: string,
@@ -101,9 +104,10 @@ export function isDeletableStrayArtifact(
   }
   if (!stat.isFile()) return false;
   // Never a compiled output: deleting one is a contract change, not cleanup.
+  // Extension freedom: EVERY allowed variant of a module is a compiled output.
   const compiled = new Set([
     ...(architecture.scaffoldOutputs || []).map((output) => output.path),
-    ...(architecture.modules || []).map((module) => module.output),
+    ...(architecture.modules || []).flatMap((module) => moduleOutputVariants(module)),
   ]);
   if (compiled.has(normalized)) return false;
   let baselinePaths: ReadonlySet<string>;
@@ -279,6 +283,23 @@ export function scanSkipPredicate(projectRoot: string): (relativePath: string) =
 
 const CONTEXT_ALIAS_PATH = 'CLAUDE.md';
 const CONTEXT_ALIAS_TARGET = 'AGENTS.md';
+
+/**
+ * Root `AGENTS.md`/`CLAUDE.md` are runtime-MAINTAINED project context:
+ * materialization rewrites them (rule kernel re-append) on every session, so a
+ * content change there is the runtime's own doing, never implementation work a
+ * role had to plan. They stay visible to the raw baseline scans (a rogue
+ * symlink still fails closed), but every verification JUDGMENT — contract
+ * identity, the refresh authority, QA source-hash extras — treats them as
+ * legitimately changed. Observed 13cl: the frontend reported "AGENTS.md
+ * restored to baseline — the gitnexus hook re-appends", i.e. the runtime was
+ * fighting its own hook to satisfy the frozen-authority check.
+ * Root-anchored on purpose: a nested AGENTS.md is ordinary project content.
+ */
+export function isRuntimeMaintainedContextPath(relativePath: string): boolean {
+  const normalized = normalizeRelative(relativePath);
+  return normalized === CONTEXT_ALIAS_PATH || normalized === CONTEXT_ALIAS_TARGET;
+}
 
 /**
  * Identity row for the canonical context alias. Both the immutable baseline and

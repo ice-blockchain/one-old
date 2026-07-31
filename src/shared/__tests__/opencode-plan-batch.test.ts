@@ -76,6 +76,9 @@ test('finalizePlanBatch writes terminal batch.json, COMPLETE, and non-empty role
     const batchDir = path.join(dir, '.traffic-one', 'runs', 'run-batch', 'opencode-plan-batch');
     const batch = readOpenCodePlanBatchState(dir, 'run-batch');
     assert.equal(batch?.outcome, 'partial');
+    // Observed live: outcome "success" with `rolesCompleted: []` because the
+    // terminal write ran BEFORE the per-role loop and then refused the update.
+    assert.deepEqual([...(batch?.rolesCompleted ?? [])].sort(), ['backend', 'frontend']);
     assert.equal(fs.existsSync(path.join(batchDir, 'COMPLETE')), true);
     assert.ok(fs.statSync(path.join(batchDir, 'frontend')).size > 0);
     assert.ok(fs.statSync(path.join(batchDir, 'backend')).size > 0);

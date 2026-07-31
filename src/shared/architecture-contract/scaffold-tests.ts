@@ -106,7 +106,12 @@ export function testerOutputs(
   modules: CompiledArchitectureModuleV1[],
 ): CompiledArchitectureOutputV1[] {
   const outputs: CompiledArchitectureOutputV1[] = modules
-    .filter((module) => module.kind !== 'app-shell')
+    // `edge-function` modules are excluded for two reasons: every one of them
+    // has the basename `index`, so the derived test paths would collide and
+    // abort compilation outright; and the unit runner here is the APP's (Deno
+    // source it cannot import, a deployed function it cannot reach during the
+    // build). They are exercised from the QA/integration side instead.
+    .filter((module) => module.kind !== 'app-shell' && module.kind !== 'edge-function')
     .map((module) => ({
       path: testOutputForModule(profile, module),
       ownerRole: 'senior-tester',

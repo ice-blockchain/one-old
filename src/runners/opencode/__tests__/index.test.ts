@@ -7,6 +7,7 @@ import * as path from 'path';
 
 import { delegate, delegateFromPlan, normalizeOpenCodeI18nScope, normalizePlanI18nUnits, normalizePlanRole, parsePlanDelegationQueue, postApplyI18n, postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { compileArchitecture, persistCompiledArchitecture } from '../../../shared/architecture-contract';
+import { openCodeQueuePolicyViolations } from '../../../shared/opencode-queue';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
@@ -449,6 +450,25 @@ test('delegate applies a successful run to the working tree + writes a digest', 
     const digest = path.join(dir, '.traffic-one', 'digests', '2026-01-01T00-00-00Z', 'frontend.md');
     assert.equal(r.digest, digest);
     assert.match(fs.readFileSync(digest, 'utf8'), /verdict: DELEGATED_OK/);
+    // A whole-role delegation writes the ROLE's digest, so it keeps the hint the
+    // orchestrator acts on.
+    assert.match(fs.readFileSync(digest, 'utf8'), /normalize_to: IMPLEMENTED/);
+    const runDir = path.join(dir, ['.traffic', '-one'].join(''), 'runs', '2026-01-01T00-00-00Z');
+    // Observed live: a direct (non-plan-queue) delegation carried no unit id and
+    // was therefore recorded NOWHERE in the unit ledger — the tester delegated
+    // its whole suite to the free model and only the attempt log knew.
+    const statuses = JSON.parse(fs.readFileSync(path.join(runDir, 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses.length, 1);
+    assert.equal(statuses[0].role, 'frontend');
+    assert.equal(statuses[0].status, 'delegated');
+    assert.equal(statuses[0].source, 'direct');
+    assert.equal(statuses[0].model, OPENCODE_FREE_MODELS[0]);
+    // ...and the model that actually wrote the files now has provenance.
+    const provenance = JSON.parse(fs.readFileSync(path.join(runDir, 'delegated-model-observations.json'), 'utf8')) as any[];
+    assert.equal(provenance.length, 1);
+    assert.equal(provenance[0].model, OPENCODE_FREE_MODELS[0]);
+    assert.equal(provenance[0].action, 'delegated');
+    assert.deepEqual(provenance[0].touched, ['foo.txt']);
     // worktree cleaned up
     assert.equal(spawnSync('git', ['-C', dir, 'worktree', 'list'], { encoding: 'utf8' }).stdout.trim().split('\n').length, 1);
   });
@@ -698,6 +718,33 @@ test('delegateFromPlan deterministically delegates every queued bounded unit', (
     assert.ok(queue.units.every((u: any) => typeof u.id === 'string' && u.id.length > 0));
     const statuses = JSON.parse(fs.readFileSync(path.join(runDir, 'opencode-units.json'), 'utf8')) as any[];
     assert.deepEqual(statuses.map((s) => s.status), ['delegated', 'delegated']);
+  });
+});
+
+test('two units of the SAME role accumulate into one digest instead of overwriting it', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: frontend-a | role: frontend | files: unit-1.txt | task: make unit A',
+      '- id: frontend-b | role: frontend | files: unit-2.txt | task: make unit B',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'plan-acc' });
+    assert.equal(r.delegated, 2);
+    // Observed live: four frontend units ran and the digest listed only the
+    // LAST unit's files — each unit overwrote the previous one at this path.
+    const digest = fs.readFileSync(path.join(dir, '.traffic-one', 'digests', 'plan-acc', 'opencode-frontend.md'), 'utf8');
+    assert.match(digest, /^delegated_units: 2$/m);
+    assert.match(digest, /- unit-1\.txt/);
+    assert.match(digest, /- unit-2\.txt/);
+    assert.match(digest, /- unit 1 \(.+, 1 file\): unit 1/);
+    assert.match(digest, /- unit 2 \(.+, 1 file\): unit 2/);
+    // A plan-unit digest is the run's delegation ledger, not the role's verdict,
+    // so it carries no never-applied normalize_to instruction.
+    assert.doesNotMatch(digest, /normalize_to:/);
+    assert.match(digest, /verdict: DELEGATED_OK/);
   });
 });
 
@@ -1819,6 +1866,34 @@ test('postApplyQuality reads landed files and spares strings, types, and non-sou
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('postApplyQuality formats a collapsed landed file in place when the project prettier is reachable', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocq-fmt-'));
+  try {
+    const rel = 'src/Nav.tsx';
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel),
+      'export function Nav(){const [o,setO]=useState(false);return <header><nav><a href="/">H</a></nav><button>{o}</button></header>}\n');
+    const binDir = path.join(dir, 'node_modules', '.bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    // Stand-in for the project's own prettier: `--write <file>` rewrites the
+    // file with formatted (non-collapsed) source; stdin mode prints it.
+    fs.writeFileSync(path.join(binDir, 'prettier'), [
+      '#!/usr/bin/env node',
+      "const fs = require('fs');",
+      "const clean = 'export function Nav() {\\n  return null;\\n}\\n';",
+      'const args = process.argv.slice(2);',
+      "const writeAt = args.indexOf('--write');",
+      'if (writeAt >= 0) fs.writeFileSync(args[writeAt + 1], clean);',
+      'else process.stdout.write(clean);',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    assert.equal(postApplyQuality(dir, [rel]), null);
+    assert.match(fs.readFileSync(path.join(dir, rel), 'utf8'), /return null;/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('post-apply verifier prefers nearest package typecheck script over raw tsconfig fallback', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ packageManager: 'pnpm@9.0.0' }), 'utf8');
@@ -2004,6 +2079,60 @@ test('OpenCode expands frontend scope with compiled locale catalogs and serializ
   }
 });
 
+test('catalog-OWNING units register in serialization: declared same-namespace catalogs get depends edges and pass the overlap policy', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18nown-'));
+  try {
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home', path: '/', moduleId: 'home-page' }],
+      modules: [{ id: 'home-page', name: 'Home', kind: 'page' }],
+      i18n: { sourceLocale: 'en', locales: ['en', 'ro'] },
+    });
+    persistCompiledArchitecture(dir, architecture);
+    const common = architecture.i18n!.catalogs.filter((catalog) => catalog.namespaces.includes('common'));
+    const enCommon = common.find((catalog) => catalog.locales.includes('en'))!.path;
+    const roCommon = common.find((catalog) => catalog.locales.includes('ro'))!.path;
+
+    // 13cl: units DECLARING their catalogs explicitly never registered in
+    // lastUnitByCatalog (only injected paths did), so no depends edge was
+    // added and the overlap policy rejected the whole queue.
+    const normalized = normalizePlanI18nUnits(dir, 'R', [
+      { id: 'i18n-en', role: 'frontend', files: enCommon, task: 'seed english strings' },
+      { id: 'i18n-ro', role: 'frontend', files: roCommon, task: 'seed romanian strings' },
+    ]);
+    assert.equal(normalized.errors.size, 0);
+    assert.deepEqual(normalized.units[1]!.dependsOn, ['i18n-en']);
+    assert.deepEqual(openCodeQueuePolicyViolations(normalized.units), []);
+
+    // Id-less units serialize under the same computed fallback id the errors
+    // map uses — the `if (unit.id)` hole skipped their registration entirely.
+    const anonymous = normalizePlanI18nUnits(dir, 'R', [
+      { role: 'frontend', files: enCommon, task: 'seed english strings' },
+      { role: 'frontend', files: roCommon, task: 'seed romanian strings' },
+    ]);
+    assert.deepEqual(anonymous.units[1]!.dependsOn, ['position-1']);
+
+    // 14cl counter-evidence: only ONE unit touches catalogs → serialization
+    // must not invent any edge (that queue delegated 5/5 in the field).
+    const home = architecture.modules.find((module) => module.id === 'home-page')!.output;
+    const singleOwner = normalizePlanI18nUnits(dir, 'R', [
+      { id: 'home-ui', role: 'frontend', files: home, task: 'compose the home page' },
+      { id: 'seed', role: 'backend', files: 'supabase/seed.sql', task: 'seed demo rows' },
+      { id: 'docs', role: 'docs', files: 'README.md', task: 'draft the readme' },
+    ]);
+    assert.equal(singleOwner.errors.size, 0);
+    for (const unit of singleOwner.units) assert.deepEqual(unit.dependsOn, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('postApplyI18n rejects rendered t()/hardcoded copy and accepts Trans with locale parity', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-verify-'));
   try {
@@ -2084,8 +2213,20 @@ test('ad-hoc OpenCode reuses detected catalogs and fails closed when runtime cat
     assert.match(scope.prompt, /declared locales: en, ro/);
     assert.equal(postApplyI18n(dir, [source, en, ro], '', 'frontend'), null);
 
+    // A key the in-change <Trans>fallback</Trans> references and a locale is
+    // missing is deterministic to fix: runtime seeds the source-locale fallback
+    // and a marked TODO into the other locales instead of rolling back.
     fs.writeFileSync(path.join(dir, ro), JSON.stringify({}));
-    assert.match(String(postApplyI18n(dir, [source, ro], '', 'frontend')), /STRUCT_I18N_CATALOG/);
+    assert.equal(postApplyI18n(dir, [source, ro], '', 'frontend'), null);
+    const seededRo = JSON.parse(fs.readFileSync(path.join(dir, ro), 'utf8')) as Record<string, string>;
+    assert.equal(seededRo.welcome, 'TODO(en copy): Welcome');
+
+    // A parity gap with NO in-change fallback to seed from stays a rollback:
+    // the reference-free source cannot authorize inventing catalog content.
+    fs.writeFileSync(path.join(dir, ro), JSON.stringify({}));
+    const plain = 'apps/web/src/Plain.tsx';
+    fs.writeFileSync(path.join(dir, plain), 'export const Plain = () => null;');
+    assert.match(String(postApplyI18n(dir, [plain, ro], '', 'frontend')), /STRUCT_I18N_CATALOG/);
 
     fs.rmSync(path.join(dir, 'apps'), { recursive: true, force: true });
     const closed = normalizeOpenCodeI18nScope(dir, '', 'frontend', 'src/Home.tsx');

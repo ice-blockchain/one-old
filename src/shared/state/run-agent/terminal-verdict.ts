@@ -275,8 +275,20 @@ export function runHasQaEvidence(cwd: string, runId: string): boolean {
     const testerFile = digestFile(cwd, runId, 'tester.md');
     if (!testerFile) return false;
     try {
-      return Math.floor(fs.statSync(testerFile).mtimeMs)
-        >= Math.floor(fs.statSync(result.reportPath).mtimeMs);
+      // "Did the tester re-attest AFTER this report" — normally anchored on the
+      // sidecar file mtime. When the verdict is attestation-backed
+      // (`acceptedGeneratedAtMs`), the anchor is the MINIMUM of the file mtime
+      // and the hash-pinned generatedAt of the ACCEPTED report: the file mtime
+      // can be newer solely because the runtime itself rewrote report-v2.json
+      // after acceptance (a persisted gate rejection against a drifted build
+      // tree — observed 14cl), and that self-rewrite must not retroactively
+      // un-attest the tester. A genuinely NEW report moves both timestamps
+      // forward, so it still requires a fresh tester verdict.
+      const reportMtimeMs = Math.floor(fs.statSync(result.reportPath).mtimeMs);
+      const reportAnchorMs = result.acceptedGeneratedAtMs !== undefined
+        ? Math.min(reportMtimeMs, result.acceptedGeneratedAtMs)
+        : reportMtimeMs;
+      return Math.floor(fs.statSync(testerFile).mtimeMs) >= reportAnchorMs;
     } catch {
       return false;
     }
@@ -400,6 +412,18 @@ export function reviewerDigestApprovedForRun(cwd: string, runId: string, reviewe
     return exactDigestVerdict(reviewer) === 'APPROVED';
   }
   return /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
+}
+
+/**
+ * The machine verdict token this run's <name> digest resolves to, or null when
+ * no authoritative verdict exists (no digest, no verdict line, or conflicting
+ * verdicts across spellings/lines). Diagnostic only — settlement decisions go
+ * through the role-specific predicates above; this exists so a refused
+ * transition can NAME what the parser actually saw instead of "rejected".
+ */
+export function runDigestVerdict(cwd: string, runId: string, name: string): string | null {
+  if (digestVerdictsConflict(cwd, runId, name)) return null;
+  return exactDigestVerdict(readDigest(cwd, runId, name));
 }
 
 export function runCompletionEvidenceAllows(

@@ -6,7 +6,9 @@ import * as path from 'path';
 
 import {
   DEFAULTS,
+  buildFingerprintTag,
   classifyBlockedStatus,
+  runScopedOutDir,
   createAuditUrl,
   detectPackageManager,
   dlxArgs,
@@ -95,6 +97,45 @@ test('reportBaseName slugifies the route + appends a timestamp', () => {
   const name = reportBaseName('http://127.0.0.1:4173/blog/post');
   assert.match(name, /^blog-post-\d{4}-\d{2}-\d{2}T/);
   assert.match(reportBaseName('http://127.0.0.1:4173/'), /^home-/);
+});
+
+test('report artefacts are run-scoped and build-stamped', () => {
+  // Observed 10co-e2e: `.traffic-one/reports/lighthouse/` had no run id and no
+  // build fingerprint, so files from different runs were indistinguishable and
+  // a stale 98 was quoted as this run's page speed against a canonical 74.
+  const dir = tmp();
+  const memory = path.join(dir, '.traffic-one');
+  fs.mkdirSync(memory, { recursive: true });
+
+  // No Traffic One state: the plain directory is kept.
+  assert.equal(runScopedOutDir(dir, DEFAULTS.outDir, []), DEFAULTS.outDir);
+
+  fs.writeFileSync(path.join(memory, '.one.json'), JSON.stringify({ currentRunId: '20260731-a1' }));
+  assert.equal(
+    runScopedOutDir(dir, DEFAULTS.outDir, []),
+    path.join(DEFAULTS.outDir, '20260731-a1'),
+  );
+  // An operator who passed --out owns that path verbatim.
+  assert.equal(runScopedOutDir(dir, 'reports/manual', ['--out', 'reports/manual']), 'reports/manual');
+  // A run id that could escape the directory is refused.
+  fs.writeFileSync(path.join(memory, '.one.json'), JSON.stringify({ currentRunId: '../evil' }));
+  assert.equal(runScopedOutDir(dir, DEFAULTS.outDir, []), DEFAULTS.outDir);
+
+  assert.equal(buildFingerprintTag(dir, dir), null, 'no build on disk, no tag');
+  fs.mkdirSync(path.join(dir, 'apps/web/dist/assets'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'apps/web/dist/index.html'),
+    '<html><body><script type="module" src="/assets/app-3f2a1b0c.js"></script></body></html>',
+  );
+  const tag = buildFingerprintTag(dir, path.join(dir, 'apps/web'));
+  assert.equal(tag, 'app-3f2a1b0c');
+  assert.match(reportBaseName('http://127.0.0.1:4173/', tag), /^home-app-3f2a1b0c-\d{4}-/);
+
+  // Next builds identify by BUILD_ID.
+  const nextDir = tmp();
+  fs.mkdirSync(path.join(nextDir, '.next'), { recursive: true });
+  fs.writeFileSync(path.join(nextDir, '.next', 'BUILD_ID'), 'Xf9-Build\n');
+  assert.equal(buildFingerprintTag(nextDir, nextDir), 'Xf9-Build');
 });
 
 test('package-manager arg builders', () => {

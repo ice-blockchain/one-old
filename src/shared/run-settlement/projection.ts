@@ -176,6 +176,52 @@ function legacyProjection(
 
 const BLOCKED_OUTCOMES = ['review-cycle-cap', 'test-cycle-cap', 'environment-blocked'];
 
+const TERMINAL_LEGACY_STATUS: Partial<Record<CanonicalRunStatus, string>> = {
+  verified: 'completed',
+  failed: 'failed',
+  blocked: 'blocked',
+};
+const PROJECTED_TRANSITION_HISTORY_LIMIT = 32;
+
+// `writeLegacyProjection` is the only writer of run.json that does NOT go
+// through the run-ledger state machine, and `reconcileRunSettlement` can derive
+// a terminal canonical status the ledger never transitioned to (a terminal
+// maintenance result, or strict V2 verification evidence). When that happened,
+// run.json ended up carrying a terminal `canonicalStatus` while
+// `transitionHistory` still stopped at `planned -> active` and `statusUpdatedAt`
+// stayed frozen at that moment — only `updatedAt` moved on. The lifecycle record
+// has to be single-sourced: whichever writer moves the run to a terminal state
+// records the transition, exactly as `writeRunLedgerTransition` does.
+function recordProjectedTerminalTransition(
+  existing: Rec,
+  next: Rec,
+  settlement: RunSettlementV2,
+): void {
+  const terminal = TERMINAL_LEGACY_STATUS[settlement.status];
+  if (!terminal) return;
+  const previous = effectiveLegacyRunStatus(existing);
+  if (previous === terminal) return;
+  const at = settlement.updatedAt;
+  // Read the outcome back off the finished projection so the entry records the
+  // CANONICAL outcome, not the `agent-failed` mask the rollback barrier writes
+  // into the raw `status`/`outcome` pair.
+  const outcome = effectiveLegacyRunOutcome(next);
+  const history = (Array.isArray(existing.transitionHistory) ? existing.transitionHistory : [])
+    .filter((entry): entry is Rec => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry));
+  history.push({
+    from: previous || null,
+    to: terminal,
+    at,
+    ...(outcome ? { outcome } : {}),
+    reason: 'settlement-projection',
+  });
+  next.transitionHistory = history.slice(-PROJECTED_TRANSITION_HISTORY_LIMIT);
+  next.statusUpdatedAt = at;
+  next.finishedAt = typeof existing.finishedAt === 'string' && existing.finishedAt
+    ? existing.finishedAt
+    : at;
+}
+
 export function writeLegacyProjection(projectRoot: string, settlement: RunSettlementV2): void {
   const file = path.join(runDir(projectRoot, settlement.runId), 'run.json');
   const existing = readJson<Rec>(file, {});
@@ -213,6 +259,11 @@ export function writeLegacyProjection(projectRoot: string, settlement: RunSettle
         ...existing,
         ...legacyProjection(settlement.status, false),
         canonicalStatus: settlement.status,
+        // An unprotected projection publishes its status raw, so a leftover
+        // guard from an earlier barrier activation would make
+        // `effectiveLegacyRunStatus` keep reporting the STALE canonical status
+        // and contradict the `canonicalStatus` written right here.
+        runtimeV2RollbackGuard: undefined,
       };
   if (settlement.status === 'verified' && canonicalOutcome === 'shipped') {
     projection.outcome = 'shipped';
@@ -228,6 +279,7 @@ export function writeLegacyProjection(projectRoot: string, settlement: RunSettle
   };
   if (!next.runtimeV2RollbackGuard) delete next.runtimeV2RollbackGuard;
   if (!next.outcome) delete next.outcome;
+  recordProjectedTerminalTransition(existing, next, settlement);
   writeJson(file, next);
 
   const maintenanceFile = path.join(runDir(projectRoot, settlement.runId), 'maintenance.json');

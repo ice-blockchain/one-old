@@ -214,7 +214,10 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
 - **Split the app across the compiled module structure.** Each route/page,
   feature, and reusable component uses its runtime-compiled output. Entrypoints
   bootstrap only; app shells may wire routing/layout but never contain multiple
-  route targets or whole feature implementations.
+  route targets or whole feature implementations. A feature module owns its
+  whole folder: the compiled `index` is the barrel, and splitting components/
+  hooks/types into sibling files in that folder is in scope and verifies —
+  never cram a feature into its index to satisfy a line budget.
 - Do not edit compiled contracts, roots, profiles, limits, or baseline data.
   Emit `IMPLEMENTED` only after the complete structural scan passes; numeric
   LOC/component-count findings remain advisory during rollout.

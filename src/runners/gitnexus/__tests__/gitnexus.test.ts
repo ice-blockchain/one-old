@@ -14,6 +14,7 @@ import {
   nodeVersionMismatchMessage,
   nvmPresent,
 } from '../index';
+import { backupConflicts } from '../bootstrap-env';
 
 // Run a fn with a fake $HOME pointing at a temp dir (synchronous; restored after).
 function withHome(setup: (home: string) => void, fn: () => void): void {
@@ -100,6 +101,41 @@ test('constants + messages are stable', () => {
   assert.ok(msg.includes('>=22'));
   assert.ok(msg.includes('graphify'));
   assert.ok(nodeVersionMismatchMessage(null).includes('an unknown Node version'));
+});
+
+test('backupConflicts skips an unchanged snapshot and links CLAUDE.md instead of copying it twice', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gnbackup-'));
+  const backupsRoot = path.join(dir, '.traffic-one', 'backups');
+  try {
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'agent context\n', 'utf8');
+    let linked = true;
+    try { fs.symlinkSync('AGENTS.md', path.join(dir, 'CLAUDE.md')); } catch { linked = false; }
+
+    const first = backupConflicts(dir, '2026-01-01T00-00-00Z');
+    assert.equal(path.basename(first.backupRoot), '2026-01-01T00-00-00Z');
+    if (linked) {
+      // Observed live: each snapshot stored two full 8703-byte copies because
+      // copyFileSync/cpSync dereference the CLAUDE.md → AGENTS.md symlink.
+      assert.equal(fs.lstatSync(path.join(first.backupRoot, 'CLAUDE.md')).isSymbolicLink(), true);
+      assert.equal(fs.readlinkSync(path.join(first.backupRoot, 'CLAUDE.md')), 'AGENTS.md');
+    }
+
+    // Unchanged content → no second snapshot at all; the existing one is reused.
+    // Four identical snapshots in four minutes used to rotate out (keep 3) the
+    // only snapshot that could have differed.
+    const second = backupConflicts(dir, '2026-01-01T00-01-00Z');
+    assert.equal(second.backupRoot, first.backupRoot);
+    assert.deepEqual(fs.readdirSync(backupsRoot).sort(), ['2026-01-01T00-00-00Z']);
+    assert.deepEqual(second.recorded.map((r) => r.rel), first.recorded.map((r) => r.rel));
+
+    // Changed content → a real new snapshot.
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'agent context v2\n', 'utf8');
+    const third = backupConflicts(dir, '2026-01-01T00-02-00Z');
+    assert.equal(path.basename(third.backupRoot), '2026-01-01T00-02-00Z');
+    assert.equal(fs.readFileSync(path.join(third.backupRoot, 'AGENTS.md'), 'utf8'), 'agent context v2\n');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // bootstrap: both early-return branches that never spawn gitnexus.

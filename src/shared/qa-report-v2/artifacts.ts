@@ -116,6 +116,7 @@ function qaEvidenceContentHash(
   projectRoot: string,
   runId: string,
   report: QaReportV2,
+  observedBuildHashOverride?: string,
 ): string {
   const machinePath = report.machineEvidencePath
     ? qaArtifactAbsolute(projectRoot, runId, report.machineEvidencePath)
@@ -157,9 +158,10 @@ function qaEvidenceContentHash(
       artifactPath,
       artifactContentHash(projectRoot, runId, artifactPath),
     ]);
-  const observedBuildHash = report.build
-    ? computeBuildOutputManifest(projectRoot, report.build.outputRoot)?.manifestHash || '<invalid>'
-    : '<not-required>';
+  const observedBuildHash = observedBuildHashOverride
+    ?? (report.build
+      ? computeBuildOutputManifest(projectRoot, report.build.outputRoot)?.manifestHash || '<invalid>'
+      : '<not-required>');
   return sha256(stableContractJson({
     report: qaReportV2ContentHash(report),
     artifacts,
@@ -211,6 +213,80 @@ export function acceptanceAttests(
     && accepted.reportHash === qaReportV2ContentHash(report)
     && accepted.evidenceHash === qaEvidenceContentHash(projectRoot, runId, report)
     && accepted.buildFingerprint === report.build.fingerprint);
+}
+
+/**
+ * Recover the ACCEPTED report from the durable acceptance attestation, judging
+ * evidence by content hashes alone — never by file mtimes, live server state,
+ * or the current build output tree.
+ *
+ * The attestation is written exactly once, by this validator, at the end of a
+ * FULLY PASSING live validation (machine evidence, route matrix, screenshots,
+ * build identity — all against the then-live tree). From that moment the
+ * accepted verdict is a fact about hash-pinned inputs: the report
+ * (`reportHash`), every evidence artifact byte (`evidenceHash`), the contract
+ * (`verificationContractHash`), the source tree (`sourceHash`, which the
+ * caller has already re-verified LIVE), and the build identity
+ * (`buildFingerprint`).
+ *
+ * Two later events must not be able to revoke it (observed live, 14cl run
+ * 1785511629914 — a fully green run that could never settle):
+ *
+ *   1. The build output dir was rebuilt after acceptance (the reviewer's probe
+ *      `pnpm build`). The live-manifest recheck inside machine-evidence
+ *      validation then failed, although not one byte of the accepted evidence,
+ *      report, or source had changed.
+ *   2. That very rejection was persisted into report-v2.json by
+ *      `persistGateRejection`, durably flipping the accepted `passed` report
+ *      to `failed` + a machine-evidence gate — poisoning every later read.
+ *
+ * So this function accepts two report forms: the report byte-identical to what
+ * was accepted, and the accepted report reconstructed by undoing exactly the
+ * `persistGateRejection` transform (status back to `passed`, `gates` dropped).
+ * And it accepts two `observedBuildHash` forms: the current live manifest
+ * (nothing drifted), or the RECORDED `build.buildHash` — which is provably the
+ * value embedded at acceptance time, because the acceptance-time live checks
+ * required `manifestHash === build.buildHash`.
+ *
+ * Fail-closed properties, deliberately kept: no attestation → full live
+ * validation; any changed byte in the report, machine evidence, a trace, or a
+ * screenshot → hash mismatch → full live validation; source drift → the
+ * caller's live sourceHash check rejects before this is consulted; a report
+ * whose gate rejection predates acceptance can never match, because acceptance
+ * is only ever written after a full pass.
+ */
+export function acceptanceRestoresReport(
+  projectRoot: string,
+  runId: string,
+  report: QaReportV2,
+  contract: VerificationContractV2,
+  sourceHash: string,
+): QaReportV2 | null {
+  const accepted = readAcceptanceAttestation(projectRoot, runId);
+  if (!accepted
+    || !report.build
+    || accepted.verificationContractHash !== contract.contractHash
+    || accepted.sourceHash !== sourceHash
+    || accepted.buildFingerprint !== report.build.fingerprint) return null;
+  const candidates: QaReportV2[] = [report];
+  if (report.status === 'failed' || (report.gates || []).length > 0) {
+    const normalized = { ...report, status: 'passed' as const };
+    delete normalized.gates;
+    candidates.push(normalized);
+  }
+  for (const candidate of candidates) {
+    if (accepted.reportHash !== qaReportV2ContentHash(candidate)) continue;
+    if (accepted.evidenceHash === qaEvidenceContentHash(projectRoot, runId, candidate)
+      || accepted.evidenceHash === qaEvidenceContentHash(
+        projectRoot,
+        runId,
+        candidate,
+        candidate.build?.buildHash,
+      )) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 export function writeAcceptanceAttestation(

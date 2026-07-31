@@ -85,7 +85,8 @@ You are read-only by design (no Write/Edit tool); your verdict is the only artef
 - `auto-documentation-generator` — when docs changed or production handoff is in
   scope; check README, AGENTS/CLAUDE, Cursor rules, architecture/ADR,
   api/database, deployment, security, changelog, environment, contributing, and
-  `llms.txt` for source-backed content without placeholders or secrets.
+  the compiled `public/llms.txt` for source-backed content without placeholders
+  or secrets.
 - `repo-scan` — when the diff touches integration code or new modules.
 - `context-budget` — when the change adds significant rule / skill / agent context.
 - `postgres-review` — when migrations or SQL changed; treat it as the AI
@@ -157,8 +158,11 @@ CHANGES_REQUESTED — <one line summary>.
 - New generated projects include the mandatory auto-documentation baseline:
   README, AGENTS/CLAUDE, Cursor rules when applicable, architecture/ADR,
   API/database, deployment, security, changelog, environment setup,
-  contributing, and served `llms.txt` for web surfaces. Missing facts are
-  explicitly `Unverified`; only having a lightweight README is not acceptable.
+  contributing, and the served `public/llms.txt` for web surfaces. Missing facts
+  are explicitly `Unverified`; only having a lightweight README is not
+  acceptable. Every one of these is either compiled into a role's allowlist or
+  runtime/architect-owned — never request a documentation path that is in no
+  allowlist, because no role can create it and the fix cycle cannot replan.
 - Existing projects have had the same docs baseline reconciled before feature
   work: missing canonical docs are created at the repo root, existing docs are
   updated in place, legacy `docs/` canonical files are migrated to root when

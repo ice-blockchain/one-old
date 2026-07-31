@@ -1474,6 +1474,50 @@ test('a released claim reactivates in place on resume — metadata intact, relea
   });
 });
 
+test('a rebuilt claim preserves the record it supersedes instead of destroying it', () => {
+  withPrefs((dir) => {
+    const state = { ...materializedState(), currentRunId: '1784600000009' };
+    const first = claimThreadRole(dir, state, FRONTEND_THREAD, 'senior-frontend', {
+      parentSessionId: 'orchestrator',
+      model: 'opus',
+    });
+    assert.ok(first);
+    const runId = String(first!.runId);
+    const claimFile = path.join(dir, '.traffic-one', 'runs', runId, `${FRONTEND_THREAD}.json`);
+    const original = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    // Age the claim past the freshness window so the next bind REBUILDS the file
+    // in place — the write that used to erase cycle-1 claim history, leaving
+    // `previousClaimId` pointing at a record that no longer existed anywhere.
+    const stale = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(claimFile, JSON.stringify({
+      ...original,
+      claimId: 'senior-frontend-0-earlier',
+      createdAt: stale,
+      claimedAt: stale,
+    }), 'utf8');
+
+    const second = claimThreadRole(dir, state, FRONTEND_THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' });
+    assert.ok(second);
+    const rebuilt = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    assert.equal(rebuilt.previousClaimId, 'senior-frontend-0-earlier');
+    const archiveDir = path.join(dir, '.traffic-one', 'runs', runId, 'superseded');
+    const archived = fs.readdirSync(archiveDir)
+      .map((name) => JSON.parse(fs.readFileSync(path.join(archiveDir, name), 'utf8')));
+    assert.equal(archived.length, 1, 'the superseded claim keeps a file of its own');
+    assert.equal(archived[0].claimId, 'senior-frontend-0-earlier');
+    assert.equal(archived[0].model, 'opus', 'cycle-1 metadata is recoverable');
+    assert.equal(archived[0].supersededBy, rebuilt.claimId);
+    // Archived records live in a SUBDIRECTORY, so they never re-enter claim
+    // resolution or the spawn-index count (both read only the run dir's files).
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, '.traffic-one', 'runs', runId), { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && entry.name !== 'run.json')
+        .map((entry) => entry.name),
+      [`${FRONTEND_THREAD}.json`],
+    );
+  });
+});
+
 test('a retired thread cannot resume over the live replacement for its role', () => {
   withPrefs((dir) => {
     const state = { ...materializedState(), currentRunId: '1784600000003' };

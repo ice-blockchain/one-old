@@ -13,14 +13,23 @@ export const ARCHITECTURE_RUN_SNAPSHOT_SCHEMA_VERSION = 1 as const;
 export const ARCHITECTURE_RUN_BASELINE_SCHEMA_VERSION = 1 as const;
 export const ARCHITECTURE_SCAN_MAX_FILES = 10_000;
 
-export type ArchitectureModuleKind =
-  | 'app-shell'
-  | 'page'
-  | 'component'
-  | 'feature'
-  | 'service'
-  | 'store'
-  | 'test';
+// One list, shared with the input validator, so the accepted vocabulary and the
+// compiled type can never drift. `edge-function` is the serverless/edge unit
+// (Supabase Edge Functions): server code on a FOREIGN runtime (Deno), which is
+// why it cannot be represented as `service` — a service is mandatorily mapped
+// into the app's own TypeScript project.
+export const ARCHITECTURE_MODULE_KINDS = [
+  'app-shell',
+  'page',
+  'component',
+  'feature',
+  'service',
+  'store',
+  'edge-function',
+  'test',
+] as const;
+
+export type ArchitectureModuleKind = typeof ARCHITECTURE_MODULE_KINDS[number];
 
 export interface ArchitectureRouteInputV1 {
   id: string;
@@ -87,7 +96,18 @@ export interface ArchitectureRunBaselineV1 {
 
 export interface CompiledArchitectureModuleV1 extends ArchitectureModuleInputV1 {
   ownerRole: string;
+  /** DEFAULT concrete path. Always valid on its own — see the optional fields. */
   output: string;
+  /**
+   * Extension freedom (additive, like `i18n` on ArchitectureInputV1): the
+   * contract pins identity (`outputBase`) and the toolchain arbitrates form
+   * (`allowedExtensions`, default first — `output` is always
+   * `outputBase + allowedExtensions[0]`). Optional on read so
+   * pre-extension-freedom sidecars keep their exact single-path behavior;
+   * every newly compiled contract emits both fields.
+   */
+  outputBase?: string;
+  allowedExtensions?: string[];
 }
 
 interface CompiledArchitectureRouteV1 extends ArchitectureRouteInputV1 {

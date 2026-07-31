@@ -330,7 +330,12 @@ test('hardcoded copy blocks new UI and only advises changed legacy UI with an i1
     const greenfield = analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
       .filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
     assert.ok(greenfield.length >= 5);
-    assert.ok(greenfield.every((finding) => finding.severity === 'error'));
+    // React-family compiles the AST lint layer (eslint-plugin-i18next in the
+    // scaffolded eslint config), so the lexical scanner advises here and the
+    // project's own `lint` run owns the blocking verdict — the implementer
+    // lint gate proves that toolchain is runnable. Profiles WITHOUT a layer
+    // keep the blocking scanner (see the svelte test below).
+    assert.ok(greenfield.every((finding) => finding.severity === 'warning'));
 
     // Existing project with no i18n evidence: no forced migration.
     const existingContract = { ...contract, i18n: undefined };
@@ -348,6 +353,33 @@ test('hardcoded copy blocks new UI and only advises changed legacy UI with an i1
       .filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
     assert.ok(withI18n.length > 0);
     assert.ok(withI18n.every((finding) => finding.severity === 'warning'));
+  });
+});
+
+test('profiles without an AST lint layer keep the blocking lexical copy scanner', () => {
+  // Svelte has no mature no-raw-text equivalent (see uiAstLintLayer), so
+  // retiring or demoting the lexical scanner there would be an enforcement
+  // coverage gap — hardcoded copy must still block a greenfield run.
+  withProject((cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { svelte: '5.0.0', 'svelte-i18n': '4.0.1' },
+    }));
+    const contract = compileArchitecture(cwd, 'R', { ...STATE, frontend: 'svelte' }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+    });
+    const home = contract.modules.find((entry) => entry.id === 'home')!;
+    fs.mkdirSync(path.dirname(path.join(cwd, home.output)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, home.output), [
+      '<h1>Welcome to the learning platform</h1>',
+      '<p>Start your journey with curated courses</p>',
+      '',
+    ].join('\n'));
+    const copy = analyzeProjectStructure(cwd, contract, { greenfield: true }).findings
+      .filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
+    assert.ok(copy.length >= 2, 'the lexical scanner still reads markup copy');
+    assert.ok(copy.every((finding) => finding.severity === 'error'), 'and it still blocks');
   });
 });
 

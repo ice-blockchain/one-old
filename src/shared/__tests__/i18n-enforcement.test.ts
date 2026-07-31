@@ -171,6 +171,64 @@ test('catalog validation requires referenced keys and non-empty locale parity', 
     assert.ok(invalid.some((finding) => finding.message.includes('non-empty')));
     assert.ok(invalid.some((finding) => finding.message.includes('searchLabel')));
     assert.ok(invalid.some((finding) => finding.message.includes('extra key')));
+    // 13cl: the classes split by scope. Parity findings span the locale PAIR
+    // (no single write can satisfy them) and carry `crossLocaleParity`; the
+    // single-file classes (empty values here) must NOT, so the write-time gate
+    // keeps denying them immediately.
+    const parity = invalid.filter((finding) => (
+      finding.message.includes('required for catalog parity') || finding.message.includes('extra key')
+    ));
+    assert.ok(parity.length > 0);
+    assert.ok(parity.every((finding) => finding.crossLocaleParity === true));
+    const singleFile = invalid.filter((finding) => /has an empty/.test(finding.message));
+    assert.ok(singleFile.length > 0);
+    assert.ok(singleFile.every((finding) => !finding.crossLocaleParity));
+  });
+});
+
+// CLDR plural forms are per-locale spellings of one logical key: English needs
+// `_one`/`_other`, Romanian also `_few`, and `t('ns:key', { count })`
+// references the BARE key. Exact-key parity/reference matching denied every
+// correct plural catalog — a false deny on the standard i18next idiom.
+test('CLDR plural-form keys satisfy parity and bare-key references across locales', () => {
+  withContract((cwd, contract) => {
+    assert.ok(contract.i18n);
+    const catalogs = contract.i18n!.catalogs.filter((catalog) => catalog.namespaces.includes('common'));
+    for (const catalog of catalogs) {
+      fs.mkdirSync(path.dirname(path.join(cwd, catalog.path)), { recursive: true });
+      const locale = catalog.locales[0];
+      fs.writeFileSync(path.join(cwd, catalog.path), JSON.stringify(locale === 'ro'
+        ? {
+            lessonCount_one: 'O lecție',
+            lessonCount_few: 'Câteva lecții',
+            lessonCount_other: 'Multe lecții',
+          }
+        : {
+            lessonCount_one: 'One lesson',
+            lessonCount_other: 'Many lessons',
+          }));
+    }
+    // Different category sets per locale + a bare-key reference: all satisfied.
+    assert.deepEqual(validateI18nCatalogs(cwd, contract.i18n!, {
+      namespaces: ['common'],
+      references: [{ namespace: 'common', key: 'lessonCount', line: 4 }],
+    }), []);
+
+    // The fix must not widen past the family: a missing logical key still
+    // denies, and a non-plural extra key still breaks parity.
+    const ro = catalogs.find((catalog) => catalog.locales.includes('ro'))!;
+    fs.writeFileSync(path.join(cwd, ro.path), JSON.stringify({
+      courseCount_other: 'Cursuri',
+      draftsOnly: 'Numai în traducere',
+    }));
+    const invalid = validateI18nCatalogs(cwd, contract.i18n!, {
+      namespaces: ['common'],
+      references: [{ namespace: 'common', key: 'missingEntirely', line: 9 }],
+    });
+    assert.ok(invalid.some((finding) => finding.message.includes('lessonCount_one')));
+    assert.ok(invalid.some((finding) => finding.message.includes('extra key') && finding.message.includes('draftsOnly')));
+    assert.ok(invalid.some((finding) => finding.message.includes('missingEntirely')));
+    assert.ok(invalid.some((finding) => finding.message.includes('extra key') && finding.message.includes('courseCount_other')));
   });
 });
 
@@ -437,4 +495,84 @@ test('Blade directives are code, not user-facing copy', () => {
   const findings = analyzeI18nSourceText('resources/views/home.blade.php', withCopy, profile).findings;
   assert.equal(findings.length, 1, 'exactly the real template copy');
   assert.equal(findings[0]!.id, 'STRUCT_HARDCODED_COPY');
+});
+
+// 14cl: 7 of 17 consolidated findings were CLI-installed shadcn primitives
+// (breadcrumb/pagination/sidebar/spinner) under `<sharedRoot>/src/components/
+// ui/` flagged as hardcoded copy. That directory is defined BY THE CONTRACT as
+// adapter-CLI-owned vendor code — `shadcn add` overwrites it wholesale — so
+// demanding <Trans> there orders edits the next CLI run destroys. Only the
+// `ui/` vendor dir is exempt; sibling compositions stay scanned.
+test('CLI-owned shadcn vendor primitives are exempt from copy findings; sibling compositions are not', () => {
+  withContract((_cwd, contract) => {
+    assert.equal(contract.profile.uiSystem?.sharedRoot, 'packages/ui');
+    const primitive = [
+      'export function Spinner() {',
+      '  return <svg role="status" aria-label="Loading" viewBox="0 0 24 24" />;',
+      '}',
+    ].join('\n');
+    assert.deepEqual(
+      analyzeI18nSourceText(
+        'packages/ui/src/components/ui/spinner.tsx',
+        primitive,
+        contract.profile,
+        contract.i18n,
+      ).findings,
+      [],
+      'vendor primitives are overwritten by the next `shadcn add` — never a copy finding',
+    );
+
+    // One directory up: role-authored composition, still fully scanned.
+    const composition = analyzeI18nSourceText(
+      'packages/ui/src/components/StatusCard.tsx',
+      [
+        'export function StatusCard() {',
+        '  return <p aria-label="Loading">Loading your courses</p>;',
+        '}',
+      ].join('\n'),
+      contract.profile,
+      contract.i18n,
+    );
+    assert.ok(
+      composition.findings.some((finding) => finding.id === 'STRUCT_HARDCODED_COPY'),
+      'non-ui compositions under the shared root stay scanned',
+    );
+
+    // References from a vendor file still feed catalog validation — the keys
+    // it consumes must exist regardless of who owns the file.
+    const withReference = analyzeI18nSourceText(
+      'packages/ui/src/components/ui/pagination.tsx',
+      [
+        "import { t } from '@app/i18n';",
+        'export function paginationLabel(): string {',
+        "  return t('common:paginationLabel');",
+        '}',
+      ].join('\n'),
+      contract.profile,
+      contract.i18n,
+    );
+    assert.ok(withReference.references.some((reference) => reference.key === 'paginationLabel'));
+  });
+});
+
+test('a JSDoc @example containing JSX is documentation, not copy', () => {
+  withContract((_cwd, contract) => {
+    const source = [
+      '/**',
+      ' * Formats a price.',
+      ' * @example',
+      ' * <Button>Save the document</Button>',
+      ' */',
+      "export const html = '<p>Welcome to the course</p>';",
+      'export const identity = <T,>(value: T): T => value;',
+      'export function price(value: number): string {',
+      '  return `${value}`;',
+      '}',
+    ].join('\n');
+    assert.deepEqual(
+      analyzeI18nSourceText('apps/web/src/lib/format.tsx', source, contract.profile, contract.i18n).findings,
+      [],
+      'comments, string literals, and generic arrows are not rendered markup',
+    );
+  });
 });

@@ -6,8 +6,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   capabilityProfileForRun,
+  moduleOutputVariants,
   readCompiledArchitecture,
 } from '../../../shared/architecture-contract';
+import { readVerificationContract } from '../../../shared/verification-contract';
 import {
   type StructureFinding,
 } from '../react-structure';
@@ -40,10 +42,53 @@ export function missingPlannedModulesForRole(
   const architecture = readCompiledArchitecture(projectRoot, runId);
   if (!architecture) return [];
   return (architecture.modules || [])
-    .filter((module) => module.ownerRole === ownerRole)
+    .filter((module) => module.ownerRole === ownerRole && module.output)
+    // Extension freedom: delivered at ANY allowed variant counts; the missing
+    // path reported stays the DEFAULT concrete output.
+    .filter((module) => !moduleOutputVariants(module).some((variant) => (
+      fs.existsSync(path.join(projectRoot, variant))
+    )))
     .map((module) => module.output)
-    .filter((output) => output && !fs.existsSync(path.join(projectRoot, output)))
     .sort();
+}
+
+/**
+ * The share of its OWN compiled contract a role has actually delivered.
+ *
+ * Observed 10co-e2e: `verification-v2.json` asserted 15 changed files because
+ * `changedPaths = observedChangedPaths ∪ plannedOutputs` and
+ * `observedChangedPaths` was EMPTY — on disk exactly one of the 15 existed,
+ * while root `package.json` declared `"test": "vitest run"` and `"test:e2e":
+ * "playwright test"` against a `vitest.config.ts` and a `playwright.config.ts`
+ * that were never written. The role still reported `IMPLEMENTED`.
+ *
+ * Scoped to the role's own compiled modules, and an output the verification
+ * contract genuinely OBSERVED as changed is never counted missing (a delete is
+ * a delivery). Both narrowings exist so legitimate partial work — another
+ * role's share, a path the baseline diff already accounts for — cannot be
+ * blocked by this gate.
+ */
+export function undeliveredContractOutputs(
+  projectRoot: string,
+  runId: string,
+  ownerRole: string,
+): { missing: string[]; planned: number } | null {
+  if (!runId) return null;
+  const architecture = readCompiledArchitecture(projectRoot, runId);
+  if (!architecture) return null;
+  const planned = (architecture.modules || [])
+    .filter((module) => module.ownerRole === ownerRole && module.output);
+  if (planned.length === 0) return null;
+  const observed = new Set(readVerificationContract(projectRoot, runId)?.observedChangedPaths || []);
+  // Extension freedom: ANY allowed variant observed as changed or present on
+  // disk is a delivery; the missing path reported stays the DEFAULT output.
+  const missing = planned
+    .filter((module) => !moduleOutputVariants(module).some((variant) => (
+      observed.has(variant) || fs.existsSync(path.join(projectRoot, variant))
+    )))
+    .map((module) => module.output)
+    .sort();
+  return missing.length > 0 ? { missing, planned: planned.length } : null;
 }
 
 export /**
@@ -86,6 +131,66 @@ function qaReportOlderThanImplementation(
   }
   if (!newest || newest.ms <= generatedAtMs) return null;
   return { generatedAt, digest: newest.digest, digestAt: newest.digestAt };
+}
+
+// ── Lighthouse claim reconciliation ─────────────────────────────────────────
+// Observed 10co-e2e: `.traffic-one/reports/lighthouse/` carried no run id and no
+// build fingerprint, so report files survived across runs indistinguishably. The
+// frontend self-ran Lighthouse 13.2.0 (before the `^12.8.2` pin existed), scored
+// 0.98, and shipped "performance 98" downstream in its digest with verdict
+// IMPLEMENTED — against a canonical runner measurement of 74. A number an agent
+// types is a claim; the runner's evidence sidecar is the measurement.
+const LIGHTHOUSE_LINE_RE = /\b(?:lighthouse|page[\s-]?speed)\b/i;
+const PERFORMANCE_CLAIM_RE = /\bperformance\b[^0-9\n]{0,40}(\d{1,3})([^\n]{0,4})/i;
+
+export function claimedLighthousePerformance(
+  content: string,
+): { value: number; line: string } | null {
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || !LIGHTHOUSE_LINE_RE.test(line)) continue;
+    const match = PERFORMANCE_CLAIM_RE.exec(line);
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (!Number.isInteger(value) || value < 0 || value > 100) continue;
+    // `performance 4527 ms` is a metric, not a score.
+    if (/^\s*(?:ms|s\b|kb|mb)/i.test(match[2] || '')) continue;
+    return { value, line: line.length > 240 ? `${line.slice(0, 240)}…` : line };
+  }
+  return null;
+}
+
+/** The canonical runner's Lighthouse Performance score for this run, if any. */
+export function canonicalLighthousePerformance(
+  projectRoot: string,
+  runId: string,
+): number | null {
+  if (!runId || /[\\/]/.test(runId)) return null;
+  const memoryDir = '.traffic' + '-one';
+  const qaDir = path.join(projectRoot, memoryDir, 'reports', 'qa', runId);
+  try {
+    const report = JSON.parse(fs.readFileSync(path.join(qaDir, 'report-v2.json'), 'utf8')) as {
+      lighthouse?: { evidencePath?: unknown };
+    };
+    const evidencePath = report?.lighthouse?.evidencePath;
+    if (typeof evidencePath !== 'string'
+      || !evidencePath
+      || path.isAbsolute(evidencePath)
+      || evidencePath.split(/[\\/]/).some((segment) => !segment || segment === '.' || segment === '..')) {
+      return null;
+    }
+    const evidence = JSON.parse(fs.readFileSync(path.join(qaDir, evidencePath), 'utf8')) as {
+      producer?: unknown;
+      runId?: unknown;
+      performance?: unknown;
+    };
+    if (evidence?.producer !== 'traffic-one-qa-runner' || evidence?.runId !== runId) return null;
+    return typeof evidence.performance === 'number' && Number.isFinite(evidence.performance)
+      ? evidence.performance
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 // Identity of the build(s) currently on disk: the entry asset the built HTML

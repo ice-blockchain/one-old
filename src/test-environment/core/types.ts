@@ -15,7 +15,8 @@ export type Category =
   | 'existing-project'
   | 'feature-auth'
   | 'feature-onboarding'
-  | 'run-sim';
+  | 'run-sim'
+  | 'lint-corpus';
 
 // pure-node  → fully deterministic, no host CLI, reuses src/ functions directly.
 // host-e2e   → drives a real host CLI headlessly against a seeded temp project.

@@ -19,6 +19,10 @@ export interface GateTarget {
   resultContent: string;
   addedContent: string;
   staticCheck: boolean;
+  // Heredoc payload of a shell-derived target. Deliberately NOT `resultContent`:
+  // it is unverified shell text, so only gates that opt in read it (see
+  // `heredocBodies`). Undefined for Write/Edit/apply_patch targets.
+  shellBody?: string;
 }
 
 interface TextEditSpec {

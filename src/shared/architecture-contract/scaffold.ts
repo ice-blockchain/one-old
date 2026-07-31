@@ -60,6 +60,10 @@ const NODE_TOOLING_OUTPUTS = [
   '.prettierignore',
   '.nvmrc',
   'eslint.config.js',
+  // CSS through the community parser (13co: a 424-char single-line `@theme`
+  // block was invisible to every lexical gate). Seeded with
+  // stylelint-config-standard plus the Tailwind at-rule carve-outs.
+  '.stylelintrc.json',
 ] as const;
 
 const BACKEND_QUALITY_OUTPUT_BY_FRAMEWORK: Record<string, readonly string[]> = {
@@ -237,6 +241,15 @@ export function resolveInitialScaffoldOwners(
 // widen the allowlist (observed 4cu — two of its four replans were exactly
 // robots/sitemap/manifest/icons/OG). Deterministic names, no globs, same as
 // every other scaffold output.
+//
+// `llms.txt` is here for exactly the same reason, one campaign later: the
+// reviewer's documentation baseline REQUIRES a served `/llms.txt` for every web
+// surface, `auto-documentation-generator` names `public/llms.txt` as its home,
+// and nothing compiled it. Observed 12co — reviewer finding 5 ordered the
+// frontend to create `apps/web/public/llms.txt`, the write was hard-denied with
+// STRUCT_ASSIGNMENT_ALLOWLIST_GAP (an `apps/*/public/**` path is a build
+// artifact, so the run-team gate judges it), whose only remedy is a replan the
+// fix cycle cannot perform — so the reviewer could never reach `APPROVED`.
 const PUBLIC_CRAWL_ASSETS = [
   'public/robots.txt',
   'public/sitemap.xml',
@@ -247,6 +260,7 @@ const PUBLIC_CRAWL_ASSETS = [
   'public/icons/icon-192.png',
   'public/icons/icon-512.png',
   'public/og-image.png',
+  'public/llms.txt',
 ] as const;
 
 export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitectureOutputV1[] {
@@ -336,6 +350,11 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
     ];
   }
   if (profile.profileId === 'astro') {
+    // Astro serves `public/` verbatim, so the crawl/share assets the reviewer
+    // baseline requires compile here exactly like vite-react/next. Without
+    // them these profiles had NO owner for robots.txt/sitemap.xml and every
+    // reviewer demand for them was an unsatisfiable order (the 12co class the
+    // satisfiability sweep now denies at PLAN_READY).
     return [
       ...common,
       ...sharedUi,
@@ -343,10 +362,13 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
         at('package.json'),
         at('astro.config.mjs'),
         at('tsconfig.json'),
+        ...PUBLIC_CRAWL_ASSETS.map(at),
       ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const })),
     ];
   }
   if (profile.profileId === 'angular') {
+    // Angular's default builder copies `public/` since v18 (`angular.json`
+    // assets glob), so the same crawl assets compile here; see the astro note.
     return [
       ...common,
       ...sharedUi,
@@ -354,6 +376,7 @@ export function frontendScaffoldOutputs(profile: CapabilityProfileV1): CompiledA
         at('package.json'),
         at('angular.json'),
         at('tsconfig.json'),
+        ...PUBLIC_CRAWL_ASSETS.map(at),
       ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const })),
     ];
   }

@@ -37,9 +37,13 @@ framework-native and never receives a forced shadcn port. Add only compiled
 
 The alternatives are immutable precedence candidates, not duplicate trees.
 Blade pages compile under `resources/views` with route-derived
-`.blade.php` paths. Inertia React pages/components use `.tsx`; Inertia Vue
-uses `.vue`. Laravel route registration is frontend-owned only when the
-semantic plan contains routes.
+`.blade.php` paths, and those filenames stay pinned. Inertia React
+pages/components and feature entries use `.tsx` by default (`.ts` is allowed
+where a file holds no JSX — the compiled base path is the contract and the
+build arbitrates the form); Inertia Vue pages/components use `.vue` by default
+(`.ts` for a headless entry). A feature entry is a module
+entry, not a route file: export it and its helpers by NAME. Laravel route
+registration is frontend-owned only when the semantic plan contains routes.
 
 The common repository/tooling, `.env.example`, web-QA, and PHP backend/test
 overlays from `rules/modes/new-project-architecture.md` apply. Use `API_URL`

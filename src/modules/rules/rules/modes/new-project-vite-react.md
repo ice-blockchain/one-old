@@ -42,7 +42,7 @@ managed workspace. `profile.sourceRoots`, not stack folklore, is authoritative.
 │   ├── App.tsx                     when an app-shell module is planned
 │   ├── pages/                      compiled page modules
 │   ├── components/                 compiled app components
-│   ├── features/<name>/index.ts    compiled feature modules
+│   ├── features/<name>/index.tsx   compiled feature modules
 │   └── lib/                        UI-local service/store modules
 └── public/
     ├── robots.txt
@@ -53,7 +53,8 @@ managed workspace. `profile.sourceRoots`, not stack folklore, is authoritative.
     ├── apple-touch-icon.png
     ├── icons/icon-192.png
     ├── icons/icon-512.png
-    └── og-image.png
+    ├── og-image.png
+    └── llms.txt
 
 packages/
 ├── ui/package.json
@@ -72,6 +73,14 @@ and QA overlays from the catalog. Root `vitest.config.ts`,
 `playwright.config.ts`, and `tests/e2e/smoke.spec.ts` remain tester-owned even
 when `<web-root>` is nested. Backend-owned `service`/`store` modules follow the
 backend overlay instead of `src/lib`.
+
+A `feature` module compiles to a `.tsx` entry by default so its section can
+hold JSX; the compiled base path is the contract, and a headless entry with no
+JSX may be delivered as `index.ts` instead — `tsc`/build arbitrates the form.
+Export that entry and its helpers by NAME — a feature entry is a module entry,
+not a route file, and only route files may `export default`. The feature owns
+its whole `features/<name>/` folder: the index is the barrel, and sibling
+component/hook/type files in that folder are in scope and verify.
 
 This tree describes deterministic scaffold and conventional module locations;
 the selected entrypoint, `modules[].output`, `scaffoldOutputs`, and

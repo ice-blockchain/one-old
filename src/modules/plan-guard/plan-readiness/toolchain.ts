@@ -120,6 +120,15 @@ type FormatParityProblem =
 // Presence of a formatter was verified; coverage never was.
 const FORMATTABLE_OUTPUT_RE = /\.(?:[cm]?[jt]sx?|css|scss|less|json|jsonc|md|mdx|ya?ml|html|vue|svelte|astro|graphql|gql)$/i;
 
+// `edge-function` modules compile to `supabase/functions/<name>/index.ts`, which
+// runs on Deno — a different runtime, with its own resolver and no relationship
+// to the app's tsconfig or package manifests. Holding the app toolchain
+// answerable for those files would demand a compiler that can never typecheck
+// them and a formatter script that must reach outside the app's own tree, so
+// they are excluded from both parity checks below (the Deno toolchain owns
+// them, and the project's `prettier --check .` still formats them incidentally).
+const FOREIGN_RUNTIME_OUTPUT_RE = /^supabase\/functions\//;
+
 // `a/{b,c}/*.{ts,tsx}` → every concrete pattern. Bounded so a pathological
 // script can never blow up the gate.
 function expandBraces(pattern: string, budget = 64): string[] {
@@ -240,7 +249,9 @@ export function formatParityViolation(
     const script = typeof scripts[name] === 'string' ? String(scripts[name]) : '';
     const invocation = script ? prettierCheckTargets(script) : null;
     if (!invocation) continue;
-    const formattable = ownedOutputs.filter((output) => FORMATTABLE_OUTPUT_RE.test(output));
+    const formattable = ownedOutputs.filter((output) => (
+      FORMATTABLE_OUTPUT_RE.test(output) && !FOREIGN_RUNTIME_OUTPUT_RE.test(normalizeRelPath(output))
+    ));
     const uncovered = formattable.filter((output) => !coversPath(invocation.targets, output));
     if (uncovered.length > 0) {
       return {
@@ -284,7 +295,11 @@ export function roleOwnedTsOutputs(
   ownerRole: string,
 ): string[] {
   return compiledOutputPaths(architecture, ownerRole)
-    .filter((output) => TS_SOURCE_OUTPUT_RE.test(output) && !output.endsWith('.d.ts'));
+    .filter((output) => (
+      TS_SOURCE_OUTPUT_RE.test(output)
+      && !output.endsWith('.d.ts')
+      && !FOREIGN_RUNTIME_OUTPUT_RE.test(normalizeRelPath(output))
+    ));
 }
 
 // A root `typecheck` that only fans out to workspace members (`turbo run
@@ -335,6 +350,157 @@ export function typecheckParityViolation(
   }
   if (rootOwned && rootCoverage === 'none') uncovered.add('package.json');
   return uncovered.size > 0 ? { manifests: [...uncovered].sort() } : null;
+}
+
+// The gate above is satisfiable WITHOUT COVERAGE. Observed 10co-e2e: it demanded
+// a `typecheck` script in `packages/api-client` and `packages/i18n`, both got
+// one — and the root manifest read `"typecheck": "pnpm --filter @app/web
+// typecheck"`, which invokes neither. Running the project's own typecheck
+// command therefore stopped reproducing a real, reported failure: the compiler
+// was reachable, demanded, present, and never run.
+//
+// A member is REACHED when the root script broadcasts (no narrowing flag at
+// all) or names it. Matching is deliberately generous — package name, directory
+// path, basename, and `*` globs, with pnpm's `...pkg` / `{dir}` / `^` selector
+// decorations stripped — because a false "unreached" would block honest work.
+const FILTER_FLAG_RE = /^(?:--filter|--filter-prod|--scope|--projects|--project|-p)(?:=(.*))?$/;
+
+function narrowingTargets(script: string): string[] {
+  const tokens = script.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+  const targets: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = (tokens[index] || '').replace(/^["']|["']$/g, '');
+    const match = FILTER_FLAG_RE.exec(token);
+    if (!match) continue;
+    const inline = match[1];
+    const value = inline !== undefined && inline !== ''
+      ? inline
+      : (tokens[index + 1] || '').replace(/^["']|["']$/g, '');
+    if (!value || value.startsWith('-')) continue;
+    for (const part of value.split(',')) {
+      const cleaned = part.trim().replace(/^\.{3}|\.{3}$/g, '').replace(/^[{^]|[}]$/g, '').trim();
+      // A NEGATED selector (`--filter=!./docs`) excludes one member and leaves
+      // the run broadcasting to every other one. Counting it as a narrowing
+      // target matched no member at all and reported the whole workspace
+      // unreached — a deny on a script that does cover the demanded packages.
+      if (cleaned && !cleaned.startsWith('!')) targets.push(cleaned);
+    }
+  }
+  return targets;
+}
+
+function targetReaches(target: string, memberDir: string, memberName: string): boolean {
+  const candidates = [memberDir, `./${memberDir}`, path.posix.basename(memberDir), memberName]
+    .filter((candidate) => Boolean(candidate));
+  const normalized = target.replace(/^\.\//, '');
+  return candidates.some((candidate) => {
+    const plain = candidate.replace(/^\.\//, '');
+    if (normalized === plain) return true;
+    if (!normalized.includes('*')) return false;
+    const source = normalized.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+    try {
+      return new RegExp(`^${source}$`).test(plain);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function scriptInvocationGap(
+  projectRoot: string,
+  outputs: readonly string[],
+  scriptName: 'typecheck' | 'lint',
+  memberDemands: (parsed: Rec | null) => boolean,
+): { script: string; unreached: string[] } | null {
+  const owners = new Set<string>();
+  for (const output of outputs) {
+    const pkg = /^((?:apps|packages|services)\/[^/]+)\//.exec(output)?.[1];
+    if (pkg) owners.add(pkg);
+  }
+  if (owners.size === 0) return null;
+  const root = jsoncFile(projectRoot, 'package.json')?.parsed || null;
+  const rootScripts = root ? obj(root.scripts) || {} : {};
+  const script = typeof rootScripts[scriptName] === 'string' ? String(rootScripts[scriptName]).trim() : '';
+  // No root script is a different, louder failure (`npm run <script>` errors
+  // out); a root that runs the tool directly genuinely covers its members.
+  if (!script || !DELEGATING_RUNNER_RE.test(script)) return null;
+  const targets = narrowingTargets(script);
+  // A broadcast (`pnpm -r <script>`, `turbo run <script>`) reaches every member.
+  if (targets.length === 0) return null;
+  const unreached: string[] = [];
+  for (const owner of [...owners].sort()) {
+    const manifest = `${owner}/package.json`;
+    const parsed = jsoncFile(projectRoot, manifest)?.parsed || null;
+    // A member with no tool of its own is the other gate's finding.
+    if (!memberDemands(parsed)) continue;
+    const name = parsed && typeof parsed.name === 'string' ? parsed.name : '';
+    if (!targets.some((target) => targetReaches(target, owner, name))) unreached.push(manifest);
+  }
+  return unreached.length > 0 ? { script, unreached } : null;
+}
+
+export function typecheckInvocationGap(
+  projectRoot: string,
+  tsOutputs: readonly string[],
+): { script: string; unreached: string[] } | null {
+  return scriptInvocationGap(projectRoot, tsOutputs, 'typecheck', (parsed) => (
+    manifestTypecheckCoverage(parsed) !== 'none'
+  ));
+}
+
+// ── Lint layer parity (quality verdict through the compiled toolchain) ──────
+// The scaffolded `eslint.config.js` carries real AST rules (see
+// `architecture-contract/scaffold-content.ts`), so for UI-owning roles a
+// runnable, reaching `lint` script IS the quality verdict the retired lexical
+// scanners used to fake. Same triad as prettier/tsc: config compiled →
+// dependency declared → script exists → invocation actually reaches the
+// members that demanded it.
+const LINTABLE_OUTPUT_RE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i;
+
+export function lintableOutputPaths(architecture: CompiledArchitectureV1): string[] {
+  return compiledOutputPaths(architecture).filter((output) => (
+    LINTABLE_OUTPUT_RE.test(output) && !FOREIGN_RUNTIME_OUTPUT_RE.test(normalizeRelPath(output))
+  ));
+}
+
+export function compiledLintToolchainForRole(
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): FormatToolchainTarget | null {
+  const config = (architecture.scaffoldOutputs || []).find((output) => (
+    output.ownerRole === ownerRole
+    && path.posix.basename(output.path) === 'eslint.config.js'
+  ));
+  if (!config) return null;
+  const toolingRoot = path.posix.dirname(config.path);
+  return {
+    configPath: config.path,
+    manifestPath: toolingRoot === '.' ? 'package.json' : `${toolingRoot}/package.json`,
+    toolingRoot,
+  };
+}
+
+export function lintParityViolation(
+  projectRoot: string,
+  target: FormatToolchainTarget,
+): { missing: string[] } | null {
+  const pkg = jsoncFile(projectRoot, target.manifestPath)?.parsed || null;
+  const deps = { ...(pkg ? obj(pkg.dependencies) : null), ...(pkg ? obj(pkg.devDependencies) : null) };
+  const scripts = pkg ? obj(pkg.scripts) || {} : {};
+  const missing: string[] = [];
+  if (typeof deps.eslint !== 'string') missing.push('`eslint` dependency');
+  if (typeof scripts.lint !== 'string') missing.push('`lint` script');
+  return missing.length > 0 ? { missing } : null;
+}
+
+export function lintInvocationGap(
+  projectRoot: string,
+  lintableOutputs: readonly string[],
+): { script: string; unreached: string[] } | null {
+  return scriptInvocationGap(projectRoot, lintableOutputs, 'lint', (parsed) => {
+    const scripts = parsed ? obj(parsed.scripts) || {} : {};
+    return typeof scripts.lint === 'string';
+  });
 }
 
 // rules/common/seo.md already says "never invent a deploy URL", and 6co invented

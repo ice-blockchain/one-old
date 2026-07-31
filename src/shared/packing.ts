@@ -70,6 +70,10 @@ export function packFixCycleHeader(_cwd: string, role: string, runId: string, sp
   const fixCycleFile = `.traffic-one/fix-cycles/${runId}/${role}-fix-${spawnIndex - 1}.md`;
   const digestFile = `.traffic-one/digests/${runId}/${roleDigestName(role)}.md`;
   const hasFixCycleFile = _cwd ? fs.existsSync(path.join(_cwd, fixCycleFile)) : false;
+  // Runtime-consolidated write-time quality findings (batched instead of
+  // per-write denies); when present, they are part of the same single-turn fix.
+  const qualityFile = `.traffic-one/fix-cycles/${runId}/${role}-quality-findings.md`;
+  const hasQualityFile = _cwd ? fs.existsSync(path.join(_cwd, qualityFile)) : false;
   const lines = [
     `═══ traffic-one — ${role} FIX-CYCLE #${spawnIndex - 1} (run ${runId}) ═══`,
     '',
@@ -79,6 +83,12 @@ export function packFixCycleHeader(_cwd: string, role: string, runId: string, sp
       ? '1. Read the fix-cycle context (exact reviewer findings with file:line):'
       : '1. No fix-cycle context file exists on disk for this replacement. Use ONLY the spawn prompt/new message for exact findings; do not fabricate or read a missing fix-cycle path:',
     `   ${fixCycleFile}`,
+    ...(hasQualityFile
+      ? [
+        '   Also apply ALL accumulated quality findings (batched write-time findings, one list) in the same turn:',
+        `   ${qualityFile}`,
+      ]
+      : []),
     '',
     '2. Recall your prior work from your previous digest:',
     `   ${digestFile}`,

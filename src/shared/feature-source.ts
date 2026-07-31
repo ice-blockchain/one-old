@@ -179,6 +179,40 @@ function stripHeredocBodies(command: string): string {
   return result + command.slice(cursor);
 }
 
+/**
+ * The inverse of `stripHeredocBodies`: every heredoc body in the command,
+ * concatenated, with the surrounding shell text removed.
+ *
+ * The reviewer is read-only by contract and writes its digest as
+ * `cat > .traffic-one/digests/<run>/reviewer.md <<'EOF' … EOF`, so the gate's
+ * normal `content` for that write is the empty string — no content-shape check
+ * can see the findings it is about to publish. This makes the payload visible
+ * to the checks that must read it, WITHOUT promoting it to `content`: shell
+ * targets stay `staticCheck: false` and every existing content gate keeps its
+ * current (deliberately conservative) blindness.
+ */
+export function heredocBodies(command: unknown): string {
+  if (typeof command !== 'string' || !command.trim()) return '';
+  const heredocRe = /<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
+  const bodies: string[] = [];
+  let cursor = 0;
+  for (let m = heredocRe.exec(command); m; m = heredocRe.exec(command)) {
+    if (m.index < cursor) continue; // operator text inside an already-collected body
+    const term = m[1] || m[2] || m[3] || '';
+    const operatorEnd = m.index + m[0].length;
+    const bodyStart = command.indexOf('\n', operatorEnd);
+    if (bodyStart === -1) break;
+    const rest = command.slice(bodyStart + 1);
+    const termRe = new RegExp(`\\n[\\t ]*${term}[\\t ]*(?=\\n|$)`);
+    const terminator = termRe.exec(command.slice(bodyStart));
+    if (!terminator) { bodies.push(rest); break; } // unterminated: body runs to the end
+    bodies.push(command.slice(bodyStart + 1, bodyStart + terminator.index));
+    cursor = bodyStart + terminator.index;
+    heredocRe.lastIndex = cursor;
+  }
+  return bodies.join('\n');
+}
+
 export function shellWriteTargetsStateDir(command: unknown): boolean {
   if (typeof command !== 'string' || !command.trim()) return false;
   const scanned = stripHeredocBodies(command);
@@ -211,7 +245,11 @@ export function shellTrafficOneWriteTargets(command: unknown): string[] {
   if (!shellCommandHasWritePrimitive(scanned)) return [];
   const targets: string[] = [];
   const targetRe =
-    /(?:^|[\s"'`=(:,\[])((?:\/[^\s"'`;|&<>,)\]}]*\/)?(?:\.\/)?\.traffic-one\/(?:(?:runs|digests|reports)\/[^\s"'`;|&<>,)\]}]+|deployments\.jsonl))/g;
+    // `fix-cycles/` is here so the orchestrator's verbatim transcription of the
+    // reviewer's findings is a visible write target, not an invisible one: the
+    // finding-satisfiability gate must judge it. It adds no ownership deny —
+    // fix-cycle notes match no run-artifact/sidecar contract.
+    /(?:^|[\s"'`=(:,\[])((?:\/[^\s"'`;|&<>,)\]}]*\/)?(?:\.\/)?\.traffic-one\/(?:(?:runs|digests|reports|fix-cycles)\/[^\s"'`;|&<>,)\]}]+|deployments\.jsonl))/g;
   for (let match = targetRe.exec(scanned); match; match = targetRe.exec(scanned)) {
     const target = (match[1] || '')
       .replace(/["'`,;]+$/, '')

@@ -59,7 +59,10 @@ Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.tra
 <!-- T1BLOCK:END architect-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-queue-gate -->
-Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machine-readable `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` block with at least 3 runnable bounded units (`- id: <stable-unit-id> | role: frontend|backend|tester|docs | files: … | task: …`). Prose-only or incomplete OpenCode lists are ignored by `opencode_delegate_from_plan`.
+Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machine-readable `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` block with at least 3 runnable bounded units (`- id: <stable-unit-id> | role: frontend|backend|tester|docs | files: … | task: …`). Prose-only or incomplete OpenCode lists are ignored by `opencode_delegate_from_plan`. A rewrite may omit the block only after a queue was accepted for the current run — runtime then preserves and re-appends it. Concrete example of a runnable unit row:
+`<!-- opencode-delegate:start -->`
+`- id: seed-demo-data | role: backend | files: supabase/seed.sql | task: Seed the demo rows the plan data section describes`
+`<!-- opencode-delegate:end -->`
 <!-- T1BLOCK:END plan-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-self-delegation-gate -->
@@ -109,6 +112,10 @@ Architecture assignment gate: the runtime-compiled outputs are not covered befor
 <!-- T1BLOCK:BEGIN architecture-contract-gate -->
 Architecture contract gate: do not emit `PLAN_READY` until the run's `architecture-input-v1.json` is valid and runtime compilation succeeds. {{ERROR}}. The architect may change only semantic routes/modules/component placement/uiPrimitives/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.
 <!-- T1BLOCK:END architecture-contract-gate -->
+
+<!-- T1BLOCK:BEGIN contract-self-conflict -->
+Contract satisfiability gate: the compiled plan demands outputs its own write gates forbid — {{CONFLICTS}}. `PLAN_READY` is denied before any implementer spawns: a role facing this contract would be hard-denied on a mandatory output and the run would deadlock. Fix the semantic ArchitectureInputV1 (routes/modules/placement/i18n/exceptions) so every compiled output is writable, then re-emit `PLAN_READY`.
+<!-- T1BLOCK:END contract-self-conflict -->
 
 <!-- T1BLOCK:BEGIN verification-contract-scan-gate -->
 Verification contract gate: STRUCT_SCAN_INCOMPLETE ({{ERROR}}). Runtime could not derive the complete diff from the immutable baseline, so `PLAN_READY` is forbidden.
@@ -178,20 +185,44 @@ Implementer test toolchain gate: role `{{ROLE}}` owns `{{MANIFEST}}`, and the co
 Implementer crawl origin gate: `{{FILE}}` ships an unusable production origin — {{DETAIL}}. Crawl assets are published verbatim, so an invented origin is a live defect, not a placeholder. Generate these files from the public site-url env var (`VITE_SITE_URL` or the framework equivalent) and fail generation when it is unset; leave the deploy origin `Unverified` in project memory until the user supplies it. Then re-emit `IMPLEMENTED`.
 <!-- T1BLOCK:END implementer-crawl-origin-gate -->
 
+<!-- T1BLOCK:BEGIN implementer-typecheck-invocation-gate -->
+Implementer typecheck gate: the root `package.json` "typecheck" script runs `{{SCRIPT}}`, which never invokes the per-package `typecheck` this contract demanded in {{MANIFESTS}}. A compiler that is installed, scripted, and never run is not coverage — the project's own command reports success while the errors stay unreported. Broadcast to every workspace member (`pnpm -r typecheck`, `turbo run typecheck` with no filter) or name each package in the filter, run it clean, then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-typecheck-invocation-gate -->
+
+<!-- T1BLOCK:BEGIN implementer-contract-delivery-gate -->
+Implementer completion gate: `IMPLEMENTED` is forbidden while {{COUNT}} of role `{{ROLE}}`'s {{PLANNED}} compiled modules do not exist and were never observed as changed ({{MISSING}}). `changedPaths` unions the observed diff with every PLANNED output, so a contract can look complete while the files were never written — a verdict must describe what was delivered, not what was planned. Write the missing modules, or report `BLOCKED` naming them. Do not re-emit `IMPLEMENTED` until each one exists.
+<!-- T1BLOCK:END implementer-contract-delivery-gate -->
+
+<!-- T1BLOCK:BEGIN lighthouse-claim-reconciliation-gate -->
+Page-speed claim gate: this digest reports Lighthouse performance {{CLAIMED}} — "{{EVIDENCE}}" — but the canonical QA runner measured {{MEASURED}} for run `{{RUN_ID}}`. A self-run audit is not the run's evidence: it can use a different Lighthouse version, a dev server, or a build from another run, and its report files are not run-scoped. Quote the runner's number (`.traffic-one/reports/qa/{{RUN_ID}}/lighthouse-evidence-v1.json`), or re-run the canonical sweep and quote the fresh one.
+<!-- T1BLOCK:END lighthouse-claim-reconciliation-gate -->
+
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
-Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; `STRUCT_MODULE_LOC` blocks — split the module. Integration findings block too: orphan modules, unused API packages, inert styling, and every i18n finding (`STRUCT_HARDCODED_COPY`, `STRUCT_I18N_RUNTIME`, `STRUCT_I18N_REACT_TRANS`, `STRUCT_I18N_CATALOG`). React child copy uses `<Trans>` with namespace, key, and fallback; catalog keys are non-empty in every declared locale.
+Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; `STRUCT_MODULE_LOC` blocks — split the module. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (`STRUCT_I18N_RUNTIME`), and catalog validation (`STRUCT_I18N_CATALOG` — keys non-empty in every declared locale). Hardcoded-copy findings (`STRUCT_HARDCODED_COPY`, `STRUCT_I18N_REACT_TRANS`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own `lint` run owns them. React child copy uses `<Trans>` with namespace, key, and fallback.
 <!-- T1BLOCK:END frontend-structure-completion-gate -->
+
+<!-- T1BLOCK:BEGIN implementer-lint-toolchain-gate -->
+Implementer lint gate: role `{{ROLE}}` owns the compiled `{{CONFIG}}`, whose AST rules are this run's quality verdict for UI source, but {{MISSING}} is absent from `{{MANIFEST}}`. The write-time lexical copy scanners are warnings on this profile on exactly the promise that the project's own `lint` runs — a lint layer that cannot run is an enforcement gap, not a style nit. Add the missing entries (the scaffold seeds `eslint` plus the plugins the config imports), run `lint` clean, then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-lint-toolchain-gate -->
+
+<!-- T1BLOCK:BEGIN implementer-lint-invocation-gate -->
+Implementer lint gate: the root `package.json` "lint" script runs `{{SCRIPT}}`, which never invokes the per-package `lint` in {{MANIFESTS}}. A linter that is installed, scripted, and never run is not coverage — the compiled AST quality rules silently stop applying to those packages. Broadcast to every workspace member (`pnpm -r lint`, `turbo run lint` with no filter) or name each package in the filter, run it clean, then re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-lint-invocation-gate -->
 
 <!-- T1BLOCK:BEGIN reviewer-structure-gate -->
 Reviewer gate: `APPROVED` is forbidden while the complete runtime structure report contains errors ({{FINDINGS}}). Review the compiled architecture and request fixes.
 <!-- T1BLOCK:END reviewer-structure-gate -->
+
+<!-- T1BLOCK:BEGIN finding-allowlist-gap -->
+Finding-satisfiability gate: {{PATHS}} is named as work to do, but it is outside EVERY role's runtime-owned WorkUnitContract for run `{{RUN_ID}}`. The role you would hand this to cannot write it — the run-team gate denies the write with STRUCT_ASSIGNMENT_ALLOWLIST_GAP, and a fix cycle cannot replan, so the loop never closes. Do one of three things instead: point the finding at a path a role already owns; drop it; or record it explicitly as DEFERRED (or REPLAN) on the same line, with the reason, so the next run's ArchitectureInputV1 compiles a home for it. Never hand a role an instruction its allowlist forbids.
+<!-- T1BLOCK:END finding-allowlist-gap -->
 
 <!-- T1BLOCK:BEGIN tester-planned-module-gate -->
 Tester completion gate: `TESTS_GREEN` is forbidden while a compiled test module the tester owns is missing ({{MISSING}}). The complete structure scan blocks the reviewer's `APPROVED` on the same finding, so writing this verdict now spends a fix cycle to discover it. Create the module, run it, then re-emit `TESTS_GREEN`.
 <!-- T1BLOCK:END tester-planned-module-gate -->
 
 <!-- T1BLOCK:BEGIN tester-qa-v2-gate -->
-Tester completion gate: VerificationContractV2 rejected this verdict ({{ERROR}}). Dimensions: {{DIMENSIONS}}. Re-run only the failing dimension; a blocked environment is not `TESTS_GREEN`, and an `advisory-warning` is never the thing to fix.
+Tester completion gate: VerificationContractV2 rejected this verdict ({{ERROR}}). Dimensions: {{DIMENSIONS}}. Re-run only the failing dimension for uiImpact={{UI_IMPACT}}; a blocked environment is not `TESTS_GREEN`, and an `advisory-warning` is never the thing to fix. The sidecar is runtime evidence: produce it with the canonical runner — `node ~/.traffic-one/bin/qa-evidence-runner.cjs browser …` per the browser-qa skill, or `stack --run-id <id>` for no-browser contracts (the shim runs the plugin's `scripts/qa-evidence-runner.cjs`) — never by hand-editing `report-v2.json`; a hand-authored report cannot carry the machine evidence this gate verifies.
 <!-- T1BLOCK:END tester-qa-v2-gate -->
 
 <!-- T1BLOCK:BEGIN tester-stale-qa-gate -->
@@ -221,6 +252,10 @@ Run-team enforcement gate: this project was onboarded with `team.mode="subagents
 <!-- T1BLOCK:BEGIN run-team-scope-conflict -->
 Run-team enforcement gate: `{{TARGET}}` is in `{{OWNER}}`'s assigned scope for this run, not `{{ROLE}}`'s. Each subagent writes only within its runtime-compiled assignment in `.traffic-one/runs/<runId>/assignments.json`. Let the owning role write the target, or split the patch along the existing compiled work units.
 <!-- T1BLOCK:END run-team-scope-conflict -->
+
+<!-- T1BLOCK:BEGIN run-team-runtime-allowlist-gap -->
+Run-team enforcement gate: STRUCT_ASSIGNMENT_ALLOWLIST_GAP — `{{TARGET}}` is outside `{{ROLE}}`'s immutable runtime-owned WorkUnitContract. No dynamic claim is allowed for a compiled run. Do NOT keep retrying this write, and do not move it to a path you do own. Report it in your digest instead: name `{{TARGET}}`, say it is in no role's allowlist, and set your verdict to `BLOCKED` (in a fix cycle, list it under `FIXES_FAILING` with this reason — that is the whole available action there, and it is a complete answer). Replanning ArchitectureInputV1 to compile a home for the path happens between runs, by the architect, never from inside this session.
+<!-- T1BLOCK:END run-team-runtime-allowlist-gap -->
 
 <!-- T1BLOCK:BEGIN run-team-fallback-taken -->
 Run-team enforcement gate: `{{TARGET}}` is outside every runtime-compiled role scope and is already being written by `{{HOLDER}}` in this run. Coordinate so one existing work unit owns the path, or stop for semantic replanning and runtime regeneration of assignments before writing it.
@@ -259,7 +294,7 @@ Use the workspace package name (`@app/ui`, `@app/ui-native`, `@app/utils`) inste
 <!-- T1BLOCK:END deep-relative-package -->
 
 <!-- T1BLOCK:BEGIN default-export -->
-Use named exports only for reusable components. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.
+Use named exports only for reusable components — including the compiled feature entry `features/<name>/index.tsx`, which is a module entry, not a route file. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.
 <!-- T1BLOCK:END default-export -->
 
 <!-- T1BLOCK:BEGIN native-inline-style -->

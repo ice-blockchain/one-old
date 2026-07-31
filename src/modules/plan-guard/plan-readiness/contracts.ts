@@ -6,19 +6,26 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   buildRuntimeAssignments,
+  isRuntimeMaintainedContextPath,
   publishRuntimeAssignments,
   readCompiledArchitecture,
   readRuntimeAssignments,
   validateArchitectureInput,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
+import {
+  BUILD_ARTIFACT_RE,
+  FEATURE_SOURCE_RE,
+  isTestInfraConfigPath,
+  isTestScopePath,
+} from '../../../shared/feature-source';
 import { obj } from '../../../shared/obj';
 import {
   canPublishRunPolicyBootstraps,
   ensureRunPolicyBootstraps,
   readRunModelPolicy,
 } from '../../../shared/run-model-policy';
-import {    type AssignedScope } from '../../../shared/scope';
+import { matchesScope, type AssignedScope } from '../../../shared/scope';
 import {
   activeAgentRole,
   readRunAssignmentsResilient,
@@ -37,6 +44,9 @@ import {
   analyzeProjectStructure,
   writeStructureReport,
 } from '../react-structure';
+// Leaf classifier, not the plan-write dispatcher: `plan-write/targets` imports
+// only `shared/**`, so plan-readiness may use it without an import cycle.
+import { isCompiledFeatureTarget } from '../plan-write/targets';
 
 import {
   QA_REPORT_ARTIFACT_RE,
@@ -77,6 +87,66 @@ export function assignmentScopesForRole(
   return manifest.assignments
     .filter((assignment) => assignment.role === role)
     .map((assignment) => assignment.scope);
+}
+
+// A repo-relative path reference inside a finding: at least one directory
+// segment and a file extension, anchored on a token boundary so `https://host/
+// a.txt` and other absolute URLs never match. A trailing `:line` is left
+// outside the capture, which is exactly the reviewer's `file:line` shape.
+const FINDING_PATH_RE = /(?:^|[\s`'"(\[<])((?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9]+)/g;
+// A finding that is explicitly PARKED is not an order: the role is told the
+// item is not its to carry out, which is a satisfiable instruction. Anything
+// else reads as "do this", and a role cannot do what the write gate denies.
+const FINDING_PARKED_RE = /\b(?:DEFERRED|DEFER|REPLAN|BLOCKED|OUT[ -]OF[ -]SCOPE|NOT ACTIONABLE)\b/i;
+
+/**
+ * Paths a finding names that NO role in this run may write.
+ *
+ * On a compiled run the write gate hard-denies two namespaces — feature source
+ * and assigned build artifacts — whenever the target sits outside every
+ * runtime-owned WorkUnitContract (`run-team-runtime-allowlist-gap`), and the
+ * only remedy it offers is a replan, which a fix cycle cannot perform. So a
+ * finding naming such a path is an order no role can carry out: the implementer
+ * is denied, the reviewer never reaches `APPROVED`, and the run deadlocks on a
+ * file nobody owns (observed 12co — finding 5 ordered
+ * `apps/web/public/llms.txt`, which was in no allowlist; that specific path now
+ * has a compiled home, this stops the next one).
+ *
+ * Deliberately narrow. Anything the write gate would let through — root docs,
+ * `.traffic-one/**`, build output, a path any role owns — is not reported, and
+ * an abbreviated reference to a compiled output ("src/pages/Home.tsx" for
+ * "apps/web/src/pages/Home.tsx") counts as owned rather than as a defect.
+ */
+export function unsatisfiableFindingPaths(
+  projectRoot: string,
+  runId: string,
+  content: string,
+): string[] {
+  if (!runId || !content) return [];
+  const architecture = readCompiledArchitecture(projectRoot, runId);
+  const assignments = readRuntimeAssignments(projectRoot, runId);
+  if (!architecture || !assignments) return [];
+  const scopes = assignments.assignments.map((assignment) => assignment.scope);
+  const includes = scopes.flatMap((scope) => scope.include);
+  const ordered = new Set<string>();
+  const parked = new Set<string>();
+  for (const line of content.split(/\r?\n/)) {
+    const bucket = FINDING_PARKED_RE.test(line) ? parked : ordered;
+    for (const match of line.matchAll(FINDING_PATH_RE)) {
+      bucket.add(match[1]!.replace(/^\.\/+/, ''));
+    }
+  }
+  const unsatisfiable = new Set<string>();
+  for (const target of ordered) {
+    if (parked.has(target)) continue;
+    if (!FEATURE_SOURCE_RE.test(target)
+      && !BUILD_ARTIFACT_RE.test(target)
+      && !isCompiledFeatureTarget(architecture, target)) continue;
+    if (scopes.some((scope) => matchesScope(target, scope))) continue;
+    if (includes.some((include) => include.endsWith(`/${target}`))) continue;
+    unsatisfiable.add(target);
+  }
+  return [...unsatisfiable].sort();
 }
 
 export function roleContract(
@@ -197,7 +267,39 @@ export function refreshVerificationAfterImplementation(
       };
     }
     const authorizedPaths = new Set(previous.changedPaths);
-    const unauthorized = currentDiff.paths.filter((entry) => !authorizedPaths.has(entry));
+    // The write surface and the verification authority are the SAME set:
+    // whatever the runtime assignment already authorizes a role to write is a
+    // legitimately-changed path here, never a frozen-authority breach. Three
+    // shapes land through this (all observed 13cl/14cl):
+    //   - sibling files under a folder-shaped module directory: a feature
+    //     assignment includes the module DIRECTORY, so the compiled scope
+    //     covers children the exact planned-output list never named (14cl
+    //     wrote 26 legitimate sibling files; the old exact-set deny pushed the
+    //     role to delete its split and ship a monolith);
+    //   - tester-owned test files/config: test-scope paths are tester-owned
+    //     regardless of the surrounding directory — the run-team gate's own
+    //     ownership rule — so a new test file is authorized whenever this run
+    //     compiled a tester assignment (13cl: `tests/i18n-parity.test.ts`);
+    //   - runtime-maintained root context (AGENTS.md/CLAUDE.md), which
+    //     materialization re-appends every session.
+    // `matchesScope` over the hash-valid runtime assignments is the exact
+    // matcher and manifest the run-team write gate enforces with — no second
+    // matcher. A missing/invalid manifest contributes no scopes, so the check
+    // stays fail-closed on the frozen exact set. This widens only what
+    // verification RECOGNIZES; no role may claim anything new, and a genuinely
+    // unowned path (the 12co `llms.txt` class) still denies below.
+    const runtimeAssignments = readRuntimeAssignments(projectRoot, runId);
+    const assignmentScopes = runtimeAssignments
+      ? runtimeAssignments.assignments.map((assignment) => assignment.scope)
+      : [];
+    const testerAssigned = Boolean(runtimeAssignments
+      ?.assignments.some((assignment) => assignment.role === 'senior-tester'));
+    const unauthorized = currentDiff.paths.filter((entry) => (
+      !authorizedPaths.has(entry)
+      && !assignmentScopes.some((scope) => matchesScope(entry, scope))
+      && !(testerAssigned && (isTestScopePath(entry) || isTestInfraConfigPath(entry)))
+      && !isRuntimeMaintainedContextPath(entry)
+    ));
     if (unauthorized.length > 0) {
       return {
         error: `changed paths outside the frozen verification/WorkUnit authority: ${unauthorized.slice(0, 20).join(', ')}`,

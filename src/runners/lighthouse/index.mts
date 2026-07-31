@@ -18,8 +18,10 @@ import {
   DEFAULTS,
   applyContractThresholds,
   type PackageManager,
+  buildFingerprintTag,
   classifyBlockedStatus,
   createAuditUrl,
+  runScopedOutDir,
   detectPackageManager,
   dlxArgs,
   execArgs,
@@ -218,7 +220,9 @@ async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lig
   appDir: string; rootDir: string; packageManager: PackageManager; url: string; outDir: string; lighthouseVersion: string; lighthouseTimeoutMs: number; localOnly: boolean;
 }): Promise<{ jsonPath: string; htmlPath: string | null }> {
   mkdirSync(outDir, { recursive: true });
-  const baseName = reportBaseName(url);
+  // Run-scoped directory + build-stamped file name: an artefact must say which
+  // run and which build it measured, or a stale score gets quoted as this one.
+  const baseName = reportBaseName(url, buildFingerprintTag(rootDir, appDir));
   const outputBase = join(outDir, baseName);
   const lighthouseArgs = [
     url,
@@ -327,7 +331,7 @@ async function main(): Promise<void> {
       throw new Error('No URL to audit. Provide --url or allow the runner to start preview.');
     }
 
-    const outDir = resolve(rootDir, args.outDir);
+    const outDir = resolve(rootDir, runScopedOutDir(rootDir, args.outDir, process.argv.slice(2)));
     const reportPaths = await runLighthouse({
       appDir,
       rootDir,

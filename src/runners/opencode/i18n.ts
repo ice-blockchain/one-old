@@ -6,6 +6,7 @@ import {
   projectDeclaresI18nRuntime,
 } from '../../shared/i18n-enforcement';
 import {
+  moduleOutputVariants,
   readCompiledArchitecture,
   type CompiledArchitectureV1,
   type CompiledI18nContractV1,
@@ -26,6 +27,14 @@ import {
 export interface OpenCodeI18nScope {
   allowedFiles: string[];
   injectedCatalogs: string[];
+  /**
+   * EVERY catalog path in the effective allowlist — declared by the unit AND
+   * injected. Serialization must register all of them: registering only the
+   * injected ones let catalog-OWNING units (files: the catalog itself) slip
+   * past `lastUnitByCatalog`, so no `depends:` edge was added and the overlap
+   * policy rejected the whole queue (observed 13cl: 6/6 units rejected).
+   */
+  catalogFiles: string[];
   prompt: string;
   error: string | null;
 }
@@ -59,7 +68,10 @@ function compiledCatalogsForPatterns(
   if (!contract.i18n) return [];
   const namespaces = new Set<string>();
   for (const module of contract.modules) {
-    if (patterns.some((pattern) => matchesPattern(module.output, pattern))) {
+    // Extension freedom: the unit may target any allowed variant of the module.
+    if (moduleOutputVariants(module).some((variant) => (
+      patterns.some((pattern) => matchesPattern(variant, pattern))
+    ))) {
       namespaces.add(namespaceForModule(contract, module));
     }
   }
@@ -130,7 +142,7 @@ export function normalizeOpenCodeI18nScope(
 ): OpenCodeI18nScope {
   const allowed = parseAllowedFiles(allowedFiles);
   if (!isFrontendRole(role)) {
-    return { allowedFiles: allowed, injectedCatalogs: [], prompt: '', error: null };
+    return { allowedFiles: allowed, injectedCatalogs: [], catalogFiles: [], prompt: '', error: null };
   }
   const contract = runId ? readCompiledArchitecture(cwd, runId) : null;
   const compiled = contract ? compiledCatalogsForPatterns(contract, allowed) : [];
@@ -141,15 +153,17 @@ export function normalizeOpenCodeI18nScope(
     && touchesUi
     && !detectedContract
     && projectDeclaresI18nRuntime(cwd, contract || undefined);
-  const injectedCatalogs = unique([...compiled, ...detected])
-    .filter((catalog) => !allowed.includes(catalog));
+  const catalogPaths = unique([...compiled, ...detected]);
+  const injectedCatalogs = catalogPaths.filter((catalog) => !allowed.includes(catalog));
   const error = unresolvedExistingRuntime
     ? 'i18n runtime is present but no existing catalog paths can be detected; ad-hoc delegation fails closed because it cannot complete locale parity without inventing outputs'
     : assignmentError(cwd, runId, role, injectedCatalogs);
   const safeInjected = error ? [] : injectedCatalogs;
+  const effectiveAllowed = unique([...allowed, ...safeInjected]);
   return {
-    allowedFiles: unique([...allowed, ...safeInjected]),
+    allowedFiles: effectiveAllowed,
     injectedCatalogs: safeInjected,
+    catalogFiles: catalogPaths.filter((catalog) => effectiveAllowed.includes(catalog)),
     prompt: i18nPrompt(contract, safeInjected, detectedContract),
     error,
   };
@@ -164,13 +178,20 @@ export function normalizePlanI18nUnits(
   const lastUnitByCatalog = new Map<string, string>();
   const normalized = units.map((unit, index) => {
     const scope = normalizeOpenCodeI18nScope(cwd, runId, unit.role, unit.files);
+    // The SAME computed fallback id keys the errors map and the serialization
+    // map — `if (unit.id)` skipped registration for id-less units entirely.
     const id = unit.id || `position-${index + 1}`;
     if (scope.error) errors.set(id, scope.error);
     const dependsOn = new Set(unit.dependsOn || []);
-    for (const catalog of scope.injectedCatalogs) {
+    // Register every catalog in the EFFECTIVE allowlist (declared + injected):
+    // a later unit touching the same catalog gets an ordering edge, which is
+    // exactly what the overlap policy demands. A queue where only one unit
+    // touches catalogs registers but never finds a prior, so no edge is ever
+    // invented (14cl: single-owner queue delegated 5/5 with zero added edges).
+    for (const catalog of scope.catalogFiles) {
       const prior = lastUnitByCatalog.get(catalog);
-      if (prior && prior !== unit.id) dependsOn.add(prior);
-      if (unit.id) lastUnitByCatalog.set(catalog, unit.id);
+      if (prior && prior !== id) dependsOn.add(prior);
+      lastUnitByCatalog.set(catalog, id);
     }
     return {
       ...unit,

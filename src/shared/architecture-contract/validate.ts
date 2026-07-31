@@ -7,6 +7,7 @@ import { obj, type Rec } from '../obj';
 
 import {
   ARCHITECTURE_INPUT_SCHEMA_VERSION,
+  ARCHITECTURE_MODULE_KINDS,
   type ArchitectureExceptionRequestV1,
   type ArchitectureValidationResult,
 } from './types';
@@ -148,8 +149,11 @@ export function validateArchitectureInput(input: unknown): ArchitectureValidatio
     if (moduleIds.has(id)) errors.push(`modules[${index}].id is duplicated`);
     moduleIds.add(id);
     if (!SAFE_NAME_RE.test(name)) errors.push(`modules[${index}].name is invalid (expected a letter first, then letters/digits/spaces and , . ( ) & + ' : - punctuation, max 80 chars — no slashes, quotes, or angle brackets)`);
-    if (!['app-shell', 'page', 'component', 'feature', 'service', 'store', 'test'].includes(kind)) {
-      errors.push(`modules[${index}].kind is invalid`);
+    if (!(ARCHITECTURE_MODULE_KINDS as readonly string[]).includes(kind)) {
+      // Name the vocabulary: an architect that cannot see the accepted kinds
+      // has no way to discover `edge-function` and stalls the whole plan
+      // instead (observed — a Supabase function had no representation at all).
+      errors.push(`modules[${index}].kind is invalid (accepted: ${ARCHITECTURE_MODULE_KINDS.join(', ')})`);
     }
     const placement = typeof module?.placement === 'string' ? module.placement : '';
     if (placement && placement !== 'app' && placement !== 'shared-ui') {

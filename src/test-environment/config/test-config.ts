@@ -23,6 +23,8 @@ export const ALL_CATEGORIES: Category[] = [
   // --category values against this array and silently drops anything missing,
   // which would turn `--category=run-sim` into "run the whole matrix".
   'run-sim',
+  // The false-positive corpus: pure-node, no dist required, no spend.
+  'lint-corpus',
 ];
 
 export function defaultConfig(): RootTestConfig {

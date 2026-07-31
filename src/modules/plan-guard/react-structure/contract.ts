@@ -6,6 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   canonicalRoutePath,
+  moduleOutputVariants,
+  uiAstLintLayer,
   webPackageRoot,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
@@ -537,6 +539,20 @@ function i18nFindings(
       message: 'New UI project is missing its profile-selected i18n runtime/provider setup.',
     });
   }
+  // Where the compiled eslint config carries a real AST i18n rule
+  // (React-family, Vue — see scaffold-content.ts), the lexical copy findings
+  // demote to warnings: the project's own `lint` run owns the blocking verdict
+  // there, and the implementer lint gate proves that toolchain is runnable and
+  // reaching. Profiles without an AST equivalent keep the blocking scanner —
+  // retiring it there would be an enforcement coverage gap. Catalog and
+  // runtime findings are data validation, not copy parsing, and never demote.
+  const lexicalCopyDemoted = uiAstLintLayer(contract.profile) !== null;
+  const sourceSeverity = (finding: { id: string }): StructureFinding['severity'] => (
+    lexicalCopyDemoted
+    && (finding.id === 'STRUCT_HARDCODED_COPY' || finding.id === 'STRUCT_I18N_REACT_TRANS')
+      ? 'warning'
+      : severity
+  );
   const references: I18nReference[] = [];
   for (const analysis of analyses) {
     const source = analyzeI18nSourceText(
@@ -548,7 +564,7 @@ function i18nFindings(
     references.push(...source.references);
     findings.push(...source.findings.map((finding) => ({
       ...finding,
-      severity,
+      severity: sourceSeverity(finding),
     })));
   }
   if (i18n) {
@@ -584,7 +600,13 @@ export function contractFindings(
   // denied by STRUCT_SCAN_INCOMPLETE.
   const canCheckReferences = analyses.length > 0;
   for (const module of contract.modules) {
-    if (!fs.existsSync(path.join(projectRoot, module.output))) {
+    // Extension freedom: the module is satisfied when ANY allowed-extension
+    // variant of its base path exists — the toolchain, not this gate, judges
+    // the chosen form. The orphan/import checks below are already
+    // extension-blind (withoutModuleExtension).
+    if (!moduleOutputVariants(module).some((variant) => (
+      fs.existsSync(path.join(projectRoot, variant))
+    ))) {
       findings.push({
         id: 'STRUCT_MISSING_PLANNED_MODULE',
         severity: 'error',
@@ -626,7 +648,12 @@ export function contractFindings(
   if (profileUsesExplicitRouter(contract.profile)) {
     const cause = unresolvedRouteNote(analyses);
     for (const route of contract.routes.filter((item) => !item.redirect)) {
-      if (!fs.existsSync(path.join(projectRoot, route.moduleOutput))) continue;
+      // Extension freedom: a page delivered at a non-default allowed variant
+      // must still prove its route wiring (routeUsesModule matches by stem, so
+      // the default moduleOutput compares extension-blind below).
+      const routeModule = contract.modules.find((module) => module.output === route.moduleOutput);
+      const deliveredAt = routeModule ? moduleOutputVariants(routeModule) : [route.moduleOutput];
+      if (!deliveredAt.some((variant) => fs.existsSync(path.join(projectRoot, variant)))) continue;
       const routePath = normalizedRoutePath(route.path);
       const matchingUsages = analyses.flatMap((analysis) => (
         analysis.routes

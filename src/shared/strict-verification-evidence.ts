@@ -134,9 +134,18 @@ export function strictRunVerificationEvidence(
       incomplete.add('qa-verification-incomplete');
     } else {
       qaReportPath = qa.reportPath;
+      // Anchor tester freshness on min(file mtime, hash-pinned generatedAt)
+      // whenever the verdict is attestation-backed: the sidecar mtime can be
+      // newer solely because the runtime rewrote it after acceptance (a
+      // persisted gate rejection against a drifted build tree — observed
+      // 14cl), and that self-rewrite must not read as "the tester never saw
+      // this report". A genuinely NEW report moves both timestamps forward.
       let reportMtimeMs = 0;
       try { reportMtimeMs = Math.floor(fs.statSync(qa.reportPath).mtimeMs); } catch { /* fail below */ }
-      if (reportMtimeMs <= 0 || tester.newestMtimeMs < reportMtimeMs) {
+      const reportAnchorMs = qa.acceptedGeneratedAtMs !== undefined && reportMtimeMs > 0
+        ? Math.min(reportMtimeMs, qa.acceptedGeneratedAtMs)
+        : reportMtimeMs;
+      if (reportAnchorMs <= 0 || tester.newestMtimeMs < reportAnchorMs) {
         incomplete.add('tester-qa-attestation-stale');
       }
     }

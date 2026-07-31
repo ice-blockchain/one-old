@@ -20,12 +20,14 @@ keeps native primitives and is not forced into a UI-package port. Follow
     ├── layouts/Layout.astro                app-shell/entrypoint
     ├── pages/<route>.astro                 compiled pages
     ├── components/                         compiled components
-    ├── features/<name>/index.ts
+    ├── features/<name>/index.astro
     └── lib/                                UI-local service/store modules
 ```
 
 Route parameters compile to `[name]`; `/` uses `src/pages/index.astro`. Astro
-file routing owns registration. The framework scaffold includes only
+file routing owns registration. Page filenames stay `.astro`; a feature entry
+defaults to `index.astro` and a headless entry may be delivered as `index.ts`
+— the compiled base path is the contract, the build arbitrates the form. The framework scaffold includes only
 `package.json`, `astro.config.mjs`, and `tsconfig.json`; this profile does not
 itself promise public crawl/share assets.
 

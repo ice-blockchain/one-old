@@ -41,8 +41,13 @@ If a contract is missing, stale, scan-incomplete, or hash-mismatched, emit
 `TESTS_FAILING`; never repair a runtime-owned sidecar.
 
 The canonical result is
-`.traffic-one/reports/qa/<run-id>/report-v2.json` with `schemaVersion: 2`.
-No digest, screenshot, or prose summary can substitute for that report.
+`.traffic-one/reports/qa/<run-id>/report-v2.json` with `schemaVersion: 2`,
+and the QA evidence runner — never this agent — writes it. No digest,
+screenshot, or prose summary can substitute for that report, and neither can a
+hand-authored `report-v2.json`: validation rejects it because it cannot carry
+the machine evidence (Playwright traces, screenshots, build fingerprint) the
+runner records alongside it. When validation names offending fields, fix the
+INPUTS and re-run the runner; never patch the JSON by hand.
 
 ## Owned outputs
 
@@ -107,8 +112,11 @@ everyone else.
 Follow `uiImpact` exactly:
 
 - `none`: run relevant stack build/test/lint. No browser and no screenshots.
+  The canonical report still comes from the runner:
+  `node ~/.traffic-one/bin/qa-evidence-runner.cjs stack --run-id "$RUN_ID"`
+  executes the stack commands itself and writes `report-v2.json`.
 - `nonvisual`: unit/component checks; axe only when a DOM fixture exists. No
-  browser E2E requirement.
+  browser E2E requirement. Produce the report with the same `stack` command.
 - `behavioral`: local headless Playwright against the built app. Assert DOM,
   actions, routing, hydration, console errors, and network errors. A passing
   run does not require screenshots.

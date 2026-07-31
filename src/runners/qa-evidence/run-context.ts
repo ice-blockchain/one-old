@@ -14,6 +14,7 @@ import {
   validateQaReportV2,
   type QaReportV2,
 } from '../../shared/qa-report-v2';
+import { reconcileRunSettlement } from '../../shared/run-settlement';
 import {
   currentVerificationSourceHash,
   readVerificationContract,
@@ -82,6 +83,25 @@ export function safeProjectRelative(projectRoot: string, value: string): string 
 
 export function qaDir(projectRoot: string, runId: string): string {
   return path.join(projectRoot, '.traffic-one', 'reports', 'qa', runId);
+}
+
+// Persist the canonical QA report AND re-derive the run's canonical settlement
+// from it. `reconcileRunSettlement` used to be reachable only from the two
+// session/prompt boundaries (session-start, prompt-submit), so the PLAN_READY
+// seed (`active` + `verification-not-started`) survived verbatim for the whole
+// run — observed still at revision 5 roughly fifty minutes after
+// verification-v2.json, report-v2.json and both reviewer/tester digests were on
+// disk. The settlement is DERIVED state, so it has to be re-derived where the
+// evidence actually lands, not only where a human happens to type. Publishing a
+// report can never manufacture `verified` here: strict evidence additionally
+// requires a reviewer/tester attestation NEWER than this report.
+export function publishQaReportV2(
+  projectRoot: string,
+  runId: string,
+  report: QaReportV2,
+): void {
+  writeJson(qaReportV2Path(projectRoot, runId), report);
+  reconcileRunSettlement(projectRoot, runId);
 }
 
 export function outputPath(
@@ -224,7 +244,7 @@ export function publishStackReport(
     checks,
     routes: [],
   };
-  writeJson(qaReportV2Path(args.projectRoot, args.runId), report);
+  publishQaReportV2(args.projectRoot, args.runId, report);
   const validation = validateQaReportV2(report, args.projectRoot, args.runId, loaded.contract);
   return validation.ok
     ? { report, ok: true }
@@ -309,7 +329,7 @@ export function publishAndValidateReport(
     ...(lighthouseField ? { lighthouse: lighthouseField } : {}),
     ...(blockerSummary ? { blockerSummary } : {}),
   };
-  writeJson(qaReportV2Path(args.projectRoot, args.runId), report);
+  publishQaReportV2(args.projectRoot, args.runId, report);
   const validation = validateQaReportV2(report, args.projectRoot, args.runId, loaded.contract);
   return validation.ok
     ? { report, ok: true }

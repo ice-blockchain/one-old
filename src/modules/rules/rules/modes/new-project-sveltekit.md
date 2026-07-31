@@ -23,12 +23,15 @@ For a new project `<web-root>` is `apps/web`; Tailwind v4 resolves
     │   └── <route segments>/+page.svelte   compiled pages
     └── lib/
         ├── components/                     compiled components
-        ├── features/<name>/index.ts
+        ├── features/<name>/index.svelte
         └── ...                             UI-local service/store modules
 ```
 
 Route parameters compile to `[name]`; `/` uses `src/routes/+page.svelte`.
-SvelteKit owns route discovery, so do not add a parallel registry. The framework
+SvelteKit owns route discovery, so do not add a parallel registry.
+`+page`/`+layout` filenames stay pinned; a feature entry defaults to
+`index.svelte` and a headless entry may be delivered as `index.ts` — the
+compiled base path is the contract, the build arbitrates the form. The framework
 scaffold includes only `package.json`, `svelte.config.js`, `vite.config.ts`, and
 `tsconfig.json`; this profile does not itself promise public crawl/share assets.
 

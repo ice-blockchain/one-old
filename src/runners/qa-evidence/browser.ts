@@ -284,7 +284,11 @@ export async function browserCommand(
   const scenario = loadScenario(args, loaded.contract);
   const out = outputPath(args, 'machine-evidence-v1.json');
   if (!scenario || !out) {
-    process.stderr.write('qa-evidence: scenario/output path is invalid or does not cover changedRoutes exactly.\n');
+    process.stderr.write(
+      'qa-evidence: scenario/output path is invalid or does not cover changedRoutes exactly. '
+      + 'A route that fills a form must also submit it and assert the success path, '
+      + 'and a degraded-state affordance (setup CTA, placeholder, off-site link) is never the pass condition.\n',
+    );
     return 2;
   }
   fs.mkdirSync(path.dirname(out.absolute), { recursive: true });

@@ -282,8 +282,15 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
           { TARGET: target, OWNER: String(conflict.agentKey || conflict.role), ROLE: String(myKey) }));
       }
       if (runtimeAssignments) {
+        // The remedy used to name only the replan. Inside a fix cycle there is
+        // no replan available, so an order to write an unowned path became an
+        // unescapable deny: the implementer could not comply, the reviewer
+        // could not approve, and the run deadlocked (observed 12co,
+        // `apps/web/public/llms.txt`). Name the action that EXISTS in both
+        // situations first — report BLOCKED in the role digest — and keep the
+        // replan as the between-runs remedy it actually is.
         return deny(block('run-team-runtime-allowlist-gap',
-          `Run-team enforcement gate: STRUCT_ASSIGNMENT_ALLOWLIST_GAP — \`${target}\` is outside \`${myKey}\`'s immutable runtime-owned WorkUnitContract. No dynamic claim is allowed for a compiled run. Return the required output in the role digest and replan ArchitectureInputV1 before execution.`,
+          `Run-team enforcement gate: STRUCT_ASSIGNMENT_ALLOWLIST_GAP — \`${target}\` is outside \`${myKey}\`'s immutable runtime-owned WorkUnitContract. No dynamic claim is allowed for a compiled run. Do NOT keep retrying this write, and do not move it to a path you do own. Report it in your digest instead: name \`${target}\`, say it is in no role's allowlist, and set your verdict to \`BLOCKED\` (in a fix cycle, list it under \`FIXES_FAILING\` with this reason — that is the whole available action there, and it is a complete answer). Replanning ArchitectureInputV1 to compile a home for the path happens between runs, by the architect, never from inside this session.`,
           { TARGET: target, ROLE: String(myKey) }));
       }
       // Outside every assignment -> dynamic first-write claim (no hard deadlock).

@@ -65,6 +65,21 @@ function namespaceId(value: string, fallback: string): string {
   return normalized || fallback;
 }
 
+/**
+ * The catalog namespace one module's own copy belongs to — the same derivation
+ * `architectureI18nNamespaces` below applies to the whole input, asked for a
+ * single module. Pages take their route's namespace, features their own id,
+ * everything else shares `common`.
+ */
+export function architectureModuleNamespace(
+  module: Pick<ArchitectureModuleInputV1, 'id' | 'kind'>,
+  route: Pick<ArchitectureRouteInputV1, 'id'> | undefined,
+): string {
+  if (module.kind === 'page') return namespaceId(route?.id || module.id, 'common');
+  if (module.kind === 'feature') return namespaceId(module.id, 'common');
+  return 'common';
+}
+
 export function architectureI18nNamespaces(
   modules: readonly ArchitectureModuleInputV1[],
   routes: readonly ArchitectureRouteInputV1[],

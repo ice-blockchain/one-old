@@ -172,7 +172,10 @@ export function objectProperties(
   const properties = new Map<string, PropertyValue[]>();
   const depth = braceDepths(syntax);
   const objectDepth = depth[open]! + 1;
-  const pattern = /\b(path|element|Component|component|lazy)\s*:/g;
+  // `children` is collected as a route SIGNAL only (a nested-route parent is
+  // route-shaped even without a render target); render targets stay the four
+  // keys routes.ts reads.
+  const pattern = /\b(path|element|Component|component|lazy|children)\s*:/g;
   pattern.lastIndex = open + 1;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(commentsMasked)) && match.index < close) {

@@ -172,6 +172,16 @@ selected: Supabase/our-fork uses `packages/api-client/src/`, Go uses
 use `app/Services/`, and other owned backends use `services/api/src/`. Use the
 compiled module path; do not duplicate a browser-side service.
 
+An `edge-function` module is the serverless/edge unit and exists only on
+Supabase/our-fork backends — compilation refuses it on any other. It compiles
+to `supabase/functions/<kebab(name)>/index.ts`, owned by `senior-backend`, and
+it is the ONLY module kind that does not belong to the app's TypeScript
+project: the file runs on Deno. Keep it out of the app `tsconfig` includes and
+the ESLint project (the seeded `eslint.config.js` already ignores
+`supabase/functions/**`), never import it from app code — invoke it through the
+Supabase client — and expect no compiled unit test for it. A unit of work that
+belongs inside the app's own TS project is a `service`, not an `edge-function`.
+
 ### Test and QA overlay
 
 Module-derived tester outputs are authoritative only when they appear in

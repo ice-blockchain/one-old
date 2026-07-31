@@ -151,18 +151,22 @@ outside its role's compiled assignment is rejected at Step-0 delegation
 (pre-model, paid fallback). Scope mismatches never block `PLAN_READY`, so do
 not try to guess the compiled allowlist — declare the owning module instead.
 The compiled path per module is DETERMINISTIC (closed kind list: app-shell,
-page, component, feature, service, store, test): `feature` → `<features-root>/
-<kebab(name)>/index.ts`; `page` → `<pages-root>/<Pascal(name)>.tsx`;
+page, component, feature, service, store, edge-function, test): `feature` → `<features-root>/
+<kebab(name)>/index<profile-native-extension>` (`.tsx` for React/React Native);
+`page` → `<pages-root>/<Pascal(name)>.tsx`;
 `component` → `<components-root>/<Pascal(name)>.tsx`; `app-shell` → the app
 shell entry (router/shell only); `test` → `tests/<kebab(name)>.test.ts`;
 `service`/`store` compile into backend-owned api-client files whenever a
-backend role exists. Standing scaffold files are also unit-safe when the
+backend role exists; `edge-function` (Supabase-family backends only) →
+`supabase/functions/<kebab(name)>/index.ts`, backend-owned and Deno, so it
+stays outside the app's tsconfig/lint surface and gets no compiled unit test.
+Standing scaffold files are also unit-safe when the
 role owns them: `README.md`, the source i18n catalog, backend seed/migrations.
 There is NO compiled helpers/util file for the frontend when a backend role
 exists — never queue invented paths (`src/lib/format.ts`, `features/<x>/
 demo-content.ts`): the rejected unit's files are unwritable for the
-implementers too, so fold helper/demo content into the owning feature's
-`index.ts` or a declared component instead. If
+implementers too, so fold helper/demo content into the owning feature entry or
+a declared component instead. If
 the task mentions tests, testability, Vitest, Playwright, specs, or config/deps,
 the allowlist must include the exact test/spec/config/package files it may
 touch; otherwise remove that acceptance and leave verification/config work to
@@ -188,7 +192,7 @@ CLI, worker, data-only, or native-only profiles.
 Write semantic ArchitectureInputV1 to
 .traffic-one/runs/<run-id>/architecture-input-v1.json: route ids/paths and
 module ids, semantic modules (`app-shell`, `page`, `component`, `feature`,
-`service`, `store`, or `test`), exact demand-driven `uiPrimitives` identifiers
+`service`, `store`, `edge-function`, or `test`), exact demand-driven `uiPrimitives` identifiers
 from the active adapter's official catalog, optional `placement: "shared-ui"`
 only for reusable domain-agnostic component modules, optional semantic `i18n` intent
 (`sourceLocale`, supported `locales`, exact `literalBrands`), and only narrowly
@@ -535,6 +539,19 @@ node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status completed --
 The completed commands are evidence-gated. Never infer them from green text,
 deploy intent, or delegated-only output. Blocked/failed settlement preserves
 the run and its role agents for the unresolved-run flow.
+
+When reading `run.json`, know that its top-level `status`/`outcome` are a
+compatibility projection for older runtimes, NOT the run's truth: a V2 run
+that is still verifying is deliberately projected as `status: "failed"` /
+`outcome: "agent-failed"` so a rolled-back runtime cannot resume it.
+`canonicalStatus` (and `runtimeV2RollbackGuard.canonicalStatus`) is the truth —
+e.g. `canonicalStatus: "validating"` means verification is still settling, not
+that any agent died. Never build a recovery story from the projected
+`failed`/`agent-failed` pair, and never request `--status active --reason
+user-authorized-extra-cycle` for it (that edge exists only for a canonically
+`blocked` run). If a `completed` command is rejected, the stderr names the
+exact failed check (reviewer/tester verdict, QA evidence, claims) — fix that
+named check and re-run the same command.
 
 ## Phase 4 — Shipper (only on explicit deploy intent)
 

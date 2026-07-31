@@ -235,7 +235,16 @@ the architect digest. It contains semantic intent only:
 ```
 
 Allowed module kinds are `app-shell`, `page`, `component`, `feature`, `service`,
-`store`, and `test`. Every route target must reference a declared module.
+`store`, `edge-function`, and `test`. Every route target must reference a
+declared module.
+Use `edge-function` for a serverless/edge unit on a Supabase-family backend
+(webhook receiver, third-party callback, privileged server-side job). It
+compiles to `supabase/functions/<kebab(name)>/index.ts`, is owned by
+`senior-backend`, and runs on Deno — so it is NOT part of the app's TypeScript
+project: keep it out of the app tsconfig/eslint surface, never import it from
+app code (call it through `functions.invoke`), and never model it as a
+`service`, which is mandatorily mapped into the app-side client package.
+Compilation refuses `edge-function` on any non-Supabase backend.
 For web UI, inventory all controls and states, inspect installed `packages/ui`
 components, and search the active adapter's official catalog by name,
 behavior, and synonyms. Put each required exact CLI identifier in

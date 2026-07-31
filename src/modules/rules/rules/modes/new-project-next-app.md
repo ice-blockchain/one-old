@@ -29,10 +29,17 @@ unless the user selected or the project detected another UI library.
 │   ├── globals.css                        design tokens + Tailwind entry
 │   └── <route segments>/page.tsx          compiled page modules
 ├── components/ | src/components/          compiled components
-├── features/ | src/features/              <name>/index.ts
+├── features/ | src/features/              <name>/index.tsx
 ├── lib/ | src/lib/                        UI-local service/store modules
 └── public/                                 crawl/share asset set
 ```
+
+A `feature` module compiles to a `.tsx` entry by default so its section can
+hold JSX; the compiled base path is the contract, and a headless entry with no
+JSX may be delivered as `index.ts` instead — `tsc`/build arbitrates the form.
+Route files (`page.tsx`, `layout.tsx`) keep their pinned filenames.
+Export that entry and its helpers by NAME — a feature entry is a module entry,
+not a route file, and only route files may `export default`.
 
 Styling lives in the compiled `globals.css` (imported once from
 `layout.tsx`) plus Tailwind utility classes — never in `<style>` tags or

@@ -21,7 +21,7 @@ For a new project `<web-root>` is `apps/web`; Tailwind v4 resolves
 │   ├── App.vue                            planned app shell
 │   ├── pages/ | views/                    compiled pages
 │   ├── components/                        compiled components
-│   ├── features/<name>/index.ts
+│   ├── features/<name>/index.vue
 │   └── lib/ | composables/                UI-local service/store modules
 └── public/                                 crawl/share asset set
 ```
@@ -29,7 +29,9 @@ For a new project `<web-root>` is `apps/web`; Tailwind v4 resolves
 `pages` versus `views`, and `main.ts` versus `main.js`, are frozen precedence
 choices from baseline evidence. A semantic page compiles to
 `<selected-pages-root>/<PascalName>.vue`; Vue Router registration belongs only
-in a compiled module/entrypoint output.
+in a compiled module/entrypoint output. SFC-shaped modules default to `.vue`
+and a headless entry may be delivered as `.ts` at the same base path — the
+compiled base path is the contract, the build arbitrates the form.
 
 The framework scaffold includes `package.json`, `vite.config.ts`,
 `tsconfig.json`, and the catalog's public assets. Common repository/tooling,

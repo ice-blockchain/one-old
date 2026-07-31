@@ -21,6 +21,7 @@ import {
 } from '../../shared/capabilities';
 import {
   readCompiledArchitecture,
+  uiAstLintLayer,
 } from '../../shared/architecture-contract';
 import {
   analyzeI18nSourceText,
@@ -29,6 +30,11 @@ import {
   validateI18nCatalogs,
   type I18nReference,
 } from '../../shared/i18n-enforcement';
+import { seedI18nCatalogKeys } from '../../shared/i18n-seed';
+import {
+  formatFileWithPrettier,
+  resolveProjectPrettier,
+} from '../../shared/prettier-fix';
 import {
   normalizeOpenCodeRole,
 } from '../../shared/opencode-queue';
@@ -266,10 +272,23 @@ export function postApplyQuality(cwd: string, touched: string[]): string | null 
     } catch {
       continue; // deleted or unreadable — not this check's concern
     }
-    const line = collapsedLineNumber(rel, text);
-    if (line !== null) {
-      return `${rel}:${line} packs an entire function/component onto one line`;
+    let line = collapsedLineNumber(rel, text);
+    if (line === null) continue;
+    // Deterministic auto-fix before the rollback: the diff has already been
+    // applied, so when the project's own prettier is reachable from this
+    // file's package scope, format the landed file in place and re-scan.
+    // Rollback remains for files no formatter can reach (pre-install) or fix.
+    const bin = resolveProjectPrettier(cwd, rel);
+    if (bin && formatFileWithPrettier(bin, cwd, rel)) {
+      try {
+        text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+        line = collapsedLineNumber(rel, text);
+      } catch {
+        continue;
+      }
+      if (line === null) continue;
     }
+    return `${rel}:${line} packs an entire function/component onto one line`;
   }
   return null;
 }
@@ -335,8 +354,23 @@ export function postApplyI18n(
     }
     const source = analyzeI18nSourceText(rel, text, profile, i18n);
     references.push(...source.references);
-    findings.push(...source.findings);
+    // Same demotion as the write/completion gates: where the compiled eslint
+    // config carries a real AST i18n rule (React-family, Vue), lexical copy
+    // findings advise instead of triggering the apply rollback — the project's
+    // own `lint` run owns that verdict. Catalog findings always block.
+    findings.push(...source.findings.filter((finding) => (
+      !uiAstLintLayer(profile)
+      || (finding.id !== 'STRUCT_HARDCODED_COPY' && finding.id !== 'STRUCT_I18N_REACT_TRANS')
+    )));
   }
+  // Deterministic catalog seeding, mirroring the write gate: a missing key
+  // that a `<Trans ns i18nKey>fallback</Trans>` in this delegated diff
+  // references is auto-fixed from its own fallback before validation. When
+  // findings remain anyway, the seeds are restored so the rollback leaves the
+  // tree exactly as the failed apply's own rollback expects it.
+  const seeded = i18n && references.some((reference) => reference.fallback)
+    ? seedI18nCatalogKeys(cwd, i18n, references)
+    : null;
   if (i18n) {
     const namespaces = new Set(references.map((reference) => reference.namespace));
     for (const catalog of i18n.catalogs) {
@@ -359,6 +393,7 @@ export function postApplyI18n(
     });
   }
   if (findings.length === 0) return null;
+  seeded?.restore();
   return findings.slice(0, 4).map((finding) => (
     `${finding.file}${finding.line ? `:${finding.line}` : ''} ${finding.id}: ${finding.message}`
   )).join(' | ');

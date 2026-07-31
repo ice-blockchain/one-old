@@ -52,4 +52,20 @@ test('packFixCycleHeader points at the fix-cycle + digest files', () => {
   const r = packFixCycleHeader('/x', 'senior-reviewer', 'run-1', 2);
   assert.ok(r.body.includes('.traffic-one/fix-cycles/run-1/senior-reviewer-fix-1.md'));
   assert.ok(r.body.includes('.traffic-one/digests/run-1/reviewer.md'));
+  // No consolidated quality-findings file on disk → no pointer to a missing path.
+  assert.ok(!r.body.includes('quality-findings'));
+});
+
+test('packFixCycleHeader also points at the consolidated quality findings when they exist', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-pack-quality-'));
+  try {
+    const rel = path.join('.traffic-one', 'fix-cycles', 'run-1', 'senior-frontend-quality-findings.md');
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), '# findings\n', 'utf8');
+    const r = packFixCycleHeader(dir, 'senior-frontend', 'run-1', 2);
+    assert.ok(r.body.includes('.traffic-one/fix-cycles/run-1/senior-frontend-quality-findings.md'));
+    assert.ok(r.body.includes('Also apply ALL accumulated quality findings'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

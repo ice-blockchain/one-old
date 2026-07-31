@@ -110,6 +110,7 @@ export {
 export {
   anyRunProducedImplementerOutput,
   anyRunReachedTerminalVerdict,
+  describeTerminalSettleBlockers,
   runHasOrchestratedArtifacts,
   runIsEmptyFailedHusk,
   runSettledForRotation,

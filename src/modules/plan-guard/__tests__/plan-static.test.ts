@@ -79,7 +79,7 @@ test('compiled runtime output paths never trip a static placement rule', () => {
     'apps/web/src/pages/HomePage.tsx',
     'apps/web/src/pages/CourseDetailPage.tsx',
     'apps/web/src/components/CourseCardComponent.tsx',
-    'apps/web/src/features/courses-catalog-feature/index.ts',
+    'apps/web/src/features/courses-catalog-feature/index.tsx',
     'packages/ui/src/index.ts',
     'packages/i18n/src/index.ts',
     'packages/api-client/src/AuthAPIService.ts',
@@ -106,6 +106,36 @@ test('deep relative package imports are flagged', () => {
 test('default export in a reusable component is flagged', () => {
   assert.deepEqual(check('packages/ui/src/components/Btn.tsx', 'export default function Btn() {}'), ['default-export']);
   assert.deepEqual(check('apps/web/src/features/x/Card.tsx', 'export default function Card() {}'), ['default-export']);
+});
+
+test('the compiled feature entry is NOT a default-export exception — named exports are mandated', () => {
+  // `feature` stopped compiling to a JSX-illegal `features/<name>/index.ts`,
+  // so the entry is now `.tsx` and this rule reaches it for the first time.
+  // The resolution is the CONVENTION, not a third exemption: nothing lazy-loads
+  // a feature entry by the default-export contract (routes compile to the pages
+  // root), every other `.tsx` under features/ already required a named export,
+  // and the remedy is a rename inside the same file — never a relocation.
+  assert.deepEqual(
+    check('apps/web/src/features/contact-section/index.tsx', 'export default function ContactSection() {}'),
+    ['default-export'],
+  );
+  // The Inertia features root (`resources/js/Features`) is outside this rule's
+  // `src/(components|features)/` anchor and was never reached — recorded so a
+  // future widening of the anchor is a deliberate decision, not a surprise.
+  assert.deepEqual(
+    check('apps/web/resources/js/Features/auth/index.tsx', 'export default function Auth() {}'),
+    [],
+  );
+  // the named form the mode rules print is clean
+  assert.deepEqual(
+    check('apps/web/src/features/contact-section/index.tsx', 'export function ContactSection() { return null; }'),
+    [],
+  );
+  // and the pre-existing `.ts` entry shape stays clean for profiles that keep it
+  assert.deepEqual(
+    check('apps/web/src/features/contact-section/index.ts', 'export default function ContactSection() {}'),
+    [],
+  );
 });
 
 test('default export in web page/route files is the exception (8c: React.lazy contract)', () => {

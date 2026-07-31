@@ -72,6 +72,13 @@ export interface OpenCodeUnitStatusEntry {
   touched?: string[];
   allowedFiles?: string[];
   assignmentHash?: string | null;
+  /**
+   * Where the unit came from. Absent (or `plan-queue`) = a unit the architect
+   * queued in plan.md; `direct` = a per-role `opencode_delegate` call, which
+   * has no queue entry but must still be registered so no delegation is
+   * invisible in the ledger.
+   */
+  source?: 'plan-queue' | 'direct';
   fallback?: {
     status: 'paid_spawned';
     role: string;

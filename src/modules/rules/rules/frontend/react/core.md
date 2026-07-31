@@ -77,6 +77,11 @@ delivering mobile with Ionic/Capacitor.
   `src/pages/` and Expo Router files under `app/` may default-export — that is
   the `React.lazy` / router contract; do not wrap lazy imports in a
   `.then((m) => ({ default: m.X }))` shim just to keep a named export.
+  A compiled feature entry (`features/<name>/index.tsx`) is a module entry, not
+  a route file: export its section component and its helpers by name. That
+  entry is the feature's barrel — split components/hooks/types into sibling
+  files in the same feature folder as it grows; the folder is the feature's
+  scope and sibling files verify.
 - Props have an explicit `ComponentNameProps` interface.
 - All API calls via `services/` or RTK Query — never axios in components.
 - Server state in RTK Query/Redux only — never duplicated in zustand or component state.

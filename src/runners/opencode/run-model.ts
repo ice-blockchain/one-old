@@ -15,6 +15,7 @@ import {
   MAX_DELEGATE_ATTEMPTS,
   OPENCODE_RUN_ENV,
   RUN_TIMEOUT_MS,
+  T1_DIR,
   which,
 } from './types';
 import {
@@ -51,40 +52,139 @@ export function runStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, 'Z');
 }
 
+// One record per delegated model run, kept per digest role so a multi-unit
+// batch renders ALL of its work. Units of the same role are processed
+// sequentially inside a single role shard, so this read-modify-write is the
+// only writer of a given file.
+interface DelegatedDigestUnit {
+  model: string;
+  at: string;
+  touched: string[];
+  summary: string;
+}
+
+const MAX_DIGEST_UNITS = 20;
+const DIGEST_SUMMARY_BUDGET = 900;
+const DIGEST_TOUCHED_LINES = 20;
+
+function digestUnitsPath(cwd: string, runId: string, digestRole: string): string {
+  return path.join(cwd, T1_DIR, 'runs', runId, 'opencode-digest-units', `${digestRole}.json`);
+}
+
+function parseDigestUnit(value: unknown): DelegatedDigestUnit | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  if (typeof rec.model !== 'string' || typeof rec.at !== 'string') return null;
+  return {
+    model: rec.model,
+    at: rec.at,
+    touched: Array.isArray(rec.touched) ? rec.touched.filter((f): f is string => typeof f === 'string') : [],
+    summary: typeof rec.summary === 'string' ? rec.summary : '',
+  };
+}
+
+// Every landed unit used to OVERWRITE the same digest path, so a four-unit
+// frontend batch (12 files) shipped a digest naming only the last unit's three
+// files and three units' work was invisible (observed live). Accumulate instead.
+function accumulateDigestUnits(
+  cwd: string,
+  runId: string,
+  digestRole: string,
+  unit: DelegatedDigestUnit,
+): DelegatedDigestUnit[] {
+  const filePath = digestUnitsPath(cwd, runId, digestRole);
+  let prior: DelegatedDigestUnit[] = [];
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (Array.isArray(parsed)) {
+      prior = parsed.map(parseDigestUnit).filter((u): u is DelegatedDigestUnit => Boolean(u));
+    }
+  } catch {
+    // first unit for this role (or an unreadable ledger) — start fresh
+  }
+  const next = [...prior, unit].slice(-MAX_DIGEST_UNITS);
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  } catch {
+    // best-effort ledger; the digest below still renders this unit
+  }
+  return next;
+}
+
+// Truncate on a WORD boundary and never mid-token inside a backticked
+// identifier — the old raw `.slice(0, 400)` cut a summary in the middle of a
+// `path/like.this` span and left an unbalanced backtick in the digest
+// (observed live).
+function clampSummary(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+  let cut = flat.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace > max * 0.6) cut = cut.slice(0, lastSpace);
+  if ((cut.match(/`/g) || []).length % 2 === 1) cut = cut.slice(0, cut.lastIndexOf('`'));
+  return `${cut.replace(/[\s,;:]+$/, '')}…`;
+}
+
 export function writeDigest(cwd: string, runId: string, role: string, model: string, touched: string[], summary: string, opts?: { planUnit?: boolean }): string {
   const dir = path.join(cwd, '.traffic-one', 'digests', runId);
   fs.mkdirSync(dir, { recursive: true });
-  const touchedLines = touched.slice(0, 20).map((f) => `- ${f}        # delegated edit`).join('\n')
-    + (touched.length > 20 ? `\n- … +${touched.length - 20} more` : '');
+  // Same filename rule as every other digest writer/reader (senior-frontend →
+  // frontend.md): successor roles and the build-complete verification heuristic
+  // look for the stripped name, so the full role string would hide the digest.
+  const planUnit = Boolean(opts?.planUnit);
+  const digestRole = planUnit ? `opencode-${roleDigestName(role)}` : roleDigestName(role);
+  const units = accumulateDigestUnits(cwd, runId, digestRole, {
+    model,
+    at: nowIso(),
+    touched,
+    summary: summary || 'OpenCode applied the delegated change.',
+  });
+  const allTouched: string[] = [];
+  for (const unit of units) {
+    for (const file of unit.touched) if (!allTouched.includes(file)) allTouched.push(file);
+  }
+  const touchedLines = allTouched.slice(0, DIGEST_TOUCHED_LINES).map((f) => `- ${f}        # delegated edit`).join('\n')
+    + (allTouched.length > DIGEST_TOUCHED_LINES ? `\n- … +${allTouched.length - DIGEST_TOUCHED_LINES} more` : '');
+  const perUnitBudget = Math.max(120, Math.floor(DIGEST_SUMMARY_BUDGET / units.length));
+  const summaryLines = units.map((unit, index) => (
+    `- unit ${index + 1} (${unit.model}, ${unit.touched.length} file${unit.touched.length === 1 ? '' : 's'}): ${clampSummary(unit.summary, perUnitBudget)}`
+  )).join('\n');
   // The runner cannot honestly claim a role's canonical verdict (TESTS_GREEN /
-  // IMPLEMENTED) — it applied a diff, it did not verify anything. Delegated
-  // digests therefore carry DELEGATED_OK plus an explicit normalization hint,
-  // so the orchestrator does the one-line verdict edit itself after ITS
-  // verification passes (observed live: without the hint it spawned a whole
-  // paid agent just to rewrite this line).
+  // IMPLEMENTED) — it applied a diff, it did not verify anything. A WHOLE-ROLE
+  // delegation writes the role's own digest, so it carries DELEGATED_OK plus an
+  // explicit normalization hint and the orchestrator does the one-line verdict
+  // edit itself after ITS verification passes (observed live: without the hint
+  // it spawned a whole paid agent just to rewrite this line). A PLAN-UNIT digest
+  // is not the role's digest — it is this run's ledger of delegated units, and
+  // the role's own `<role>.md` carries the verdict — so it deliberately carries
+  // no normalize_to: the hint sat there unapplied on every run, and after
+  // accumulation a single "normalize me" line cannot speak for N units.
   const canonical = roleDigestName(role) === 'tester' ? 'TESTS_GREEN' : 'IMPLEMENTED';
-  const digestRole = opts?.planUnit ? `opencode-${roleDigestName(role)}` : roleDigestName(role);
   const body = [
     `# ${role} digest — run ${runId}`,
     '',
     'verdict: DELEGATED_OK',
-    `normalize_to: ${canonical} — once the orchestrator's own verification passes, edit the verdict line above to this canonical token (one-line edit; do NOT spawn an agent for it)`,
-    `finished_at: ${nowIso()}`,
-    `delegated_to: opencode (${model})`,
+    ...(planUnit
+      ? []
+      : [`normalize_to: ${canonical} — once the orchestrator's own verification passes, edit the verdict line above to this canonical token (one-line edit; do NOT spawn an agent for it)`]),
+    `finished_at: ${units[units.length - 1]!.at}`,
+    `delegated_to: opencode (${[...new Set(units.map((u) => u.model))].join(', ')})`,
+    `delegated_units: ${units.length}`,
     '',
     '## Touched',
     touchedLines || '- (none)',
     '',
     '## Summary',
-    (summary || 'OpenCode applied the delegated change.').slice(0, 400),
+    summaryLines,
     '',
     '## Open questions / blockers / assumptions',
     '- Changes produced by OpenCode (free model). Reviewer MUST verify the diff before commit.',
+    ...(planUnit
+      ? [`- Delegated plan units only — the run verdict for this role lives in \`${roleDigestName(role)}.md\`.`]
+      : []),
     '',
   ].join('\n');
-  // Same filename rule as every other digest writer/reader (senior-frontend →
-  // frontend.md): successor roles and the build-complete verification heuristic
-  // look for the stripped name, so the full role string would hide the digest.
   const p = path.join(dir, `${digestRole}.md`);
   fs.writeFileSync(p, body.slice(0, DIGEST_HARD_BYTES), 'utf8');
   return p;

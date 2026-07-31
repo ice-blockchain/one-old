@@ -6,8 +6,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {  readJson } from '../../fsjson';
 import { isMaintenanceTerminal } from '../../maintenance/terminal';
+import { readQaReportV2 } from '../../qa-report-v2';
 import {
   activeRunClaimCount,
+  activeRunClaimScan,
 } from '../../run-settlement';
 
 import {
@@ -20,6 +22,7 @@ import {
   type RunLedgerOutcome,
 } from './ledger';
 import {
+  listClaimedAgents,
   releaseRunClaims,
 } from './claims-store';
 import {
@@ -27,6 +30,7 @@ import {
   digestDir,
   readDigest,
   reviewerDigestApprovedForRun,
+  runDigestVerdict,
   runHasExplicitBlockedQaOutcome,
   runHasQaEvidence,
   runLedgerStatusRecord,
@@ -81,6 +85,76 @@ export function settleTerminalRunLedger(
     outcome: 'verified',
     preserveLegacyQaContract,
   });
+}
+
+/**
+ * Why did (or would) `settleTerminalRunLedger` refuse this terminal outcome?
+ * Re-evaluates the SAME predicates the settle path checks and names each one
+ * that fails, most fundamental first. Diagnostic only — it never mutates state
+ * and never substitutes for the settle path's own checks.
+ *
+ * Exists because "transition rejected; inspect run.json" misled a live
+ * orchestrator (14cl): run.json showed the rollback-barrier MASK
+ * (status 'failed'/outcome 'agent-failed' over canonicalStatus 'validating'),
+ * so the orchestrator invented an agent-death story and asked the user to
+ * authorize a blocked->active resume that was neither needed nor available.
+ * A refusal must name the concrete failed check and the next step instead.
+ */
+export function describeTerminalSettleBlockers(
+  cwd: string,
+  runId: string,
+  expectedOutcome: Extract<RunLedgerOutcome, 'verified' | 'shipped'>,
+): string[] {
+  const blockers: string[] = [];
+  const ledgerState = runLedgerStatusRecord(cwd, runId);
+  if (ledgerState.status === 'failed') {
+    blockers.push("run ledger status is terminal 'failed' — no transition to completed exists from it");
+  } else if (ledgerState.status === 'blocked') {
+    blockers.push("run ledger status is 'blocked' — resume it first with "
+      + `\`--run-id ${runId} --status active --reason user-authorized-extra-cycle\` (requires the user's explicit authorization)`);
+  }
+  if (expectedOutcome === 'shipped' && !shipperDigestCompleted(cwd, runId)) {
+    blockers.push('shipper digest does not record a clean SHIPPED verdict');
+  }
+  const reviewer = readDigest(cwd, runId, 'reviewer.md');
+  const tester = readDigest(cwd, runId, 'tester.md');
+  if (!reviewerDigestApprovedForRun(cwd, runId, reviewer)) {
+    blockers.push('reviewer digest is not APPROVED '
+      + `(parsed verdict: ${runDigestVerdict(cwd, runId, 'reviewer.md') ?? 'none or conflicting'})`);
+  }
+  if (!testerDigestPassedForRun(cwd, runId, tester)) {
+    blockers.push('tester digest is not TESTS_GREEN '
+      + `(parsed verdict: ${runDigestVerdict(cwd, runId, 'tester.md') ?? 'none or conflicting'})`);
+  }
+  if (!runHasQaEvidence(cwd, runId)) {
+    const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+    if (ledger?.qaContractVersion === 2) {
+      const qa = readQaReportV2(cwd, runId);
+      if (!qa.ok) {
+        blockers.push(`QA evidence did not validate — ${qa.code}: ${qa.message}`);
+      } else {
+        blockers.push('QA report is valid but the tester digest predates it — '
+          + 'the tester must re-emit its verdict after the report was generated');
+      }
+    } else {
+      blockers.push('QA evidence is missing, stale, or explicitly blocked for this run');
+    }
+  }
+  if (blockers.length === 0) {
+    // Everything green: the only remaining veto is claim liveness — which the
+    // settle path releases itself, so a lingering positive count here means a
+    // truncated scan or claims staked after the last settle attempt.
+    const scan = activeRunClaimScan(cwd, runId);
+    if (scan.count > 0 || !scan.complete) {
+      const roles = [...new Set(listClaimedAgents(cwd, runId)
+        .filter((claim) => claim.status !== 'released')
+        .map((claim) => String(claim.role || 'unknown')))].sort();
+      blockers.push(`${scan.count} active claim(s)${roles.length ? ` held by ${roles.join(', ')}` : ''}`
+        + `${scan.complete ? '' : ' (claim scan truncated)'} — the green settle path releases claims itself, `
+        + 'so re-run the same command; if this persists an agent is still live in this run');
+    }
+  }
+  return blockers;
 }
 
 // Prompt-boundary "settled enough to rotate the run id" — used ONLY by the maintenance

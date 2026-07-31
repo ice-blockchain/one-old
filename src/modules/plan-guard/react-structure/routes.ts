@@ -56,6 +56,59 @@ function unresolvedDisplay(prefix: string, value: string): string {
   return `${prefix}${trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed}`;
 }
 
+// The 14cl false-positive class: `path:` is an ordinary identifier, so the
+// recognizer also matched a TypeScript interface member (`path: string;` in
+// Seo.tsx) and a Zod issue path (`path: ['confirmPassword']` in SignUpForm.tsx)
+// and reported each as an unverifiable route. Three narrowings, each from
+// ground truth, applied ONLY to the unresolved-route note (literal routes were
+// never affected — they already require a render-target sibling):
+//   (a) a value carrying a top-level `;`, or a bare primitive-type token, is
+//       type/interface syntax — object-literal values end at `,` or `}`;
+//   (b) an array-literal value is never a route path;
+//   (c) the object must be route-shaped at all: a route-signal sibling key
+//       (element/Component/component/lazy/children) or an enclosing recognized
+//       route-table call. `path: CONSTANT` inside a real route table stays
+//       reported — that unresolved class is the 1co incident this note exists
+//       for.
+const ROUTE_SIGNAL_KEYS = ['element', 'Component', 'component', 'lazy', 'children'] as const;
+
+const ROUTE_TABLE_CALL_RE = /\b(?:createBrowserRouter|createHashRouter|createMemoryRouter|createRouter|useRoutes)\s*\(/g;
+
+function insideRouteTableCall(commentsMasked: string, syntax: string, index: number): boolean {
+  ROUTE_TABLE_CALL_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ROUTE_TABLE_CALL_RE.exec(commentsMasked))) {
+    if (match.index >= index) break;
+    // The call name must be CODE: a string mentioning `useRoutes(` is data.
+    if (syntax.slice(match.index, match.index + 4).trim() === '') continue;
+    const openParen = match.index + match[0].length - 1;
+    const closeParen = findMatching(syntax, openParen, '(', ')');
+    if (closeParen < 0 || index < closeParen) return true;
+  }
+  return false;
+}
+
+function typeAnnotationValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (/^(?:string|number|boolean|bigint|symbol|null|undefined|any|unknown|never)\b/.test(trimmed)) {
+    return true;
+  }
+  const masked = lexicalMask(trimmed, true);
+  let curly = 0;
+  let square = 0;
+  let paren = 0;
+  for (const char of masked) {
+    if (char === '{') curly += 1;
+    else if (char === '}' && curly > 0) curly -= 1;
+    else if (char === '[') square += 1;
+    else if (char === ']' && square > 0) square -= 1;
+    else if (char === '(') paren += 1;
+    else if (char === ')' && paren > 0) paren -= 1;
+    else if (char === ';' && curly === 0 && square === 0 && paren === 0) return true;
+  }
+  return false;
+}
+
 export function objectRouteUsages(text: string, unresolved?: UnresolvedRoute[]): RouteUsage[] {
   const commentsMasked = lexicalMask(text, false);
   const syntax = lexicalMask(text, true);
@@ -75,8 +128,15 @@ export function objectRouteUsages(text: string, unresolved?: UnresolvedRoute[]):
     const routePath = literalValue(pathValue?.value || '');
     if (routePath === null) {
       // Property present but not a plain string literal: record the cause so
-      // the mismatch denies can state it instead of a generic "route missing".
-      if (pathValue && unresolved) {
+      // the mismatch denies can state it instead of a generic "route missing" —
+      // but only when the object is a route at all (the 14cl narrowings above):
+      // a type member, a Zod issue path, or a routeless object is not an
+      // unverifiable route; it is not a route.
+      if (pathValue && unresolved
+        && !pathValue.value.trim().startsWith('[')
+        && !typeAnnotationValue(pathValue.value)
+        && (ROUTE_SIGNAL_KEYS.some((key) => properties.has(key))
+          || insideRouteTableCall(commentsMasked, syntax, open))) {
         unresolved.push({ display: unresolvedDisplay('path: ', pathValue.value), line: lineAt(text, open) });
       }
       continue;

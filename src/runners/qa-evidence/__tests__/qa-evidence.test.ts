@@ -18,6 +18,7 @@ import {
   readJsonFile,
 } from '../../../shared/qa-evidence-runtime';
 import {
+  qaAcceptanceAttestationPath,
   qaReportV2Path,
   readQaReportV2,
 } from '../../../shared/qa-report-v2';
@@ -437,7 +438,14 @@ test('browser CLI owns the listener, runs Playwright and Lighthouse, then verifi
     ], cwd), 0, 'the production converter accepts the raw artifact captured on the attested live listener');
     assert.equal(readQaReportV2(cwd, 'R').ok, true);
 
+    // A post-acceptance rebuild of the output tree does NOT revoke the
+    // runner's own accepted verdict (observed 14cl: the reviewer's probe
+    // build bricked a fully green run) — the evidence, report, contract, and
+    // source stay hash-pinned by the acceptance attestation. Without that
+    // attestation, the same drifted tree fails closed exactly as before.
     fs.writeFileSync(path.join(cwd, 'apps/web/dist/index.html'), '<main>mutated after QA</main>\n');
+    assert.equal(readQaReportV2(cwd, 'R').ok, true, 'a durable acceptance survives an output-tree rebuild');
+    fs.rmSync(qaAcceptanceAttestationPath(cwd, 'R'));
     const stale = readQaReportV2(cwd, 'R');
     assert.equal(stale.ok, false);
     if (!stale.ok) assert.equal(stale.code, 'machine-evidence-invalid');

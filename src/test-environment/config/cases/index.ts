@@ -9,9 +9,11 @@ import { FEATURE_AUTH_CASES } from './features-auth.cases';
 import { FEATURE_ONBOARDING_CASES } from './features-onboarding.cases';
 import { HOST_ENFORCEMENT_CASES } from './host-enforcement.cases';
 import { RUN_SIM_CASES } from './run-sim.cases';
+import { LINT_CORPUS_CASES } from './lint-corpus.cases';
 
 export const ALL_CASES: Case[] = [
   ...FEATURE_ONBOARDING_CASES,
+  ...LINT_CORPUS_CASES,
   ...RUN_SIM_CASES,
   ...HOST_ENFORCEMENT_CASES,
   ...NEW_PROJECT_CASES,

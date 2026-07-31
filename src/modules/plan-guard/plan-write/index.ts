@@ -17,6 +17,7 @@ import {
   commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
+  heredocBodies,
   shellAssetImportDest,
   shellStrayDeleteTarget,
   shellTrafficOneWriteTargets,
@@ -169,6 +170,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
       }]
       : []);
   if (isShellToolName(toolName)) {
+    const shellBody = heredocBodies(rawCommand);
     for (const shellTarget of shellTrafficOneWriteTargets(rawCommand)) {
       const relative = projectRelativeHookPath(patchBase, projectRoot, shellTarget);
       if (!relative || gateTargets.some((target) => target.filePath === relative)) continue;
@@ -177,6 +179,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
         resultContent: '',
         addedContent: '',
         staticCheck: false,
+        ...(shellBody ? { shellBody } : {}),
       });
     }
   }
@@ -262,6 +265,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
       state,
       writingFeatureSource: isFeatureTarget(target.filePath)
         || (gateTargets.length === 0 && writingFeatureSourceViaCommand),
+      shellBody: target.shellBody,
       host: ctx.host,
       rawData: raw,
       block,
@@ -337,6 +341,17 @@ export function planWriteGate(ctx: Ctx): HookResult {
     filePaths: writeTargetPaths,
     host: ctx.host,
     sessionId: denyIdentity.sessionId || null,
+    // Per-AGENT attribution. `sessionId` is the ORCHESTRATOR's for every child
+    // on Codex and on Claude agent-teams, so all 13 denies of one run carried
+    // the same id together with `isSubagent: true` and a subagent role — the
+    // violation history of an individual agent across a fix cycle could not be
+    // reconstructed. The child's own keys are the host agent id (which
+    // claim-capture already records as `raw.agent_id`) and, on Codex where
+    // there is no agent id, the transcript-derived thread id. Record both, plus
+    // the claim the gates themselves resolved.
+    agentId: denyIdentity.agentId || null,
+    threadId: denyIdentity.threadId || null,
+    ...(resolvedContext?.claimId ? { claimId: resolvedContext.claimId } : {}),
     isSubagent: denyIdentity.isSubagent || Boolean(resolvedRole),
     role: effectiveRole,
     // WHY nothing resolved, not just that nothing did. A bare `role: null`

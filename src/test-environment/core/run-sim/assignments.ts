@@ -10,6 +10,7 @@
 // and immediately exercised.
 
 import {
+  moduleOutputVariants,
   type CompiledArchitectureV1,
   type CompiledArchitectureModuleV1,
 } from '../../../shared/architecture-contract';
@@ -55,15 +56,34 @@ export function buildImplementContext(
 
   const moduleByPath = new Map<string, CompiledArchitectureModuleV1>();
   const outputById = new Map<string, string>();
+  // Extension freedom widened assignment includes: a feature carries its
+  // DIRECTORY literal, a flat kind every allowed-extension variant. The driver
+  // stays on the DEFAULT concrete output — resolve each include back to it and
+  // author it exactly once.
+  const includeToDefault = new Map<string, string>();
   for (const module of architecture.modules) {
     moduleByPath.set(module.output, module);
     outputById.set(module.id, module.output);
+    for (const variant of moduleOutputVariants(module)) {
+      includeToDefault.set(variant, module.output);
+    }
+    if (module.kind === 'feature' && module.outputBase) {
+      const dir = module.outputBase.slice(0, module.outputBase.lastIndexOf('/'));
+      if (dir) includeToDefault.set(dir, module.output);
+    }
   }
 
   return {
     runId,
     architecture,
-    outputsFor: (role) => byRole.get(role) ?? [],
+    outputsFor: (role) => {
+      const outputs: string[] = [];
+      for (const rel of byRole.get(role) ?? []) {
+        const resolved = includeToDefault.get(rel) ?? rel;
+        if (!outputs.includes(resolved)) outputs.push(resolved);
+      }
+      return outputs;
+    },
     outputOf: (moduleId) => outputById.get(moduleId) ?? null,
     moduleAt: (rel) => moduleByPath.get(rel) ?? null,
     roles: () => [...byRole.keys()],

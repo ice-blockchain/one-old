@@ -71,8 +71,8 @@ You don't need to re-read implementer digests; the verifier digests are your con
    tasks may remain only if they are named with owner and accepted risk.
 11. Release-facing docs and memory are current: README live URL, deployment
    runbook, security reporting, environment setup, changelog, `.traffic-one/stack.md`,
-   `.traffic-one/known-issues.md`, `.traffic-one/agent-log.md`, and `llms.txt`
-   when the app has a public web surface.
+   `.traffic-one/known-issues.md`, `.traffic-one/agent-log.md`, and the served
+   `public/llms.txt` when the app has a public web surface.
 
 ## What you do
 

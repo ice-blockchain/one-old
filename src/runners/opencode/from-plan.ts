@@ -16,6 +16,7 @@ import {
   finalizePlanBatchOnly,
   markPlanBatchRunningIfNeeded,
 } from '../../shared/opencode-plan/batch';
+import { restorePlanOpenCodeDelegateBlock } from '../../shared/opencode-plan/preserve';
 import {
   blockedByFailedDependencies,
   buildOpenCodeQueue,
@@ -88,12 +89,25 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   const maintenanceQueueSuppressed =
     isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined) &&
     !hasFreshArchitectQueueForRun(cwd, runId);
+  // Runtime touchpoint for the preserved-queue auto-fix: a prose rewrite may
+  // have landed without the machine block (the plan-write gate preserved the
+  // accepted queue instead of denying). Repair plan.md BEFORE parsing — and
+  // before writeOpenCodeQueue below overwrites the compiled-queue sidecar the
+  // repair may reconstruct from.
+  if (!maintenanceQueueSuppressed && runId
+    && parsePlanDelegationQueue(planText).length === 0
+    && restorePlanOpenCodeDelegateBlock(cwd, runId)) {
+    try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* keep prior read */ }
+  }
   const parsedQueue = maintenanceQueueSuppressed ? [] : parsePlanDelegationQueue(planText);
   const normalizedI18n = normalizePlanI18nUnits(cwd, runId, parsedQueue);
   const queue = normalizedI18n.units;
   const formalQueue = buildOpenCodeQueue(cwd, runId, queue);
   writeOpenCodeQueue(cwd, formalQueue);
-  let entries = queue.map((unit, index) => ({ unit, formal: formalQueue.units[index]! }));
+  // `index` is the position in the FULL parsed queue — the role-shard filter
+  // below reorders `entries`, so a position recomputed from the filtered list
+  // would key the i18n errors map wrong for every unit after the first shard.
+  let entries = queue.map((unit, index) => ({ unit, formal: formalQueue.units[index]!, index }));
   // Role shard filter: the MCP layer parallelizes the batch ACROSS roles (units
   // within one role stay sequential — they share a digest file).
   if (opts.roles && opts.roles.length > 0) {
@@ -173,7 +187,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
       const unitPolicyViolations = [
         ...(rejectAll ? policyReport.violations : (policyReport.byUnitId.get(formal.id) || [])),
       ];
-      const i18nPolicyError = normalizedI18n.errors.get(u.id || `position-${entries.indexOf(entry) + 1}`);
+      const i18nPolicyError = normalizedI18n.errors.get(u.id || `position-${entry.index + 1}`);
       if (i18nPolicyError) unitPolicyViolations.push(i18nPolicyError);
       if (unitPolicyViolations.length > 0) {
         const error = unitPolicyViolations.join('; ');

@@ -5,8 +5,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { readRunSettlement, writeRunSettlement } from '../../../shared/run-settlement';
+import { type QaReportV2 } from '../../../shared/qa-report-v2';
 import { computeBrowserCheckStatuses, wholesaleCheckStatuses } from '../report-publish';
 import { acquireQaRunLock, releaseQaRunLock } from '../lock';
+import { publishQaReportV2 } from '../run-context';
 
 const BEHAVIORAL_CHECKS = [
   'stack-build', 'playwright-local', 'dom-assertions', 'actions', 'routing',
@@ -145,6 +148,60 @@ test('different run ids do not contend', () => {
     assert.ok(a.ok && b.ok);
     if (a.ok) releaseQaRunLock(a.lockPath);
     if (b.ok) releaseQaRunLock(b.lockPath);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// The PLAN_READY seed (`active` + `verification-not-started`) used to outlive
+// the evidence: `reconcileRunSettlement` was reachable only from session-start
+// and prompt-submit, so the seed was still verbatim at revision 5 roughly fifty
+// minutes after the QA report and both digests were on disk. Publishing the
+// report re-derives the settlement where the evidence actually lands.
+test('publishing the QA report supersedes the PLAN_READY settlement seed', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-settle-'));
+  try {
+    const runDir = path.join(projectRoot, '.traffic-one', 'runs', 'R');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify({
+      version: 2,
+      runId: 'R',
+      status: 'active',
+      kind: 'orchestration',
+      qaContractVersion: 2,
+    }));
+    const seed = writeRunSettlement(projectRoot, 'R', {
+      status: 'active',
+      incompleteChecks: ['verification-not-started'],
+    });
+    assert.equal(seed?.status, 'active');
+    assert.deepEqual(seed?.incompleteChecks, ['verification-not-started']);
+
+    const digests = path.join(projectRoot, '.traffic-one', 'digests', 'R');
+    fs.mkdirSync(digests, { recursive: true });
+    fs.writeFileSync(path.join(digests, 'reviewer.md'), '# reviewer\nverdict: CHANGES_REQUESTED\n');
+    fs.writeFileSync(path.join(digests, 'tester.md'), '# tester\nverdict: TESTS_FAILING\n');
+
+    const report: QaReportV2 = {
+      schemaVersion: 2,
+      runId: 'R',
+      verificationContractHash: 'a'.repeat(64),
+      generatedAt: new Date().toISOString(),
+      producer: 'parent-runner',
+      status: 'failed',
+      sourceHash: 'b'.repeat(64),
+      checks: [{ id: 'stack-build', status: 'failed' }],
+      routes: [],
+    };
+    publishQaReportV2(projectRoot, 'R', report);
+
+    const settled = readRunSettlement(projectRoot, 'R');
+    assert.equal(settled?.status, 'validating', 'the seed must not survive published evidence');
+    assert.deepEqual(settled?.incompleteChecks, ['verification-incomplete']);
+    assert.equal(settled!.revision, seed!.revision + 1);
+    // A published report can never manufacture a green: strict evidence still
+    // needs a contract plus a NEWER reviewer/tester attestation.
+    assert.notEqual(settled?.status, 'verified');
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   }

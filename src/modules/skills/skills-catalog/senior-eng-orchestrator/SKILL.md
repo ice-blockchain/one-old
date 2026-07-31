@@ -408,6 +408,16 @@ Do not use `agent-failed` for reviewer/tester cycle caps or environment/browser,
 sandbox, usage-limit, or timeout blockers; those have the distinct blocked
 outcomes below.
 
+Never DIAGNOSE from `run.json`'s top-level `status`/`outcome` either: they are
+a compatibility projection for older runtimes, and a V2 run that is still
+verifying deliberately projects as `status: "failed"` / `outcome:
+"agent-failed"` so a rolled-back runtime cannot resume it.
+`canonicalStatus` (and `runtimeV2RollbackGuard.canonicalStatus`) is the truth;
+`"validating"` means verification is still settling — no agent died, and the
+`blocked -> active` resume does not apply. When `run-status.cjs` rejects a
+transition, its stderr names the exact failed check — act on that named check,
+not on the projected pair.
+
 ### Fix-cycle follow-up (CHANGES_REQUESTED loop)
 
 When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
@@ -427,6 +437,8 @@ When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-
    ```
 
    where `<n>` is the fix-cycle number (1 for the first fix, 2 for the second, etc.).
+
+   Runtime batches write-time quality findings instead of interrupting each write: when `.traffic-one/fix-cycles/<currentRunId>/<role>-quality-findings.md` exists (regenerated at the role's completion digest), include it in the same cycle — the continuation/spawn message must tell the role to apply ALL findings from BOTH files in the one turn. Do not copy its items by hand; point at the file.
 
 2. **Bump `spawnIndex[role]`** in `.traffic-one/.one.json` before the re-spawn:
 
@@ -684,12 +696,17 @@ shipper can't read the predecessor digest and falls back to re-reading the
 diff.
 
 **Delegated digests:** a digest produced by an OpenCode delegation carries
-`verdict: DELEGATED_OK` with a `normalize_to:` hint — the runner applied a diff
-but verified nothing, so it never claims the canonical token. After YOUR root
+`verdict: DELEGATED_OK` — the runner applied a diff but verified nothing, so it
+never claims the canonical token. A WHOLE-ROLE delegation writes that role's own
+digest (`<role>.md`) and adds a `normalize_to:` hint: after YOUR root
 verification passes (typecheck/test/build green), normalize the verdict line to
 the hinted token yourself with a one-line edit to the digest file (digests are
 run bookkeeping under `.traffic-one/`, not feature source — the write gate
-allows it). Do NOT spawn an agent just to rewrite a verdict line.
+allows it). Do NOT spawn an agent just to rewrite a verdict line. A Step-0
+plan-unit digest (`opencode-<role>.md`) carries NO hint and is never normalized:
+it is this run's accumulated ledger of the delegated units for that role (all of
+them, with per-unit models and touched files), and the role's own `<role>.md`
+holds the verdict.
 
 **Then stamp the maintenance phase.** A strictly terminal orchestrator run means
 the project's main build is done — flip `lifecycle.phase` to `maintenance` so the

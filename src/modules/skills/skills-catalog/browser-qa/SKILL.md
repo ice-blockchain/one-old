@@ -93,6 +93,16 @@ identity is not a literal path, add `startPath` with the concrete URL to visit:
 { "route": "/courses/:courseSlug", "startPath": "/courses/html-css", "finalPath": "/courses/html-css", "stableSelector": "main", "steps": [ … ] }
 ```
 
+A route that `fill`s a form must also SUBMIT it (`click`/`press` after the last
+`fill`) and assert the result afterwards (`expect-visible`, `expect-text`, or
+`expect-url`). A scenario that fills fields and stops is compatible with the
+form being completely broken and still reports `actions: passed`. The success
+assertion must name the working outcome — never a degraded-state affordance
+(a "configure this first" call to action, a placeholder, a coming-soon panel,
+or an off-site `a[href='https://…']` link). Asserting the fallback the app
+renders when it is misconfigured makes the bug the pass condition; the runner
+rejects such a scenario.
+
 `startPath` must satisfy its own pattern, and a `*` probe must be a URL no other
 declared route claims — otherwise the sweep exercises the sibling route instead
 of the 404. Never rewrite the architecture to turn a pattern into a literal path

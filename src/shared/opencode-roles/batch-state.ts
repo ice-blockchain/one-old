@@ -35,6 +35,26 @@ export function planBatchMarkerPath(cwd: string, runId: string, role: string): s
   return path.join(planBatchDir(cwd, runId), normalizeAttemptRole(role));
 }
 
+// Roles whose per-role completion MARKER exists on disk. The markers are the
+// durable record; `rolesCompleted` in batch.json is only a mirror of them, and
+// that mirror was written by the terminal writer BEFORE the per-role loop ran —
+// and `markOpenCodePlanRoleCompleted` refuses to touch a terminal batch — so a
+// finished batch recorded `outcome: "success"` with `rolesCompleted: []` while
+// four units had completed (observed live). Union the markers in here so the
+// mirror is right whatever order the two writers run in.
+function completedRolesFromMarkers(cwd: string, runId: string): string[] {
+  try {
+    return fs.readdirSync(planBatchDir(cwd, runId), { withFileTypes: true })
+      .filter((entry) => entry.isFile()
+        && entry.name !== 'batch.json'
+        && entry.name !== 'COMPLETE'
+        && !entry.name.startsWith('.'))
+      .map((entry) => entry.name);
+  } catch {
+    return []; // no batch dir yet — nothing has completed
+  }
+}
+
 export function atomicWriteJson(filePath: string, data: unknown): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
@@ -147,7 +167,10 @@ export function markOpenCodePlanBatchTerminal(
       outcome,
       startedAt: existing?.startedAt ?? new Date().toISOString(),
       finishedAt: new Date().toISOString(),
-      rolesCompleted: existing?.rolesCompleted ?? [],
+      rolesCompleted: [...new Set([
+        ...(existing?.rolesCompleted ?? []),
+        ...completedRolesFromMarkers(cwd, runId),
+      ])],
       ...(error ? { error: String(error).slice(0, 500) } : {}),
       assignmentHash: opencodeAssignmentHash(cwd, runId),
     } satisfies OpenCodePlanBatchState);

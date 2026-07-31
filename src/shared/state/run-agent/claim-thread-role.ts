@@ -4,6 +4,7 @@
 
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
+import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
 import {  readJson,  writeJson } from '../../fsjson';
 import {
@@ -20,6 +21,7 @@ import {
   firstString,
   runAgentFile,
   runDir,
+  safePathSegment,
   stackFingerprintPatch,
 } from './run-paths';
 import {
@@ -66,6 +68,33 @@ import {
 import {
   runLedgerStatusRecord,
 } from './terminal-verdict';
+
+// A thread's claim file is REBUILT in place when the same thread re-claims
+// (interrupt/resume, a fix cycle, a role rebind), so the record it replaces is
+// destroyed. `previousClaimId` on the new claim is a pointer to a file that no
+// longer exists, which made cycle-1 claim history unrecoverable — model,
+// roleSource, parent and timing of the superseded claim were simply gone
+// (observed live). Snapshot the outgoing record into a sidecar of its own
+// first. Sidecars live in a SUBDIRECTORY: `listClaimedAgentEntries` reads only
+// files directly in the run dir, so archived claims never re-enter resolution
+// or the spawn-index count. Best-effort — an archive failure must never block
+// the bind.
+function archiveSupersededClaim(cwd: string, runId: string, claim: Rec, supersededBy: string): void {
+  const claimId = firstString(claim.claimId);
+  if (!claimId) return; // role-bearing sidecars (maintenance.json) are not claims
+  try {
+    const dir = path.join(runDir(cwd, runId), 'superseded');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${safePathSegment(claimId)}.${Date.now()}.json`);
+    writeJson(file, {
+      ...claim,
+      supersededAt: stateTimestamp(),
+      supersededBy: supersededBy || null,
+    });
+  } catch {
+    // best-effort history; the live claim below is still written
+  }
+}
 
 export function claimThreadRole(
   cwd: string,
@@ -211,6 +240,9 @@ export function claimThreadRole(
         : {}),
     };
     fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+    // The write below destroys whatever record this thread's claim file held —
+    // preserve it before it is gone (see archiveSupersededClaim).
+    if (existing) archiveSupersededClaim(cwd, runId, existing, nextClaimId);
     writeJson(runAgentFile(cwd, runId, id), claim);
     if (pending) removePendingClaim(pending.filePath);
     removeSiblingPendingClaims(cwd, source, runId, role, claim!.parentSessionId as string | null, claim!.claimId as string | null);

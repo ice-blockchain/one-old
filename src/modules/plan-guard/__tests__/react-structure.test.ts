@@ -991,6 +991,128 @@ test('pathless index/layout routes stay silent; dynamic route arrays are warning
   });
 });
 
+// The other half of the 13cl parity fix: demoting cross-locale parity at WRITE
+// time must not weaken completion. A parity gap still on disk when the role
+// reports done is a blocking error in the full structure scan, exactly as
+// before.
+test('full scan still blocks on cross-locale catalog parity left broken at completion', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      ...INPUT,
+      i18n: { sourceLocale: 'en', locales: ['en', 'ro'], literalBrands: [] },
+    });
+    writeCompiledModules(cwd, contract);
+    const catalogs = contract.i18n!.catalogs.filter((catalog) => catalog.namespaces.includes('common'));
+    assert.ok(catalogs.length >= 2, 'contract compiles a catalog per locale');
+    for (const catalog of catalogs) {
+      fs.mkdirSync(path.dirname(path.join(cwd, catalog.path)), { recursive: true });
+      fs.writeFileSync(path.join(cwd, catalog.path), JSON.stringify(
+        catalog.locales.includes('en')
+          ? { welcome: 'Welcome', installLabel: 'Install the app' }
+          : { welcome: 'Bun venit' },
+      ));
+    }
+    const report = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.ok(
+      report.findings.some((finding) => (
+        finding.id === 'STRUCT_I18N_CATALOG'
+        && finding.severity === 'error'
+        && /installLabel/.test(finding.message)
+      )),
+      JSON.stringify(report.findings.filter((finding) => finding.id === 'STRUCT_I18N_CATALOG')),
+    );
+  });
+});
+
+// 14cl false positives: the object-route recognizer matched `path:` in a
+// TypeScript interface (Seo.tsx:21 — "path: string; robots?: RobotsPolicy")
+// and in a Zod validation path (SignUpForm.tsx:45 — "path: ['confirmPassword']");
+// only Courses.tsx:42 ("path: CATALOG_PATH" inside a real route table) was a
+// route. A type member, an array literal, or a routeless object is not an
+// unverifiable route — it is not a route.
+test('interface members and Zod issue paths are not unresolved routes; route-table shapes still are', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    const seo = [
+      "import { useEffect } from 'react';",
+      '',
+      'export interface SeoProps {',
+      '  title: string;',
+      '  /** Absolute or root-relative canonical path for the page. */',
+      '  path: string;',
+      '  robots?: { index: boolean; follow: boolean };',
+      '}',
+      '',
+      'export function Seo({ title, path }: SeoProps) {',
+      '  useEffect(() => {',
+      '    document.title = title;',
+      '  }, [title, path]);',
+      '  return null;',
+      '}',
+      '',
+    ].join('\n');
+    assert.ok(
+      !analyzeStructureTextAgainstContract('apps/web/src/components/Seo.tsx', seo, contract)
+        .some((finding) => finding.id === 'STRUCT_ROUTE_PATH_UNRESOLVED'),
+      'an interface member `path: string;` is type syntax, not a route',
+    );
+
+    const zodForm = [
+      "import { z } from 'zod';",
+      '',
+      'export const signUpSchema = z',
+      '  .object({',
+      '    password: z.string().min(8),',
+      '    confirmPassword: z.string(),',
+      '  })',
+      '  .refine((data) => data.password === data.confirmPassword, {',
+      "    message: 'auth:passwordsMustMatch',",
+      "    path: ['confirmPassword'],",
+      '  });',
+      '',
+    ].join('\n');
+    assert.ok(
+      !analyzeStructureTextAgainstContract('apps/web/src/features/auth/SignUpForm.tsx', zodForm, contract)
+        .some((finding) => finding.id === 'STRUCT_ROUTE_PATH_UNRESOLVED'),
+      'a Zod issue path array is never a route path',
+    );
+
+    // The 1co class stays visible: `path: CONSTANT` inside a recognized route
+    // table (call context) …
+    const routeTable = [
+      "import { createBrowserRouter } from 'react-router-dom';",
+      '',
+      "import News from './pages/NewsPage';",
+      '',
+      "const NEWS_PATH = '/news';",
+      '',
+      'export const router = createBrowserRouter([',
+      '  { path: NEWS_PATH, element: <News /> },',
+      ']);',
+      '',
+    ].join('\n');
+    const tableUnresolved = analyzeStructureTextAgainstContract('apps/web/src/router.tsx', routeTable, contract)
+      .find((finding) => finding.id === 'STRUCT_ROUTE_PATH_UNRESOLVED');
+    assert.ok(tableUnresolved, 'path: CONSTANT inside a route table stays reported');
+    assert.equal(tableUnresolved!.severity, 'warning');
+
+    // … and a route-signal sibling key alone (a `children` nested-route parent
+    // with no table call in the same file) is also enough.
+    const objectRoutes = [
+      "const HOME = '/';",
+      'export const routes = [',
+      '  { path: HOME, children: [] },',
+      '];',
+      '',
+    ].join('\n');
+    assert.ok(
+      analyzeStructureTextAgainstContract('apps/web/src/routes.tsx', objectRoutes, contract)
+        .some((finding) => finding.id === 'STRUCT_ROUTE_PATH_UNRESOLVED'),
+      'a route-shaped object outside a table call still records the advisory',
+    );
+  });
+});
+
 test('a nested template literal cannot blind the collapse and module-size gates', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);
@@ -1107,5 +1229,44 @@ test('a directory symlink still makes the scan incomplete', () => {
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }
+  });
+});
+
+test('a headless .ts feature entry satisfies its compiled module and stays wired (extension freedom)', () => {
+  // The class this kills (12co): the compiled table said `.tsx`, the section
+  // held no JSX, and the single-path existence gate forced a rewrite. The
+  // contract pins the BASE PATH; any allowed extension delivered there
+  // settles, and the orphan/import checks match by stem, extension-blind.
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      ...INPUT,
+      modules: [
+        ...INPUT.modules,
+        { id: 'auth', name: 'Auth', kind: 'feature' },
+      ],
+    });
+    writeCompiledModules(cwd, contract);
+    const feature = contract.modules.find((module) => module.id === 'auth')!;
+    assert.deepEqual(feature.allowedExtensions, ['.tsx', '.ts']);
+    fs.rmSync(path.join(cwd, feature.output));
+    const variant = feature.output.replace(/\.tsx$/, '.ts');
+    fs.writeFileSync(
+      path.join(cwd, variant),
+      'export async function signOut(): Promise<void> {\n  return;\n}\n',
+    );
+    const home = contract.modules.find((module) => module.id === 'home')!;
+    fs.writeFileSync(
+      path.join(cwd, home.output),
+      'import { signOut } from "../features/auth/index";\n'
+      + 'export function Home(){return <main onClick={() => void signOut()}>Home</main>}\n',
+    );
+    const settled = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
+    assert.ok(!settled.includes('STRUCT_MISSING_PLANNED_MODULE'), settled.join(','));
+    assert.ok(!settled.includes('STRUCT_ORPHAN_MODULE'), settled.join(','));
+
+    // With NO variant on disk the missing-module gate still fires.
+    fs.rmSync(path.join(cwd, variant));
+    const missing = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
+    assert.ok(missing.includes('STRUCT_MISSING_PLANNED_MODULE'));
   });
 });

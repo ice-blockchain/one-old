@@ -83,7 +83,16 @@ export function activeRunClaimScan(projectRoot: string, runId: string): ActiveRu
       }
       const absolute = path.join(current, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === 'bootstrap' || entry.name === 'transactions') continue;
+        // `superseded/` holds immutable claim-HISTORY snapshots, written by
+        // archiveSupersededClaim precisely so replaced claims "never re-enter
+        // resolution or the spawn-index count". Each snapshot preserves the
+        // claim's status at archive time (usually 'claimed'), and no live agent
+        // is ever represented ONLY by a snapshot — the live thread keeps its
+        // top-level claim file. Counting archives as active made activeClaims
+        // permanently positive after any rebind (observed 14cl: 15 of 19
+        // "active" claims were snapshots), so a fully green run could never
+        // settle verified even after releaseRunClaims swept the real claims.
+        if (entry.name === 'bootstrap' || entry.name === 'transactions' || entry.name === 'superseded') continue;
         walk(absolute);
         continue;
       }

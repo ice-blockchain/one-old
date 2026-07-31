@@ -28,7 +28,10 @@ For a new project `<web-root>` is `apps/web`; Tailwind v4 resolves
 
 Each pair is a precedence list; create only the selected compiled path. Plain
 Svelte uses its selected router integration, not SvelteKit file conventions.
-Page modules compile as `<PascalName>.svelte`.
+Page modules compile as `<PascalName>.svelte`. Component/feature modules
+default to `.svelte` and a headless entry may be delivered as `.ts` at the
+same base path — the compiled base path is the contract, the build arbitrates
+the form.
 
 The framework scaffold includes `package.json`, `vite.config.ts`,
 `tsconfig.json`, and the catalog's public assets. Common repository/tooling,

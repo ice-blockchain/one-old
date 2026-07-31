@@ -13,6 +13,7 @@ import {
   persistCompiledArchitecture,
   publishRuntimeAssignments,
   readCompiledArchitecture,
+  uiAstLintLayer,
   validateArchitectureInput,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
@@ -25,6 +26,10 @@ import { hasMaterializedProjectAssets } from '../../../shared/materialize';
 import { canonicalHost } from '../../../shared/model-tiers';
 import { openCodeDelegationActive } from '../../../shared/performance';
 import { OPENCODE_PLAN_MIN_UNITS } from '../../../shared/opencode-roles';
+import {
+  preserveOpenCodeDelegateBlockForWrite,
+  restorePlanOpenCodeDelegateBlock,
+} from '../../../shared/opencode-plan/preserve';
 import { obj } from '../../../shared/obj';
 import {
   activateRunV2RollbackBarrier,
@@ -47,6 +52,7 @@ import {
 } from '../../../shared/i18n-enforcement';
 import {
   isMaterialized,
+  isNativeState,
   legacyStatePath,
   readRunAssignmentsResilient,
   resolveRunAgentContext,
@@ -54,6 +60,13 @@ import {
   stackFingerprint,
   statePath,
 } from '../../../shared/state';
+import { appendQualityFindings } from '../../../shared/state/quality-findings';
+import { collapsedLineNumber } from '../../../shared/collapsed-source';
+import { seedI18nCatalogKeys } from '../../../shared/i18n-seed';
+import {
+  formatTextWithPrettier,
+  resolveProjectPrettier,
+} from '../../../shared/prettier-fix';
 import {
   buildVerificationContract,
   publishVerificationContract,
@@ -103,6 +116,11 @@ import {
   usesMainAgentTeam,
 } from './contracts';
 import { digestCompletionGates } from './completion';
+import {
+  contractSelfConflictFallback,
+  contractSelfConflictSummary,
+  contractSelfConflicts,
+} from './satisfiability';
 
 interface ReadinessArgs {
   filePath: string;          // project-relative target path
@@ -111,6 +129,9 @@ interface ReadinessArgs {
   // cannot be reconstructed (e.g. `node -e` naming the file). Content-shape
   // gates then judge the on-disk artifact instead of an empty pseudo-payload.
   contentVerified?: boolean;
+  // Heredoc payload behind a shell-derived target. Unverified shell text: only
+  // gates that explicitly opt in may read it, and it never becomes `content`.
+  shellBody?: string;
   projectRoot: string;       // resolved project root for the target
   state: Rec;                // readEffectiveState(projectRoot)
   writingFeatureSource: boolean;
@@ -118,6 +139,20 @@ interface ReadinessArgs {
   rawData?: unknown;
   block: Block;
 }
+
+// The only write-time structural/i18n finding ids that still DENY: compiled-
+// contract violations no tool can auto-fix, scope gaps, catalog data
+// validation (single-file classes only — cross-locale parity findings carry
+// `crossLocaleParity` and accumulate instead; see the split below), and
+// collapse (which first gets the deterministic formatter attempt below).
+// Every other finding accumulates into the run-scoped quality ledger and is
+// batched into one document at the completion digest.
+const HOT_WRITE_BLOCKING_IDS = new Set<string>([
+  'STRUCT_ROUTE_MODULE_MISMATCH',
+  'STRUCT_ASSIGNMENT_ALLOWLIST_GAP',
+  'STRUCT_I18N_CATALOG',
+  'STRUCT_COLLAPSED_LINE',
+]);
 
 // Readiness violations for a single write/edit. Empty array == nothing to block.
 export function planReadinessViolations(args: ReadinessArgs): string[] {
@@ -276,9 +311,19 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       const enforceI18n = state.mode === 'new-project'
         || projectDeclaresI18nRuntime(projectRoot, architecture || undefined);
       const i18n = architecture?.i18n || (enforceI18n ? detectExistingI18nContract(projectRoot) : undefined);
-      const sourceI18nFindings = enforceI18n && I18N_SOURCE_RE.test(filePath)
-        ? analyzeI18nSourceText(filePath, content, profile, i18n).findings
-        : [];
+      const sourceI18n = enforceI18n && I18N_SOURCE_RE.test(filePath)
+        ? analyzeI18nSourceText(filePath, content, profile, i18n)
+        : null;
+      const sourceI18nFindings = sourceI18n?.findings || [];
+      // Deterministic catalog seeding: a missing key that a `<Trans ns
+      // i18nKey>fallback</Trans> in THIS change references is auto-fixed, not
+      // denied — the fallback is the declared source copy, so runtime seeds it
+      // into the source locale and a marked TODO into the other locales before
+      // any validator can trip over it. Empty-value/extra-key parity findings
+      // are untouched: they carry no in-change fallback to seed from.
+      if (contentVerified && i18n && sourceI18n?.references.some((reference) => reference.fallback)) {
+        seedI18nCatalogKeys(projectRoot, i18n, sourceI18n.references);
+      }
       const changedCatalog = i18n?.catalogs.find((catalog) => catalog.path === filePath);
       const catalogI18nFindings = enforceI18n && changedCatalog
         ? validateI18nCatalogs(projectRoot, i18n!, {
@@ -287,21 +332,83 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
             contentOverrides: { [filePath]: content },
           })
         : [];
+      // Write-time demotion, mirroring the completion-scan severity in
+      // react-structure/contract.ts: where the compiled eslint config carries
+      // a real AST i18n rule, the lexical copy findings advise instead of
+      // deny — the project's own `lint` run owns the blocking verdict there.
+      // Catalog/runtime findings are data validation and always block.
+      const lexicalCopyDemoted = uiAstLintLayer(profile) !== null;
       const i18nFindings = [...sourceI18nFindings, ...catalogI18nFindings]
-        .map((finding) => ({ ...finding, severity: 'error' as const }));
-      const findings = [...structuralFindings, ...i18nFindings]
-        .filter((finding) => finding.severity === 'error');
-      if (findings.length > 0) {
+        .map((finding) => ({
+          ...finding,
+          severity: lexicalCopyDemoted
+            && (finding.id === 'STRUCT_HARDCODED_COPY' || finding.id === 'STRUCT_I18N_REACT_TRANS')
+            ? 'warning' as const
+            : 'error' as const,
+        }));
+      const allFindings = [...structuralFindings, ...i18nFindings];
+      // Write-time blocking set: intent-level violations only — compiled-
+      // contract breaks (a route pointing away from its module), scope
+      // (allowlist gaps), catalog DATA validation, and collapse the formatter
+      // could not fix. Everything else — entrypoint conventions, copy/Trans
+      // findings, advisory route notes — accumulates into the run-scoped
+      // quality ledger and is delivered ONCE, batched, at the completion
+      // digest (observed 13co: 16 per-write denies, each atomically rejecting
+      // a whole multi-file patch, for findings that were all fixable in one
+      // batched pass).
+      // STRUCT_I18N_CATALOG splits by scope: parity is a property of the
+      // namespace's locale PAIR, and a role cannot write two files atomically,
+      // so every legitimate intermediate state costs a deny (observed 13cl: ~8
+      // denies including a perfect oscillation on one key — "en has extra key"
+      // → the counterpart write itself denied → "en is missing key"). The
+      // cross-locale parity classes therefore accumulate into the quality
+      // ledger as warnings; the single-file classes (unparseable JSON, empty
+      // catalog, empty values) stay immediate denies, and the completion scan
+      // keeps full-parity blocking exactly as before.
+      const isCrossLocaleParity = (finding: { id: string; crossLocaleParity?: boolean }): boolean => (
+        finding.crossLocaleParity === true
+      );
+      let blocking = allFindings.filter((finding) => (
+        finding.severity === 'error'
+        && HOT_WRITE_BLOCKING_IDS.has(finding.id)
+        && !isCrossLocaleParity(finding)
+      ));
+      if (contentVerified && blocking.some((finding) => finding.id === 'STRUCT_COLLAPSED_LINE')) {
+        // Deterministic auto-fix first: when the project's own prettier is
+        // reachable from this file's package scope and formatting resolves the
+        // collapse, the finding is a formatting task, not a deny — the on-disk
+        // repair belongs to the completion gate/formatter run. Deny only when
+        // no formatter is reachable (pre-install) or it cannot fix the line.
+        const bin = resolveProjectPrettier(projectRoot, filePath);
+        const formatted = bin
+          ? formatTextWithPrettier(bin, projectRoot, filePath, content)
+          : null;
+        if (formatted !== null && collapsedLineNumber(filePath, formatted) === null) {
+          blocking = blocking.filter((finding) => finding.id !== 'STRUCT_COLLAPSED_LINE');
+        }
+      }
+      if (blocking.length > 0) {
         // Carry each finding's own message. Reporting only `ID (file:line)`
         // withheld the one fact that resolves the deny — which route/module is
         // wrong and what the compiled contract expects instead — so the writer
         // guessed: observed 2cu, three of four routes were correct and only the
         // catch-all failed, but the frontend read the generic prose as "routes
         // are forbidden here", reported BLOCKED twice, and burned a re-plan.
-        const summary = structureFindingSummary(findings);
+        const summary = structureFindingSummary(blocking);
         violations.push(block('frontend-structure-hot-gate',
           `Structural/i18n gate: ${summary}. Entrypoints may only bootstrap the app; route pages must be separate compiled modules. React child copy uses <Trans ns="…" i18nKey="…">fallback</Trans>; t() is reserved for string props, metadata, and imperative APIs.`,
           { FINDINGS: summary }));
+      } else if (currentRunId) {
+        // The write proceeds: bank the non-blocking findings (per role, deduped)
+        // instead of interrupting. The completion digest consolidates them into
+        // one fix-cycle document, and the completion structure scan still holds
+        // the bar — batching changes the delivery, never the standard.
+        const accumulated = allFindings
+          .filter((finding) => !HOT_WRITE_BLOCKING_IDS.has(finding.id) || isCrossLocaleParity(finding))
+          .map((finding) => (isCrossLocaleParity(finding)
+            ? { ...finding, severity: 'warning' as const }
+            : finding));
+        appendQualityFindings(projectRoot, currentRunId, writerRole || 'main-agent', accumulated);
       }
     }
   }
@@ -315,7 +422,12 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Architect completion gate: do not write \`PLAN_READY\` until the required .traffic-one project-memory baseline exists with real content. Missing or incomplete: ${missingMemory.join(', ')}. Write the missing memory files yourself (do not delegate .traffic-one/* to OpenCode), then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
         { MISSING: missingMemory.join(', ') }));
     }
-    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot) && opencodeQueueBlocks(host)) {
+    // Runtime touchpoint for the preserved-queue auto-fix (see the plan gate
+    // below): a plan rewrite was allowed to land without the block because a
+    // previously-accepted queue survives — re-append it here, on disk, before
+    // judging PLAN_READY. Deny only when nothing is recoverable.
+    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot) && opencodeQueueBlocks(host)
+      && !restorePlanOpenCodeDelegateBlock(projectRoot, runId)) {
       violations.push(block('architect-opencode-queue-gate',
         `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- id: <stable-unit-id> | role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
     }
@@ -354,6 +466,18 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
             compiled,
             verification.contractHash,
           );
+          // Satisfiability is a compiler invariant: every output the compiled
+          // contract demands must be writable under the compiled contract's own
+          // blocking write gates. A contract that fails this sweep would spawn
+          // implementers into a guaranteed deadlock (12co/13co class: the
+          // mandatory file is hard-denied and only a replan — which the fix
+          // cycle cannot perform — could ever fix it). Deny PLAN_READY here,
+          // naming both sides, while the architect can still change the input.
+          const selfConflicts = contractSelfConflicts(compiled, candidateAssignments, {
+            isNative: isNativeState(state),
+            enforceI18n: state.mode === 'new-project'
+              || projectDeclaresI18nRuntime(projectRoot, compiled),
+          });
           // Full queue checks: metadata (stable ids, depends edges, parseable
           // files, unit-kind heuristics) AND the file-vs-assignment scope
           // cross-check. The compiled allowlist is born in THIS call, so the
@@ -372,7 +496,12 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
               assignments: candidateAssignments.assignments,
             })
             : [];
-          if (queuePolicyErrors.length > 0) {
+          if (selfConflicts.length > 0) {
+            const summary = contractSelfConflictSummary(selfConflicts);
+            violations.push(block('contract-self-conflict',
+              contractSelfConflictFallback(summary),
+              { CONFLICTS: summary }));
+          } else if (queuePolicyErrors.length > 0) {
             violations.push(block('architect-opencode-queue-policy-gate',
               `Architect completion gate: OpenCode queue metadata is unsafe: ${queuePolicyErrors.join('; ')}. Fix the queue block in \`.traffic-one/plan.md\` (stable unique ids, parseable \`files:\`, explicit \`depends:\` edges for overlaps) and re-emit \`PLAN_READY\`. Scope errors above list the owning role's real compiled in-scope files — retarget each unit's \`files:\` to those exact paths, or declare the module in ArchitectureInputV1 so runtime compiles the output you need.`,
               { ERRORS: queuePolicyErrors.join('; ') }));
@@ -407,7 +536,14 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
               // Seed canonical content for scaffold files whose body is runtime
               // knowledge (.prettierignore skip list, .env.example VITE_SITE_URL
               // contract) — only when missing/blank, never over agent content.
-              ensureScaffoldContent(projectRoot, compiled.scaffoldOutputs || []);
+              // On greenfield runs the same call also materializes the compliant
+              // module skeletons the satisfiability sweep above just certified,
+              // with their catalog keys seeded into every declared locale —
+              // implementers EDIT compliant code instead of authoring de novo.
+              ensureScaffoldContent(projectRoot, compiled.scaffoldOutputs || [], compiled.profile, {
+                compiled,
+                newProject: state.mode === 'new-project',
+              });
               publishVerificationContract(projectRoot, verification);
               const assignments = publishRuntimeAssignments(
                 projectRoot,
@@ -441,11 +577,23 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     }
   }
 
-  digestCompletionGates({ projectRoot, state, filePath, content, currentRunId, violations, block });
+  digestCompletionGates({
+    projectRoot, state, filePath, content, shellBody: args.shellBody, currentRunId, violations, block,
+  });
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content) && opencodeQueueBlocks(host)) {
+  // Auto-fix over deny (13cl replan: two identical 'block missing' denies 30s
+  // apart — the architect rewrites prose and cannot reconstruct machine
+  // metadata from memory). A plan write carrying NO delegate marker while a
+  // previously-accepted queue exists for the current run is preserved: the
+  // write proceeds and runtime re-appends the prior block at the next
+  // touchpoint (PLAN_READY gate / --from-plan). A write that DOES carry the
+  // marker is the architect authoring the block, so an incomplete one still
+  // denies with the concrete fix; a first-ever write with nothing recoverable
+  // denies too.
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content) && opencodeQueueBlocks(host)
+    && (hasOpenCodeDelegateMarker(content) || !preserveOpenCodeDelegateBlockForWrite(projectRoot, currentRunId))) {
     violations.push(block('plan-opencode-queue-gate',
-      `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- id: <stable-unit-id> | role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
+      `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- id: <stable-unit-id> | role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`. A rewrite may omit the block only after a queue was accepted for the current run — runtime then preserves and re-appends it. Concrete example of a runnable unit row:\n\`<!-- opencode-delegate:start -->\`\n\`- id: seed-demo-data | role: backend | files: supabase/seed.sql | task: Seed the demo rows the plan data section describes\`\n\`<!-- opencode-delegate:end -->\``));
   }
 
   if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && hasOpenCodeDelegateMarker(content)) {

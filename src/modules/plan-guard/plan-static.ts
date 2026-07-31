@@ -152,13 +152,22 @@ export function planStaticViolations(filePath: string, content: string, isNative
   // under app/ (never matched here), and web page components under src/pages/
   // are loaded via React.lazy, whose contract is a default export — denying
   // them forces the `.then((m) => ({ default: m.X }))` shim (observed 8c).
+  //
+  // The compiled FEATURE entry (`features/<kebab>/index.tsx`, .tsx since the
+  // kind stopped compiling to a JSX-illegal `.ts`) is deliberately NOT a third
+  // exemption. Nothing lazy-loads it by the default-export contract — routes
+  // compile to the pages root — and every other `.tsx` under `features/` has
+  // always required a named export, so exempting exactly the entry would be
+  // the inconsistency. The remedy is a one-token rename inside the same file,
+  // never a relocation, and the mode rules state the convention next to the
+  // path they print. See `rules/frontend/react/core.md` ("Absolute rules").
   if (
     filePath.endsWith('.tsx')
     && /(src|packages\/(ui|ui-native))\/(components|features)\//.test(filePath)
     && /^export default /m.test(content)
   ) {
     violations.push(block('default-export',
-      'Use named exports only for reusable components. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.'));
+      'Use named exports only for reusable components — including the compiled feature entry `features/<name>/index.tsx`, which is a module entry, not a route file. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.'));
   }
 
   if (isNative) {

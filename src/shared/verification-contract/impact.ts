@@ -4,6 +4,7 @@
 
 import * as path from 'path';
 import {
+  moduleOutputVariants,
   stableContractJson,
   type ArchitectureBaselineV1,
   type CompiledArchitectureV1,
@@ -213,7 +214,10 @@ export function plannedUiImpactFloor(
   if (!profileHasWebUi(architecture.profile)) return baseImpact(architecture.profile);
   let floor: UiImpact = 'nonvisual';
   for (const module of architecture.modules) {
-    if (baselineContainsPath(projectRoot, architecture.baseline, module.output)) continue;
+    // Extension freedom: a module pre-existing at ANY allowed variant is not new.
+    if (moduleOutputVariants(module).some((variant) => (
+      baselineContainsPath(projectRoot, architecture.baseline, variant)
+    ))) continue;
     if (['app-shell', 'page', 'component'].includes(module.kind)) return 'visual';
     if (module.kind === 'feature') floor = raiseImpact(floor, 'behavioral');
   }
@@ -234,7 +238,9 @@ export function plannedImportantVisualChange(
 ): boolean {
   return architecture.modules.some((module) => (
     ['app-shell', 'page'].includes(module.kind)
-    && !baselineContainsPath(projectRoot, architecture.baseline, module.output)
+    && !moduleOutputVariants(module).some((variant) => (
+      baselineContainsPath(projectRoot, architecture.baseline, variant)
+    ))
   )) || (architecture.scaffoldOutputs || []).some((output) => (
     output.ownerRole !== 'senior-tester'
     && IMPORTANT_VISUAL_PATH_RE.test(output.path)

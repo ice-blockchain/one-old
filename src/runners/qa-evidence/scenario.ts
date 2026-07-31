@@ -66,6 +66,79 @@ function routePatternToRegExp(pattern: string): RegExp | null {
   }
 }
 
+const ASSERTION_STEPS = ['expect-visible', 'expect-text', 'expect-url'];
+const INTERACTIVE_STEPS = ['click', 'fill', 'press', 'check', 'select'];
+const SUBMIT_STEPS = ['click', 'press'];
+
+// A degraded-state affordance is what the app shows INSTEAD of working: a
+// "configure this first" call to action, a placeholder, a coming-soon panel.
+// Asserting one is the opposite of proving the feature.
+// `[\s_-]` because these words reach the scenario as prose AND as test ids
+// (`[data-testid="coming-soon"]`, `#setup_required`).
+const DEGRADED_STATE_RE = new RegExp([
+  'not[\\s_-]+configured',
+  'configuration[\\s_-]+(?:is[\\s_-]+)?(?:required|missing)',
+  'missing[\\s_-]+configuration',
+  'needs?[\\s_-]+configuration',
+  'set[\\s_-]?up[\\s_-]+required',
+  'requires?[\\s_-]+set[\\s_-]?up',
+  'coming[\\s_-]+soon',
+  'placeholder',
+  'unavailable',
+].join('|'), 'i');
+// A CSS attribute NAME is not content: `input[placeholder="Search courses"]`
+// targets a field, it does not assert a placeholder state — and rejecting it
+// threw out the whole scenario file over the most ordinary selector idiom
+// there is. Blank the name, keep the value, so `[data-testid="coming-soon"]`
+// and `[aria-label="Unavailable"]` still read as degraded.
+const ATTRIBUTE_NAME_RE = /(\[\s*)([A-Za-z_:][\w:.-]*)(?=\s*[~^$*|]?=|\s*\])/g;
+function selectorContent(selector: string): string {
+  return selector.replace(ATTRIBUTE_NAME_RE, (_match, open: string, name: string) => (
+    `${open}${' '.repeat(name.length)}`
+  ));
+}
+// `a[href='https://vendor.example/']` — an off-site link can never be the
+// success path of a form the app was supposed to handle.
+const OFFSITE_LINK_SELECTOR_RE = /\bhref\s*[\^$*~|]?=\s*["']?\s*https?:\/\//i;
+
+/**
+ * Does this route's step list actually assert the thing it exercises?
+ *
+ * Observed 10co-e2e: the generated `scenario-v1.json` filled the contact form
+ * and then asserted `expect-visible` on `a[href='https://traffic.io/']` — the
+ * missing-configuration setup CTA a reviewer finding had flagged as wrongly
+ * rendered. There was NO submit step and NO result assertion, so
+ * `"actions: passed"` was fully compatible with the form being broken: the
+ * scenario asserted the bug as its pass condition.
+ *
+ * Two rules, both narrow on purpose. A scenario that FILLS a form must submit
+ * it and assert something afterwards, and that success assertion may not be a
+ * degraded-state affordance. Routes with no `fill` keep the pre-existing
+ * contract (one interactive step), so ordinary click-through sweeps are
+ * untouched.
+ */
+export function scenarioStepsProveOutcome(steps: readonly ScenarioStep[]): boolean {
+  if (!steps.some((step) => INTERACTIVE_STEPS.includes(step.type))) return false;
+  const isDegraded = (step: ScenarioStep): boolean => (
+    DEGRADED_STATE_RE.test(`${selectorContent(step.selector || '')} ${step.value || ''}`)
+  );
+  // Never a pass condition, anywhere in the scenario.
+  if (steps.some((step) => ASSERTION_STEPS.includes(step.type) && isDegraded(step))) return false;
+  let lastFill = -1;
+  for (let index = 0; index < steps.length; index += 1) {
+    if (steps[index]!.type === 'fill') lastFill = index;
+  }
+  if (lastFill < 0) return true;
+  const submitAt = steps.findIndex((step, index) => (
+    index > lastFill && SUBMIT_STEPS.includes(step.type)
+  ));
+  if (submitAt < 0) return false;
+  const successPath = steps.slice(submitAt + 1)
+    .filter((step) => ASSERTION_STEPS.includes(step.type));
+  if (successPath.length === 0) return false;
+  return !successPath.some((step) => OFFSITE_LINK_SELECTOR_RE.test(step.selector || ''));
+}
+
 function parseScenario(value: unknown, requiredRoutes: readonly string[]): ScenarioV1 | null {
   if (!isRecord(value)
     || value.schemaVersion !== 1
@@ -107,9 +180,7 @@ function parseScenario(value: unknown, requiredRoutes: readonly string[]): Scena
     })) return null;
     const steps = raw.steps.map(parseStep);
     if (steps.some((step) => !step)) return null;
-    if (!(steps as ScenarioStep[]).some((step) => (
-      ['click', 'fill', 'press', 'check', 'select'].includes(step.type)
-    ))) return null;
+    if (!scenarioStepsProveOutcome(steps as ScenarioStep[])) return null;
     routes.push({
       route: pattern,
       startPath,

@@ -3,6 +3,7 @@
 // the sibling modules; main() is the CLI the shim calls. The safety model
 // lives in the sibling headers; see git-sandbox/verify/diff-policy.
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { OPENCODE_FREE_MODELS } from '../../config/model-tiers';
@@ -24,6 +25,7 @@ import {
   unsafeAllowedFilePatterns,
 } from '../../shared/opencode-queue';
 import {  readEffectiveState } from '../../shared/state';
+import { recordDelegatedModelObservation } from '../../shared/state/delegated-model-observation';
 import {  reconcileManagedToolStamp } from '../toolchain';
 
 import {
@@ -174,6 +176,18 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
     markedAttempt = true;
     markOpenCodeRoleAttempted(cwd, runId, role);
   };
+  // Every delegation is registered in the unit ledger, not only plan-queue
+  // units. A direct `opencode_delegate` carries no unit id, so the tester's
+  // whole-suite delegation to the free model (129s, one file written) showed up
+  // in `opencode-attempts/tester.log` and NOWHERE in opencode-units.json or
+  // opencode-queue.json — an undocumented fifth delegation (observed live).
+  // The synthesized id is derived from the WORK, so a retry of the same task
+  // folds into the existing row instead of multiplying rows.
+  const ledgerUnitId = opts.unitId
+    || `direct-${normalizePlanRole(role)}-${crypto.createHash('sha256')
+      .update(`${role}\0${task}\0${effectiveAllowedFiles}`)
+      .digest('hex')
+      .slice(0, 10)}`;
   // Terminal-outcome diagnostics into the attempt marker (append-only JSON lines;
   // the spawn gate only checks existence). Failed delegations were undiagnosable
   // from the 0-byte flag alone.
@@ -188,20 +202,32 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       durationMs: Date.now() - startedAt,
       touched: enriched.touched.length,
     });
-    if (opts.unitId) {
-      recordOpenCodeUnitStatus(cwd, runId, {
-        id: opts.unitId,
-        role: normalizePlanRole(role),
-        status: statusFromDelegateAction(enriched.action, enriched.error),
-        action: enriched.action,
-        model: enriched.model ?? null,
-        error: enriched.error,
-        failureKind: enriched.failureKind ?? null,
-        touched: enriched.touched,
-        allowedFiles: policy.allowedPatterns,
-        assignmentHash: policy.expectedAssignmentHash,
-      });
-    }
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: ledgerUnitId,
+      role: normalizePlanRole(role),
+      status: statusFromDelegateAction(enriched.action, enriched.error),
+      action: enriched.action,
+      model: enriched.model ?? null,
+      error: enriched.error,
+      failureKind: enriched.failureKind ?? null,
+      touched: enriched.touched,
+      allowedFiles: policy.allowedPatterns,
+      assignmentHash: policy.expectedAssignmentHash,
+      ...(opts.unitId ? {} : { source: 'direct' as const }),
+    });
+    // Model provenance for the delegated worker. The host-subagent store
+    // (codex-model-observations.json) can never see it: it has no child thread,
+    // no claim and no role policy row — so the model that wrote most of the diff
+    // was in zero observation records (observed live).
+    recordDelegatedModelObservation(cwd, runId, {
+      role,
+      model: enriched.model ?? null,
+      action: enriched.action,
+      unitId: ledgerUnitId,
+      touched: enriched.touched,
+      digest: enriched.digest,
+      error: enriched.error,
+    });
     recordMaintenanceDelegationOutcome(
       cwd,
       state,

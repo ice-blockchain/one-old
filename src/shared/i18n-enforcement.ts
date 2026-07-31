@@ -7,11 +7,13 @@ import * as path from 'path';
 
 import type { CapabilityProfileV1 } from './capabilities';
 import {
+  moduleOutputVariants,
   profileUsesReactI18n,
   type CompiledArchitectureV1,
   type CompiledI18nCatalogV1,
   type CompiledI18nContractV1,
 } from './architecture-contract';
+import { lexicalMask } from './collapsed-source';
 
 export type I18nEnforcementFindingId =
   | 'STRUCT_I18N_RUNTIME'
@@ -24,12 +26,31 @@ export interface I18nEnforcementFinding {
   file: string;
   line?: number;
   message: string;
+  /**
+   * True for the parity classes whose truth spans the namespace's locale PAIR
+   * (key missing in a sibling locale / extra key vs the source locale). A role
+   * cannot write two catalog files atomically, so every legitimate
+   * intermediate state trips one of these (observed 13cl: ~8 denies including
+   * a perfect oscillation on one key — "en has extra key" → counterpart write
+   * denied → "en is missing key"). The write-time hot gate banks these as
+   * warnings in the quality ledger instead of denying; the completion scan
+   * still blocks on them, and the single-file classes (unparseable JSON, empty
+   * catalog, empty values) keep denying at write time.
+   */
+  crossLocaleParity?: boolean;
 }
 
 export interface I18nReference {
   namespace: string;
   key: string;
   line: number;
+  /**
+   * The literal source-language children of the `<Trans>` that made this
+   * reference, when there is one. This is the DECLARED source copy, which is
+   * what makes seeding a missing catalog key deterministic (i18n-seed.ts);
+   * `t()` references carry no fallback and are never seedable.
+   */
+  fallback?: string;
 }
 
 export interface I18nSourceAnalysis {
@@ -114,27 +135,46 @@ function addTReferences(text: string, namespace: string, references: I18nReferen
 // only appears glued to the identifier it parameterises (`useState<`,
 // `Promise<`, `Array<`, `.from<`). So a `<` immediately preceded by an
 // identifier character is a type argument, never a tag.
-function jsxTagAt(text: string, index: number): boolean {
-  if (!/^(?:<\/?[A-Za-z]|<>|<\/>)/.test(text.slice(index))) return false;
+//
+// Two further shapes opened a tag that is not one, and both are answered by the
+// same two extra tests:
+//   - `const html = "<p>Welcome</p>"` — a `<` inside a string literal. `syntax`
+//     (string bodies blanked) says whether the character is code at all.
+//   - `<T,>(x: T) => x`, the generic-arrow idiom. A JSX tag name is followed by
+//     whitespace, `>` or `/`; `,` (and `[` in `<Course[]>`) never follows one.
+//
+// The preceding-character rule does NOT apply to a CLOSING tag inside an open
+// element: `<h2>Traffic One</h2>` ends on a letter, so `</h2>` failed the test
+// and the child token came out as `"Traffic One</h2>"`. Two consequences, both
+// bad: the brand no longer compared equal to itself, and — because the element
+// was never popped — a `<Trans>` closed that way stayed on the stack for the
+// rest of the FILE, silently absorbing every later child text as its own
+// fallback. Depth-gating keeps ordinary `a < /re/.test(x)` code untouched.
+function jsxTagAt(text: string, syntax: string, index: number, jsxDepth: number): boolean {
+  if (syntax[index] !== '<') return false;
+  const ahead = text.slice(index);
+  if (/^(?:<>|<\/>)/.test(ahead)) return true;
+  if (!/^<\/?[A-Za-z][A-Za-z0-9_.:-]*(?:[\s/>]|$)/.test(ahead)) return false;
+  if (jsxDepth > 0 && ahead.startsWith('</')) return true;
   const previous = index > 0 ? text[index - 1]! : '';
   return !/[\w$]/.test(previous);
 }
 
-function jsxTokens(text: string): Array<{ token: string; index: number }> {
+function jsxTokens(text: string, syntax: string): Array<{ token: string; index: number }> {
   const tokens: Array<{ token: string; index: number }> = [];
   let index = 0;
   let jsxDepth = 0;
   while (index < text.length) {
     const start = index;
     const opener = text[index];
-    const jsxExpression = opener === '{' && jsxDepth > 0;
-    const jsxTag = opener === '<' && jsxTagAt(text, index);
+    const jsxExpression = opener === '{' && syntax[index] === '{' && jsxDepth > 0;
+    const jsxTag = opener === '<' && jsxTagAt(text, syntax, index, jsxDepth);
     if (!jsxTag && !jsxExpression) {
       index += 1;
       while (index < text.length) {
         const candidate = text[index];
-        if (candidate === '<' && jsxTagAt(text, index)) break;
-        if (candidate === '{' && jsxDepth > 0) break;
+        if (candidate === '<' && jsxTagAt(text, syntax, index, jsxDepth)) break;
+        if (candidate === '{' && syntax[index] === '{' && jsxDepth > 0) break;
         index += 1;
       }
       tokens.push({ token: text.slice(start, index), index: start });
@@ -190,8 +230,16 @@ function reactSourceAnalysis(
   const findings: I18nEnforcementFinding[] = [];
   const references: I18nReference[] = [];
   const brands = i18n?.literalBrands || [];
-  const namespace = fileTranslationNamespace(text);
-  addTReferences(text, namespace, references);
+  // Comment bodies are blanked (offsets and newlines preserved, so every
+  // reported line still points at the real source): a JSDoc `@example` holding
+  // `<Button>Save</Button>` is documentation, not rendered copy, and reading it
+  // as hardcoded text denied files whose only sin was being documented. String
+  // BODIES stay — attribute and child copy lives in them — and `syntax`, where
+  // they are blanked, is what tells the tag scanner which `<` is code at all.
+  const scan = lexicalMask(text, false);
+  const syntax = lexicalMask(text, true);
+  const namespace = fileTranslationNamespace(scan);
+  addTReferences(scan, namespace, references);
   // JSX child-text analysis is only valid where JSX itself is valid. TypeScript
   // REJECTS JSX in `.ts` (it is `.tsx` or nothing), so every "element" found in
   // a .ts file is really a generic type argument — `Promise<Course[]>` opens a
@@ -201,31 +249,45 @@ function reactSourceAnalysis(
   // `t()` references are collected above and stay available to catalog
   // validation, which is the part that IS meaningful in a .ts file.
   if (!JSX_CAPABLE_RE.test(file)) return { findings, references };
-  if (!/<\/?[A-Za-z][^>]*>/.test(text)) return { findings, references };
+  if (!/<\/?[A-Za-z][^>]*>/.test(scan)) return { findings, references };
 
-  type StackEntry = { name: string; trans: boolean; fallback: boolean; line: number };
+  type StackEntry = {
+    name: string;
+    trans: boolean;
+    fallback: boolean;
+    line: number;
+    // The reference this <Trans> pushed, so its literal children can be
+    // recorded as the reference's declared source-language fallback.
+    reference?: I18nReference;
+  };
   const stack: StackEntry[] = [];
-  for (const { token, index } of jsxTokens(text)) {
+  for (const { token, index } of jsxTokens(scan, syntax)) {
     if (token.startsWith('<')) {
       const name = tagName(token);
       if (!name) continue;
       if (/^<\//.test(token)) {
         const entryIndex = stack.map((entry) => entry.name).lastIndexOf(name);
         if (entryIndex >= 0) {
-          const [entry] = stack.splice(entryIndex, stack.length - entryIndex);
-          if (entry?.trans && !entry.fallback) {
-            findings.push({
-              id: 'STRUCT_I18N_REACT_TRANS',
-              file,
-              line: entry.line,
-              message: '<Trans> must contain a non-empty source-language children fallback.',
-            });
+          // Every entry from here down is closed — the tail entries implicitly,
+          // by their parent. Judging only the first one silently dropped any
+          // <Trans> that a parent closed over.
+          for (const entry of stack.splice(entryIndex, stack.length - entryIndex)) {
+            if (!entry.trans) continue;
+            if (!entry.fallback) {
+              findings.push({
+                id: 'STRUCT_I18N_REACT_TRANS',
+                file,
+                line: entry.line,
+                message: '<Trans> must contain a non-empty source-language children fallback.',
+              });
+            }
           }
         }
         continue;
       }
 
       const isTrans = name === 'Trans' || name.endsWith('.Trans');
+      let transReference: I18nReference | undefined;
       if (isTrans) {
         const ns = literalAttribute(token, 'ns');
         const key = literalAttribute(token, 'i18nKey');
@@ -237,7 +299,8 @@ function reactSourceAnalysis(
             message: '<Trans> requires literal `ns` and `i18nKey` attributes.',
           });
         } else {
-          references.push({ namespace: ns, key, line: lineAt(text, index) });
+          transReference = { namespace: ns, key, line: lineAt(text, index) };
+          references.push(transReference);
         }
       }
       for (const attr of translatableLiteralAttributes(token)) {
@@ -268,7 +331,13 @@ function reactSourceAnalysis(
           message: '<Trans> may not be self-closing; provide visible source-language fallback children.',
         });
       } else if (!selfClosing) {
-        stack.push({ name, trans: isTrans, fallback: false, line: lineAt(text, index) });
+        stack.push({
+          name,
+          trans: isTrans,
+          fallback: false,
+          line: lineAt(text, index),
+          ...(transReference ? { reference: transReference } : {}),
+        });
       }
       continue;
     }
@@ -279,7 +348,12 @@ function reactSourceAnalysis(
     if (token.startsWith('{')) {
       if (transEntry) {
         const literalFallback = /^\{\s*(["'])([\s\S]*?)\1\s*\}$/.exec(token)?.[2];
-        if (literalFallback && visibleLiteral(literalFallback)) transEntry.fallback = true;
+        if (literalFallback && visibleLiteral(literalFallback)) {
+          transEntry.fallback = true;
+          if (transEntry.reference && !transEntry.reference.fallback) {
+            transEntry.reference.fallback = normalizeDisplayText(literalFallback);
+          }
+        }
         continue;
       }
       if (/^\{\s*(?:[\w$.]+\.)?t\s*\(/.test(token)) {
@@ -306,6 +380,9 @@ function reactSourceAnalysis(
     if (!visibleLiteral(token)) continue;
     if (transEntry) {
       transEntry.fallback = true;
+      if (transEntry.reference && !transEntry.reference.fallback) {
+        transEntry.reference.fallback = normalizeDisplayText(token);
+      }
       continue;
     }
     if (exactBrand(token, brands)) continue;
@@ -345,6 +422,27 @@ function blankEmbeddedCode(text: string): string {
     );
 }
 
+// The app ENTRY html document (`index.html`). Its document-level metadata —
+// `<title>`, `<noscript>`, `<meta>` — renders BEFORE any framework boots, so
+// "use the active framework localization primitive" is unsatisfiable for it:
+// the primitive does not exist yet at that point in the page lifecycle.
+// Observed 13co: the mandatory vite-react `apps/web/index.html` scaffold's
+// static `<title>`/`<noscript>` text tripped STRUCT_HARDCODED_COPY and blocked
+// the frontend for multiple cycles on a file the contract itself requires.
+const ENTRY_HTML_RE = /(?:^|\/)index\.html$/i;
+
+// Blank ONLY the document-metadata blocks of an entry html (offsets/newlines
+// preserved, same technique as blankEmbeddedCode). Everything else in the file
+// — rendered body markup, attributes on body elements — stays strictly scanned.
+function blankEntryHtmlDocumentMetadata(text: string): string {
+  return text
+    .replace(
+      /<(title|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
+      (block) => block.replace(/[^\n]/g, ' '),
+    )
+    .replace(/<meta\b[^>]*>/gi, (tag) => tag.replace(/[^\n]/g, ' '));
+}
+
 function markupSourceAnalysis(
   file: string,
   text: string,
@@ -356,7 +454,12 @@ function markupSourceAnalysis(
   // profiles (Vue, Svelte, generic-web) route their .ts files here.
   if (SCRIPT_ONLY_RE.test(file)) return { findings, references: [] };
   const brands = i18n?.literalBrands || [];
-  const scannable = blankEmbeddedCode(text);
+  // Entry-HTML carve-out: pre-boot document metadata cannot be localized by any
+  // framework primitive, so it is exempt in the ENTRY document only. All other
+  // .html content — and every other element in the entry html — stays strict.
+  const scannable = ENTRY_HTML_RE.test(file)
+    ? blankEntryHtmlDocumentMetadata(blankEmbeddedCode(text))
+    : blankEmbeddedCode(text);
   const re = />([^<>{}]+)</g;
   for (let match = re.exec(scannable); match; match = re.exec(scannable)) {
     const value = match[1]!;
@@ -417,6 +520,25 @@ function nativeSourceAnalysis(
   return { findings, references: [] };
 }
 
+// `<sharedRoot>/src/components/ui/` is defined BY THE CONTRACT as the adapter
+// CLI's vendor output (the shadcn campaign's structure: `shadcn add` writes and
+// OVERWRITES primitives there), so a copy/Trans finding inside it orders an
+// edit the next CLI run destroys (observed 14cl: 7 of 17 consolidated findings
+// were the CLI-installed breadcrumb/pagination/sidebar/spinner primitives).
+// Same principle as `.prettierignore` — the verifier must skip what the owning
+// tool overwrites. The root is derived from the compiled profile's uiSystem,
+// never a hardcoded literal (workspace roots vary), and ONLY the `ui/` vendor
+// dir is exempt: `<sharedRoot>/src/components/` siblings are role-authored
+// compositions and stay fully scanned.
+function vendorUiPrimitiveFile(file: string, profile: CapabilityProfileV1): boolean {
+  const sharedRoot = profile.uiSystem?.sharedRoot;
+  if (!sharedRoot) return false;
+  const normalizedRoot = sharedRoot.replace(/\\/g, '/').replace(/^\.?\/+|\/+$/g, '');
+  if (!normalizedRoot) return false;
+  const normalizedFile = file.replace(/\\/g, '/').replace(/^\.?\/+/, '');
+  return normalizedFile.startsWith(`${normalizedRoot}/src/components/ui/`);
+}
+
 export function analyzeI18nSourceText(
   file: string,
   text: string,
@@ -424,11 +546,18 @@ export function analyzeI18nSourceText(
   i18n?: CompiledI18nContractV1,
 ): I18nSourceAnalysis {
   if (!I18N_SOURCE_RE.test(file)) return { findings: [], references: [] };
-  if (profileUsesReactI18n(profile) && /\.(?:tsx?|jsx?)$/i.test(file)) {
-    return reactSourceAnalysis(file, text, i18n);
+  const analysis = profileUsesReactI18n(profile) && /\.(?:tsx?|jsx?)$/i.test(file)
+    ? reactSourceAnalysis(file, text, i18n)
+    : /\.(?:swift|kt|dart)$/i.test(file)
+      ? nativeSourceAnalysis(file, text, i18n)
+      : markupSourceAnalysis(file, text, i18n);
+  // Vendor exemption applies to the copy/Trans findings only; `t()`/`<Trans>`
+  // references still feed catalog validation — the keys a vendor file consumes
+  // must exist regardless of who owns the file.
+  if (analysis.findings.length > 0 && vendorUiPrimitiveFile(file, profile)) {
+    return { findings: [], references: analysis.references };
   }
-  if (/\.(?:swift|kt|dart)$/i.test(file)) return nativeSourceAnalysis(file, text, i18n);
-  return markupSourceAnalysis(file, text, i18n);
+  return analysis;
 }
 
 function manifestPaths(contract?: CompiledArchitectureV1): string[] {
@@ -639,6 +768,29 @@ function entriesForNamespace(
   return out;
 }
 
+// i18next/vue-i18n CLDR plural forms — `key_one`/`key_other` (cardinal) and
+// `key_ordinal_two` … — are per-locale spellings of ONE logical key. WHICH
+// categories a locale needs is CLDR data this validator does not carry
+// (Romanian needs `_few`, Japanese only `_other`), so parity and reference
+// resolution are judged on the logical key: a locale satisfies a plural
+// family by declaring ANY of its forms, and a form another locale does not
+// need is never an "extra key". The category list is the closed CLDR set —
+// ground truth, not a per-scenario table.
+const PLURAL_SUFFIX_RE = /_(?:ordinal_)?(?:zero|one|two|few|many|other)$/;
+
+function pluralBase(key: string): string | null {
+  return PLURAL_SUFFIX_RE.test(key) ? key.replace(PLURAL_SUFFIX_RE, '') : null;
+}
+
+/** Any non-empty form of the logical key: exact, or a CLDR plural variant. */
+function pluralFamilySatisfied(entries: Map<string, string>, logicalKey: string): boolean {
+  if (entries.get(logicalKey)?.trim()) return true;
+  for (const [key, value] of entries) {
+    if (pluralBase(key) === logicalKey && value.trim()) return true;
+  }
+  return false;
+}
+
 function inferredJsonNamespaces(projectRoot: string, relative: string): string[] {
   try {
     const value = JSON.parse(fs.readFileSync(path.join(projectRoot, relative), 'utf8')) as unknown;
@@ -834,9 +986,14 @@ export function validateI18nCatalogs(
           message: `Source-locale key \`${namespace}:${key}\` has an empty value.`,
         });
       }
+      const keyPluralBase = pluralBase(key);
       for (const locale of i18n.locales) {
         const localized = byLocale.get(locale);
         if (!localized) continue;
+        // A plural-form source key is satisfied by the locale's OWN forms of
+        // the same logical key — locales legitimately need different CLDR
+        // categories, so exact-key parity would deny correct catalogs.
+        if (keyPluralBase !== null && pluralFamilySatisfied(localized, keyPluralBase)) continue;
         if (!localized.has(key) || !localized.get(key)?.trim()) {
           const target = relevant.find((catalog) => (
             catalog.locales.includes(locale) && catalog.namespaces.includes(namespace)
@@ -845,6 +1002,7 @@ export function validateI18nCatalogs(
             id: 'STRUCT_I18N_CATALOG',
             file: target?.path || '<catalog>',
             message: `Locale \`${locale}\` is missing a non-empty \`${namespace}:${key}\` value required for catalog parity.`,
+            crossLocaleParity: true,
           });
         }
       }
@@ -861,6 +1019,10 @@ export function validateI18nCatalogs(
             message: `Locale \`${locale}\` has an empty \`${namespace}:${key}\` value.`,
           });
         } else if (!source.has(key)) {
+          // A plural form whose logical key the source locale declares (in any
+          // of ITS categories) is a required per-locale spelling, not an extra.
+          const base = pluralBase(key);
+          if (base !== null && pluralFamilySatisfied(source, base)) continue;
           const target = relevant.find((catalog) => (
             catalog.locales.includes(locale) && catalog.namespaces.includes(namespace)
           ));
@@ -868,6 +1030,7 @@ export function validateI18nCatalogs(
             id: 'STRUCT_I18N_CATALOG',
             file: target?.path || '<catalog>',
             message: `Locale \`${locale}\` has extra key \`${namespace}:${key}\`; declared locales must have identical key sets.`,
+            crossLocaleParity: true,
           });
         }
       }
@@ -885,7 +1048,9 @@ export function validateI18nCatalogs(
     const namespaced = sourceCatalog && entries
       ? entriesForNamespace(entries, sourceCatalog, reference.namespace)
       : undefined;
-    if (!namespaced?.get(reference.key)?.trim()) {
+    // `t('ns:key', { count })` resolves to the catalog's `key_<category>`
+    // forms — a plural family satisfies the bare reference key.
+    if (!namespaced || !pluralFamilySatisfied(namespaced, reference.key)) {
       findings.push({
         id: 'STRUCT_I18N_CATALOG',
         file: sourceCatalog?.path || '<catalog>',
@@ -903,7 +1068,8 @@ export function requiredI18nNamespacesForFiles(
 ): string[] {
   const namespaces = new Set<string>();
   for (const file of files.map((value) => value.replace(/\\/g, '/'))) {
-    const module = contract.modules.find((candidate) => candidate.output === file);
+    // Extension freedom: the file may be any allowed variant of the module.
+    const module = contract.modules.find((candidate) => moduleOutputVariants(candidate).includes(file));
     if (module?.kind === 'page') {
       const route = contract.routes.find((candidate) => candidate.moduleId === module.id && !candidate.redirect);
       namespaces.add(route?.id || module.id);

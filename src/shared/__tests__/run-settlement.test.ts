@@ -11,9 +11,11 @@ import {
   activateRunV2RollbackBarrier,
   activeRunClaimScan,
   effectiveLegacyRunStatus,
+  projectRunLedgerForV2Rollback,
   readRunSettlement,
   reconcileRunSettlement,
   writeRunSettlement,
+  type CanonicalRunStatus,
 } from '../run-settlement';
 import { sha256 } from '../text';
 import { DEFAULT_LIGHTHOUSE_THRESHOLDS, currentVerificationSourceHash, verificationContractPath, type VerificationContractV2 } from '../verification-contract';
@@ -531,4 +533,88 @@ test('a terminal legacy ledger cannot bypass strict reviewer, tester, QA, and Ve
     writeStrictVerificationEvidence(cwd);
     assert.equal(reconcileRunSettlement(cwd, 'R')?.status, 'verified');
   });
+});
+
+// `writeLegacyProjection` is the one writer of run.json that bypasses the
+// run-ledger state machine, and reconciliation can derive a TERMINAL canonical
+// status the ledger never transitioned to. Observed 12co: run.json carried a
+// terminal projection while `transitionHistory` still ended at `planned ->
+// active` and `statusUpdatedAt` was frozen at that moment — only `updatedAt`
+// moved on, an hour later. The lifecycle record must be single-sourced.
+test('a projected terminal settlement records its transition and advances statusUpdatedAt', () => {
+  withProject((cwd) => {
+    const runDir = path.join(cwd, '.traffic-one', 'runs', 'R');
+    const planned = '2026-07-30T00:00:00.000Z';
+    fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify({
+      version: 2,
+      runId: 'R',
+      status: 'active',
+      kind: 'orchestration',
+      qaContractVersion: 2,
+      createdAt: planned,
+      statusUpdatedAt: planned,
+      transitionHistory: [{ from: 'planned', to: 'active', at: planned }],
+    }));
+    assert.ok(writeRunSettlement(cwd, 'R', {
+      status: 'active',
+      incompleteChecks: ['verification-not-started'],
+    }));
+    const seeded = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8'));
+    assert.equal(seeded.statusUpdatedAt, planned, 'a non-terminal projection is not a transition');
+    assert.equal((seeded.transitionHistory as unknown[]).length, 1);
+
+    fs.writeFileSync(path.join(runDir, 'maintenance.json'), JSON.stringify({
+      version: 1,
+      role: 'quick-fix',
+      overallOutcome: 'failed',
+    }));
+    const settlement = reconcileRunSettlement(cwd, 'R');
+    assert.equal(settlement?.status, 'failed');
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8'));
+    assert.equal(ledger.canonicalStatus, 'failed');
+    assert.equal(ledger.statusUpdatedAt, settlement!.updatedAt);
+    assert.equal(ledger.finishedAt, settlement!.updatedAt);
+    const history = ledger.transitionHistory as Array<Record<string, unknown>>;
+    assert.equal(history.length, 2);
+    assert.deepEqual(history[1], {
+      from: 'active',
+      to: 'failed',
+      at: settlement!.updatedAt,
+      outcome: 'agent-failed',
+      reason: 'settlement-projection',
+    });
+
+    // Idempotent: a replayed projection of the same terminal settlement must not
+    // append a second entry or re-stamp the transition timestamp.
+    assert.ok(reconcileRunSettlement(cwd, 'R'));
+    const replayed = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8'));
+    assert.equal((replayed.transitionHistory as unknown[]).length, 2);
+    assert.equal(replayed.statusUpdatedAt, settlement!.updatedAt);
+  });
+});
+
+// The legacy `status` and `canonicalStatus` may look different on disk — that is
+// the rollback barrier, not a contradiction — but reading the projection back
+// through `effectiveLegacyRunStatus` must always return the legacy equivalent of
+// the canonical status a current runtime is entitled to see.
+test('every legacy projection round-trips to its own canonicalStatus', () => {
+  const cases: Array<[CanonicalRunStatus, string]> = [
+    ['planned', 'planned'],
+    ['active', 'active'],
+    ['code-delivered', 'active'],
+    ['validating', 'active'],
+    ['verified', 'completed'],
+    ['failed', 'failed'],
+    ['blocked', 'blocked'],
+  ];
+  for (const [canonical, legacy] of cases) {
+    const projected = projectRunLedgerForV2Rollback({ runId: 'R' }, canonical);
+    assert.equal(projected.canonicalStatus, canonical);
+    assert.equal(effectiveLegacyRunStatus(projected), legacy, canonical);
+    // Runtime 1.0.19 never reads the guard: everything unfinished must look
+    // irreversibly failed to it, and nothing may look completed unless it is.
+    const legacyView = effectiveLegacyRunStatus(projected, '1.0.19');
+    assert.equal(legacyView === 'completed', canonical === 'verified', canonical);
+  }
 });

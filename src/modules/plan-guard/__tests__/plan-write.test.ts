@@ -124,19 +124,15 @@ test('node -e referencing a VALID on-disk architecture-input is not denied as in
 test('plugin authoring cwd does not exempt an absolute project file from the plan/structure gate', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (project) => {
     const target = path.join(project, 'apps', 'web', 'src', 'main.tsx');
+    // Collapsed source with NO reachable formatter (pre-install) stays in the
+    // write-time blocking set; convention findings (entrypoint components)
+    // accumulate instead of denying since the batched-feedback change.
     const result = planWriteGate(writeCtx(process.cwd(), 'Write', 'file-write', {
       file_path: target,
-      content: [
-        'function HomePage() { return <main>Home</main>; }',
-        'function SettingsPage() { return <main>Settings</main>; }',
-        'const router = createBrowserRouter([',
-        "  { path: '/', element: <HomePage /> },",
-        "  { path: '/settings', element: <SettingsPage /> },",
-        ']);',
-      ].join('\n'),
+      content: 'export function App(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
     }));
     assert.equal(result.kind, 'deny');
-    if (result.kind === 'deny') assert.match(result.reason, /STRUCT_ENTRYPOINT_COMPONENT|STRUCT_MULTI_PAGE_MODULE/);
+    if (result.kind === 'deny') assert.match(result.reason, /STRUCT_COLLAPSED_LINE/);
     assert.equal(fs.existsSync(path.join(process.cwd(), '.traffic-one')), false);
   });
 });
@@ -895,6 +891,11 @@ test('an unattributable deny records WHY the role never resolved, and names a cl
     assert.equal(last.role, null);
     assert.ok(last.unresolved, 'the deny row carries a named unresolved reason');
     assert.equal(typeof last.unresolved.reason, 'string');
+    // Observed live: all 13 deny rows of one run carried the ORCHESTRATOR's
+    // sessionId with isSubagent:true and no agent id, so per-agent violation
+    // history across a fix cycle could not be reconstructed.
+    assert.equal(last.sessionId, 'parent-session');
+    assert.equal(last.agentId, 'architect-child', 'the denied AGENT is identifiable, not just its parent session');
   });
 });
 
@@ -963,8 +964,8 @@ test('static layout violation is denied even in a clean main-agent project', () 
   });
 });
 
-test('Edit hot structural gate reconstructs the full file and blocks monolithization hidden by a fragment', () => {
-  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+test('Edit hot structural gate reconstructs the full file and banks monolithization findings in the quality ledger', () => {
+  withMaterialized({ currentRunId: 'R', team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, [
@@ -979,15 +980,22 @@ test('Edit hot structural gate reconstructs the full file and blocks monolithiza
       '',
     ].join('\n'));
 
+    // The reconstructed post-Edit file declares a UI component in the
+    // entrypoint. Since the batched-feedback change this convention finding no
+    // longer interrupts the write — it accumulates into the run-scoped quality
+    // ledger for one consolidated delivery at the completion digest.
     const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
       file_path: 'apps/web/src/main.tsx',
       old_string: '  return null;',
       new_string: '  return <main>Inline route page</main>;',
     }));
-    assert.equal(result.kind, 'deny');
-    if (result.kind === 'deny') {
-      assert.match(result.reason, /STRUCT_ENTRYPOINT_COMPONENT/);
-    }
+    assert.equal(result.kind, 'noop', JSON.stringify(result));
+    const ledger = fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'R', 'quality-findings.jsonl'),
+      'utf8',
+    );
+    assert.match(ledger, /STRUCT_ENTRYPOINT_COMPONENT/);
+    assert.match(ledger, /apps\/web\/src\/main\.tsx/);
   });
 });
 

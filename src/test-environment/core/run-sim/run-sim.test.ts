@@ -33,7 +33,9 @@ function architecture(): CompiledArchitectureV1 {
       { id: 'app-shell', kind: 'app-shell', name: 'App', output: 'apps/web/src/App.tsx', ownerRole: 'senior-frontend' },
       { id: 'home', kind: 'page', name: 'Home', output: 'apps/web/src/pages/Home.tsx', ownerRole: 'senior-frontend' },
       { id: 'card', kind: 'component', name: 'Card', output: 'apps/web/src/components/Card.tsx', ownerRole: 'senior-frontend' },
-      { id: 'auth', kind: 'feature', name: 'Auth', output: 'apps/web/src/features/auth/index.ts', ownerRole: 'senior-frontend' },
+      // `.tsx`, matching what the compiler emits: a feature is a UI section, and
+      // a section that holds JSX cannot live in a `.ts` file.
+      { id: 'auth', kind: 'feature', name: 'Auth', output: 'apps/web/src/features/auth/index.tsx', ownerRole: 'senior-frontend' },
       { id: 'api', kind: 'service', name: 'CoursesAPI', output: 'packages/api-client/src/CoursesAPI.ts', ownerRole: 'senior-backend' },
     ],
     routes: [{ id: 'home-route', path: '/', moduleId: 'home', moduleOutput: 'apps/web/src/pages/Home.tsx' }],
@@ -54,6 +56,44 @@ test('buildImplementContext reads the allowlist from scope.include, not a guesse
   assert.deepEqual(ctx.outputsFor('senior-backend'), ['packages/api-client/src/CoursesAPI.ts']);
   assert.deepEqual(ctx.outputsFor('senior-tester'), []);
   assert.deepEqual(ctx.roles().sort(), ['senior-backend', 'senior-frontend']);
+});
+
+test('widened extension-freedom includes resolve to the DEFAULT compiled output exactly once', () => {
+  // Extension freedom: assignments now carry a feature's DIRECTORY literal and
+  // every allowed-extension variant of flat kinds. The driver keeps emitting
+  // the DEFAULT concrete path — one authored file per module, never a junk
+  // sibling per variant and never a file at a directory path.
+  const arch = architecture();
+  const modules = arch.modules.map((module) => (
+    module.id === 'auth'
+      ? { ...module, outputBase: 'apps/web/src/features/auth/index', allowedExtensions: ['.tsx', '.ts'] }
+      : module.id === 'home'
+        ? { ...module, outputBase: 'apps/web/src/pages/Home', allowedExtensions: ['.tsx', '.ts'] }
+        : module
+  ));
+  const widened = { ...arch, modules } as unknown as CompiledArchitectureV1;
+  const ctx = buildImplementContext('R', widened, {
+    assignments: [{
+      role: 'senior-frontend',
+      summary: 'ui',
+      scope: {
+        include: [
+          'apps/web/src/features/auth', // feature DIRECTORY literal
+          'apps/web/src/pages/Home.tsx', // default variant
+          'apps/web/src/pages/Home.ts', // allowed non-default variant
+          'package.json',
+        ],
+      },
+    }],
+  });
+  assert.deepEqual(ctx.outputsFor('senior-frontend'), [
+    'apps/web/src/features/auth/index.tsx',
+    'apps/web/src/pages/Home.tsx',
+    'package.json',
+  ]);
+  // The resolved default is authorable, so a run whose plan compiled the
+  // widened shape still writes every module and settles.
+  assert.ok(sourceFor('apps/web/src/features/auth/index.tsx', ctx));
 });
 
 test('buildImplementContext maps module ids and paths in both directions', () => {
@@ -81,6 +121,29 @@ test('the app shell wires planned routes AND feature modules', () => {
   // A feature imported nowhere is STRUCT_ORPHAN_MODULE — dead code, not a
   // deliverable. The shell is where cross-cutting features attach.
   assert.match(shell, /features\/auth/, 'planned feature modules are wired in');
+});
+
+// The Vue profile compiles `feature` to `.vue`, so the resolver must author an
+// SFC there. Emitting plain TypeScript into a `.vue` path is the same defect
+// class as the `.ts` React entry this replaced — and the hosting page imports
+// named helpers, which only a plain `<script>` block can export.
+test('a Vue feature entry is authored as an SFC with named exports', () => {
+  const vueArchitecture = (): CompiledArchitectureV1 => ({
+    ...architecture(),
+    profile: { ...architecture().profile, profileId: 'vue', framework: 'vue', router: 'vue-router' },
+    modules: [
+      { id: 'home', kind: 'page', name: 'Home', output: 'apps/web/src/pages/Home.vue', ownerRole: 'senior-frontend' },
+      { id: 'auth', kind: 'feature', name: 'Auth', output: 'apps/web/src/features/auth/index.vue', ownerRole: 'senior-frontend' },
+    ],
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home', moduleOutput: 'apps/web/src/pages/Home.vue' }],
+  } as unknown as CompiledArchitectureV1);
+  const ctx = buildImplementContext('R', vueArchitecture(), assignments);
+  const feature = sourceFor('apps/web/src/features/auth/index.vue', ctx) || '';
+  assert.match(feature, /<template>/, 'a .vue module is a single-file component');
+  assert.match(feature, /export async function signOut/, 'helpers stay named exports');
+  // The page that hosts the feature imports those helpers by name.
+  const page = sourceFor('apps/web/src/pages/Home.vue', ctx) || '';
+  assert.match(page, /import \{ signOut \} from '[^']*features\/auth\/index\.vue'/);
 });
 
 test('pages reference the planned components and the API client', () => {

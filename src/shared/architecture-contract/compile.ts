@@ -30,7 +30,7 @@ import {
   baselineContains,
 } from './core';
 import {
-  moduleOutput,
+  resolveModuleOutput,
 } from './naming';
 import {
   REPOSITORY_SCAFFOLD_OUTPUTS,
@@ -199,6 +199,15 @@ export function compileArchitecture(
   if (input.modules.some((module) => module.placement === 'shared-ui') && !profile.uiSystem?.sharedRoot) {
     throw new Error(`shared-ui component placement requires a resolved shared UI root for profile ${profile.profileId}`);
   }
+  if (
+    input.modules.some((module) => module.kind === 'edge-function')
+    && !['supabase', 'our-fork'].includes(profile.backendFramework)
+  ) {
+    // `supabase/functions/<name>/index.ts` is a Supabase CLI layout. On any
+    // other backend the same path deploys nowhere, so the kind is refused
+    // rather than compiled into a directory no toolchain reads.
+    throw new Error(`edge-function modules require a Supabase-family backend; profile ${profile.profileId} selected backend ${profile.backendFramework || 'none'}`);
+  }
   const uiOnlyModules = input.modules.filter((module) => (
     module.kind === 'app-shell' || module.kind === 'page' || module.kind === 'component'
   ));
@@ -218,20 +227,35 @@ export function compileArchitecture(
     || captureArchitectureBaseline(projectRoot, { ...profile, sourceRoots: compiledSourceRoots });
   const immutablePaths = baselinePathSet(projectRoot, compiledBaseline);
   const routesByModule = new Map(input.routes.map((route) => [route.moduleId, route]));
-  const modules = input.modules.map((module) => ({
-    ...module,
-    ownerRole: module.kind === 'test'
-      ? 'senior-tester'
-      : (
-          ['app-shell', 'page', 'component', 'feature'].includes(module.kind)
-          && hasUi
-        )
-          ? 'senior-frontend'
-          : profile.roles.includes('senior-backend')
-            ? 'senior-backend'
-            : 'senior-frontend',
-    output: moduleOutput(projectRoot, profile, module, routesByModule.get(module.id), immutablePaths),
-  }));
+  const modules = input.modules.map((module) => {
+    const resolved = resolveModuleOutput(
+      projectRoot,
+      profile,
+      module,
+      routesByModule.get(module.id),
+      immutablePaths,
+    );
+    return {
+      ...module,
+      ownerRole: module.kind === 'test'
+        ? 'senior-tester'
+        // An edge function is server code by definition — it must never reach the
+        // UI branch below, whatever surfaces the profile has.
+        : module.kind === 'edge-function'
+          ? (profile.roles.includes('senior-backend') ? 'senior-backend' : 'senior-frontend')
+          : (
+              ['app-shell', 'page', 'component', 'feature'].includes(module.kind)
+              && hasUi
+            )
+              ? 'senior-frontend'
+              : profile.roles.includes('senior-backend')
+                ? 'senior-backend'
+                : 'senior-frontend',
+      output: resolved.output,
+      outputBase: resolved.outputBase,
+      allowedExtensions: resolved.allowedExtensions,
+    };
+  });
   const outputById = new Map(modules.map((module) => [module.id, module.output]));
   const routes = input.routes.map((route) => ({
     ...route,

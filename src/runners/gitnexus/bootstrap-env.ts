@@ -91,9 +91,33 @@ function sha1OfPath(absPath: string): string | null {
   return crypto.createHash('sha1').update(fs.readFileSync(absPath)).digest('hex');
 }
 
+// `CLAUDE.md` is a symlink to `AGENTS.md` in most Traffic One projects, and both
+// copyFileSync and cpSync DEREFERENCE it — so every snapshot stored two full
+// copies of the same 8703-byte file (observed live). Recreate the link instead
+// whenever it points at a sibling INSIDE the copied set; an absolute or
+// escaping target is still dereferenced, because a backup whose link leaves the
+// backup restores nothing.
 function copyRecursive(src: string, dst: string): void {
   if (!fs.existsSync(src)) return;
   fs.mkdirSync(path.dirname(dst), { recursive: true });
+  let link: string | null = null;
+  try {
+    if (fs.lstatSync(src).isSymbolicLink()) {
+      const target = fs.readlinkSync(src);
+      if (!path.isAbsolute(target) && !target.split(/[\\/]/).includes('..')) link = target;
+    }
+  } catch {
+    // not a link, or unreadable — fall through to a content copy
+  }
+  if (link) {
+    try {
+      try { fs.rmSync(dst, { recursive: true, force: true }); } catch { /* nothing to clear */ }
+      fs.symlinkSync(link, dst);
+      return;
+    } catch {
+      // Windows without the symlink privilege — fall through to a content copy
+    }
+  }
   if (fs.statSync(src).isDirectory()) {
     fs.cpSync(src, dst, { recursive: true });
   } else {
@@ -104,22 +128,54 @@ function copyRecursive(src: string, dst: string): void {
 interface BackupRecord { rel: string; sha: string | null; }
 interface Backups { backupRoot: string; recorded: BackupRecord[]; }
 
+function backupStamps(cwd: string): string[] {
+  try {
+    return fs.readdirSync(path.join(cwd, '.traffic-one', 'backups'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return []; // no backups dir yet
+  }
+}
+
+/** True when `backupRoot` already holds byte-identical content for every live path. */
+function snapshotMatchesLive(backupRoot: string, live: readonly BackupRecord[]): boolean {
+  if (live.length === 0) return false;
+  return live.every(({ rel, sha }) => Boolean(sha) && sha1OfPath(path.join(backupRoot, rel)) === sha);
+}
+
 export function backupConflicts(cwd: string, runStamp: string): Backups {
-  const backupRoot = path.join(cwd, '.traffic-one', 'backups', runStamp);
-  const recorded: BackupRecord[] = [];
+  // Hash what is on disk right now, once.
+  const live: BackupRecord[] = [];
   for (const rel of CONFLICT_PATHS) {
     const src = path.join(cwd, rel);
     if (!fs.existsSync(src)) continue;
-    const dst = path.join(backupRoot, rel);
+    live.push({ rel, sha: sha1OfPath(src) });
+  }
+  // Skip the snapshot entirely when the newest one already holds exactly this
+  // content. Bootstrap runs many times per session and each run re-snapshotted
+  // the same unchanged files: four AGENTS.md/CLAUDE.md snapshots in four
+  // minutes, ALL hashing identically to the live file — and rotation (keep 3)
+  // then evicted the only snapshot that could have differed (observed live).
+  // Restore stays correct because the reused root holds the same bytes.
+  const stamps = backupStamps(cwd);
+  const newest = stamps.length > 0 ? stamps[stamps.length - 1]! : null;
+  if (newest && newest !== runStamp) {
+    const newestRoot = path.join(cwd, '.traffic-one', 'backups', newest);
+    if (snapshotMatchesLive(newestRoot, live)) return { backupRoot: newestRoot, recorded: live };
+  }
+  const backupRoot = path.join(cwd, '.traffic-one', 'backups', runStamp);
+  const recorded: BackupRecord[] = [];
+  for (const { rel, sha } of live) {
     try {
-      copyRecursive(src, dst);
-      recorded.push({ rel, sha: sha1OfPath(src) });
+      copyRecursive(path.join(cwd, rel), path.join(backupRoot, rel));
+      recorded.push({ rel, sha });
     } catch {
       // best-effort; absence of backup is non-fatal
     }
   }
-  // Cap the directory here, not only at SessionStart: this bootstrap can run many
-  // times per session and each run snapshots the same unchanged files.
+  // Cap the directory here, not only at SessionStart.
   try { pruneTrafficOneBackups(cwd, runStamp); } catch { /* best-effort */ }
   return { backupRoot, recorded };
 }

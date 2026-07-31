@@ -16,6 +16,7 @@ import {
   ensureArchitectureRunSnapshot,
   isDeletableStrayArtifact,
   isScanSkippedPath,
+  moduleOutputVariants,
   publishRuntimeAssignments,
   readArchitectureRunBaseline,
   legacyCustomBackendMigration,
@@ -25,9 +26,11 @@ import {
   runtimeAssignmentsPath,
   scanSkipPredicate,
   stableContractJson,
+  uiAstLintLayer,
   validateArchitectureInput,
   type ArchitectureInputV1,
 } from '../architecture-contract';
+import { matchesScope } from '../scope';
 import { sha256 } from '../text';
 import {
   compileVerificationContract,
@@ -96,6 +99,231 @@ test('architecture input is semantic and cannot choose roots or output paths', (
   const validation = validateArchitectureInput(invalid);
   assert.equal(validation.ok, false);
   assert.ok(validation.errors.some((error) => error.includes('may not choose output paths')));
+});
+
+test('React-family feature modules compile to TSX entries that can contain JSX', () => {
+  const featureInput: ArchitectureInputV1 = {
+    schemaVersion: 1,
+    routes: [],
+    modules: [{ id: 'contact-section', name: 'Contact Section', kind: 'feature' }],
+  };
+  const fixtures = [
+    {
+      name: 'vite-react',
+      state: REACT_STATE,
+      setupPaths: [],
+      expectedProfile: 'vite-react',
+      expectedOutput: 'apps/web/src/features/contact-section/index.tsx',
+    },
+    {
+      name: 'next-app',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: 'nextjs',
+        backend: 'none',
+        mobile: { framework: 'none' },
+      },
+      setupPaths: [],
+      expectedProfile: 'next-app',
+      expectedOutput: 'apps/web/features/contact-section/index.tsx',
+    },
+    {
+      name: 'next-pages',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: 'nextjs',
+        backend: 'none',
+        mobile: { framework: 'none' },
+      },
+      setupPaths: ['apps/web/pages'],
+      expectedProfile: 'next-pages',
+      expectedOutput: 'apps/web/features/contact-section/index.tsx',
+    },
+    {
+      name: 'react-native',
+      state: {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: 'none',
+        backend: 'none',
+        mobile: { framework: 'react-native-expo' },
+      },
+      setupPaths: [],
+      expectedProfile: 'react-native',
+      expectedOutput: 'src/features/contact-section/index.tsx',
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    withProject((cwd) => {
+      for (const setupPath of fixture.setupPaths || []) {
+        fs.mkdirSync(path.join(cwd, setupPath), { recursive: true });
+      }
+      const compiled = compileArchitecture(cwd, fixture.name, fixture.state, featureInput);
+      assert.equal(compiled.profile.profileId, fixture.expectedProfile);
+      assert.equal(compiled.modules[0]?.output, fixture.expectedOutput);
+      assert.ok(compiled.allowedOutputs.includes(fixture.expectedOutput));
+    });
+  }
+});
+
+test('the compiled feature entry takes the framework-native default plus an allowed extension set on every profile', () => {
+  // The regression this exists for: `feature` was bucketed with service/store
+  // and compiled to `index.ts` on EVERY profile, so a React UI section had to
+  // hold JSX in a file TypeScript forbids it in, and a Vue/Svelte/Astro section
+  // had to be a single-file component that was not a `.vue`/`.svelte`/`.astro`
+  // file. One case per profile so the whole matrix is pinned, not one corner.
+  //
+  // Extension freedom (12co): the contract pins the BASE PATH; the default is
+  // the first allowed extension and the implementer may deliver any other
+  // allowed one (a headless `.ts` feature on React) — tsc/build arbitrates.
+  const featureInput: ArchitectureInputV1 = {
+    schemaVersion: 1,
+    routes: [],
+    modules: [{ id: 'contact-section', name: 'Contact Section', kind: 'feature' }],
+  };
+  const web = (frontend: string): Record<string, unknown> => ({
+    mode: 'new-project',
+    stack: 'custom-frontend',
+    frontend,
+    backend: 'none',
+    mobile: { framework: 'none' },
+  });
+  const fixtures: Array<{
+    name: string;
+    state: Record<string, unknown>;
+    setupPaths?: string[];
+    setupFiles?: Record<string, string>;
+    expectedProfile: string;
+    expectedExtension: string;
+    expectedAllowed: string[];
+  }> = [
+    { name: 'vite-react', state: REACT_STATE, expectedProfile: 'vite-react', expectedExtension: '.tsx', expectedAllowed: ['.tsx', '.ts'] },
+    { name: 'next-app', state: web('nextjs'), expectedProfile: 'next-app', expectedExtension: '.tsx', expectedAllowed: ['.tsx', '.ts'] },
+    {
+      name: 'next-pages',
+      state: web('nextjs'),
+      setupPaths: ['apps/web/pages'],
+      expectedProfile: 'next-pages',
+      expectedExtension: '.tsx',
+      expectedAllowed: ['.tsx', '.ts'],
+    },
+    {
+      name: 'react-native',
+      state: { ...web('none'), mobile: { framework: 'react-native-expo' } },
+      expectedProfile: 'react-native',
+      expectedExtension: '.tsx',
+      expectedAllowed: ['.tsx', '.ts'],
+    },
+    {
+      // Inertia React: the server-rendered profile whose UI is React.
+      name: 'inertia-react',
+      state: { ...REACT_STATE, stack: 'custom-backend', frontend: 'none', backend: 'laravel' },
+      setupPaths: ['resources/js/Pages'],
+      setupFiles: {
+        'resources/js/app.tsx': 'export {};\n',
+        'composer.json': JSON.stringify({
+          require: { 'laravel/framework': '^12.0', 'inertiajs/inertia-laravel': '^2.0' },
+        }),
+        'package.json': JSON.stringify({ dependencies: { '@inertiajs/react': '^2.0', react: '^19.0' } }),
+      },
+      expectedProfile: 'server-rendered',
+      expectedExtension: '.tsx',
+      expectedAllowed: ['.tsx', '.ts'],
+    },
+    { name: 'nuxt', state: web('nuxt'), expectedProfile: 'nuxt', expectedExtension: '.vue', expectedAllowed: ['.vue', '.ts'] },
+    { name: 'vue', state: web('vue'), expectedProfile: 'vue', expectedExtension: '.vue', expectedAllowed: ['.vue', '.ts'] },
+    { name: 'svelte', state: web('svelte'), expectedProfile: 'svelte', expectedExtension: '.svelte', expectedAllowed: ['.svelte', '.ts'] },
+    {
+      // SvelteKit is detected from its config artifact, never from state — the
+      // wizard only knows `svelte`.
+      name: 'sveltekit',
+      state: web('svelte'),
+      setupFiles: { 'svelte.config.js': 'export default {};\n' },
+      expectedProfile: 'sveltekit',
+      expectedExtension: '.svelte',
+      expectedAllowed: ['.svelte', '.ts'],
+    },
+    { name: 'astro', state: web('astro'), expectedProfile: 'astro', expectedExtension: '.astro', expectedAllowed: ['.astro', '.ts'] },
+    // Angular is the deliberate exception: its components ARE `.ts` classes,
+    // so there is no second legal form.
+    { name: 'angular', state: web('angular'), expectedProfile: 'angular', expectedExtension: '.ts', expectedAllowed: ['.ts'] },
+  ];
+
+  for (const fixture of fixtures) {
+    withProject((cwd) => {
+      for (const setupPath of fixture.setupPaths || []) {
+        fs.mkdirSync(path.join(cwd, setupPath), { recursive: true });
+      }
+      for (const [rel, body] of Object.entries(fixture.setupFiles || {})) {
+        fs.mkdirSync(path.join(cwd, path.dirname(rel)), { recursive: true });
+        fs.writeFileSync(path.join(cwd, rel), body);
+      }
+      const compiled = compileArchitecture(cwd, fixture.name, fixture.state, featureInput);
+      assert.equal(compiled.profile.profileId, fixture.expectedProfile, fixture.name);
+      const feature = compiled.modules[0];
+      const output = feature?.output || '';
+      assert.equal(
+        output.endsWith(`/index${fixture.expectedExtension}`),
+        true,
+        `${fixture.name}: expected a feature entry ending in index${fixture.expectedExtension}, got ${output}`,
+      );
+      assert.deepEqual(feature?.allowedExtensions, fixture.expectedAllowed, fixture.name);
+      assert.equal(
+        `${feature?.outputBase}${feature?.allowedExtensions?.[0]}`,
+        output,
+        `${fixture.name}: output must be outputBase + default extension`,
+      );
+      assert.deepEqual(
+        moduleOutputVariants(feature!),
+        fixture.expectedAllowed.map((ext) => `${feature?.outputBase}${ext}`),
+        fixture.name,
+      );
+      assert.ok(compiled.allowedOutputs.includes(output), fixture.name);
+    });
+  }
+});
+
+test('framework-dictated filenames stay pinned while flat React kinds gain the .ts/.tsx pair', () => {
+  withProject((cwd) => {
+    const compiled = compileArchitecture(cwd, 'pinning', {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'nav', name: 'Nav', kind: 'component' },
+      ],
+    });
+    const byId = new Map(compiled.modules.map((module) => [module.id, module]));
+    // Next App Router reads `layout.tsx`/`page.tsx` by NAME — no freedom there.
+    assert.deepEqual(byId.get('app-shell')?.allowedExtensions, ['.tsx']);
+    assert.deepEqual(byId.get('home')?.allowedExtensions, ['.tsx']);
+    assert.deepEqual(moduleOutputVariants(byId.get('home')!), [byId.get('home')!.output]);
+    // A non-route module is free: the toolchain, not the runtime, judges form.
+    assert.deepEqual(byId.get('nav')?.allowedExtensions, ['.tsx', '.ts']);
+  });
+  withProject((cwd) => {
+    // A React-family `.ts` default (service) may grow a provider and need JSX:
+    // the same 12co class in the opposite direction.
+    const compiled = compileArchitecture(cwd, 'service-freedom', REACT_STATE, SERVICE_INPUT);
+    assert.deepEqual(compiled.modules[0]?.allowedExtensions, ['.ts', '.tsx']);
+  });
+});
+
+test('a legacy compiled module without the additive fields keeps single-path behavior', () => {
+  assert.deepEqual(
+    moduleOutputVariants({ output: 'apps/web/src/features/auth/index.tsx' }),
+    ['apps/web/src/features/auth/index.tsx'],
+  );
 });
 
 test('uiPrimitives are safe, deduplicated, demand-driven adapter outputs', () => {
@@ -347,9 +575,18 @@ test('vite-react+supabase compiled outputs cover the standard surfaces the rules
       'apps/web/public/favicon.ico',
       'apps/web/public/apple-touch-icon.png',
       'apps/web/public/og-image.png',
+      // 12co: the reviewer's docs baseline REQUIRES a served `/llms.txt` and
+      // `auto-documentation-generator` names `public/llms.txt` as its home, but
+      // nothing compiled it — an `apps/*/public/**` path is a build artifact, so
+      // the write was hard-denied with STRUCT_ASSIGNMENT_ALLOWLIST_GAP whose only
+      // remedy is a replan the fix cycle cannot perform. The requirement is kept
+      // and the path is compiled; the served copy is the ONLY llms.txt.
+      'apps/web/public/llms.txt',
     ]) {
       assert.equal(byPath.get(asset), 'senior-frontend', `missing frontend asset grant: ${asset}`);
     }
+    assert.ok(!scaffoldOutputs.some((output) => output.path === 'llms.txt'),
+      'a root llms.txt is not compiled: one owned home, not two');
     // 4cu backend: the generated Database types snapshot was in no allowlist.
     assert.equal(byPath.get('packages/api-client/src/database.types.ts'), 'senior-backend');
     // 6co: no compiled home for the client factory, so the FRONTEND built its
@@ -1387,6 +1624,69 @@ test('a supabase backend owns its whole data layer, and every project owns a .gi
   });
 });
 
+test('an edge function is a declarable module kind that lands on the backend, off the app runtime', () => {
+  // The architect hit a hard blocker and refused PLAN_READY: a Supabase
+  // function had no representable kind. `service`/`store` are mandatorily
+  // mapped into the app's own TypeScript project (`packages/api-client/src/
+  // *.ts`) and `placement` is component-only, so there was no escape hatch.
+  const input: ArchitectureInputV1 = {
+    ...INPUT,
+    modules: [
+      ...INPUT.modules,
+      { id: 'send-invite', name: 'Send Invite', kind: 'edge-function' },
+    ],
+  };
+  assert.equal(validateArchitectureInput(input).ok, true);
+
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/pages'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    const inputPath = architectureInputPath(cwd, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify(input));
+    const architecture = compileArchitectureForRun(cwd, 'R', REACT_STATE);
+
+    const compiled = architecture.modules.find((module) => module.id === 'send-invite');
+    // The Supabase CLI deploys by directory name — this layout is the only one.
+    assert.equal(compiled?.output, 'supabase/functions/send-invite/index.ts');
+    assert.equal(compiled?.ownerRole, 'senior-backend');
+    assert.ok(architecture.allowedOutputs.includes('supabase/functions/send-invite/index.ts'));
+
+    const verification = compileVerificationContract(cwd, 'R', REACT_STATE, architecture, { changedPaths: [] });
+    const assignments = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const scopeFor = (role: string): string[] => assignments.assignments
+      .find((assignment) => assignment.role === role)?.scope.include || [];
+    assert.ok(scopeFor('senior-backend').includes('supabase/functions/send-invite/index.ts'));
+    // Server code, single owner: the frontend can never write the function.
+    assert.equal(scopeFor('senior-frontend').some((entry) => entry.startsWith('supabase/')), false);
+
+    // Deno source gets no compiled unit test from the app runner: every edge
+    // function's basename is `index`, so derived test paths would collide and
+    // abort compilation outright.
+    const scaffoldPaths = (architecture.scaffoldOutputs || []).map((output) => output.path);
+    assert.equal(scaffoldPaths.includes('tests/index.test.ts'), false);
+    assert.equal(scopeFor('senior-tester').some((entry) => entry.startsWith('supabase/functions/')), false);
+  });
+
+  // `supabase/functions/**` deploys nowhere on another backend, so the kind is
+  // refused rather than compiled into a directory no toolchain reads.
+  withProject((cwd) => {
+    assert.throws(() => compileArchitecture(cwd, 'R', {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'send-invite', name: 'Send Invite', kind: 'edge-function' }],
+    }), /edge-function modules require a Supabase-family backend/);
+  });
+});
+
 test('the router catch-all is declarable and matches the path routers actually use', () => {
   // 2cu: `*` was rejected by the input schema, `/*` never matched the
   // `path="*"` in code, so the app shipped with an unreachable NotFoundPage.
@@ -1472,6 +1772,14 @@ test('flat next-app compiles styling/i18n homes and the workspace declaration fo
 });
 
 test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs', () => {
+  const featureInput: ArchitectureInputV1 = {
+    ...INPUT,
+    modules: [
+      ...INPUT.modules,
+      { id: 'contact-section', name: 'Contact Section', kind: 'feature' },
+    ],
+  };
+
   withProject((cwd) => {
     fs.mkdirSync(path.join(cwd, 'apps/web/app'), { recursive: true });
     fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
@@ -1482,10 +1790,14 @@ test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs'
       stack: 'custom-frontend',
       frontend: 'none',
       backend: 'none',
-    }, INPUT);
+    }, featureInput);
     assert.equal(compiled.profile.profileId, 'next-app');
     assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'apps/web/app/layout.tsx');
     assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'apps/web/app/news/page.tsx');
+    assert.equal(
+      compiled.modules.find((module) => module.id === 'contact-section')?.output,
+      'apps/web/features/contact-section/index.tsx',
+    );
     assert.ok(compiled.allowedOutputs.includes('apps/web/i18n/locales/en/common.json'));
   });
 
@@ -1500,10 +1812,14 @@ test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs'
       stack: 'custom-frontend',
       frontend: 'none',
       backend: 'none',
-    }, INPUT);
+    }, featureInput);
     assert.equal(compiled.profile.profileId, 'nuxt');
     assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'apps/web/ui/app/app.vue');
     assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'apps/web/ui/app/pages/news.vue');
+    assert.equal(
+      compiled.modules.find((module) => module.id === 'contact-section')?.output,
+      'apps/web/ui/app/features/contact-section/index.vue',
+    );
   });
 
   withProject((cwd) => {
@@ -1523,11 +1839,15 @@ test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs'
       stack: 'custom-backend',
       frontend: 'none',
       backend: 'laravel',
-    }, INPUT);
+    }, featureInput);
     assert.equal(compiled.profile.router, 'inertia-react-router');
     assert.ok(compiled.allowedOutputs.includes('apps/web/resources/js/i18n/locales/en/common.json'));
     assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'apps/web/resources/js/app.tsx');
     assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'apps/web/resources/js/Pages/News.tsx');
+    assert.equal(
+      compiled.modules.find((module) => module.id === 'contact-section')?.output,
+      'apps/web/resources/js/Features/contact-section/index.tsx',
+    );
   });
 });
 
@@ -1777,6 +2097,48 @@ test('runtime assignments contain only exact compiled outputs and bind the verif
   });
 });
 
+test('assignments give features their directory and flat kinds every allowed variant', () => {
+  withProject((cwd) => {
+    const inputPath = architectureInputPath(cwd, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      ...INPUT,
+      modules: [
+        ...INPUT.modules,
+        { id: 'contact-section', name: 'Contact Section', kind: 'feature' },
+      ],
+    }));
+    const architecture = compileArchitectureForRun(cwd, 'R', REACT_STATE);
+    const verification = compileVerificationContract(cwd, 'R', REACT_STATE, architecture, {
+      changedPaths: [],
+    });
+    const published = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const frontend = published.assignments.find((entry) => entry.role === 'senior-frontend');
+    assert.ok(frontend);
+    // Folder-shaped kind: the DIRECTORY is the scope literal (matchesScope
+    // treats it as exact-or-directory-prefix), never the single default file.
+    assert.ok(frontend.scope.include.includes('apps/web/src/features/contact-section'));
+    assert.equal(
+      frontend.scope.include.includes('apps/web/src/features/contact-section/index.tsx'),
+      false,
+    );
+    for (const variant of ['index.tsx', 'index.ts']) {
+      assert.ok(
+        matchesScope(`apps/web/src/features/contact-section/${variant}`, frontend.scope),
+        `feature ${variant} must be writable via the directory literal`,
+      );
+    }
+    // Flat kind: every allowed-extension variant is a literal.
+    const home = architecture.modules.find((module) => module.id === 'home');
+    assert.ok(home?.outputBase);
+    for (const variant of moduleOutputVariants(home!)) {
+      assert.ok(frontend.scope.include.includes(variant), variant);
+    }
+    // The published manifest revalidates deterministically with the new shape.
+    assert.equal(readRuntimeAssignments(cwd, 'R')?.assignmentsHash, published.assignmentsHash);
+  });
+});
+
 test('backend-only scaffolds stay stack-native and existing-codebase skips scaffold/config outputs', () => {
   const semanticService: ArchitectureInputV1 = {
     schemaVersion: 1,
@@ -1974,13 +2336,101 @@ test('the quality toolchain is compiled per stack and seeded before implementers
     // Seeding happens from the compiled outputs, so the configs exist on disk the
     // moment the architecture is compiled — i.e. at PLAN_READY, before any
     // implementer writes a line.
-    const written = ensureScaffoldContent(cwd, web.scaffoldOutputs || []);
+    const written = ensureScaffoldContent(cwd, web.scaffoldOutputs || [], web.profile);
     assert.ok(written.includes('eslint.config.js'));
     const eslintBody = fs.readFileSync(path.join(cwd, 'eslint.config.js'), 'utf8');
     assert.match(eslintBody, /max-lines/, 'the retired STRUCT_MODULE_LOC budget must live here now');
     assert.match(eslintBody, /no-restricted-imports/, 'page/layer boundaries must be expressed as import rules');
     const prettierBody = fs.readFileSync(path.join(cwd, '.prettierrc'), 'utf8');
     assert.match(prettierBody, /printWidth/);
+  });
+});
+
+// Coverage proof for the retired lexical Phase-5 layer: every bug class the
+// removed createElement/i18n scanners caught must be owned by the compiled AST
+// lint layer. This repo does not install the plugins (the hook runtime is
+// dependency-free), so these assert the compiled config CONTAINS the rules;
+// the behavioral fixtures live in `src/test-environment/lint-corpus.md`,
+// marked for Part-7 corpus verification against a real install.
+test('React-family scaffolds the AST i18n lint layer with matching devDependencies', () => {
+  withProject((cwd) => {
+    const web = compileArchitecture(cwd, 'R', REACT_STATE, INPUT);
+    assert.equal(uiAstLintLayer(web.profile), 'react-i18next');
+    const written = ensureScaffoldContent(cwd, web.scaffoldOutputs || [], web.profile);
+    assert.ok(written.includes('eslint.config.js'));
+    const eslintBody = fs.readFileSync(path.join(cwd, 'eslint.config.js'), 'utf8');
+    // `mode: 'all'` is what covers copy handed to createElement() calls — the
+    // shape the retired lexical parity tests exercised — as well as JSX text
+    // inside ternaries, `&&` branches, and `.map()` callbacks (13co).
+    assert.match(eslintBody, /i18next\/no-literal-string/);
+    assert.match(eslintBody, /mode: 'all'/);
+    // One files-glob covers every workspace package: coverage is structural,
+    // never per-package opt-in (13co: "ESLint … ignores this package").
+    assert.match(eslintBody, /files: \['\*\*\/\*\.\{js,jsx,mjs,cjs,ts,tsx\}'\]/);
+
+    // The config imports real plugins, so the tooling manifest is seeded with
+    // the matching devDependencies and the lint scripts — or `npm run lint`
+    // would be broken on arrival.
+    assert.ok(written.includes('package.json'));
+    const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    assert.equal(manifest.scripts.lint, 'eslint .');
+    assert.ok((manifest.scripts['lint:css'] || '').includes('stylelint'));
+    for (const dependency of [
+      'eslint', 'eslint-plugin-i18next', 'typescript-eslint', 'stylelint', 'stylelint-config-standard', 'prettier',
+    ]) {
+      assert.ok(manifest.devDependencies[dependency], `manifest must seed ${dependency}`);
+    }
+
+    // CSS through the community parser (13co: a 424-char one-line @theme block
+    // was invisible to every lexical gate), with the Tailwind at-rules the
+    // stack itself selects carved out so the standard config never false-denies.
+    assert.ok(written.includes('.stylelintrc.json'));
+    const stylelintBody = fs.readFileSync(path.join(cwd, '.stylelintrc.json'), 'utf8');
+    assert.match(stylelintBody, /stylelint-config-standard/);
+    assert.match(stylelintBody, /"theme"/);
+
+    // Idempotence contract unchanged: a non-empty agent-authored manifest is
+    // never overwritten.
+    fs.writeFileSync(path.join(cwd, 'package.json'), '{"private":true}\n');
+    const again = ensureScaffoldContent(cwd, web.scaffoldOutputs || [], web.profile);
+    assert.ok(!again.includes('package.json'));
+    assert.equal(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'), '{"private":true}\n');
+  });
+});
+
+test('Vue/Nuxt scaffold the vue-i18n AST layer; Svelte/Astro stay on the dependency-free config', () => {
+  withProject((cwd) => {
+    const vue = compileArchitecture(cwd, 'R', { ...REACT_STATE, frontend: 'vue', backend: 'none' }, INPUT);
+    assert.equal(uiAstLintLayer(vue.profile), 'vue-i18n');
+    ensureScaffoldContent(cwd, vue.scaffoldOutputs || [], vue.profile);
+    const config = (vue.scaffoldOutputs || [])
+      .map((output) => output.path)
+      .find((output) => output.endsWith('eslint.config.js'))!;
+    const body = fs.readFileSync(path.join(cwd, config), 'utf8');
+    assert.match(body, /@intlify\/vue-i18n\/no-raw-text/);
+    const manifestPath = path.posix.join(path.posix.dirname(config), 'package.json');
+    const manifest = JSON.parse(fs.readFileSync(path.join(cwd, manifestPath), 'utf8')) as {
+      devDependencies: Record<string, string>;
+    };
+    assert.ok(manifest.devDependencies['@intlify/eslint-plugin-vue-i18n']);
+    assert.ok(manifest.devDependencies['vue-eslint-parser']);
+  });
+  // No mature AST no-raw-text equivalent exists for Svelte/Astro, so those
+  // profiles keep the dependency-free config AND the blocking lexical scanner
+  // (asserted in integration-findings.test.ts) — no coverage gap.
+  withProject((cwd) => {
+    const svelte = compileArchitecture(cwd, 'R', { ...REACT_STATE, frontend: 'svelte', backend: 'none' }, INPUT);
+    assert.equal(uiAstLintLayer(svelte.profile), null);
+    ensureScaffoldContent(cwd, svelte.scaffoldOutputs || [], svelte.profile);
+    const config = (svelte.scaffoldOutputs || [])
+      .map((output) => output.path)
+      .find((output) => output.endsWith('eslint.config.js'))!;
+    const body = fs.readFileSync(path.join(cwd, config), 'utf8');
+    assert.match(body, /Dependency-free by design/);
+    assert.ok(!body.includes('import '), 'no plugin imports without seeded dependencies');
   });
 });
 

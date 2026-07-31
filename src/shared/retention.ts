@@ -262,24 +262,30 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
   // evidence artefact is an 863-byte `lighthouse-evidence-v1.json` in the QA dir.
   // Keep the newest few per route; the rest are superseded duplicates.
   const lighthouseRoot = path.join(t1, 'reports', 'lighthouse');
-  const byRoute = new Map<string, string[]>();
-  for (const name of listFiles(lighthouseRoot)) {
-    if (actions.some((action) => action.path === path.join(lighthouseRoot, name))) continue;
-    // `<route>-<ISO timestamp>.report.{json,html}` — group on the route prefix.
-    const match = /^(.*?)-\d{4}-\d{2}-\d{2}T[\d-]+Z\.report\.(?:json|html)$/.exec(name);
-    if (!match) continue;
-    const bucket = byRoute.get(match[1]!) || [];
-    bucket.push(name);
-    byRoute.set(match[1]!, bucket);
-  }
-  for (const [, names] of byRoute) {
-    // Two files per run (json + html), so keeping 2 runs means 4 files.
-    for (const name of names.sort().reverse().slice(policy.lighthouseKeepPerRoute * 2)) {
-      maybeAction(
-        actions,
-        path.join(lighthouseRoot, name),
-        `superseded Lighthouse report (keeping ${policy.lighthouseKeepPerRoute} per route)`,
-      );
+  // Reports are written run-scoped (`reports/lighthouse/<runId>/…`); pre-1.0.40
+  // artefacts sit flat in the root, so both layouts are swept.
+  for (const dir of ['', ...listDirs(lighthouseRoot)]) {
+    const root = dir ? path.join(lighthouseRoot, dir) : lighthouseRoot;
+    const byRoute = new Map<string, string[]>();
+    for (const name of listFiles(root)) {
+      if (actions.some((action) => action.path === path.join(root, name))) continue;
+      // `<route>[-<buildTag>]-<ISO timestamp>.report.{json,html}` — group on the
+      // route+build prefix, so a new build never supersedes another build's file.
+      const match = /^(.*?)-\d{4}-\d{2}-\d{2}T[\d-]+Z\.report\.(?:json|html)$/.exec(name);
+      if (!match) continue;
+      const bucket = byRoute.get(match[1]!) || [];
+      bucket.push(name);
+      byRoute.set(match[1]!, bucket);
+    }
+    for (const [, names] of byRoute) {
+      // Two files per run (json + html), so keeping 2 runs means 4 files.
+      for (const name of names.sort().reverse().slice(policy.lighthouseKeepPerRoute * 2)) {
+        maybeAction(
+          actions,
+          path.join(root, name),
+          `superseded Lighthouse report (keeping ${policy.lighthouseKeepPerRoute} per route)`,
+        );
+      }
     }
   }
 

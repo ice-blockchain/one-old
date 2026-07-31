@@ -24,7 +24,7 @@ For a new project the web package root is `apps/web`; Tailwind v4 resolves
     │   ├── app.vue                         preferred app-shell/entrypoint
     │   ├── pages/<route>.vue
     │   ├── components/
-    │   ├── features/<name>/index.ts
+    │   ├── features/<name>/index.vue
     │   └── composables/
     ├── app.vue                             alternate entrypoint when selected
     ├── pages/                              alternate file-router root
@@ -36,7 +36,10 @@ For a new project the web package root is `apps/web`; Tailwind v4 resolves
 literal directory name. The alternatives are precedence candidates, not
 duplicate trees. Route
 parameters compile to `[name]`; `/` uses `index.vue`. Nuxt file routing owns
-registration, so do not create a parallel router.
+registration, so do not create a parallel router. Page filenames stay `.vue`;
+a feature entry defaults to `features/<name>/index.vue` and a headless entry
+may be delivered as `index.ts` — the compiled base path is the contract, the
+build arbitrates the form.
 
 The framework scaffold includes `package.json`, `nuxt.config.ts`,
 `tsconfig.json`, and the public crawl/share assets from the architecture

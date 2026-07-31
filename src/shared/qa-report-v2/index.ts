@@ -15,7 +15,10 @@ import {
 } from '../verification-contract';
 
 import {
+  formatSchemaIssues,
   isRecord,
+  isoMs,
+  newSchemaIssues,
   parseReport,
   qaReportV2Path,
   type QaReportV2,
@@ -25,7 +28,13 @@ import {
 } from './schema';
 import { qaDimensions } from './dimensions';
 import {
+  PERFORMANCE_GATE_ID,
+  failedGate,
+  persistGateRejection,
+} from './gates';
+import {
   acceptanceAttests,
+  acceptanceRestoresReport,
   artifactValid,
   writeAcceptanceAttestation,
 } from './artifacts';
@@ -108,14 +117,53 @@ function reject(
   };
 }
 
+/**
+ * Judge the report, then make a rejection DURABLE.
+ *
+ * `reject()` computes a verdict and writes nothing, so the runner's optimistic
+ * `"status":"passed"` publication used to remain the only record on disk even
+ * when this validator failed the run on a non-browser gate (observed 10co-e2e:
+ * a `passed` sidecar next to Lighthouse evidence of performance 74 against a
+ * required floor of 90). Every reader after the run — settlement, the tester
+ * completion gate, a human — reads that file.
+ */
 export function validateQaReportV2(
   value: unknown,
   projectRoot: string,
   runId: string,
   contract: VerificationContractV2,
 ): QaV2ValidationResult {
-  const report = parseReport(value);
-  if (!report) return reject(projectRoot, runId, 'invalid-schema', 'QA sidecar does not match QaReportV2.', undefined, contract);
+  const result = evaluateQaReportV2(value, projectRoot, runId, contract);
+  if (!result.ok) persistGateRejection(projectRoot, runId, result);
+  return result;
+}
+
+function evaluateQaReportV2(
+  value: unknown,
+  projectRoot: string,
+  runId: string,
+  contract: VerificationContractV2,
+): QaV2ValidationResult {
+  // Name the offending fields. "does not match QaReportV2." named nothing —
+  // observed live (13cl): the tester hand-edited the sidecar blindly and hit
+  // the same byte-identical deny 6+ times in 90 seconds. The concrete
+  // violations plus the runner command are the diagnosable exit.
+  const schemaIssues = newSchemaIssues();
+  const report = parseReport(value, schemaIssues);
+  if (!report) {
+    return reject(
+      projectRoot,
+      runId,
+      'invalid-schema',
+      `QA sidecar does not match QaReportV2 — ${formatSchemaIssues(schemaIssues)}. `
+        + 'Regenerate it with the canonical QA evidence runner '
+        + '(`node ~/.traffic-one/bin/qa-evidence-runner.cjs browser …`, or `stack` for no-browser contracts; '
+        + "the shim runs the plugin's `scripts/qa-evidence-runner.cjs`) — "
+        + 'a hand-authored report-v2.json cannot carry the machine evidence this validation requires.',
+      undefined,
+      contract,
+    );
+  }
   if (report.runId !== runId || report.verificationContractHash !== contract.contractHash) {
     return reject(projectRoot, runId, 'contract-mismatch', 'QA report does not belong to the active verification contract.', report, contract);
   }
@@ -129,6 +177,56 @@ export function validateQaReportV2(
       return reject(projectRoot, runId, 'invalid-schema', 'Environment blocker is invalid for none/nonvisual verification.', report, contract);
     }
     return reject(projectRoot, runId, 'blocked-environment', report.blockerSummary || 'Required runtime environment is unavailable.', report, contract);
+  }
+  // The durable acceptance attestation outranks every LIVE-STATE recheck below
+  // (persisted gates, the build-output manifest, server identity): it is this
+  // validator's own record that this exact report + evidence set + build
+  // identity already passed the complete live validation, judged strictly by
+  // content hashes on top of the live sourceHash check above. Without it, a
+  // post-acceptance rebuild of the output dir (observed 14cl: the reviewer's
+  // probe build) failed the machine-evidence manifest recheck and
+  // `persistGateRejection` durably flipped the accepted report to `failed` —
+  // a fully green run that could never settle. Any changed byte in the report
+  // or evidence, or any source drift, and this returns null so the full live
+  // validation still runs and still fails closed.
+  const acceptedReport = acceptanceRestoresReport(projectRoot, runId, report, contract, source.hash);
+  if (acceptedReport) {
+    const acceptedGeneratedAtMs = isoMs(acceptedReport.generatedAt);
+    return {
+      ok: true,
+      report: acceptedReport,
+      contract,
+      reportPath: qaReportV2Path(projectRoot, runId),
+      // Advisory warnings were already surfaced when the report was first
+      // accepted; an attestation-backed re-read does not recompute them.
+      advisories: [],
+      dimensions: qaDimensions(acceptedReport, contract, {
+        hasEvidence: Boolean(acceptedReport.lighthouse?.evidencePath),
+        thresholdFailures: [],
+      }),
+      ...(acceptedGeneratedAtMs === null ? {} : { acceptedGeneratedAtMs }),
+    };
+  }
+  // A gate verdict persisted by an earlier validation keeps its ORIGINAL code
+  // and message. Without this the durable correction would degrade on the next
+  // read to a generic `functional-failure`, and a fix cycle would lose the one
+  // thing it needs: which dimension failed.
+  const persisted = failedGate(report);
+  if (persisted) {
+    return reject(
+      projectRoot,
+      runId,
+      persisted.code,
+      persisted.summary,
+      report,
+      contract,
+      persisted.id === PERFORMANCE_GATE_ID
+        ? {
+            hasEvidence: Boolean(report.lighthouse?.evidencePath),
+            thresholdFailures: [persisted.summary],
+          }
+        : undefined,
+    );
   }
   const checks = new Map(report.checks.map((check) => [check.id, check]));
   for (const required of contract.requiredChecks) {
@@ -374,6 +472,7 @@ export {
   type QaBuildIdentityV2,
   type QaDimensionStatus,
   type QaDimensionsV1,
+  type QaGateV2,
   type QaReportV2,
   type QaV2FailureCode,
   type QaV2ValidationRejected,
@@ -382,3 +481,4 @@ export {
 } from './schema';
 export { qaDimensions } from './dimensions';
 export { qaReportV2ContentHash } from './artifacts';
+export { PERFORMANCE_GATE_ID, failedGate } from './gates';

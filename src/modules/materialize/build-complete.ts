@@ -35,6 +35,7 @@ import {
   isMaintenancePhase,
   markMaintenance,
   pruneExpiredPendingClaims,
+  releaseRunClaims,
   runHasEnvironmentBlockedQaOutcome,
   runVerificationState,
   settleTerminalRunLedger,
@@ -141,6 +142,9 @@ function buildSettlement(root: string, state: unknown, atPromptBoundary: boolean
     return { settled: true, terminal: true, runId };
   }
   if (atPromptBoundary && verification === 'nonterminal' && runHasEnvironmentBlockedQaOutcome(root, runId)) {
+    // Release before settling — a terminal transition fails closed while claims
+    // are still active, and nothing else releases them on the non-verified path.
+    releaseRunClaims(root, runId, 'terminal-environment-blocked');
     transitionRunStatus(root, runId, { status: 'blocked', outcome: 'environment-blocked' });
   }
   return {

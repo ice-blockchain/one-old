@@ -238,9 +238,11 @@ instead of creating it out of scope.
      and remain read-only to implementers. Verify them and return a blocker
      when they are absent or stale.
    - Other suggested files from `rules/common/documentation.md`—such as
-     `CHANGELOG.md`, `CONTRIBUTING.md`, or served `/llms.txt`—are created only
-     when their exact paths are compiled. Do not infer permission from this
-     checklist and do not create duplicate root-level memory documents.
+     `CHANGELOG.md` or `CONTRIBUTING.md`—are created only when their exact paths
+     are compiled. Do not infer permission from this checklist and do not create
+     duplicate root-level memory documents. The served `/llms.txt` IS compiled
+     for every web profile with a `public/` crawl-asset set: write it at
+     `public/llms.txt`, never at the repo root.
    - Mark facts as `Unverified` with the exact needed command/input instead of
      inventing deploy URLs, database output, secret values, or production
      configuration.
@@ -326,7 +328,15 @@ instead of creating it out of scope.
       implementer waits for and verifies that state, but never writes it.
 
    g. Edge Functions apply only when an exact
-      `supabase/functions/<name>/...` output is compiled. Runtime may auto-deploy
+      `supabase/functions/<name>/...` output is compiled. The architect declares
+      one as an `edge-function` module; runtime compiles it to
+      `supabase/functions/<kebab(name)>/index.ts` and gives it to
+      `senior-backend`. The file runs on **Deno**, not this project's TypeScript
+      program: it stays out of every app `tsconfig` include and out of the
+      ESLint project (the seeded `eslint.config.js` ignores
+      `supabase/functions/**`), it declares its own imports the Deno way, and no
+      app module imports it — the client calls
+      `supabase.functions.invoke('<name>')`. Runtime may auto-deploy
       on save when `.traffic-one/.one.json` records
       `supabaseFunctionsAutoDeploy: true`; the PostToolUse hook prompts and
       persists the user's choice. An implementer neither creates an uncompiled

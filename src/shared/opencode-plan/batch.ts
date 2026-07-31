@@ -128,10 +128,14 @@ export function finalizePlanBatch(projectRoot: string, runId: string, merged: Pl
   }
   persistBatchUnitsToStatus(projectRoot, runId, merged.units || []);
   const outcome = deriveBatchOutcomeFromUnits(merged.units || [], merged.error);
-  markOpenCodePlanBatchTerminal(projectRoot, runId, outcome, merged.error ?? null);
+  // Per-role completion BEFORE the terminal write: markOpenCodePlanRoleCompleted
+  // refuses to update a batch that is already terminal, so the old order left
+  // every finished batch claiming `rolesCompleted: []` (observed live: outcome
+  // "success" with four completed frontend units and an empty list).
   for (const role of planDelegationQueueRolesForRun(projectRoot, runId)) {
     markOpenCodePlanRoleCompleted(projectRoot, runId, role);
   }
+  markOpenCodePlanBatchTerminal(projectRoot, runId, outcome, merged.error ?? null);
   return merged;
 }
 

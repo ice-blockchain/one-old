@@ -97,6 +97,70 @@ export function contractThresholds(rootDir: string): Partial<LighthouseArgs> | n
   };
 }
 
+/**
+ * Report artefacts belong to ONE run and ONE build.
+ *
+ * Observed 10co-e2e: `.traffic-one/reports/lighthouse/` carried no run id and no
+ * build fingerprint, so files from different runs sat side by side and were
+ * indistinguishable — the frontend self-ran Lighthouse 13.2.0 before the
+ * `^12.8.2` pin existed, scored 0.98, and that number travelled downstream as
+ * the run's page speed against a canonical 74. Scoping the directory under the
+ * run id, and stamping the served build's entry asset into the file name, makes
+ * "which run and which build is this report about?" answerable from the path.
+ *
+ * Best-effort and dependency-free (this runner is ESM-only and cannot require
+ * the CJS runtime): with no Traffic One state, or no build on disk, the caller
+ * keeps its plain output directory.
+ */
+export function currentRunId(rootDir: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(
+      readFileSync(join(rootDir, '.traffic-one', '.one.json'), 'utf8'),
+    );
+    const state = parsed && typeof parsed === 'object' ? parsed as Rec : null;
+    const runId = typeof state?.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    return runId && !/[\\/]/.test(runId) && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)
+      ? runId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The served build's identity: the hashed entry asset, or the Next BUILD_ID. */
+export function buildFingerprintTag(rootDir: string, appDir: string): string | null {
+  const sanitize = (value: string): string | null => {
+    const cleaned = value.replace(/\.[cm]?js$/i, '').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 40);
+    return cleaned || null;
+  };
+  for (const dir of [appDir, rootDir]) {
+    for (const outDir of ['dist', 'out', '.output/public', 'build', 'public/build']) {
+      try {
+        const html = readFileSync(join(dir, ...outDir.split('/'), 'index.html'), 'utf8');
+        const match = /<script[^>]+src="([^"]+\.[cm]?js)"/.exec(html);
+        if (match?.[1]) return sanitize(match[1].split('/').pop() || '');
+      } catch {
+        // not built with this layout
+      }
+    }
+    try {
+      const buildId = readFileSync(join(dir, '.next', 'BUILD_ID'), 'utf8').trim();
+      if (buildId) return sanitize(buildId);
+    } catch {
+      // not a Next build
+    }
+  }
+  return null;
+}
+
+/** `<outDir>/<runId>` when this is a Traffic One run; the plain dir otherwise. */
+export function runScopedOutDir(rootDir: string, outDir: string, argv: readonly string[]): string {
+  // An operator who passed `--out` owns that path verbatim.
+  if (argv.some((item) => item === '--out')) return outDir;
+  const runId = currentRunId(rootDir);
+  return runId ? join(outDir, runId) : outDir;
+}
+
 const CLI_FLAG_FOR_THRESHOLD: Record<string, string> = {
   performanceMin: '--performance-min',
   fcpMax: '--fcp-max',

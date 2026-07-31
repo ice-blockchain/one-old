@@ -158,10 +158,15 @@ export function localLighthouseBin(rootDir: string, appDir: string): string | nu
   return null;
 }
 
-export function reportBaseName(url: string): string {
+// `buildTag` is the served build's identity (hashed entry asset / Next
+// BUILD_ID). Without it a report file names only a route and a wall-clock time,
+// so two runs' artefacts are indistinguishable once they share a directory —
+// which is exactly how a stale 98 was quoted against a canonical 74.
+export function reportBaseName(url: string, buildTag?: string | null): string {
   const parsed = new URL(url);
   const route = parsed.pathname.replace(/[^a-z0-9]+/gi, '-').replace(/(^-|-$)/g, '') || 'home';
-  return `${route}-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  const tag = buildTag ? `-${buildTag}` : '';
+  return `${route}${tag}-${new Date().toISOString().replace(/[:.]/g, '-')}`;
 }
 
 export function findReportJson(outDir: string, baseName: string): string | null {
@@ -314,9 +319,12 @@ export function parseSummary(report: Rec, thresholds: Thresholds): Summary {
 }
 export {
   DEFAULTS,
+  buildFingerprintTag,
   classifyBlockedStatus,
+  currentRunId,
   detectPackageManager,
   findUp,
+  runScopedOutDir,
   applyContractThresholds,
   contractThresholds,
   lighthouseMissingMessage,

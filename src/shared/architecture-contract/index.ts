@@ -28,6 +28,9 @@ import {
   stableContractJson,
 } from './core';
 import {
+  moduleOutputVariants,
+} from './naming';
+import {
   validateArchitectureInput,
 } from './validate';
 import {
@@ -45,7 +48,16 @@ function assignmentOutputs(
   const outputs = [
     ...architecture.modules
       .filter((module) => module.ownerRole === role)
-      .map((module) => module.output),
+      // Extension freedom: a folder-shaped kind (feature) owns its module
+      // DIRECTORY (matchesScope treats a literal include as
+      // exact-or-directory-prefix), a flat kind owns every allowed-extension
+      // variant as a literal. Legacy compiled contracts without the additive
+      // fields keep their exact single-path scope.
+      .flatMap((module) => (
+        module.kind === 'feature' && module.outputBase
+          ? [path.posix.dirname(module.outputBase)]
+          : moduleOutputVariants(module)
+      )),
     ...(role === 'senior-frontend' ? architecture.entrypoints : []),
     ...(architecture.scaffoldOutputs || [])
       .filter((output) => output.ownerRole === role)
@@ -359,21 +371,32 @@ export {
 } from './types';
 export {
   architectureI18nNamespaces,
+  architectureModuleNamespace,
   i18nScaffoldOutputs,
   profileHasUi,
   profileUsesReactI18n,
   resolveArchitectureI18n,
 } from './i18n';
 export {
+  moduleSkeleton,
+  moduleSkeletonContent,
+  type ModuleSkeletonReferenceV1,
+  type ModuleSkeletonV1,
+} from './skeletons';
+export {
   canonicalRoutePath,
   stableContractJson,
 } from './core';
+export {
+  moduleOutputVariants,
+} from './naming';
 export {
   webPackageRoot,
 } from './scaffold';
 export {
   ensureScaffoldContent,
   scaffoldFileContent,
+  uiAstLintLayer,
 } from './scaffold-content';
 export {
   validateArchitectureInput,
@@ -385,6 +408,7 @@ export {
   captureArchitectureBaseline,
   contextAliasHash,
   isDeletableStrayArtifact,
+  isRuntimeMaintainedContextPath,
   isScanSkippedPath,
   readArchitectureRunBaseline,
   readArchitectureRunSnapshot,

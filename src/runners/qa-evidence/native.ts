@@ -30,6 +30,7 @@ import {
   ensureProjectDirectory,
   type LoadedNativeRun,
   outputPath,
+  publishQaReportV2,
   qaDir,
 } from './run-context';
 import { wholesaleCheckStatuses } from './report-publish';
@@ -222,7 +223,7 @@ function publishNativeResult(
     native: { evidencePath: out.relative },
     ...(blockerSummary ? { blockerSummary } : {}),
   };
-  writeJson(qaReportV2Path(args.projectRoot, args.runId), report);
+  publishQaReportV2(args.projectRoot, args.runId, report);
   const validation = validateQaReportV2(report, args.projectRoot, args.runId, loaded.contract);
   process.stdout.write(`${JSON.stringify({
     ok: validation.ok,

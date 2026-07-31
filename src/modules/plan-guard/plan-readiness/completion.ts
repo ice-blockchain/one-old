@@ -8,13 +8,20 @@ import {
   capabilityProfileForRun,
   readCompiledArchitecture,
   readRuntimeAssignments,
+  uiAstLintLayer,
 } from '../../../shared/architecture-contract';
 import { readQaReportV2 } from '../../../shared/qa-report-v2';
+import {
+  formatFileWithPrettier,
+  resolveProjectPrettier,
+} from '../../../shared/prettier-fix';
+import { consolidateQualityFindings } from '../../../shared/state/quality-findings';
 import {
   readVerificationContract,
 } from '../../../shared/verification-contract';
 import {
   COLLAPSE_LINE_CHARS,
+  FIX_CYCLE_CONTEXT_RE,
   FRONTEND_DIGEST_RE,
   IMPLEMENTER_DIGEST_RE,
   REVIEWER_DIGEST_RE,
@@ -25,28 +32,42 @@ import {
 } from './context';
 import {
   builtAppIdentities,
+  canonicalLighthousePerformance,
+  claimedLighthousePerformance,
   collapsedProductSourceFile,
   missingPlannedModulesForRole,
   qaReportOlderThanImplementation,
   qaReportVerifiedBuild,
   structureFindingSummary,
+  undeliveredContractOutputs,
 } from './checks';
 import {
   compiledFormatToolchainForRole,
+  compiledLintToolchainForRole,
   compiledOutputPaths,
   crawlOriginProblem,
   emitConfigProblems,
   formatParityViolation,
+  lintInvocationGap,
+  lintParityViolation,
+  lintableOutputPaths,
   roleOwnedTsOutputs,
   skippedVerificationLine,
   testToolchainGaps,
+  typecheckInvocationGap,
   typecheckParityViolation,
 } from './toolchain';
+
+// A Lighthouse score an agent TYPED, judged against the score the canonical
+// runner MEASURED. Tolerant by design: page-speed audits are noisy, so only a
+// gap no re-run explains is a false claim.
+const LIGHTHOUSE_CLAIM_TOLERANCE = 5;
 import {
   allImplementationRolesDelivered,
   digestClaimsVerdict,
   refreshVerificationAfterImplementation,
   runFullStructureScan,
+  unsatisfiableFindingPaths,
 } from './contracts';
 
 
@@ -55,6 +76,7 @@ export function digestCompletionGates(ctx: {
   state: Rec;
   filePath: string;
   content: string;
+  shellBody?: string;
   currentRunId: string;
   violations: string[];
   block: Block;
@@ -67,7 +89,21 @@ export function digestCompletionGates(ctx: {
   // empty scaffolded module dirs (observed 16c).
   const frontendDigest = FRONTEND_DIGEST_RE.exec(filePath);
   if (frontendDigest && digestClaimsVerdict(content, 'IMPLEMENTED')) {
-    const collapsed = collapsedProductSourceFile(projectRoot, state);
+    let collapsed = collapsedProductSourceFile(projectRoot, state);
+    // Deterministic auto-fix before the deny: collapse is exactly what the
+    // project's own formatter exists to fix, so when prettier is reachable
+    // from the file's package scope, format the file in place and re-scan.
+    // The deny below fires only for files the formatter cannot reach
+    // (pre-install) or cannot fix — an auto-fix failure stays blocking.
+    const formatAttempted = new Set<string>();
+    while (collapsed.file && !collapsed.incomplete) {
+      const rel = collapsed.file.replace(/:\d+$/, '');
+      if (formatAttempted.has(rel)) break;
+      formatAttempted.add(rel);
+      const bin = resolveProjectPrettier(projectRoot, rel);
+      if (!bin || !formatFileWithPrettier(bin, projectRoot, rel)) break;
+      collapsed = collapsedProductSourceFile(projectRoot, state);
+    }
     if (collapsed.incomplete) {
       violations.push(block('frontend-structure-scan-incomplete',
         `Frontend completion gate: STRUCT_SCAN_INCOMPLETE after ${collapsed.scanned} product source files. A truncated scan is never a pass; narrow generated/output roots or split the project contract before re-emitting \`IMPLEMENTED\`.`,
@@ -116,7 +152,7 @@ export function digestCompletionGates(ctx: {
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
           violations.push(block('frontend-structure-completion-gate',
-            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module. Integration findings block too: orphan modules, unused API packages, inert styling, and every i18n finding (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_RUNTIME\`, \`STRUCT_I18N_REACT_TRANS\`, \`STRUCT_I18N_CATALOG\`). React child copy uses \`<Trans>\` with namespace, key, and fallback; catalog keys are non-empty in every declared locale.`,
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (\`STRUCT_I18N_RUNTIME\`), and catalog validation (\`STRUCT_I18N_CATALOG\` — keys non-empty in every declared locale). Hardcoded-copy findings (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_REACT_TRANS\`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own \`lint\` run owns them. React child copy uses \`<Trans>\` with namespace, key, and fallback.`,
             { FINDINGS: summary }));
         }
       }
@@ -197,6 +233,19 @@ export function digestCompletionGates(ctx: {
       const typecheckGap = tsOutputs.length > 0
         ? typecheckParityViolation(projectRoot, tsOutputs)
         : null;
+      const invocationGap = tsOutputs.length > 0 && !typecheckGap
+        ? typecheckInvocationGap(projectRoot, tsOutputs)
+        : null;
+      if (invocationGap) {
+        const manifestList = invocationGap.unreached.map((manifest) => `\`${manifest}\``).join(', ');
+        violations.push(block('implementer-typecheck-invocation-gate',
+          `Implementer typecheck gate: the root \`package.json\` "typecheck" script runs \`${invocationGap.script}\`, which never invokes the per-package \`typecheck\` this contract demanded in ${manifestList}. A compiler that is installed, scripted, and never run is not coverage — the project's own command reports success while the errors stay unreported. Broadcast to every workspace member (\`pnpm -r typecheck\`, \`turbo run typecheck\` with no filter) or name each package in the filter, run it clean, then re-emit \`IMPLEMENTED\`.`,
+          {
+            ROLE: ownerRole,
+            SCRIPT: invocationGap.script,
+            MANIFESTS: manifestList,
+          }));
+      }
       if (typecheckGap) {
         const manifestList = typecheckGap.manifests.map((manifest) => `\`${manifest}\``).join(', ');
         violations.push(block('implementer-typecheck-toolchain-gate',
@@ -205,6 +254,41 @@ export function digestCompletionGates(ctx: {
             ROLE: ownerRole,
             MANIFESTS: manifestList,
           }));
+      }
+      // Lint parity triad, only where the compiled eslint config carries real
+      // AST rules (React-family, Vue) — those profiles' write-time lexical
+      // copy findings were demoted to warnings on exactly the promise that the
+      // project's own `lint` run owns the quality verdict, so a lint layer
+      // that cannot run or never reaches a package would be an enforcement
+      // coverage gap, not a style nit.
+      const lintTooling = uiAstLintLayer(architecture.profile)
+        ? compiledLintToolchainForRole(architecture, ownerRole)
+        : null;
+      if (lintTooling) {
+        const lintParity = lintParityViolation(projectRoot, lintTooling);
+        const lintGap = !lintParity
+          ? lintInvocationGap(projectRoot, lintableOutputPaths(architecture))
+          : null;
+        if (lintParity) {
+          const missing = lintParity.missing.join(' and ');
+          violations.push(block('implementer-lint-toolchain-gate',
+            `Implementer lint gate: role \`${ownerRole}\` owns the compiled \`${lintTooling.configPath}\`, whose AST rules are this run's quality verdict for UI source, but ${missing} is absent from \`${lintTooling.manifestPath}\`. The write-time lexical copy scanners are warnings on this profile on exactly the promise that the project's own \`lint\` runs — a lint layer that cannot run is an enforcement gap, not a style nit. Add the missing entries (the scaffold seeds \`eslint\` plus the plugins the config imports), run \`lint\` clean, then re-emit \`IMPLEMENTED\`.`,
+            {
+              ROLE: ownerRole,
+              CONFIG: lintTooling.configPath,
+              MANIFEST: lintTooling.manifestPath,
+              MISSING: missing,
+            }));
+        } else if (lintGap) {
+          const manifestList = lintGap.unreached.map((manifest) => `\`${manifest}\``).join(', ');
+          violations.push(block('implementer-lint-invocation-gate',
+            `Implementer lint gate: the root \`package.json\` "lint" script runs \`${lintGap.script}\`, which never invokes the per-package \`lint\` in ${manifestList}. A linter that is installed, scripted, and never run is not coverage — the compiled AST quality rules silently stop applying to those packages. Broadcast to every workspace member (\`pnpm -r lint\`, \`turbo run lint\` with no filter) or name each package in the filter, run it clean, then re-emit \`IMPLEMENTED\`.`,
+            {
+              ROLE: ownerRole,
+              SCRIPT: lintGap.script,
+              MANIFESTS: manifestList,
+            }));
+        }
       }
     }
     if (architecture) {
@@ -239,12 +323,60 @@ export function digestCompletionGates(ctx: {
           }));
       }
     }
+    // Contract-delivery gate. `changedPaths` is the UNION of the observed diff
+    // and every planned output, so a contract can assert 15 changed files while
+    // `observedChangedPaths` holds none and one file exists on disk (observed
+    // 10co-e2e). A verdict is a claim about the role's OWN compiled work unit;
+    // this compares that unit against what was actually delivered.
+    const delivery = undeliveredContractOutputs(projectRoot, runId, ownerRole);
+    if (delivery) {
+      const missing = delivery.missing.slice(0, 10).join(', ');
+      violations.push(block('implementer-contract-delivery-gate',
+        `Implementer completion gate: \`IMPLEMENTED\` is forbidden while ${delivery.missing.length} of role \`${ownerRole}\`'s ${delivery.planned} compiled modules do not exist and were never observed as changed (${missing}). \`changedPaths\` unions the observed diff with every PLANNED output, so a contract can look complete while the files were never written — a verdict must describe what was delivered, not what was planned. Write the missing modules, or report \`BLOCKED\` naming them. Do not re-emit \`IMPLEMENTED\` until each one exists.`,
+        {
+          ROLE: ownerRole,
+          MISSING: missing,
+          COUNT: delivery.missing.length,
+          PLANNED: delivery.planned,
+        }));
+    }
+    const implementerLighthouseClaim = claimedLighthousePerformance(content);
+    const implementerMeasured = implementerLighthouseClaim
+      ? canonicalLighthousePerformance(projectRoot, runId)
+      : null;
+    if (implementerLighthouseClaim
+      && implementerMeasured !== null
+      && implementerLighthouseClaim.value - implementerMeasured > LIGHTHOUSE_CLAIM_TOLERANCE) {
+      violations.push(block('lighthouse-claim-reconciliation-gate',
+        `Page-speed claim gate: this digest reports Lighthouse performance ${implementerLighthouseClaim.value} — "${implementerLighthouseClaim.line}" — but the canonical QA runner measured ${implementerMeasured} for run \`${runId}\`. A self-run audit is not the run's evidence: it can use a different Lighthouse version, a dev server, or a build from another run, and its report files are not run-scoped. Quote the runner's number (\`.traffic-one/reports/qa/${runId}/lighthouse-evidence-v1.json\`), or re-run the canonical sweep and quote the fresh one.`,
+        {
+          CLAIMED: implementerLighthouseClaim.value,
+          MEASURED: implementerMeasured,
+          RUN_ID: runId,
+          EVIDENCE: implementerLighthouseClaim.line,
+        }));
+    }
     const skipped = skippedVerificationLine(content);
     if (skipped) {
       violations.push(block('implementer-verification-skipped-gate',
         `Implementer verification gate: this digest reports a required command as skipped or unavailable — "${skipped}" — directly alongside \`IMPLEMENTED\`. A verdict is a claim that the owned scope was verified, so an unrun build/typecheck/lint makes it unverifiable and the errors surface later in a sibling role's build. Install the toolchain at its owning manifest, run the command to completion, record the real outcome, then re-emit \`IMPLEMENTED\`. If the command genuinely does not apply, say why without claiming it was skipped.`,
         { EVIDENCE: skipped }));
     }
+  }
+  // Batched quality delivery: at the role's completion digest, consolidate the
+  // write-time findings its writes accumulated (instead of interrupting each
+  // write) into ONE fix-cycle document —
+  // `.traffic-one/fix-cycles/<runId>/<role>-quality-findings.md` — that the
+  // fix-cycle mechanism (orchestrator context file + SessionStart fix-cycle
+  // header) hands to the implementer as a single "apply ALL findings in this
+  // one turn" list. Delivery only: the completion structure scan above still
+  // denies while blocking findings remain on disk.
+  if (implementedDigest && digestClaimsVerdict(content, 'IMPLEMENTED')) {
+    consolidateQualityFindings(
+      projectRoot,
+      implementedDigest[2] || '',
+      `senior-${implementedDigest[3] || ''}`,
+    );
   }
   if (implementedDigest
     && implementedDigest[2] === currentRunId
@@ -262,6 +394,32 @@ export function digestCompletionGates(ctx: {
   }
 
   const reviewerDigest = REVIEWER_DIGEST_RE.exec(filePath);
+  // Finding-satisfiability gate. A `CHANGES_REQUESTED` finding is an ORDER, and
+  // the orchestrator copies it verbatim into the fix-cycle context; the same
+  // check therefore runs on that file. A named path that no role may write is
+  // an order the receiving role is structurally forbidden to carry out — the
+  // implementer is denied `run-team-runtime-allowlist-gap`, whose remedy is a
+  // replan the fix cycle cannot perform, so the reviewer never reaches
+  // `APPROVED` and the run deadlocks (observed 12co on `apps/web/public/llms.txt`).
+  //
+  // The reviewer is read-only by contract and publishes its digest as a
+  // `cat > … <<'EOF'` heredoc, so this is the one gate that must read the
+  // shell payload: with `content` alone it would be permanently blind on the
+  // exact write it exists to judge.
+  const fixCycleContext = FIX_CYCLE_CONTEXT_RE.exec(filePath);
+  const findingText = content || ctx.shellBody || '';
+  const findingRunId = fixCycleContext
+    ? (fixCycleContext[2] || '')
+    : (reviewerDigest && digestClaimsVerdict(findingText, 'CHANGES_REQUESTED') ? (reviewerDigest[2] || '') : '');
+  if (findingRunId) {
+    const unowned = unsatisfiableFindingPaths(projectRoot, findingRunId, findingText);
+    if (unowned.length > 0) {
+      const paths = unowned.map((target) => `\`${target}\``).join(', ');
+      violations.push(block('finding-allowlist-gap',
+        `Finding-satisfiability gate: ${paths} is named as work to do, but it is outside EVERY role's runtime-owned WorkUnitContract for run \`${findingRunId}\`. The role you would hand this to cannot write it — the run-team gate denies the write with STRUCT_ASSIGNMENT_ALLOWLIST_GAP, and a fix cycle cannot replan, so the loop never closes. Do one of three things instead: point the finding at a path a role already owns; drop it; or record it explicitly as DEFERRED (or REPLAN) on the same line, with the reason, so the next run's ArchitectureInputV1 compiles a home for it. Never hand a role an instruction its allowlist forbids.`,
+        { PATHS: paths, RUN_ID: findingRunId }));
+    }
+  }
   if (reviewerDigest && digestClaimsVerdict(content, 'APPROVED') && !digestClaimsVerdict(content, 'CHANGES_REQUESTED')) {
     const runId = reviewerDigest[2] || '';
     const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
@@ -336,6 +494,24 @@ export function digestCompletionGates(ctx: {
         `Tester completion gate: \`TESTS_GREEN\` is forbidden while a compiled test module the tester owns is missing (${list}). The complete structure scan blocks the reviewer's \`APPROVED\` on the same finding, so writing this verdict now spends a fix cycle to discover it. Create the module, run it, then re-emit \`TESTS_GREEN\`.`,
         { MISSING: list }));
     }
+    // Same reconciliation as the implementer branch: a page-speed number in a
+    // TESTS_GREEN digest must be the runner's, not a self-run audit's.
+    const testerLighthouseClaim = claimedLighthousePerformance(content);
+    const testerMeasured = testerLighthouseClaim
+      ? canonicalLighthousePerformance(projectRoot, runId)
+      : null;
+    if (testerLighthouseClaim
+      && testerMeasured !== null
+      && testerLighthouseClaim.value - testerMeasured > LIGHTHOUSE_CLAIM_TOLERANCE) {
+      violations.push(block('lighthouse-claim-reconciliation-gate',
+        `Page-speed claim gate: this digest reports Lighthouse performance ${testerLighthouseClaim.value} — "${testerLighthouseClaim.line}" — but the canonical QA runner measured ${testerMeasured} for run \`${runId}\`. A self-run audit is not the run's evidence: it can use a different Lighthouse version, a dev server, or a build from another run, and its report files are not run-scoped. Quote the runner's number (\`.traffic-one/reports/qa/${runId}/lighthouse-evidence-v1.json\`), or re-run the canonical sweep and quote the fresh one.`,
+        {
+          CLAIMED: testerLighthouseClaim.value,
+          MEASURED: testerMeasured,
+          RUN_ID: runId,
+          EVIDENCE: testerLighthouseClaim.line,
+        }));
+    }
     const verification = runId ? readVerificationContract(projectRoot, runId) : null;
     if (verification) {
       const result = readQaReportV2(projectRoot, runId);
@@ -346,8 +522,8 @@ export function digestCompletionGates(ctx: {
         const d = result.dimensions;
         const breakdown = `functional=${d.functionalQaStatus} accessibility=${d.accessibilityStatus} responsive=${d.responsiveStatus} lighthouse=${d.lighthouseStatus}`;
         violations.push(block('tester-qa-v2-gate',
-          `Tester completion gate: VerificationContractV2 rejected this verdict (${result.code}: ${result.message}). Dimensions: ${breakdown}. Re-run only the failing dimension for uiImpact=${verification.uiImpact}; a blocked environment is not \`TESTS_GREEN\`, and an \`advisory-warning\` is never the thing to fix.`,
-          { ERROR: `${result.code}: ${result.message}`, DIMENSIONS: breakdown }));
+          `Tester completion gate: VerificationContractV2 rejected this verdict (${result.code}: ${result.message}). Dimensions: ${breakdown}. Re-run only the failing dimension for uiImpact=${verification.uiImpact}; a blocked environment is not \`TESTS_GREEN\`, and an \`advisory-warning\` is never the thing to fix. The sidecar is runtime evidence: produce it with the canonical runner — \`node ~/.traffic-one/bin/qa-evidence-runner.cjs browser …\` per the browser-qa skill, or \`stack --run-id <id>\` for no-browser contracts (the shim runs the plugin's \`scripts/qa-evidence-runner.cjs\`) — never by hand-editing \`report-v2.json\`; a hand-authored report cannot carry the machine evidence this gate verifies.`,
+          { ERROR: `${result.code}: ${result.message}`, DIMENSIONS: breakdown, UI_IMPACT: verification.uiImpact }));
       }
     }
     if (!verification) {

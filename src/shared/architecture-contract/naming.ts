@@ -62,20 +62,28 @@ function routeSegments(routePath: string): string[] {
 
 function extensionFor(profile: CapabilityProfileV1, kind: ArchitectureModuleKind): string {
   if (kind === 'test') return profile.framework === 'laravel' ? '.php' : '.test.ts';
-  if (profile.profileId === 'nuxt') return kind === 'page' || kind === 'component' ? '.vue' : '.ts';
+  // `feature` is a UI SECTION, so it takes the framework-native extension for
+  // the same reason page/component do: a Vue/Svelte/Astro section cannot live
+  // in a `.ts` file. Angular is the exception below — its components ARE `.ts`
+  // classes with the template beside or inside them.
+  if (profile.profileId === 'nuxt') {
+    return ['page', 'component', 'feature'].includes(kind) ? '.vue' : '.ts';
+  }
   if (profile.profileId === 'vue') {
-    return ['app-shell', 'page', 'component'].includes(kind) ? '.vue' : '.ts';
+    return ['app-shell', 'page', 'component', 'feature'].includes(kind) ? '.vue' : '.ts';
   }
   if (profile.profileId === 'sveltekit' || profile.profileId === 'svelte') {
-    return ['app-shell', 'page', 'component'].includes(kind) ? '.svelte' : '.ts';
+    return ['app-shell', 'page', 'component', 'feature'].includes(kind) ? '.svelte' : '.ts';
   }
   if (profile.profileId === 'astro') {
-    return ['app-shell', 'page', 'component'].includes(kind) ? '.astro' : '.ts';
+    return ['app-shell', 'page', 'component', 'feature'].includes(kind) ? '.astro' : '.ts';
   }
   if (profile.profileId === 'angular') return '.ts';
   if (profile.profileId === 'server-rendered') {
     if (profile.router === 'inertia-vue-router') return kind === 'page' || kind === 'component' ? '.vue' : '.ts';
-    if (profile.router.startsWith('inertia-')) return kind === 'page' || kind === 'component' ? '.tsx' : '.ts';
+    if (profile.router.startsWith('inertia-')) {
+      return kind === 'page' || kind === 'component' || kind === 'feature' ? '.tsx' : '.ts';
+    }
     return kind === 'page' || kind === 'component' ? '.blade.php' : '.php';
   }
   if (profile.profileId === 'swift-native') return '.swift';
@@ -90,8 +98,114 @@ function extensionFor(profile: CapabilityProfileV1, kind: ArchitectureModuleKind
     if (profile.backendFramework === 'kotlin') return '.kt';
     if (profile.backendFramework === 'dotnet') return '.cs';
   }
-  if (kind === 'service' || kind === 'store' || kind === 'feature') return '.ts';
+  if (kind === 'service' || kind === 'store') return '.ts';
   return '.tsx';
+}
+
+// ── Extension freedom ───────────────────────────────────────────────────────
+// The contract pins IDENTITY (base path + directory); the toolchain arbitrates
+// FORM. `extensionFor` above still chooses the DEFAULT concrete filename that
+// `moduleOutput` emits and every skeleton/simulator writes, but wherever the
+// framework does not dictate the filename semantically the implementer may
+// deliver any extension in the allowed set — tsc/build judges the choice, not
+// a runtime table (observed 12co: a module pinned to a single extension forced
+// a `createElement` rewrite in a file where JSX is illegal).
+const FREE_EXTENSION_SETS: Record<string, readonly string[]> = {
+  '.tsx': ['.tsx', '.ts'],
+  '.vue': ['.vue', '.ts'],
+  '.svelte': ['.svelte', '.ts'],
+  '.astro': ['.astro', '.ts'],
+};
+
+// Profiles whose UI language is JSX/TSX: a `.ts` default (service/store/lib)
+// may legitimately grow a provider component and need `.tsx`.
+function reactFamilyProfile(profile: CapabilityProfileV1): boolean {
+  if (['vite-react', 'next-app', 'next-pages', 'react-native', 'generic-web'].includes(profile.profileId)) {
+    return true;
+  }
+  return profile.profileId === 'server-rendered'
+    && profile.router.startsWith('inertia-')
+    && profile.router !== 'inertia-vue-router';
+}
+
+// Pinning stays ONLY where the framework reads the filename itself: file-router
+// page/layout files (Next, Nuxt, SvelteKit, Astro, Blade views), Angular
+// `.component.ts`, entrypoint-derived app shells, test files, and the Supabase
+// edge-function layout.
+function moduleExtensionPinned(
+  profile: CapabilityProfileV1,
+  kind: ArchitectureModuleKind,
+): boolean {
+  if (kind === 'test' || kind === 'edge-function') return true;
+  if (kind === 'app-shell') {
+    return ['next-app', 'next-pages', 'nuxt', 'sveltekit', 'astro', 'angular', 'server-rendered']
+      .includes(profile.profileId);
+  }
+  if (kind === 'page') {
+    return ['next-app', 'next-pages', 'nuxt', 'sveltekit', 'astro', 'angular'].includes(profile.profileId)
+      || (profile.profileId === 'server-rendered' && !profile.router.startsWith('inertia-'));
+  }
+  if (kind === 'component') return profile.profileId === 'angular';
+  return false;
+}
+
+const COMPOUND_OUTPUT_EXTENSIONS = ['.blade.php', '.test.ts'] as const;
+
+function outputExtension(output: string): string {
+  for (const ext of COMPOUND_OUTPUT_EXTENSIONS) {
+    if (output.endsWith(ext)) return ext;
+  }
+  return path.posix.extname(output);
+}
+
+export interface ResolvedModuleOutput {
+  /** DEFAULT concrete path — what run-sim/skeletons emit and `module.output` keeps holding. */
+  output: string;
+  /** `output` minus its default extension. */
+  outputBase: string;
+  /** Extensions deliverable at `outputBase`; the first is the default. */
+  allowedExtensions: string[];
+}
+
+export function resolveModuleOutput(
+  projectRoot: string,
+  profile: CapabilityProfileV1,
+  module: ArchitectureModuleInputV1,
+  route: ArchitectureRouteInputV1 | undefined,
+  baselinePaths: ReadonlySet<string>,
+): ResolvedModuleOutput {
+  const output = moduleOutput(projectRoot, profile, module, route, baselinePaths);
+  const ext = outputExtension(output);
+  const outputBase = ext ? output.slice(0, -ext.length) : output;
+  if (!ext) return { output, outputBase, allowedExtensions: [] };
+  if (moduleExtensionPinned(profile, module.kind)) {
+    return { output, outputBase, allowedExtensions: [ext] };
+  }
+  const free = ext === '.ts' && reactFamilyProfile(profile)
+    ? ['.ts', '.tsx']
+    : FREE_EXTENSION_SETS[ext];
+  return { output, outputBase, allowedExtensions: [...(free || [ext])] };
+}
+
+/**
+ * Every concrete path a compiled module may legally be delivered at, default
+ * first. Pre-extension-freedom sidecars carry no `outputBase`/
+ * `allowedExtensions` and keep their exact single-path behavior — the fields
+ * are additive, so a mid-run plugin upgrade cannot invalidate persisted
+ * assignments built from an older compiled contract.
+ */
+export function moduleOutputVariants(module: {
+  output: string;
+  outputBase?: string;
+  allowedExtensions?: string[];
+}): string[] {
+  if (!module.outputBase
+    || !Array.isArray(module.allowedExtensions)
+    || module.allowedExtensions.length === 0) {
+    return [module.output];
+  }
+  const variants = module.allowedExtensions.map((ext) => `${module.outputBase}${ext}`);
+  return variants.includes(module.output) ? variants : [module.output, ...variants];
 }
 
 function sharedUiExtension(profile: CapabilityProfileV1): string {
@@ -208,6 +322,12 @@ export function moduleOutput(
   }
   if (module.kind === 'feature') return `${featuresRoot}/${kebab(module.name)}/index${ext}`;
   if (module.kind === 'test') return `tests/${kebab(module.name)}${ext}`;
+  // Edge functions have ONE legal layout: the Supabase CLI deploys
+  // `supabase/functions/<name>/index.ts` by directory name. The file is Deno,
+  // not the app's TypeScript project, so it deliberately lands outside every
+  // source root — nothing here may pull it into the app tsconfig/lint/format
+  // surface, and app code reaches it through `functions.invoke`, never import.
+  if (module.kind === 'edge-function') return `supabase/functions/${kebab(module.name)}/index.ts`;
   if (
     profile.profileId !== 'backend-only'
     && (module.kind === 'service' || module.kind === 'store')
