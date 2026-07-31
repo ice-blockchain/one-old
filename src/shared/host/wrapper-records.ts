@@ -36,6 +36,13 @@ export interface WrapperRecordSpec {
   targetField: string;
   targetVersion: string;
   packageName: string;
+  /**
+   * Wrapper API generation stamped into the owner record. Absent on installs
+   * written before the field existed — readers treat that as generation 1.
+   * Older readers validate only owner/version/pluginRoot, so adding this is
+   * backward-compatible.
+   */
+  wrapperApi?: number;
 }
 
 export function buildOwnerRecord(spec: WrapperRecordSpec, pluginRoot: string): WrapperRecordBase & Record<string, unknown> {
@@ -45,6 +52,7 @@ export function buildOwnerRecord(spec: WrapperRecordSpec, pluginRoot: string): W
     pluginRoot,
     [spec.targetField]: spec.targetVersion,
     packageName: spec.packageName,
+    ...(spec.wrapperApi !== undefined ? { wrapperApi: spec.wrapperApi } : {}),
     installedAt: new Date().toISOString(),
   };
 }
@@ -75,6 +83,7 @@ function parsedRecord(spec: WrapperRecordSpec, parsed: unknown): (WrapperRecordB
     pluginRoot: rec.pluginRoot,
     [spec.targetField]: typeof rec[spec.targetField] === 'string' ? rec[spec.targetField] as string : '',
     packageName: typeof rec.packageName === 'string' ? rec.packageName : '',
+    ...(typeof rec.wrapperApi === 'number' ? { wrapperApi: rec.wrapperApi } : {}),
     ...(typeof rec.installedAt === 'string' ? { installedAt: rec.installedAt } : {}),
     ...(typeof rec.enabled === 'boolean' ? { enabled: rec.enabled } : {}),
     ...(typeof rec.enabledAt === 'string' ? { enabledAt: rec.enabledAt } : {}),

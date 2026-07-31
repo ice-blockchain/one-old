@@ -24,9 +24,12 @@ import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-d
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
+import { claudeWaitBackgroundDeniedReason, claudeWaitLinkFirstReason } from '../../shared/onboarding-server/claude-setup';
+import { codexWaitLinkFirstReason } from '../../shared/onboarding-server/codex-setup';
 import { cursorWaitLinkFirstReason } from '../../shared/onboarding-server/cursor-setup';
 import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
+import { windsurfBackend } from '../../shared/windsurf-backend';
 import { pluginRoot } from '../../shared/paths';
 import { firstEmitThisSession } from '../../shared/once';
 import {
@@ -73,8 +76,9 @@ const block = (name: string, vars: Record<string, string | number | null | undef
 // Claude, so this stays free and never blocks the tool. Same wording every other
 // surface uses, so no new prose and no T1BLOCK.
 // Read a LIVE wizard link without spawning anything. prepareOnboardingServer would
-// launch a server as a side effect, which a nudge must never do.
-function liveWizardLink(root: string, host: string): { dashboardUrl: string; token: string; localFallback: LocalFallback } | null {
+// launch a server as a side effect, which a nudge must never do. Also the Stop
+// backstop's engagement gate: no live record ⇒ this session never engaged setup.
+export function liveWizardLink(root: string, host: string): { dashboardUrl: string; token: string; localFallback: LocalFallback } | null {
   const rec = readServerRecord(root, process.env, host);
   if (!rec || rec.url.includes(':0/') || !processAlive(rec.pid)) return null;
   const urls = agentOnboardingUrls(process.env, rec.port, rec.token);
@@ -94,10 +98,20 @@ function setupLinkNudge(
   token: string,
   localFallback: LocalFallback,
 ): HookResult {
-  // Only where an empty context is genuinely free and systemMessage is the user's
-  // channel. Codex emits additionalContext unconditionally (so an empty context is
-  // not free), and Windsurf/OpenCode already carry the recipe on their own surfaces.
-  if (host !== 'claude' && host !== 'cursor') return noop();
+  // Only where an empty context is genuinely free and systemMessage is a
+  // user-visible channel: Claude/Cursor (systemMessage → user_message), Copilot
+  // (systemMessage rides both wire surfaces; the CLI omits an empty context), and
+  // Windsurf-Cascade (hook stdout renders under show_output: true). Codex stays
+  // excluded — it emits additionalContext unconditionally, so an empty context is
+  // not free and the deny reason is its only real surface. OpenCode/Kilo deliver
+  // through their wrapper's own prompt-part/idle surfaces instead.
+  if (host !== 'claude' && host !== 'cursor' && host !== 'copilot' && host !== 'windsurf') return noop();
+  // Devin native merges systemMessage into agent-facing additionalContext — the
+  // nudge would burn the shared TTL marker without ever reaching the user (the
+  // exact invisible-producer failure this marker discipline exists to prevent).
+  // Devin's own Stop block owns re-delivery there; only Cascade renders hook
+  // stdout to the user.
+  if (host === 'windsurf' && windsurfBackend(process.env) === 'devin') return noop();
   // Never emit a placeholder, and stand down once a browser demonstrably has the
   // wizard open — re-offering then reads as "start over" mid-setup.
   if (!dashboardUrl) return noop();
@@ -191,6 +205,25 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // Cursor does not reliably render UserPromptSubmit user_message, and agents sometimes skip
     // reposting the URL before running the wait command. Force one visible, clickable link at the
     // shell boundary, then allow the retry so setup can block normally.
+    // A backgrounded onboarding runner (bootstrap or waiter) writes its output —
+    // including the setup link it prints — into a background task file the user
+    // never opens, and its nonzero pending exit renders as "Background task
+    // failed", which the agent reads as a broken command and abandons (observed
+    // live on 1.0.43). Only Claude's Bash payload carries the flag; deny EVERY
+    // such request — backgrounding is never right here — and prescribe the
+    // identical command in the foreground. Hoisted ABOVE the bootstrap release
+    // below so a backgrounded `--use --bootstrap-only` is caught too.
+    if (ctx.host === 'claude'
+      && toolInput.run_in_background === true
+      && (isOnboardingBootstrapCommand(toolName, toolInput) || isOnboardingWaitCommand(toolName, toolInput))) {
+      const live = liveWizardLink(root, ctx.host);
+      const urlLine = live ? `Open Traffic One setup: ${live.dashboardUrl}` : '';
+      const observed = asString(toolInput.command ?? toolInput.cmd);
+      return deny(block('claude-wait-background-denied', {
+        URL_LINE: urlLine,
+        WAIT_CMD: observed,
+      }, claudeWaitBackgroundDeniedReason(urlLine, observed)));
+    }
     // The approved bootstrap is the only way a sandboxed hook can start an
     // unsandboxed wizard that owns ~/.traffic-one/projects. Admit it before the
     // Cursor URL-repost path, which necessarily calls the same failing launcher.
@@ -231,6 +264,51 @@ export function onboardingGate(ctx: Ctx): HookResult {
             LOCAL_FALLBACK: localFallback,
             WAIT_CMD: waitCommand,
           }, cursorWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+        }
+      }
+      // Claude mirrors the Cursor link-first deny: hook output and blocked
+      // commands render inside a collapsed tool block, so the nudge below is
+      // agent-invisible in practice and the recipe's "post the link" step is
+      // routinely skipped (observed live on 1.0.43 — the user never got a link).
+      // One deny per session orders the visible repost; the allowed retry then
+      // proceeds into the blocking wait. Never fired over an open wizard, and the
+      // recovery path (server not ready) is never trapped.
+      if (ctx.host === 'claude') {
+        const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
+        if (prepared.kind === 'ready') {
+          const { server, waitCommand } = prepared;
+          if (server.dashboardUrl
+            && !wizardOpened(root, server.token, process.env, ctx.host)
+            && firstEmitThisSession(root, 'claude-onboarding-wait-link', hookSessionIdentity(raw).sessionId)) {
+            const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
+            return deny(block('claude-wait-link-first', {
+              URL: server.dashboardUrl,
+              LOCAL_FALLBACK: localFallback,
+              WAIT_CMD: waitCommand,
+            }, claudeWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+          }
+        }
+      }
+      // Codex: the deny reason is the ONLY channel that reaches the model (see
+      // the walkthrough comment below), so the wait command gets its own
+      // self-contained link-first deny. DEDICATED marker — deliberately not
+      // 'onboarding-deny-tool': an orientation call may have burned the
+      // walkthrough without the link ever being posted, and this deny must not
+      // consume the walkthrough for later mutating calls either.
+      if (ctx.host === 'codex') {
+        const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
+        if (prepared.kind === 'ready') {
+          const { server, waitCommand } = prepared;
+          if (server.dashboardUrl
+            && !wizardOpened(root, server.token, process.env, ctx.host)
+            && firstEmitThisSession(root, 'codex-onboarding-wait-link', hookSessionIdentity(raw).sessionId)) {
+            const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
+            return deny(block('codex-wait-link-first', {
+              URL: server.dashboardUrl,
+              LOCAL_FALLBACK: localFallback,
+              WAIT_CMD: waitCommand,
+            }, codexWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+          }
         }
       }
       // The waiter is the LAST tool call before the agent blocks — often for
@@ -280,21 +358,27 @@ export function onboardingGate(ctx: Ctx): HookResult {
       WAIT_CMD: waitCommand,
       DECLINE_CMD: declineCmd,
     };
-    // OpenCode: the full multi-host deny block (URLs + shell commands + JavaScript
-    // code blocks + "do NOT…" behavioral overrides) triggers the model's prompt-
-    // injection safety training — it reads as a third-party hijack attempt and
-    // refuses to follow the instructions. Use a minimal, factual message instead:
-    // just the wizard URL and wait command, no behavioral overrides or code blocks.
-    // The fallback uses the bare one-line form for the same reason.
-    if (ctx.host === 'opencode') {
-      const opencodeFallback = localFallbackLine(root, server.localWizardUrl, process.env, ctx.host);
+    // OpenCode/Kilo: the full multi-host deny block (URLs + shell commands +
+    // JavaScript code blocks + "do NOT…" behavioral overrides) triggers the
+    // model's prompt-injection safety training — it reads as a third-party hijack
+    // attempt and refuses to follow the instructions. Use a minimal, factual
+    // message instead: just the wizard URL and wait command, no behavioral
+    // overrides or code blocks. The fallback uses the bare one-line form for the
+    // same reason. The restart note is OpenCode-only: the waiter emits
+    // TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED exclusively for host === 'opencode',
+    // so promising it on Kilo would be false prose.
+    if (ctx.host === 'opencode' || ctx.host === 'kilo') {
+      const wrapperFallback = localFallbackLine(root, server.localWizardUrl, process.env, ctx.host);
+      const restartNote = ctx.host === 'opencode'
+        ? 'If it prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, '
+          + 'then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.\n\n'
+        : '';
       return deny(
-        `Traffic One project setup is required before building. `
+        'Traffic One project setup is required before building. '
         + `Show this setup link to the user: ${vars.URL}\n\n`
-        + (opencodeFallback ? `${opencodeFallback}\n\n` : '')
+        + (wrapperFallback ? `${wrapperFallback}\n\n` : '')
         + `Then immediately run this wait command in the current turn (timeout ~9 minutes); do not wait for another user message first:\n${vars.WAIT_CMD}\n\n`
-        + `If it prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, `
-        + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.\n\n`
+        + restartNote
         + `If the user does not want Traffic One for this project, run instead: ${declineCmd}`,
       );
     }
@@ -334,10 +418,21 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // one fired whenever any surface had merely PRODUCED the link, which is how the
     // agent ended up telling the user to use a link it had never posted.
     const wizardIsOpen = wizardOpened(root, server.token, process.env, ctx.host);
+    // Copilot renders `systemMessage` on BOTH its wire surfaces INCLUDING a deny
+    // (CLI and VS Code), so the wizard banner rides the deny itself — the one
+    // guaranteed user-visible moment on that host. Shares the nudge's TTL marker
+    // so the two surfaces keep a single cadence, and stands down once a browser
+    // demonstrably has the wizard open.
+    const copilotDenyBanner = (): { systemMessage: string } | Record<string, never> => {
+      if (ctx.host !== 'copilot' || wizardIsOpen || !server.dashboardUrl) return {};
+      if (emittedWithin(root, setupLinkNudgeLabel(server.token), SETUP_LINK_NUDGE_TTL_MS)) return {};
+      stampEmitMarker(root, setupLinkNudgeLabel(server.token));
+      return { systemMessage: formatWizardBanner(ctx.host, server.dashboardUrl, localFallback, 'traffic-one [setup required]') };
+    };
     if (firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId)) {
       return deny(wizardIsOpen
         ? block('server-deny-reason-links-shown', vars)
-        : block('server-deny-reason', vars));
+        : block('server-deny-reason', vars), copilotDenyBanner());
     }
     // Recipe already delivered this session → orientation flows; every further
     // non-orientation / mutating attempt repeats only the URL + wait-command. The
@@ -348,7 +443,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
     }
     return deny(wizardIsOpen
       ? block('server-deny-reason-links-shown', vars)
-      : block('server-deny-reason-repeat', vars));
+      : block('server-deny-reason-repeat', vars), copilotDenyBanner());
   }
 
   if (childEvent) return noop();

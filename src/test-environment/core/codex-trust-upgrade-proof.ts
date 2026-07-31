@@ -14,14 +14,14 @@ import { REPO_ROOT_PATH } from '../config/test-config';
 
 export const CODEX_TRUST_PROOF_MARKETPLACE = 'traffic-one-trust-proof';
 export const CODEX_TRUST_PROOF_PLUGIN_ID = `traffic-one@${CODEX_TRUST_PROOF_MARKETPLACE}`;
-export const CODEX_TRUST_PROOF_EXPECTED_HOOKS = 15;
+export const CODEX_TRUST_PROOF_EXPECTED_HOOKS = 16;
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const COMMAND_TIMEOUT_CAP_MS = 15_000;
 const MARKER_TIMEOUT_CAP_MS = 8_000;
 const RPC_STDOUT_LIMIT = 1_048_576;
 const RPC_STDERR_LIMIT = 65_536;
-const ABI_FIXTURE_PATH = path.join(REPO_ROOT_PATH, 'tests', 'fixtures', 'codex-hook-abi.v1.json');
+const ABI_FIXTURE_PATH = path.join(REPO_ROOT_PATH, 'tests', 'fixtures', 'codex-hook-abi.v2.json');
 const V1_VERSION = '0.0.0-trust-proof.1';
 const V2_VERSION = '0.0.0-trust-proof.2';
 
@@ -50,7 +50,7 @@ export interface CodexHookAbiFixtureEntry {
 }
 
 export interface CodexHookAbiFixture {
-  version: 1;
+  version: 2;
   entries: CodexHookAbiFixtureEntry[];
 }
 
@@ -168,8 +168,8 @@ function normalizedHash(value: string): string {
 }
 
 function parseAbiFixture(value: unknown): CodexHookAbiFixture {
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.entries)) {
-    throw new Error('Codex hook ABI fixture must be a version 1 object with entries');
+  if (!isRecord(value) || value.version !== 2 || !Array.isArray(value.entries)) {
+    throw new Error('Codex hook ABI fixture must be a version 2 object with entries');
   }
   const entries: CodexHookAbiFixtureEntry[] = value.entries.map((entry, index) => {
     if (!isRecord(entry) || typeof entry.key !== 'string' || typeof entry.currentHash !== 'string') {
@@ -184,7 +184,7 @@ function parseAbiFixture(value: unknown): CodexHookAbiFixture {
   if (new Set(entries.map((entry) => entry.key)).size !== entries.length) {
     throw new Error('Codex hook ABI fixture contains duplicate keys');
   }
-  return { version: 1, entries };
+  return { version: 2, entries };
 }
 
 function loadAbiFixture(options: CodexTrustUpgradeProofOptions): CodexHookAbiFixture {

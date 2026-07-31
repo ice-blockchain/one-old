@@ -12,7 +12,8 @@ import {
   CODEX_HOOK_EXPECTED_COUNT,
   CODEX_TRAFFIC_ONE_HOOK_KEYS,
 } from '../src/runners/doctor/codex-hook-trust';
-import abiFixtureJson from './fixtures/codex-hook-abi.v1.json';
+import abiFixtureV1Json from './fixtures/codex-hook-abi.v1.json';
+import abiFixtureJson from './fixtures/codex-hook-abi.v2.json';
 
 type Rec = Record<string, unknown>;
 type CodexVersion = '0.133' | '0.145';
@@ -37,11 +38,12 @@ interface AbiFixture {
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ABI_FIXTURE = abiFixtureJson as AbiFixture;
+const ABI_FIXTURE_V1 = abiFixtureV1Json as AbiFixture;
 const ABI_MIGRATION_GUIDANCE =
   'Codex hook ABI drift detected: bump CODEX_HOOK_ABI_VERSION and ship a trust-state migration.';
 const DEFAULT_TIMEOUT_SEC = 600;
 const CODEX_0145_DEFAULT_ADDITIONAL_CONTEXT_LIMIT = 2_500;
-const HOOKS_JSON_SHA256 = 'fd232cf4f2fcfefc177f5f7762b2240fcbce45c5d9365e22e3ff5c527599bec7';
+const HOOKS_JSON_SHA256 = 'e292958c20a40430496ed585f1d6ad996549af775debe14c6f4eec80665b234c';
 
 const EVENT_LABELS: Readonly<Record<string, string>> = {
   PreToolUse: 'pre_tool_use',
@@ -287,21 +289,26 @@ function hookHandler(
   );
 }
 
-test('Codex hook ABI fixture v1 is complete and tied to the source version', () => {
+test('Codex hook ABI fixture v2 is complete and tied to the source version', () => {
   assert.equal(
     ABI_FIXTURE.version,
     CODEX_HOOK_ABI_VERSION,
     ABI_MIGRATION_GUIDANCE,
   );
-  assert.equal(ABI_FIXTURE.entries.length, 15, 'ABI v1 must contain exactly 15 entries');
+  assert.equal(ABI_FIXTURE.entries.length, 16, 'ABI v2 must contain exactly 16 entries');
   assert.equal(
     new Set(ABI_FIXTURE.entries.map(({ key }) => key)).size,
     ABI_FIXTURE.entries.length,
-    'ABI v1 keys must be unique',
+    'ABI v2 keys must be unique',
   );
   assert.ok(
     ABI_FIXTURE.entries.some(({ key }) => key === 'pre_tool_use:2:1'),
-    'ABI v1 must pin the second handler in PreToolUse group 2',
+    'ABI v2 must pin the second handler in PreToolUse group 2',
+  );
+  assert.equal(
+    ABI_FIXTURE.entries[ABI_FIXTURE.entries.length - 1]!.key,
+    'stop:0:0',
+    'the v2 Stop entry must be appended LAST so every v1 positional identity survives',
   );
   const entryFields = [
     'key',
@@ -330,7 +337,19 @@ test('Codex hook ABI fixture v1 is complete and tied to the source version', () 
   }
 });
 
-test('doctor hook-trust expected keys stay in sync with ABI fixture v1', () => {
+// The v1→v2 trust-migration contract: adding the Stop entry must not disturb a
+// single pre-existing positional identity or hash — installed trust survives and
+// only the ONE new hook arrives untrusted (one prompt, not an all-hooks outage).
+test('ABI v2 preserves every v1 positional identity byte-for-byte', () => {
+  assert.equal(ABI_FIXTURE_V1.entries.length, 15);
+  assert.deepEqual(
+    ABI_FIXTURE.entries.slice(0, ABI_FIXTURE_V1.entries.length),
+    ABI_FIXTURE_V1.entries,
+    `${ABI_MIGRATION_GUIDANCE}\nthe v2 fixture may only APPEND — v1 entries changed`,
+  );
+});
+
+test('doctor hook-trust expected keys stay in sync with ABI fixture v2', () => {
   assert.equal(
     CODEX_TRAFFIC_ONE_HOOK_KEYS.length,
     CODEX_HOOK_EXPECTED_COUNT,
@@ -342,11 +361,11 @@ test('doctor hook-trust expected keys stay in sync with ABI fixture v1', () => {
       .map(({ key }) => `traffic-one@traffic-one-local:hooks/hooks.json:${key}`)
       .sort(),
     `${ABI_MIGRATION_GUIDANCE}\n`
-    + 'EXPECTED_SUFFIXES in src/runners/doctor/codex-hook-trust.ts must mirror the fixture keys',
+    + 'EXPECTED_SUFFIXES in src/runners/doctor/codex-hook-schema.ts must mirror the fixture keys',
   );
 });
 
-test('generated hooks preserve Codex hook ABI v1 under 0.133 and 0.145 normalization', () => {
+test('generated hooks preserve Codex hook ABI v2 under 0.133 and 0.145 normalization', () => {
   const { hooksFile, bytes } = generatedHooksArtifact();
   assert.equal(
     createHash('sha256').update(bytes).digest('hex'),

@@ -53,7 +53,12 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   // Codex SubagentStart binds the pending role claim to the new subagent thread id.
   assert.deepEqual(idsFor('subagent-start'), ['agent-model.subagent-start']);
   assert.deepEqual(idsFor('cursor-subagent-stop'), ['agent-model.cursor-subagent-stop']);
-  assert.deepEqual(idsFor('cursor-stop'), ['agent-model.cursor-stop']);
+  // cursor-stop routes BOTH the onboarding backstop (priority 10, first followup
+  // wins) and the agent-model failure reconcile (40).
+  assert.deepEqual(idsFor('cursor-stop'), ['agent-model.cursor-stop', 'onboarding-gate.stop']);
+  // The Claude/Codex turn-end backstop: re-delivers the setup link when a turn
+  // would end with onboarding pending and a live wizard engaged.
+  assert.deepEqual(idsFor('onboarding-stop'), ['onboarding-gate.stop']);
 });
 
 test('an unknown subcommand routes to no handlers', () => {

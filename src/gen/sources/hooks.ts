@@ -11,7 +11,10 @@
 
 import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME } from '../../config/one-mcp';
 
-export const CODEX_HOOK_ABI_VERSION = 1;
+// v2 (1.0.44): adds the Stop → onboarding-stop group (appended LAST, so all 15
+// v1 positional identities and their trusted hashes are unchanged; the one new
+// entry arrives untrusted and Codex prompts once for it).
+export const CODEX_HOOK_ABI_VERSION = 2;
 
 function regexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -128,6 +131,15 @@ export const SESSION_START: HookGroup = {
 // Hosts that do not emit SubagentStart simply never invoke this command.
 export const SUBAGENT_START: HookGroup = {
   entries: [{ subcommand: 'subagent-start' }],
+};
+
+// Turn-end backstop (Claude + Codex): while onboarding is pending and a live
+// wizard exists, the Stop hook blocks the turn end once (stop_hook_active guards
+// the loop) and re-delivers the setup link — the last chance to put it in a
+// message the user can see. Not tool-scoped → no matcher (Stop takes none on
+// Codex). No statusMessage: keep the ABI identity minimal.
+export const STOP: HookGroup = {
+  entries: [{ subcommand: 'onboarding-stop' }],
 };
 
 export function promptSubmitGroup(withStatus: boolean): HookGroup {

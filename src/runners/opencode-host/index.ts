@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   OPENCODE_HOST_TARGET_VERSION,
+  OPENCODE_HOST_WRAPPER_API,
 } from '../../config/opencode-host';
 
 import {
@@ -148,6 +149,14 @@ export function doctorWrapper(
   const config = globalConfigHasPlugin(env, registrationFeatureEnabled);
   const currentRoot = runtimePluginRoot(env);
   const current = path.resolve(owner.pluginRoot) === path.resolve(currentRoot);
+  // Wrapper API generation: an owner stamp without the field is generation 1.
+  // A stale wrapper keeps working on its old surfaces, but lacks the v2 ones
+  // (banner composition + session.idle delivery) until reinstalled.
+  const wrapperApi = typeof owner.wrapperApi === 'number' ? owner.wrapperApi : 1;
+  const apiCurrent = wrapperApi === OPENCODE_HOST_WRAPPER_API;
+  const wrapperApiLine = `wrapperApi: ${wrapperApi}${apiCurrent
+    ? ''
+    : ` (stale-wrapper: expected ${OPENCODE_HOST_WRAPPER_API} — re-run \`install --yes\` and restart OpenCode)`}\n`;
   const projectArg = explicitCwdArg(argv);
   let projectSection = '';
   let projectOk = true;
@@ -164,8 +173,8 @@ export function doctorWrapper(
     projectSection = `projectActivation: ${status}\nprojectRoot: ${projectRoot}\nprojectMarker: ${marker}\n`;
   }
   return {
-    code: current && projectOk && config.ok ? 0 : 1,
-    stdout: `${current ? 'ok' : 'owned-by-other-install'}: ${file}\npluginRoot: ${owner.pluginRoot}\ntargetOpenCode: ${owner.targetOpenCode || OPENCODE_HOST_TARGET_VERSION}\nconfig: ${config.ok ? 'ok' : `error: ${config.error}`} (${config.path})\npluginSpec: ${config.spec}\nloadModel: registered in OpenCode global plugin array\n${projectSection}`,
+    code: current && projectOk && config.ok && apiCurrent ? 0 : 1,
+    stdout: `${current ? 'ok' : 'owned-by-other-install'}: ${file}\npluginRoot: ${owner.pluginRoot}\ntargetOpenCode: ${owner.targetOpenCode || OPENCODE_HOST_TARGET_VERSION}\n${wrapperApiLine}config: ${config.ok ? 'ok' : `error: ${config.error}`} (${config.path})\npluginSpec: ${config.spec}\nloadModel: registered in OpenCode global plugin array\n${projectSection}`,
   };
 }
 

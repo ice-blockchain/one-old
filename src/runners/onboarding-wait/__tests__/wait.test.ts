@@ -1023,3 +1023,63 @@ test('announceWizardUrl ignores a legacy marker and emits the direct /local fall
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── rearmSetupLinkNudge: a PENDING waiter exit must re-arm the gate's setup-link
+// nudge, or every wait retry inside the 5-minute TTL runs with no user-visible
+// surface at all (observed live on Claude: the link never reached the user). ──
+
+test('rearmSetupLinkNudge clears the nudge marker for the live server token', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { rearmSetupLinkNudge } = await import('../index');
+  const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+  const { emittedWithin, stampEmitMarker } = await import('../../../shared/once');
+  const { SETUP_LINK_NUDGE_TTL_MS, setupLinkNudgeLabel } = await import('../../../shared/onboarding-server/wizard-links');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-rearm-')));
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    writeServerRecord(dir, {
+      pid: process.pid,
+      port: 55191,
+      token: 'rearm-token',
+      url: 'http://127.0.0.1:55191/?t=rearm-token',
+      startedAt: 'x',
+    }, process.env, 'claude');
+    stampEmitMarker(dir, setupLinkNudgeLabel('rearm-token'));
+    assert.equal(emittedWithin(dir, setupLinkNudgeLabel('rearm-token'), SETUP_LINK_NUDGE_TTL_MS), true);
+
+    rearmSetupLinkNudge(dir, 'claude');
+    assert.equal(emittedWithin(dir, setupLinkNudgeLabel('rearm-token'), SETUP_LINK_NUDGE_TTL_MS), false,
+      'a pending exit re-arms the nudge for the next gated tool call');
+  } finally {
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rearmSetupLinkNudge without a server record clears the placeholder label and never throws', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { rearmSetupLinkNudge } = await import('../index');
+  const { emittedWithin, stampEmitMarker } = await import('../../../shared/once');
+  const { SETUP_LINK_NUDGE_TTL_MS, setupLinkNudgeLabel } = await import('../../../shared/onboarding-server/wizard-links');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-rearm-norec-')));
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    stampEmitMarker(dir, setupLinkNudgeLabel(''));
+    rearmSetupLinkNudge(dir, 'claude');
+    assert.equal(emittedWithin(dir, setupLinkNudgeLabel(''), SETUP_LINK_NUDGE_TTL_MS), false,
+      'the record-less placeholder marker is cleared too');
+  } finally {
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -91,6 +91,23 @@ test('copilot CLI: PreToolUse deny → flat permissionDecision shape', async () 
   assert.equal(out.additionalContext, 'ctx');
 });
 
+test('copilot CLI + VS Code: a deny carries systemMessage — the user-visible banner channel', async () => {
+  const handlers: Handler[] = [
+    {
+      id: 'g', event: 'PreToolUse', tools: ['shell'], priority: 0,
+      run: () => deny('blocked', { systemMessage: 'BANNER with setup link' }),
+    },
+  ];
+  const cli = inv('before-tool-use', { tool_name: 'bash', tool_args: '{"command":"pwd"}' }, 'cli');
+  const cliOut = JSON.parse(await dispatch(cli.adapter, handlers, cli.raw));
+  assert.equal(cliOut.permissionDecision, 'deny');
+  assert.equal(cliOut.systemMessage, 'BANNER with setup link');
+  const vscode = inv('before-tool-use', { tool_name: 'bash', tool_args: '{"command":"pwd"}' }, 'vscode');
+  const vsOut = JSON.parse(await dispatch(vscode.adapter, handlers, vscode.raw));
+  assert.equal(vsOut.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.equal(vsOut.systemMessage, 'BANNER with setup link');
+});
+
 test('copilot CLI: session-start context → flat additionalContext', async () => {
   const { adapter, raw } = inv('session-start', {}, 'cli');
   const handlers: Handler[] = [{ id: 's', event: 'SessionStart', priority: 0, run: () => context('auth!') }];

@@ -184,3 +184,37 @@ test('codex: deny context carries a PreToolUse provenance marker without changin
     '<!-- traffic-one-hook-context:v1 event=PreToolUse -->\nrepair this state',
   );
 });
+
+// ── Stop: a deny is a turn-end block ({"decision":"block","reason"}), not a
+// tool permission. Codex additionally gets the marked additionalContext so a
+// build that ignores Stop blocking still delivers the reason as context. ──
+
+test('claude: Stop deny → {"decision":"block","reason"} (no PreToolUse permission shape)', async () => {
+  const handlers: Handler[] = [
+    { id: 'stop', event: 'Stop', priority: 0, run: () => deny('post the setup link') },
+  ];
+  const stdin = JSON.stringify({ hook_event_name: 'Stop', cwd: '/tmp/p', session_id: 's' });
+  const out = JSON.parse(await dispatch(claude, handlers, { stdin, argv: [] }));
+  assert.deepEqual(out, { decision: 'block', reason: 'post the setup link' });
+});
+
+test('codex: Stop deny carries the block AND the marked additionalContext evidence channel', async () => {
+  const handlers: Handler[] = [
+    { id: 'stop', event: 'Stop', priority: 0, run: () => deny('post the setup link') },
+  ];
+  const stdin = JSON.stringify({ hook_event_name: 'Stop', cwd: '/tmp/p', session_id: 's' });
+  const out = JSON.parse(await dispatch(makeClaudeAdapter('codex'), handlers, { stdin, argv: [] }));
+  assert.equal(out.decision, 'block');
+  assert.equal(out.reason, 'post the setup link');
+  assert.equal(out.hookSpecificOutput?.hookEventName, 'Stop');
+  assert.match(String(out.hookSpecificOutput?.additionalContext), /^<!-- traffic-one-hook-context:v1 event=Stop -->/);
+});
+
+test('claude: a Stop payload parses to the Stop event (never misparsed as PreToolUse)', () => {
+  const parsed = claude.parse({
+    stdin: JSON.stringify({ hook_event_name: 'Stop', cwd: '/tmp/p', stop_hook_active: true }),
+    argv: [],
+  });
+  assert.equal(parsed.event, 'Stop');
+  assert.equal((parsed.raw as Record<string, unknown>).stop_hook_active, true);
+});

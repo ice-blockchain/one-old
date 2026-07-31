@@ -41,6 +41,7 @@ import {
   awaitWizardCompletionAck,
   bootstrapReadyOutput,
   declineOutput,
+  rearmSetupLinkNudge,
 } from './wizard-output';
 import {
   beginOnboardingAttempt,
@@ -251,6 +252,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     }
     process.exit(0);
   }
+  rearmSetupLinkNudge(cwd, host);
   process.stdout.write('TRAFFIC_ONE_SETUP_PENDING\n');
   process.exit(2);
 }
@@ -260,6 +262,13 @@ if (require.main === module) {
     main();
   } catch {
     // Never hang or crash loudly — report pending so the agent re-runs.
+    try {
+      const argv = process.argv.slice(2);
+      const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
+      rearmSetupLinkNudge(cwd, detectHost(process.env, argv));
+    } catch {
+      // best effort — the pending exit below is the contract
+    }
     process.stdout.write('TRAFFIC_ONE_SETUP_PENDING\n');
     process.exit(2);
   }
@@ -281,6 +290,7 @@ export {
   awaitWizardCompletionAck,
   bootstrapReadyOutput,
   declineOutput,
+  rearmSetupLinkNudge,
 } from './wizard-output';
 export {
   applyReconsiderChoice,

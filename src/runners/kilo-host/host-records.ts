@@ -15,6 +15,7 @@ import {
   KILO_HOST_PACKAGE,
   KILO_HOST_PROJECT_MARKER_REL,
   KILO_HOST_TARGET_VERSION,
+  KILO_HOST_WRAPPER_API,
 } from '../../config/kilo-host';
 import {
   buildActivationRecord,
@@ -36,6 +37,7 @@ const SPEC: WrapperRecordSpec = {
   targetField: 'targetKilo',
   targetVersion: KILO_HOST_TARGET_VERSION,
   packageName: KILO_HOST_PACKAGE,
+  wrapperApi: KILO_HOST_WRAPPER_API,
 };
 
 function kiloConfigDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -66,6 +68,7 @@ interface OwnerRecord {
   pluginRoot: string;
   targetKilo: string;
   packageName: string;
+  wrapperApi?: number;
   installedAt?: string;
 }
 

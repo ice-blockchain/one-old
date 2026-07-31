@@ -8,8 +8,8 @@ import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { agentOnboardingUrls } from '../../config/dashboard';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
-import { localFallbackSection, wizardOpened } from '../../shared/onboarding-server/wizard-links';
-import { emittedWithin, stampEmitMarker } from '../../shared/once';
+import { localFallbackSection, setupLinkNudgeLabel, wizardOpened } from '../../shared/onboarding-server/wizard-links';
+import { clearEmitMarker, emittedWithin, stampEmitMarker } from '../../shared/once';
 
 import {
   WIZARD_BANNER_REPRINT_MS,
@@ -59,6 +59,23 @@ export function announceWizardUrl(
     stampEmitMarker(cwd, bannerMarkerLabel(rec.token));
   } catch {
     // best-effort — the wait still works without the banner
+  }
+}
+
+// A wait that exits PENDING means setup did not complete while the agent held
+// the turn open — and the gate's setup-link nudge marker may still be inside its
+// TTL, which would leave every wait retry in the next few minutes with no
+// user-visible surface at all (observed live: the link never reached the user).
+// Re-arm the nudge so the NEXT gated tool call re-delivers the link. Exit-free
+// and best-effort by design (the pending exit itself must never be blocked).
+export function rearmSetupLinkNudge(cwd: string, host: string): void {
+  try {
+    const rec = readServerRecord(cwd, process.env, host);
+    if (rec?.token) clearEmitMarker(cwd, setupLinkNudgeLabel(rec.token));
+    // Defensive: a record-less project may still hold the placeholder marker.
+    clearEmitMarker(cwd, setupLinkNudgeLabel(''));
+  } catch {
+    // best effort — re-arming must never break the waiter's exit path
   }
 }
 

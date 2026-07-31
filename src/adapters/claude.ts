@@ -22,6 +22,8 @@ function normalizeEvent(value: unknown): CanonicalEvent {
       return 'PostToolUse';
     case 'SubagentStart':
       return 'SubagentStart';
+    case 'Stop':
+      return 'Stop';
     default:
       return 'PreToolUse';
   }
@@ -93,6 +95,26 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
             ...(id === 'claude' && !additionalContext ? {} : { additionalContext }),
             ...(updatedInput !== undefined ? { updatedInput } : {}),
           },
+        });
+      }
+      // A deny on Stop is a turn-end block, not a tool permission: Claude Code's
+      // Stop protocol is {"decision":"block","reason"} (the reason is fed to the
+      // model, which must continue instead of ending the turn). Codex gets the
+      // same shape plus the marked additionalContext evidence channel — if a
+      // Codex build does not honor Stop blocking, the reason still reaches the
+      // model as context instead of vanishing.
+      if (input.event === 'Stop') {
+        return JSON.stringify({
+          decision: 'block',
+          reason: result.reason,
+          ...(id === 'codex'
+            ? {
+              hookSpecificOutput: {
+                hookEventName: 'Stop',
+                additionalContext: markCodexHookContext('Stop', result.reason),
+              },
+            }
+            : {}),
         });
       }
       return JSON.stringify({

@@ -5,7 +5,7 @@
 import type { CanonicalEvent } from '../core/types';
 
 export type CodexHookEvent = Extract<CanonicalEvent,
-  'SessionStart' | 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse' | 'SubagentStart'>;
+  'SessionStart' | 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse' | 'SubagentStart' | 'Stop'>;
 
 const CODEX_HOOK_EVENTS = new Set<CodexHookEvent>([
   'SessionStart',
@@ -13,6 +13,7 @@ const CODEX_HOOK_EVENTS = new Set<CodexHookEvent>([
   'PreToolUse',
   'PostToolUse',
   'SubagentStart',
+  'Stop',
 ]);
 
 export function isCodexHookEvent(value: unknown): value is CodexHookEvent {
@@ -31,7 +32,7 @@ export function markCodexHookContext(event: CodexHookEvent, context: string): st
 }
 
 export function codexHookEvidenceEvent(text: string): CodexHookEvent | null {
-  const match = text.trimStart().match(/^<!--[ \t]+traffic-one-hook-context:v1[ \t]+event=(SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|SubagentStart)[ \t]+-->/);
+  const match = text.trimStart().match(/^<!--[ \t]+traffic-one-hook-context:v1[ \t]+event=(SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|SubagentStart|Stop)[ \t]+-->/);
   return match && isCodexHookEvent(match[1]) ? match[1] : null;
 }
 

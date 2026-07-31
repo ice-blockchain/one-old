@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   KILO_HOST_TARGET_VERSION,
+  KILO_HOST_WRAPPER_API,
 } from '../../config/kilo-host';
 import {
   ONE_MCP_REGISTRATION,
@@ -152,6 +153,14 @@ export function doctorWrapper(
   }
   const currentRoot = runtimePluginRoot(env);
   const current = path.resolve(owner.pluginRoot) === path.resolve(currentRoot);
+  // Wrapper API generation: an owner stamp without the field is generation 1.
+  // A stale wrapper keeps working on its old surfaces, but lacks the v2 ones
+  // (banner composition + session.idle delivery) until reinstalled.
+  const wrapperApi = typeof owner.wrapperApi === 'number' ? owner.wrapperApi : 1;
+  const apiCurrent = wrapperApi === KILO_HOST_WRAPPER_API;
+  const wrapperApiLine = `wrapperApi: ${wrapperApi}${apiCurrent
+    ? ''
+    : ` (stale-wrapper: expected ${KILO_HOST_WRAPPER_API} — re-run \`install --yes\` and restart Kilo)`}\n`;
   const registrationEnabled = registrationFeatureEnabled ?? ONE_MCP_REGISTRATION;
   const config = registrationEnabled
     ? oneMcpDisabledStatus(env)
@@ -172,8 +181,8 @@ export function doctorWrapper(
     projectSection = `projectActivation: ${status}\nprojectRoot: ${projectRoot}\nprojectMarker: ${marker}\n`;
   }
   return {
-    code: current && projectOk && config.ok ? 0 : 1,
-    stdout: `${current ? 'ok' : 'owned-by-other-install'}: ${file}\npluginRoot: ${owner.pluginRoot}\ntargetKilo: ${owner.targetKilo || KILO_HOST_TARGET_VERSION}\nconfig: ${registrationEnabled ? (config.ok ? 'ok' : `error: ${config.error}`) : 'registration-disabled'} (${config.path})\nloadModel: auto-loaded from Kilo global plugin directory\n${projectSection}`,
+    code: current && projectOk && config.ok && apiCurrent ? 0 : 1,
+    stdout: `${current ? 'ok' : 'owned-by-other-install'}: ${file}\npluginRoot: ${owner.pluginRoot}\ntargetKilo: ${owner.targetKilo || KILO_HOST_TARGET_VERSION}\n${wrapperApiLine}config: ${registrationEnabled ? (config.ok ? 'ok' : `error: ${config.error}`) : 'registration-disabled'} (${config.path})\nloadModel: auto-loaded from Kilo global plugin directory\n${projectSection}`,
   };
 }
 

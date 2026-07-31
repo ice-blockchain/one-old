@@ -590,8 +590,8 @@ type VerifiedHookTrust = Extract<CodexHookTrustProbe, { evaluation: 'verified' }
 const healthyHookTrust = (over: Partial<VerifiedHookTrust> = {}): VerifiedHookTrust => ({
   evaluation: 'verified',
   source: 'codex-hooks-list',
-  expectedCount: 15,
-  counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
+  expectedCount: 16,
+  counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 16 },
   missingKeys: [],
   unexpectedKeys: [],
   hooks: CODEX_TRAFFIC_ONE_HOOK_KEYS.map((key) => ({
@@ -740,8 +740,8 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 14, trusted: 14, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 14 },
-        missingKeys: [CODEX_TRAFFIC_ONE_HOOK_KEYS[14] as string],
+        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
+        missingKeys: [CODEX_TRAFFIC_ONE_HOOK_KEYS[15] as string],
       }),
     }),
   });
@@ -751,7 +751,7 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 1, runnable: 14 },
+        counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 1, runnable: 15 },
       }),
     }),
   });
@@ -761,7 +761,7 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 15, trusted: 0, managed: 0, modified: 13, untrusted: 2, disabled: 0, runnable: 0 },
+        counts: { discovered: 16, trusted: 0, managed: 0, modified: 14, untrusted: 2, disabled: 0, runnable: 0 },
       }),
     }),
   });
@@ -771,7 +771,7 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 14 },
+        counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
       }),
     }),
   });

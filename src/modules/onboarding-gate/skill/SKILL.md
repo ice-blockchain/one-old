@@ -102,6 +102,72 @@ Only after that message is written, re-run the wait command in the FOREGROUND of
 When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.
 <!-- T1BLOCK:END cursor-wait-link-first -->
 
+<!-- T1BLOCK:BEGIN claude-wait-link-first -->
+This notice is NOT visible to the user: Claude Code renders hook output and blocked commands inside a collapsed tool block, so the setup link has still never appeared in the conversation.
+
+Check your own last VISIBLE chat message. Tool output, hook banners, and collapsed command blocks do not count — if the link is not in a message you wrote, the user has not seen it.
+
+Post this to the user in your NEXT CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself with a browser tool or an `open`/`xdg-open`/`start` command; the user clicks it:
+
+Open Traffic One setup: {{URL}}
+
+{{LOCAL_FALLBACK}}
+
+Only after that message is written, re-run the wait command in the FOREGROUND of the same turn (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open:
+
+{{WAIT_CMD}}
+
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.
+<!-- T1BLOCK:END claude-wait-link-first -->
+
+<!-- T1BLOCK:BEGIN claude-wait-background-denied -->
+This onboarding command was requested with run_in_background: true. A backgrounded run writes its output — including the setup link it prints — into a background task file the user never opens, and the turn ends with the user waiting on a link they were never shown.
+
+{{URL_LINE}}
+
+Post the setup link to the user in a CHAT MESSAGE — plain clickable text on its own line, not inside a code block — then re-run this SAME command in the FOREGROUND of this turn (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. Follow its printed instructions when it finishes.
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END claude-wait-background-denied -->
+
+<!-- T1BLOCK:BEGIN stop-setup-required -->
+You are ending your turn while Traffic One setup is still required, and the setup link has not been confirmed delivered — if the link is not in a message you wrote, the user has no way to continue setup.
+
+Post this setup link to the user NOW, in a chat message, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself; the user clicks it:
+
+Open Traffic One setup: {{URL}}
+
+{{LOCAL_FALLBACK}}
+
+Then run this wait command in the FOREGROUND (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. When it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request:
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END stop-setup-required -->
+
+<!-- T1BLOCK:BEGIN stop-setup-links-shown -->
+You are ending your turn while Traffic One setup is still in progress — the user has the setup wizard open in their browser right now (the setup server saw it load). Do NOT repost the link: a repeated link reads as "start over".
+
+Run this wait command NOW in the FOREGROUND (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. It returns immediately if setup is already complete; when it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request:
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END stop-setup-links-shown -->
+
+<!-- T1BLOCK:BEGIN codex-wait-link-first -->
+The setup link has not been posted to the user in this conversation yet, and this deny reason is the only channel that reaches you — so the user still has no link to click.
+
+Post this to the user in your NEXT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself; the user clicks it and completes setup in their browser:
+
+Open Traffic One setup: {{URL}}
+
+{{LOCAL_FALLBACK}}
+
+Only after that message is written, re-run the wait command in the foreground of the same turn and keep the turn open:
+
+{{WAIT_CMD}}
+
+When it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request.
+<!-- T1BLOCK:END codex-wait-link-first -->
+
 <!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
 Traffic One setup is still pending — building stays blocked until setup finishes.
 Post this setup link to the user in a chat message — the user opens it, not you: {{URL}}

@@ -27,6 +27,11 @@ const SUB_TO_EVENT: Readonly<Record<string, CanonicalEvent>> = {
   'before-tool-use': 'PreToolUse',
   'after-tool-use': 'PostToolUse',
   'user-prompt-submit': 'UserPromptSubmit',
+  // The wrapper's `event` hook forwards session.idle as this subcommand — the
+  // turn-end (Stop) surface. Keyed on the SUBCOMMAND deliberately: the payload
+  // event string 'session.idle' would hit normalizeEvent's 'session' catch-all
+  // and misparse as SessionStart.
+  'session-idle': 'Stop',
 };
 
 function subcommandOf(argv: readonly string[]): string {

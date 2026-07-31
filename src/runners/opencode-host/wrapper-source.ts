@@ -7,6 +7,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import {
   OPENCODE_HOOK_CHAT_MESSAGE,
+  OPENCODE_HOOK_EVENT,
   OPENCODE_HOOK_SYSTEM_TRANSFORM,
   OPENCODE_HOOK_TOOL_AFTER,
   OPENCODE_HOOK_TOOL_BEFORE,
@@ -296,8 +297,16 @@ function appendToolWarning(output, result) {
 }
 
 function appendPromptContext(output, result) {
-  const text = resultText(result);
-  if (!text) return;
+  if (!result || result.kind === 'noop') return;
+  // systemMessage is the USER-facing banner (it carries the clickable setup
+  // link) and context is the agent-facing body. The old firstString(context,
+  // systemMessage, …) let context SHADOW the banner, so the link the hook sent
+  // was silently dropped — compose BOTH, banner first.
+  const banner = firstString(result.systemMessage);
+  const body = firstString(result.context, result.reason);
+  const suffix = (banner ? '\\n\\n[Traffic One]\\n' + banner : '')
+    + (body ? '\\n\\n[Traffic One context]\\n' + body : '');
+  if (!suffix) return;
   const out = asObject(output);
   if (!Array.isArray(out.parts) || !out.parts.length) return;
   // OpenCode validates user-message parts against a strict schema (id/sessionID/
@@ -307,7 +316,7 @@ function appendPromptContext(output, result) {
   for (let i = out.parts.length - 1; i >= 0; i -= 1) {
     const part = out.parts[i];
     if (part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') {
-      part.text = part.text + '\\n\\n[Traffic One context]\\n' + text;
+      part.text = part.text + suffix;
       return;
     }
   }
@@ -344,6 +353,51 @@ async function chatMessage(input, output, pluginCtx) {
   appendPromptContext(output, result);
 }
 
+function sessionIdleFromEvent(input) {
+  const rec = asObject(input);
+  const event = asObject(rec.event || rec);
+  const type = firstString(event.type, rec.type);
+  // VERIFY(session.idle): the bus event OpenCode emits when a session's turn
+  // completes (1.15–1.17 vocabulary). Feature-detected end to end — a renamed
+  // or absent event simply never fires this surface.
+  if (type !== 'session.idle') return null;
+  const props = asObject(event.properties);
+  const info = asObject(props.info || event.info);
+  return {
+    sessionID: firstString(props.sessionID, event.sessionID, info.id, rec.sessionID),
+    directory: firstString(info.directory, props.directory, event.directory),
+  };
+}
+
+// Turn-end delivery: when a session goes idle with Traffic One setup still
+// pending, the hook runtime answers with a one-line systemMessage carrying the
+// setup link; surface it as a host toast. Deliberately NOT a session-prompt injection
+// (that adds a model turn — loop risk). Feature-detected: an SDK without
+// client.tui.showToast degrades to a logged no-op, never a crash.
+async function sessionIdle(input, pluginCtx) {
+  const idle = sessionIdleFromEvent(input);
+  if (!idle) return;
+  const result = runTrafficOne('session-idle', {
+    event: 'session.idle',
+    cwd: firstString(idle.directory, pluginCtx.directory, pluginCtx.worktree) || process.cwd(),
+    workspaceRoot: firstString(pluginCtx.directory, pluginCtx.worktree),
+    session_id: idle.sessionID,
+  });
+  const text = result && result.kind !== 'noop' ? firstString(result.systemMessage) : '';
+  if (!text) return;
+  const client = asObject(pluginCtx.client);
+  const tui = asObject(client.tui);
+  if (typeof tui.showToast === 'function') {
+    try {
+      await tui.showToast({ body: { message: text, variant: 'info' } });
+    } catch (err) {
+      debugLog('toast-fail', { err: String(err && err.message || err) });
+    }
+    return;
+  }
+  debugLog('stop-delivery-unavailable', { sessionID: idle.sessionID || null });
+}
+
 export const TrafficOne = async (ctx = {}) => {
   const pluginCtx = asObject(ctx);
   return {
@@ -351,6 +405,7 @@ export const TrafficOne = async (ctx = {}) => {
     ${jsString(OPENCODE_HOOK_TOOL_AFTER)}: (input, output) => afterTool(input, output, pluginCtx),
     ${jsString(OPENCODE_HOOK_SYSTEM_TRANSFORM)}: (input, output) => systemTransform(input, output, pluginCtx),
     ${jsString(OPENCODE_HOOK_CHAT_MESSAGE)}: (input, output) => chatMessage(input, output, pluginCtx),
+    ${jsString(OPENCODE_HOOK_EVENT)}: (input) => sessionIdle(input, pluginCtx),
   };
 };
 

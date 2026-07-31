@@ -112,3 +112,12 @@ test('opencode: context and noop use wrapper JSON protocol', async () => {
   assert.deepEqual(JSON.parse(await dispatch(opencode, handlers, inv('session-start', { cwd: '/x' }))), { kind: 'context', context: 'hello' });
   assert.deepEqual(JSON.parse(await dispatch(opencode, [{ id: 'n', event: 'SessionStart', priority: 0, run: () => noop() }], inv('session-start', {}))), { kind: 'noop' });
 });
+
+test('opencode: the session-idle subcommand maps to the Stop event (never the session catch-all)', () => {
+  const adapter = makeOpenCodeAdapter();
+  const parsed = adapter.parse({
+    stdin: JSON.stringify({ event: 'session.idle', cwd: '/tmp/p', session_id: 's' }),
+    argv: ['session-idle', '--host=opencode'],
+  });
+  assert.equal(parsed.event, 'Stop');
+});

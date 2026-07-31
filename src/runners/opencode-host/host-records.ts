@@ -16,6 +16,7 @@ import {
   OPENCODE_HOST_PACKAGE,
   OPENCODE_HOST_PROJECT_MARKER_REL,
   OPENCODE_HOST_TARGET_VERSION,
+  OPENCODE_HOST_WRAPPER_API,
 } from '../../config/opencode-host';
 import {
   buildActivationRecord,
@@ -37,6 +38,7 @@ const SPEC: WrapperRecordSpec = {
   targetField: 'targetOpenCode',
   targetVersion: OPENCODE_HOST_TARGET_VERSION,
   packageName: OPENCODE_HOST_PACKAGE,
+  wrapperApi: OPENCODE_HOST_WRAPPER_API,
 };
 
 function opencodeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -71,6 +73,7 @@ interface OwnerRecord {
   pluginRoot: string;
   targetOpenCode: string;
   packageName: string;
+  wrapperApi?: number;
   installedAt?: string;
 }
 

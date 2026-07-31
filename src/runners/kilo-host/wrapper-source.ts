@@ -446,14 +446,21 @@ function appendToolWarning(output, result) {
 }
 
 function appendPromptContext(output, result) {
-  const text = resultText(result);
-  if (!text) return;
+  if (!result || result.kind === 'noop') return;
+  // systemMessage is the USER-facing banner (it carries the clickable setup
+  // link) and context is the agent-facing body. The old firstString(context,
+  // systemMessage, …) let context SHADOW the banner — compose BOTH, banner first.
+  const banner = result.kind === 'deny' ? '' : firstString(result.systemMessage);
+  const body = result.kind === 'deny' ? denyMessage(result) : firstString(result.context, result.reason);
+  const suffix = (banner ? '\\n\\n[Traffic One]\\n' + banner : '')
+    + (body ? '\\n\\n[Traffic One context]\\n' + body : '');
+  if (!suffix) return;
   const out = asObject(output);
   if (!Array.isArray(out.parts) || !out.parts.length) return;
   for (let i = out.parts.length - 1; i >= 0; i -= 1) {
     const part = out.parts[i];
     if (part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') {
-      part.text = part.text + '\\n\\n[Traffic One context]\\n' + text;
+      part.text = part.text + suffix;
       return;
     }
   }
@@ -505,8 +512,54 @@ async function shellEnv(_input, output) {
   out.env = { ...asObject(out.env), TRAFFIC_ONE_PLUGIN_ROOT, TRAFFIC_ONE_HOST: 'kilo' };
 }
 
+function sessionIdleFromEvent(input) {
+  const rec = asObject(input);
+  const event = asObject(rec.event || rec);
+  const type = firstString(event.type, rec.type);
+  // VERIFY(session.idle): the bus event Kilo (tracking OpenCode's contract)
+  // emits when a session's turn completes. Feature-detected end to end — a
+  // renamed or absent event simply never fires this surface.
+  if (type !== 'session.idle') return null;
+  const props = asObject(event.properties);
+  const info = asObject(props.info || event.info);
+  return {
+    sessionID: firstString(props.sessionID, event.sessionID, info.id, rec.sessionID),
+    directory: firstString(info.directory, props.directory, event.directory),
+  };
+}
+
+// Turn-end delivery: when a session goes idle with Traffic One setup still
+// pending, the hook runtime answers with a one-line systemMessage carrying the
+// setup link; surface it as a host toast. Deliberately NOT a session-prompt injection
+// (that adds a model turn — loop risk). Feature-detected: an SDK without
+// client.tui.showToast degrades to a logged no-op, never a crash.
+async function sessionIdleDelivery(input, pluginCtx) {
+  const idle = sessionIdleFromEvent(input);
+  if (!idle) return;
+  const result = runTrafficOne('session-idle', {
+    event: 'session.idle',
+    cwd: firstString(idle.directory, rememberedSessionRoot(idle.sessionID), pluginCtx.directory, pluginCtx.worktree) || process.cwd(),
+    workspaceRoot: firstString(rememberedSessionRoot(idle.sessionID), pluginCtx.directory, pluginCtx.worktree),
+    session_id: idle.sessionID,
+  });
+  const text = result && result.kind !== 'noop' ? firstString(result.systemMessage) : '';
+  if (!text) return;
+  const client = asObject(pluginCtx.client);
+  const tui = asObject(client.tui);
+  if (typeof tui.showToast === 'function') {
+    try {
+      await tui.showToast({ body: { message: text, variant: 'info' } });
+    } catch (err) {
+      debugLog('toast-fail', { err: String(err && err.message || err) });
+    }
+    return;
+  }
+  debugLog('stop-delivery-unavailable', { sessionID: idle.sessionID || null });
+}
+
 async function event(input, pluginCtx) {
   recordSessionEvent(input, pluginCtx);
+  await sessionIdleDelivery(input, pluginCtx);
   const permission = permissionRequestFromEvent(input);
   if (!permission) return;
   const payload = normalizePermissionPayload('permission.asked', permission.props, {}, pluginCtx);

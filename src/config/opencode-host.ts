@@ -20,6 +20,13 @@ export const OPENCODE_HOOK_TOOL_BEFORE = 'tool.execute.before';
 export const OPENCODE_HOOK_TOOL_AFTER = 'tool.execute.after';
 export const OPENCODE_HOOK_CHAT_MESSAGE = 'chat.message';
 export const OPENCODE_HOOK_SYSTEM_TRANSFORM = 'experimental.chat.system.transform';
+export const OPENCODE_HOOK_EVENT = 'event';
+
+// Wrapper API generation stamped into the installed wrapper's owner record.
+// v2 (1.0.44): systemMessage banner composition in chat.message + the `event`
+// (session.idle) turn-end delivery. An installed wrapper without the stamp is
+// generation 1 — the doctor reports stale-wrapper until `install --yes` re-runs.
+export const OPENCODE_HOST_WRAPPER_API = 2;
 
 const OPENCODE_HOST_PROJECT_DIR = '.opencode';
 export const OPENCODE_HOST_AGENTS_DIR = 'agents';
