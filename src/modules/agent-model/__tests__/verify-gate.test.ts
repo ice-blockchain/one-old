@@ -143,6 +143,33 @@ test('marker helpers: verified-write convention', () => {
   }
 });
 
+// Parallel mode: implementer spawns stand down while the batch runs, but the
+// verifier gate is NOT flag-gated — reviewers/testers wait in both modes.
+test('openCode.parallelImplementers lifts the implementer spawn gate but never the verify gate', () => {
+  const dir = liveBatchProject('run-vg-par');
+  try {
+    touchPlanBatchHeartbeat(dir, 'run-vg-par');
+    const parallelState = { ...STATE, openCode: { enabled: true, parallelImplementers: true } };
+    const gc = (role: string): GateContext => ({
+      ...gateContext(dir, role, 'run-vg-par'),
+      state: parallelState as never,
+    });
+    // Implementer: with the flag ON, the plan-batch spawn deny stands down
+    // (the frontend has queued units and no attempt marker, so the per-role
+    // OpenCode-first deny still gets its single say — that budget is separate).
+    const frontend = openCodeFirstGates(gc('senior-frontend'));
+    if (frontend && frontend.kind === 'deny') {
+      assert.doesNotMatch(frontend.reason, /opencode-plan-batch-required|Step-0 plan batch/i, 'the batch spawn deny must stand down under the flag');
+    }
+    // Verifier: still gated on the live batch, flag or no flag.
+    const reviewer = openCodeFirstGates(gc('senior-reviewer'));
+    assert.ok(reviewer && reviewer.kind === 'deny');
+    if (reviewer && reviewer.kind === 'deny') assert.match(reviewer.reason, /verification gate/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // One row through the REAL spawn pipeline: with no live batch, a reviewer
 // spawn in the standard fixture flows exactly as before this gate existed.
 test('pipeline regression: a reviewer spawn without a live batch is not affected', () => {

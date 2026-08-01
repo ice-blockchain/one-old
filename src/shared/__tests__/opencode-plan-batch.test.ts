@@ -16,6 +16,7 @@ import {
   openCodePlanBatchComplete,
   pendingOpenCodePlanRoles,
   readOpenCodePlanBatchState,
+  reservedOpenCodeFiles,
   shouldBlockImplementerForPlanBatch,
   touchPlanBatchHeartbeat,
 } from '../opencode-roles';
@@ -231,6 +232,47 @@ test('a running batch with no sign of life stops blocking; every live signal sti
     // A batch that never STARTED (no batch.json) still blocks: Step-0 first.
     fs.rmSync(path.join(dir, '.traffic-one', 'runs', runId, 'opencode-plan-batch', 'batch.json'));
     assert.equal(shouldBlockImplementerForPlanBatch(dir, runId, state, 'claude'), true, 'an unstarted batch still gates implementers');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reservedOpenCodeFiles: only verifiably-running units reserve; stale/terminal/empty never do', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocreserve-'));
+  try {
+    const queue = buildOpenCodeQueue(dir, 'r-res', [
+      { role: 'frontend', files: 'src/features/news/**,src/i18n.ts', task: 't' },
+      { role: 'tester', files: 'e2e/', task: 't2' },
+    ]);
+    writeOpenCodeQueue(dir, queue);
+    // Fresh running unit → reserves its patterns.
+    recordOpenCodeUnitStatus(dir, 'r-res', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'running', action: 'running', touched: [],
+      allowedFiles: queue.units[0]!.allowedFiles,
+    });
+    // Terminal unit → reserves nothing.
+    recordOpenCodeUnitStatus(dir, 'r-res', {
+      id: queue.units[1]!.id, role: 'tester', status: 'delegated', action: 'delegated', touched: [],
+      allowedFiles: queue.units[1]!.allowedFiles,
+    });
+    const live = reservedOpenCodeFiles(dir, 'r-res');
+    assert.equal(live.length, 1);
+    assert.equal(live[0]!.role, 'frontend');
+    assert.ok(live[0]!.patterns.includes('src/i18n.ts'));
+
+    // Stale running (past the in-flight window, no latch) → gone.
+    recordOpenCodeUnitStatus(dir, 'r-res', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'running', action: 'running', touched: [],
+      allowedFiles: queue.units[0]!.allowedFiles,
+      updatedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+    assert.deepEqual(reservedOpenCodeFiles(dir, 'r-res'), [], 'a stale ledger never reserves');
+    // ...unless the pid-verified apply latch shows the executor mid-apply.
+    markOpenCodeApplyInProgress(dir, 'r-res', 'frontend');
+    assert.equal(reservedOpenCodeFiles(dir, 'r-res').length, 1);
+    clearOpenCodeApplyInProgress(dir, 'r-res', 'frontend');
+    // Empty allowlist reserves nothing, and no ledger at all is just empty.
+    assert.deepEqual(reservedOpenCodeFiles(dir, 'no-such-run'), []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

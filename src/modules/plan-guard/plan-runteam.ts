@@ -12,6 +12,7 @@ import {
   readRuntimeAssignments,
 } from '../../shared/architecture-contract';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
+import { reservedOpenCodeFiles } from '../../shared/opencode-roles';
 import { readActiveRunBootstrap, repairRunBootstrapForBoundChild } from '../../shared/run-bootstrap-policy';
 import {
   activeAgentRole,
@@ -328,6 +329,46 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
         return deny(block('run-team-fallback-taken',
           `Run-team enforcement gate: \`${target}\` is outside every Traffic One role's owned paths and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path.`,
           { TARGET: target, HOLDER: String(decision.holder) }));
+      }
+    }
+  }
+  return null;
+}
+
+// Verbatim mirror of the SKILL.md `opencode-reserved-files` block. The denied
+// actor is a CHILD implementer with no MCP tools — every remedy must be
+// child-executable (the pre-12co runteam prose that named an unavailable
+// remedy is the bug class to avoid).
+const OPENCODE_RESERVED_FILES_FALLBACK = 'traffic-one — OpenCode reservation: `{{TARGET}}` is reserved by the RUNNING delegated unit `{{UNIT_ID}}` ({{UNIT_ROLE}}) in run `{{RUN_ID}}` — a paid write here would collide with the diff that unit is about to apply. Reserved for it: {{FILES}}. Work on your NON-reserved files now and come back to this path last; if it stays reserved when everything else is done, record the path and unit id under Open questions in your digest — the ORCHESTRATOR (not you) waits for or cancels the delegation. Bounded: the reservation clears the moment unit `{{UNIT_ID}}` ends (or its executor dies).';
+
+/** Write-time reservation deny: while a delegated unit is verifiably RUNNING,
+ *  its allowedFiles are off-limits to every paid writer — in serial mode too
+ *  (a paid backend vs a running maintenance frontend unit is the same
+ *  collision). The OpenCode runner itself never passes through hooks (its
+ *  apply is an in-process git apply), so the only writer that must pass is
+ *  already invisible here. Bounded by unit terminality + the liveness window;
+ *  a stale ledger never denies. */
+export function openCodeReservedFilesViolation(args: {
+  projectRoot: string;
+  state: Rec;
+  targets: readonly string[];
+  block: Block;
+}): string | null {
+  if (args.targets.length === 0) return null;
+  const runId = typeof args.state.currentRunId === 'string' ? args.state.currentRunId.trim() : '';
+  if (!runId) return null;
+  const reservations = reservedOpenCodeFiles(args.projectRoot, runId);
+  if (reservations.length === 0) return null;
+  for (const target of args.targets) {
+    for (const unit of reservations) {
+      if (matchesScope(target, { include: unit.patterns, exclude: [] })) {
+        return args.block('opencode-reserved-files', OPENCODE_RESERVED_FILES_FALLBACK, {
+          TARGET: target,
+          UNIT_ID: unit.unitId,
+          UNIT_ROLE: unit.role,
+          RUN_ID: runId,
+          FILES: unit.patterns.join(', '),
+        });
       }
     }
   }

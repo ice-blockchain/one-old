@@ -39,7 +39,7 @@ import {
 import { profileHasWebUi } from '../../../shared/capabilities';
 import { planReadinessViolations } from '../plan-readiness';
 import { runIdPathViolation } from '../plan-runid';
-import { runTeamEnforcementViolation } from '../plan-runteam';
+import { openCodeReservedFilesViolation, runTeamEnforcementViolation } from '../plan-runteam';
 import { planStaticViolations, makePlanBlock } from '../plan-static';
 import { resolveToolScope } from '../../../shared/tool-scope';
 
@@ -292,6 +292,17 @@ export function planWriteGate(ctx: Ctx): HookResult {
     violations.push(block('registry-probe-gate',
       'Registry probe gate: do not query the npm registry (`npm view`/`show`/`info`/`outdated`, `pnpm view`, `yarn info`) to pick scaffold or dependency versions during new-project setup. Versions come from the active stack contract — install with the pinned ranges (`pnpm add <pkg>` resolves the latest matching minor/patch). Only an explicit user request for a newer major overrides a pin, recorded as an ADR in `.traffic-one/decisions/`.'));
   }
+  // Live OpenCode reservations: a verifiably RUNNING delegated unit's
+  // allowedFiles are off-limits to every paid writer (serial mode included).
+  // Feature + build-artifact targets only — state-dir writes (digests,
+  // fix-cycle notes) stay free, and a stale ledger never denies.
+  const reservation = openCodeReservedFilesViolation({
+    projectRoot,
+    state,
+    targets: runTeamTargetPaths,
+    block,
+  });
+  if (reservation) violations.push(reservation);
   const recordFallbackClaims = violations.length === 0;
   const runTeam = runTeamEnforcementViolation({
     host: ctx.host,

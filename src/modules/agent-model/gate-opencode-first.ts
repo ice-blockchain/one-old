@@ -10,6 +10,7 @@ import {
   markOpenCodeGateDenied,
   markVerifyGateDenied,
   openCodeGateDenied,
+  openCodeParallelImplementers,
   openCodePlanBatchComplete,
   openCodePlanRoleCompleted,
   openCodeRoleAttempted,
@@ -45,7 +46,12 @@ export function openCodeFirstGates(g: GateContext): HookResult | null {
   // per-role gate below only covers roles configured to run on OpenCode
   // (frontend/tester/quick-fix by default), which let backend start while
   // frontend was blocked. This batch gate catches both implementers first.
-  if (isPlanBatchGatedRole(role) && shouldBlockImplementerForPlanBatch(cwd, spawnRunId, state, ctx.host)) {
+  // Parallel mode (openCode.parallelImplementers, default OFF): implementers
+  // may SPAWN while the batch runs — the write-time reservation deny becomes
+  // the only serializer. The reviewer/tester verification gate below is NOT
+  // flag-gated: verifiers wait for terminality in both modes.
+  if (!openCodeParallelImplementers(state)
+    && isPlanBatchGatedRole(role) && shouldBlockImplementerForPlanBatch(cwd, spawnRunId, state, ctx.host)) {
     const pendingPlanRoles = pendingOpenCodePlanRoles(cwd, spawnRunId, state, ctx.host);
     if (pendingPlanRoles.length > 0) {
       const denyContext = buildOpenCodePlanBatchDenyContext(cwd, spawnRunId, pendingPlanRoles);

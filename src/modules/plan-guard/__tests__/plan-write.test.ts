@@ -1173,3 +1173,72 @@ test('registry probes are denied in new-project mode; installs and other modes s
     }
   });
 });
+
+// ── Live OpenCode file reservations ──────────────────────────────────────────
+// While a delegated unit is verifiably RUNNING, its allowedFiles are
+// write-denied for every paid writer; a terminal or stale unit never denies,
+// and state-dir writes (digests) stay free even under a repo-wide reservation.
+
+test('a paid write into a RUNNING unit reservation is denied; terminal/stale units release it', async () => {
+  const { buildOpenCodeQueue, writeOpenCodeQueue, recordOpenCodeUnitStatus } = await import('../../../shared/opencode-queue');
+  withMaterialized({ currentRunId: 'run-res' }, (cwd) => {
+    const queue = buildOpenCodeQueue(cwd, 'run-res', [
+      { role: 'frontend', files: 'src/features/news/**', task: 't' },
+    ]);
+    writeOpenCodeQueue(cwd, queue);
+    recordOpenCodeUnitStatus(cwd, 'run-res', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'running', action: 'running', touched: [],
+      allowedFiles: queue.units[0]!.allowedFiles,
+    });
+
+    // Glob reservation covers the subtree → deny names the unit and the target.
+    const denied = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: path.join(cwd, 'src/features/news/list.tsx'),
+      content: 'export const a = 1;\n',
+    }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.match(denied.reason, /OpenCode reservation/);
+      assert.ok(denied.reason.includes(queue.units[0]!.id));
+      assert.match(denied.reason, /Open questions/);
+    }
+
+    // Outside the reservation → no reservation deny (other gates may still speak,
+    // but never this one).
+    const outside = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: path.join(cwd, 'src/lib/util.ts'),
+      content: 'export const b = 2;\n',
+    }));
+    if (outside.kind === 'deny') assert.doesNotMatch(outside.reason, /OpenCode reservation/);
+
+    // State-dir write stays free even while the unit runs (digests are not
+    // feature targets).
+    const digest = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cat > .traffic-one/digests/run-res/frontend.md <<\'EOF\'\nverdict: IMPLEMENTED\nEOF',
+    }));
+    if (digest.kind === 'deny') assert.doesNotMatch(digest.reason, /OpenCode reservation/);
+
+    // Terminal unit releases the reservation.
+    recordOpenCodeUnitStatus(cwd, 'run-res', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'delegated', action: 'delegated', touched: [],
+      allowedFiles: queue.units[0]!.allowedFiles,
+    });
+    const released = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: path.join(cwd, 'src/features/news/list.tsx'),
+      content: 'export const a = 1;\n',
+    }));
+    if (released.kind === 'deny') assert.doesNotMatch(released.reason, /OpenCode reservation/);
+
+    // Stale running (dead executor) never denies either.
+    recordOpenCodeUnitStatus(cwd, 'run-res', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'running', action: 'running', touched: [],
+      allowedFiles: queue.units[0]!.allowedFiles,
+      updatedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+    const stale = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: path.join(cwd, 'src/features/news/list.tsx'),
+      content: 'export const a = 1;\n',
+    }));
+    if (stale.kind === 'deny') assert.doesNotMatch(stale.reason, /OpenCode reservation/);
+  });
+});

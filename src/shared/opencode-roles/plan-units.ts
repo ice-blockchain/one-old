@@ -51,6 +51,13 @@ export function openCodeEnabled(state: unknown): boolean {
   return obj(obj(state)?.openCode)?.enabled === true;
 }
 
+/** Opt-in (default OFF): let paid implementers SPAWN while the Step-0 batch is
+ *  still running — write-time file reservations become the only serializer.
+ *  Flip only after an e2e validates the reservations live. */
+export function openCodeParallelImplementers(state: unknown): boolean {
+  return obj(obj(state)?.openCode)?.parallelImplementers === true;
+}
+
 // Should this role run on OpenCode rather than a paid subagent? Delegation is a
 // paid-host feature: paid hosts may offload to OpenCode, but OpenCode/Kilo hosts
 // must not self-delegate or spawn the worker recursively.

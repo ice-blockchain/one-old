@@ -9,6 +9,7 @@ export {
   OPENCODE_PLAN_MIN_UNITS,
   openCodeDelegateRoles,
   openCodeEnabled,
+  openCodeParallelImplementers,
   parsePlanDelegationBlock,
   parsePlanDelegationUnits,
   planDelegationQueueRoles,
@@ -30,9 +31,11 @@ export {
   markOpenCodePlanBatchTerminal,
   openCodePlanBatchComplete,
   readOpenCodePlanBatchState,
+  reservedOpenCodeFiles,
   shouldBlockImplementerForPlanBatch,
   touchPlanBatchHeartbeat,
   unitLivenessWindowMs,
+  type OpenCodeReservation,
 } from './batch-state';
 
 export {

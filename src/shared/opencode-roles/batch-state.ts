@@ -101,6 +101,45 @@ export function batchLooksLive(cwd: string, runId: string, nowMs: number = Date.
     || openCodeApplyInProgress(cwd, runId, nowMs);
 }
 
+// ── Live file reservations ───────────────────────────────────────────────────
+
+export interface OpenCodeReservation {
+  unitId: string;
+  role: string;
+  patterns: string[];
+}
+
+/** The allowedFiles of every unit that is verifiably EXECUTING right now:
+ *  ledger status `running` with a fresh `updatedAt` (inside the sanctioned
+ *  in-flight window — the runner is spawnSync and cannot refresh mid-attempt;
+ *  the MCP watchdog touches it every tick), or a pid-verified apply latch for
+ *  the run. Derived, never a sidecar: the unit ledger is already the single
+ *  source of execution state. Units with an empty allowlist reserve nothing
+ *  (fail-open — there is nothing verifiable to reserve). */
+export function reservedOpenCodeFiles(cwd: string, runId: string, nowMs: number = Date.now()): OpenCodeReservation[] {
+  if (!runId) return [];
+  try {
+    const windowMs = unitLivenessWindowMs();
+    const latchLive = openCodeApplyInProgress(cwd, runId, nowMs);
+    return readOpenCodeUnitStatuses(cwd, runId)
+      .filter((entry) => entry.status === 'running'
+        && Array.isArray(entry.allowedFiles)
+        && entry.allowedFiles.length > 0)
+      .filter((entry) => {
+        if (latchLive) return true;
+        const at = Date.parse(entry.updatedAt || '');
+        return Number.isFinite(at) && nowMs - at < windowMs;
+      })
+      .map((entry) => ({
+        unitId: entry.id,
+        role: entry.role,
+        patterns: (entry.allowedFiles as string[]).filter(Boolean),
+      }));
+  } catch {
+    return []; // stale/no ledger never blocks a paid writer
+  }
+}
+
 // Roles whose per-role completion MARKER exists on disk. The markers are the
 // durable record; `rolesCompleted` in batch.json is only a mirror of them, and
 // that mirror was written by the terminal writer BEFORE the per-role loop ran —

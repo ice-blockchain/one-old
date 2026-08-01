@@ -253,6 +253,10 @@ Run-team enforcement gate: this project was onboarded with `team.mode="subagents
 Run-team enforcement gate: `{{TARGET}}` is in `{{OWNER}}`'s assigned scope for this run, not `{{ROLE}}`'s. Each subagent writes only within its runtime-compiled assignment in `.traffic-one/runs/<runId>/assignments.json`. Let the owning role write the target, or split the patch along the existing compiled work units.
 <!-- T1BLOCK:END run-team-scope-conflict -->
 
+<!-- T1BLOCK:BEGIN opencode-reserved-files -->
+traffic-one — OpenCode reservation: `{{TARGET}}` is reserved by the RUNNING delegated unit `{{UNIT_ID}}` ({{UNIT_ROLE}}) in run `{{RUN_ID}}` — a paid write here would collide with the diff that unit is about to apply. Reserved for it: {{FILES}}. Work on your NON-reserved files now and come back to this path last; if it stays reserved when everything else is done, record the path and unit id under Open questions in your digest — the ORCHESTRATOR (not you) waits for or cancels the delegation. Bounded: the reservation clears the moment unit `{{UNIT_ID}}` ends (or its executor dies).
+<!-- T1BLOCK:END opencode-reserved-files -->
+
 <!-- T1BLOCK:BEGIN run-team-runtime-allowlist-gap -->
 Run-team enforcement gate: STRUCT_ASSIGNMENT_ALLOWLIST_GAP — `{{TARGET}}` is outside `{{ROLE}}`'s immutable runtime-owned WorkUnitContract. No dynamic claim is allowed for a compiled run. Do NOT keep retrying this write, and do not move it to a path you do own. Report it in your digest instead: name `{{TARGET}}`, say it is in no role's allowlist, and set your verdict to `BLOCKED` (in a fix cycle, list it under `FIXES_FAILING` with this reason — that is the whole available action there, and it is a complete answer). Replanning ArchitectureInputV1 to compile a home for the path happens between runs, by the architect, never from inside this session.
 <!-- T1BLOCK:END run-team-runtime-allowlist-gap -->
