@@ -4,6 +4,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { readJson } from '../fsjson';
+import { removeOriginHeadRef } from '../git-init';
 import { isMaintenanceTerminal, maintenanceOutcome } from '../maintenance/terminal';
 import { withProjectStateLock } from '../state/project-state-lock';
 import { strictRunVerificationEvidence } from '../strict-verification-evidence';
@@ -148,6 +149,13 @@ export function reconcileRunSettlement(projectRoot: string, runId: string): RunS
         status = 'active';
       }
 
+      // A run that has stopped moving no longer needs the spawn-survival ref
+      // `ensureRunBootstrap` created, so the user's repo is left as it was found.
+      // Ownership is proven by the absence of a real `origin` remote — once one
+      // exists the ref is git's and `removeOriginHeadRef` returns untouched.
+      if (status === 'verified' || status === 'failed' || status === 'blocked') {
+        removeOriginHeadRef(projectRoot);
+      }
       return writeRunSettlement(projectRoot, runId, {
         status,
         ...(reason ? { reason } : {}),

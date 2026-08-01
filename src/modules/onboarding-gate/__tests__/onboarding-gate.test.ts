@@ -1445,6 +1445,68 @@ test('Codex wait proceeds with no deny once the assistant has posted the link in
   }
 });
 
+// Cursor twins of the Claude/Codex rows above. Cursor was the host left with NO
+// evidence path on either the wait gate or Stop — it reads its own transcript
+// from `~/.cursor/projects/<slug-of-cwd>/agent-transcripts/<id>/<id>.jsonl`, and
+// the slug is derived from the cwd, so dropping `cwd` from the evidence input
+// silently makes every Cursor session look like the link was never posted.
+function withCursorTranscript(
+  cwd: string,
+  sessionId: string,
+  line: string,
+  fn: () => void,
+): void {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursorproj-')));
+  const prev = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+  process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = root;
+  try {
+    const slug = path.resolve(fs.realpathSync(cwd))
+      .replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
+      .replace(/[/:\s]+/g, '-');
+    const dir = path.join(root, slug, 'agent-transcripts', sessionId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), `${line}\n`, 'utf8');
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = prev;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const CURSOR_ASSISTANT_POST = JSON.stringify({
+  role: 'assistant',
+  message: { content: [{ type: 'text', text: `Complete the Traffic One setup here:\n\n${DASH_URL}` }] },
+});
+// The dominant real shape, and the one the unit fixture only half-covered: the
+// URL reaches the transcript inside a TOOL CALL (`open '<url>'`), which the user
+// never sees. That must not stand the deny down.
+const CURSOR_TOOL_USE_ONLY = JSON.stringify({
+  role: 'assistant',
+  message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `open '${DASH_URL}'` } }] },
+});
+
+test('Cursor wait proceeds with no deny once the assistant has posted the link', () => {
+  withProject(null, (cwd) => {
+    withCursorTranscript(cwd, 'cursor-main', CURSOR_ASSISTANT_POST, () => {
+      const wait = onboardingWaitCommand(cwd, 'cursor');
+      const r = onboardingGate(ctxHost('cursor', cwd, 'Bash', 'shell', { command: wait }));
+      assert.equal(r.kind, 'noop', 'a posted link is delivery evidence on Cursor too');
+    });
+  });
+});
+
+test('Cursor wait deny still fires when the link exists ONLY inside a tool call', () => {
+  withProject(null, (cwd) => {
+    withCursorTranscript(cwd, 'cursor-main', CURSOR_TOOL_USE_ONLY, () => {
+      const wait = onboardingWaitCommand(cwd, 'cursor');
+      const r = onboardingGate(ctxHost('cursor', cwd, 'Bash', 'shell', { command: wait }));
+      assert.equal(r.kind, 'deny', 'an `open` call is not the user seeing the link');
+      if (r.kind === 'deny') assert.match(r.reason, /NOT visible to the user/);
+    });
+  });
+});
+
 test('Stop with the link already posted keeps the turn on the waiter WITHOUT reposting', () => {
   withProject(null, (cwd) => {
     const transcript = path.join(cwd, 'session.jsonl');

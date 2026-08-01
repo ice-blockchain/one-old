@@ -31,6 +31,7 @@ import { writeCursorAgentFiles } from './cursor-agents';
 import { writeCopilotAgentFiles } from './copilot-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
+import { writeCodexAgentFiles } from './codex-agents';
 import { writeKiloAgentFiles } from './kilo-agents';
 import { cleanupLegacyOpenCodeProjectAssets, refreshOpenCodeGlobalAgentFiles } from './opencode-assets';
 import { preserveManualRootContext, renderAgentsWithLocalContext, writeRootAgents, writeRootClaude } from './render-agents';
@@ -153,6 +154,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, capabilityState);
   if (detectHost() === 'copilot') written += writeCopilotAgentFiles(cwd, capabilityState);
   if (detectHost() === 'kilo') written += writeKiloAgentFiles(cwd, capabilityState);
+  if (detectHost() === 'codex') written += writeCodexAgentFiles(cwd, capabilityState);
   // Legacy project-local OpenCode assets are shared, so every host removes only
   // Traffic One-generated copies. Model-pinned replacements are user-local and
   // are written exclusively by the active OpenCode host.

@@ -137,6 +137,35 @@ test('plugin authoring cwd does not exempt an absolute project file from the pla
   });
 });
 
+// A gate is a pure function of on-disk state, so an unchanged retry draws the
+// same refusal forever with nothing counting. Measured in 17cl: 25 denies, 15 of
+// them repeats of four (file, reason) pairs, one refused seven times across 25
+// minutes before a replan resolved a one-line fix the deny text had already
+// named. The escalation is appended in `deny(...)` AFTER the violations are
+// assembled — which is why it can never appear in the deny journal, and why this
+// has to be asserted on the returned reason.
+test('an identical refusal escalates on the third attempt, and not before', () => {
+  withMaterialized({ currentRunId: 'R', team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const write = (): ReturnType<typeof planWriteGate> => planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/main.tsx',
+      content: 'export function App(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
+    }));
+    for (const attempt of [1, 2]) {
+      const early = write();
+      assert.equal(early.kind, 'deny');
+      if (early.kind === 'deny') {
+        assert.doesNotMatch(early.reason, /STOP RETRYING/, `attempt ${attempt} must read exactly as before`);
+      }
+    }
+    const escalated = write();
+    assert.equal(escalated.kind, 'deny');
+    if (escalated.kind === 'deny') {
+      assert.match(escalated.reason, /STOP RETRYING/);
+      assert.match(escalated.reason, /BLOCKED/, 'the escalation must name the honest exit');
+    }
+  });
+});
+
 test('OpenCode write (camelCase filePath) of a root Vite file is gated — was blind on opencode', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     // OpenCode's write tool sends `filePath` (camelCase); the snake_case-only read

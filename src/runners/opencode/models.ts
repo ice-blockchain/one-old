@@ -48,7 +48,22 @@ export function resolveModels(state: Rec, opts: DelegateOpts): { models: string[
 // Non-JSON lines (e.g. a first-run DB-migration banner) are ignored. The error
 // name AND message are both kept: classification needs the raw class name
 // (e.g. "ProviderModelNotFoundError") when the message is empty.
-export function parseStream(stdout: string): { errored: boolean; errName: string; errorMsg: string; summary: string } {
+export function parseStream(stdout: string): {
+  errored: boolean;
+  errName: string;
+  errorMsg: string;
+  summary: string;
+  /**
+   * The model's LAST text part — its concluding statement.
+   *
+   * `summary` is every part joined in stream order, so head-slicing it (which is
+   * what the digest does) yields the model thinking out loud rather than what it
+   * did: reviewers were handed "Let me verify eslint-plugin-i18next behavior in a
+   * temp sandbox…" and "Now I have everything I need. Writing the file:" as the
+   * record of a delegated unit. The last part is where models put the result.
+   */
+  lastText: string;
+} {
   let errored = false;
   let errName = '';
   let errorMsg = '';
@@ -71,7 +86,14 @@ export function parseStream(stdout: string): { errored: boolean; errName: string
       if (txt) texts.push(txt);
     }
   }
-  return { errored, errName, errorMsg, summary: texts.join(' ').replace(/\s+/g, ' ').trim() };
+  const flat = (value: string): string => value.replace(/\s+/g, ' ').trim();
+  return {
+    errored,
+    errName,
+    errorMsg,
+    summary: flat(texts.join(' ')),
+    lastText: flat(texts[texts.length - 1] || ''),
+  };
 }
 
 // Decide whether the NEXT free model in the chain should be tried after an

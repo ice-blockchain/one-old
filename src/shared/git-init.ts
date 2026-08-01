@@ -16,6 +16,65 @@ function git(root: string, args: readonly string[]): { code: number; stdout: str
   return { code: r.code, stdout: r.stdout || '' };
 }
 
+/** True iff this repo has no `origin` remote configured. */
+function hasNoOriginRemote(root: string): boolean {
+  return !git(root, ['remote']).stdout.split('\n').some((line) => line.trim() === 'origin');
+}
+
+/**
+ * Give a remote-less repo a local `refs/remotes/origin/HEAD`.
+ *
+ * Some hosts inject a startup preamble into every spawned subagent that shells
+ * out to `git diff --name-only origin/HEAD...` — Claude's built-in
+ * `security-review` skill, which collides by name with the one this plugin ships
+ * and which the reviewer role lists. On a Traffic One scaffold there is a repo
+ * and a commit but never a remote, so that command exits non-zero and the host
+ * kills the spawn BEFORE the agent produces a transcript: observed 18cl, where
+ * the reviewer died twice and the run finished through a generic-worker
+ * fallback. The failure is deterministic on every greenfield run.
+ *
+ * The orchestrator skill has carried a manual recovery recipe for this since
+ * 1.0.4x, and 18cl is the measurement that a recipe is the wrong shape: the
+ * agent read `fatal: ambiguous argument 'origin/HEAD...'` as "not a git
+ * repository", concluded the recipe did not apply, and worked around it. A
+ * condition this deterministic belongs to the runtime, not to a paragraph the
+ * model has to match against an error string.
+ *
+ * Strictly guarded: a repo with a REAL `origin` is git's to manage and is never
+ * touched, an existing ref is never overwritten, and every failure is swallowed.
+ * Returns true iff it wrote the ref.
+ */
+export function ensureOriginHeadRef(root: string): boolean {
+  try {
+    if (!root || isNonProjectRoot(root)) return false;
+    if (git(root, ['rev-parse', '--is-inside-work-tree']).stdout.trim() !== 'true') return false;
+    if (!hasNoOriginRemote(root)) return false;
+    if (git(root, ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/HEAD']).code === 0) return false;
+    const head = git(root, ['rev-parse', '--verify', '--quiet', 'HEAD']).stdout.trim();
+    if (!head) return false;
+    return git(root, ['update-ref', 'refs/remotes/origin/HEAD', head]).code === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove the ref `ensureOriginHeadRef` created, so a settled run leaves the
+ * user's repo as it found it. The no-remote test is the ownership proof: once a
+ * real `origin` exists the ref is git's, and this returns without touching it.
+ */
+export function removeOriginHeadRef(root: string): boolean {
+  try {
+    if (!root || isNonProjectRoot(root)) return false;
+    if (git(root, ['rev-parse', '--is-inside-work-tree']).stdout.trim() !== 'true') return false;
+    if (!hasNoOriginRemote(root)) return false;
+    if (git(root, ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/HEAD']).code !== 0) return false;
+    return git(root, ['update-ref', '-d', 'refs/remotes/origin/HEAD']).code === 0;
+  } catch {
+    return false;
+  }
+}
+
 // Returns true iff it created the initial commit. Best-effort — never throws.
 // opts.initIfNeeded: when the path is NOT a git work tree yet, `git init` it first.
 // Reserved for the new-project scaffold path (the user consented to Traffic One

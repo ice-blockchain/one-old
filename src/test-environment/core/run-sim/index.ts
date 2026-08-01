@@ -126,6 +126,53 @@ function claimSnapshot(cwd: string, runId: string, role: string): {
 }
 
 
+// A dependency-free stand-in for the project's formatter.
+//
+// It is NOT prettier and does not pretend to be: it verifies two properties the
+// authored sim sources genuinely hold — no trailing whitespace on any line, and
+// a final newline — over the same tree `prettier --check .` would walk. That is
+// enough to prove the thing this tier must prove about `stack-format`: that the
+// check is required, executed for real, its result reaches report-v2.json, and a
+// red format:check fails QA validation. Proving prettier's own correctness is
+// prettier's job, not this tier's.
+function installSimFormatter(cwd: string): void {
+  const binDir = path.join(cwd, 'node_modules', '.bin');
+  const bin = path.join(binDir, 'prettier');
+  if (fs.existsSync(bin)) return;
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(bin, [
+    '#!/usr/bin/env node',
+    "'use strict';",
+    "const fs = require('fs');",
+    "const path = require('path');",
+    "const SKIP = new Set(['node_modules', 'dist', 'build', 'coverage', 'out', '.next', '.turbo', '.vite', '.traffic-one', '.git']);",
+    "const CHECKABLE = /\\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|json|md|ya?ml)$/i;",
+    'const offenders = [];',
+    'function walk(dir) {',
+    '  let entries = [];',
+    '  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }',
+    '  for (const entry of entries) {',
+    '    const full = path.join(dir, entry.name);',
+    '    if (entry.isDirectory()) { if (!SKIP.has(entry.name)) walk(full); continue; }',
+    '    if (!entry.isFile() || !CHECKABLE.test(entry.name)) continue;',
+    '    let text = "";',
+    '    try { text = fs.readFileSync(full, "utf8"); } catch { continue; }',
+    '    if (!text) continue;',
+    '    const trailing = text.split("\\n").some((line) => /[ \\t]+$/.test(line));',
+    '    if (trailing || !text.endsWith("\\n")) offenders.push(path.relative(process.cwd(), full));',
+    '  }',
+    '}',
+    "walk(process.cwd());",
+    'if (offenders.length > 0) {',
+    '  process.stdout.write("[warn] Code style issues found in:\\n" + offenders.join("\\n") + "\\n");',
+    '  process.exit(1);',
+    '}',
+    'process.stdout.write("All matched files use Prettier code style!\\n");',
+    '',
+  ].join('\n'), 'utf8');
+  fs.chmodSync(bin, 0o755);
+}
+
 // --- negative rows ---------------------------------------------------------
 // The suite proves gates ACCEPT correct work across every shape. These prove
 // they still REJECT the specific defects they exist for. Without them a gate
@@ -161,6 +208,24 @@ function negativeRows(cwd: string, runId: string, implement: ImplementContext): 
       content: '// not mine to write\n',
       expectDeny: true,
       denyMatch: 'Run-team enforcement gate',
+    });
+  }
+
+  // Collapsed source into a legitimately OWNED frontend output. The gate must
+  // deny on content alone: it used to wave this through whenever the project's
+  // prettier happened to be reachable, which made the same bytes legal after
+  // `npm install` and illegal before, and landed the unformatted original on
+  // disk either way. Without a negative row the gate can go quiet and every
+  // other assertion still passes.
+  const frontendOutput = implement.outputsFor('senior-frontend')
+    .find((rel) => /\.(tsx|jsx|vue)$/.test(rel));
+  if (frontendOutput) {
+    const packed = `export function Collapsed() { ${'const a = 1; const b = 2; const c = 3; '.repeat(6)}return null; }`;
+    rows.push({
+      path: frontendOutput,
+      content: `${packed}\n`,
+      expectDeny: true,
+      denyMatch: 'STRUCT_COLLAPSED_LINE',
     });
   }
 
@@ -299,7 +364,7 @@ export async function runSimulatedRun(
 
   // --- Phase 2: implementers ----------------------------------------------
   // Every path comes from the published assignments; nothing here is literal.
-  const implement = buildImplementContext(runId, architecture, assignments);
+  const implement = buildImplementContext(runId, architecture, assignments, cwd);
   // Backend first: the frontend's IMPLEMENTED gate runs the COMPLETE structure
   // scan, which requires every planned module to exist — including the service
   // module the backend owns. A run where the frontend lands last is the normal
@@ -403,6 +468,14 @@ export async function runSimulatedRun(
   // build/test/lint. Nothing is fabricated: if the toolchain is missing, the
   // runner records `not-applicable` with the reason and the assertion reports
   // an environment gap rather than a pass.
+  // `stack-format` is a required check on every impact level, and the seeded
+  // manifest declares `format:check`. Without a resolvable formatter the runner
+  // honestly reports "declared but its binary is absent" and this tier reports an
+  // environment gap — correct, but it would mean the tier proves nothing about
+  // the check it just started requiring. So give the simulated project a REAL
+  // formatter: not prettier, but a genuine checker of two properties the authored
+  // sources actually hold. The negative row plants a violation and requires red.
+  installSimFormatter(cwd);
   if (spec.qa.mode === 'stack') {
     const qa = await runStackEvidence(cwd, runId);
     transcript.facts.qaExitCode = qa.code;
@@ -552,7 +625,7 @@ async function runMaintenancePass(
   transcript.facts.phase2UiImpact = verification.uiImpact;
   transcript.facts.phase2ChangedRoutes = verification.changedRoutes;
 
-  const implement = buildImplementContext(runId, architecture, assignments);
+  const implement = buildImplementContext(runId, architecture, assignments, cwd);
   const implementers = ['senior-backend', 'senior-frontend']
     .filter((role) => implement.outputsFor(role).length > 0);
   const authored = new Map<string, string[]>();

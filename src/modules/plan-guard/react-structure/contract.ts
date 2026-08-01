@@ -507,13 +507,31 @@ function uiSystemFindings(
         !normalizeRel(analysis.file).startsWith(`${uiSystem.sharedRoot}/`)
         && analysis.components.some((component) => component.name === componentName)
       ));
+      // Two different claims wore one id, and only one of them is a fact.
+      //
+      // HAND-ROLLED is verifiable and stays blocking: a duplicate of a
+      // catalog primitive exists on disk, and the remedy — import it from
+      // @app/ui — is always available and always correct.
+      //
+      // NOT-CONSUMED is a product judgment: whether every primitive the
+      // ARCHITECT selected ought to be used. The role cannot resolve it — the
+      // catalog is immutable after PLAN_READY, deleting the file trades this
+      // finding for STRUCT_UI_SYSTEM_MISSING, and the gate's own passing
+      // fixture is a `<Name>Demo.tsx`. Both times it was enforced, the answer
+      // was faked usage: 14co built a hidden primitive preview in App.tsx, and
+      // when the reviewer rejected it the next cycle built another one; 15co
+      // satisfied it with inert wrappers that had no focus trap, Escape, or
+      // keyboard handling. The reviewer caught both — because judging whether a
+      // component is really used is review work, not scanning work. So it now
+      // rides the batched quality ledger to that reviewer instead of blocking a
+      // role that has no honest way to clear it.
       findings.push({
         id: 'STRUCT_UI_PRIMITIVE_NOT_SHARED',
-        severity,
+        severity: handRolled ? severity : 'warning',
         file: handRolled?.file || primitivePath,
         message: handRolled
           ? `Component \`${componentName}\` hand-rolls the catalog-selected \`${primitive}\` primitive. Import it from @app/ui instead.`
-          : `Catalog-selected primitive \`${primitive}\` is not consumed through the @app/ui package API.`,
+          : `Catalog-selected primitive \`${primitive}\` is installed and exported but no surface imports it from @app/ui. Either compose it into a real surface, or say in your digest that the plan selected a primitive this product does not need — do NOT add a preview/demo block to satisfy the scan.`,
       });
     }
   }

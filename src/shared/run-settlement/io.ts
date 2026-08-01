@@ -4,6 +4,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+
+import { SUBAGENT_STALE_MS } from '../../config/state';
+import { timestampAgeMs } from '../state/run-agent/session-identity';
 import { isMaintenanceTerminal, maintenanceOutcome } from '../maintenance/terminal';
 import { paidFallbackCompletionFromMaintenance } from '../maintenance/fallback-proof';
 import { pluginVersion } from '../../config/plugin-identity';
@@ -102,7 +105,30 @@ export function activeRunClaimScan(projectRoot: string, runId: string): ActiveRu
       const rec = readJson<Rec | null>(absolute, null);
       if (!rec) continue;
       const status = typeof rec.status === 'string' ? rec.status : '';
-      if (status === 'pending' || status === 'claimed' || status === 'active' || status === 'running') count += 1;
+      if (status !== 'pending' && status !== 'claimed' && status !== 'active' && status !== 'running') continue;
+      // A claim only vetoes settlement while it represents a LIVE agent. Nothing
+      // aged one out here, while the rest of the codebase has used
+      // SUBAGENT_STALE_MS for exactly this judgement for a long time — so an
+      // abandoned run kept `activeClaims > 0` forever, and because a later
+      // `verified` is downgraded back to `validating` while that is true, the
+      // held claims actively prevented the run from ever certifying. Observed
+      // 15cl: `validating` with 4 claims hours after the session ended, poisoning
+      // the project for every later run.
+      //
+      // Safe to relax because `activeClaims` is a VETO layered on top of real
+      // evidence: settleTerminalRunLedger still demands reviewer APPROVED, tester
+      // TESTS_GREEN and QA evidence, so dropping a stale veto can unblock a run
+      // that already earned its verdict but can never manufacture one.
+      const touchedAt = [rec.updatedAt, rec.claimedAt, rec.createdAt]
+        .find((value) => typeof value === 'string' && value);
+      let ageMs = timestampAgeMs(touchedAt);
+      if (!Number.isFinite(ageMs)) {
+        // No usable timestamp: fall back to the record's own mtime rather than
+        // assuming either liveness or staleness.
+        try { ageMs = Date.now() - fs.statSync(absolute).mtimeMs; } catch { ageMs = 0; }
+      }
+      if (Number.isFinite(ageMs) && ageMs > SUBAGENT_STALE_MS) continue;
+      count += 1;
     }
   };
   walk(dir);

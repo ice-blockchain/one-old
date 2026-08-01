@@ -11,6 +11,7 @@ import {
   type WorkUnitContractV1,
 } from '../architecture-contract';
 import { readJson, writeJson } from '../fsjson';
+import { ensureOriginHeadRef } from '../git-init';
 import {
   ensureRunHostCapability,
   RUN_HOST_CAPABILITY_RELATIVE_FILE,
@@ -49,6 +50,12 @@ export function ensureRunBootstrap(
   options: EnsureRunBootstrapOptions,
 ): RunBootstrapEnvelopeV2 | null {
   if (!runId.trim() || !role.trim() || !options.modelPolicyId.trim()) return null;
+  // Before ANY child spawns. Hosts inject a startup preamble that shells out to
+  // `git diff … origin/HEAD…`, which exits non-zero on a remote-less scaffold and
+  // kills the spawn before the agent produces a transcript (18cl: the reviewer
+  // died twice). Idempotent and strictly guarded — a repo with a real `origin`
+  // is never touched — so the repeat calls per role cost one `git rev-parse`.
+  ensureOriginHeadRef(cwd);
   let snapshot;
   try {
     snapshot = ensureArchitectureRunSnapshot(cwd, runId, state);

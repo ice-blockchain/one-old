@@ -36,32 +36,16 @@ export function resolveProjectPrettier(projectRoot: string, relFile: string): st
   }
 }
 
-/**
- * Format proposed WRITE CONTENT (not yet on disk) through the resolved
- * prettier via `--stdin-filepath`, so the project's own config applies to the
- * exact target path. Returns the formatted text, or null when the formatter
- * errors/times out — the caller treats null as "auto-fix failed" and denies.
- */
-export function formatTextWithPrettier(
-  bin: string,
-  projectRoot: string,
-  relFile: string,
-  text: string,
-): string | null {
-  try {
-    const run = spawnTool(bin, ['--stdin-filepath', path.resolve(projectRoot, relFile)], {
-      cwd: projectRoot,
-      encoding: 'utf8',
-      input: text,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: FORMAT_TIMEOUT_MS,
-    });
-    if (run.error || run.status !== 0 || typeof run.stdout !== 'string' || !run.stdout) return null;
-    return run.stdout;
-  } catch {
-    return null;
-  }
-}
+// There is deliberately NO "format the proposed write content" helper here.
+// One existed and the write gate used it to wave `STRUCT_COLLAPSED_LINE`
+// through: it formatted the pending text in memory, used the result only as a
+// predicate, discarded it, and let the ORIGINAL collapsed content land. Two
+// things make that unfixable in place — the gate has no content-substitution
+// channel (`updatedToolInput` is Claude-only, so Codex could never use it), and
+// resolution below depends on install state, which would make the same
+// byte-identical write denied pre-install and allowed post-install. Collapse is
+// now an unconditional deny at write time; formatting happens on disk, after the
+// file exists, through `formatFileWithPrettier`.
 
 /** `prettier --write` on a file already on disk. True only on a clean exit. */
 export function formatFileWithPrettier(

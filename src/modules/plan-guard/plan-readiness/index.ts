@@ -61,12 +61,7 @@ import {
   statePath,
 } from '../../../shared/state';
 import { appendQualityFindings } from '../../../shared/state/quality-findings';
-import { collapsedLineNumber } from '../../../shared/collapsed-source';
 import { seedI18nCatalogKeys } from '../../../shared/i18n-seed';
-import {
-  formatTextWithPrettier,
-  resolveProjectPrettier,
-} from '../../../shared/prettier-fix';
 import {
   buildVerificationContract,
   publishVerificationContract,
@@ -144,7 +139,7 @@ interface ReadinessArgs {
 // contract violations no tool can auto-fix, scope gaps, catalog data
 // validation (single-file classes only — cross-locale parity findings carry
 // `crossLocaleParity` and accumulate instead; see the split below), and
-// collapse (which first gets the deterministic formatter attempt below).
+// collapse (an unconditional deny: write it formatted, see below).
 // Every other finding accumulates into the run-scoped quality ledger and is
 // batched into one document at the completion digest.
 const HOT_WRITE_BLOCKING_IDS = new Set<string>([
@@ -373,20 +368,28 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         && HOT_WRITE_BLOCKING_IDS.has(finding.id)
         && !isCrossLocaleParity(finding)
       ));
-      if (contentVerified && blocking.some((finding) => finding.id === 'STRUCT_COLLAPSED_LINE')) {
-        // Deterministic auto-fix first: when the project's own prettier is
-        // reachable from this file's package scope and formatting resolves the
-        // collapse, the finding is a formatting task, not a deny — the on-disk
-        // repair belongs to the completion gate/formatter run. Deny only when
-        // no formatter is reachable (pre-install) or it cannot fix the line.
-        const bin = resolveProjectPrettier(projectRoot, filePath);
-        const formatted = bin
-          ? formatTextWithPrettier(bin, projectRoot, filePath, content)
-          : null;
-        if (formatted !== null && collapsedLineNumber(filePath, formatted) === null) {
-          blocking = blocking.filter((finding) => finding.id !== 'STRUCT_COLLAPSED_LINE');
-        }
-      }
+      // `STRUCT_COLLAPSED_LINE` is NOT waved through when a formatter could fix
+      // it. That branch (v1.0.44) computed the formatted text, used it only as a
+      // predicate, and threw it away — so the ORIGINAL collapsed content still
+      // landed on disk, and the deferred repair it pointed at is calibrated 3.5x
+      // looser (completion scans raw >500 chars; this gate masks and thresholds
+      // at 140/80), leaving that whole band collapsed forever. Observed 15co:
+      // `pnpm format:check` stayed red for an entire run; 14co: 25 unformatted
+      // source files at the tester.
+      //
+      // The argument that settles it is determinism, not the dropped string:
+      // `resolveProjectPrettier` walks for `node_modules/.bin/prettier`, so the
+      // SAME byte-identical write was denied before install and allowed after. A
+      // gate whose verdict depends on install state is not a gate — every other
+      // HOT_WRITE_BLOCKING_ID is a pure function of path + content. Substituting
+      // the formatted text instead is not available either: `updatedToolInput` is
+      // Claude-only and Codex cannot rewrite tool input, which would make this
+      // host-conditional enforcement.
+      //
+      // This reverses part of v1.0.44's "auto-fix over deny" direction, and that
+      // direction stays right for BATCHED quality findings (13co: 16 per-write
+      // denies for one pass of fixes). It is wrong for collapse, where the deny
+      // is one write, one file, and one directly actionable instruction.
       if (blocking.length > 0) {
         // Carry each finding's own message. Reporting only `ID (file:line)`
         // withheld the one fact that resolves the deny — which route/module is

@@ -687,6 +687,28 @@ test('child SessionStart header renders requirements always, kernel only for plu
     assert.ok(body.includes('Integration requirements (deterministic gates verify these)'));
     assert.ok(body.includes('STRUCT_ORPHAN_MODULE'));
     assert.ok(body.length <= 16_000, `child header is ${body.length} chars (budget 16k)`);
+    // Negative row first: with no contract file on disk there is NO pointer.
+    // Naming a path the child cannot Read is worse than saying nothing, so the
+    // render is guarded on existence — which is exactly why the positive row
+    // below has to materialize the file rather than assume it.
+    assert.ok(
+      !body.includes('.traffic-one/agents/senior-frontend.md'),
+      'a pointer to a file that does not exist must never be rendered',
+    );
+
+    // The kernel is an excerpt; the full role contract reaches a
+    // plugin-injected-fallback child only as a FILE, so once materialization has
+    // written it the header must say where it is. Kilo, Copilot and Windsurf
+    // materialize the same way — Codex was the one left with `contractPath: null`
+    // and no materializer, so its children have been kernel-only since 9cc08b53.
+    const contractFile = path.join(cwd, '.traffic-one', 'agents', 'senior-frontend.md');
+    fs.mkdirSync(path.dirname(contractFile), { recursive: true });
+    fs.writeFileSync(contractFile, '# senior-frontend\nfull contract body\n', 'utf8');
+    const withContract = subagentRoleContext(ctx, STATE as never, agentContext, pluginRoot()) as { kind: string; context?: string };
+    assert.ok(
+      (withContract.context || '').includes('.traffic-one/agents/senior-frontend.md'),
+      'the fallback header must name the materialized role contract',
+    );
 
     // Host-native role delivery (hostAgentType set) drops the kernel but keeps
     // the requirements — the agent doc reaches the child via the host's own

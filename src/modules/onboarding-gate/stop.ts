@@ -89,7 +89,7 @@ export function onboardingStopGate(ctx: Ctx): HookResult {
   // live transcript swaps the prose the same way (delivery evidence — reposting
   // duplicated the link live on 1.0.45): the turn stays on the waiter, no repost.
   const linkAlreadyPosted = !wizardOpened(root, link.token, process.env, ctx.host)
-    && assistantPostedLink({ url: link.dashboardUrl, host: ctx.host, raw, sessionId });
+    && assistantPostedLink({ url: link.dashboardUrl, host: ctx.host, raw, sessionId, cwd: root });
   const text = wizardOpened(root, link.token, process.env, ctx.host)
     ? block('stop-setup-links-shown', { WAIT_CMD: waitCommand }, stopSetupLinksShownReason(waitCommand))
     : (linkAlreadyPosted

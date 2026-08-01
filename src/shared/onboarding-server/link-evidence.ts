@@ -145,13 +145,79 @@ function findCodexRollout(sessionId: string, env: NodeJS.ProcessEnv): string | n
   return null;
 }
 
+// Cursor transcript line: {"role":"assistant","message":{"content":[
+// {"type":"text","text":"…"},{"type":"tool_use","name":"…"}]}}. Only the `text`
+// blocks are the model SPEAKING; a `tool_use` for `open '<url>'` must never
+// count as having shown the link to anyone.
+function cursorAssistantLineHasUrl(line: string, url: string): boolean {
+  try {
+    const rec = asRec(JSON.parse(line));
+    if (!rec || rec.role !== 'assistant') return false;
+    const message = asRec(rec.message);
+    const content = message?.content;
+    if (!Array.isArray(content)) return false;
+    return content.some((raw) => {
+      const block = asRec(raw);
+      return block?.type === 'text' && typeof block.text === 'string' && block.text.includes(url);
+    });
+  } catch {
+    return false;
+  }
+}
+
+// `<projects>/<cwd-slug>/agent-transcripts/<sessionId>/<sessionId>.jsonl`. The
+// PARENT transcript, deliberately — the setup link is posted by the main thread,
+// so the subagent-rooted traversal in state/run-agent/cursor-transcripts.ts is
+// the wrong tree here. Slugging matches that module: absolute path, separators
+// to `-`, both the literal cwd and its realpath (workspace_roots can name the
+// same project through a symlink).
+function cursorProjectDirSlugs(cwd: string): string[] {
+  const roots = [cwd];
+  try {
+    const real = fs.realpathSync(cwd);
+    if (real && real !== cwd) roots.push(real);
+  } catch {
+    // best-effort: the project may not exist in a unit test
+  }
+  const slugs = roots.map((root) => path.resolve(root)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .replace(/[/:\s]+/g, '-'));
+  return [...new Set(slugs)];
+}
+
+function findCursorTranscript(
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  const override = typeof env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR === 'string'
+    ? env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR.trim()
+    : '';
+  const home = typeof env.HOME === 'string' && env.HOME ? env.HOME : os.homedir();
+  const root = override || (home ? path.join(home, '.cursor', 'projects') : '');
+  if (!root) return null;
+  for (const slug of cursorProjectDirSlugs(cwd)) {
+    const file = path.join(root, slug, 'agent-transcripts', sessionId, `${sessionId}.jsonl`);
+    try {
+      if (fs.statSync(file).isFile()) return file;
+    } catch {
+      // try the next slug
+    }
+  }
+  return null;
+}
+
 export interface AssistantLinkEvidenceInput {
   url: string;
   host: string;
   /** The raw hook payload — Claude carries transcript_path on it. */
   raw: Rec;
-  /** Codex conversation id (rollout filename suffix). */
+  /** Codex conversation id (rollout filename suffix); Cursor session id. */
   sessionId?: string | null;
+  /** Project root — Cursor's transcript path is derived from it. */
+  cwd?: string | null;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -172,6 +238,14 @@ export function assistantPostedLink(input: AssistantLinkEvidenceInput): boolean 
       const rollout = findCodexRollout(sessionId, input.env ?? process.env);
       if (!rollout) return false;
       return transcriptHasAssistantUrl(rollout, url, codexAssistantLineHasUrl);
+    }
+    if (input.host === 'cursor') {
+      const sessionId = (input.sessionId || '').trim();
+      const cwd = (input.cwd || '').trim();
+      if (!sessionId || !cwd) return false;
+      const transcript = findCursorTranscript(cwd, sessionId, input.env ?? process.env);
+      if (!transcript) return false;
+      return transcriptHasAssistantUrl(transcript, url, cursorAssistantLineHasUrl);
     }
     // Other hosts have no readable assistant transcript here — no evidence.
     return false;

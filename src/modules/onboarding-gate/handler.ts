@@ -257,6 +257,19 @@ export function onboardingGate(ctx: Ctx): HookResult {
         // user with the agent claiming a link it had never posted.
         if (wizardOpened(root, server.token, process.env, ctx.host)) return noop();
         const id = hookSessionIdentity(raw).sessionId;
+        // Same assistant-posted stand-down as Claude/Codex. Cursor DOES expose a
+        // readable parent transcript — `~/.cursor/projects/<slug>/agent-transcripts/
+        // <id>/<id>.jsonl` — whose assistant records separate `text` blocks (the
+        // model speaking) from `tool_use` blocks (an `open '<url>'` that shows the
+        // user nothing). Only the former counts, so this cannot be satisfied by
+        // the bootstrap stdout Cursor collapses into "ran N commands".
+        if (server.dashboardUrl && assistantPostedLink({
+          url: server.dashboardUrl,
+          host: ctx.host,
+          raw,
+          sessionId: id,
+          cwd: root,
+        })) return noop();
         if (server.dashboardUrl
           && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {
           const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);

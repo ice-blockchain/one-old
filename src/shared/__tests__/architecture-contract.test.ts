@@ -2453,6 +2453,17 @@ test('non-npm backends get their own formatter and linter config', () => {
       assert.ok(paths.includes(expected), `${backend} must scaffold ${expected}`);
       const written = ensureScaffoldContent(cwd, architecture.scaffoldOutputs || []);
       assert.ok(written.includes(expected), `${expected} must be seeded with canonical content`);
+      if (backend === 'go') {
+        // Seeding a syntactically valid but semantically dead config must not
+        // pass. golangci-lint v2 validates against a schema with
+        // `additionalProperties: false`, so the v1 top-level `linters-settings`
+        // key does not soften the bar — it terminates the run outright
+        // ("additional properties 'linters-settings' not allowed", reproduced on
+        // 2.12.2). The negative row is the load-bearing half of this pair.
+        const body = fs.readFileSync(path.join(cwd, expected), 'utf8');
+        assert.match(body, /^linters:\n(?:.*\n)*? {2}settings:\n {4}funlen:$/m, 'funlen must sit under linters.settings');
+        assert.doesNotMatch(body, /^linters-settings:/m, 'the v1 top-level key makes golangci-lint v2 refuse to run');
+      }
     });
   }
 });

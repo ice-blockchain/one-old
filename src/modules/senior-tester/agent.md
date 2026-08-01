@@ -61,6 +61,16 @@ traces — a green viewport records none since evidence v2) the runner records
 alongside it. When validation names offending fields, fix the INPUTS and
 re-run the runner; never patch the JSON by hand.
 
+**A FAILED check still produces a usable report.** The runner publishes the
+complete, schema-valid `report-v2.json` BEFORE it validates, so a red
+`stack-build` (or any other check) leaves real evidence on disk and merely exits
+non-zero. That exit code is not "no artifact, try again" — it is your evidence
+for `TESTS_FAILING`, and the completion gate accepts it: only `TESTS_GREEN` is
+held to a passing report. Read the published report, name the failing check in
+your digest, and report `TESTS_FAILING` on it. Do NOT hand-write a report because
+the runner exited 1 — one tester burned eight denies doing exactly that when the
+evidence it needed was already on disk.
+
 ## Owned outputs
 
 You may change:

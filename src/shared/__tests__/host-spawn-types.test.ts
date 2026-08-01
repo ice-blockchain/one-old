@@ -47,6 +47,10 @@ test('hosts whose custom types are never registered pin the built-in as PRIMARY'
   const codex = hostSpawnType('codex', 'senior-frontend');
   assert.equal(codex.primary, 'senior_frontend');
   assert.equal(codex.parameter, 'task_name');
+  // And it names a contract, like every other fallback host. It did not until
+  // 9cc08b53 removed the context pack that used to carry the role doc inline,
+  // which left Codex children with the kernel excerpt and nothing else.
+  assert.equal(codex.contractPath, '.traffic-one/agents/senior-frontend.md');
 });
 
 test('a fallback spawn records the CANONICAL type so it reuses the published bootstrap', () => {

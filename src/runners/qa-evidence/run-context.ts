@@ -31,6 +31,7 @@ import {
   wholesaleCheckStatuses,
   type CheckEvidenceInput,
 } from './report-publish';
+import { runStackChecks } from './stack';
 
 export function strictRelative(value: string): string | null {
   if (!value
@@ -152,6 +153,21 @@ export interface LoadedNativeRun {
 // (`currentVerificationSourceHash` already computes it) learned nothing. Two
 // roles each burned minutes on that, and neither ever identified the cause.
 export type LoadResult<T> = { ok: true; run: T } | { ok: false; reason: string };
+
+// `stack-format` is the one stack check every impact level carries, so the
+// BROWSER path must produce it too — and `computeBrowserCheckStatuses` has no
+// command channel (its ids are all evidence-derived). Run the project's own
+// declared format script here and substitute the real result. A project that
+// declares none reports `not-applicable` with its reason, which
+// `validateQaReportV2` accepts for non-build stack checks. Verifying the
+// formatter by CONFIGURATION alone is what let two runs ship with format:check
+// red from the first implementer turn to the last.
+function withExecutedStackFormat(args: RunnerArgs, checks: QaReportV2['checks']): QaReportV2['checks'] {
+  if (!checks.some((check) => check.id === 'stack-format')) return checks;
+  const [executed] = runStackChecks(args, ['stack-format']);
+  if (!executed) return checks;
+  return checks.map((check) => (check.id === 'stack-format' ? executed : check));
+}
 
 export function loadRun(args: RunnerArgs): LoadResult<LoadedRun> {
   if (!SAFE_ID_RE.test(args.runId)) {
@@ -309,9 +325,9 @@ export function publishAndValidateReport(
     producer: 'parent-runner',
     status,
     sourceHash: loaded.sourceHash,
-    checks: checkInput
+    checks: withExecutedStackFormat(args, checkInput
       ? computeBrowserCheckStatuses(loaded.contract.requiredChecks, checkInput)
-      : wholesaleCheckStatuses(loaded.contract.requiredChecks, status, blockerSummary),
+      : wholesaleCheckStatuses(loaded.contract.requiredChecks, status, blockerSummary)),
     routes,
     machineEvidencePath,
     build: {

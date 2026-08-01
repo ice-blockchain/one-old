@@ -1046,6 +1046,26 @@ test('tester completion gate: TESTS_GREEN is denied while the QA report predates
       JSON.stringify({ schemaVersion: 1, runId, generatedAt: reportAt, producer: 'senior-tester', status: 'passed', routes: [] }), 'utf8');
     assert.deepEqual(planReadinessViolations({ ...gateArgs, content: 'verdict: TESTS_FAILING\n' }), []);
 
+    // A heredoc-published digest is judged identically. Heredocs targeting
+    // `.traffic-one/digests/` are exempt from the shell-write deny as run-state
+    // bookkeeping, so `content` is empty on that channel and the whole implementer
+    // battery used to be blind on it — the same digest was denied through `Write`
+    // and accepted through `cat > … <<'EOF'`.
+    assert.deepEqual(planReadinessViolations({
+      ...gateArgs,
+      content: '',
+      shellBody: 'verdict: TESTS_FAILING\n',
+    }), []);
+
+    // …including one that EXPLAINS why it cannot claim the green token. The gate
+    // reads the verdict line, not the whole body: matching the token anywhere
+    // punished the honest report for naming what it could not claim, which is
+    // the exact failure contracts.ts records ("selecting for phrasing, not truth").
+    assert.deepEqual(planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: TESTS_FAILING\n\nCannot emit TESTS_GREEN until stack-build passes.\n',
+    }), []);
+
     // No QA report at all → other gates own that case, this one stays silent.
     fs.rmSync(path.join(qaDir, 'report.json'));
     assert.deepEqual(planReadinessViolations(gateArgs), []);
@@ -2845,6 +2865,29 @@ test('implementer verification gate: a digest that reports a required command as
 
     // A BLOCKED digest may narrate the same fact — that is the honest path.
     assert.ok(!gate('verdict: BLOCKED\n- typecheck could not run: tsc not found.')
+      .includes('implementer-verification-skipped-gate'));
+
+    // The SAME digest published through a heredoc is judged identically.
+    // Heredocs targeting `.traffic-one/digests/` are exempt from the shell-write
+    // deny as run-state bookkeeping, so `content` is empty on that channel — and
+    // the whole implementer battery was blind on it. Deny through `Write` and
+    // accept through `cat > … <<'EOF'` is not a gate, it is a coin flip.
+    const heredoc = (shellBody: string): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: '',
+      shellBody,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(heredoc([
+      'verdict: IMPLEMENTED',
+      '- TypeScript execution was skipped because dependencies are not installed.',
+    ].join('\n')).includes('implementer-verification-skipped-gate'),
+    'the heredoc channel must not launder a confession past the gate');
+    // Negative row: the honest heredoc digest still passes.
+    assert.ok(!heredoc('verdict: IMPLEMENTED\n- Ran pnpm typecheck: 0 errors.')
       .includes('implementer-verification-skipped-gate'));
   });
 });

@@ -246,7 +246,7 @@ function evaluateQaReportV2(
     // Test and lint coverage is still guarded independently by the tester's own
     // completion gate, so this cannot become the only thing standing between an
     // untested service and settlement.
-    const justifiedNoStackCommand = (required === 'stack-test' || required === 'stack-lint' || required === 'stack-performance')
+    const justifiedNoStackCommand = (required === 'stack-test' || required === 'stack-lint' || required === 'stack-format' || required === 'stack-performance')
       && check?.status === 'not-applicable'
       && typeof check.summary === 'string'
       && /\bnot run:/i.test(check.summary)

@@ -77,7 +77,10 @@ export function contractSelfConflicts(
   for (const output of compiled.scaffoldOutputs || []) {
     const body = Object.prototype.hasOwnProperty.call(overrides, output.path)
       ? overrides[output.path]!
-      : scaffoldFileContent(output.path);
+      // WITH the profile: `.env.example` is web-shaped or service-shaped
+      // depending on it, so an un-profiled read would certify a body the seeder
+      // never writes.
+      : scaffoldFileContent(output.path, compiled.profile);
     if (body !== null) {
       candidates.push({ path: output.path, content: body, role: output.ownerRole });
     }

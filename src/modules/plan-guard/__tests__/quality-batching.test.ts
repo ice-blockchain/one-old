@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { planReadinessViolations } from '../plan-readiness';
+import { collapsedProductSourceFile } from '../plan-readiness/checks';
 import {
   appendQualityFindings,
   consolidateQualityFindings,
@@ -91,24 +92,37 @@ function hotWriteArgs(dir: string, content: string): Parameters<typeof planReadi
   };
 }
 
-test('write gate: collapsed source pre-install denies; a reachable formatter turns it into an auto-fix', () => {
+// A reachable formatter used to turn this deny into an allow. It could not: the
+// gate has no channel to substitute the formatted text (`updatedToolInput` is
+// Claude-only), so the ORIGINAL collapsed content landed on disk anyway, and the
+// completion scan it deferred to is 3.5x looser. The verdict must not depend on
+// install state either — the same bytes cannot be illegal before `npm install`
+// and legal after.
+test('write gate: collapsed source is denied whether or not a formatter is reachable', () => {
   withProject((dir) => {
-    // Pre-install: no node_modules anywhere — the deny holds.
-    const denied = planReadinessViolations(hotWriteArgs(dir, COLLAPSED_TSX));
-    assert.deepEqual(denied, ['frontend-structure-hot-gate']);
+    // Pre-install: no node_modules anywhere.
+    assert.deepEqual(planReadinessViolations(hotWriteArgs(dir, COLLAPSED_TSX)), ['frontend-structure-hot-gate']);
 
-    // Toolchain present and the formatter resolves the collapse: no deny.
+    // Toolchain present AND able to format this exact content — still denied.
     installFakePrettier(dir, CLEAN_TSX);
-    const allowed = planReadinessViolations(hotWriteArgs(dir, COLLAPSED_TSX));
-    assert.deepEqual(allowed, []);
+    assert.deepEqual(planReadinessViolations(hotWriteArgs(dir, COLLAPSED_TSX)), ['frontend-structure-hot-gate']);
   });
 });
 
-test('write gate: a formatter that cannot fix the collapse keeps the deny (auto-fix failure blocks)', () => {
+test('write gate: a formatter that cannot fix the collapse keeps the deny', () => {
   withProject((dir) => {
     installFakePrettier(dir, null);
     const denied = planReadinessViolations(hotWriteArgs(dir, COLLAPSED_TSX));
     assert.deepEqual(denied, ['frontend-structure-hot-gate']);
+  });
+});
+
+// Negative row: the gate must still allow well-formatted source, or "deny
+// collapse" would just be "deny everything".
+test('write gate: formatted multi-line source passes with the formatter reachable', () => {
+  withProject((dir) => {
+    installFakePrettier(dir, CLEAN_TSX);
+    assert.deepEqual(planReadinessViolations(hotWriteArgs(dir, CLEAN_TSX)), []);
   });
 });
 
@@ -254,6 +268,142 @@ test('completion digest auto-formats collapsed product source when the project p
     };
     assert.deepEqual(planReadinessViolations(digestArgs), []);
     assert.equal(fs.readFileSync(path.join(dir, 'apps/web/src/App.tsx'), 'utf8'), CLEAN_TSX);
+  });
+});
+
+// The completion scan used to key on RAW >500 chars while the write gate masked
+// and thresholded at 140. Everything in between was flagged at write time, waved
+// through, and then invisible here — it shipped collapsed (15co: format:check red
+// for a whole run). This line is ~200 code chars: inside the old blind band.
+test('completion digest blocks source collapsed below the old 500-char bar', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    const line = `function App() { ${'const a = 1; const b = 2; const c = 3; '.repeat(5)}return null; }`;
+    assert.ok(line.length > 140 && line.length < 500, `fixture must sit in the blind band, got ${line.length}`);
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), `${line}\n`, 'utf8');
+    // No formatter reachable, so the repair cannot mask the finding.
+    const denied = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(denied, ['frontend-collapse-gate']);
+  });
+});
+
+// The completion scan repairs with `prettier --write`, so the bar it applies on a
+// repo Traffic One did not scaffold has to be one ordinary code never meets. A
+// single table row of five `<td>` cells formatted at printWidth 100 clears the
+// 80-char JSX bar, and the gate's own formatter puts it straight back on every
+// retry — a maintenance run dead-ended on somebody else's code. So the STRICT
+// arm is greenfield-only; existing codebases keep the raw >500-char arm, which
+// is what shipped before and which no ordinary line reaches. The write gate stays
+// strict in both modes, so collapse this run PRODUCES is still refused.
+test('the strict collapse bar does not dead-end an existing codebase', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    const row = '      <tr><td>{u.id}</td><td>{u.name}</td><td>{u.email}</td><td>{u.team}</td><td>{u.role}</td></tr>';
+    assert.ok(row.length > 80 && row.length < 500, `fixture must clear the JSX bar, got ${row.length}`);
+    fs.writeFileSync(path.join(dir, 'apps/web/src/Table.tsx'), `${row}\n`, 'utf8');
+    const args = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      writingFeatureSource: false,
+      block: names,
+    };
+    assert.deepEqual(
+      planReadinessViolations({ ...args, state: { ...DEFAULT_STATE, mode: 'existing-codebase', onboardingComplete: true } }),
+      [],
+      'a pre-existing wide line must never dead-end a maintenance run',
+    );
+    // Same bytes on greenfield, where Traffic One owns the structure: still denied.
+    assert.deepEqual(
+      planReadinessViolations({ ...args, state: { ...DEFAULT_STATE, onboardingComplete: true } }),
+      ['frontend-collapse-gate'],
+      'the greenfield backstop must survive the mode guard',
+    );
+  });
+});
+
+// The scan is whole-project, so unscoped it denied `senior-backend` for a
+// collapsed `App.tsx` — a file the assignment allowlist forbids it to edit, i.e.
+// a deny with no legal remedy. The owner's own scopes are the fix, and they are
+// what makes the Go/Python arm meaningful rather than a second way to blame the
+// wrong role.
+test('the collapse scan only judges files the owning role owns, in its own language', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'internal/api'), { recursive: true });
+    const collapsedTsx = `function App() { ${'const a = 1; const b = 2; const c = 3; '.repeat(5)}return null; }`;
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), `${collapsedTsx}\n`, 'utf8');
+    const state = { ...DEFAULT_STATE, currentRunId: 'R', onboardingComplete: true };
+    const backendScope = [{ include: ['internal/**'] }];
+
+    // Unscoped, the walk finds the frontend file — which is how the backend arm
+    // came to deny `senior-backend` for source it cannot legally edit.
+    assert.match(
+      String(collapsedProductSourceFile(dir, state).file),
+      /App\.tsx/,
+      'the unscoped walk reaches every language, which is why scoping is required',
+    );
+    assert.equal(
+      collapsedProductSourceFile(dir, state, backendScope).file,
+      null,
+      'the backend scope must not see frontend source',
+    );
+
+    // Negative row: collapsed Go inside the backend's OWN scope IS found. This is
+    // the coverage the branch claimed and did not have — `.go` was absent from the
+    // walker's extension set, so the whole backend arm scanned zero files. It
+    // routes through the raw >500-char arm, never the JS/TS lexer.
+    const collapsedGo = `func main() { ${'a := 1; b := 2; c := 3; _ = a; _ = b; _ = c; '.repeat(12)} }`;
+    assert.ok(collapsedGo.length > 500, `Go fixture must clear the raw bar, got ${collapsedGo.length}`);
+    fs.writeFileSync(path.join(dir, 'internal/api/handler.go'), `${collapsedGo}\n`, 'utf8');
+    assert.match(
+      String(collapsedProductSourceFile(dir, state, backendScope).file),
+      /handler\.go/,
+      'collapsed Go inside the backend scope must be found',
+    );
+
+    // And vendored dependencies are never walked: without the skip the Go and
+    // Python arms would exhaust COLLAPSE_MAX_FILES and report a clean project as
+    // STRUCT_SCAN_INCOMPLETE.
+    fs.mkdirSync(path.join(dir, 'internal/vendor/dep'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'internal/vendor/dep/lib.go'), `${collapsedGo}\n`, 'utf8');
+    fs.unlinkSync(path.join(dir, 'internal/api/handler.go'));
+    assert.equal(
+      collapsedProductSourceFile(dir, state, backendScope).file,
+      null,
+      'vendored source is not the project author\'s to format',
+    );
+  });
+});
+
+// The CSS arm keeps the raw-length detector: `lexicalMask` is a JS/TS lexer and
+// produces nonsense on a stylesheet, and the shape is real (13co: a 424-char
+// single-line `@theme` block no lexical gate could see).
+test('completion digest still blocks a collapsed stylesheet through the raw-length arm', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), CLEAN_TSX, 'utf8');
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/globals.css'),
+      `@theme { ${'--color-a: #fff; --color-b: #000; --color-c: #ccc; '.repeat(14)}}\n`,
+      'utf8',
+    );
+    const denied = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(denied, ['frontend-collapse-gate']);
   });
 });
 

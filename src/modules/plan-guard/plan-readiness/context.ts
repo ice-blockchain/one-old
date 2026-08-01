@@ -47,8 +47,18 @@ export const TESTER_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/([^/]+)\/(?:senio
 // pass on collapsed code). A hand-written code line does not approach this
 // length; a long string/URL/data-URI has none of the statement/JSX punctuation
 // required below, so the threshold is safe from false positives.
-export const COLLAPSE_SOURCE_RE = /\.(?:tsx?|jsx?|mjs|cjs|css|scss)$/;
-export const COLLAPSE_SKIP_DIR_RE = /(^|\/)(node_modules|dist|build|coverage|out|\.turbo|\.next|\.vite|generated|__generated__)(\/|$)/;
+// Backend languages are here because collapse is a defect in every language, not
+// just the frontend's — but they route to the RAW >500-char arm, never to
+// `collapsedLineNumber`. That detector runs `lexicalMask`, a JS/TS lexer, which
+// produces nonsense on Go or Python for exactly the reason CSS was left on the
+// raw arm. The raw arm's predicate is pure punctuation counting (3+ `;` on one
+// line), and packing statements onto a single line is precisely what REQUIRES
+// explicit semicolons in both Go and Python — so it fits them without a lexer.
+export const COLLAPSE_SOURCE_RE = /\.(?:tsx?|jsx?|mjs|cjs|css|scss|go|py)$/;
+// Dependency and build roots for every language above. Without `vendor`/`.venv`
+// the Go and Python arms would walk vendored dependencies and blow
+// COLLAPSE_MAX_FILES, turning a clean project into STRUCT_SCAN_INCOMPLETE.
+export const COLLAPSE_SKIP_DIR_RE = /(^|\/)(node_modules|dist|build|coverage|out|\.turbo|\.next|\.vite|generated|__generated__|vendor|\.venv|venv|__pycache__|site-packages|\.tox)(\/|$)/;
 export const COLLAPSE_LINE_CHARS = 500;
 export const COLLAPSE_MAX_FILES = 600;
 

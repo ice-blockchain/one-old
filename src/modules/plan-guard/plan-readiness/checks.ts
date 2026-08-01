@@ -9,6 +9,8 @@ import {
   moduleOutputVariants,
   readCompiledArchitecture,
 } from '../../../shared/architecture-contract';
+import { collapsedLineNumber, isCollapseCandidate } from '../../../shared/collapsed-source';
+import { type AssignedScope, matchesScope } from '../../../shared/scope';
 import { readVerificationContract } from '../../../shared/verification-contract';
 import {
   type StructureFinding,
@@ -301,7 +303,41 @@ interface CollapseScanResult {
   scanned: number;
 }
 
-export function collapsedProductSourceFile(projectRoot: string, state: Rec): CollapseScanResult {
+/**
+ * The literal directory prefix of an include pattern — `internal/**` → `internal`,
+ * `apps/web/src/**\/*.tsx` → `apps/web/src`, `cmd/server/main.go` → `cmd/server`.
+ * A walk root only has to be an ANCESTOR of the owned files; `matchesScope` does
+ * the exact filtering per file, so an over-wide root costs a few `readdir` calls
+ * and never widens what can be reported.
+ */
+function scopeRootDir(pattern: string): string {
+  const segments = String(pattern || '').replace(/\\/g, '/').split('/');
+  const literal: string[] = [];
+  for (const segment of segments) {
+    if (/[*?[\]{}]/.test(segment)) break;
+    literal.push(segment);
+  }
+  // A trailing literal segment may be the file itself; its parent is the root.
+  if (literal.length === segments.length && /\.[A-Za-z0-9]+$/.test(literal[literal.length - 1] || '')) {
+    literal.pop();
+  }
+  return literal.join('/') || '.';
+}
+
+/**
+ * @param scopes The owner role's assigned scopes. When non-empty the walk is
+ *   restricted to files that role actually owns. Whole-project was wrong in both
+ *   directions: it denied `senior-backend` for a collapsed `App.tsx` it cannot
+ *   legally edit under the assignment allowlist, and on a repo Traffic One did
+ *   not scaffold it judged files the run never touched. Empty scopes fall back
+ *   to the whole tree — that only happens when assignments are missing or stale,
+ *   which the allowlist-gap gate already denies on its own.
+ */
+export function collapsedProductSourceFile(
+  projectRoot: string,
+  state: Rec,
+  scopes: readonly AssignedScope[] = [],
+): CollapseScanResult {
   const profile = capabilityProfileForRun(projectRoot, state);
   const capabilityRoots = [
     ...profile.sourceRoots,
@@ -313,7 +349,13 @@ export function collapsedProductSourceFile(projectRoot: string, state: Rec): Col
     ...(profile.profileId === 'server-rendered' ? ['resources/css'] : []),
   ];
   const root = path.resolve(projectRoot);
-  const stack = [...new Set([...capabilityRoots, 'apps', 'packages'])]
+  // Roots follow OWNERSHIP when scopes are given. The capability roots above are
+  // the web profile's — `apps/web/src`, `packages`, the entrypoint dirs — so a Go
+  // or Python backend's `internal/` was never on the stack no matter which
+  // extensions the walker accepted. Scoping by extension alone would have left
+  // the backend arm scanning zero files, which is what it did.
+  const scopeRoots = scopes.flatMap((scope) => (scope.include || []).map(scopeRootDir));
+  const stack = [...new Set([...capabilityRoots, ...scopeRoots, 'apps', 'packages'])]
     .map((dir) => path.resolve(projectRoot, dir))
     .filter((dir) => dir === root || dir.startsWith(`${root}${path.sep}`));
   const visited = new Set<string>();
@@ -343,6 +385,8 @@ export function collapsedProductSourceFile(projectRoot: string, state: Rec): Col
         continue;
       }
       if (!entry.isFile() || !COLLAPSE_SOURCE_RE.test(entry.name)) continue;
+      // Only the owner's own files. See the `scopes` note on this function.
+      if (scopes.length > 0 && !scopes.some((scope) => matchesScope(rel, scope))) continue;
       // Emit-in-place skip: a `.js`/`.d.ts` with a same-stem `.ts`/`.tsx`
       // sibling is compiler output (a stock `tsc -b` build drops one next to
       // every source). Reporting it masked the REAL collapsed source — observed
@@ -369,6 +413,30 @@ export function collapsedProductSourceFile(projectRoot: string, state: Rec): Col
       } catch {
         continue;
       }
+      // Two arms, each with the detector its language has. For JS/TS-family
+      // sources use the SAME detector the write gate uses — it masks comments and
+      // string bodies and thresholds at 140 code chars (80 for a JSX line). This
+      // scan previously used only the raw >500-char arm below, 3.5x looser, so
+      // everything the write gate flagged between those bounds was invisible here
+      // and shipped collapsed: observed 15co, `pnpm format:check` red for a whole
+      // run; 14co, 25 unformatted source files at the tester.
+      // …but the strict bar is GREENFIELD-only. On a repo Traffic One did not
+      // scaffold, 140 masked code chars (80 on a JSX line) is met by ordinary
+      // code formatted at printWidth 100 or 120 — a single `<tr>` of five `<td>`
+      // cells clears it — and `repairCollapsedSource` would then reformat the
+      // user's own file and re-deny it forever, dead-ending a maintenance run on
+      // code nobody touched. Existing codebases keep the raw >500-char arm below,
+      // which is what shipped before this tightening and which no ordinary source
+      // line reaches. The write gate is strict in BOTH modes: it judges only the
+      // bytes being written, so collapse this run PRODUCES is still refused.
+      if (isCollapseCandidate(rel) && state.mode === 'new-project') {
+        const line = collapsedLineNumber(rel, text);
+        if (line !== null) return { file: `${rel}:${line}`, incomplete: false, scanned };
+        continue;
+      }
+      // CSS and friends keep the raw-length arm: `lexicalMask` is a JS/TS lexer
+      // and produces nonsense on a stylesheet, and the shape this catches is real
+      // (13co: a 424-char single-line `@theme` block no lexical gate could see).
       const lines = text.split('\n');
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i]!;

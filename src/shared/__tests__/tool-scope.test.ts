@@ -316,3 +316,60 @@ test('a READ that merely names an absolute foreign path does not move the projec
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('a subshell inside a READ is not adoption evidence, but a real writer still is', () => {
+  // The residual half of the read-is-not-adoption rule. `$(…)` means a mutation
+  // could be hidden SOMEWHERE; it says nothing about the foreign path the command
+  // merely names, so routing it through the write classifier re-adopted any
+  // project an inspection command mentioned. Observed live across a whole
+  // monitoring session — including `/dev` adopted off a `/dev/null` operand — each
+  // time answered with a full onboarding demand for a project nobody was touching.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-tool-scope-subshell-'));
+  const authoring = path.join(base, 'plugin');
+  const project = path.join(base, 'project');
+  const source = path.join(project, 'src', 'server.go');
+  try {
+    makeAuthoringRoot(authoring);
+    makeProject(project);
+    fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+    resetAuthoringRootCache();
+
+    for (const command of [
+      `RUN=$(ls -t ${project}/.traffic-one/runs | head -1); echo "$RUN"`,
+      `for f in ${project}/src/*.go; do echo "$(basename "$f")"; done`,
+      `wc -l ${source} 2>/dev/null | awk '{print $1}'`,
+      `grep -c . ${source} && echo "$(date)"`,
+    ]) {
+      const scope = resolveToolScope(ctx(authoring, 'Bash', 'shell', { command }, { command }));
+      assert.equal(scope.projectRoot, authoring, `a read with a subshell must not adopt: ${command}`);
+      assert.equal(scope.standsDown, false, `${command} — the foreign target stays governed`);
+    }
+
+    // Negative rows: everything that is real evidence toward THAT path still
+    // re-anchors, subshell or not. Narrowing root selection must not narrow these.
+    //
+    // The last three are the rows this test was missing, and their absence hid a
+    // hole this very fix opened. Every writer above sits at a position the
+    // vocabulary regexes anchor on — line start or `[\s;&|]` — so they passed
+    // whether or not the substitution short-circuit ran. A writer INSIDE `$(…)`,
+    // backticks, or a plain subshell is preceded by `(` or a backtick, which
+    // those anchors did not accept: before this fix the blanket `/`|\$\(/` check
+    // caught them first, and turning it off here let them through unclassified.
+    // A mutation is a mutation wherever the shell nests it.
+    for (const command of [
+      `sed -i.bak s/a/b/ ${source} && echo "$(date)"`,
+      `echo "$(date)" > ${source}`,
+      `rm -f ${source}`,
+      `python3 -c "open('${source}','w')"`,
+      `echo "$(rm -f ${source})"`,
+      'echo "`rm -f ' + source + '`"',
+      `(rm -f ${source})`,
+    ]) {
+      const scope = resolveToolScope(ctx(authoring, 'Bash', 'shell', { command }, { command }));
+      assert.equal(scope.projectRoot, project, `a real writer must still re-anchor: ${command}`);
+    }
+  } finally {
+    resetAuthoringRootCache();
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});

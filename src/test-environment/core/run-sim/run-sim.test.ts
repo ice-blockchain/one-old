@@ -50,7 +50,7 @@ const assignments = {
 };
 
 test('buildImplementContext reads the allowlist from scope.include, not a guessed field', () => {
-  const ctx = buildImplementContext('R', architecture(), assignments);
+  const ctx = buildImplementContext('R', architecture(), assignments, '/nonexistent-sim-root');
   // An empty list here would make phase 2 write nothing and still "succeed".
   assert.deepEqual(ctx.outputsFor('senior-frontend'), ['apps/web/src/App.tsx', 'package.json']);
   assert.deepEqual(ctx.outputsFor('senior-backend'), ['packages/api-client/src/CoursesAPI.ts']);
@@ -85,7 +85,7 @@ test('widened extension-freedom includes resolve to the DEFAULT compiled output 
         ],
       },
     }],
-  });
+  }, '/nonexistent-sim-root');
   assert.deepEqual(ctx.outputsFor('senior-frontend'), [
     'apps/web/src/features/auth/index.tsx',
     'apps/web/src/pages/Home.tsx',
@@ -97,7 +97,7 @@ test('widened extension-freedom includes resolve to the DEFAULT compiled output 
 });
 
 test('buildImplementContext maps module ids and paths in both directions', () => {
-  const ctx = buildImplementContext('R', architecture(), assignments);
+  const ctx = buildImplementContext('R', architecture(), assignments, '/nonexistent-sim-root');
   assert.equal(ctx.outputOf('home'), 'apps/web/src/pages/Home.tsx');
   assert.equal(ctx.outputOf('nope'), null);
   assert.equal(ctx.moduleAt('apps/web/src/components/Card.tsx')?.kind, 'component');
@@ -105,7 +105,7 @@ test('buildImplementContext maps module ids and paths in both directions', () =>
 });
 
 test('sourceFor authors every planned module kind', () => {
-  const ctx = buildImplementContext('R', architecture(), assignments);
+  const ctx = buildImplementContext('R', architecture(), assignments, '/nonexistent-sim-root');
   for (const module of architecture().modules) {
     const body = sourceFor(module.output, ctx);
     assert.ok(body, `${module.kind} module ${module.output} must be authored`);
@@ -114,7 +114,7 @@ test('sourceFor authors every planned module kind', () => {
 });
 
 test('the app shell wires planned routes AND feature modules', () => {
-  const ctx = buildImplementContext('R', architecture(), assignments);
+  const ctx = buildImplementContext('R', architecture(), assignments, '/nonexistent-sim-root');
   const shell = sourceFor('apps/web/src/App.tsx', ctx) || '';
   assert.match(shell, /import Home from/, 'route pages are imported by the shell');
   assert.match(shell, /path="\/"/, 'the compiled route path is used');
@@ -137,7 +137,7 @@ test('a Vue feature entry is authored as an SFC with named exports', () => {
     ],
     routes: [{ id: 'home-route', path: '/', moduleId: 'home', moduleOutput: 'apps/web/src/pages/Home.vue' }],
   } as unknown as CompiledArchitectureV1);
-  const ctx = buildImplementContext('R', vueArchitecture(), assignments);
+  const ctx = buildImplementContext('R', vueArchitecture(), assignments, '/nonexistent-sim-root');
   const feature = sourceFor('apps/web/src/features/auth/index.vue', ctx) || '';
   assert.match(feature, /<template>/, 'a .vue module is a single-file component');
   assert.match(feature, /export async function signOut/, 'helpers stay named exports');
@@ -147,14 +147,14 @@ test('a Vue feature entry is authored as an SFC with named exports', () => {
 });
 
 test('pages reference the planned components and the API client', () => {
-  const ctx = buildImplementContext('R', architecture(), assignments);
+  const ctx = buildImplementContext('R', architecture(), assignments, '/nonexistent-sim-root');
   const page = sourceFor('apps/web/src/pages/Home.tsx', ctx) || '';
   assert.match(page, /components\/Card/, 'planned components are referenced');
   assert.match(page, /@app\/api-client/, 'the planned API package is consumed');
 });
 
 test('sourceFor declines binaries and crawl assets rather than faking them', () => {
-  const ctx = buildImplementContext('R', architecture(), assignments);
+  const ctx = buildImplementContext('R', architecture(), assignments, '/nonexistent-sim-root');
   for (const rel of [
     'apps/web/public/favicon.ico',
     'apps/web/public/icons/icon-192.png',
@@ -166,7 +166,7 @@ test('sourceFor declines binaries and crawl assets rather than faking them', () 
 });
 
 test('the root manifest declares every tool its scripts name', () => {
-  const ctx = buildImplementContext('R', architecture(), assignments);
+  const ctx = buildImplementContext('R', architecture(), assignments, '/nonexistent-sim-root');
   const manifest = JSON.parse(sourceFor('package.json', ctx) || '{}') as {
     scripts: Record<string, string>;
     devDependencies: Record<string, string>;

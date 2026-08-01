@@ -269,7 +269,15 @@ export function runModel(cwd: string, bin: string, baseSha: string, model: strin
       // work visible even when the model `git commit`ed inside the detached
       // worktree (which moves HEAD and would make a HEAD-relative diff empty).
       git(wt, ['add', '-A', '--', '.', ...stageExcludePathspecs(wt)]);
-      if (git(wt, ['diff', '--cached', '--quiet', baseSha]).status !== 0) { summary = parsed.summary; break; }
+      // The model's CONCLUDING part, falling back to the whole narration only
+      // when it emitted a single part. The digest head-slices whatever lands
+      // here, and the joined narration head-slices to the model's opening
+      // thoughts — reviewers were reading "Let me verify …" as the record of a
+      // delegated unit instead of what it changed.
+      if (git(wt, ['diff', '--cached', '--quiet', baseSha]).status !== 0) {
+        summary = parsed.lastText || parsed.summary;
+        break;
+      }
       if (attempt >= MAX_DELEGATE_ATTEMPTS) {
         return { kind: 'no-changes' };
       }

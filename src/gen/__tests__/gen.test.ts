@@ -169,6 +169,19 @@ test('generated agent-facing documentation contains no Traffic One authoring pat
   // intentionally legal. These patterns name Traffic One's authoring topology
   // and therefore cannot resolve inside an installed plugin.
   const authoringPath = /(?:\bsrc\/(?:modules\/|gen\/|build\/|hooks\/(?:claude|copilot|cursor|devin|kilo|opencode|windsurf)-entry\.ts\b|config\/model-tiers\.ts\b|shared\/(?:performance-config|stack-layout)\.ts\b|(?:shared|runners)\/onboarding-server(?:\/|\b))|\bdist\/scripts\/)/;
+  // A shipped doc that names `scripts/<path>.js` is naming a compiled runtime
+  // module. The build is a straight 1:1 tsc emit, so `scripts/X.js` exists in an
+  // installed plugin iff `src/X.ts` exists here — resolve against src/, never
+  // dist/, because `npm test` runs BEFORE `npm run build`. Observed live: the
+  // orchestrator skill required `scripts/shared/state/local-prefs.js` long after
+  // that module became the directory `local-prefs/`; both call sites sit in
+  // `try{}catch{}`, so the code-graph provider silently came back empty every run.
+  // The flat `.cjs` shims at the output root are a separate surface (build-runtime
+  // SHIMS) and are not matched here.
+  const unresolvableScriptPaths = (content: string): string[] => (
+    [...new Set(content.match(/\bscripts\/[A-Za-z0-9_./-]+\.js\b/g) || [])]
+      .filter((ref) => !fs.existsSync(path.join(REPO_ROOT, 'src', `${ref.slice('scripts/'.length, -'.js'.length)}.ts`)))
+  );
   try {
     const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const docs = write.written.filter((relPath) => (
@@ -191,6 +204,11 @@ test('generated agent-facing documentation contains no Traffic One authoring pat
         /\$\{[A-Z][A-Z0-9_]*:-/,
         `${relPath} embeds POSIX-only plugin-root parameter expansion`,
       );
+      assert.deepEqual(
+        unresolvableScriptPaths(content),
+        [],
+        `${relPath} names compiled runtime modules that do not exist`,
+      );
     }
 
     const gateSkills = fs.readdirSync(path.join(REPO_ROOT, 'src', 'modules'), { withFileTypes: true })
@@ -206,7 +224,24 @@ test('generated agent-facing documentation contains no Traffic One authoring pat
         /\$\{[A-Z][A-Z0-9_]*:-/,
         `${label} embeds POSIX-only plugin-root parameter expansion`,
       );
+      assert.deepEqual(
+        unresolvableScriptPaths(content),
+        [],
+        `${label} names compiled runtime modules that do not exist`,
+      );
     }
+
+    // Negative row: a path-existence assertion that cannot fail is decoration.
+    assert.deepEqual(
+      unresolvableScriptPaths("require('scripts/shared/state/does-not-exist.js')"),
+      ['scripts/shared/state/does-not-exist.js'],
+      'the compiled-module path check must reject a module with no source',
+    );
+    assert.deepEqual(
+      unresolvableScriptPaths("require('scripts/shared/state/local-prefs/index.js')"),
+      [],
+      'the compiled-module path check must accept a directory-index module that exists',
+    );
 
     const planGuard = fs.readFileSync(
       path.join(REPO_ROOT, 'src', 'modules', 'plan-guard', 'skill', 'SKILL.md'),
@@ -291,6 +326,28 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       path.join(dir, 'rules', 'common', 'agent-handoff-digests.md'),
       'utf8',
     );
+
+    // Prose fixes need a SEMANTIC pin, not the byte snapshot: `golden:update` is
+    // the supported way to refresh that snapshot, so a version bump rewrites it
+    // and a silently deleted paragraph rides along unnoticed. Each of the three
+    // below cost a measured failure.
+    //
+    // D10 — a tester read a non-zero runner exit as "no artifact" and hand-wrote
+    // a report through eight denies, while the schema-valid one sat on disk.
+    assert.match(tester, /publishes the\s+complete[\s\S]{0,80}BEFORE it validates/i);
+    assert.match(tester, /Do NOT hand-write a report/i);
+    // D21 — findings routed by wording rather than ownership sent the tester
+    // source it may not touch, and the implementer test files it does not own.
+    assert.match(orchestrator, /role that OWNS the flagged path/i);
+    assert.match(orchestrator, /`senior-tester` owns test files/i);
+    // D26 — 88 `wait_agent` calls at 60s in 15co, 72 of them bare timeouts,
+    // ≈9M input tokens for no information. The long ceiling is only safe because
+    // a bare wait returns on the FIRST message, so both halves are pinned; and
+    // the anti-serialization rule (spawn everything BEFORE waiting) must not be
+    // traded away to get it.
+    assert.match(orchestrator, /ONE bare `wait_agent`[\s\S]{0,120}900000/);
+    assert.match(orchestrator, /before any `wait_agent`/);
+    assert.match(orchestrator, /Never re-wait in 30–60s slices/);
 
     assert.match(testerPrompt, /<IMPLEMENTER_DIGEST_PATHS>/);
     assert.doesNotMatch(testerPrompt, /Both implementer digests above/);
@@ -422,6 +479,14 @@ test('every emitted senior agent doc keeps its T1KERNEL markers', () => {
       const kernel = match![1]!.trim();
       assert.ok(kernel.length > 0 && kernel.length <= 2_500,
         `${role} kernel is ${kernel.length} chars (cap 2500 so the child header stays under its 16k budget)`);
+      // Anti-drift pin. On a fallback host (Codex) the kernel is ALL the role
+      // text that arrives inline, so a gate-backed invariant dropped from it is
+      // an invariant the role never learns — it only meets it as a deny. Whoever
+      // trims a kernel for budget must compress this, not delete it.
+      if (role === 'senior-frontend' || role === 'senior-backend') {
+        assert.match(kernel, /collapsed code/,
+          `${role} kernel must carry the collapse invariant: the write gate denies it unconditionally`);
+      }
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

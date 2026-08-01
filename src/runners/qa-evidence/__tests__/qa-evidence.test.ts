@@ -29,7 +29,7 @@ import {
 import { main } from '../index';
 import { loadRun } from '../run-context';
 import { type RunnerArgs } from '../types';
-import { resolveStackCommand } from '../stack';
+import { resolveStackCommand, runStackChecks } from '../stack';
 
 const STATE = {
   mode: 'existing-codebase',
@@ -1075,6 +1075,135 @@ test('resolveStackCommand gives a Python project a real build form', () => {
     if ('unavailable' in build) return;
     assert.equal(build.command, 'python3');
     assert.deepEqual(build.args, ['-m', 'compileall', '-q', '.']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// `go build ./...` discards its object for several packages or a single non-main
+// one, but writes a binary named after the package DIRECTORY when the pattern
+// matches exactly one main package. The compiled backend-only Go layout puts every
+// module in `internal/`, so the first `func main()` there makes the output name
+// `internal` — which collides with the directory and exits 1
+// (cmd/go/internal/work/build.go:513). Observed live in 15cl: `stack-build` could
+// never pass, so no Go backend-only run could reach TESTS_GREEN even with build,
+// vet and tests all green by hand.
+test('resolveStackCommand discards the Go build object instead of naming it after the package dir', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gostack-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'go.mod'), 'module catalog-api\n\ngo 1.22\n');
+    const build = resolveStackCommand(dir, 'stack-build');
+    assert.ok(!('unavailable' in build), 'a Go project must resolve a build command');
+    if ('unavailable' in build) return;
+    assert.equal(build.command, 'go');
+    const sink = process.platform === 'win32' ? 'NUL' : '/dev/null';
+    assert.deepEqual(build.args, ['build', '-o', sink, './...']);
+    // Negative row: the bare form is the defect. Asserting only the positive
+    // above would survive someone "simplifying" the args back.
+    assert.notDeepEqual(
+      build.args,
+      ['build', './...'],
+      'the bare form writes a binary named after the package dir and exits 1 on the compiled flat layout',
+    );
+    // test/lint write no output file and need no sink.
+    const test = resolveStackCommand(dir, 'stack-test');
+    const lint = resolveStackCommand(dir, 'stack-lint');
+    assert.deepEqual('unavailable' in test ? null : test.args, ['test', './...']);
+    assert.deepEqual('unavailable' in lint ? null : lint.args, ['vet', './...']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Formatting used to be verified by CONFIGURATION only — the gate confirmed a
+// formatter was declared and never ran it, so two runs shipped with
+// `pnpm format:check` red end to end. `stack-format` runs the project's OWN
+// declared script; the three outcomes below are the whole contract.
+test('stack-format runs the declared script and separates red from absent', () => {
+  const write = (dir: string, script: string): void => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'x',
+      scripts: { 'format:check': script },
+    }));
+  };
+  const run = (dir: string): { status?: string; summary?: string } => {
+    const [check] = runStackChecks({ projectRoot: dir } as never, ['stack-format']);
+    return { status: check?.status, summary: String(check?.summary || '') };
+  };
+
+  // Red: the formatter ran and found unformatted files. This is the case both
+  // observed runs shipped with, and it must fail QA.
+  const red = fs.mkdtempSync(path.join(os.tmpdir(), 't1-fmt-red-'));
+  // Green: the formatter ran and was satisfied.
+  const green = fs.mkdtempSync(path.join(os.tmpdir(), 't1-fmt-green-'));
+  // Absent: the script is declared but its binary is not installed. An
+  // environment gap, NOT a formatting failure — conflating them would make a
+  // missing devDependency indistinguishable from unformatted source.
+  const absent = fs.mkdtempSync(path.join(os.tmpdir(), 't1-fmt-absent-'));
+  // Undeclared: the project offers no format command at all.
+  const none = fs.mkdtempSync(path.join(os.tmpdir(), 't1-fmt-none-'));
+  try {
+    write(red, "node -e \"process.stdout.write('[warn] src/a.ts'); process.exit(1)\"");
+    assert.equal(run(red).status, 'failed');
+
+    write(green, "node -e \"process.stdout.write('All matched files use Prettier code style!')\"");
+    assert.equal(run(green).status, 'passed');
+
+    write(absent, 'definitely-not-installed-formatter --check .');
+    const missing = run(absent);
+    assert.equal(missing.status, 'not-applicable', missing.summary);
+    assert.match(missing.summary || '', /could not be executed/);
+
+    fs.writeFileSync(path.join(none, 'package.json'), JSON.stringify({ name: 'x', scripts: {} }));
+    const undeclared = run(none);
+    assert.equal(undeclared.status, 'not-applicable');
+    assert.match(undeclared.summary || '', /declares no/);
+  } finally {
+    for (const dir of [red, green, absent, none]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A check summary must satisfy the schema's safe-string rule. `\s` collapses
+// whitespace but leaves ESC/NUL intact, and the resulting `invalid-schema` has no
+// GATE_ID_FOR_FAILURE entry — persistGateRejection no-ops and the report left on
+// disk cannot be parsed on the next read.
+test('a stack summary carries no control characters even when the tool colourizes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-stack-ctl-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'go.mod'), 'module x\n\ngo 1.22\n');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'x',
+      // Emits an ANSI escape and a NUL, then fails.
+      scripts: { build: `node -e "process.stdout.write('a\\u001b[31mred\\u0000b'); process.exit(1)"` },
+    }));
+    const report = runStackChecks({ projectRoot: dir } as never, ['stack-build']);
+    const summary = String(report[0]?.summary || '');
+    assert.match(summary, /red/, 'the real output must still be reported');
+    for (const ch of summary) {
+      const code = ch.charCodeAt(0);
+      assert.ok(code >= 0x20 && code !== 0x7f, `summary carries control char ${code}`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The ordering at resolveStackCommand is deliberate: a project's OWN declaration
+// beats a language default, so a Go service wrapping its build in an npm script
+// keeps that script. Pinned because the Go sink fix above sits in the branch below it.
+test('a declared package.json build still wins over the Go default', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gostack-manifest-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'go.mod'), 'module catalog-api\n\ngo 1.22\n');
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ name: 'api', scripts: { build: 'make build' } }, null, 2),
+    );
+    const build = resolveStackCommand(dir, 'stack-build');
+    assert.ok(!('unavailable' in build), 'a declared build script must resolve');
+    if ('unavailable' in build) return;
+    assert.equal(build.command, 'npm');
+    assert.equal(build.source, 'package.json scripts.build');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

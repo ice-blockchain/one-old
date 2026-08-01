@@ -3,10 +3,12 @@
 // before onboarding completes.
 
 import { obj, type Rec } from '../../shared/obj';
+import * as fs from 'fs';
 import * as path from 'path';
 import { context,  noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { hasMaterializedProjectAssets } from '../../shared/materialize';
+import { hostSpawnType } from '../../shared/host/spawn-types';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import {  packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
@@ -154,7 +156,19 @@ export function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgent
   // rides it only when the host did not deliver the agent doc natively
   // (roleSource 'plugin-injected-fallback' — e.g. Codex spawn_agent children).
   const envelope = role && runId ? safeActiveEnvelope(cwd, runId, role) : null;
-  const kernel = envelope?.roleSource === 'plugin-injected-fallback' && role ? roleKernel(role) : null;
+  const fallbackRole = envelope?.roleSource === 'plugin-injected-fallback' && role ? role : null;
+  const kernel = fallbackRole ? roleKernel(fallbackRole) : null;
+  // The kernel is a SUMMARY. Where the host materializes the full role contract
+  // (every fallback host except Claude, which delivers the agent doc natively),
+  // name the file too — a child that only ever saw ~7 bullets cannot honour the
+  // invariants living in the other ~200 lines, and the deny it eventually hits
+  // never told it the contract existed. Observed 15co on Codex, whose contract
+  // path was null and whose role text has been kernel-only since 9cc08b53.
+  const contractRel = fallbackRole ? hostSpawnType(ctx.host, fallbackRole, cwd).contractPath : null;
+  const contract = contractRel && fs.existsSync(path.join(cwd, contractRel))
+    ? `\nYour FULL role contract is \`${contractRel}\` — Read it once before your first write. `
+      + 'The kernel above summarizes it; it does not replace it.\n'
+    : '';
   const requirements = envelope?.integrationRequirements?.length
     ? '\n## Integration requirements (deterministic gates verify these)\n'
       + `${envelope.integrationRequirements.map((line) => `- ${line}`).join('\n')}\n`
@@ -165,7 +179,7 @@ export function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgent
     + '.traffic-one/rules/. This index lists role-scoped rules; Read them on demand — '
     + 'ONE file per Read/shell command, never several concatenated (host exec output '
     + 'truncates middle-out and the middle files vanish silently).\n';
-  return context(`${header}${kernel ? `${kernel}\n` : ''}${requirements}${skillDirective}${graphPreview}\n${body}`);
+  return context(`${header}${kernel ? `${kernel}\n` : ''}${contract}${requirements}${skillDirective}${graphPreview}\n${body}`);
 }
 
 // A subagent NEVER runs the full session-start hook. The auth gate and onboarding

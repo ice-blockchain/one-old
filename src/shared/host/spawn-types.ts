@@ -65,7 +65,16 @@ export function hostSpawnType(host: HostId | string, role: string, cwd = ''): Ho
     case 'claude':
       return { primary: role, fallback: 'general-purpose', parameter: 'subagent_type', contractPath: null };
     case 'codex':
-      return { primary: underscoreRole(role), fallback: null, parameter: 'task_name', contractPath: null };
+      // Codex spawns by task name, not by an agent type the host resolves, so
+      // the role text has to arrive some other way. The per-run context pack that
+      // used to carry the full `agent.md` was removed in 9cc08b53; this is the
+      // materialized replacement the other fallback hosts already had.
+      return {
+        primary: underscoreRole(role),
+        fallback: null,
+        parameter: 'task_name',
+        contractPath: `.traffic-one/agents/${role}.md`,
+      };
     case 'copilot':
       return { primary: role, fallback: null, parameter: 'name', contractPath: `.copilot/${role}.agent.md` };
     case 'kilo':

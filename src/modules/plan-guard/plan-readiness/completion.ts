@@ -62,14 +62,45 @@ import {
 // runner MEASURED. Tolerant by design: page-speed audits are noisy, so only a
 // gap no re-run explains is a false claim.
 const LIGHTHOUSE_CLAIM_TOLERANCE = 5;
+import { type AssignedScope } from '../../../shared/scope';
+
 import {
   allImplementationRolesDelivered,
+  assignmentScopesForRole,
   digestClaimsVerdict,
   refreshVerificationAfterImplementation,
   runFullStructureScan,
   unsatisfiableFindingPaths,
 } from './contracts';
 
+
+/**
+ * Format collapsed product source in place, then re-scan, until nothing is left
+ * or the formatter cannot fix the next file.
+ *
+ * This is where formatting BELONGS: the file exists on disk, so `--write` can
+ * actually change it, and a failure still ends in a deny. The write gate cannot
+ * do this — it only ever sees proposed content and has no way to substitute it
+ * (see shared/prettier-fix.ts) — so collapse denies there unconditionally and
+ * the repair happens here.
+ */
+function repairCollapsedSource(
+  projectRoot: string,
+  state: Rec,
+  scopes: readonly AssignedScope[] = [],
+): ReturnType<typeof collapsedProductSourceFile> {
+  let collapsed = collapsedProductSourceFile(projectRoot, state, scopes);
+  const formatAttempted = new Set<string>();
+  while (collapsed.file && !collapsed.incomplete) {
+    const rel = collapsed.file.replace(/:\d+$/, '');
+    if (formatAttempted.has(rel)) break;
+    formatAttempted.add(rel);
+    const bin = resolveProjectPrettier(projectRoot, rel);
+    if (!bin || !formatFileWithPrettier(bin, projectRoot, rel)) break;
+    collapsed = collapsedProductSourceFile(projectRoot, state, scopes);
+  }
+  return collapsed;
+}
 
 export function digestCompletionGates(ctx: {
   projectRoot: string;
@@ -89,21 +120,16 @@ export function digestCompletionGates(ctx: {
   // empty scaffolded module dirs (observed 16c).
   const frontendDigest = FRONTEND_DIGEST_RE.exec(filePath);
   if (frontendDigest && digestClaimsVerdict(content, 'IMPLEMENTED')) {
-    let collapsed = collapsedProductSourceFile(projectRoot, state);
-    // Deterministic auto-fix before the deny: collapse is exactly what the
-    // project's own formatter exists to fix, so when prettier is reachable
-    // from the file's package scope, format the file in place and re-scan.
-    // The deny below fires only for files the formatter cannot reach
-    // (pre-install) or cannot fix — an auto-fix failure stays blocking.
-    const formatAttempted = new Set<string>();
-    while (collapsed.file && !collapsed.incomplete) {
-      const rel = collapsed.file.replace(/:\d+$/, '');
-      if (formatAttempted.has(rel)) break;
-      formatAttempted.add(rel);
-      const bin = resolveProjectPrettier(projectRoot, rel);
-      if (!bin || !formatFileWithPrettier(bin, projectRoot, rel)) break;
-      collapsed = collapsedProductSourceFile(projectRoot, state);
-    }
+    // Scoped to the files this role owns. The scan runs in BOTH modes — the
+    // strict/raw split that keeps it safe on an existing codebase lives in the
+    // detector (see `collapsedProductSourceFile`), not here, so a genuinely
+    // minified file is still caught during maintenance.
+    const frontendRunId = frontendDigest[2] || '';
+    const collapsed = repairCollapsedSource(
+      projectRoot,
+      state,
+      assignmentScopesForRole(projectRoot, frontendRunId, 'senior-frontend'),
+    );
     if (collapsed.incomplete) {
       violations.push(block('frontend-structure-scan-incomplete',
         `Frontend completion gate: STRUCT_SCAN_INCOMPLETE after ${collapsed.scanned} product source files. A truncated scan is never a pass; narrow generated/output roots or split the project contract before re-emitting \`IMPLEMENTED\`.`,
@@ -111,7 +137,13 @@ export function digestCompletionGates(ctx: {
     }
     if (collapsed.file) {
       violations.push(block('frontend-collapse-gate',
-        `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed.file}\` packs an entire component/route onto a single line (over ${COLLAPSE_LINE_CHARS} chars) — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
+        // No character threshold in this text. Two detectors feed it — JS/TS
+        // masks comments and strings and thresholds at 140 code chars (80 on a
+        // JSX line), CSS uses raw >500 — so any single number printed here is a
+        // lie for the other arm. Naming a bar the writer can then argue with is
+        // worse than naming the file and the remedy, which is all that is
+        // actionable anyway.
+        `Frontend completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed.file}\` packs an entire component/route onto a single line — collapsed/minified source is a defect even when build and typecheck pass. Run the project formatter (\`format\` script), and split routes, pages, features, and shared components into their own files under the scaffolded module dirs (\`App.tsx\` is the router/shell only, not the whole app). Then re-run \`format:check\` and re-emit \`IMPLEMENTED\`.`,
         { FILE: collapsed.file }));
     }
     // Deterministic emit-config gate (new-project only; the pre-existing tsc -b
@@ -128,7 +160,7 @@ export function digestCompletionGates(ctx: {
           { PROBLEMS: problems }));
       }
     }
-    const runId = frontendDigest[2] || '';
+    const runId = frontendRunId;
     const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
     if (architecture) {
       if (!readRuntimeAssignments(projectRoot, runId)) {
@@ -165,13 +197,40 @@ export function digestCompletionGates(ctx: {
   // come from the real immutable-baseline diff. Candidate assignments and every
   // bootstrap are preflighted against the new hash before publication.
   const implementedDigest = IMPLEMENTER_DIGEST_RE.exec(filePath);
+  // The digest BEING WRITTEN, whichever channel carries it. A shell-derived
+  // write leaves `content` empty, and heredocs targeting `.traffic-one/digests/`
+  // are explicitly exempt from the shell-write deny as run-state bookkeeping —
+  // so an implementer publishing `cat > …/backend.md <<'EOF'` skipped this whole
+  // battery, while the identical digest through `Write` was judged. The gates
+  // below judge the digest's CLAIM; how the bytes arrived is not part of it.
+  const implementerBody = content || ctx.shellBody || '';
   if (
     implementedDigest
-    && digestClaimsVerdict(content, 'IMPLEMENTED')
+    && digestClaimsVerdict(implementerBody, 'IMPLEMENTED')
     && state.mode === 'new-project'
   ) {
     const runId = implementedDigest[2] || '';
     const ownerRole = `senior-${implementedDigest[3] || ''}`;
+    // Collapse is a defect in EVERY language, not just the frontend's. The scan
+    // + on-disk repair used to hang off the frontend digest only, so a Go or
+    // Python backend could ship collapsed source and nothing looked. Skip the
+    // frontend here — its own branch above already ran the same repair, and
+    // running it twice would double the walk for no new coverage.
+    if (ownerRole !== 'senior-frontend') {
+      // Scoped to what THIS role owns. Unscoped, the whole-project walk blamed
+      // `senior-backend` for a collapsed `App.tsx` it cannot legally edit under
+      // the assignment allowlist — a deny with no legal remedy.
+      const collapsed = repairCollapsedSource(
+        projectRoot,
+        state,
+        assignmentScopesForRole(projectRoot, runId, ownerRole),
+      );
+      if (collapsed.file) {
+        violations.push(block('implementer-collapse-gate',
+          `Implementer completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed.file}\` packs an entire function/component onto a single line — collapsed/minified source is a defect even when build, typecheck and lint pass, and the project formatter could not repair it. Write one statement per line, run the project formatter, and re-emit \`IMPLEMENTED\`.`,
+          { FILE: collapsed.file }));
+      }
+    }
     // NO read-receipt gate here, by measurement. A gate keyed on rules-ack
     // receipts was written and REMOVED after 9co proved the receipts are not
     // evidence of ingestion: every role satisfied it by batching the pager
@@ -358,7 +417,13 @@ export function digestCompletionGates(ctx: {
           EVIDENCE: implementerLighthouseClaim.line,
         }));
     }
-    const skipped = skippedVerificationLine(content);
+    // Read the heredoc payload too. A shell-derived digest write carries
+    // `resultContent: ''`, so a role that published its digest through
+    // `cat > … <<'EOF'` — an explicitly permitted way to write run bookkeeping —
+    // skipped this gate entirely while the identical digest through `Write` was
+    // denied. The reviewer satisfiability gate below already reads `shellBody`
+    // for the same reason; this is the same channel, not a new one.
+    const skipped = skippedVerificationLine(implementerBody);
     if (skipped) {
       violations.push(block('implementer-verification-skipped-gate',
         `Implementer verification gate: this digest reports a required command as skipped or unavailable — "${skipped}" — directly alongside \`IMPLEMENTED\`. A verdict is a claim that the owned scope was verified, so an unrun build/typecheck/lint makes it unverifiable and the errors surface later in a sibling role's build. Install the toolchain at its owning manifest, run the command to completion, record the real outcome, then re-emit \`IMPLEMENTED\`. If the command genuinely does not apply, say why without claiming it was skipped.`,
@@ -471,7 +536,12 @@ export function digestCompletionGates(ctx: {
   // re-run the sweep after a fix cycle; this turns "ignored instruction, silent stall" into
   // an actionable deny at the moment the stale verdict is written.
   const testerDigest = TESTER_DIGEST_RE.exec(filePath);
-  if (testerDigest && /\bTESTS_GREEN\b/.test(content)) {
+  // The VERDICT line, not the token anywhere in the body — every sibling gate in
+  // this file already reads it that way, and contracts.ts records why: whole-body
+  // matching once blocked honest failure reports, "gates were selecting for
+  // phrasing, not truth". A tester writing `verdict: TESTS_FAILING` and then
+  // EXPLAINING why it cannot claim TESTS_GREEN was tripping this whole battery.
+  if (testerDigest && digestClaimsVerdict(content, 'TESTS_GREEN')) {
     const runId = testerDigest[2] || '';
     if (runId === currentRunId && violations.length === 0) {
       const refresh = refreshVerificationAfterImplementation(projectRoot, runId, state);

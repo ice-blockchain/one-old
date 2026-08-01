@@ -618,3 +618,44 @@ test('every legacy projection round-trips to its own canonicalStatus', () => {
     assert.equal(legacyView === 'completed', canonical === 'verified', canonical);
   }
 });
+
+// A claim vetoes settlement only while it represents a LIVE agent. Nothing aged
+// one out, so an abandoned run held `activeClaims > 0` forever — and because a
+// later `verified` is downgraded back to `validating` while that is true, the
+// held claims actively prevented the run from ever certifying. Observed 15cl:
+// `validating` with 4 claims hours after the session had ended.
+test('activeRunClaimScan ignores claims older than the subagent staleness window', () => {
+  withProject((cwd) => {
+    const runId = 'R';
+    const dir = path.join(cwd, '.traffic-one', 'runs', runId);
+    fs.mkdirSync(dir, { recursive: true });
+    const claim = (name: string, ageMs: number): void => {
+      const at = new Date(Date.now() - ageMs).toISOString();
+      fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify({
+        claimId: `senior-backend-1-${name}`,
+        runId,
+        role: 'senior-backend',
+        status: 'claimed',
+        createdAt: at,
+        claimedAt: at,
+      }), 'utf8');
+    };
+
+    // Negative row, and the one that matters: a working agent must keep vetoing.
+    claim('fresh', 60_000);
+    assert.equal(activeRunClaimScan(cwd, runId).count, 1, 'a live claim still blocks settlement');
+
+    // An abandoned one stops.
+    claim('abandoned', 45 * 60 * 1000);
+    assert.equal(
+      activeRunClaimScan(cwd, runId).count,
+      1,
+      'a claim past the staleness window is residue, not an agent',
+    );
+
+    // With nothing live left, the veto is gone entirely — which is what lets an
+    // abandoned run reach a terminal state instead of poisoning later runs.
+    fs.rmSync(path.join(dir, 'fresh.json'));
+    assert.equal(activeRunClaimScan(cwd, runId).count, 0);
+  });
+});

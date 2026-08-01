@@ -34,6 +34,16 @@ function withPluginAndProject(fn: (project: string, plugin: string) => void): vo
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination);
   }
+  // Real role agent docs, because the Codex materializer's whole job is to carry
+  // the FULL body to a host that cannot receive it any other way. A stub body
+  // would let a truncating regression pass.
+  fs.mkdirSync(path.join(plugin, 'agents'), { recursive: true });
+  for (const role of ['senior-frontend', 'senior-backend']) {
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', '..', '..', 'modules', role, 'agent.md'),
+      path.join(plugin, 'agents', `${role}.md`),
+    );
+  }
   const project = path.join(base, 'proj');
   const home = path.join(base, 'home');
   fs.mkdirSync(project, { recursive: true });
@@ -92,6 +102,18 @@ test('materializeProjectAssets writes rules + skills + manifest + AGENTS.md/CLAU
     assert.equal(fs.existsSync(path.join(project, 'AGENTS.md')), true);
     assert.equal(fs.existsSync(path.join(project, 'CLAUDE.md')), true);
     assert.equal(hasMaterializedProjectAssets(project, state), true);
+    // Codex is a `plugin-injected-fallback` host: the child gets a ~2.5k kernel
+    // excerpt in its SessionStart header and nothing else, so without a file on
+    // disk its role contract simply does not reach it. Kilo, Copilot and
+    // Windsurf all inline the full `roleAgentBody`; this asserts Codex has the
+    // same. The length bar is what makes it a regression test — an empty or
+    // kernel-sized file would satisfy mere existence.
+    const contract = path.join(project, '.traffic-one', 'agents', 'senior-frontend.md');
+    assert.equal(fs.existsSync(contract), true, 'the codex role contract must be materialized');
+    assert.ok(
+      fs.readFileSync(contract, 'utf8').length > 4000,
+      'the contract must be the full role doc, not the kernel excerpt',
+    );
     // re-run keeps the materialization valid
     materializeProjectAssets(project, state);
     assert.equal(hasMaterializedProjectAssets(project, state), true);

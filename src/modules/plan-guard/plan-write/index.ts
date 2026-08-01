@@ -30,6 +30,7 @@ import { pluginRoot } from '../../../shared/paths';
 import { makeSkillBlock } from '../../../shared/skill-block';
 import { activeAgentRole, explainUnresolvedRunAgent, hookSessionIdentity, isNativeState, readEffectiveState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
 import { capturePlanGuardDebug } from '../../../shared/state/claim-capture';
+import { denyRepeatEscalation, denySignature, recordDenyRepeat } from '../../../shared/state/deny-repeat';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../../shared/tool-classify';
 import {
   capabilityProfileForRun,
@@ -372,8 +373,15 @@ export function planWriteGate(ctx: Ctx): HookResult {
     ...(effectiveRole ? {} : { unresolved: explainUnresolvedRunAgent(projectRoot, state, raw) }),
     violations: violations.map((v) => (v.length > 400 ? `${v.slice(0, 400)}…` : v)),
   });
+  // A gate is a pure function of on-disk state, so an unchanged retry draws this
+  // exact message again — forever, with nothing counting. Measured in 17cl: 15 of
+  // 25 denies were repeats of four (file, reason) pairs, one refused seven times
+  // over 25 minutes before a replan resolved a one-line fix the text had already
+  // named. Say so from the third identical attempt; the escalation is advice, not
+  // a cap — capping here would strand a run whose next attempt was about to work.
+  const repeats = recordDenyRepeat(projectRoot, runId, denySignature(filePath, violations));
   // The trailing line prevents a real recovery failure: after a deny on a NEW
   // file the agent assumed partial content existed and issued Edit calls
   // against it ("File does not exist" ×2, observed 5cl-claude on plan.md).
-  return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}\nNo write was applied — the denied Write/Edit/apply_patch left the target file(s) unchanged on disk. Fix the violation(s) and re-issue the FULL corrected write; do not Edit content that was never written.`);
+  return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}\nNo write was applied — the denied Write/Edit/apply_patch left the target file(s) unchanged on disk. Fix the violation(s) and re-issue the FULL corrected write; do not Edit content that was never written.${denyRepeatEscalation(repeats, filePath)}`);
 }

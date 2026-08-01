@@ -17,6 +17,7 @@
 // have none, and a fabricated origin belongs in the negative-gate rows where it
 // must produce a deny.
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 import { profileUsesReactI18n } from '../../../shared/architecture-contract';
@@ -796,9 +797,34 @@ function e2eSpec(): string {
 // A real compilable module: `go build ./...` and `go test ./...` actually run
 // in this tier, so these have to be correct Go, not Go-shaped text.
 
-function goPackage(rel: string): string {
+// The compiled backend-only Go layout puts EVERY module flat in one directory
+// with no root-level entry, so that single package is the program and must be
+// `main` — which is exactly what the live 15cl run produced ("Write surface is
+// FLAT internal/*.go = one package main"). Emitting `package internal` instead
+// made both Go cases green for a reason unrelated to the product: `go build
+// ./...` discards the object for a NON-main package, so the runner's bare
+// `go build ./...` never hit the output-name collision that made TESTS_GREEN
+// unreachable in the real run. A root-level `.go` file means the repo brought
+// its own entry (the existing-repo fixture) — leave that shape alone.
+function goEntrypoint(ctx: ImplementContext): string | null {
+  // An existing repo already declares its own package layout — the fixture ships
+  // `main.go` at the root and `package internal` beside it, and Go names a package
+  // per DIRECTORY, so renaming the compiled one would collide with source the run
+  // never owned. The git-head baseline carries no file list, so read the disk.
+  const owned = fs.existsSync(ctx.projectRoot)
+    && fs.readdirSync(ctx.projectRoot).some((name) => name.endsWith('.go'));
+  if (owned) return null;
+  const sources = ctx.outputsFor('senior-backend')
+    .filter((rel) => rel.endsWith('.go') && !/_test\.go$/.test(path.basename(rel)));
+  if (!sources.length || sources.some((rel) => !rel.includes('/'))) return null;
+  return [...sources].sort()[0] ?? null;
+}
+
+function goPackage(rel: string, entry: string | null): string {
   const dir = path.dirname(rel);
-  return dir === '.' ? 'main' : path.basename(dir);
+  if (dir === '.') return 'main';
+  if (entry && path.dirname(entry) === dir) return 'main';
+  return path.basename(dir);
 }
 
 // Go modules are SELF-CONTAINED and named from their compiled filename. An
@@ -816,10 +842,15 @@ function goSymbol(rel: string): string {
     .join('');
 }
 
-function goRecord(rel: string): string {
+function goRecord(rel: string, entry: string | null): string {
   const symbol = goSymbol(rel);
+  // `package main` without `func main` does not compile, so the designated
+  // entry carries it. One per package, deterministically the first by path.
+  const main = rel === entry
+    ? ['', '// main starts the service. The compiled flat layout has no other home for it.', 'func main() {', `\t_ = List${symbol}()`, '}']
+    : [];
   return [
-    `package ${goPackage(rel)}`,
+    `package ${goPackage(rel, entry)}`,
     '',
     `// ${symbol}Item is one record served by this module.`,
     `type ${symbol}Item struct {`,
@@ -845,16 +876,17 @@ function goRecord(rel: string): string {
     '\t}',
     `\treturn ${symbol}Item{}, false`,
     '}',
+    ...main,
     '',
   ].join('\n');
 }
 
 // Behaviour, not a grep over source text. Names derive from the file so sibling
 // test files in one package cannot collide.
-function goTest(rel: string): string {
+function goTest(rel: string, entry: string | null): string {
   const symbol = goSymbol(rel);
   return [
-    `package ${goPackage(rel)}`,
+    `package ${goPackage(rel, entry)}`,
     '',
     'import "testing"',
     '',
@@ -958,9 +990,10 @@ function pySource(rel: string): string | null {
   return pyModule(rel);
 }
 
-function goSource(rel: string): string | null {
-  if (/_test\.go$/.test(path.basename(rel))) return goTest(rel);
-  return goRecord(rel);
+function goSource(rel: string, ctx: ImplementContext): string | null {
+  const entry = goEntrypoint(ctx);
+  if (/_test\.go$/.test(path.basename(rel))) return goTest(rel, entry);
+  return goRecord(rel, entry);
 }
 
 // --- Laravel ---------------------------------------------------------------
@@ -1049,7 +1082,7 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   // Anchored on the suffix: the compiler nests a Laravel app under a web root
   // (apps/web/routes/web.php), so an exact root match authored nothing at all.
   if (rel.endsWith('routes/web.php')) return laravelRoutes(ctx);
-  if (rel.endsWith('.go')) return goSource(rel);
+  if (rel.endsWith('.go')) return goSource(rel, ctx);
   if (rel.endsWith('.py')) return pySource(rel);
   if (rel === 'pyproject.toml') {
     // Presence of this file is what resolveStackCommand keys on for the Python

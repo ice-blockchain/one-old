@@ -95,3 +95,49 @@ test('other hosts and empty urls never claim evidence', () => {
   assert.equal(assistantPostedLink({ url: URL, host: 'cursor', raw: {} }), false);
   assert.equal(assistantPostedLink({ url: '', host: 'claude', raw: { transcript_path: '/nope' } }), false);
 });
+
+// Cursor was the one fallback host this module skipped, on the belief that it
+// exposes no readable assistant transcript. It does:
+// `~/.cursor/projects/<cwd-slug>/agent-transcripts/<id>/<id>.jsonl`, whose
+// assistant records separate `text` blocks (the model speaking) from `tool_use`
+// blocks. An `open '<url>'` tool call shows the user nothing and must not count.
+const cursorAssistantLine = JSON.stringify({
+  role: 'assistant',
+  message: { content: [{ type: 'text', text: `Open Traffic One setup: ${URL}` }] },
+});
+const cursorToolUseLine = JSON.stringify({
+  role: 'assistant',
+  message: { content: [{ type: 'tool_use', name: 'Shell', input: { command: `open '${URL}'` } }] },
+});
+const cursorUserLine = JSON.stringify({
+  role: 'user',
+  message: { content: [{ type: 'text', text: `<user_query>go</user_query> ${URL}` }] },
+});
+
+test('cursor: the parent transcript proves delivery, and only its text blocks do', () => {
+  withDir((dir) => {
+    const projects = path.join(dir, 'projects');
+    const cwd = path.join(dir, 'work');
+    fs.mkdirSync(cwd, { recursive: true });
+    const slug = path.resolve(cwd).replace(/^\/+/, '').replace(/[/:\s]+/g, '-');
+    const sessionId = '32a74fc9-2270-4263-acef-45ee2226a769';
+    const transcriptDir = path.join(projects, slug, 'agent-transcripts', sessionId);
+    fs.mkdirSync(transcriptDir, { recursive: true });
+    const transcript = path.join(transcriptDir, `${sessionId}.jsonl`);
+    const env = { ...process.env, TRAFFIC_ONE_CURSOR_PROJECTS_DIR: projects };
+    const input = { url: URL, host: 'cursor', raw: {}, sessionId, cwd, env };
+
+    // Negative row: opening the URL with a tool, or the user pasting it back, is
+    // not the assistant showing it.
+    fs.writeFileSync(transcript, `${cursorToolUseLine}\n${cursorUserLine}\n`, 'utf8');
+    assert.equal(assistantPostedLink(input), false, 'a tool_use open() is not delivery');
+
+    fs.appendFileSync(transcript, `${cursorAssistantLine}\n`, 'utf8');
+    assert.equal(assistantPostedLink(input), true, 'an assistant text block IS delivery');
+
+    // A different session id must not read this transcript.
+    assert.equal(assistantPostedLink({ ...input, sessionId: 'other-session' }), false);
+    // And a missing cwd yields no evidence rather than a guess.
+    assert.equal(assistantPostedLink({ ...input, cwd: '' }), false);
+  });
+});

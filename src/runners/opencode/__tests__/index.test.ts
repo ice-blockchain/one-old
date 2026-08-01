@@ -77,7 +77,7 @@ function withCodexProPolicyEnv(
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts' | 'prompt' | 'collapsed';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts' | 'prompt' | 'collapsed' | 'twopart';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -96,6 +96,21 @@ const i = process.argv.indexOf('--dir');
 const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created foo.txt' } }) + '\\n');
 fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
+`,
+    // The ONLY stub that emits more than one text part, and the whole point of
+    // it. Every other stub emits exactly one, so a digest summary built by
+    // head-slicing the joined narration and one built from the model's last
+    // message are byte-identical under all of them — the behaviour was
+    // untestable until a run had a preamble AND a conclusion. Real runs always
+    // do: the observed shape was "Let me check the existing setup first." as the
+    // summary of a run that ended by reporting what it built.
+    twopart: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'Let me check the existing setup first.' } }) + '\\n');
+fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created foo.txt with the requested helper' } }) + '\\n');
 `,
     // simulates a unit that ran an install in the sandbox: writes a real source
     // file PLUS node_modules junk and a wrong-package-manager lockfile. The
@@ -471,6 +486,20 @@ test('delegate applies a successful run to the working tree + writes a digest', 
     assert.deepEqual(provenance[0].touched, ['foo.txt']);
     // worktree cleaned up
     assert.equal(spawnSync('git', ['-C', dir, 'worktree', 'list'], { encoding: 'utf8' }).stdout.trim().split('\n').length, 1);
+  });
+});
+
+test('the digest summary is what the model concluded, not how it opened', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('twopart');
+    const r = delegate(dir, { role: 'frontend', task: 'create foo.txt', runId: '2026-01-01T00-00-00Z' });
+    assert.equal(r.ok, true);
+    const body = fs.readFileSync(path.join(dir, '.traffic-one', 'digests', '2026-01-01T00-00-00Z', 'frontend.md'), 'utf8');
+    const summary = /^- unit 1 .*$/m.exec(body)?.[0] || '';
+    assert.match(summary, /created foo\.txt with the requested helper/);
+    // The load-bearing half. Reverted, the summary is the JOIN of every part cut
+    // to a head slice, so it starts with the preamble and this fails.
+    assert.doesNotMatch(summary, /Let me check/, 'a preamble is not a report of work done');
   });
 });
 

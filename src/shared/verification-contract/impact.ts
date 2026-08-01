@@ -319,20 +319,25 @@ export function changedRoutes(
 }
 
 export function requiredChecks(impact: UiImpact, stackPerformanceRisk = false): string[] {
+  // `stack-format` rides EVERY impact level: unformatted source is a defect on a
+  // web app exactly as much as on an api-only service, and configuration-only
+  // verification let two runs ship with format:check red end to end. A project
+  // that declares no format script reports `not-applicable` with its reason,
+  // which validateQaReportV2 accepts for non-build stack checks.
   const withStackPerformance = (checks: string[]): string[] => (
-    stackPerformanceRisk ? [...checks, 'stack-performance'] : checks
+    stackPerformanceRisk ? [...checks, 'stack-format', 'stack-performance'] : [...checks, 'stack-format']
   );
   if (impact === 'none') return withStackPerformance(['stack-build', 'stack-test', 'stack-lint']);
-  if (impact === 'nonvisual') return ['stack-build', 'unit-or-component-tests', 'axe-when-dom'];
+  if (impact === 'nonvisual') return ['stack-build', 'stack-format', 'unit-or-component-tests', 'axe-when-dom'];
   if (impact === 'behavioral') {
     return [
-      'stack-build', 'playwright-local', 'dom-assertions', 'actions', 'routing',
+      'stack-build', 'stack-format', 'playwright-local', 'dom-assertions', 'actions', 'routing',
       'hydration', 'console-errors', 'network-errors',
     ];
   }
   if (impact === 'visual') {
     return [
-      'stack-build', 'playwright-local', 'dom-assertions', 'actions', 'routing',
+      'stack-build', 'stack-format', 'playwright-local', 'dom-assertions', 'actions', 'routing',
       'hydration', 'console-errors', 'network-errors', 'responsive-screenshots',
     ];
   }

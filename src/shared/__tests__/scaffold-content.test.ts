@@ -29,9 +29,52 @@ test('canonical bodies exist for .prettierignore and .env.example only', () => {
   assert.match(String(scaffoldFileContent('.prettierignore')), /\.traffic-one\//);
   assert.match(String(scaffoldFileContent('.prettierignore')), /pnpm-lock\.yaml/);
   assert.match(String(scaffoldFileContent('.prettierignore')), /\.turbo\//);
-  assert.match(String(scaffoldFileContent('.env.example')), /VITE_SITE_URL=/);
   assert.equal(scaffoldFileContent('package.json'), null);
   assert.equal(scaffoldFileContent('apps/web/src/App.tsx'), null);
+});
+
+// `.env.example` is owned by senior-backend on EVERY profile that has one, so an
+// unconditional Vite body seeded `VITE_SITE_URL=` into API-only projects (15cl:
+// the Go backend replaced it by hand). A caller with no profile cannot be assumed
+// to be building a web surface.
+test('.env.example is web-shaped only where a web surface exists', () => {
+  withTempDir((cwd) => {
+    const service = compileArchitecture(cwd, 'R', {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'store', name: 'Store', kind: 'store' }],
+    } as ArchitectureInputV1);
+    const goBody = String(scaffoldFileContent('.env.example', service.profile));
+    assert.doesNotMatch(goBody, /VITE_/, 'a Go API must not be handed Vite crawl-origin variables');
+    assert.match(goBody, /^PORT=$/m);
+    assert.doesNotMatch(String(scaffoldFileContent('.env.example')), /VITE_/, 'no profile must not imply a web surface');
+  });
+});
+
+// One authority, two encodings: `lint:css` globs `**/*.css` across the repo, so a
+// stylelint config without ignoreFiles lints the build output it just produced
+// (249 errors in 14co, 182 in 15co). Iterating the prettier list is what keeps
+// the two from drifting apart again.
+test('the stylelint ignore list covers everything .prettierignore skips', () => {
+  const stylelint = JSON.parse(String(scaffoldFileContent('.stylelintrc.json'))) as { ignoreFiles?: string[] };
+  const ignoreFiles = stylelint.ignoreFiles || [];
+  assert.ok(ignoreFiles.length > 0, 'a repo-wide lint:css glob needs an ignore list');
+  const skipped = String(scaffoldFileContent('.prettierignore'))
+    .split('\n')
+    .filter((line) => line.endsWith('/') && !line.startsWith('#'))
+    .map((line) => line.slice(0, -1));
+  for (const dir of skipped) {
+    assert.ok(
+      ignoreFiles.includes(`**/${dir}/**`),
+      `stylelint must skip ${dir}/ — the formatter already does`,
+    );
+  }
 });
 
 test('seeds missing and blank files; never overwrites agent content', () => {
@@ -46,7 +89,9 @@ test('seeds missing and blank files; never overwrites agent content', () => {
     const written = ensureScaffoldContent(cwd, outputs);
     assert.deepEqual(written.sort(), ['.env.example', '.prettierignore']);
     assert.match(fs.readFileSync(path.join(cwd, '.prettierignore'), 'utf8'), /\.traffic-one\//);
-    assert.match(fs.readFileSync(path.join(cwd, '.env.example'), 'utf8'), /VITE_SITE_URL=/);
+    // No profile passed here, so the framework-neutral service body is correct;
+    // the web/service split has its own test above.
+    assert.match(fs.readFileSync(path.join(cwd, '.env.example'), 'utf8'), /^PORT=$/m);
 
     // A second pass changes nothing, and agent-authored content is preserved.
     fs.writeFileSync(path.join(cwd, '.prettierignore'), 'custom-entry\n');

@@ -368,7 +368,12 @@ function targetsMayReanchor(ctx: Ctx, externalTargets: readonly ToolScopeTarget[
   const raw = obj(ctx.input.raw) || {};
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
-  return isMutatingPreToolUse(toolName, toolInput);
+  // Command substitution is deliberately NOT counted here — see the option's own
+  // comment. It is evidence that the command might write SOMETHING, never
+  // evidence about the foreign path it merely names, and treating it as adoption
+  // is what let a read with a subshell in it pull an unrelated project (once
+  // `/dev`) into scope and demand onboarding there.
+  return isMutatingPreToolUse(toolName, toolInput, { ignoreCommandSubstitution: true });
 }
 
 function absoluteTarget(base: string, target: ToolScopeTarget): ToolScopeTarget {

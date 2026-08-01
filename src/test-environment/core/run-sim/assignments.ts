@@ -20,6 +20,13 @@ export interface ImplementContext {
   runId: string;
   architecture: CompiledArchitectureV1;
   /** Compiled outputs this role is allowed to write, in contract order. */
+  /**
+   * The project the run is writing into. Authoring a language whose package
+   * naming is directory-wide (Go) has to see what the repo ALREADY declares —
+   * the compiled outputs alone cannot tell a greenfield tree from one that
+   * brought its own entrypoint.
+   */
+  projectRoot: string;
   outputsFor(role: string): string[];
   /** Semantic module id → its compiled output path. */
   outputOf(moduleId: string): string | null;
@@ -43,6 +50,7 @@ export function buildImplementContext(
   runId: string,
   architecture: CompiledArchitectureV1,
   assignments: { assignments: unknown[] },
+  projectRoot: string,
 ): ImplementContext {
   const byRole = new Map<string, string[]>();
   for (const raw of assignments.assignments) {
@@ -76,6 +84,7 @@ export function buildImplementContext(
   return {
     runId,
     architecture,
+    projectRoot,
     outputsFor: (role) => {
       const outputs: string[] = [];
       for (const rel of byRole.get(role) ?? []) {

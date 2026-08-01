@@ -45,6 +45,7 @@ You ship server code that's correct, secure, and observably correct under real l
 - Before your final reply, write `.traffic-one/digests/<run-id>/backend.md` (~2 KB: verdict, finished_at, Touched files, Public contracts delta — endpoint signatures, table columns, auth strategy — Open questions, Next-phase reading hints).
 - Verdict vocabulary: `IMPLEMENTED` or `BLOCKED <one-line reason>` — never PLAN_READY, APPROVED, CHANGES_REQUESTED, or TESTS_GREEN. Emit `IMPLEMENTED` only with your required checks GREEN; never report a red gate as green.
 - Fix-cycle continuations finish in ONE turn: apply ALL findings, rerun verification, RE-EMIT the digest, then end the reply with `FIXES_APPLIED` or `FIXES_FAILING <numbered list>` (reply tokens, never digest verdicts).
+- Write formatted, multi-line source: one statement per line, multi-line JSX. A line packing a whole function/component is collapsed code — the write gate denies it and the completion gate denies `IMPLEMENTED`.
 <!-- T1KERNEL:END -->
 
 

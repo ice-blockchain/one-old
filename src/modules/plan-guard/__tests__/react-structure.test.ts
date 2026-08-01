@@ -214,22 +214,38 @@ test('minifying a 600-line entrypoint monolith hides no blocking ID and adds the
   });
 });
 
-test('catalog-selected primitives must be installed, exported, and consumed through @app/ui', () => {
+// Installed + exported is a FACT and blocks. Whether every selected primitive is
+// CONSUMED is a product judgment the role cannot resolve — the catalog is
+// immutable after PLAN_READY, deleting the file just trades this finding for
+// STRUCT_UI_SYSTEM_MISSING, and this very test's satisfying fixture is a
+// `<Name>Demo.tsx`, i.e. the preview block the reviewer rejects. Enforced as an
+// error it produced faked usage twice (14co previews, 15co inert wrappers) and
+// the reviewer caught both, so it batches to the reviewer instead of blocking.
+test('a catalog primitive must be installed and exported; being unconsumed only advises', () => {
   withProject((cwd) => {
     const contract = prepare(cwd, { ...INPUT, uiPrimitives: ['progress'] });
     writeCompiledModules(cwd, contract);
-    const missing = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
-    assert.ok(missing.includes('STRUCT_UI_SYSTEM_MISSING'));
-    assert.ok(missing.includes('STRUCT_UI_PRIMITIVE_NOT_SHARED'));
+    const report = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    const missing = ids(report);
+    assert.ok(missing.includes('STRUCT_UI_SYSTEM_MISSING'), 'a missing primitive is a fact and blocks');
+    assert.ok(!missing.includes('STRUCT_UI_PRIMITIVE_NOT_SHARED'), 'unconsumed must not block');
+    // It is still REPORTED — demoted, never dropped, or the reviewer loses it.
+    const unconsumed = report.findings.find((finding) => finding.id === 'STRUCT_UI_PRIMITIVE_NOT_SHARED');
+    assert.ok(unconsumed, 'the finding must still reach the quality ledger');
+    assert.equal(unconsumed?.severity, 'warning');
+    assert.match(unconsumed?.message || '', /do NOT add a preview\/demo block/);
 
     writeResolvedUiSystem(
       cwd,
       'progress',
       'import { Progress } from "@app/ui";\nexport function ProgressDemo(){return <Progress />}\n',
     );
-    const resolved = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
-    assert.ok(!resolved.includes('STRUCT_UI_SYSTEM_MISSING'));
-    assert.ok(!resolved.includes('STRUCT_UI_PRIMITIVE_NOT_SHARED'));
+    const resolved = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.ok(!ids(resolved).includes('STRUCT_UI_SYSTEM_MISSING'));
+    assert.ok(
+      !resolved.findings.some((finding) => finding.id === 'STRUCT_UI_PRIMITIVE_NOT_SHARED'),
+      'a real @app/ui consumer clears it entirely',
+    );
   });
 });
 
