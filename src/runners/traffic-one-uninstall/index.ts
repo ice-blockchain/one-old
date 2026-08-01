@@ -173,6 +173,48 @@ function presenceStep(label: string, file: string, action: string): Step {
     : { label, ok: true, detail: `not present (${file})` };
 }
 
+// First `<dir>/<cmd>` on the given PATH, symlinks included (a dangling shim is
+// still residue worth naming). Deliberately env-threaded rather than a shell
+// `command -v`, so the report describes the machine, not this process.
+function resolveOnPath(cmd: string, env: NodeJS.ProcessEnv): string | null {
+  for (const dir of (env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, cmd);
+    try {
+      fs.lstatSync(candidate);
+      return candidate;
+    } catch { /* next dir */ }
+  }
+  return null;
+}
+
+// ADVISORY ONLY — never removes anything. Traffic One used to install graphify
+// through pipx, which lands in the user's pipx home instead of the managed
+// toolchain root, so the state sweep above cannot reach it. We report it and
+// stop there: provenance is undecidable (the user may have installed graphifyy
+// for themselves), and running `pipx uninstall` on their tool would be a worse
+// failure than leaving a stray one behind.
+function pipxGraphifyStep(env: NodeJS.ProcessEnv): Step {
+  const label = 'graphify installed outside ~/.traffic-one';
+  const onPath = resolveOnPath('graphify', env);
+  if (!onPath) return { label, ok: true, detail: 'not present' };
+  let target = onPath;
+  try {
+    target = fs.realpathSync(onPath);
+  } catch {
+    try { target = fs.readlinkSync(onPath); } catch { /* keep the PATH entry */ }
+  }
+  if (!/[\\/]pipx[\\/]venvs[\\/]/.test(target)) {
+    return { label, ok: true, detail: `\`graphify\` on PATH is not a pipx install — not ours, left alone (${onPath})` };
+  }
+  return {
+    label,
+    ok: true,
+    detail: `\`graphify\` on PATH resolves into a pipx venv (${target}) — older Traffic One versions installed it there. `
+      + 'It is NOT removed by this uninstall. If you do not use graphifyy yourself: `pipx uninstall graphifyy`',
+  };
+}
+
 function hostStep(label: string, result: RunnerOutput): Step {
   return {
     label,
@@ -225,6 +267,7 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
     }
     if (installs.length === 0) steps.push({ label: 'plugin bundle', ok: true, detail: 'no installed bundle found' });
     steps.push(...removeStateDirs(env, true));
+    steps.push(pipxGraphifyStep(env));
     return { code: 0, steps };
   }
 
@@ -248,6 +291,10 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
   // 4. Machine-global state LAST — after every step that could touch it, so the
   // user genuinely ends with no ~/.traffic-one.
   steps.push(...removeStateDirs(env, false));
+
+  // 5. Advisory tail: name what a past pipx-installed graphify left behind that
+  // step 4 provably cannot reach. Reports only; never fails the run.
+  steps.push(pipxGraphifyStep(env));
 
   return { code: steps.every((step) => step.ok) ? 0 : 1, steps };
 }

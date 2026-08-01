@@ -222,8 +222,36 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
       'Run-team enforcement gate: this run has CompiledArchitectureV1 but its current-run runtime assignments or VerificationContractV2 are missing, stale, or tampered. The write fails closed; repair/recompile this run and never borrow an assignments manifest from a sibling run.'));
   }
   if (isMaintenancePhase(state, (state as Record<string, unknown>).mode) && !runtimeAssignments) {
-    return deny(block('run-team-maintenance-contract',
-      'Run-team enforcement gate: maintenance writes fail closed without a hash-valid runtime assignment or a bounded quick-fix WorkUnitContract. No unattributed or legacy-scope write was made; publish the parent-owned contract before retrying.'));
+    // A senior implementer can hold a bounded-maintenance contract, and until now
+    // this gate could not see it. `runtimeAssignments` is strictly per-current-run
+    // and a maintenance request rotates a FRESH run with no compiled architecture,
+    // so it is always null here — which meant the deny below was unconditional for
+    // `senior-frontend`/`senior-backend`. `quick-fix` escapes above by consulting
+    // its bootstrap contract; these roles never got the same door, even though the
+    // runtime mints them `${role}:bounded-maintenance` envelopes
+    // (run-bootstrap-policy/work-unit.ts) and the spawn gate already recognizes
+    // them (agent-model/handler.ts). The whole paid fallback path the task-triage
+    // skill documents — "if OpenCode declines, spawn that paid role subagent" —
+    // was therefore dead on its first write, on every host.
+    //
+    // The bar is identical to quick-fix's: a parent-published, readback-verified
+    // envelope whose allowlist covers EVERY requested output. A role with neither
+    // that nor runtime assignments still fails closed.
+    const maintenanceBootstrap = acRole && stateRunId
+      ? readActiveRunBootstrap(projectRoot, stateRunId, acRole)
+      : null;
+    const boundedScope = maintenanceBootstrap
+      && maintenanceBootstrap.workUnit.unitId === `${acRole}:bounded-maintenance`
+      ? {
+        include: maintenanceBootstrap.workUnit.allowlist,
+        exclude: maintenanceBootstrap.workUnit.allowlistExclude,
+      }
+      : null;
+    if (!boundedScope || !writeTargetPaths.every((target) => matchesScope(target, boundedScope))) {
+      return deny(block('run-team-maintenance-contract',
+        'Run-team enforcement gate: maintenance writes fail closed without a hash-valid runtime assignment or a bounded quick-fix WorkUnitContract. No unattributed or legacy-scope write was made; publish the parent-owned contract before retrying.'));
+    }
+    return null;
   }
   if (!inSubagent) {
     if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) {

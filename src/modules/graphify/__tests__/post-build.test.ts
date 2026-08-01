@@ -130,13 +130,13 @@ test('post-build code-graph hint is silent when the artefact is fresh', () => {
 test('post-build code-graph hint runs graphify bootstrap + emits the success banner', () => {
   withProject({ provider: 'graphify' }, (cwd) => {
     let called = 0;
-    __setCodeGraphBootstraps({ graphify: () => { called += 1; return { ok: true, action: 'installed-pipx', durationMs: 1200 }; } });
+    __setCodeGraphBootstraps({ graphify: () => { called += 1; return { ok: true, action: 'installed-venv', durationMs: 1200 }; } });
     const r = postBuildCodeGraphHint(ctxFor(cwd, 'pnpm build'));
     assert.equal(called, 1);
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.ok(r.context.includes('[graphify] Codebase graph built'));
-      assert.ok(r.context.includes('installed `graphifyy` via pipx'));
+      assert.ok(r.context.includes('installed `graphifyy` in a Traffic One managed venv'));
     }
   });
 });
@@ -151,7 +151,7 @@ test('post-build code-graph bootstrap resolves a nested monorepo build to the wo
     __setCodeGraphBootstraps({
       graphify: (root) => {
         bootstrapCwd = root;
-        return { ok: true, action: 'installed-pipx', durationMs: 10 };
+        return { ok: true, action: 'installed-venv', durationMs: 10 };
       },
     });
 

@@ -38,3 +38,59 @@ test('a transient EPERM on lock acquire retries instead of escaping the hook', (
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The mkdir-then-rename handshake stages every acquisition in a sibling
+// `<lock>.<token>.pending` dir, and the only thing that removed one was the
+// `finally` in withProjectStateLock — which does not run when the host kills the
+// hook process. `reapAbandonedEmptyLock` could not help: it reaps the lock path
+// itself, and a `.pending` dir is never empty (it holds its owner file). One
+// 16co run accumulated 22 of them, which is what made `.traffic-one` look like
+// it was sprouting directories at random.
+test('a later acquirer reaps pending staging dirs left by dead hook processes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-state-lock-reap-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    const lockPath = path.join(dir, '.traffic-one', '.one.json.report-id.lock');
+    const stale = Date.now() - 60_000;
+
+    // Dead owner, old enough: must be reaped.
+    const dead = `${lockPath}.deadtoken.pending`;
+    fs.mkdirSync(dead, { recursive: true });
+    fs.writeFileSync(
+      path.join(dead, 'owner-deadtoken.json'),
+      // pid 0x7FFFFFFF is not a live process; process.kill would ESRCH.
+      JSON.stringify({ pid: 0x7FFFFFFF, token: 'deadtoken', createdAt: stale }),
+      'utf8',
+    );
+    fs.utimesSync(dead, new Date(stale), new Date(stale));
+
+    // Negative row 1: same shape but owned by THIS process, which is alive.
+    const live = `${lockPath}.livetoken.pending`;
+    fs.mkdirSync(live, { recursive: true });
+    fs.writeFileSync(
+      path.join(live, 'owner-livetoken.json'),
+      JSON.stringify({ pid: process.pid, token: 'livetoken', createdAt: stale }),
+      'utf8',
+    );
+    fs.utimesSync(live, new Date(stale), new Date(stale));
+
+    // Negative row 2: dead owner but FRESH — somebody may be mid-handshake.
+    const fresh = `${lockPath}.freshtoken.pending`;
+    fs.mkdirSync(fresh, { recursive: true });
+    fs.writeFileSync(
+      path.join(fresh, 'owner-freshtoken.json'),
+      JSON.stringify({ pid: 0x7FFFFFFF, token: 'freshtoken', createdAt: Date.now() }),
+      'utf8',
+    );
+
+    withProjectStateLock(dir, () => undefined);
+
+    assert.equal(fs.existsSync(dead), false, 'a stale pending dir with a dead owner must be reaped');
+    assert.equal(fs.existsSync(live), true, 'a live owner is somebody\'s in-flight acquisition');
+    assert.equal(fs.existsSync(fresh), true, 'a fresh pending dir may be mid-handshake');
+    // And the acquisition itself still worked.
+    assert.equal(fs.existsSync(lockPath), false, 'the lock is released after the critical section');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

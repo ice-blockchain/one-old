@@ -164,6 +164,40 @@ test('XDG_STATE_HOME: the active state dir AND the pre-XDG ~/.traffic-one leftov
   });
 });
 
+// The state sweep removes ~/.traffic-one and nothing else, so a graphify that an
+// older Traffic One installed through pipx provably outlives an uninstall. It is
+// REPORTED, never removed: provenance is undecidable, and `pipx uninstall` on a
+// graphifyy the user installed themselves is a worse failure than a stray one.
+test('a pipx-installed graphify is reported, never removed', () => {
+  withHome((home, base) => {
+    const pipxBin = path.join(home, 'Library', 'Application Support', 'pipx', 'venvs', 'graphifyy', 'bin', 'graphify');
+    writeFile(pipxBin, 'binary');
+    const shimDir = path.join(home, '.local', 'bin');
+    fs.mkdirSync(shimDir, { recursive: true });
+    fs.symlinkSync(pipxBin, path.join(shimDir, 'graphify'));
+    const env = { ...base, PATH: shimDir };
+
+    const { steps } = runUninstall({ dryRun: false, keepPlugin: true }, env);
+    const step = steps.find((s) => s.label.startsWith('graphify installed outside'));
+    assert.ok(step, 'the advisory step is present');
+    assert.equal(step?.ok, true, 'the advisory never fails the uninstall');
+    assert.match(step?.detail || '', /pipx uninstall graphifyy/);
+    assert.equal(fs.existsSync(pipxBin), true, 'the pipx install is left untouched');
+    assert.equal(fs.existsSync(path.join(shimDir, 'graphify')), true, 'the PATH shim is left untouched');
+  });
+});
+
+test('a graphify that is not a pipx install is named but not blamed', () => {
+  withHome((home, base) => {
+    const binDir = path.join(home, 'bin');
+    writeFile(path.join(binDir, 'graphify'), 'binary');
+    const { steps } = runUninstall({ dryRun: true, keepPlugin: true }, { ...base, PATH: binDir });
+    const step = steps.find((s) => s.label.startsWith('graphify installed outside'));
+    assert.match(step?.detail || '', /not a pipx install/);
+    assert.equal(/pipx uninstall/.test(step?.detail || ''), false, 'no removal is suggested for a tool that is not ours');
+  });
+});
+
 test('a machine with nothing installed reports cleanly', () => {
   withHome((home, env) => {
     const result = run(['--yes'], env);

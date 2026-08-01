@@ -532,3 +532,59 @@ test('readRunAssignments returns null for absent or malformed manifests', () => 
     assert.equal(readRunAssignments(dir, RUN), null); // no entry has both a role and a non-empty include
   });
 });
+
+// A maintenance request rotates a FRESH run with no compiled architecture, so
+// `runtimeAssignments` is always null by the time this gate runs. `quick-fix`
+// has always had a door — it consults its own bootstrap contract — and the two
+// senior implementers never did, even though the runtime mints them
+// `${role}:bounded-maintenance` envelopes and the spawn gate already recognizes
+// those. So the paid fallback the task-triage skill prescribes ("if OpenCode
+// declines, spawn that paid role subagent") was dead on its FIRST write, on
+// every host, since v1.0.20. Found by fanning out over the 16co run.
+test('maintenance: a senior implementer with a bounded contract may write inside it', () => {
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      currentRunId: 'MNT',
+      lifecycle: { phase: 'maintenance', completedAt: '2026-08-01T18:36:01Z' },
+    });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    const bounded = ensureRunBootstrap(dir, 'MNT', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-maintenance-preflight',
+      modelPolicyId: 'policy-maintenance',
+      boundedOutputs: ['src/pages/Pricing.tsx'],
+      boundedAllowlist: ['src/pages/Pricing.tsx'],
+    });
+    assert.ok(bounded, 'the runtime must mint a bounded-maintenance envelope for a senior role');
+    assert.equal(bounded.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+
+    assert.equal(
+      gate(dir, state, 'src/pages/Pricing.tsx', rawFor(THREAD)),
+      null,
+      'a write the bounded allowlist covers must be allowed',
+    );
+
+    // Negative row 1: the contract binds, so a target OUTSIDE the allowlist is
+    // still refused. Without this the fix would be a hole, not a door.
+    const outside = gate(dir, state, 'src/pages/Checkout.tsx', rawFor(THREAD));
+    assert.ok(outside, 'a target outside the bounded allowlist must still be denied');
+    assert.match(String(outside), /maintenance writes fail closed/);
+  });
+});
+
+test('maintenance: a senior implementer with NO bounded contract is still refused', () => {
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      currentRunId: 'MNT2',
+      lifecycle: { phase: 'maintenance', completedAt: '2026-08-01T18:36:01Z' },
+    });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    // No ensureRunBootstrap call: nothing published, so nothing to bind to.
+    const denied = gate(dir, state, 'src/pages/Pricing.tsx', rawFor(THREAD));
+    assert.ok(denied, 'an unattributed maintenance write must fail closed');
+    assert.match(String(denied), /maintenance writes fail closed/);
+  });
+});

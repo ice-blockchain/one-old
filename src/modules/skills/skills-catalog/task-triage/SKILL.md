@@ -42,9 +42,13 @@ honor that and drop a tier. If they say "build the whole …" / "a full feature 
 The directive states the project's **team mode** and whether **OpenCode** is active. Route accordingly. On OpenCode or Kilo hosts, OpenCode delegation is inactive by design; do not call `opencode_delegate` from inside those peer/self hosts.
 
 **Run bookkeeping (all tiers) — never copy or hand-write
-`.traffic-one/runs/<runId>/assignments.json`.** With no fresh architect run, the
-run-team gate automatically scopes implementer writes via the NEWEST existing
-manifest (the build's) — no per-run copy is needed. A hand-copied manifest makes
+`.traffic-one/runs/<runId>/assignments.json`.** With no fresh architect run, an
+implementer's writes are scoped by the BOUNDED WORK-UNIT CONTRACT the parent
+publishes for it (`<role>:bounded-maintenance`, or `quick-fix:bootstrap`), not by
+any assignments manifest — the maintenance run is fresh and has none. Publish
+that contract in preflight and the writes land; skip it and every write fails
+closed, which is the correct behaviour and not something a copied manifest may
+paper over. A hand-copied manifest makes
 the new run look architect-fresh, which re-arms the Step-0 plan-batch gate on the
 previous build's stale `plan.md` queue and kills the first implementer spawn.
 Only `senior-architect` authors that file, in complex-tier runs.
@@ -105,10 +109,11 @@ Only `senior-architect` authors that file, in complex-tier runs.
     duplicate while one is recorded): on Cursor re-invoke `Task` with `resume: "<agentId>"`, on
     Claude `SendMessage { to: <agentId> }`, on Codex `followup_task { target: "<agentId>" }`, on
     Copilot the recorded background `agent_id`.
-  - **Scope note:** with no fresh architect run, the run-team gate scopes the implementer's writes
-    via the newest `runs/<id>/assignments.json` (the build's manifest). If the feature genuinely
-    needs paths outside every prior assignment, escalate to complex (fresh architect run) instead
-    of fighting out-of-scope denies.
+  - **Scope note:** the implementer's writes are bounded by the `<role>:bounded-maintenance`
+    contract published for it in preflight — name every path the change needs in that contract's
+    outputs. There is no assignments manifest on a maintenance run to fall back on. If the feature
+    genuinely needs a scope you cannot state up front, escalate to complex (fresh architect run)
+    instead of fighting out-of-scope denies.
   - **Kilo:** each direct role is a built-in `general` task with `[t1-role: senior-<role>]` on the
     first line, an immediate read of `.kilo/agents/senior-<role>.md`, and no `model` field.
   - **OpenCode active:** call the `opencode_delegate` tool FIRST for each chosen role, with the current

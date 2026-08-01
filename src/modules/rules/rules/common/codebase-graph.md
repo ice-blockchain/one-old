@@ -58,7 +58,8 @@ node ~/.traffic-one/bin/gitnexus-runner.cjs
 
 ### When `codeGraphProvider: "graphify"`
 
-graphify is Python-based (pipx-installed) and writes a Markdown report plus a
+graphify is Python-based (installed into a Traffic One-managed venv under
+`~/.traffic-one/toolchains/graphify/`) and writes a Markdown report plus a
 structured JSON graph that Traffic One keeps under `.traffic-one/graphify-out/`
 (relocated there after each scan — the project root is never polluted).
 License: **MIT**.

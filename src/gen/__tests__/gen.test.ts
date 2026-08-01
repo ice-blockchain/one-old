@@ -874,3 +874,37 @@ test('static emitter recovers when sourceRoot points at dist', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A bare `go build` over a package pattern writes a binary named after the
+// package directory whenever the pattern matches exactly one `main` package
+// (cmd/go/internal/work/build.go). On a Traffic One compiled layout that name IS
+// the directory, so the command exits 1 with `build output "internal" already
+// exists and is a directory` while nothing is wrong with the code.
+//
+// Asserted over EVERY generated doc, not the one line that was wrong. The QA
+// runner hit this in 15cl; the fix went into the runner and into the layout
+// prose; and 18cl's reviewer then re-derived the same failure from a project ADR
+// that had copied the bare form out of `golang-patterns` — a doc nobody had
+// re-read. Shipped commands propagate into user projects, so this is the class.
+test('no generated doc prints a `go build` that can collide with its own package dir', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-go-build-'));
+  try {
+    const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const offenders: string[] = [];
+    for (const relPath of write.written.filter((p) => /\.(?:md|mdc)$/i.test(p))) {
+      const body = fs.readFileSync(path.join(dir, relPath), 'utf8');
+      for (const line of body.split('\n')) {
+        // Only package-pattern builds collide; `go build` of a named .go file or
+        // an explicit `-o` target is fine, and so is prose that merely mentions
+        // the broken form while explaining it.
+        if (!/(?:^|[\s`])go build\s/.test(line)) continue;
+        if (/-o\b/.test(line)) continue;
+        if (!/(?:\.\/[^\s`]*|\.\.\.)/.test(line)) continue;
+        offenders.push(`${relPath}: ${line.trim()}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `sinkless \`go build\` in generated docs:\n${offenders.join('\n')}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

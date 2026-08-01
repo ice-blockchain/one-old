@@ -5,10 +5,18 @@
 // after the first successful build. Ported 1:1 from scripts/graphify-runner.cjs.
 //
 // Output shape:
-//   { ok, action: 'used-existing'|'used-managed'|'fresh'|'installed-pipx'|
-//     'installed-venv'|'upgraded-pipx'|'upgraded-venv'|
-//     'install-skipped', report: '<abs>'|null, error: '<msg>'|null,
-//     durationMs, installedVersion? }
+//   { ok, action: 'used-existing'|'used-managed'|'fresh'|'installed-venv'|
+//     'upgraded-venv'|'install-skipped', report: '<abs>'|null,
+//     error: '<msg>'|null, durationMs, installedVersion? }
+//
+// Installs land ONLY in the Traffic One-managed venv under
+// ~/.traffic-one/toolchains/graphify/ — same invariant the gitnexus/opencode
+// runners hold with their managed npm prefix ("never the user's global
+// prefix"). An earlier pipx path installed into the user's pipx home instead,
+// leaving a graphify that survived `traffic-one uninstall` and clobbered a
+// graphifyy the user had pinned for their own use. A graphify the user already
+// has on PATH is still REUSED (`used-existing`) — reusing their tool is fine,
+// creating one outside the managed root is not.
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
@@ -19,7 +27,6 @@ import { exec } from '../../shared/exec';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { writeGraphPreview } from '../../shared/materialize';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
-import { spawnTool } from '../../shared/spawn-tool';
 import { resolvePython, runtimeMissingMessage } from '../../shared/runtime-resolve';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -96,7 +103,8 @@ function graphifyRecommendedVersion(): string | null {
 
 // graphify 0.9.x exposes `--version`; package metadata remains the compatibility
 // fallback for older releases. Read it through the Python interpreter beside the
-// graphify binary (managed venv or pipx): `pip show graphifyy`.
+// graphify binary — the managed venv's bin dir, or whatever venv a user's own
+// install resolves into: `pip show graphifyy`.
 function graphifyPipShowVersion(binPath: string): string | null {
   const dir = path.dirname(binPath);
   const ext = process.platform === 'win32' ? '.exe' : '';
@@ -133,30 +141,7 @@ function stampToolchain(cwd: string, binPath: string, version?: string | null): 
   writeStateMerge(cwd, { toolchain: updated.toolchain });
 }
 
-function installWithPipx(cwd: string): InstallResult {
-  if (which('pipx')) {
-    // spawnTool: a Windows pipx may be a .cmd/.exe shim.
-    const result = spawnTool('pipx', ['install', graphifyPackageSpec(), '--force', '--quiet'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 90 * 1000,
-    });
-    const binPath = which('graphify');
-    if (result.status === 0 && binPath) {
-      const installedVersion = graphifyInstalledVersion(binPath, true);
-      stampToolchain(cwd, binPath, installedVersion);
-      return { action: 'installed-pipx', error: null, binPath, installedVersion };
-    }
-    return {
-      action: 'install-skipped',
-      error: `pipx graphifyy installation failed: ${(result.stderr || '').trim() || 'non-zero exit'}`,
-      binPath: null,
-    };
-  }
-  return { action: 'install-skipped', error: '`pipx` is not on PATH', binPath: null };
-}
-
-function installWithManagedVenv(cwd: string, previousError: string | null = null): InstallResult {
+function installWithManagedVenv(cwd: string): InstallResult {
   // GUI-PATH-proof: never trust `which('python3')` (a Finder-launched host
   // inherits the stock CLT 3.9.x, below graphifyy's Requires-Python >=3.10). The
   // shared resolver probes Homebrew/pyenv/PATH for an ABSOLUTE interpreter that
@@ -178,8 +163,7 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
     // onboarding — the caller degrades gracefully on install-skipped.
     return {
       action: 'install-skipped',
-      error: runtimeMissingMessage('graphify', 'python', minMajor, minMinor)
-        + (previousError ? ` pipx attempt: ${previousError}` : ''),
+      error: runtimeMissingMessage('graphify', 'python', minMajor, minMinor),
       binPath: null,
     };
   }
@@ -187,6 +171,10 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
   const venvDir = path.join(managedToolDir('graphify'), 'venv');
   const venvPython = managedVenvPython('graphify');
   const binPath = managedVenvBin('graphify', 'graphify');
+  // Decides the reported action below, so it MUST be sampled before pip runs:
+  // afterwards the binary exists either way and every install would read as an
+  // upgrade. (`pip install --upgrade` covers both cases in one call.)
+  const wasInstalled = fs.existsSync(binPath);
   try {
     fs.mkdirSync(path.dirname(venvDir), { recursive: true });
   } catch {
@@ -225,27 +213,18 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
   if (pip.status !== 0 || !fs.existsSync(binPath)) {
     return {
       action: 'install-skipped',
-      error: [
-        `managed venv install of graphifyy failed: ${(pip.stderr || '').trim() || 'non-zero exit'}`,
-        previousError ? `pipx attempt: ${previousError}` : '',
-      ].filter(Boolean).join(' '),
+      error: `managed venv install of graphifyy failed: ${(pip.stderr || '').trim() || 'non-zero exit'}`,
       binPath: null,
     };
   }
   const installedVersion = graphifyInstalledVersion(binPath, true);
   stampToolchain(cwd, binPath, installedVersion);
   return {
-    action: previousError ? 'installed-venv' : 'upgraded-venv',
+    action: wasInstalled ? 'upgraded-venv' : 'installed-venv',
     error: null,
     binPath,
     installedVersion,
   };
-}
-
-function tryInstall(cwd: string): InstallResult {
-  const pipx = installWithPipx(cwd);
-  if (!pipx.error && pipx.binPath) return pipx;
-  return installWithManagedVenv(cwd, pipx.error);
 }
 
 export function ensureGraphifyTool(cwd: string = process.cwd(), opts: GraphifyOpts = {}): GraphifyToolResult {
@@ -276,7 +255,7 @@ export function ensureGraphifyTool(cwd: string = process.cwd(), opts: GraphifyOp
     return { ok: false, action: 'install-skipped', error: 'graphify is missing or below the minimum supported version and skipInstall=true', binPath: null };
   }
 
-  const installResult = tryInstall(cwd);
+  const installResult = installWithManagedVenv(cwd);
   if (installResult.error || !installResult.binPath) {
     writeStateMerge(cwd, { graphifyLastErrorAt: nowIso(), graphifyLastError: installResult.error || 'graphify still not available after install attempt' });
     return { ok: false, action: installResult.action, error: installResult.error || 'graphify not available after install', binPath: null };

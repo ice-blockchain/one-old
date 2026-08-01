@@ -149,6 +149,51 @@ function projectStateLockPath(cwd: string): string {
   return `${path.join(path.resolve(cwd), STATE_FILE)}.report-id.lock`;
 }
 
+/**
+ * Reap `<lock>.<token>.pending` staging dirs left by hook processes that died.
+ *
+ * The mkdir-then-rename handshake stages every acquisition in a sibling
+ * `.pending` dir, and the only thing that removes one is the `finally` in
+ * `withProjectStateLock` — which does not run when the host kills the process.
+ * `reapAbandonedEmptyLock` cannot help: it reaps the lock path itself, and a
+ * `.pending` dir is never empty (it holds its owner file). Measured on one 16co
+ * run: 22 orphans, each with a live-looking owner. Harmless to acquisition, but
+ * it litters the user's project and it is what made `.traffic-one` look like it
+ * was growing directories at random.
+ *
+ * Deliberately conservative: same liveness test the observed-lock reaper uses,
+ * plus the same staleness floor, and every failure is swallowed. A `.pending`
+ * dir whose owner process is alive is somebody's in-flight acquisition.
+ */
+function reapAbandonedPendingDirs(lockPath: string, now: number): void {
+  const dir = path.dirname(lockPath);
+  const prefix = `${path.basename(lockPath)}.`;
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.pending')) continue;
+    const pendingPath = path.join(dir, name);
+    try {
+      if (now - fs.statSync(pendingPath).mtimeMs <= ONE_MCP_REPORT_ID_LOCK_STALE_MS) continue;
+    } catch {
+      continue;
+    }
+    const owner = observedLockOwner(pendingPath);
+    // No readable owner => nothing proves it is in flight; a live pid does.
+    if (owner && processAlive(owner.pid)) continue;
+    try {
+      if (owner) fs.unlinkSync(owner.ownerPath);
+      fs.rmdirSync(pendingPath);
+    } catch {
+      // best-effort: a racing owner may be removing it right now
+    }
+  }
+}
+
 function acquireProjectStateLock(cwd: string): ProjectStateLock {
   const lockPath = projectStateLockPath(cwd);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
@@ -156,6 +201,9 @@ function acquireProjectStateLock(cwd: string): ProjectStateLock {
   const ownerName = `owner-${token}.json`;
   const pendingPath = `${lockPath}.${token}.pending`;
   const deadline = Date.now() + ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS;
+  // Opportunistic, before staging our own: the dead ones are only ever visible
+  // to a later acquirer, since the process that would have cleaned them is gone.
+  reapAbandonedPendingDirs(lockPath, Date.now());
 
   fs.mkdirSync(pendingPath, { mode: 0o700 });
   try {

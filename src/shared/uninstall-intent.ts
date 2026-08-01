@@ -93,7 +93,7 @@ export function uninstallDirective(host: HostId): string {
     'traffic-one — the user appears to be asking to UNINSTALL Traffic One. Handle exactly this, nothing else.',
     '',
     '1. Ask for ONE explicit confirmation before running anything, and state plainly what is removed and that it cannot be undone:',
-    '   - `~/.traffic-one` — the saved API key, this machine\'s per-project preferences, the runner shims, and the managed toolchains (OpenCode/GitNexus, typically over 1 GB; a future install re-downloads them).',
+    '   - `~/.traffic-one` — the saved API key, this machine\'s per-project preferences, the runner shims, and the managed toolchains (OpenCode/GitNexus/graphify, typically over 1 GB; a future install re-downloads them).',
     '   - the user-level host integrations Traffic One installed: the OpenCode and Kilo wrappers, the Windsurf/Cascade hooks and global rule, and the Codex machine-global MCP block.',
     '   - the plugin itself, from every host CLI that has it installed.',
     '   Onboarded projects are NOT touched — their `.traffic-one/` folders and generated instructions stay on disk.',

@@ -158,6 +158,23 @@ export function activateRunV2RollbackBarrier(
 }
 
 
+/**
+ * The legacy `status`/`outcome` pair written into `run.json` for runtimes older
+ * than the v2 settlement. `canonicalStatus` is the truth; these two are a
+ * compatibility projection of it.
+ *
+ * READ THIS BEFORE DIAGNOSING A RUN. Under the rollback barrier this reports
+ * `failed`/`agent-failed` over a run that is alive and progressing — which looks
+ * exactly like a dead run to anyone reading the file. It has now cost two
+ * separate investigations a full diagnosis cycle, and in 16co it sat next to
+ * `canonicalStatus: "active"` on a run that went on to finish `verified`.
+ *
+ * Do NOT "fix" this by renaming the keys to `legacyStatus`/`legacyOutcome`: the
+ * barrier works precisely because an OLD runtime reads `status` and refuses to
+ * reopen the run. Renaming makes it read a missing field and proceed, which is
+ * the failure the barrier exists to prevent. Every current reader already goes
+ * through `effectiveLegacyRunStatus`.
+ */
 function legacyProjection(
   status: CanonicalRunStatus,
   rollbackProtected: boolean,

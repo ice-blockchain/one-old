@@ -144,9 +144,7 @@ function buildHintMessage(provider: 'gitnexus' | 'graphify', result: CodeGraphRe
       ? 'used existing `graphify` install'
       : (result.action === 'used-managed'
         ? 'used Traffic One managed `graphify` install'
-        : (result.action === 'installed-pipx'
-          ? 'installed `graphifyy` via pipx'
-          : 'installed `graphifyy` in a Traffic One managed venv'));
+        : 'installed `graphifyy` in a Traffic One managed venv');
     return `[graphify] Codebase graph built (${seconds}s, ${actionLabel}). `
       + 'Report at `.traffic-one/graphify-out/GRAPH_REPORT.md` (under .traffic-one, already gitignored). '
       + 'Subagents and skills will consult it before grep/glob for module/structure questions.';

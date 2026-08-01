@@ -355,22 +355,25 @@ instead of creating it out of scope.
    Read replaces dozens of grep calls and cuts cross-session token usage by
    an estimated 50–70% on multi-file work.
 
+   Never install either provider by hand and never invoke it raw — a global
+   `npm install -g` / `pipx install` lands outside the Traffic One toolchain
+   root (and survives an uninstall), and a raw `gitnexus analyze .` /
+   `graphify update .` writes its output into the project ROOT. The runners own
+   both halves: they install into `~/.traffic-one/toolchains/<tool>/` and
+   relocate the output under `.traffic-one/`. To force a rebuild now:
+
    **When `codeGraphProvider: "gitnexus"`** (PolyForm Noncommercial license):
    ```bash
-   npm install -g gitnexus    # one-time install (Node CLI)
-   gitnexus analyze .         # index lands at .traffic-one/.gitnexus/ (the plugin runner relocates it)
+   node ~/.traffic-one/bin/gitnexus-runner.cjs   # index lands at .traffic-one/.gitnexus/
    ```
    GitNexus auto-writes `AGENTS.md`, `CLAUDE.md`, and `.claude/skills/`,
-   which conflict with traffic-one's own. The runner
-   (`scripts/gitnexus-runner.cjs`) backs those three up to
+   which conflict with traffic-one's own. The runner backs those three up to
    `.traffic-one/backups/<run-stamp>/` before each run and restores
    traffic-one's versions if changed.
 
    **When `codeGraphProvider: "graphify"`** (MIT license):
    ```bash
-   pipx install graphifyy     # one-time install (Python tool)
-   graphify update .          # report lands at .traffic-one/graphify-out/GRAPH_REPORT.md (the plugin runner relocates it)
-   graphify hook install      # optional: regenerate on every git commit
+   node ~/.traffic-one/bin/graphify-runner.cjs   # report lands at .traffic-one/graphify-out/GRAPH_REPORT.md
    ```
 
    The plugin's PostToolUse hook emits this hint automatically after the first

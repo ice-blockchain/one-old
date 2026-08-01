@@ -21,7 +21,7 @@ interface ToolSpec {
   minimum?: string;
   installLatest?: boolean;
   npmPackage?: string;
-  pipxPackage?: string;
+  pipPackage?: string;
   runtime?: 'python' | 'node';
   runtimeMinMajor?: number;
   runtimeMinMinor?: number;
@@ -47,7 +47,7 @@ export function toolInstallSpec(toolName: string): string | null {
   const spec = getToolSpec(toolName);
   if (!spec) return null;
   const npmPkg = typeof spec.npmPackage === 'string' ? spec.npmPackage : '';
-  const pipPkg = typeof spec.pipxPackage === 'string' ? spec.pipxPackage : '';
+  const pipPkg = typeof spec.pipPackage === 'string' ? spec.pipPackage : '';
   const rec = typeof spec.recommended === 'string' && spec.recommended ? spec.recommended : '';
   const latest = spec.installLatest === true || !rec;
   if (npmPkg) return latest ? `${npmPkg}@latest` : `${npmPkg}@${rec}`;
