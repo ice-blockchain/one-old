@@ -31,7 +31,7 @@ export const NEW_PROJECT_CASES: Case[] = [
     layer: 'host-e2e',
     fixture: 'empty',
     preSeed: {
-      mode: 'new-project', stack: 'minimal', frontend: 'react-vite', backend: 'none',
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'react-vite', backend: 'none',
       mobile: { enabled: false, framework: 'none' },
       performance: 'balanced', team: { mode: 'subagents', approved: true },
       openCode: false, codeGraphProvider: 'gitnexus',

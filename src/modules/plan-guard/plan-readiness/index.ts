@@ -83,6 +83,8 @@ import {
   exists,
 } from './context';
 import {
+  noImplementerRoleFallback,
+  noImplementerRoleSummary,
   structureFindingSummary,
 } from './checks';
 import {
@@ -444,6 +446,22 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       violations.push(block('bootstrap-publication-gate',
         'Bootstrap gate: immutable parent model-policy.json is missing or corrupt. No architecture assignments or implementation bootstrap may be published until parent preflight creates it.',
         { ERROR: 'model policy missing' }));
+    }
+    // Zero-implementer stop, BEFORE compilation. A profile with neither
+    // implementer cannot build anything, and the architecture compiler THROWS on
+    // the first route/app-shell/page/component module for a no-UI profile — so
+    // without this the honest cause surfaces as `architecture-contract-gate`
+    // blaming the architect's semantic input for a defect that lives in
+    // `.one.json`, and the architect re-plans forever against a contract it can
+    // never satisfy. Denying here also keeps the 2cl invariant: the
+    // `violations.length === 0` guard below means no capability snapshot,
+    // baseline, verification contract, assignment set, or child envelope is
+    // minted for a run that can never produce code.
+    const noImplementer = noImplementerRoleSummary(projectRoot, state);
+    if (noImplementer) {
+      violations.push(block('capability-no-implementer-gate',
+        noImplementerRoleFallback(noImplementer, runId || '<runId>'),
+        { PROFILE: noImplementer, RUN_ID: runId || '<runId>' }));
     }
     const inputExists = Boolean(runId) && exists(projectRoot, `.traffic-one/runs/${runId}/architecture-input-v1.json`);
     if (violations.length === 0 && (state.mode === 'new-project' || inputExists)) {

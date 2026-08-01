@@ -16,7 +16,11 @@ import {
   readRuntimeAssignments,
 } from '../../../shared/architecture-contract';
 import { formatParityViolation, roleOwnedTsOutputs } from '../plan-readiness/toolchain';
-import { missingPlannedModulesForRole, undeliveredContractOutputs } from '../plan-readiness/checks';
+import {
+  missingPlannedModulesForRole,
+  noImplementerRoleSummary,
+  undeliveredContractOutputs,
+} from '../plan-readiness/checks';
 import {
   compileVerificationContract,
   readVerificationContract,
@@ -366,6 +370,98 @@ test('architect completion gate requires semantic input and memory, never an age
       block: names,
     });
     assert.deepEqual(nonTerminal, []);
+  });
+});
+
+test('capability-no-implementer-gate: a zero-implementer profile denies PLAN_READY before compilation', () => {
+  withProject((dir) => {
+    // The exact state the classifier used to mint for a brochure brief. The
+    // capability profile compiles to backend-only with zero surfaces, so
+    // profile.roles is UNIVERSAL_ROLES only: nobody may write code.
+    const state = {
+      mode: 'new-project',
+      stack: 'minimal',
+      frontend: 'none',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeRequiredMemory(dir, state);
+    writeArchitectureInputOnly(dir);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(v.includes('capability-no-implementer-gate'), `got: ${v.join(', ')}`);
+    // Pre-compile: the architect's semantic input is never blamed for a defect
+    // that lives in .one.json. Post-compile this deny is unreachable — the
+    // compiler throws on the first UI module for a no-UI profile.
+    assert.ok(!v.includes('architecture-contract-gate'), `got: ${v.join(', ')}`);
+    // …and nothing runtime-owned is minted for a run that can never build.
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'capability-v1.json')), false);
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(readCompiledArchitecture(dir, 'R'), null);
+  });
+});
+
+test('capability-no-implementer-gate: every profile with an implementer passes it', () => {
+  // One implementer is enough. These are the shapes the gate must never touch:
+  // frontend-only web, backend-only api, native-only, and the existing-codebase
+  // floor (stack `minimal` + backend `other`, which is NOT in BACKEND_NONE).
+  const rows: Array<[string, Record<string, unknown>]> = [
+    ['react-vite frontend, no backend', {
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'react-vite', backend: 'none',
+      mobile: { framework: 'none' },
+    }],
+    ['go api, no frontend', {
+      mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'go',
+      mobile: { framework: 'none' },
+    }],
+    ['python api, no frontend', {
+      mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'python',
+      mobile: { framework: 'none' },
+    }],
+    ['expo native only', {
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'none', backend: 'none',
+      mobile: { framework: 'react-native-expo' },
+    }],
+    ['ionic over react-vite', {
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'react-vite', backend: 'none',
+      mobile: { framework: 'ionic-capacitor' },
+    }],
+    ['floored existing codebase', {
+      mode: 'existing-codebase', stack: 'minimal', frontend: 'none', backend: 'other',
+      mobile: { framework: 'none' },
+    }],
+    ['laravel with an unspecified web UI', {
+      mode: 'new-project', stack: 'custom-stack', frontend: 'other', backend: 'laravel',
+      mobile: { framework: 'none' },
+    }],
+  ];
+  for (const [label, state] of rows) {
+    withProject((dir) => {
+      assert.equal(noImplementerRoleSummary(dir, state), null, label);
+    });
+  }
+});
+
+test('capability-no-implementer-gate: an external-api project with no UI has no implementer either', () => {
+  // Documented consequence, not an accident: backend `external-api` is in
+  // BACKEND_NONE, and on a fresh project there is no api/cli/worker/data surface
+  // to earn senior-backend. Such a run already deadlocked silently — the
+  // compiler assigns service modules to a senior-frontend the profile declares
+  // ineligible, and the orchestration directive forbids spawning one. The gate
+  // turns that deadlock into an actionable deny.
+  withProject((dir) => {
+    const summary = noImplementerRoleSummary(dir, {
+      mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'external-api',
+      mobile: { framework: 'none' },
+    });
+    assert.ok(summary && summary.includes('external-api'), `got: ${summary}`);
   });
 });
 

@@ -516,10 +516,11 @@ test('finalize: NO captured prompt + blank form does NOT collapse to minimal (th
   });
 });
 
-test('finalize: an EXPLICIT minimal request is preserved (the no-signal floor does not over-fire)', () => {
+test('finalize: an EXPLICIT brochure request is preserved (the no-signal floor does not over-fire)', () => {
   withProject(null, (cwd) => {
-    // "static landing page" carries promptHasStackSignal===true (wantsMinimal), so the
-    // floor must NOT fire — intentional minimal is honored.
+    // "static landing page" carries promptHasStackSignal===true (wantsStaticSite),
+    // so the floor must NOT fire — the intentional brochure shape is honored. It
+    // is a FRONTEND with no backend, not a stack with no implementer.
     writeState(cwd, { mode: 'new-project', originalPrompt: 'a simple static landing page' });
     applyAnswer(cwd, 'open-code', 'not_now');
     applyAnswer(cwd, 'performance', 'low');
@@ -527,13 +528,59 @@ test('finalize: an EXPLICIT minimal request is preserved (the no-signal floor do
     applyAnswer(cwd, 'mobile', 'web_only');
     applyAnswer(cwd, 'code-graph', 'gitnexus');
     applyAnswer(cwd, 'finalize', null);
-    assert.equal(readState(cwd).stack, 'minimal');
+    const s = readState(cwd);
+    assert.equal(s.stack, 'custom-frontend');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'none');
+  });
+});
+
+test('finalize: ionic + a brochure prompt lands on custom-frontend, not the Turborepo default', () => {
+  withProject(null, (cwd) => {
+    // The `if (stack === 'minimal') stack = 'default'` remap in deriveStack is gone
+    // with the classifier arm that fed it. Ionic still forces a web frontend and a
+    // backend, but it no longer PROMOTES the stack id: `default` carries the
+    // pnpm/Turborepo contract (stateRequiresNewProjectMonorepo), and a brochure
+    // brief never asked for one. This also removes a real inconsistency — the same
+    // request phrased as "a React Vite app with no backend" already derived
+    // custom-frontend on this exact path.
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'a simple static landing page' });
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'ionic_capacitor');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.ok(applyAnswer(cwd, 'finalize', null).ok);
+    const s = readState(cwd);
+    assert.equal(s.stack, 'custom-frontend');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'supabase');
+    assert.equal(asRec(s.mobile).framework, 'ionic-capacitor');
+  });
+});
+
+test('finalize: expo + a brochure prompt is byte-identical to the pre-change outcome', () => {
+  withProject(null, (cwd) => {
+    // The deleted `if (stack === 'minimal') stack = 'custom-frontend'` was a true
+    // no-op: the classifier now returns custom-frontend for this prompt directly.
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'a simple static landing page' });
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'react_native_expo');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.ok(applyAnswer(cwd, 'finalize', null).ok);
+    const s = readState(cwd);
+    assert.equal(s.stack, 'custom-frontend');
+    assert.equal(s.frontend, 'none');
+    assert.equal(s.backend, 'supabase');
   });
 });
 
 test('finalize: a thin originalPrompt is rescued by the typed project-context answers (not minimal)', () => {
   withProject(null, (cwd) => {
-    // The bug case: a later "ok build it" became the seed, which alone derives `minimal`.
+    // The bug case: a later "ok build it" became the seed, which alone derives a
+    // bare frontend shell carrying none of the real project's surfaces.
     writeState(cwd, { mode: 'new-project', originalPrompt: 'ok build it' });
     applyAnswer(cwd, 'open-code', 'not_now');
     applyAnswer(cwd, 'performance', 'low');

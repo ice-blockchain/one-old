@@ -117,6 +117,10 @@ Architecture contract gate: do not emit `PLAN_READY` until the run's `architectu
 Contract satisfiability gate: the compiled plan demands outputs its own write gates forbid — {{CONFLICTS}}. `PLAN_READY` is denied before any implementer spawns: a role facing this contract would be hard-denied on a mandatory output and the run would deadlock. Fix the semantic ArchitectureInputV1 (routes/modules/placement/i18n/exceptions) so every compiled output is writable, then re-emit `PLAN_READY`.
 <!-- T1BLOCK:END contract-self-conflict -->
 
+<!-- T1BLOCK:BEGIN capability-no-implementer-gate -->
+Capability gate: this project's saved stack selection resolves to a capability profile with NO implementation role — {{PROFILE}}. `PLAN_READY` is denied because neither `senior-frontend` nor `senior-backend` is eligible, so no implementer can be spawned and nothing planned here could ever be built. This is a STACK-SELECTION defect in the project's `.traffic-one/.one.json`, not a planning mistake: no change to `architecture-input-v1.json` can fix it, and re-emitting `PLAN_READY` will be denied identically. Tell the user their saved selection names no buildable surface, and ask them to re-run Traffic One setup (or correct `frontend`/`backend` in `.traffic-one/.one.json`) so the project has a real web/native UI, a real backend, or both. Runtime freezes the capability profile when a run id is minted, so the corrected selection takes effect only in a NEW run — run `{{RUN_ID}}` must be replaced, not retried.
+<!-- T1BLOCK:END capability-no-implementer-gate -->
+
 <!-- T1BLOCK:BEGIN verification-contract-scan-gate -->
 Verification contract gate: STRUCT_SCAN_INCOMPLETE ({{ERROR}}). Runtime could not derive the complete diff from the immutable baseline, so `PLAN_READY` is forbidden.
 <!-- T1BLOCK:END verification-contract-scan-gate -->

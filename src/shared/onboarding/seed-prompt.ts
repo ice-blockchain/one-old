@@ -1,7 +1,7 @@
 // src/shared/onboarding/seed-prompt.ts
 // Persist the user's first request into the project state so the wizard can
 // tailor its questions AND derive the right stack (without it, an empty prompt
-// derives to `minimal`). Shared by UserPromptSubmit (normal flow) and the
+// derives a bare frontend shell). Shared by UserPromptSubmit (normal flow) and the
 // onboarding-wait runner's `--use --seed-prompt=…` yes path (ask-first flow,
 // where nothing may be written before the user's recorded yes). Idempotent:
 // never overwrites an existing prompt — the FIRST coding prompt is the project

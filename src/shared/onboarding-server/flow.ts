@@ -165,16 +165,20 @@ function mobileFromChoice(value: unknown): { enabled: boolean; framework: string
 
 function deriveStack(originalPrompt: string, mobileFramework: string): { stack: string; frontend: string; backend: string } {
   const cls = classifyPromptForStack(originalPrompt);
-  let { stack, frontend, backend } = cls;
+  let { frontend, backend } = cls;
+  const { stack } = cls;
   if (mobileFramework === 'react-native-expo') {
     frontend = 'none';
-    if (stack === 'minimal') stack = 'custom-frontend';
     if (backend === 'none') backend = 'supabase';
   } else if (mobileFramework === 'ionic-capacitor') {
     if (frontend === 'none') frontend = 'react-vite';
-    if (stack === 'minimal') stack = 'default';
     if (backend === 'none') backend = 'supabase';
   }
+  // The `stack === 'minimal'` remaps that used to live here are gone with the
+  // classifier arm that produced them: it never returns `minimal`, and it never
+  // returns a frontend-less stack for a non-mobile web prompt. Ionic no longer
+  // PROMOTES the stack id either — `default` carries the pnpm/Turborepo
+  // contract, and a brochure brief never asked for one.
   return { stack, frontend, backend };
 }
 
@@ -400,9 +404,9 @@ function applyAnswerStep(
       // Stack signal: the user's original prompt MERGED WITH the MVP answers they
       // typed — not a short-circuit on the first non-empty value. A present-but-thin
       // originalPrompt (e.g. a later "ok build it" that became the seed) classifies
-      // to `minimal` on its own; folding in the answers recovers the real signal.
-      // Concatenation is monotonic for classifyPromptForStack — extra keywords only
-      // add signal, so a rich originalPrompt is never downgraded.
+      // to a bare frontend-only shell on its own; folding in the answers recovers
+      // the real signal. Concatenation is monotonic for classifyPromptForStack —
+      // extra keywords only add signal, so a rich originalPrompt is never downgraded.
       const answers = obj((obj(committed.projectContext) || {}).answers) || {};
       const answerSignal = Object.values(answers).filter((v): v is string => typeof v === 'string' && v.trim() !== '').join('. ');
       const promptSignal = [projectContextOriginalPrompt(committed), answerSignal]
@@ -413,11 +417,13 @@ function applyAnswerStep(
       // WAS intended, but the prompt can be LOST before it is ever seeded (observed on
       // Cursor 9b: the user-prompt-submit hook no-ops when the host payload carries no
       // prompt text, so seedOriginalPrompt never runs; the wizard form has no prompt
-      // field, so promptSignal === ''). deriveStack('') collapses to `minimal/none/none`,
-      // silently scaffolding the wrong (empty) stack. So when there is NO stack signal at
-      // all, floor to the default build seed instead of minimal. An EXPLICIT minimal
-      // request ("landing page", "static site") carries promptHasStackSignal===true, so it
-      // classifies normally and is preserved — only a truly signal-less build is floored.
+      // field, so promptSignal === ''). deriveStack('') resolves to
+      // `custom-frontend/react-vite/none` — a bare frontend shell with no backend,
+      // still the wrong (empty) stack for a build nobody described. So when there is
+      // NO stack signal at all, floor to the default build seed. An EXPLICIT brochure
+      // request ("landing page", "static site") carries promptHasStackSignal===true
+      // via wantsStaticSite, so it classifies normally and is preserved — only a
+      // truly signal-less build is floored.
       const stackSeed = promptHasStackSignal(promptSignal) ? promptSignal : 'app with users and an admin dashboard';
       const derived = hasStack ? {} : deriveStack(stackSeed, String(mobile.framework || 'none'));
       const next = { ...committed, mode: 'new-project', ...derived };

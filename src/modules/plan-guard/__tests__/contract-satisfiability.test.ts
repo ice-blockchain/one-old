@@ -24,6 +24,7 @@ import {
   contractSelfConflictSummary,
   contractSelfConflicts,
 } from '../plan-readiness/satisfiability';
+import { noImplementerRoleFallback } from '../plan-readiness/checks';
 
 function withProject(fn: (cwd: string) => void): void {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-satisfiability-'));
@@ -364,4 +365,18 @@ test('the contract-self-conflict deny prose renders from its own T1BLOCK', () =>
     .split('{{CONFLICTS}}').join('SAMPLE');
   assert.equal(rendered, contractSelfConflictFallback('SAMPLE'),
     'contract-self-conflict prose/fallback drift');
+});
+
+test('the capability-no-implementer deny prose renders from its own T1BLOCK', () => {
+  const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+  const begin = '<!-- T1BLOCK:BEGIN capability-no-implementer-gate -->';
+  const end = '<!-- T1BLOCK:END capability-no-implementer-gate -->';
+  const beginAt = skill.indexOf(begin);
+  const endAt = skill.indexOf(end);
+  assert.ok(beginAt >= 0 && endAt > beginAt, 'missing T1BLOCK capability-no-implementer-gate');
+  const rendered = skill.slice(beginAt + begin.length, endAt).trim()
+    .split('{{PROFILE}}').join('SAMPLE')
+    .split('{{RUN_ID}}').join('RUNID');
+  assert.equal(rendered, noImplementerRoleFallback('SAMPLE', 'RUNID'),
+    'capability-no-implementer-gate prose/fallback drift');
 });

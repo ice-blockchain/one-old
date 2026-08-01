@@ -57,13 +57,12 @@ interface PromptClassification {
   frontend: string;
   backend: string;
   mobile: { enabled: boolean; framework: string; source: string };
-  shouldAskMobile: boolean;
   evidence: {
     frontend: string | null;
     backend: string | null;
     mobileIntentDetected: boolean;
     backendNeed: boolean;
-    wantsMinimal: boolean;
+    wantsStaticSite: boolean;
   };
 }
 
@@ -72,7 +71,21 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
   const frontend = detectFrontendFromText(text);
   const backend = detectBackendFromText(text);
   const mobile = detectMobileFromText(text);
-  const wantsMinimal = includesAny(text, [
+  // Brochure/marketing vocabulary. EVIDENCE ONLY — it selects nothing. Its whole
+  // job is `promptHasStackSignal`, so a verb-less "a landing page for a law firm"
+  // still reads as a real project description.
+  //
+  // It used to force `minimal` + frontend/backend `none`, which compiles to a
+  // capability profile with NO web-ui surface and therefore NO implementer role —
+  // for a prompt whose entire content is a web page. Observed: "create modern an
+  // agency presentation website. one landing page with projects listing, latest
+  // news, reviews." derived `minimal|none|none`, the architecture compiler then
+  // refused every route the architect declared (no UI surface), the orchestration
+  // directive told the parent not to spawn an implementer at all, and runtime
+  // still seeded module skeletons no role was permitted to edit. A brochure site
+  // is a FRONTEND; it takes the ordinary frontend path below and differs only in
+  // having no backend.
+  const wantsStaticSite = includesAny(text, [
     /\blanding page\b/, /\bpresentation\b/, /\bbrochure\b/, /\bportfolio\b/,
     /\bone[- ]page\b/, /\bstatic\b/, /\bsimple website\b/,
   ]);
@@ -82,6 +95,11 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
     /\buploads?\b/, /\bfiles?\b/, /\brealtime\b/, /\breal[- ]time\b/,
     /\bdashboard\b/, /\badmin\b/, /\bpayments?\b/, /\bmarketplace\b/,
     /\bsaas\b/, /\bmvp\b/, /\bplatform\b/,
+    // Content vocabulary. Each names a collection the user expects to LIST and
+    // later EDIT — that is persistence. Their absence is why the agency brief
+    // above read as needing no backend at all for three content collections.
+    /\bnews\b/, /\bblogs?\b/, /\breviews?\b/, /\blistings?\b/, /\bcms\b/,
+    /\bcontent\b/,
   ]);
   const explicitCustomFrontend = Boolean(frontend && frontend !== 'react-vite');
   const explicitCustomBackend = Boolean(backend && backend !== 'supabase' && backend !== 'none');
@@ -93,7 +111,8 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
   // API-only concept and the wizard preselected the fallback. Deliberately
   // scoped to explicit custom backends (go/rust/java/php/…): ambiguous
   // supabase-tier prompts keep the web default, and the wizard still lets the
-  // user add a frontend.
+  // user add a frontend. This and the mobile arm below are now the ONLY two
+  // producers of `frontend: 'none'`.
   const apiOnlyBackend = !frontend && !mobile.enabled && explicitCustomBackend
     && includesAny(text, [
       /\bapis?\b/, /\bmicroservices?\b/, /\bgrpc\b/, /\brest(?:ful)?\b/,
@@ -107,14 +126,10 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
 
   let resolvedFrontend = frontend
     || (apiOnlyBackend ? 'none' : (backend === 'laravel' ? 'other' : 'react-vite'));
-  let resolvedBackend = backend || (backendNeed ? 'supabase' : 'none');
+  const resolvedBackend = backend || (backendNeed ? 'supabase' : 'none');
   let stack: string;
 
-  if (wantsMinimal && !backendNeed && !frontend && !mobile.enabled) {
-    stack = 'minimal';
-    resolvedFrontend = 'none';
-    resolvedBackend = 'none';
-  } else if (mobile.enabled && !frontend) {
+  if (mobile.enabled && !frontend) {
     stack = explicitCustomBackend ? 'custom-stack' : 'custom-frontend';
     resolvedFrontend = mobile.framework === 'ionic-capacitor' ? 'react-vite' : 'none';
   } else if (explicitCustomFrontend && explicitCustomBackend) {
@@ -124,15 +139,18 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
   } else if (explicitCustomBackend) {
     stack = resolvedFrontend === 'none' ? 'custom-backend' : 'custom-stack';
   } else if (noBackend) {
-    stack = resolvedFrontend === 'none' ? 'minimal' : 'custom-frontend';
+    // Reaching here means NEITHER side is explicitly custom, so `frontend` is
+    // null or react-vite and `resolvedFrontend` is always react-vite: the old
+    // `resolvedFrontend === 'none' ? 'minimal' : …` true-branch was dead code.
+    // This arm must stay ahead of `backendNeed`: "a React app with no backend"
+    // matches /\bbackend\b/, and the explicit refusal wins over the keyword.
+    stack = 'custom-frontend';
   } else if (backendNeed) {
     stack = 'default';
-  } else if (frontend === 'react-vite') {
-    stack = resolvedBackend === 'none' ? 'custom-frontend' : 'default';
   } else {
-    stack = 'minimal';
-    resolvedFrontend = 'none';
-    resolvedBackend = 'none';
+    // Nothing named on either side. A web app either way; `default` only when a
+    // backend was actually named (react-vite + supabase IS the default stack).
+    stack = resolvedBackend === 'none' ? 'custom-frontend' : 'default';
   }
 
   return {
@@ -140,13 +158,12 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
     frontend: resolvedFrontend,
     backend: resolvedBackend,
     mobile: { enabled: mobile.enabled, framework: mobile.framework, source: mobile.source },
-    shouldAskMobile: stack !== 'minimal',
     evidence: {
       frontend: frontend || null,
       backend: backend || null,
       mobileIntentDetected: mobile.intentDetected,
       backendNeed,
-      wantsMinimal,
+      wantsStaticSite,
     },
   };
 }
@@ -224,12 +241,13 @@ export function isRuntimeControlPrompt(prompt: unknown): boolean {
 // True when the prompt carries an explicit STACK signal — i.e. it reads as a real
 // project description even without an imperative coding verb. Derived from
 // classifyPromptForStack so there is ONE keyword source of truth (its backendNeed /
-// frontend / backend / mobile / wantsMinimal evidence) rather than a parallel list
+// frontend / backend / mobile / wantsStaticSite evidence) rather than a parallel list
 // that drifts out of sync with isLikelyCodingPrompt. The coding-intent gate uses
 // this to AVOID dropping a verb-less first prompt like "a marketplace for
 // freelancers": dropping it loses the genuine project description, and a later thin
-// "ok build it" then becomes the seeded originalPrompt and derives `minimal`. A pure
-// greeting/question ("hi there") has no stack signal, so the gate still suppresses it.
+// "ok build it" then becomes the seeded originalPrompt and derives a bare frontend
+// shell carrying none of the real project's surfaces. A pure greeting/question
+// ("hi there") has no stack signal, so the gate still suppresses it.
 export function promptHasStackSignal(prompt: unknown): boolean {
   const text = String(prompt || '').toLowerCase().trim();
   if (!text) return false;
@@ -239,7 +257,7 @@ export function promptHasStackSignal(prompt: unknown): boolean {
     || evidence.frontend
     || evidence.backend
     || evidence.mobileIntentDetected
-    || evidence.wantsMinimal,
+    || evidence.wantsStaticSite,
   );
 }
 

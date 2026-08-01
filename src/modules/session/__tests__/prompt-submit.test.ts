@@ -337,7 +337,8 @@ test('coding-intent gate: a verb-less project description is captured (not dropp
   // Regression: "a marketplace where freelancers and clients find each other" has no
   // coding verb, so the narrow isLikelyCodingPrompt dropped it — the first project
   // description was captured nowhere and a later "ok build it" became originalPrompt,
-  // deriving `minimal`. promptHasStackSignal now admits it so the FIRST prompt wins.
+  // deriving a bare frontend shell with none of the real project's surfaces.
+  // promptHasStackSignal now admits it so the FIRST prompt wins.
   withAuthedProject(null, (cwd) => {
     const first = runUserPromptSubmit(ctx(cwd, 'a marketplace where freelancers and clients find each other'));
     assert.equal(first.kind, 'context', 'a real project description activates instead of being dropped');

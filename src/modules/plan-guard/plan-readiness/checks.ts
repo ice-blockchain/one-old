@@ -10,6 +10,7 @@ import {
   readCompiledArchitecture,
 } from '../../../shared/architecture-contract';
 import { collapsedLineNumber, isCollapseCandidate } from '../../../shared/collapsed-source';
+import { obj } from '../../../shared/obj';
 import { type AssignedScope, matchesScope } from '../../../shared/scope';
 import { readVerificationContract } from '../../../shared/verification-contract';
 import {
@@ -295,6 +296,46 @@ export function structureFindingSummary(findings: readonly StructureFinding[]): 
   return findings
     .map((finding) => `${finding.id} (${finding.file}${finding.line ? `:${finding.line}` : ''}): ${finding.message}`)
     .join(' | ');
+}
+
+/**
+ * The run's frozen capability profile has NO implementation role: neither
+ * `senior-frontend` (which needs a web-ui or native-ui surface) nor
+ * `senior-backend` (which needs an owned backend or an api/cli/worker/data
+ * surface). Returns a deny-message summary naming the STATE that produced it,
+ * or null when at least one implementer is eligible.
+ *
+ * Such a profile is fatal before it is visible. The architecture compiler
+ * refuses every route / app-shell / page / component module for it, so without
+ * a dedicated gate the honest cause surfaces as a compiler error blaming the
+ * architect's semantic input; the orchestration directive tells the parent not
+ * to invent an implementer; and any module that does compile is skeleton-seeded
+ * with no role permitted to edit it. Nothing planned under this profile can
+ * ever be built.
+ *
+ * Judged on `capabilityProfileForRun` (the frozen run snapshot when one
+ * exists), never live detection — the compiler is handed the same snapshot, so
+ * the gate and the compiler must agree.
+ */
+export function noImplementerRoleSummary(projectRoot: string, state: Rec): string | null {
+  const profile = capabilityProfileForRun(projectRoot, state);
+  if (profile.roles.includes('senior-frontend') || profile.roles.includes('senior-backend')) {
+    return null;
+  }
+  const field = (key: string): string => {
+    const value = state[key];
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'none';
+  };
+  const mobile = obj(state.mobile);
+  const nativeFramework = typeof mobile?.framework === 'string' && mobile.framework.trim() !== ''
+    ? mobile.framework.trim()
+    : 'none';
+  return `stack \`${field('stack')}\`, frontend \`${field('frontend')}\`, backend \`${field('backend')}\`, mobile \`${nativeFramework}\` compiled to capability profile \`${profile.profileId}\` with surfaces \`${profile.surfaces.join(', ') || 'none'}\` and roles \`${profile.roles.join(', ')}\``;
+}
+
+/** Verbatim TS fallback for the `capability-no-implementer-gate` T1BLOCK. */
+export function noImplementerRoleFallback(profile: string, runId: string): string {
+  return `Capability gate: this project's saved stack selection resolves to a capability profile with NO implementation role — ${profile}. \`PLAN_READY\` is denied because neither \`senior-frontend\` nor \`senior-backend\` is eligible, so no implementer can be spawned and nothing planned here could ever be built. This is a STACK-SELECTION defect in the project's \`.traffic-one/.one.json\`, not a planning mistake: no change to \`architecture-input-v1.json\` can fix it, and re-emitting \`PLAN_READY\` will be denied identically. Tell the user their saved selection names no buildable surface, and ask them to re-run Traffic One setup (or correct \`frontend\`/\`backend\` in \`.traffic-one/.one.json\`) so the project has a real web/native UI, a real backend, or both. Runtime freezes the capability profile when a run id is minted, so the corrected selection takes effect only in a NEW run — run \`${runId}\` must be replaced, not retried.`;
 }
 
 interface CollapseScanResult {

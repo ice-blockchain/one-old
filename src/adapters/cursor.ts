@@ -178,8 +178,9 @@ export function makeCursorAdapter(): HostAdapter {
       // Cursor's beforeSubmitPrompt field name is doc-unconfirmed; read the known
       // top-level forms AND the nested input.prompt (some payloads nest it like a tool
       // input). If none match, promptText is empty → the prompt is never seeded and the
-      // stack would collapse to `minimal` — the finalize no-signal floor (flow.ts) is the
-      // guarantee; this widening just recovers the real prompt text where it IS present.
+      // stack would collapse to an undescribed shell — the finalize no-signal floor
+      // (flow.ts) is the guarantee; this widening just recovers the real prompt text
+      // where it IS present.
       const prompt = firstString(data.prompt, data.user_prompt, data.userPrompt, data.message, data.text, input.prompt, input.user_prompt);
       // The opened workspace is the authoritative project boundary; surface it RAW
       // (not the cwd fold below, which a deeper shell `cwd` could override) so the

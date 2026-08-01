@@ -31,6 +31,18 @@ export const BRIEF_AGENCY =
   'create a modern agency presentation website. one landing page with projects '
   + 'listing, latest news, reviews.';
 
+// The brochure site: the shape the classifier used to collapse to
+// `minimal/none/none`. Deliberately free of the content vocabulary
+// (news/blog/reviews/listings) that legitimately implies persistence, so it
+// classifies to custom-frontend/react-vite/none — a web app with EXACTLY ONE
+// implementer role and no backend.
+export const BRIEF_BROCHURE =
+  'create a modern agency presentation website. one landing page with a hero, '
+  + 'our services, selected work, and a contact form.';
+
+export const BRIEF_BROCHURE_MAINTENANCE =
+  'add a new page for our team with short bios';
+
 // The learning-platform architecture, reused by every full-stack web shape. The
 // COMPILED paths differ per framework — that is the point — but the semantics
 // the architect declares do not.
@@ -116,6 +128,35 @@ const EXISTING_API_MAINTENANCE_ARCHITECTURE = {
     { id: 'products-service', name: 'Products Service', kind: 'service' as const },
     { id: 'news-service', name: 'News Service', kind: 'service' as const },
     { id: 'config-service', name: 'Config Service', kind: 'service' as const },
+  ],
+};
+
+// The brochure site on a frontend-only React/Vite profile: one route, no
+// service module — there is no backend role to own one.
+const BROCHURE_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+  modules: [
+    { id: 'app-shell', name: 'App', kind: 'app-shell' as const },
+    { id: 'home', name: 'Home', kind: 'page' as const },
+    { id: 'service-card', name: 'Service Card', kind: 'component' as const },
+    { id: 'work-card', name: 'Work Card', kind: 'component' as const },
+  ],
+};
+
+// The brochure site gains a team page.
+const BROCHURE_MAINTENANCE_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [
+    { id: 'home-route', path: '/', moduleId: 'home' },
+    { id: 'team-route', path: '/team', moduleId: 'team' },
+  ],
+  modules: [
+    { id: 'app-shell', name: 'App', kind: 'app-shell' as const },
+    { id: 'home', name: 'Home', kind: 'page' as const },
+    { id: 'team', name: 'Team', kind: 'page' as const },
+    { id: 'service-card', name: 'Service Card', kind: 'component' as const },
+    { id: 'work-card', name: 'Work Card', kind: 'component' as const },
   ],
 };
 
@@ -322,6 +363,41 @@ export const RUN_SIM_CASES: Case[] = [
     },
     assertions: WEB_ASSERTIONS,
     notes: 'Shape 3: Nuxt, no backend. Also the single-page guard, and the profile whose build output (.output/public) builtAppIdentities had to learn.',
+  },
+  {
+    id: 'sim-new-react-vite-nobackend',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      // The shape the classifier used to destroy. `custom-frontend` (not
+      // `default`) is what a brochure brief derives now: React/Vite with NO
+      // backend, so stateRequiresNewProjectMonorepo is FALSE while the compiled
+      // web root is still apps/web — the one React/Vite combination no other
+      // shape covers, and the one that must settle with a single implementer.
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_BROCHURE },
+    },
+    runSim: {
+      brief: BRIEF_BROCHURE,
+      architecture: BROCHURE_ARCHITECTURE,
+      qa: WEB_QA,
+      phase2: {
+        brief: BRIEF_BROCHURE_MAINTENANCE,
+        architecture: BROCHURE_MAINTENANCE_ARCHITECTURE,
+        qa: WEB_QA,
+      },
+    },
+    assertions: WEB_ASSERTIONS,
+    notes: 'Shape 10: React/Vite with no backend — exactly one implementer role, and no Turborepo contract. Guards the arm that used to emit minimal/none/none (zero implementers) for a brochure brief.',
   },
   {
     id: 'sim-new-vue-go-api',

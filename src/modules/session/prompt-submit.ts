@@ -141,8 +141,9 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // tutors and students"). Without it, such a first prompt is dropped here, the
   // FIRST project description is captured nowhere (seedOriginalPrompt runs only
   // past this gate), and a later thin "ok build it" becomes originalPrompt — which
-  // classifyPromptForStack maps to `minimal`. A signal-less greeting/question still
-  // has no stack signal, so genuine chit-chat is still suppressed.
+  // classifyPromptForStack maps to a bare frontend shell carrying none of the real
+  // project's surfaces. A signal-less greeting/question still has no stack signal,
+  // so genuine chit-chat is still suppressed.
   if (uninitialized && !serverRecordExists(cwd)
     && !isLikelyCodingPrompt(promptText) && !promptHasStackSignal(promptText)) {
     return noop();
