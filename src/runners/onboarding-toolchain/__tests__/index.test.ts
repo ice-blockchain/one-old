@@ -352,6 +352,54 @@ test('unwritable prefs path during a defer must NOT throw (never-block holds on 
   });
 });
 
+test('progress snapshots: install → scan → done transitions on a successful run', () => {
+  withTemp({ codeGraphProvider: 'graphify', mode: 'existing-codebase' }, (cwd) => {
+    const bin = path.join(cwd, 'bin');
+    writeGraphifyStubPython(bin);
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    const snapshots: Array<Array<{ id: string; status: string }>> = [];
+    try {
+      const r = ensureOnboardingToolchain(cwd, (steps) => snapshots.push(steps.map((s) => ({ id: s.id, status: s.status }))));
+      assert.equal(r.ok, true);
+      // The initial plan snapshot lists every step before any work starts.
+      assert.deepEqual(snapshots[0], [
+        { id: 'graph-install', status: 'pending' },
+        { id: 'graph-scan', status: 'pending' },
+      ]);
+      // The install→scan boundary is visible (graph-install done while the scan runs)…
+      assert.ok(snapshots.some((s) => s[0]?.status === 'done' && s[1]?.status === 'running'));
+      // …and the final snapshot reports everything done.
+      const last = snapshots[snapshots.length - 1];
+      assert.deepEqual(last, [
+        { id: 'graph-install', status: 'done' },
+        { id: 'graph-scan', status: 'done' },
+      ]);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('progress snapshots: a deferred provider ends in warn, never blocking', () => {
+  withTemp({ codeGraphProvider: 'graphify', codeGraphAutoRun: false }, (cwd) => {
+    const savedPath = process.env.PATH;
+    process.env.PATH = path.join(cwd, 'empty-bin');
+    const snapshots: Array<Array<{ id: string; status: string }>> = [];
+    try {
+      const r = ensureOnboardingToolchain(cwd, (steps) => snapshots.push(steps.map((s) => ({ id: s.id, status: s.status }))));
+      assert.equal(r.ok, true);
+      const last = snapshots[snapshots.length - 1];
+      assert.deepEqual(last, [
+        { id: 'graph-install', status: 'warn' },
+        { id: 'graph-scan', status: 'warn' },
+      ]);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
 test('no provider chosen → ok=true (nothing required to install)', () => {
   withTemp({}, (cwd) => {
     const savedPath = process.env.PATH;
