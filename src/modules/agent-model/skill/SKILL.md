@@ -68,6 +68,10 @@ If Cursor REJECTS that value (invalid enum / unknown subagent type), the agent f
 Keep the exact per-role `model` from the spawn map either way. Never send a Traffic One role to a generic worker WITHOUT the role marker, and never simulate the role in the parent thread.
 <!-- T1BLOCK:END cursor-agent-type-required -->
 
+<!-- T1BLOCK:BEGIN agent-activity-exploration-cap -->
+traffic-one — exploration cap: `{{ROLE}}` has made {{COUNT}} tool calls in run `{{RUN_ID}}` and this search/read call is refused ONCE as a consolidation checkpoint (editing, shell verification, and digest writes are never blocked, and every later call — including search/read — goes through). Write down what you already know, then act on it: batch the remaining related reads, group coherent edits, run ONE combined verification command per surface, do not re-read rules or files already loaded, and finish the assignment before exploring further. Cap: {{CAP}} calls per child (config `agentActivity.explorationCap`, env `T1_EXPLORATION_CAP`; 0 disables).
+<!-- T1BLOCK:END agent-activity-exploration-cap -->
+
 <!-- T1BLOCK:BEGIN absolute-traffic-one-path -->
 Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycle paths outside this project root (`{{PROJECT_ROOT}}`): {{BAD_PATHS}}. Re-issue the same spawn using project-relative paths such as `.traffic-one/digests/<runId>/frontend.md` and `.traffic-one/fix-cycles/<runId>/senior-frontend-fix-1.md` (digest files use the short role name; fix-cycle files keep the full `senior-` prefix); do not paste absolute paths from another folder or a corrupted root.
 <!-- T1BLOCK:END absolute-traffic-one-path -->

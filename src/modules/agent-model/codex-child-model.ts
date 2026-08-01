@@ -3,19 +3,24 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
 import {
+  EXPLORATION_CAPPED_ROLES,
   REPLACE_AGENT_MARKER,
   activeClaimForOtherThread,
+  agentActivityCapDenied,
   bumpRunAgentActivity,
   claimThreadRole,
   correctCodexChildObservationRole,
   disownConflictedRoleAgent,
+  explorationCapForRole,
   hookSessionIdentity,
   inferRoleEvidenceFromTranscript,
   isSubagentThread,
+  markAgentActivityCapDenied,
   observeCodexChildModel,
   readCodexModelObservation,
   readCodexSessionMetaIdentity,
   readEffectiveState,
+  readRunAgentActivity,
   readRunAgentRegistry,
   resolveRunAgentContext,
   runLedgerAdmitsClaims,
@@ -27,10 +32,69 @@ import { readRunModelPolicy } from '../../shared/run-model-policy';
 import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
 import { ensureRunHostCapability } from '../../shared/host/capabilities';
 import { resolveToolScope } from '../../shared/tool-scope';
+import { block } from './handler-prose';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 
 function unique(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+// Verbatim mirror of the SKILL.md `agent-activity-exploration-cap` block so a
+// missing block never softens the one consolidation deny into silence.
+const EXPLORATION_CAP_FALLBACK = 'traffic-one — exploration cap: `{{ROLE}}` has made {{COUNT}} tool calls in run `{{RUN_ID}}` and this search/read call is refused ONCE as a consolidation checkpoint (editing, shell verification, and digest writes are never blocked, and every later call — including search/read — goes through). Write down what you already know, then act on it: batch the remaining related reads, group coherent edits, run ONE combined verification command per surface, do not re-read rules or files already loaded, and finish the assignment before exploring further. Cap: {{CAP}} calls per child (config `agentActivity.explorationCap`, env `T1_EXPLORATION_CAP`; 0 disables).';
+
+// The at-most-once exploration cap. Decision is pure and fail-open on every
+// uncertainty: wrong class, exempt role, unresolved child id, disabled cap,
+// under cap, marker already present, or marker unverifiable → null (allow).
+export function explorationCapDecision(args: {
+  toolClass: unknown;
+  role: string;
+  childKey: string;
+  count: number;
+  cap: number;
+  alreadyDenied: boolean;
+}): 'deny' | null {
+  if (args.toolClass !== 'search' && args.toolClass !== 'file-read') return null;
+  if (!EXPLORATION_CAPPED_ROLES.has(args.role)) return null;
+  if (!args.childKey || args.childKey === 'unknown') return null;
+  if (args.cap <= 0) return null;
+  if (args.count < args.cap) return null;
+  if (args.alreadyDenied) return null;
+  return 'deny';
+}
+
+function explorationCapDeny(
+  ctx: Ctx,
+  cwd: string,
+  state: unknown,
+  runId: string,
+  role: string,
+  childKey: string,
+): HookResult | null {
+  try {
+    const cap = explorationCapForRole(state, role);
+    const count = readRunAgentActivity(cwd, runId, role).bySession[childKey] || 0;
+    const decision = explorationCapDecision({
+      toolClass: ctx.input.tool?.class,
+      role,
+      childKey,
+      count,
+      cap,
+      alreadyDenied: agentActivityCapDenied(cwd, runId, role),
+    });
+    if (!decision) return null;
+    // Deny only when the once-marker DURABLY landed: this check rides every
+    // search/read call, so an unwritable marker must fail open, never re-deny.
+    if (!markAgentActivityCapDenied(cwd, runId, role)) return null;
+    return deny(block('agent-activity-exploration-cap', {
+      ROLE: role,
+      RUN_ID: runId,
+      COUNT: count,
+      CAP: cap,
+    }, EXPLORATION_CAP_FALLBACK));
+  } catch {
+    return null; // telemetry-derived enforcement must never break a tool call
+  }
 }
 
 // Blocking half of Codex child activation. SubagentStart records the immutable
@@ -122,8 +186,15 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
         + 'corrupt, or does not match model-policy.json. This child has zero tool access; repair and respawn it.',
       );
     }
-    // Telemetry only, on the allowed path: one tally line per observed tool call.
-    bumpRunAgentActivity(cwd, runId, claimedRole, identity.sessionId || identity.agentId);
+    // Per-CHILD tally key: on Claude the hook session_id is the PARENT's, so a
+    // session-keyed bucket would lump every child and respawn of a role into
+    // one and the cap would misfire late-run. agentId/threadId identify the
+    // actual child; sessionId is the last resort.
+    const childKey = identity.agentId || identity.threadId || identity.sessionId || '';
+    const capDenyResult = explorationCapDeny(ctx, cwd, state, runId, claimedRole, childKey);
+    if (capDenyResult) return capDenyResult;
+    // One tally line per ALLOWED tool call (denies never count).
+    bumpRunAgentActivity(cwd, runId, claimedRole, childKey);
     return noop();
   }
 
@@ -321,7 +392,9 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       + 'runtime-owned HostCapabilityV1 ledger. Stop this child and repair the run from the parent.',
     );
   }
-  // Telemetry only, on the allowed path: one tally line per observed tool call.
+  const capDenyResult = explorationCapDeny(ctx, cwd, state, runId, role, childId);
+  if (capDenyResult) return capDenyResult;
+  // One tally line per ALLOWED tool call (denies never count).
   bumpRunAgentActivity(cwd, runId, role, childId);
   return noop();
 }

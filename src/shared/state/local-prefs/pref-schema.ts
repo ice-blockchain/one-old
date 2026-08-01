@@ -32,7 +32,7 @@ function inSet(set: Set<string>, value: unknown): boolean {
 // Preferences that remain shared by all hosts used by this user on this project.
 // codeGraphProvider is intentionally NOT here: it is MACHINE-WIDE (one.json).
 export const PROJECT_PREF_KEYS = new Set([
-  'openCode', 'toolchain',
+  'openCode', 'toolchain', 'agentActivity',
   'codeGraphAutoRun', 'graphifyAutoRun', 'graphifyLastHintedAt', 'graphifyLastRunAt',
   'graphifyLastErrorAt', 'graphifyLastError', 'gitnexusLastRunAt', 'gitnexusLastErrorAt', 'gitnexusLastError',
 ]);

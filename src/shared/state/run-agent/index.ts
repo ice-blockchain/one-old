@@ -5,10 +5,15 @@
 // every direct './run-agent' specifier keep working.
 
 export {
+  AGENT_ACTIVITY_EXPLORATION_CAP_DEFAULT,
   AGENT_ACTIVITY_REGRESSION_THRESHOLD,
   AGENT_ACTIVITY_WARN_THRESHOLD,
+  EXPLORATION_CAPPED_ROLES,
+  agentActivityCapDenied,
   bumpRunAgentActivity,
+  explorationCapForRole,
   listRunAgentActivity,
+  markAgentActivityCapDenied,
   readRunAgentActivity,
   type RunAgentActivity,
 } from './activity';
