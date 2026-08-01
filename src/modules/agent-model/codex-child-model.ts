@@ -5,6 +5,7 @@ import { obj } from '../../shared/obj';
 import {
   REPLACE_AGENT_MARKER,
   activeClaimForOtherThread,
+  bumpRunAgentActivity,
   claimThreadRole,
   correctCodexChildObservationRole,
   disownConflictedRoleAgent,
@@ -121,6 +122,8 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
         + 'corrupt, or does not match model-policy.json. This child has zero tool access; repair and respawn it.',
       );
     }
+    // Telemetry only, on the allowed path: one tally line per observed tool call.
+    bumpRunAgentActivity(cwd, runId, claimedRole, identity.sessionId || identity.agentId);
     return noop();
   }
 
@@ -318,5 +321,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       + 'runtime-owned HostCapabilityV1 ledger. Stop this child and repair the run from the parent.',
     );
   }
+  // Telemetry only, on the allowed path: one tally line per observed tool call.
+  bumpRunAgentActivity(cwd, runId, role, childId);
   return noop();
 }
