@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { pruneTrafficOneBackups, sweepTrafficOneRetention } from '../retention';
+import { pruneTrafficOneBackups, sweepAfterTerminalSettlement, sweepTrafficOneRetention } from '../retention';
 import { reportBaseName } from '../../runners/lighthouse/lib';
 
 function withProject(fn: (dir: string) => void): void {
@@ -20,6 +20,36 @@ function withProject(fn: (dir: string) => void): void {
 function mkdir(dir: string, rel: string): void {
   fs.mkdirSync(path.join(dir, rel), { recursive: true });
 }
+
+test('default policy is 3 runs / 1 backup / 3-day TTL / 1 Lighthouse pair per route (12co audit)', () => {
+  withProject((dir) => {
+    // No retention.json → the defaults apply.
+    const result = sweepTrafficOneRetention(dir, { dryRun: true });
+    assert.deepEqual(result.policy, {
+      keepRuns: 3,
+      backupKeep: 1,
+      orphanTtlDays: 3,
+      lighthouseKeepPerRoute: 1,
+    });
+  });
+});
+
+test('sweepAfterTerminalSettlement sweeps for real but never touches the current run', () => {
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ currentRunId: '1004' }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'retention.json'), JSON.stringify({ keepRuns: 1, backupKeep: 1, orphanTtlDays: 3650 }), 'utf8');
+    for (const id of ['1001', '1002', '1003', '1004']) {
+      mkdir(dir, path.join('.traffic-one', 'digests', id));
+    }
+    sweepAfterTerminalSettlement(dir);
+    // keepRuns:1 → current (1004) + the newest non-current window survive; the rest are removed for real.
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1004')), true, 'current run is protected');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1001')), false, 'superseded run is reclaimed');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1002')), false, 'superseded run is reclaimed');
+  });
+  // Never throws, even on a directory that is not a project at all.
+  sweepAfterTerminalSettlement(path.join(os.tmpdir(), 't1-retention-does-not-exist'));
+});
 
 test('sweepTrafficOneRetention dry-run preserves current run and durable memory', () => {
   withProject((dir) => {

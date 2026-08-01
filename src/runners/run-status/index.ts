@@ -11,6 +11,7 @@ import {
   type RunLedgerOutcome,
   type RunLedgerStatus,
 } from '../../shared/state/run-agent';
+import { sweepAfterTerminalSettlement } from '../../shared/retention';
 
 interface RunStatusArgs {
   runId: string;
@@ -132,6 +133,11 @@ export function main(
     status: ledger.status,
     ...(ledger.outcome ? { outcome: ledger.outcome } : {}),
   })}\n`);
+  // The run just reached a terminal ledger state — reclaim superseded artefacts
+  // now instead of waiting for the next SessionStart. Never on planned/active.
+  if (args.status === 'completed' || args.status === 'blocked' || args.status === 'failed') {
+    sweepAfterTerminalSettlement(cwd);
+  }
   return 0;
 }
 

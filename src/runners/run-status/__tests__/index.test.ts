@@ -352,6 +352,34 @@ test('a capped red run settles terminal with zero active claims and a recorded r
   });
 });
 
+// The retention sweep fires the moment a run reaches a TERMINAL ledger state —
+// not on planned/active — so superseded artefacts stop waiting for the next
+// SessionStart (12co: 113 files / 9.5 MB of reports outlived their run by hours).
+test('a terminal transition triggers the retention sweep; a non-terminal one does not', () => {
+  silenced(fs.mkdtempSync(path.join(os.tmpdir(), 't1-run-status-sweep-')), (root) => {
+    fs.mkdirSync(path.join(root, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.traffic-one', '.one.json'), JSON.stringify({ currentRunId: 'run-2' }), 'utf8');
+    fs.writeFileSync(
+      path.join(root, '.traffic-one', 'retention.json'),
+      JSON.stringify({ keepRuns: 1, backupKeep: 1, orphanTtlDays: 3650 }),
+      'utf8',
+    );
+    for (const id of ['run-0', 'run-1', 'run-2']) {
+      fs.mkdirSync(path.join(root, '.traffic-one', 'digests', id), { recursive: true });
+    }
+
+    // Non-terminal: no sweep — the superseded digest dirs survive.
+    assert.equal(main(['--run-id', 'run-2', '--status', 'active'], root), 0);
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'digests', 'run-0')), true);
+
+    // Terminal: the sweep runs for real; the current run stays untouched.
+    assert.equal(main(['--run-id', 'run-2', '--status', 'blocked', '--outcome', 'review-cycle-cap'], root), 0);
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'digests', 'run-0')), false, 'superseded run reclaimed at settlement');
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'digests', 'run-2')), true, 'current run protected');
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'runs', 'run-2')), true, 'the settling run keeps its ledger');
+  });
+});
+
 test('run-status CLI rejects completed outcomes until verification or shipper evidence exists', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 't1-run-status-evidence-'));
   const originalOut = process.stdout.write;

@@ -33,11 +33,15 @@ interface RetentionResult {
   removed: number;
 }
 
+// Tightened after the 12co audit: 5 retained runs held 113 files / 1.17 MB in
+// `runs/` plus 9.5 MB of reports for a single settled run; backups were all
+// byte-identical. One backup, three runs, and one Lighthouse pair per route
+// cover every recovery path the runtime actually exercises.
 const DEFAULT_POLICY: RetentionPolicy = {
-  keepRuns: 5,
-  backupKeep: 3,
-  orphanTtlDays: 7,
-  lighthouseKeepPerRoute: 2,
+  keepRuns: 3,
+  backupKeep: 1,
+  orphanTtlDays: 3,
+  lighthouseKeepPerRoute: 1,
 };
 
 function readPolicy(cwd: string): RetentionPolicy {
@@ -319,6 +323,20 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
     actions,
     removed,
   };
+}
+
+// Post-settlement trigger: reclaim superseded artefacts the moment a run reaches
+// a terminal ledger state instead of waiting for the next SessionStart (observed
+// 12co: 113 run files + 9.5 MB of reports sat untouched until a later session
+// swept). Runs strictly AFTER the terminal ledger write; the sweep's own
+// keep-set always protects `currentRunId` — including the run that just
+// settled — so this can never reclaim the run being settled.
+export function sweepAfterTerminalSettlement(cwd: string): void {
+  try {
+    sweepTrafficOneRetention(cwd, { dryRun: false });
+  } catch {
+    // best-effort: settlement must never fail because cleanup did
+  }
 }
 
 // Enforce the backup cap at WRITE time. The full sweep only runs at SessionStart,
