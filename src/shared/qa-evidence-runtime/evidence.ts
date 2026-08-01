@@ -17,6 +17,7 @@ import {
 } from './core';
 import {
   QA_LIGHTHOUSE_EVIDENCE_SCHEMA_VERSION,
+  QA_MACHINE_EVIDENCE_COMPAT_VERSIONS,
   QA_MACHINE_EVIDENCE_SCHEMA_VERSION,
   QA_NATIVE_EVIDENCE_SCHEMA_VERSION,
   type LighthouseArtifactSummaryV1,
@@ -48,8 +49,13 @@ function parseMachineViewport(value: unknown): QaMachineViewportEvidenceV1 | nul
     || typeof value.routingPassed !== 'boolean'
     || typeof value.hydrationPassed !== 'boolean'
     || !iso(value.artifactAt)
-    || !safeRelativePath(value.tracePath)
-    || !SHA256_RE.test(String(value.traceHash))
+    // Trace evidence: optional-paired on a PASSED viewport (v2 discards the
+    // green diagnostic trace at emit time), REQUIRED on a FAILED one — a
+    // failure without its trace is not diagnosable evidence.
+    || (value.tracePath !== undefined && !safeRelativePath(value.tracePath))
+    || (value.traceHash !== undefined && !SHA256_RE.test(String(value.traceHash)))
+    || ((value.tracePath === undefined) !== (value.traceHash === undefined))
+    || (String(value.status) === 'failed' && value.tracePath === undefined)
     || (value.screenshotPath !== undefined && !safeRelativePath(value.screenshotPath))
     || (value.screenshotHash !== undefined && !SHA256_RE.test(String(value.screenshotHash)))
     || ((value.screenshotPath === undefined) !== (value.screenshotHash === undefined))) return null;
@@ -69,8 +75,9 @@ function parseMachineViewport(value: unknown): QaMachineViewportEvidenceV1 | nul
     networkErrors,
     ...(actionErrors ? { actionErrors } : {}),
     artifactAt: value.artifactAt,
-    tracePath: value.tracePath,
-    traceHash: value.traceHash as string,
+    ...(typeof value.tracePath === 'string'
+      ? { tracePath: value.tracePath, traceHash: value.traceHash as string }
+      : {}),
     ...(typeof value.screenshotPath === 'string'
       ? { screenshotPath: value.screenshotPath, screenshotHash: value.screenshotHash as string }
       : {}),
@@ -108,7 +115,7 @@ export function createQaMachineEvidence(
 
 export function parseQaMachineEvidence(value: unknown): QaMachineEvidenceV1 | null {
   if (!isRecord(value)
-    || value.schemaVersion !== QA_MACHINE_EVIDENCE_SCHEMA_VERSION
+    || !QA_MACHINE_EVIDENCE_COMPAT_VERSIONS.includes(value.schemaVersion as number)
     || value.producer !== 'traffic-one-qa-runner'
     || !safeText(value.runnerVersion, 128)
     || !safeText(value.playwrightVersion, 128)
@@ -139,7 +146,10 @@ export function parseQaMachineEvidence(value: unknown): QaMachineEvidenceV1 | nu
   const routes = value.routes.map(parseMachineRoute);
   if (routes.some((route) => !route)) return null;
   const candidate: QaMachineEvidenceV1 = {
-    schemaVersion: QA_MACHINE_EVIDENCE_SCHEMA_VERSION,
+    // Preserve the DOCUMENT's own version — the evidence hash below covers it,
+    // so stamping the current constant over a v1 file would reject every
+    // pre-v2 document on a hash mismatch.
+    schemaVersion: value.schemaVersion as QaMachineEvidenceV1['schemaVersion'],
     producer: 'traffic-one-qa-runner',
     runnerVersion: value.runnerVersion,
     playwrightVersion: value.playwrightVersion,

@@ -3,7 +3,12 @@
 // runtime logic lives in the sibling -core/-images/-evidence modules; the
 // public surface is re-exported by qa-evidence-runtime.ts.
 
-export const QA_MACHINE_EVIDENCE_SCHEMA_VERSION = 1 as const;
+// v2: tracePath/traceHash became optional-paired on a PASSED viewport (the
+// runner discards the diagnostic trace at emit time on green — measured 9co:
+// 18 traces ≈ 6 MB on one green run) and stay REQUIRED on a failed one. v1
+// documents (trace on every viewport) remain parseable; the runner emits v2.
+export const QA_MACHINE_EVIDENCE_SCHEMA_VERSION = 2 as const;
+export const QA_MACHINE_EVIDENCE_COMPAT_VERSIONS: readonly number[] = [1, QA_MACHINE_EVIDENCE_SCHEMA_VERSION];
 export const QA_LIGHTHOUSE_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const QA_NATIVE_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const QA_BUILD_MANIFEST_SCHEMA_VERSION = 1 as const;
@@ -40,8 +45,10 @@ export interface QaMachineViewportEvidenceV1 {
   // absent means []. Mirrors QaViewportV2.actionErrors.
   actionErrors?: string[];
   artifactAt: string;
-  tracePath: string;
-  traceHash: string;
+  /** Optional-paired since v2, and only on a PASSED viewport: a green trace is
+   *  discarded at emit time. A FAILED viewport must carry both. */
+  tracePath?: string;
+  traceHash?: string;
   screenshotPath?: string;
   screenshotHash?: string;
 }
@@ -52,7 +59,8 @@ export interface QaMachineRouteEvidenceV1 {
 }
 
 export interface QaMachineEvidenceV1 {
-  schemaVersion: typeof QA_MACHINE_EVIDENCE_SCHEMA_VERSION;
+  /** 2 on new documents; 1 accepted read-only for pre-v2 evidence. */
+  schemaVersion: 1 | typeof QA_MACHINE_EVIDENCE_SCHEMA_VERSION;
   producer: 'traffic-one-qa-runner';
   runnerVersion: string;
   playwrightVersion: string;

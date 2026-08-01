@@ -116,15 +116,14 @@ async function runViewport(
   let screenshotPath: string | undefined;
   let screenshotHash: string | undefined;
   let page: PageLike | null = null;
-  // DOM snapshots are the bulk of a trace and the only part a passing run never
-  // needs: 18 traces on one green 9co run cost ~6 MB, and everything a failure
-  // actually needs is captured separately — the failure screenshot, plus console,
-  // network and action errors on the viewport record.
-  //
-  // Deliberately NOT deleting traces after the fact. `qa-report-v2/evidence.ts`
-  // re-hashes `viewport.tracePath` and `artifacts.ts` folds it into the acceptance
-  // attestation, so a post-hoc sweep would invalidate the report it is pruning.
-  // Shrinking the payload keeps the evidence chain byte-verifiable.
+  // The trace is a DIAGNOSTIC for failures, started for every viewport but
+  // SAVED only when the viewport fails (evidence v2): a green run's 18 traces
+  // cost ~6 MB on 9co while everything a pass needs is captured separately —
+  // the screenshot plus console/network/action errors on the viewport record.
+  // Discarding happens at EMIT time (tracing.stop without a path), never as a
+  // post-hoc sweep: a recorded tracePath is re-hashed by
+  // `qa-report-v2/evidence.ts` and folded into the acceptance attestation, so
+  // deleting it after the fact would invalidate the report it prunes.
   await context.tracing.start({ screenshots: true, snapshots: false, sources: false });
   try {
     await context.addInitScript(RUNTIME_PROBE_INIT_SCRIPT);
@@ -243,11 +242,22 @@ async function runViewport(
       }
     }
   } finally {
-    await context.tracing.stop({ path: traceAbsolute });
+    // status is final here (set in try/catch above): keep the trace only for a
+    // failure; stopping without a path discards the green diagnostic entirely.
+    if (status === 'failed') {
+      await context.tracing.stop({ path: traceAbsolute });
+    } else {
+      await context.tracing.stop();
+    }
     await context.close();
   }
-  const traceHash = contentHash(traceAbsolute);
-  if (!traceHash) throw new Error(`Playwright trace was not written: ${traceName}`);
+  let tracePath: string | undefined;
+  let traceHash: string | undefined;
+  if (status === 'failed') {
+    traceHash = contentHash(traceAbsolute) || undefined;
+    if (!traceHash) throw new Error(`Playwright trace was not written: ${traceName}`);
+    tracePath = traceName;
+  }
   return {
     width,
     status,
@@ -259,8 +269,7 @@ async function runViewport(
     networkErrors,
     ...(actionErrors.length > 0 ? { actionErrors } : {}),
     artifactAt: new Date().toISOString(),
-    tracePath: traceName,
-    traceHash,
+    ...(tracePath && traceHash ? { tracePath, traceHash } : {}),
     ...(screenshotPath && screenshotHash ? { screenshotPath, screenshotHash } : {}),
   };
 }

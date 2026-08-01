@@ -140,7 +140,7 @@ function qaEvidenceContentHash(
     ...(report.machineEvidencePath ? [report.machineEvidencePath] : []),
     ...(machine
       ? machine.routes.flatMap((route) => route.viewports.flatMap((viewport) => [
-          viewport.tracePath,
+          ...(viewport.tracePath ? [viewport.tracePath] : []),
           ...(viewport.screenshotPath ? [viewport.screenshotPath] : []),
         ]))
       : []),

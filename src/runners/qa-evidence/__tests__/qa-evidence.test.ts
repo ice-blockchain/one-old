@@ -287,7 +287,9 @@ exports.chromium = {
         return {
           tracing: {
             async start() {},
-            async stop({ path }) { fs.writeFileSync(path, Buffer.from('PK\\\\x03\\\\x04fake trace')); },
+            // Real Playwright discards the trace when stop() gets no path —
+            // the v2 runner does exactly that on a PASSED viewport.
+            async stop(options) { if (options && options.path) fs.writeFileSync(options.path, Buffer.from('PK\\\\x03\\\\x04fake trace')); },
           },
           async addInitScript() {},
           async newPage() {
@@ -430,6 +432,18 @@ test('browser CLI owns the listener, runs Playwright and Lighthouse, then verifi
     assert.equal(report.producer, 'parent-runner');
     assert.equal(report.lighthouse.evidencePath, 'lighthouse-evidence-v1.json');
     assert.equal(report.machineEvidencePath, 'machine-evidence-v1.json');
+    // Evidence v2: a fully green run leaves ZERO trace zips on disk — the
+    // diagnostic is discarded at emit time (measured 9co: ~6 MB per green run).
+    const qaDir = path.join(cwd, '.traffic-one', 'reports', 'qa', 'R');
+    assert.deepEqual(fs.readdirSync(qaDir).filter((name) => name.endsWith('.trace.zip')), []);
+    const machine = JSON.parse(fs.readFileSync(path.join(qaDir, 'machine-evidence-v1.json'), 'utf8'));
+    assert.equal(machine.schemaVersion, 2);
+    for (const route of machine.routes) {
+      for (const viewport of route.viewports) {
+        assert.equal(viewport.status, 'passed');
+        assert.equal(viewport.tracePath, undefined, 'green viewports record no trace');
+      }
+    }
     assert.equal(await main([
       'lighthouse',
       '--run-id', 'R',

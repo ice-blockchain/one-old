@@ -76,7 +76,8 @@ export interface PageLike {
 interface ContextLike {
   tracing: {
     start(options: { screenshots: boolean; snapshots: boolean; sources: boolean }): Promise<void>;
-    stop(options: { path: string }): Promise<void>;
+    /** Playwright discards the trace when `path` is omitted (green viewports). */
+    stop(options?: { path: string }): Promise<void>;
   };
   addInitScript(script: string): Promise<void>;
   newPage(): Promise<PageLike>;

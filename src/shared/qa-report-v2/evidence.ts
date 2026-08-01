@@ -138,16 +138,23 @@ export function validateMachineEvidence(
         return { evidence, error: `runtime Playwright evidence duplicates ${route.route} width ${viewport.width}` };
       }
       widths.set(viewport.width, viewport);
-      if (!viewportPassed(viewport)
-        || !artifactValid(
+      if (!viewportPassed(viewport)) {
+        return { evidence, error: `${route.route} width ${viewport.width} has failed Playwright evidence` };
+      }
+      // Since evidence v2 a PASSED viewport legitimately carries no trace (the
+      // runner discards the green diagnostic at emit time); when one IS
+      // recorded it must still verify byte-for-byte.
+      if (viewport.tracePath !== undefined && (
+        !artifactValid(
           projectRoot,
           report.runId,
           viewport.tracePath,
           Date.parse(viewport.artifactAt),
           Date.parse(report.generatedAt),
         )
-        || artifactContentHash(projectRoot, report.runId, viewport.tracePath) !== viewport.traceHash) {
-        return { evidence, error: `${route.route} width ${viewport.width} has failed or invalid Playwright trace evidence` };
+        || artifactContentHash(projectRoot, report.runId, viewport.tracePath) !== viewport.traceHash
+      )) {
+        return { evidence, error: `${route.route} width ${viewport.width} has invalid Playwright trace evidence` };
       }
       if (viewport.screenshotPath && (
         !artifactValid(
