@@ -25,6 +25,7 @@ import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstra
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import { claudeWaitBackgroundDeniedReason, claudeWaitLinkFirstReason } from '../../shared/onboarding-server/claude-setup';
+import { assistantPostedLink } from '../../shared/onboarding-server/link-evidence';
 import { codexWaitLinkFirstReason } from '../../shared/onboarding-server/codex-setup';
 import { cursorWaitLinkFirstReason } from '../../shared/onboarding-server/cursor-setup';
 import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
@@ -272,20 +273,31 @@ export function onboardingGate(ctx: Ctx): HookResult {
       // routinely skipped (observed live on 1.0.43 — the user never got a link).
       // One deny per session orders the visible repost; the allowed retry then
       // proceeds into the blocking wait. Never fired over an open wizard, and the
-      // recovery path (server not ready) is never trapped.
+      // recovery path (server not ready) is never trapped. A link the ASSISTANT
+      // already posted in the live transcript is delivery evidence too (observed
+      // 16cl/019fbca1 on 1.0.45: the compliant model posted right after
+      // bootstrap, and this deny — arrival-only back then — ordered a duplicate
+      // in the seconds before the user could click); the wait then runs with no
+      // deny AND no nudge ride.
       if (ctx.host === 'claude') {
         const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
         if (prepared.kind === 'ready') {
           const { server, waitCommand } = prepared;
-          if (server.dashboardUrl
-            && !wizardOpened(root, server.token, process.env, ctx.host)
-            && firstEmitThisSession(root, 'claude-onboarding-wait-link', hookSessionIdentity(raw).sessionId)) {
-            const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
-            return deny(block('claude-wait-link-first', {
-              URL: server.dashboardUrl,
-              LOCAL_FALLBACK: localFallback,
-              WAIT_CMD: waitCommand,
-            }, claudeWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+          if (server.dashboardUrl && !wizardOpened(root, server.token, process.env, ctx.host)) {
+            if (assistantPostedLink({
+              url: server.dashboardUrl,
+              host: ctx.host,
+              raw,
+              sessionId: hookSessionIdentity(raw).sessionId,
+            })) return noop();
+            if (firstEmitThisSession(root, 'claude-onboarding-wait-link', hookSessionIdentity(raw).sessionId)) {
+              const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
+              return deny(block('claude-wait-link-first', {
+                URL: server.dashboardUrl,
+                LOCAL_FALLBACK: localFallback,
+                WAIT_CMD: waitCommand,
+              }, claudeWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+            }
           }
         }
       }
@@ -294,20 +306,27 @@ export function onboardingGate(ctx: Ctx): HookResult {
       // self-contained link-first deny. DEDICATED marker — deliberately not
       // 'onboarding-deny-tool': an orientation call may have burned the
       // walkthrough without the link ever being posted, and this deny must not
-      // consume the walkthrough for later mutating calls either.
+      // consume the walkthrough for later mutating calls either. Same
+      // assistant-posted stand-down as Claude (the rollout is the transcript).
       if (ctx.host === 'codex') {
         const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
         if (prepared.kind === 'ready') {
           const { server, waitCommand } = prepared;
-          if (server.dashboardUrl
-            && !wizardOpened(root, server.token, process.env, ctx.host)
-            && firstEmitThisSession(root, 'codex-onboarding-wait-link', hookSessionIdentity(raw).sessionId)) {
-            const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
-            return deny(block('codex-wait-link-first', {
-              URL: server.dashboardUrl,
-              LOCAL_FALLBACK: localFallback,
-              WAIT_CMD: waitCommand,
-            }, codexWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+          if (server.dashboardUrl && !wizardOpened(root, server.token, process.env, ctx.host)) {
+            if (assistantPostedLink({
+              url: server.dashboardUrl,
+              host: ctx.host,
+              raw,
+              sessionId: hookSessionIdentity(raw).sessionId,
+            })) return noop();
+            if (firstEmitThisSession(root, 'codex-onboarding-wait-link', hookSessionIdentity(raw).sessionId)) {
+              const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
+              return deny(block('codex-wait-link-first', {
+                URL: server.dashboardUrl,
+                LOCAL_FALLBACK: localFallback,
+                WAIT_CMD: waitCommand,
+              }, codexWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+            }
           }
         }
       }

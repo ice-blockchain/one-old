@@ -29,9 +29,11 @@ import {
 } from '../../shared/onboarding-server/wizard-links';
 import { emittedWithin, stampEmitMarker } from '../../shared/once';
 import {
+  stopSetupLinkPostedReason,
   stopSetupLinksShownReason,
   stopSetupRequiredReason,
 } from '../../shared/onboarding-server/claude-setup';
+import { assistantPostedLink } from '../../shared/onboarding-server/link-evidence';
 import { pluginRoot } from '../../shared/paths';
 import { hookSessionIdentity, isSubagentThread } from '../../shared/state';
 import { makeSkillBlock } from '../../shared/skill-block';
@@ -83,14 +85,20 @@ export function onboardingStopGate(ctx: Ctx): HookResult {
   const waitCommand = onboardingWaitCommand(root, ctx.host, onboardingSyncSessionId(sessionId));
   // Per the Devin precedent, an open wizard does NOT silence the backstop — it
   // swaps the prose: keep the turn on the waiter instead of reposting a link
-  // over the user's open setup tab.
+  // over the user's open setup tab. A link the assistant already posted in the
+  // live transcript swaps the prose the same way (delivery evidence — reposting
+  // duplicated the link live on 1.0.45): the turn stays on the waiter, no repost.
+  const linkAlreadyPosted = !wizardOpened(root, link.token, process.env, ctx.host)
+    && assistantPostedLink({ url: link.dashboardUrl, host: ctx.host, raw, sessionId });
   const text = wizardOpened(root, link.token, process.env, ctx.host)
     ? block('stop-setup-links-shown', { WAIT_CMD: waitCommand }, stopSetupLinksShownReason(waitCommand))
-    : block('stop-setup-required', {
-      URL: link.dashboardUrl,
-      LOCAL_FALLBACK: link.localFallback,
-      WAIT_CMD: waitCommand,
-    }, stopSetupRequiredReason(link.dashboardUrl, link.localFallback, waitCommand));
+    : (linkAlreadyPosted
+      ? block('stop-setup-link-posted', { WAIT_CMD: waitCommand }, stopSetupLinkPostedReason(waitCommand))
+      : block('stop-setup-required', {
+        URL: link.dashboardUrl,
+        LOCAL_FALLBACK: link.localFallback,
+        WAIT_CMD: waitCommand,
+      }, stopSetupRequiredReason(link.dashboardUrl, link.localFallback, waitCommand)));
 
   if (ctx.host === 'claude' || ctx.host === 'codex') return deny(text);
   // Cursor consumes followup_message from its stop lifecycle events (bounded by

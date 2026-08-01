@@ -21,7 +21,7 @@ import { runModelPolicyPath } from '../../../shared/run-model-policy';
 import { doctorCommand } from '../../../shared/doctor-command';
 import {  type LocalFallback } from '../../../shared/onboarding-server/wizard-links';
 import { noteBrowserArrival } from '../../../shared/onboarding-server/browser-arrival';
-import { claudeWaitBackgroundDeniedReason, claudeWaitLinkFirstReason, stopSetupLinksShownReason, stopSetupRequiredReason } from '../../../shared/onboarding-server/claude-setup';
+import { claudeWaitBackgroundDeniedReason, claudeWaitLinkFirstReason, stopSetupLinkPostedReason, stopSetupLinksShownReason, stopSetupRequiredReason } from '../../../shared/onboarding-server/claude-setup';
 import { codexWaitLinkFirstReason } from '../../../shared/onboarding-server/codex-setup';
 import { cursorWaitLinkFirstReason } from '../../../shared/onboarding-server/cursor-setup';
 
@@ -1379,4 +1379,94 @@ test('OpenCode/Kilo session.idle gets the one-line toast text, TTL-bounded, sile
     const r = onboardingStopGate(ctxStop('opencode', cwd));
     assert.equal(r.kind, 'noop', 'a toast adds nothing while the user is mid-setup');
   });
+});
+
+// ── Assistant-posted link = delivery evidence. Validated live (16cl/019fbca1 on
+// 1.0.45): the compliant model posted the link right after bootstrap, and the
+// arrival-only link-first deny ordered a DUPLICATE post in the seconds before
+// the user could click. A link in an assistant transcript message now stands the
+// deny down; tool output alone never does. ──
+
+const CLAUDE_ASSISTANT_POST = JSON.stringify({
+  type: 'assistant',
+  message: { role: 'assistant', content: [{ type: 'text', text: `Open this link to complete setup:\n\n${DASH_URL}` }] },
+});
+const CLAUDE_TOOL_RESULT_ONLY = JSON.stringify({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'tool_result', content: `TRAFFIC_ONE_SETUP_READY\nSetup link: ${DASH_URL}` }] },
+});
+
+function ctxClaudeWait(cwd: string, command: string, transcriptPath: string): Ctx {
+  const raw = { tool_name: 'Bash', tool_input: { command }, session_id: 'claude-main', transcript_path: transcriptPath };
+  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw, tool: { class: 'shell', rawName: 'Bash' } };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+test('Claude wait proceeds with no deny once the assistant has posted the link', () => {
+  withProject(null, (cwd) => {
+    const transcript = path.join(cwd, 'session.jsonl');
+    fs.writeFileSync(transcript, `${CLAUDE_ASSISTANT_POST}\n`, 'utf8');
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    const r = onboardingGate(ctxClaudeWait(cwd, wait, transcript));
+    assert.equal(r.kind, 'noop', 'a posted link is delivery evidence — no deny, no duplicate order');
+  });
+});
+
+test('Claude wait deny still fires when the link exists ONLY in tool output', () => {
+  withProject(null, (cwd) => {
+    const transcript = path.join(cwd, 'session.jsonl');
+    fs.writeFileSync(transcript, `${CLAUDE_TOOL_RESULT_ONLY}\n`, 'utf8');
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    const r = onboardingGate(ctxClaudeWait(cwd, wait, transcript));
+    assert.equal(r.kind, 'deny', 'collapsed tool output is exactly the invisible producer that must not suppress');
+    if (r.kind === 'deny') assert.match(r.reason, /NOT visible to the user/);
+  });
+});
+
+test('Codex wait proceeds with no deny once the assistant has posted the link in the rollout', () => {
+  const codexHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-codexhome-')));
+  const prev = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHome;
+  try {
+    withProject(null, (cwd) => {
+      const dayDir = path.join(codexHome, 'sessions', '2026', '08', '01');
+      fs.mkdirSync(dayDir, { recursive: true });
+      fs.writeFileSync(path.join(dayDir, 'rollout-2026-08-01T12-00-00-codex-main.jsonl'), `${JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'agent_message', message: `Complete the Traffic One setup here:\n\n${DASH_URL}` },
+      })}\n`, 'utf8');
+      const wait = onboardingWaitCommand(cwd, 'codex');
+      const r = onboardingGate(ctxHost('codex', cwd, 'exec_command', 'shell', { command: wait }));
+      assert.equal(r.kind, 'noop', 'the rollout is the Codex transcript — a posted link stands the deny down');
+    });
+  } finally {
+    if (prev === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = prev;
+    fs.rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test('Stop with the link already posted keeps the turn on the waiter WITHOUT reposting', () => {
+  withProject(null, (cwd) => {
+    const transcript = path.join(cwd, 'session.jsonl');
+    fs.writeFileSync(transcript, `${CLAUDE_ASSISTANT_POST}\n`, 'utf8');
+    const r = onboardingStopGate(ctxStop('claude', cwd, { transcript_path: transcript }));
+    assert.equal(r.kind, 'deny', 'the backstop still holds the turn open on the waiter');
+    if (r.kind === 'deny') {
+      assert.ok(!r.reason.includes(DASH_URL), 'no repost — the link is already in the conversation');
+      assert.match(r.reason, /already posted in the conversation/);
+      assert.ok(r.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+  });
+});
+
+test('the stop-setup-link-posted TS fallback stays verbatim with its skill block', () => {
+  const block = fs.readFileSync(
+    path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8',
+  ).split('<!-- T1BLOCK:BEGIN stop-setup-link-posted -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(block.length > 0, 'the skill block must exist');
+  assert.equal(
+    stopSetupLinkPostedReason('W'),
+    block.replace(/\{\{WAIT_CMD\}\}/g, 'W'),
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical',
+  );
 });

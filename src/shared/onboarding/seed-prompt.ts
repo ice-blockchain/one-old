@@ -28,7 +28,13 @@ export function qualifiesAsSeedPrompt(prompt: string): boolean {
 }
 
 export function truncateSeedPrompt(prompt: string): string {
-  const text = (prompt || '').trim();
+  // Flatten newlines/control characters to single spaces: the value is embedded
+  // as a shell-quoted `--seed-prompt=` argv, and the gate's strict runner
+  // allow-list rejects an embedded literal newline — observed live (019fbca1,
+  // Codex 1.0.45): the gate denied the exact command its own recipe printed for
+  // a two-line prompt, and the retry silently DROPPED the seed. Classification
+  // only reads keywords, so the flattening loses no signal.
+  const text = (prompt || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ').trim();
   return text.length > SEED_PROMPT_MAX_LENGTH ? text.slice(0, SEED_PROMPT_MAX_LENGTH) : text;
 }
 

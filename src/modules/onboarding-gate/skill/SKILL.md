@@ -144,6 +144,14 @@ Then run this wait command in the FOREGROUND (run_in_background: false, timeout 
 {{WAIT_CMD}}
 <!-- T1BLOCK:END stop-setup-required -->
 
+<!-- T1BLOCK:BEGIN stop-setup-link-posted -->
+You are ending your turn while Traffic One setup is still pending. The setup link is already posted in the conversation — do NOT post it again; a repeated link reads as noise.
+
+Run this wait command NOW in the FOREGROUND (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. It returns immediately if setup is already complete; when it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request:
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END stop-setup-link-posted -->
+
 <!-- T1BLOCK:BEGIN stop-setup-links-shown -->
 You are ending your turn while Traffic One setup is still in progress — the user has the setup wizard open in their browser right now (the setup server saw it load). Do NOT repost the link: a repeated link reads as "start over".
 

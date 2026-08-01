@@ -155,3 +155,19 @@ test('isOnboardingWaitCommand: rejects chaining, redirection, expansion, and non
   // not a shell tool
   assert.equal(isOnboardingWaitCommand('Write', { command: `node ${runner} /cwd` }), false);
 });
+
+test('a multi-line seed prompt is flattened so the printed yes command passes the gate\'s own allow-list', () => {
+  // Observed live (019fbca1, Codex 1.0.45): a two-line prompt produced a
+  // --seed-prompt with an embedded literal newline; the strict runner parser
+  // rejected the exact command the recipe printed, and the retry silently
+  // dropped the seed.
+  const multiLine = 'create modern an agency presentation website in react.\nmaintenance messages after first integration:';
+  const printed = onboardingUseBootstrapCommand('/cwd', 'codex', multiLine);
+  assert.ok(printed.includes('--seed-prompt='), 'the seed must survive a multi-line prompt');
+  assert.ok(!printed.includes('\n'), 'the printed command must be a single line');
+  assert.ok(printed.includes('create modern an agency presentation website in react. maintenance messages'),
+    'newlines flatten to spaces — classification keywords are preserved');
+  assert.equal(isOnboardingWaitCommand('exec_command', { command: printed }), true,
+    'the gate must accept the exact command its own recipe prints');
+  assert.equal(isOnboardingBootstrapCommand('exec_command', { command: printed }), true);
+});
