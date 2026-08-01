@@ -5,11 +5,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { opencodeAssignmentHash, readOpenCodeQueue, readOpenCodeUnitStatuses } from '../opencode-queue';
+import { abandonAfterMs, maxConsecutiveStalls, opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { detectHost } from '../host';
 import { openCodeDelegationActive } from '../performance';
 import { isMaintenancePhase } from '../state/lifecycle';
 import { obj } from '../obj';
 
+import { openCodeApplyInProgress } from './apply-latch';
 import {
   TERMINAL_BATCH_OUTCOMES,
   planDelegationQueueRolesForRun,
@@ -33,6 +35,70 @@ export function planBatchJsonPath(cwd: string, runId: string): string {
 
 export function planBatchMarkerPath(cwd: string, runId: string, role: string): string {
   return path.join(planBatchDir(cwd, runId), normalizeAttemptRole(role));
+}
+
+// ── Batch liveness ───────────────────────────────────────────────────────────
+// batch.json has NO heartbeat by design (its mtime never advances while
+// running, and adding a field would race the terminal writer: atomicWriteJson
+// is rename-atomic but lock-free, so a 30s tick could rename OVER a
+// just-written terminal state and resurrect `running` — the exact permanent
+// wedge this machinery exists to recover from). Liveness is therefore a
+// SIDECAR dotfile (dotfiles are excluded from completedRolesFromMarkers) that
+// only ever gets touched, never carries batch state.
+
+function planBatchHeartbeatPath(cwd: string, runId: string): string {
+  return path.join(planBatchDir(cwd, runId), '.heartbeat');
+}
+
+/** Touched by the MCP watchdog tick and between role shards/units. Never
+ *  writes batch.json. */
+export function touchPlanBatchHeartbeat(cwd: string, runId: string): void {
+  if (!runId) return;
+  try {
+    const p = planBatchHeartbeatPath(cwd, runId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid })}\n`, 'utf8');
+  } catch {
+    // best-effort; absence just narrows liveness evidence to unit freshness
+  }
+}
+
+function planBatchHeartbeatFresh(cwd: string, runId: string, withinMs: number, nowMs: number): boolean {
+  try {
+    return nowMs - fs.statSync(planBatchHeartbeatPath(cwd, runId)).mtimeMs < withinMs;
+  } catch {
+    return false;
+  }
+}
+
+/** The sanctioned in-flight budget of ONE unit: the runner is spawnSync end to
+ *  end, so a unit's ledger `updatedAt` is written once at start and cannot be
+ *  refreshed mid-attempt from inside the runner. The longest legitimate unit
+ *  is the full stall walk (maxConsecutiveStalls × unit timeout) plus apply and
+ *  post-apply verification headroom. */
+export function unitLivenessWindowMs(): number {
+  return maxConsecutiveStalls() * opencodeUnitTimeoutMs() + 5 * 60_000;
+}
+
+function anyRunningUnitFresh(cwd: string, runId: string, nowMs: number): boolean {
+  const windowMs = unitLivenessWindowMs();
+  return readOpenCodeUnitStatuses(cwd, runId).some((entry) => {
+    if (entry.status !== 'running') return false;
+    const at = Date.parse(entry.updatedAt || '');
+    return Number.isFinite(at) && nowMs - at < windowMs;
+  });
+}
+
+/** Any positive evidence that a `running` batch still has a live executor:
+ *  a fresh heartbeat sidecar (MCP watchdog / between-shard touches), a running
+ *  unit inside its sanctioned in-flight window, or a pid-verified apply latch.
+ *  A `running` batch.json with NONE of these is a leftover from a dead process
+ *  (kill -9, host crash) — observed to wedge the spawn gate forever. */
+export function batchLooksLive(cwd: string, runId: string, nowMs: number = Date.now()): boolean {
+  if (!runId) return false;
+  return planBatchHeartbeatFresh(cwd, runId, abandonAfterMs(), nowMs)
+    || anyRunningUnitFresh(cwd, runId, nowMs)
+    || openCodeApplyInProgress(cwd, runId, nowMs);
 }
 
 // Roles whose per-role completion MARKER exists on disk. The markers are the
@@ -114,7 +180,12 @@ export function markOpenCodePlanBatchRunning(cwd: string, runId: string): void {
   try {
     const existing = readOpenCodePlanBatchState(cwd, runId);
     if (existing && TERMINAL_BATCH_OUTCOMES.has(existing.outcome)) return;
-    if (existing?.outcome === 'running') return;
+    if (existing?.outcome === 'running') {
+      // A re-mark means a live executor touched the batch — refresh liveness
+      // even though batch.json itself is left alone.
+      touchPlanBatchHeartbeat(cwd, runId);
+      return;
+    }
     atomicWriteJson(planBatchJsonPath(cwd, runId), {
       version: 1,
       outcome: 'running',
@@ -122,6 +193,10 @@ export function markOpenCodePlanBatchRunning(cwd: string, runId: string): void {
       rolesCompleted: existing?.rolesCompleted ?? [],
       assignmentHash: opencodeAssignmentHash(cwd, runId),
     } satisfies OpenCodePlanBatchState);
+    // Starting the batch IS the first proof of life: without this, the window
+    // between `running` landing and the first watchdog tick / unit record
+    // would read as a dead batch and briefly open the spawn gate.
+    touchPlanBatchHeartbeat(cwd, runId);
   } catch {
     // best-effort
   }
@@ -299,7 +374,17 @@ export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, s
   if (!runId || !openCodeDelegationActive(state, host)) return false;
   if (!planBatchPhaseEligible(cwd, runId, state)) return false;
   if (planDelegationQueueRolesForRun(cwd, runId).length === 0) return false;
-  return !openCodePlanBatchComplete(cwd, runId);
+  if (openCodePlanBatchComplete(cwd, runId)) return false;
+  // A batch stamped `running` blocks ONLY while something is verifiably alive.
+  // batch.json cannot go terminal on its own after a kill -9 / host crash
+  // (shards never write terminal; the in-memory MCP registry is gone), and the
+  // old behavior blocked implementers FOREVER with a prose-only recovery
+  // (--finalize-only). With liveness, a dead batch opens the gate within
+  // ~unitLivenessWindowMs (~25 min) automatically; a batch that never started
+  // (no batch.json) still blocks — Step-0 must run first.
+  const batch = readOpenCodePlanBatchState(cwd, runId);
+  if (batch?.outcome === 'running' && !batchLooksLive(cwd, runId)) return false;
+  return true;
 }
 
 // Terminal marker for the Step-0 `opencode_delegate_from_plan` batch. Unlike

@@ -31,6 +31,7 @@ export {
   recordOpenCodeFallback,
   recordOpenCodeUnitStatus,
   statusFromDelegateAction,
+  touchOpenCodeUnitRunning,
   writeOpenCodeQueue,
 } from './store';
 

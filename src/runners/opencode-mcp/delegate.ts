@@ -21,7 +21,7 @@ import {
   RESUME_WAIT_MS,
   watchdogTickMs,
 } from '../../config/opencode-timeouts';
-import { openCodeApplyInProgress, planDelegationQueueRoles } from '../../shared/opencode-roles';
+import { openCodeApplyInProgress, planDelegationQueueRoles, touchPlanBatchHeartbeat } from '../../shared/opencode-roles';
 import {
   finalizePlanBatch,
   markPlanBatchRunningIfNeeded,
@@ -35,6 +35,7 @@ import {
   persistBatchUnitsToStatus,
   readOpenCodeQueue,
   reconcileAllRunningUnits,
+  touchOpenCodeUnitRunning,
 } from '../../shared/opencode-queue';
 import { markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted } from '../../shared/opencode-roles';
 
@@ -213,6 +214,7 @@ async function startFromPlan(projectRoot: string, runId: string, model: string |
     // disk; spawning the NEXT role's runner here would land diffs underneath
     // the paid fallback the orchestrator already moved to.
     if (isAborted?.()) break;
+    touchPlanBatchHeartbeat(projectRoot, runId);
     const r = await runRunner(['--run-id', runId, '--from-plan', '--roles', role, ...modelArgs], projectRoot, onChild);
     if (isAborted?.()) break;
     if (Array.isArray(r.units) && r.units.length > 0) {
@@ -383,6 +385,12 @@ function getOrStart(key: string, meta: { projectRoot: string; runId: string; bat
   run.watchdog = setInterval(() => {
     if (run.status !== 'running') { if (run.watchdog) clearInterval(run.watchdog); return; }
     refreshChildKeepAlive(run);
+    // Disk-visible liveness: the batch heartbeat sidecar (never batch.json —
+    // that would race the terminal writer) and the running units' updatedAt.
+    // The runner itself is spawnSync end to end and cannot refresh either, so
+    // this tick is what keeps a live batch distinguishable from a dead one.
+    if (run.batchKey === PLAN_KEY) touchPlanBatchHeartbeat(run.projectRoot, run.runId);
+    touchOpenCodeUnitRunning(run.projectRoot, run.runId);
     if (Date.now() - run.lastPolledAt <= abandonAfterMs()) return;
     // Never kill mid-apply: defer the abandon while the runner's apply-back
     // latch is live (pid-verified) — the next tick re-checks. The latch's own

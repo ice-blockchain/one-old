@@ -369,12 +369,16 @@ test('the apply latch holds while its runner pid is alive, past any freshness wi
 // the current shard while the loop went on to spawn the next role's runner
 // landed diffs underneath the paid fallback (adversarial review).
 test('plan-batch cancel stops the sequential loop before the next role spawns', async () => {
+  // Sleeps far longer than the observation window so the FIRST shard is still
+  // running when the cancel lands even under full-suite load (a 1.5s stub
+  // could finish naturally before a starved event loop delivered the cancel,
+  // making the second spawn legitimate and the test flaky).
   const SLOW_COUNTING_STUB = [
     'const fs = require("fs");',
     'const path = require("path");',
     'const marker = path.join(path.dirname(process.argv[1]), "shard-spawns");',
     'fs.appendFileSync(marker, process.argv.slice(2).join(" ") + "\\n");',
-    'setTimeout(() => { console.log(JSON.stringify({ total: 1, delegated: 0, units: [{ role: "frontend", task: "t", action: "failed", touched: [] }] })); }, 1500);',
+    'setTimeout(() => { console.log(JSON.stringify({ total: 1, delegated: 0, units: [{ role: "frontend", task: "t", action: "failed", touched: [] }] })); }, 8000);',
   ].join('\n');
   await withStubRunner(SLOW_COUNTING_STUB, async (projectRoot) => {
     fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
@@ -386,11 +390,20 @@ test('plan-batch cancel stops the sequential loop before the next role spawns', 
     assert.equal(cancelled.status, 'done');
     assert.equal(cancelled.result.action, 'abandoned');
     // Give the killed shard's close event (and any wrongly-spawned successor)
-    // time to surface, then assert exactly ONE runner was ever spawned.
+    // time to surface. Under load the FIRST shard can be SIGTERMed while node
+    // is still booting — before its marker append — so a missing/empty marker
+    // is a legitimate outcome. The invariant is strictly "no LATER role shard
+    // ever spawns after the cancel".
     await new Promise((r) => setTimeout(r, 2_000));
     const marker = path.join(path.dirname(process.env[OPENCODE_RUNNER_OVERRIDE_ENV] as string), 'shard-spawns');
-    const spawns = fs.readFileSync(marker, 'utf8').trim().split('\n').filter(Boolean);
-    assert.equal(spawns.length, 1, `the cancelled batch must not spawn later role shards (saw: ${spawns.join(' | ')})`);
+    let spawns: string[] = [];
+    try {
+      spawns = fs.readFileSync(marker, 'utf8').trim().split('\n').filter(Boolean);
+    } catch {
+      spawns = []; // shard 1 died pre-append — fine; shard 2 must still be absent
+    }
+    assert.ok(spawns.length <= 1, `the cancelled batch must not spawn later role shards (saw: ${spawns.join(' | ')})`);
+    assert.ok(!spawns.some((line) => line.includes('--roles tester')), `the second role's shard must never spawn after cancel (saw: ${spawns.join(' | ')})`);
   });
 });
 

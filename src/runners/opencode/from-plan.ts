@@ -10,6 +10,7 @@ import {
   markOpenCodePlanRoleCompleted,
   type PlanDelegationUnit,
   parsePlanDelegationUnits,
+  touchPlanBatchHeartbeat,
 } from '../../shared/opencode-roles';
 import {
   finalizePlanBatch,
@@ -219,6 +220,11 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
           allowedFiles: formal.allowedFiles,
           assignmentHash: formalQueue.assignmentHash,
         });
+        // Between-unit liveness on the shell path (no MCP watchdog exists
+        // here): the delegate below is spawnSync, so this is the last moment
+        // this process can prove the batch alive before going dark for the
+        // unit's whole in-flight window.
+        touchPlanBatchHeartbeat(cwd, runId);
       }
       const task = formal.allowedFiles.length > 0
         ? `${u.task}\n\nFiles/area: ${formal.allowedFiles.join(',')}`

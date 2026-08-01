@@ -146,6 +146,33 @@ export function readOpenCodeQueue(cwd: string, runId: string): OpenCodeQueue | n
   }
 }
 
+// Refresh `updatedAt` on every RUNNING unit without touching anything else —
+// notably WITHOUT appending an attempt row (the fold in recordOpenCodeUnitStatus
+// deliberately excludes `running`, so a repeated status write would push a new
+// row per tick and evict real retry history against the attempt cap). The MCP
+// watchdog calls this each tick: the runner itself is spawnSync end to end and
+// cannot refresh its own unit mid-attempt, and a once-written `updatedAt` is
+// what batch liveness and the stale-running reconciler read.
+export function touchOpenCodeUnitRunning(cwd: string, runId: string): void {
+  if (!runId) return;
+  try {
+    withProjectStateLock(cwd, () => {
+      const file = path.join(runDir(cwd, runId), 'opencode-units.json');
+      const statuses = readStatuses(cwd, runId);
+      let touched = false;
+      const now = new Date().toISOString();
+      for (const entry of statuses) {
+        if (entry.status !== 'running') continue;
+        entry.updatedAt = now;
+        touched = true;
+      }
+      if (touched) writeJson(file, statuses);
+    });
+  } catch {
+    // best-effort; a missed touch only narrows the liveness window
+  }
+}
+
 export function recordOpenCodeUnitStatus(cwd: string, runId: string, entry: Omit<OpenCodeUnitStatusEntry, 'updatedAt'> & { updatedAt?: string }): void {
   if (!runId || !entry.id || !entry.role) return;
   try {

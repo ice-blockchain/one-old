@@ -22,6 +22,7 @@ export {
 } from './plan-units';
 
 export {
+  batchLooksLive,
   deriveBatchOutcomeFromUnits,
   hasFreshArchitectQueueForRun,
   markOpenCodePlanBatchComplete,
@@ -30,6 +31,8 @@ export {
   openCodePlanBatchComplete,
   readOpenCodePlanBatchState,
   shouldBlockImplementerForPlanBatch,
+  touchPlanBatchHeartbeat,
+  unitLivenessWindowMs,
 } from './batch-state';
 
 export {

@@ -10,11 +10,16 @@ import {
   finalizePlanBatchOnly,
 } from '../opencode-plan/batch';
 import {
+  batchLooksLive,
+  clearOpenCodeApplyInProgress,
+  markOpenCodeApplyInProgress,
   openCodePlanBatchComplete,
   pendingOpenCodePlanRoles,
   readOpenCodePlanBatchState,
+  shouldBlockImplementerForPlanBatch,
+  touchPlanBatchHeartbeat,
 } from '../opencode-roles';
-import { buildOpenCodeQueue, readOpenCodeQueue, recordOpenCodeUnitStatus, writeOpenCodeQueue } from '../opencode-queue';
+import { buildOpenCodeQueue, readOpenCodeQueue, recordOpenCodeUnitStatus, touchOpenCodeUnitRunning, writeOpenCodeQueue } from '../opencode-queue';
 
 test('a replan (new assignments hash) supersedes the terminal batch so Step-0 can run again', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocbatch-replan-'));
@@ -139,6 +144,125 @@ test('buildBatchResultFromUnitStatuses maps opencode-units.json into batch summa
     assert.equal(built.total, 1);
     assert.equal(built.delegated, 1);
     assert.equal(built.units?.[0]?.action, 'delegated');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Batch liveness: a `running` batch.json left by a dead process must stop
+// blocking implementers (it used to wedge the spawn gate FOREVER, with the
+// prose-only --finalize-only recovery), while every live signal keeps blocking.
+
+function livenessFixture(): { dir: string; runId: string; state: Record<string, unknown> } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocliveness-'));
+  const runId = 'run-live';
+  fs.mkdirSync(path.join(dir, '.traffic-one', 'runs', runId, 'opencode-plan-batch'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+    '<!-- opencode-delegate:start -->\n'
+    + '- id: u1 | role: frontend | files: src/a.ts | task: t\n'
+    + '<!-- opencode-delegate:end -->\n', 'utf8');
+  const queue = buildOpenCodeQueue(dir, runId, [{ role: 'frontend', files: 'src/a.ts', task: 't' }]);
+  writeOpenCodeQueue(dir, queue);
+  // Legacy-shaped running batch (no assignmentHash → no supersession path).
+  fs.writeFileSync(
+    path.join(dir, '.traffic-one', 'runs', runId, 'opencode-plan-batch', 'batch.json'),
+    JSON.stringify({ version: 1, outcome: 'running', startedAt: new Date(Date.now() - 60 * 60_000).toISOString(), rolesCompleted: [] }),
+    'utf8',
+  );
+  const state = {
+    mode: 'new-project',
+    openCode: { enabled: true },
+    toolchain: { opencode: { installedVersion: '1.0.0' } },
+  };
+  return { dir, runId, state };
+}
+
+test('a running batch with no sign of life stops blocking; every live signal still blocks', () => {
+  const { dir, runId, state } = livenessFixture();
+  try {
+    // Dead batch: running batch.json, no heartbeat, no fresh unit, no latch.
+    assert.equal(batchLooksLive(dir, runId), false);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, runId, state, 'claude'), false, 'a dead running batch opens the gate');
+
+    // Fresh heartbeat sidecar → blocks again.
+    touchPlanBatchHeartbeat(dir, runId);
+    assert.equal(batchLooksLive(dir, runId), true);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, runId, state, 'claude'), true, 'a fresh heartbeat proves the batch alive');
+    // The heartbeat is a dotfile sidecar: it must never appear as a completed
+    // role and must never rewrite batch.json (that write would race the
+    // terminal writer).
+    const batchRaw = fs.readFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'opencode-plan-batch', 'batch.json'), 'utf8');
+    touchPlanBatchHeartbeat(dir, runId);
+    assert.equal(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'opencode-plan-batch', 'batch.json'), 'utf8'), batchRaw);
+    // Age the heartbeat past the freshness window → dead again.
+    const heartbeat = path.join(dir, '.traffic-one', 'runs', runId, 'opencode-plan-batch', '.heartbeat');
+    const old = new Date(Date.now() - 20 * 60_000);
+    fs.utimesSync(heartbeat, old, old);
+    assert.equal(batchLooksLive(dir, runId), false);
+
+    // A running unit inside its sanctioned in-flight window (~25 min) blocks —
+    // the runner is spawnSync and cannot refresh updatedAt mid-attempt.
+    const queue = readOpenCodeQueue(dir, runId);
+    recordOpenCodeUnitStatus(dir, runId, {
+      id: queue!.units[0]!.id,
+      role: 'frontend',
+      status: 'running',
+      action: 'running',
+      touched: [],
+      updatedAt: new Date(Date.now() - 15 * 60_000).toISOString(),
+    });
+    assert.equal(batchLooksLive(dir, runId), true, 'a 15-min-old running unit is inside the in-flight window');
+    // Past the window → dead.
+    recordOpenCodeUnitStatus(dir, runId, {
+      id: queue!.units[0]!.id,
+      role: 'frontend',
+      status: 'running',
+      action: 'running',
+      touched: [],
+      updatedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+    assert.equal(batchLooksLive(dir, runId), false, 'a 30-min-old running unit is a dead batch');
+
+    // A pid-verified apply latch blocks regardless.
+    markOpenCodeApplyInProgress(dir, runId, 'senior-frontend');
+    assert.equal(batchLooksLive(dir, runId), true);
+    clearOpenCodeApplyInProgress(dir, runId, 'senior-frontend');
+
+    // A batch that never STARTED (no batch.json) still blocks: Step-0 first.
+    fs.rmSync(path.join(dir, '.traffic-one', 'runs', runId, 'opencode-plan-batch', 'batch.json'));
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, runId, state, 'claude'), true, 'an unstarted batch still gates implementers');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('touchOpenCodeUnitRunning refreshes updatedAt without appending attempt rows', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-octouch-'));
+  try {
+    const queue = buildOpenCodeQueue(dir, 'r-touch', [
+      { role: 'frontend', files: 'src/a.ts', task: 't' },
+      { role: 'tester', files: 'e2e/b.ts', task: 't2' },
+    ]);
+    writeOpenCodeQueue(dir, queue);
+    const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+    recordOpenCodeUnitStatus(dir, 'r-touch', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'running', action: 'running', touched: [], updatedAt: stale,
+    });
+    recordOpenCodeUnitStatus(dir, 'r-touch', {
+      id: queue.units[1]!.id, role: 'tester', status: 'delegated', action: 'delegated', touched: [], updatedAt: stale,
+    });
+    const before = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'r-touch', 'opencode-units.json'), 'utf8')) as Array<Record<string, unknown>>;
+    touchOpenCodeUnitRunning(dir, 'r-touch');
+    const after = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'r-touch', 'opencode-units.json'), 'utf8')) as Array<Record<string, unknown>>;
+    const runningAfter = after.find((e) => e.status === 'running')!;
+    const terminalAfter = after.find((e) => e.status === 'delegated')!;
+    assert.ok(String(runningAfter.updatedAt) > stale, 'the running unit was refreshed');
+    assert.equal(String(terminalAfter.updatedAt), stale, 'terminal units are untouched');
+    // Zero attempt-row churn: a repeated running write would evict real retry
+    // history against the attempt cap.
+    assert.equal((runningAfter.attempts as unknown[]).length, (before.find((e) => e.status === 'running')!.attempts as unknown[]).length);
+    // No-op safe on a run with no ledger.
+    touchOpenCodeUnitRunning(dir, 'no-such-run');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
