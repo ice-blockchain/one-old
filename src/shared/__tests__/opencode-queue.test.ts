@@ -195,6 +195,27 @@ test('recordOpenCodeFallback annotates units without appending attempts', () => 
   });
 });
 
+// A parallel-mode paid spawn records a fallback for its role WHILE the free
+// unit is still executing — flipping that live row destroyed its file
+// reservation the instant the flag's designed use case fired (adversarial
+// review). Live rows survive; dead ones still flip.
+test('recordOpenCodeFallback never flips a VERIFIABLY RUNNING unit; a dead running row still falls back', () => {
+  withRunDir((cwd, runId) => {
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'live-unit', role: 'frontend', status: 'running', action: 'running', touched: [],
+      allowedFiles: ['src/features/news/**'],
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'dead-unit', role: 'frontend', status: 'running', action: 'running', touched: [],
+      updatedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+    recordOpenCodeFallback(cwd, runId, 'senior-frontend', { status: 'paid_spawned', agentId: 'agent-2' });
+    const statuses = readOpenCodeUnitStatuses(cwd, runId);
+    assert.equal(statuses.find((s) => s.id === 'live-unit')?.status, 'running', 'a live executor keeps its row (and its reservation)');
+    assert.equal(statuses.find((s) => s.id === 'dead-unit')?.status, 'fallback_required', 'a dead running row still records the fallback');
+  });
+});
+
 test('openCodeQueuePolicyViolations routes dependency/package-manager units away from OpenCode', () => {
   const units = parsePlanDelegationUnits([
     '<!-- opencode-delegate:start -->',

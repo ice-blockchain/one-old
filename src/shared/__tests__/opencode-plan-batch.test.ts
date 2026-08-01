@@ -13,6 +13,8 @@ import {
   batchLooksLive,
   clearOpenCodeApplyInProgress,
   markOpenCodeApplyInProgress,
+  markOpenCodePlanBatchRunning,
+  markOpenCodePlanBatchTerminal,
   openCodePlanBatchComplete,
   pendingOpenCodePlanRoles,
   readOpenCodePlanBatchState,
@@ -237,6 +239,33 @@ test('a running batch with no sign of life stops blocking; every live signal sti
   }
 });
 
+// Replan MID-batch: the stale batch's terminal writer must stamp the hash it
+// STARTED under — re-reading the current (post-replan) hash defeated
+// supersession and replayed the pre-replan verdict for the fresh queue.
+test('a terminal write after a mid-batch replan keeps the start-time assignmentHash (stays superseded)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocreplan-mid-'));
+  try {
+    const runDir = path.join(dir, '.traffic-one', 'runs', 'run-mid');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'assignments.json'), JSON.stringify({ v: 1, scope: 'before' }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n- id: u1 | role: frontend | files: a | task: t\n<!-- opencode-delegate:end -->\n', 'utf8');
+    writeOpenCodeQueue(dir, buildOpenCodeQueue(dir, 'run-mid', [{ role: 'frontend', files: 'a', task: 't' }]));
+    markOpenCodePlanBatchRunning(dir, 'run-mid');
+    const started = readOpenCodePlanBatchState(dir, 'run-mid');
+    assert.ok(started?.assignmentHash, 'the running mark stamps the start-time hash');
+    // Replan republishes assignments (new hash) while the batch is mid-flight.
+    fs.writeFileSync(path.join(runDir, 'assignments.json'), JSON.stringify({ v: 1, scope: 'after-replan' }), 'utf8');
+    markOpenCodePlanBatchTerminal(dir, 'run-mid', 'success');
+    // The terminal state belongs to the PRE-replan world → superseded (null).
+    assert.equal(readOpenCodePlanBatchState(dir, 'run-mid'), null, 'the stale terminal verdict must not satisfy the fresh queue');
+    const rawTerminal = JSON.parse(fs.readFileSync(path.join(runDir, 'opencode-plan-batch', 'batch.json'), 'utf8')) as Record<string, unknown>;
+    assert.equal(rawTerminal.assignmentHash, started!.assignmentHash, 'terminal stamps the START-time hash');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('reservedOpenCodeFiles: only verifiably-running units reserve; stale/terminal/empty never do', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocreserve-'));
   try {
@@ -303,6 +332,21 @@ test('touchOpenCodeUnitRunning refreshes updatedAt without appending attempt row
     // Zero attempt-row churn: a repeated running write would evict real retry
     // history against the attempt cap.
     assert.equal((runningAfter.attempts as unknown[]).length, (before.find((e) => e.status === 'running')!.attempts as unknown[]).length);
+    // Role-SCOPED: a delegation may only vouch for its OWN units — an
+    // unscoped touch resurrected rows a dead batch left running for other
+    // roles (adversarial review).
+    const stale2 = new Date(Date.now() - 20 * 60_000).toISOString();
+    fs.writeFileSync(
+      path.join(dir, '.traffic-one', 'runs', 'r-touch', 'opencode-units.json'),
+      JSON.stringify(after.map((e) => (e.status === 'running' ? { ...e, updatedAt: stale2 } : e))),
+      'utf8',
+    );
+    touchOpenCodeUnitRunning(dir, 'r-touch', 'senior-tester'); // wrong role → no touch
+    const scoped = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'r-touch', 'opencode-units.json'), 'utf8')) as Array<Record<string, unknown>>;
+    assert.equal(String(scoped.find((e) => e.status === 'running')!.updatedAt), stale2, 'a foreign role touch never refreshes this row');
+    touchOpenCodeUnitRunning(dir, 'r-touch', 'senior-frontend'); // owning role → refresh
+    const owned = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'r-touch', 'opencode-units.json'), 'utf8')) as Array<Record<string, unknown>>;
+    assert.ok(String(owned.find((e) => e.status === 'running')!.updatedAt) > stale2);
     // No-op safe on a run with no ledger.
     touchOpenCodeUnitRunning(dir, 'no-such-run');
   } finally {

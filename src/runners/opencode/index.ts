@@ -15,6 +15,7 @@ import {
   markOpenCodeRoleAttempted,
   openCodeGatewayOutageActive,
   recordOpenCodeAttemptOutcome,
+  touchPlanBatchHeartbeat,
 } from '../../shared/opencode-roles';
 import {
   finalizePlanBatchOnly,
@@ -22,6 +23,7 @@ import {
 import {
   recordOpenCodeUnitStatus,
   statusFromDelegateAction,
+  touchOpenCodeUnitRunning,
   unsafeAllowedFilePatterns,
 } from '../../shared/opencode-queue';
 import {  readEffectiveState } from '../../shared/state';
@@ -293,8 +295,34 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   // Appended AFTER the task (a boundary read first competes with the work itself)
   // and below the MCP task-file layer, so the caller's recorded task text is intact.
   const boundedTask = `${task}\n${i18nScope.prompt}\n${delegationBoundaryPrompt(policy)}\n`;
+  // Register the unit as RUNNING before the model walk. DIRECT delegations
+  // previously wrote only their terminal row, so maintenance units never
+  // existed for the live file reservations the prose claimed covered them
+  // (adversarial review); plan units get their running row from from-plan,
+  // where this write folds into the same ledger entry.
+  if (runId) {
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: ledgerUnitId,
+      role: normalizePlanRole(role),
+      status: 'running',
+      action: 'running',
+      touched: [],
+      allowedFiles: policy.allowedPatterns,
+      assignmentHash: policy.expectedAssignmentHash,
+      ...(opts.unitId ? {} : { source: 'direct' as const }),
+    });
+  }
   for (const model of models) {
     lastModel = model;
+    // Between-attempt liveness: each spawnSync attempt can burn the full unit
+    // timeout, and 'try-next' resets the stall counter — so a multi-model walk
+    // legitimately outlives a single-attempt window. Refreshing OUR role's
+    // running rows (and the batch heartbeat) between attempts keeps the
+    // liveness readers honest on the shell path, where no watchdog exists.
+    if (runId) {
+      touchPlanBatchHeartbeat(cwd, runId);
+      touchOpenCodeUnitRunning(cwd, runId, role);
+    }
     const outcome = runModel(cwd, bin, baseSha, model, boundedTask, policy, markCliAttempt);
     if (outcome.kind === 'delegated') {
       if (fromChain) {

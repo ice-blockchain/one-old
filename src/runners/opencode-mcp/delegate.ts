@@ -387,10 +387,15 @@ function getOrStart(key: string, meta: { projectRoot: string; runId: string; bat
     refreshChildKeepAlive(run);
     // Disk-visible liveness: the batch heartbeat sidecar (never batch.json —
     // that would race the terminal writer) and the running units' updatedAt.
-    // The runner itself is spawnSync end to end and cannot refresh either, so
-    // this tick is what keeps a live batch distinguishable from a dead one.
-    if (run.batchKey === PLAN_KEY) touchPlanBatchHeartbeat(run.projectRoot, run.runId);
-    touchOpenCodeUnitRunning(run.projectRoot, run.runId);
+    // Role-SCOPED for single-role delegations: this run may only vouch for its
+    // OWN units — an unscoped touch resurrected rows a dead batch left
+    // `running` for other roles and re-wedged the spawn gate.
+    if (run.batchKey === PLAN_KEY) {
+      touchPlanBatchHeartbeat(run.projectRoot, run.runId);
+      touchOpenCodeUnitRunning(run.projectRoot, run.runId);
+    } else {
+      touchOpenCodeUnitRunning(run.projectRoot, run.runId, run.batchKey);
+    }
     if (Date.now() - run.lastPolledAt <= abandonAfterMs()) return;
     // Never kill mid-apply: defer the abandon while the runner's apply-back
     // latch is live (pid-verified) — the next tick re-checks. The latch's own
@@ -487,18 +492,26 @@ export async function delegateFromPlanResumable(a: FromPlanArgs, waitMs = RESUME
   const key = runKey(projectRoot, runId, PLAN_KEY);
   // Every queued unit's allowlist, surfaced while the batch runs. Best-effort:
   // an unreadable queue just yields an empty reservation list.
-  const reservedFiles = ((): string[] => {
+  const queueForBatch = ((): ReturnType<typeof readOpenCodeQueue> => {
     try {
-      const queue = readOpenCodeQueue(projectRoot, runId);
-      return [...new Set((queue?.units ?? []).flatMap((u) => u.allowedFiles))].sort();
+      return readOpenCodeQueue(projectRoot, runId);
     } catch {
-      return [];
+      return null;
     }
   })();
-  // The batch reads its units from the plan queue on disk, so a re-call carries
-  // no per-call work to compare. A constant fingerprint keeps it out of the
-  // staleness eviction above: batch behaviour is unchanged.
-  const run = getOrStart(key, { projectRoot, runId, batchKey: PLAN_KEY, fingerprint: PLAN_KEY, reservedFiles }, (onChild, isAborted) => startFromPlan(projectRoot, runId, a.model, onChild, isAborted));
+  const reservedFiles = [...new Set((queueForBatch?.units ?? []).flatMap((u) => u.allowedFiles))].sort();
+  // The batch's work identity is the ASSIGNMENTS HASH it runs against: a
+  // replan republishes assignments, and replaying the pre-replan batch result
+  // for the fresh queue would silently skip Step-0 on the new units
+  // (adversarial review — the on-disk supersession never saw the in-memory
+  // replay cache). A finished batch under a DIFFERENT hash is evicted so the
+  // re-call genuinely re-delegates; a {running:true} batch is never evicted.
+  const planFingerprint = `plan:${queueForBatch?.assignmentHash || 'none'}`;
+  const cachedPlan = runs.get(key);
+  if (cachedPlan && cachedPlan.status === 'done' && cachedPlan.fingerprint !== planFingerprint) {
+    runs.delete(key);
+  }
+  const run = getOrStart(key, { projectRoot, runId, batchKey: PLAN_KEY, fingerprint: planFingerprint, reservedFiles }, (onChild, isAborted) => startFromPlan(projectRoot, runId, a.model, onChild, isAborted));
   const res = await waitBounded(run, waitMs);
   return res ?? stillRunning(run, PLAN_KEY, 'opencode_delegate_from_plan');
 }

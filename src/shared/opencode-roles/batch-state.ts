@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { opencodeAssignmentHash, readOpenCodeQueue, readOpenCodeUnitStatuses } from '../opencode-queue';
-import { abandonAfterMs, maxConsecutiveStalls, opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
+import { abandonAfterMs, unitLivenessWindowMs } from '../../config/opencode-timeouts';
 import { detectHost } from '../host';
 import { openCodeDelegationActive } from '../performance';
 import { isMaintenancePhase } from '../state/lifecycle';
@@ -71,14 +71,9 @@ function planBatchHeartbeatFresh(cwd: string, runId: string, withinMs: number, n
   }
 }
 
-/** The sanctioned in-flight budget of ONE unit: the runner is spawnSync end to
- *  end, so a unit's ledger `updatedAt` is written once at start and cannot be
- *  refreshed mid-attempt from inside the runner. The longest legitimate unit
- *  is the full stall walk (maxConsecutiveStalls × unit timeout) plus apply and
- *  post-apply verification headroom. */
-export function unitLivenessWindowMs(): number {
-  return maxConsecutiveStalls() * opencodeUnitTimeoutMs() + 5 * 60_000;
-}
+// Re-exported from config so existing consumers keep their import; the unit
+// ledger (opencode-queue/store) reads the same value without a cycle.
+export { unitLivenessWindowMs } from '../../config/opencode-timeouts';
 
 function anyRunningUnitFresh(cwd: string, runId: string, nowMs: number): boolean {
   const windowMs = unitLivenessWindowMs();
@@ -174,7 +169,11 @@ function writeLegacyBatchComplete(cwd: string, runId: string): void {
   fs.writeFileSync(p, '', 'utf8');
 }
 
-export function readOpenCodePlanBatchState(cwd: string, runId: string): OpenCodePlanBatchState | null {
+// RAW parse — no supersession. The WRITERS need this: a terminal write that
+// read the batch through the superseding reader after a mid-batch replan saw
+// `null`, fell back to the CURRENT hash, and stamped the stale verdict as if
+// it belonged to the fresh queue (adversarial review).
+function readPlanBatchStateRaw(cwd: string, runId: string): OpenCodePlanBatchState | null {
   if (!runId) return null;
   try {
     const raw = fs.readFileSync(planBatchJsonPath(cwd, runId), 'utf8');
@@ -191,14 +190,6 @@ export function readOpenCodePlanBatchState(cwd: string, runId: string): OpenCode
     const assignmentHash = typeof rec.assignmentHash === 'string' && rec.assignmentHash
       ? rec.assignmentHash
       : null;
-    // Supersession: a replan republishes assignments.json, so a batch stamped
-    // with a DIFFERENT hash belongs to the pre-replan world. Report "no batch"
-    // so Step-0 runs again on the fresh queue instead of replaying the stale
-    // verdict (observed 4cu). Legacy batches without a stamp keep old behavior.
-    if (assignmentHash) {
-      const current = opencodeAssignmentHash(cwd, runId);
-      if (current && current !== assignmentHash) return null;
-    }
     return {
       version: 1,
       outcome,
@@ -211,6 +202,20 @@ export function readOpenCodePlanBatchState(cwd: string, runId: string): OpenCode
   } catch {
     return null;
   }
+}
+
+export function readOpenCodePlanBatchState(cwd: string, runId: string): OpenCodePlanBatchState | null {
+  const state = readPlanBatchStateRaw(cwd, runId);
+  if (!state) return null;
+  // Supersession: a replan republishes assignments.json, so a batch stamped
+  // with a DIFFERENT hash belongs to the pre-replan world. Report "no batch"
+  // so Step-0 runs again on the fresh queue instead of replaying the stale
+  // verdict (observed 4cu). Legacy batches without a stamp keep old behavior.
+  if (state.assignmentHash) {
+    const current = opencodeAssignmentHash(cwd, runId);
+    if (current && current !== state.assignmentHash) return null;
+  }
+  return state;
 }
 
 /** Idempotent: marks the Step-0 batch as running without clobbering a terminal state. */
@@ -274,7 +279,9 @@ export function markOpenCodePlanBatchTerminal(
 ): void {
   if (!runId || outcome === 'running') return;
   try {
-    const existing = readOpenCodePlanBatchState(cwd, runId);
+    // RAW read: after a mid-batch replan the superseding reader reports null
+    // for this batch, and the start-time stamp below would be lost.
+    const existing = readPlanBatchStateRaw(cwd, runId);
     if (existing && TERMINAL_BATCH_OUTCOMES.has(existing.outcome)) return;
     atomicWriteJson(planBatchJsonPath(cwd, runId), {
       version: 1,
@@ -286,7 +293,11 @@ export function markOpenCodePlanBatchTerminal(
         ...completedRolesFromMarkers(cwd, runId),
       ])],
       ...(error ? { error: String(error).slice(0, 500) } : {}),
-      assignmentHash: opencodeAssignmentHash(cwd, runId),
+      // Stamp the hash the batch STARTED under, never the current one: a
+      // replan mid-batch republishes assignments, and a stale batch whose
+      // terminal writer re-read the NEW hash would defeat supersession — the
+      // fresh Step-0 would replay the pre-replan verdict (adversarial review).
+      assignmentHash: existing?.assignmentHash ?? opencodeAssignmentHash(cwd, runId),
     } satisfies OpenCodePlanBatchState);
     writeLegacyBatchComplete(cwd, runId);
   } catch {

@@ -78,6 +78,20 @@ export function childKeepAliveEnabled(): boolean {
 /** Bounded wait window for resumable MCP tool calls (stay under host ~120s ceiling). */
 export const RESUME_WAIT_MS = 45_000;
 
+/** Sanctioned in-flight budget of ONE unit attempt (env: T1_OC_UNIT_LIVENESS_MS).
+ *
+ *  A unit's ledger `updatedAt` is refreshed between MODEL ATTEMPTS (the walk
+ *  loop) and every MCP watchdog tick, but never inside a single spawnSync
+ *  attempt — so liveness readers must tolerate one full attempt (unit timeout)
+ *  plus stall retries and apply/verify headroom before calling a unit dead.
+ *  Lives in config (not batch-state) so the unit ledger can read it without an
+ *  import cycle. */
+export function unitLivenessWindowMs(): number {
+  const v = Number(process.env.T1_OC_UNIT_LIVENESS_MS || '');
+  if (Number.isFinite(v) && v > 0) return v;
+  return maxConsecutiveStalls() * opencodeUnitTimeoutMs() + 5 * 60_000;
+}
+
 /** Server-side clamp for opencode_status `waitMs` (env: T1_OC_STATUS_WAIT_MAX_MS).
  *
  *  Hosts kill an MCP tool call at ~120s and the failure surfaces as a TOOL

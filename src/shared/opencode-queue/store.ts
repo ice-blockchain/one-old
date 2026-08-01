@@ -6,8 +6,11 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
+import { opencodeUnitTimeoutMs, unitLivenessWindowMs } from '../../config/opencode-timeouts';
 import { writeJson } from '../fsjson';
+// Direct file import (not the opencode-roles barrel — that package imports
+// this one): pid-verified apply latch for the liveness checks below.
+import { openCodeApplyInProgress } from '../opencode-roles/apply-latch';
 import type { PlanDelegationUnit } from '../opencode-plan/unit-types';
 import {   normalizeRelPath } from '../scope';
 import { withProjectStateLock } from '../state/project-state-lock';
@@ -146,16 +149,22 @@ export function readOpenCodeQueue(cwd: string, runId: string): OpenCodeQueue | n
   }
 }
 
-// Refresh `updatedAt` on every RUNNING unit without touching anything else —
+// Refresh `updatedAt` on RUNNING units without touching anything else —
 // notably WITHOUT appending an attempt row (the fold in recordOpenCodeUnitStatus
 // deliberately excludes `running`, so a repeated status write would push a new
 // row per tick and evict real retry history against the attempt cap). The MCP
-// watchdog calls this each tick: the runner itself is spawnSync end to end and
-// cannot refresh its own unit mid-attempt, and a once-written `updatedAt` is
-// what batch liveness and the stale-running reconciler read.
-export function touchOpenCodeUnitRunning(cwd: string, runId: string): void {
+// watchdog calls this each tick and the runner between model attempts; a
+// once-written `updatedAt` is what batch liveness, the reservations, and the
+// stale-running reconciler read.
+//
+// Role-SCOPED when a role is given: a delegation may only vouch for its OWN
+// units. An unscoped touch let a live single-role delegation refresh rows a
+// dead batch left `running` for OTHER roles, resurrecting the exact
+// forever-wedge the liveness fix cures (adversarial review).
+export function touchOpenCodeUnitRunning(cwd: string, runId: string, role?: string): void {
   if (!runId) return;
   try {
+    const normalizedRole = role ? normalizeOpenCodeRole(role) : null;
     withProjectStateLock(cwd, () => {
       const file = path.join(runDir(cwd, runId), 'opencode-units.json');
       const statuses = readStatuses(cwd, runId);
@@ -163,6 +172,7 @@ export function touchOpenCodeUnitRunning(cwd: string, runId: string): void {
       const now = new Date().toISOString();
       for (const entry of statuses) {
         if (entry.status !== 'running') continue;
+        if (normalizedRole && entry.role !== normalizedRole) continue;
         entry.updatedAt = now;
         touched = true;
       }
@@ -269,9 +279,22 @@ export function recordOpenCodeFallback(
       if (statuses.length === 0) return;
       const normalizedRole = normalizeOpenCodeRole(role);
       const recordedAt = new Date().toISOString();
+      const nowMs = Date.now();
+      const livenessMs = unitLivenessWindowMs();
+      const latchLive = openCodeApplyInProgress(cwd, runId, nowMs);
       let changed = false;
       const next = statuses.map((status) => {
         if (status.role !== normalizedRole || status.status === 'delegated') return status;
+        // A VERIFIABLY EXECUTING unit is not a fallback candidate: flipping a
+        // live `running` row to fallback_required destroyed its file
+        // reservation the instant a parallel-mode paid spawn went through —
+        // the exact collision the reservation exists to prevent (adversarial
+        // review). A dead `running` row (stale updatedAt, no latch) still
+        // flips exactly as before.
+        if (status.status === 'running') {
+          const at = Date.parse(status.updatedAt || '');
+          if (latchLive || (Number.isFinite(at) && nowMs - at < livenessMs)) return status;
+        }
         changed = true;
         const nextStatus = statusPrecedence(status.status) < statusPrecedence('fallback_required')
           ? 'fallback_required'
