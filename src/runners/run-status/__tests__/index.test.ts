@@ -352,6 +352,32 @@ test('a capped red run settles terminal with zero active claims and a recorded r
   });
 });
 
+// Settling an OLDER run (the codex-child deny remedy: settle it and mint a new
+// one) must never let the same-invocation sweep reclaim the ledger it just
+// wrote: currentRunId alone does not protect an arbitrary --run-id
+// (adversarial review), so the settled id is protected explicitly.
+test('the settlement sweep protects the run being settled even when it is not current', () => {
+  silenced(fs.mkdtempSync(path.join(os.tmpdir(), 't1-run-status-protect-')), (root) => {
+    fs.mkdirSync(path.join(root, '.traffic-one'), { recursive: true });
+    // current is run-9; the settled run-1 is OLDEST and outside keepRuns:1.
+    fs.writeFileSync(path.join(root, '.traffic-one', '.one.json'), JSON.stringify({ currentRunId: 'run-9' }), 'utf8');
+    fs.writeFileSync(
+      path.join(root, '.traffic-one', 'retention.json'),
+      JSON.stringify({ keepRuns: 1, backupKeep: 1, orphanTtlDays: 3650 }),
+      'utf8',
+    );
+    for (const id of ['run-1', 'run-5', 'run-6', 'run-9']) {
+      fs.mkdirSync(path.join(root, '.traffic-one', 'digests', id), { recursive: true });
+    }
+    assert.equal(main(['--run-id', 'run-1', '--status', 'active'], root), 0);
+    assert.equal(main(['--run-id', 'run-1', '--status', 'blocked', '--outcome', 'review-cycle-cap'], root), 0);
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'runs', 'run-1')), true, 'the settled run keeps its ledger');
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'digests', 'run-1')), true, 'the settled run keeps its digests');
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'digests', 'run-9')), true, 'current stays protected');
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'digests', 'run-5')), false, 'a genuinely superseded run is still reclaimed');
+  });
+});
+
 // The retention sweep fires the moment a run reaches a TERMINAL ledger state —
 // not on planned/active — so superseded artefacts stop waiting for the next
 // SessionStart (12co: 113 files / 9.5 MB of reports outlived their run by hours).

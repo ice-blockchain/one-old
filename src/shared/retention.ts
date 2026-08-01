@@ -151,13 +151,17 @@ function collectRunIds(cwd: string): string[] {
   return [...ids].sort(numericDesc);
 }
 
-function keepRunIds(cwd: string, policy: RetentionPolicy): Set<string> {
+function keepRunIds(cwd: string, policy: RetentionPolicy, protectRunIds: readonly string[] = []): Set<string> {
   const current = readCurrentRunId(cwd);
   const ids = collectRunIds(cwd);
   const keep = new Set<string>();
   if (current) keep.add(current);
+  // Caller-protected ids (the run being settled) are unconditional: a settle
+  // of an OLDER run must never reclaim the ledger it wrote milliseconds ago.
+  for (const id of protectRunIds) if (id) keep.add(id);
+  const reserved = keep.size;
   for (const id of ids) {
-    if (keep.size >= policy.keepRuns + (current ? 1 : 0)) break;
+    if (keep.size >= policy.keepRuns + reserved) break;
     keep.add(id);
   }
   return keep;
@@ -175,9 +179,9 @@ function isOlderThan(filePath: string, ttlMs: number, nowMs: number): boolean {
   }
 }
 
-function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { keep: Set<string>; actions: RetentionAction[] } {
+function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number, protectRunIds: readonly string[] = []): { keep: Set<string>; actions: RetentionAction[] } {
   const t1 = path.join(cwd, '.traffic-one');
-  const keep = keepRunIds(cwd, policy);
+  const keep = keepRunIds(cwd, policy, protectRunIds);
   const actions: RetentionAction[] = [];
 
   for (const rel of ['runs', 'digests', 'fix-cycles', path.join('reports', 'qa')]) {
@@ -197,7 +201,7 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
   const ttl = policy.orphanTtlDays * 24 * 60 * 60 * 1000;
   const currentRunId = readCurrentRunId(cwd);
   for (const id of listDirs(path.join(t1, 'runs'))) {
-    if (id === '.once' || id === currentRunId) continue;
+    if (id === '.once' || id === currentRunId || protectRunIds.includes(id)) continue;
     const runDir = path.join(t1, 'runs', id);
     if (actions.some((action) => action.path === runDir)) continue;
     if (fs.existsSync(path.join(runDir, 'architecture-v1.json'))) continue;
@@ -300,10 +304,10 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
   return { keep, actions };
 }
 
-export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; nowMs?: number } = {}): RetentionResult {
+export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; nowMs?: number; protectRunIds?: readonly string[] } = {}): RetentionResult {
   const dryRun = opts.dryRun !== false;
   const policy = readPolicy(cwd);
-  const { keep, actions } = collectActions(cwd, policy, opts.nowMs ?? Date.now());
+  const { keep, actions } = collectActions(cwd, policy, opts.nowMs ?? Date.now(), opts.protectRunIds ?? []);
   let removed = 0;
   if (!dryRun) {
     for (const action of actions) {
@@ -328,12 +332,17 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
 // Post-settlement trigger: reclaim superseded artefacts the moment a run reaches
 // a terminal ledger state instead of waiting for the next SessionStart (observed
 // 12co: 113 run files + 9.5 MB of reports sat untouched until a later session
-// swept). Runs strictly AFTER the terminal ledger write; the sweep's own
-// keep-set always protects `currentRunId` — including the run that just
-// settled — so this can never reclaim the run being settled.
-export function sweepAfterTerminalSettlement(cwd: string): void {
+// swept). Runs strictly AFTER the terminal ledger write. The settled run id is
+// protected EXPLICITLY: `currentRunId` alone is not enough — the deny remedies
+// legitimately settle OLDER runs (blocked/failed cleanup), and an adversarial
+// review proved the keep-window could reclaim the very ledger such a settle
+// wrote milliseconds earlier.
+export function sweepAfterTerminalSettlement(cwd: string, settledRunId?: string): void {
   try {
-    sweepTrafficOneRetention(cwd, { dryRun: false });
+    sweepTrafficOneRetention(cwd, {
+      dryRun: false,
+      ...(settledRunId ? { protectRunIds: [settledRunId] } : {}),
+    });
   } catch {
     // best-effort: settlement must never fail because cleanup did
   }

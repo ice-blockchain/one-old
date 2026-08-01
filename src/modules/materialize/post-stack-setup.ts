@@ -219,32 +219,6 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // logger by default; tests inject a spy/no-op via deps.
   (deps.logTokenUse ?? logToolUse)(cwd, raw);
 
-  // Turn-count nudge, once per session: a role past the warn threshold gets
-  // ONE consolidation directive (12co: frontend at 163 calls with no signal).
-  // Telemetry-driven and fail-open — never a deny; the tally itself is written
-  // by the PreToolUse identity gate.
-  try {
-    const runIdForActivity = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
-    const activityContext = runIdForActivity
-      ? resolveRunAgentContext(reportRoot, state, raw, { claimPending: false, host: ctx.host })
-      : null;
-    const activityRole = typeof activityContext?.role === 'string' ? activityContext.role : '';
-    if (runIdForActivity && activityRole) {
-      const tally = readRunAgentActivity(reportRoot, runIdForActivity, activityRole);
-      if (tally.total >= AGENT_ACTIVITY_WARN_THRESHOLD
-        && firstEmitThisSession(reportRoot, `agent-activity-warn-${runIdForActivity}-${activityRole}`, hookSessionIdentity(raw).sessionId)) {
-        return context(
-          `[traffic-one] ${activityRole} has made ${tally.total} tool calls in run ${runIdForActivity}. Consolidate: `
-          + 'batch the remaining related reads, group coherent edits, run ONE combined verification command per '
-          + 'surface, and do not re-read rules or files already loaded — finish the assignment, then emit your digest.',
-          { systemMessage: `traffic-one — ${activityRole}: ${tally.total} tool calls this run; consolidate` },
-        );
-      }
-    }
-  } catch {
-    // telemetry must never affect the tool call
-  }
-
   if (isSpawnAgentLifecycleTool) return noop();
 
   // 1. Supabase Edge Function edit → auto-deploy (injected; skip when no hook).
@@ -299,6 +273,34 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     }
     if (digestStampNotes.length > 0) return context('', { systemMessage: digestStampNotes.join('\n') });
     return noop();
+  }
+
+  // 3b. Turn-count nudge, once per session: a role past the warn threshold gets
+  //     ONE consolidation directive (12co: frontend at 163 calls, no signal).
+  //     Deliberately AFTER the digest branch — an early return here once
+  //     swallowed the digest finished_at host-stamp for the very write it rode
+  //     (adversarial review) — and before the generic convergence steps, which
+  //     re-fire on every later write and lose nothing. Fail-open, never a deny.
+  try {
+    const runIdForActivity = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    const activityContext = runIdForActivity
+      ? resolveRunAgentContext(reportRoot, state, raw, { claimPending: false, host: ctx.host })
+      : null;
+    const activityRole = typeof activityContext?.role === 'string' ? activityContext.role : '';
+    if (runIdForActivity && activityRole) {
+      const tally = readRunAgentActivity(reportRoot, runIdForActivity, activityRole);
+      if (tally.total >= AGENT_ACTIVITY_WARN_THRESHOLD
+        && firstEmitThisSession(reportRoot, `agent-activity-warn-${runIdForActivity}-${activityRole}`, hookSessionIdentity(raw).sessionId)) {
+        return context(
+          `[traffic-one] ${activityRole} has made ${tally.total} tool calls in run ${runIdForActivity}. Consolidate: `
+          + 'batch the remaining related reads, group coherent edits, run ONE combined verification command per '
+          + 'surface, and do not re-read rules or files already loaded — finish the assignment, then emit your digest.',
+          { systemMessage: `traffic-one — ${activityRole}: ${tally.total} tool calls this run; consolidate` },
+        );
+      }
+    }
+  } catch {
+    // telemetry must never affect the tool call
   }
 
   // 4. Non-state-file write → write-triggered convergence.

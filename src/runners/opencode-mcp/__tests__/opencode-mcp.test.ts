@@ -6,7 +6,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { attach, delegateFromPlanResumable, delegateResumable, delegateStatus, dispatch, parseRunnerResult, planQueueRoles, runDelegate, runDelegateFromPlan } from '../index';
-import { clearOpenCodeApplyInProgress, markOpenCodeApplyInProgress, parsePlanDelegationUnits, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
+import { clearOpenCodeApplyInProgress, markOpenCodeApplyInProgress, openCodeApplyInProgress, parsePlanDelegationUnits, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 import { buildOpenCodeQueue, readOpenCodeUnitStatuses } from '../../../shared/opencode-queue';
 import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../../config/opencode-mcp';
 
@@ -323,6 +323,74 @@ test('delegateStatus cancel kills the worker and marks the delegation cancelled'
     const unknown = (await delegateStatus({ runId: 'never-started', projectRoot, cancel: true })) as Any;
     assert.equal(unknown.status, 'unknown');
     assert.match(String(unknown.message), /nothing to cancel/);
+  });
+});
+
+test('a role-less cancel targets the single tracked delegation instead of the plan key', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-roleless', allowedFiles: 'apps/web/src/**', projectRoot };
+    const first = (await delegateResumable(args, 100)) as Any;
+    assert.equal(first.running, true);
+    // The prose shows bare {cancel:true}; with exactly one tracked delegation
+    // for this run it must cancel THAT, not answer 'nothing to cancel' on the
+    // plan key while the worker keeps running (adversarial review).
+    const cancelled = (await delegateStatus({ runId: 'res-roleless', projectRoot, cancel: true })) as Any;
+    assert.equal(cancelled.status, 'done');
+    assert.equal(cancelled.result.action, 'cancelled');
+    assert.equal(cancelled.role, 'senior-frontend');
+  });
+});
+
+// The apply-back latch is PID-verified, not mtime-fresh: the guarded section's
+// own budget (several 120s verification commands) outlives any short TTL, and
+// an aged-but-live latch expiring mid-typecheck let a cancel strand an
+// applied-unverified diff (adversarial review).
+test('the apply latch holds while its runner pid is alive, past any freshness window', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-latch-pid-'));
+  try {
+    markOpenCodeApplyInProgress(projectRoot, 'latch-run', 'senior-frontend');
+    const latchDir = path.join(projectRoot, '.traffic-one', 'runs', 'latch-run', 'opencode-applying');
+    const latchFile = path.join(latchDir, 'senior-frontend');
+    // Age the file two minutes: pid (this process) is alive → still held.
+    const old = new Date(Date.now() - 2 * 60_000);
+    fs.utimesSync(latchFile, old, old);
+    assert.equal(openCodeApplyInProgress(projectRoot, 'latch-run'), true, 'a live runner holds the latch past 60s');
+    // Past the hard cap the latch is a runaway backstop, held or not.
+    assert.equal(openCodeApplyInProgress(projectRoot, 'latch-run', Date.now() + 16 * 60_000), false);
+    // A DEAD pid is ignored immediately — a crashed runner never bricks cancel.
+    fs.writeFileSync(latchFile, `${JSON.stringify({ armedAt: new Date().toISOString(), pid: 999_999_999 })}\n`, 'utf8');
+    assert.equal(openCodeApplyInProgress(projectRoot, 'latch-run'), false, 'a dead runner releases the latch');
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// Cancelling a multi-role plan batch must stop the SEQUENTIAL loop: killing
+// the current shard while the loop went on to spawn the next role's runner
+// landed diffs underneath the paid fallback (adversarial review).
+test('plan-batch cancel stops the sequential loop before the next role spawns', async () => {
+  const SLOW_COUNTING_STUB = [
+    'const fs = require("fs");',
+    'const path = require("path");',
+    'const marker = path.join(path.dirname(process.argv[1]), "shard-spawns");',
+    'fs.appendFileSync(marker, process.argv.slice(2).join(" ") + "\\n");',
+    'setTimeout(() => { console.log(JSON.stringify({ total: 1, delegated: 0, units: [{ role: "frontend", task: "t", action: "failed", touched: [] }] })); }, 1500);',
+  ].join('\n');
+  await withStubRunner(SLOW_COUNTING_STUB, async (projectRoot) => {
+    fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), PLAN_TWO_ROLES, 'utf8');
+    writePlanQueue(projectRoot, 'cancel-loop', PLAN_TWO_ROLES);
+    const first = (await delegateFromPlanResumable({ runId: 'cancel-loop', projectRoot }, 100)) as Any;
+    assert.equal(first.running, true);
+    const cancelled = (await delegateStatus({ runId: 'cancel-loop', projectRoot, cancel: true })) as Any;
+    assert.equal(cancelled.status, 'done');
+    assert.equal(cancelled.result.action, 'abandoned');
+    // Give the killed shard's close event (and any wrongly-spawned successor)
+    // time to surface, then assert exactly ONE runner was ever spawned.
+    await new Promise((r) => setTimeout(r, 2_000));
+    const marker = path.join(path.dirname(process.env[OPENCODE_RUNNER_OVERRIDE_ENV] as string), 'shard-spawns');
+    const spawns = fs.readFileSync(marker, 'utf8').trim().split('\n').filter(Boolean);
+    assert.equal(spawns.length, 1, `the cancelled batch must not spawn later role shards (saw: ${spawns.join(' | ')})`);
   });
 });
 

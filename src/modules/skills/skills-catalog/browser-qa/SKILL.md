@@ -143,7 +143,7 @@ runners once interleaved artifacts and invalidated an entire QA pass.
 The command produces:
 
 - `.traffic-one/reports/qa/$RUN_ID/machine-evidence-v1.json`;
-- Playwright traces and risk-required/failure screenshots;
+- risk-required/failure screenshots, plus Playwright traces for FAILED viewports only (a fully green run keeps zero trace zips — the diagnostic is discarded at emit time since evidence v2);
 - `.traffic-one/reports/qa/$RUN_ID/report-v2.json`;
 - when performance is required, `lighthouse.raw.json` and
   `lighthouse-evidence-v1.json`.

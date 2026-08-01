@@ -147,7 +147,7 @@ function buildSettlement(root: string, state: unknown, atPromptBoundary: boolean
     // are still active, and nothing else releases them on the non-verified path.
     releaseRunClaims(root, runId, 'terminal-environment-blocked');
     if (transitionRunStatus(root, runId, { status: 'blocked', outcome: 'environment-blocked' })) {
-      sweepAfterTerminalSettlement(root);
+      sweepAfterTerminalSettlement(root, runId);
     }
   }
   return {

@@ -56,9 +56,10 @@ The canonical result is
 and the QA evidence runner — never this agent — writes it. No digest,
 screenshot, or prose summary can substitute for that report, and neither can a
 hand-authored `report-v2.json`: validation rejects it because it cannot carry
-the machine evidence (Playwright traces, screenshots, build fingerprint) the
-runner records alongside it. When validation names offending fields, fix the
-INPUTS and re-run the runner; never patch the JSON by hand.
+the machine evidence (screenshots, build fingerprint, failure-only Playwright
+traces — a green viewport records none since evidence v2) the runner records
+alongside it. When validation names offending fields, fix the INPUTS and
+re-run the runner; never patch the JSON by hand.
 
 ## Owned outputs
 
@@ -170,9 +171,10 @@ must satisfy its own pattern, and a catch-all probe must be a URL no other
 declared route claims. Never edit the architecture to make a route literal.
 
 The runner—not this agent—computes the output-manifest build hash, owns the
-listener, creates Playwright traces/screenshots, writes machine evidence and
-`report-v2.json`, validates them while live, and tears the listener down. Never
-hand-write pass booleans, fingerprints, screenshots, or Lighthouse summaries.
+listener, captures screenshots (and Playwright traces for failed viewports —
+green runs keep none), writes machine evidence and `report-v2.json`, validates
+them while live, and tears the listener down. Never hand-write pass booleans,
+fingerprints, screenshots, or Lighthouse summaries.
 Visual evidence is decoded and width-checked; behavioral failures receive a
 failure screenshot.
 

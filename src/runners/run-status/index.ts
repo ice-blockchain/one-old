@@ -134,9 +134,10 @@ export function main(
     ...(ledger.outcome ? { outcome: ledger.outcome } : {}),
   })}\n`);
   // The run just reached a terminal ledger state — reclaim superseded artefacts
-  // now instead of waiting for the next SessionStart. Never on planned/active.
+  // now instead of waiting for the next SessionStart. Never on planned/active,
+  // and the settled run itself is explicitly protected (it may not be current).
   if (args.status === 'completed' || args.status === 'blocked' || args.status === 'failed') {
-    sweepAfterTerminalSettlement(cwd);
+    sweepAfterTerminalSettlement(cwd, args.runId);
   }
   return 0;
 }
