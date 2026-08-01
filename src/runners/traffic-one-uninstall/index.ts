@@ -10,10 +10,15 @@
 //      fails open, so it is merely residual, but it is removed here as well.
 //   2. Windsurf/Cascade hooks + global rule, and the Codex machine-global MCP
 //      block. Both survive bundle removal and keep pointing at a dead path.
-//   3. ~/.traffic-one — auth record, per-user preferences, runner shims, managed
-//      toolchains.
-//   4. The plugin bundle, via each host CLI, LAST. Every module this runner
-//      needs is already loaded by then, so deleting the bundle mid-run is safe.
+//   3. The plugin bundle, via each host CLI. Every module this runner needs is
+//      already loaded by then, so deleting the bundle mid-run is safe.
+//   4. ~/.traffic-one — auth record, per-user preferences, runner shims, managed
+//      toolchains — LAST. Earlier steps spawn host CLIs and wrapper uninstalls
+//      that may touch machine state; deleting the dir after every other step has
+//      run is what guarantees the user actually ends with no ~/.traffic-one
+//      (previously it was removed mid-run and a later step could repopulate it).
+//      When XDG_STATE_HOME redirects the active state dir, a leftover pre-XDG
+//      ~/.traffic-one is swept as well — a full uninstall leaves neither behind.
 //
 // Onboarded projects are deliberately untouched: their `.traffic-one/` folders
 // and generated instructions are project content, not plugin state.
@@ -130,20 +135,36 @@ export function isRemovableStateDir(dir: string, env: NodeJS.ProcessEnv = proces
   return path.basename(resolved) === '.traffic-one' || path.basename(resolved) === 'traffic-one';
 }
 
-function removeStateDir(env: NodeJS.ProcessEnv, dryRun: boolean): Step {
-  const dir = globalTrafficOneDir(env);
+function removeStateDirAt(dir: string, env: NodeJS.ProcessEnv, dryRun: boolean, dryRunDetail: string): Step {
   const label = `state dir ${dir}`;
   if (!isRemovableStateDir(dir, env)) {
     return { label, ok: false, detail: 'refused: resolved path is not a Traffic One state dir' };
   }
   if (!fs.existsSync(dir)) return { label, ok: true, detail: 'not present' };
-  if (dryRun) return { label, ok: true, detail: 'would remove (auth record, preferences, shims, managed toolchains)' };
+  if (dryRun) return { label, ok: true, detail: dryRunDetail };
   try {
     fs.rmSync(dir, { recursive: true, force: true });
     return { label, ok: true, detail: 'removed' };
   } catch (error) {
     return { label, ok: false, detail: `failed: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+// The full state sweep, run LAST: the active state dir, plus — when
+// XDG_STATE_HOME redirects it — any leftover pre-XDG ~/.traffic-one. A user who
+// asked for an uninstall must end with NO local preferences folder at all.
+function removeStateDirs(env: NodeJS.ProcessEnv, dryRun: boolean): Step[] {
+  const steps = [removeStateDirAt(
+    globalTrafficOneDir(env),
+    env,
+    dryRun,
+    'would remove LAST (auth record, preferences, shims, managed toolchains)',
+  )];
+  const legacyHome = path.join(homeDir(env), '.traffic-one');
+  if (path.resolve(legacyHome) !== path.resolve(globalTrafficOneDir(env)) && fs.existsSync(legacyHome)) {
+    steps.push(removeStateDirAt(legacyHome, env, dryRun, 'would remove (pre-XDG leftover state)'));
+  }
+  return steps;
 }
 
 function presenceStep(label: string, file: string, action: string): Step {
@@ -195,7 +216,6 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
       codexConfigPath(env),
       'would remove the Traffic One marked block if it is still byte-exact',
     ));
-    steps.push(removeStateDir(env, true));
     for (const install of installs) {
       steps.push({
         label: `plugin bundle (${install.host}/${install.marketplace})`,
@@ -204,6 +224,7 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
       });
     }
     if (installs.length === 0) steps.push({ label: 'plugin bundle', ok: true, detail: 'no installed bundle found' });
+    steps.push(...removeStateDirs(env, true));
     return { code: 0, steps };
   }
 
@@ -215,10 +236,7 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
   }
   steps.push(hostStep('Codex MCP block', runOneMcpHostCommand(['uninstall', '--yes'], env)));
 
-  // 3. Machine-global state.
-  steps.push(removeStateDir(env, false));
-
-  // 4. The bundle itself, last.
+  // 3. The bundle itself (every module this runner needs is already loaded).
   if (options.keepPlugin) {
     steps.push({ label: 'plugin bundle', ok: true, detail: 'kept (--keep-plugin)' });
   } else if (installs.length === 0) {
@@ -226,6 +244,10 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
   } else {
     for (const install of installs) steps.push(removePluginViaCli(install, env));
   }
+
+  // 4. Machine-global state LAST — after every step that could touch it, so the
+  // user genuinely ends with no ~/.traffic-one.
+  steps.push(...removeStateDirs(env, false));
 
   return { code: steps.every((step) => step.ok) ? 0 : 1, steps };
 }
@@ -235,9 +257,10 @@ function usage(): string {
     'Usage: traffic-one-uninstall.cjs [--yes] [--dry-run] [--keep-plugin]',
     '',
     'Removes every machine-global Traffic One artifact: the user-level host',
-    'integrations (Kilo, OpenCode, Windsurf, the Codex MCP block), the state dir',
-    '~/.traffic-one (saved API key, per-project preferences, runner shims, managed',
-    'toolchains), and the plugin bundle from each host CLI that has it.',
+    'integrations (Kilo, OpenCode, Windsurf, the Codex MCP block), the plugin',
+    'bundle from each host CLI that has it, and — LAST, so nothing can repopulate',
+    'it — the entire state dir ~/.traffic-one (saved API key, per-project',
+    'preferences, runner shims, managed toolchains).',
     '',
     'Onboarded projects are never touched.',
     '',
