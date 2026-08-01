@@ -123,16 +123,18 @@ test('--yes removes the state dir and the user-level host wrappers', () => {
   });
 });
 
-test('the Kilo wrapper is removed before the bundle — a stale fail-closed wrapper denies every tool call', () => {
+test('ordering: Kilo wrapper first, then the bundle, and the state dir LAST', () => {
   withHome((home, env) => {
     seedMachine(home);
     const { steps } = runUninstall({ dryRun: false, keepPlugin: false }, env);
     const labels = steps.map((step) => step.label);
     const kilo = labels.findIndex((label) => label.startsWith('Kilo'));
-    const state = labels.findIndex((label) => label.startsWith('state dir'));
     const bundle = labels.findIndex((label) => label.startsWith('plugin bundle'));
-    assert.ok(kilo >= 0 && state > kilo, 'state dir removal follows the Kilo wrapper');
-    assert.ok(bundle > state, 'the bundle is removed last');
+    const state = labels.findIndex((label) => label.startsWith('state dir'));
+    assert.ok(kilo >= 0 && bundle > kilo, 'bundle removal follows the Kilo wrapper');
+    // The state dir goes last so no later step (host CLI spawn, wrapper
+    // uninstall) can repopulate it — the user must end with no ~/.traffic-one.
+    assert.ok(state > bundle, 'the state dir is removed last');
   });
 });
 
@@ -145,18 +147,20 @@ test('isRemovableStateDir refuses the home dir, a filesystem root, and any other
   assert.equal(isRemovableStateDir('/home/dev/Documents', env), false);
 });
 
-test('XDG_STATE_HOME redirects which state dir is removed', () => {
+test('XDG_STATE_HOME: the active state dir AND the pre-XDG ~/.traffic-one leftover are both removed', () => {
   withHome((home, base) => {
     const env = { ...base, XDG_STATE_HOME: path.join(home, '.local', 'state') };
     writeFile(path.join(home, '.local', 'state', 'traffic-one', 'one.json'), '{}');
     writeFile(path.join(home, '.traffic-one', 'one.json'), '{}');
 
     const { steps } = runUninstall({ dryRun: false, keepPlugin: true }, env);
-    const stateStep = steps.find((step) => step.label.startsWith('state dir'));
-    assert.match(stateStep!.detail, /removed/);
+    const stateSteps = steps.filter((step) => step.label.startsWith('state dir'));
+    assert.equal(stateSteps.length, 2, 'both state dirs are swept');
+    for (const step of stateSteps) assert.match(step.detail, /removed/);
     assert.equal(fs.existsSync(path.join(home, '.local', 'state', 'traffic-one')), false, 'XDG state dir removed');
-    // The HOME-relative dir is not this machine's state dir under XDG, so it stays.
-    assert.ok(fs.existsSync(path.join(home, '.traffic-one')), 'unrelated ~/.traffic-one untouched');
+    // A full uninstall must leave NO local preferences folder behind — the
+    // pre-XDG ~/.traffic-one is machine state from before the redirect.
+    assert.equal(fs.existsSync(path.join(home, '.traffic-one')), false, 'pre-XDG ~/.traffic-one swept');
   });
 });
 
