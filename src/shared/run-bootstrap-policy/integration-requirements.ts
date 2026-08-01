@@ -6,19 +6,26 @@
 // context-pack snapshot was removed; the deterministic STRUCT_* gates verify
 // these regardless of delivery).
 
+import { siteUrlEnvVarForFramework } from '../architecture-contract/scaffold-content';
+
 /**
  * The public site-URL variable for the compiled stack. Each framework only exposes
  * env vars with its own prefix, so naming `VITE_SITE_URL` at a Nuxt or Next project
  * asked the role for a variable its bundler would never read.
  */
+// Detects the framework from compiled output paths, then defers to the SAME
+// name table the `.env.example` seeder uses. Two tables would drift, and the
+// drift is silent: the requirement would name one variable while the seeded file
+// documents another, both empty, so nothing fails — the role simply cannot find
+// the contract it was pointed at.
 function siteUrlEnvVar(outputs: readonly string[]): string {
   const has = (re: RegExp): boolean => outputs.some((output) => re.test(output));
-  if (has(/(?:^|\/)nuxt\.config\.[cm]?[jt]s$/)) return 'NUXT_PUBLIC_SITE_URL';
-  if (has(/(?:^|\/)next\.config\.[cm]?[jt]s$/) || has(/(?:^|\/)app\/layout\.tsx$/)) return 'NEXT_PUBLIC_SITE_URL';
-  if (has(/(?:^|\/)svelte\.config\.[cm]?[jt]s$/)) return 'PUBLIC_SITE_URL';
-  if (has(/(?:^|\/)artisan$/) || has(/(?:^|\/)resources\/views\//)) return 'APP_URL';
-  if (has(/(?:^|\/)angular\.json$/)) return 'SITE_URL';
-  return 'VITE_SITE_URL';
+  if (has(/(?:^|\/)nuxt\.config\.[cm]?[jt]s$/)) return siteUrlEnvVarForFramework('nuxt');
+  if (has(/(?:^|\/)next\.config\.[cm]?[jt]s$/) || has(/(?:^|\/)app\/layout\.tsx$/)) return siteUrlEnvVarForFramework('nextjs');
+  if (has(/(?:^|\/)svelte\.config\.[cm]?[jt]s$/)) return siteUrlEnvVarForFramework('sveltekit');
+  if (has(/(?:^|\/)artisan$/) || has(/(?:^|\/)resources\/views\//)) return siteUrlEnvVarForFramework('laravel');
+  if (has(/(?:^|\/)angular\.json$/)) return siteUrlEnvVarForFramework('angular');
+  return siteUrlEnvVarForFramework('react-vite');
 }
 
 export function compileIntegrationRequirements(

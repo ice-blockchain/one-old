@@ -15,6 +15,7 @@ import {
   scaffoldFileContent,
   type ArchitectureInputV1,
 } from '../architecture-contract';
+import { siteUrlEnvVarForFramework } from '../architecture-contract/scaffold-content';
 
 function withTempDir<T>(body: (cwd: string) => T): T {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-scaffold-content-'));
@@ -249,4 +250,26 @@ test('vue greenfield materialization emits SFC skeletons and nests catalog seeds
     const ro = JSON.parse(fs.readFileSync(path.join(cwd, catalogFor('ro')), 'utf8')) as Record<string, Record<string, string>>;
     assert.equal(ro['home-route']?.title, 'TODO(en copy): Home');
   });
+});
+
+// The seeded variable must be the one the framework's bundler actually reads,
+// and the SAME one the compiled integration requirement names. Two independent
+// tables would drift silently: both values are empty, so nothing fails loudly —
+// the role is simply pointed at a contract it cannot find.
+test('.env.example seeds the site-url variable the framework actually reads', () => {
+  const cases: Array<[string, string]> = [
+    ['react-vite', 'VITE_SITE_URL='],
+    ['nextjs', 'NEXT_PUBLIC_SITE_URL='],
+    ['nuxt', 'NUXT_PUBLIC_SITE_URL='],
+    ['sveltekit', 'PUBLIC_SITE_URL='],
+    ['laravel', 'APP_URL='],
+    ['angular', 'SITE_URL='],
+  ];
+  for (const [framework, expected] of cases) {
+    assert.equal(siteUrlEnvVarForFramework(framework), expected.replace('=', ''));
+  }
+  // Negative row: an unknown framework falls back to the Vite name rather than
+  // emitting an empty or invented variable.
+  assert.equal(siteUrlEnvVarForFramework('something-new'), 'VITE_SITE_URL');
+  assert.equal(siteUrlEnvVarForFramework(undefined), 'VITE_SITE_URL');
 });

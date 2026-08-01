@@ -170,17 +170,27 @@ test('generated agent-facing documentation contains no Traffic One authoring pat
   // and therefore cannot resolve inside an installed plugin.
   const authoringPath = /(?:\bsrc\/(?:modules\/|gen\/|build\/|hooks\/(?:claude|copilot|cursor|devin|kilo|opencode|windsurf)-entry\.ts\b|config\/model-tiers\.ts\b|shared\/(?:performance-config|stack-layout)\.ts\b|(?:shared|runners)\/onboarding-server(?:\/|\b))|\bdist\/scripts\/)/;
   // A shipped doc that names `scripts/<path>.js` is naming a compiled runtime
-  // module. The build is a straight 1:1 tsc emit, so `scripts/X.js` exists in an
-  // installed plugin iff `src/X.ts` exists here — resolve against src/, never
-  // dist/, because `npm test` runs BEFORE `npm run build`. Observed live: the
-  // orchestrator skill required `scripts/shared/state/local-prefs.js` long after
-  // that module became the directory `local-prefs/`; both call sites sit in
-  // `try{}catch{}`, so the code-graph provider silently came back empty every run.
-  // The flat `.cjs` shims at the output root are a separate surface (build-runtime
-  // SHIMS) and are not matched here.
+  // module. Resolve against src/, never dist/, because `npm test` runs BEFORE
+  // `npm run build`. Observed live: the orchestrator skill required
+  // `scripts/shared/state/local-prefs.js` long after that module became the
+  // directory `local-prefs/`; both call sites sit in `try{}catch{}`, so the
+  // code-graph provider silently came back empty every run. The flat `.cjs` shims
+  // at the output root are a separate surface (build-runtime SHIMS), not matched.
+  //
+  // Existence in src/ is necessary but NOT sufficient, and assuming it was left
+  // this guard blind in the one direction it exists to cover. `tsconfig.build.json`
+  // excludes whole trees from the emit — measured: 849 source files, 501 emitted —
+  // so `scripts/gen/index.js` has a src counterpart, passes an existence check,
+  // and is MODULE_NOT_FOUND in an installed plugin. That is the same defect class
+  // as the stale `local-prefs.js` path, reached from the other side.
+  const BUILD_EXCLUDED = /^(?:gen|build|test-environment|runners\/lighthouse)\//;
   const unresolvableScriptPaths = (content: string): string[] => (
     [...new Set(content.match(/\bscripts\/[A-Za-z0-9_./-]+\.js\b/g) || [])]
-      .filter((ref) => !fs.existsSync(path.join(REPO_ROOT, 'src', `${ref.slice('scripts/'.length, -'.js'.length)}.ts`)))
+      .filter((ref) => {
+        const rel = ref.slice('scripts/'.length, -'.js'.length);
+        if (BUILD_EXCLUDED.test(rel) || /(?:^|\/)__tests__\//.test(rel) || /\.test$/.test(rel)) return true;
+        return !fs.existsSync(path.join(REPO_ROOT, 'src', `${rel}.ts`));
+      })
   );
   try {
     const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
@@ -241,6 +251,14 @@ test('generated agent-facing documentation contains no Traffic One authoring pat
       unresolvableScriptPaths("require('scripts/shared/state/local-prefs/index.js')"),
       [],
       'the compiled-module path check must accept a directory-index module that exists',
+    );
+    // The other direction, which existence alone could not see: these DO have a
+    // src counterpart and are still absent from an installed plugin, because
+    // tsconfig.build.json excludes their trees from the emit.
+    assert.deepEqual(
+      unresolvableScriptPaths("require('scripts/gen/index.js') require('scripts/test-environment/run.js')"),
+      ['scripts/gen/index.js', 'scripts/test-environment/run.js'],
+      'a module excluded from the build must be rejected even though its source exists',
     );
 
     const planGuard = fs.readFileSync(
