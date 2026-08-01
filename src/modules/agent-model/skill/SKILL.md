@@ -69,7 +69,7 @@ Keep the exact per-role `model` from the spawn map either way. Never send a Traf
 <!-- T1BLOCK:END cursor-agent-type-required -->
 
 <!-- T1BLOCK:BEGIN absolute-traffic-one-path -->
-Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycle paths outside this project root (`{{PROJECT_ROOT}}`): {{BAD_PATHS}}. Re-issue the same spawn using project-relative paths such as `.traffic-one/digests/<runId>/frontend.md` and `.traffic-one/fix-cycles/<runId>/<role>-fix-1.md`; do not paste absolute paths from another folder or a corrupted root.
+Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycle paths outside this project root (`{{PROJECT_ROOT}}`): {{BAD_PATHS}}. Re-issue the same spawn using project-relative paths such as `.traffic-one/digests/<runId>/frontend.md` and `.traffic-one/fix-cycles/<runId>/senior-frontend-fix-1.md` (digest files use the short role name; fix-cycle files keep the full `senior-` prefix); do not paste absolute paths from another folder or a corrupted root.
 <!-- T1BLOCK:END absolute-traffic-one-path -->
 
 <!-- T1BLOCK:BEGIN cursor-models-capture -->

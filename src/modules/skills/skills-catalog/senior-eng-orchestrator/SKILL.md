@@ -436,7 +436,7 @@ When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-
    .traffic-one/fix-cycles/<currentRunId>/<role>-fix-<n>.md
    ```
 
-   where `<n>` is the fix-cycle number (1 for the first fix, 2 for the second, etc.).
+   where `<n>` is the fix-cycle number (1 for the first fix, 2 for the second, etc.) and `<role>` is the FULL role id WITH its `senior-` prefix — `senior-frontend-fix-1.md`, never the digest-style short name (`frontend-fix-1.md`). Digests use the short `<role-name>`; fix-cycle files never do (a 12co session wrote the short name and the continuation header silently missed the file — the runtime now probes the short spelling as a legacy fallback, but the prefixed name is the contract).
 
    Runtime batches write-time quality findings instead of interrupting each write: when `.traffic-one/fix-cycles/<currentRunId>/<role>-quality-findings.md` exists (regenerated at the role's completion digest), include it in the same cycle — the continuation/spawn message must tell the role to apply ALL findings from BOTH files in the one turn. Do not copy its items by hand; point at the file.
 

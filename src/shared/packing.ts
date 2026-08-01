@@ -67,9 +67,19 @@ export function roleDigestName(role: unknown): string {
 }
 
 export function packFixCycleHeader(_cwd: string, role: string, runId: string, spawnIndex: number): PackResult {
-  const fixCycleFile = `.traffic-one/fix-cycles/${runId}/${role}-fix-${spawnIndex - 1}.md`;
+  // Canonical fix-cycle filename carries the FULL role (senior-frontend-fix-1.md).
+  // Orchestrators reading the older `<role>` placeholder prose wrote the
+  // digest-style short name (frontend-fix-1.md) — observed live on 12co, where
+  // an existing findings file was silently skipped and the header degraded to
+  // the no-context branch. Probe both spellings; canonical wins when both exist.
+  const canonicalFile = `.traffic-one/fix-cycles/${runId}/${role}-fix-${spawnIndex - 1}.md`;
+  const legacyFile = `.traffic-one/fix-cycles/${runId}/${roleDigestName(role)}-fix-${spawnIndex - 1}.md`;
+  const onDisk = (rel: string): boolean => (_cwd ? fs.existsSync(path.join(_cwd, rel)) : false);
+  const hasCanonical = onDisk(canonicalFile);
+  const hasLegacy = !hasCanonical && legacyFile !== canonicalFile && onDisk(legacyFile);
+  const fixCycleFile = hasLegacy ? legacyFile : canonicalFile;
   const digestFile = `.traffic-one/digests/${runId}/${roleDigestName(role)}.md`;
-  const hasFixCycleFile = _cwd ? fs.existsSync(path.join(_cwd, fixCycleFile)) : false;
+  const hasFixCycleFile = hasCanonical || hasLegacy;
   // Runtime-consolidated write-time quality findings (batched instead of
   // per-write denies); when present, they are part of the same single-turn fix.
   const qualityFile = `.traffic-one/fix-cycles/${runId}/${role}-quality-findings.md`;
