@@ -77,3 +77,23 @@ export function childKeepAliveEnabled(): boolean {
 
 /** Bounded wait window for resumable MCP tool calls (stay under host ~120s ceiling). */
 export const RESUME_WAIT_MS = 45_000;
+
+/** Server-side clamp for opencode_status `waitMs` (env: T1_OC_STATUS_WAIT_MAX_MS).
+ *
+ *  Hosts kill an MCP tool call at ~120s and the failure surfaces as a TOOL
+ *  ERROR, not {running:true} — which orchestrator prose reads as "fall back to
+ *  paid". A long status wait must therefore return BEFORE the host ceiling no
+ *  matter what the caller asked for; 110s leaves transport headroom. This is
+ *  what turns the old 45s-per-turn polling into ~2.4x fewer orchestrator
+ *  turns without risking a ceiling kill. */
+export function statusWaitMaxMs(): number {
+  const v = Number(process.env.T1_OC_STATUS_WAIT_MAX_MS || '');
+  return Number.isFinite(v) && v > 0 ? v : 110_000;
+}
+
+/** Clamp a caller-supplied status wait into [0, statusWaitMaxMs()]. */
+export function clampStatusWaitMs(value: unknown): number {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  return Math.min(Math.floor(v), statusWaitMaxMs());
+}

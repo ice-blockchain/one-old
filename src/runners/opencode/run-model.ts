@@ -19,6 +19,10 @@ import {
   which,
 } from './types';
 import {
+  clearOpenCodeApplyInProgress,
+  markOpenCodeApplyInProgress,
+} from '../../shared/opencode-roles';
+import {
   backupApplyTargets,
   formatError,
   git,
@@ -290,63 +294,71 @@ export function runModel(cwd: string, bin: string, baseSha: string, model: strin
     fs.writeFileSync(patchPath, patch, 'utf8');
 
     // Apply to the real working tree (unstaged, like a subagent edit). Same base,
-    // so a clean tree applies cleanly; a conflict → fail → fallback.
-    let backups: ApplyTargetBackup[];
+    // so a clean tree applies cleanly; a conflict → fail → fallback. The latch
+    // makes this section cancel-safe: the MCP cancel path refuses to kill the
+    // process group while a fresh latch shows the real tree is mid-mutation
+    // (apply/rollback pairs are only atomic while this process lives).
+    markOpenCodeApplyInProgress(cwd, policy.runId, policy.role);
     try {
-      backups = backupApplyTargets(cwd, applyTargets, parent);
-    } catch (err) {
-      return { kind: 'failed', error: `could not prepare atomic delegated diff apply: ${formatError(err)}` };
-    }
-    let applied = git(cwd, ['apply', '--whitespace=nowarn', patchPath]);
-    if (applied.status !== 0) {
-      const rollbackError = restoreApplyTargets(backups);
-      if (rollbackError) {
-        return {
-          kind: 'failed',
-          error: `could not roll back failed delegated diff apply: ${rollbackError}`,
-        };
+      let backups: ApplyTargetBackup[];
+      try {
+        backups = backupApplyTargets(cwd, applyTargets, parent);
+      } catch (err) {
+        return { kind: 'failed', error: `could not prepare atomic delegated diff apply: ${formatError(err)}` };
       }
-      applied = git(cwd, ['apply', '--3way', patchPath]);
+      let applied = git(cwd, ['apply', '--whitespace=nowarn', patchPath]);
+      if (applied.status !== 0) {
+        const rollbackError = restoreApplyTargets(backups);
+        if (rollbackError) {
+          return {
+            kind: 'failed',
+            error: `could not roll back failed delegated diff apply: ${rollbackError}`,
+          };
+        }
+        applied = git(cwd, ['apply', '--3way', patchPath]);
+      }
+      if (applied.status !== 0) {
+        const rollbackError = restoreApplyTargets(backups);
+        const rollbackSuffix = rollbackError ? `; rollback failed: ${rollbackError}` : '';
+        return { kind: 'failed', error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}${rollbackSuffix}` };
+      }
+      const i18nError = postApplyI18n(cwd, touched, policy.runId, policy.role);
+      if (i18nError) {
+        const rollbackError = restoreApplyTargets(backups);
+        const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+        return { kind: 'failed', error: `delegated diff applied but violated the i18n contract${suffix}: ${i18nError}` };
+      }
+      const verifyError = postApplyTypecheck(cwd, touched);
+      if (verifyError) {
+        const rollbackError = restoreApplyTargets(backups);
+        const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+        return { kind: 'failed', error: `delegated diff applied but typecheck failed${suffix}: ${verifyError}` };
+      }
+      const qualityError = postApplyQuality(cwd, touched);
+      if (qualityError) {
+        const rollbackError = restoreApplyTargets(backups);
+        const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+        return { kind: 'failed', error: `delegated diff applied but landed collapsed source${suffix}: ${qualityError}` };
+      }
+      const stylingError = postApplyStyling(cwd, touched, policy.runId);
+      if (stylingError) {
+        const rollbackError = restoreApplyTargets(backups);
+        const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+        return { kind: 'failed', error: `delegated diff applied but used a styling system the project does not have${suffix}: ${stylingError}` };
+      }
+      // Enforced here as well as at write time: a module Step-0 accepts but the
+      // structural gate refuses leaves its owning role holding a file it cannot
+      // legally edit.
+      const sizeError = postApplySize(cwd, touched);
+      if (sizeError) {
+        const rollbackError = restoreApplyTargets(backups);
+        const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+        return { kind: 'failed', error: `delegated diff applied but landed an oversized module${suffix}: ${sizeError}` };
+      }
+      return { kind: 'delegated', touched, summary };
+    } finally {
+      clearOpenCodeApplyInProgress(cwd, policy.runId, policy.role);
     }
-    if (applied.status !== 0) {
-      const rollbackError = restoreApplyTargets(backups);
-      const rollbackSuffix = rollbackError ? `; rollback failed: ${rollbackError}` : '';
-      return { kind: 'failed', error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}${rollbackSuffix}` };
-    }
-    const i18nError = postApplyI18n(cwd, touched, policy.runId, policy.role);
-    if (i18nError) {
-      const rollbackError = restoreApplyTargets(backups);
-      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
-      return { kind: 'failed', error: `delegated diff applied but violated the i18n contract${suffix}: ${i18nError}` };
-    }
-    const verifyError = postApplyTypecheck(cwd, touched);
-    if (verifyError) {
-      const rollbackError = restoreApplyTargets(backups);
-      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
-      return { kind: 'failed', error: `delegated diff applied but typecheck failed${suffix}: ${verifyError}` };
-    }
-    const qualityError = postApplyQuality(cwd, touched);
-    if (qualityError) {
-      const rollbackError = restoreApplyTargets(backups);
-      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
-      return { kind: 'failed', error: `delegated diff applied but landed collapsed source${suffix}: ${qualityError}` };
-    }
-    const stylingError = postApplyStyling(cwd, touched, policy.runId);
-    if (stylingError) {
-      const rollbackError = restoreApplyTargets(backups);
-      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
-      return { kind: 'failed', error: `delegated diff applied but used a styling system the project does not have${suffix}: ${stylingError}` };
-    }
-    // Enforced here as well as at write time: a module Step-0 accepts but the
-    // structural gate refuses leaves its owning role holding a file it cannot
-    // legally edit.
-    const sizeError = postApplySize(cwd, touched);
-    if (sizeError) {
-      const rollbackError = restoreApplyTargets(backups);
-      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
-      return { kind: 'failed', error: `delegated diff applied but landed an oversized module${suffix}: ${sizeError}` };
-    }
-    return { kind: 'delegated', touched, summary };
   } finally {
     removeWorktree(cwd, parent, wt);
   }

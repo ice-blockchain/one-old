@@ -236,3 +236,49 @@ export function openCodeGateDenied(cwd: string, runId: string, role: string): bo
     return false;
   }
 }
+
+// ── Apply-back latch ─────────────────────────────────────────────────────────
+// run-model's apply-back critical section (staged patch + post-apply
+// verifications applied to the REAL tree under a backup/restore pair) is only
+// atomic while the runner process lives. An explicit cancel that kills the
+// process group mid-section can strand a partial apply, so the runner arms
+// this latch around the section and the MCP cancel path refuses to kill while
+// a latch is fresh. TTL-bounded: a crashed runner's leftover latch must never
+// brick cancellation.
+const APPLY_LATCH_TTL_MS = 60_000;
+
+function applyLatchPath(cwd: string, runId: string, role: string): string {
+  const safe = role.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-applying', safe);
+}
+
+export function markOpenCodeApplyInProgress(cwd: string, runId: string, role: string): void {
+  if (!runId || !role) return;
+  try {
+    const p = applyLatchPath(cwd, runId, role);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, `${JSON.stringify({ armedAt: new Date().toISOString() })}\n`, 'utf8');
+  } catch {
+    // best-effort; without the latch a cancel merely loses this narrow guard
+  }
+}
+
+export function clearOpenCodeApplyInProgress(cwd: string, runId: string, role: string): void {
+  if (!runId || !role) return;
+  try { fs.rmSync(applyLatchPath(cwd, runId, role), { force: true }); } catch { /* best-effort */ }
+}
+
+/** True while ANY role's apply-back latch for this run is fresh (< TTL). */
+export function openCodeApplyInProgress(cwd: string, runId: string, nowMs: number = Date.now()): boolean {
+  if (!runId) return false;
+  try {
+    const dir = path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-applying');
+    for (const name of fs.readdirSync(dir)) {
+      const stat = fs.statSync(path.join(dir, name));
+      if (nowMs - stat.mtimeMs < APPLY_LATCH_TTL_MS) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}

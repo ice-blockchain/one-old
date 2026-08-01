@@ -33,10 +33,13 @@ export {
 } from './batch-state';
 
 export {
+  clearOpenCodeApplyInProgress,
+  markOpenCodeApplyInProgress,
   markOpenCodeGateDenied,
   markOpenCodeGatewayOutage,
   markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
+  openCodeApplyInProgress,
   openCodeGateDenied,
   openCodeGatewayOutageActive,
   openCodePlanRoleCompleted,

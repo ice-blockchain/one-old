@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 
 import {
   abandonAfterMs,
+  clampStatusWaitMs,
   gatewayBreakerMs,
   maxConsecutiveStalls,
   opencodeUnitTimeoutMs,
+  statusWaitMaxMs,
 } from '../opencode-timeouts';
 
 function withEnv(key: string, value: string | undefined, fn: () => void): void {
@@ -53,4 +55,22 @@ test('timeout env overrides are honoured and reject junk', () => {
   withEnv('T1_OC_MAX_STALLS', '3', () => assert.equal(maxConsecutiveStalls(), 3));
   withEnv('T1_OC_MAX_STALLS', '0', () => assert.equal(maxConsecutiveStalls(), 2));
   withEnv('T1_OC_GATEWAY_BREAKER_MS', '5000', () => assert.equal(gatewayBreakerMs(), 5000));
+});
+
+// A status long-wait that outlives the host's ~120s tool ceiling dies at the
+// HOST as a tool error the orchestrator misreads as "fall back to paid" — so
+// the clamp is a hard server-side property, whatever the caller asked for.
+test('status waitMs is clamped under the host tool-call ceiling', () => {
+  withEnv('T1_OC_STATUS_WAIT_MAX_MS', undefined, () => {
+    assert.equal(statusWaitMaxMs(), 110_000);
+    assert.equal(clampStatusWaitMs(90_000), 90_000);
+    assert.equal(clampStatusWaitMs(600_000), 110_000, 'a request beyond the ceiling is clamped, not honoured');
+    assert.equal(clampStatusWaitMs(0), 0);
+    assert.equal(clampStatusWaitMs(-5), 0);
+    assert.equal(clampStatusWaitMs('junk'), 0);
+    assert.equal(clampStatusWaitMs(undefined), 0);
+  });
+  withEnv('T1_OC_STATUS_WAIT_MAX_MS', '30000', () => {
+    assert.equal(clampStatusWaitMs(90_000), 30_000);
+  });
 });

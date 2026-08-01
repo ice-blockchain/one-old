@@ -6,7 +6,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { attach, delegateFromPlanResumable, delegateResumable, delegateStatus, dispatch, parseRunnerResult, planQueueRoles, runDelegate, runDelegateFromPlan } from '../index';
-import { parsePlanDelegationUnits, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
+import { clearOpenCodeApplyInProgress, markOpenCodeApplyInProgress, parsePlanDelegationUnits, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 import { buildOpenCodeQueue, readOpenCodeUnitStatuses } from '../../../shared/opencode-queue';
 import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../../config/opencode-mcp';
 
@@ -278,16 +278,73 @@ test('delegateResumable re-call without a task keeps waiting on the in-flight ru
   });
 });
 
-test('delegateStatus reports running → done', async () => {
+test('delegateStatus reports running → done, surfaces reservedFiles while running', async () => {
   await withStubRunner(SLOW_STUB, async (projectRoot) => {
     const args = { role: 'senior-frontend', task: 'slow', runId: 'res-2', allowedFiles: 'apps/web/src/**', projectRoot };
-    await delegateResumable(args, 100); // start (returns running)
-    assert.equal((delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot }) as Any).status, 'running');
+    const started = (await delegateResumable(args, 100)) as Any; // start (returns running)
+    assert.deepEqual(started.reservedFiles, ['apps/web/src/**']);
+    const running = (await delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot })) as Any;
+    assert.equal(running.status, 'running');
+    assert.deepEqual(running.reservedFiles, ['apps/web/src/**']);
     await delegateResumable(args, 2000); // wait for completion
-    const st = delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot }) as Any;
+    const st = (await delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot })) as Any;
     assert.equal(st.status, 'done');
     assert.equal(st.result.ok, true);
-    assert.equal((delegateStatus({ runId: 'nope', projectRoot }) as Any).status, 'unknown');
+    assert.equal(((await delegateStatus({ runId: 'nope', projectRoot })) as Any).status, 'unknown');
+  });
+});
+
+test('delegateStatus waitMs is a bounded long wait that returns the terminal result', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-wait', allowedFiles: 'apps/web/src/**', projectRoot };
+    const first = (await delegateResumable(args, 100)) as Any; // stub sleeps 1200ms
+    assert.equal(first.running, true);
+    // One long status wait collects the terminal result — no re-poll loop.
+    const st = (await delegateStatus({ runId: 'res-wait', role: 'senior-frontend', projectRoot, waitMs: 3000 })) as Any;
+    assert.equal(st.status, 'done');
+    assert.equal(st.result.ok, true);
+  });
+});
+
+test('delegateStatus cancel kills the worker and marks the delegation cancelled', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-cancel', allowedFiles: 'apps/web/src/**', projectRoot };
+    const first = (await delegateResumable(args, 100)) as Any;
+    assert.equal(first.running, true);
+    const cancelled = (await delegateStatus({ runId: 'res-cancel', role: 'senior-frontend', projectRoot, cancel: true })) as Any;
+    assert.equal(cancelled.status, 'done');
+    assert.equal(cancelled.result.ok, false);
+    assert.equal(cancelled.result.action, 'cancelled');
+    assert.match(String(cancelled.result.error), /explicitly cancelled/);
+    // Idempotent: cancelling a finished run just replays its terminal result.
+    const again = (await delegateStatus({ runId: 'res-cancel', role: 'senior-frontend', projectRoot, cancel: true })) as Any;
+    assert.equal(again.status, 'done');
+    // Unknown runs cannot be cancelled — say so instead of pretending.
+    const unknown = (await delegateStatus({ runId: 'never-started', projectRoot, cancel: true })) as Any;
+    assert.equal(unknown.status, 'unknown');
+    assert.match(String(unknown.message), /nothing to cancel/);
+  });
+});
+
+test('delegateStatus cancel is REFUSED while the apply-back latch is fresh', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-latch', allowedFiles: 'apps/web/src/**', projectRoot };
+    const first = (await delegateResumable(args, 100)) as Any;
+    assert.equal(first.running, true);
+    // Arm the latch the way run-model does around its apply-back section.
+    markOpenCodeApplyInProgress(projectRoot, 'res-latch', 'senior-frontend');
+    try {
+      const refused = (await delegateStatus({ runId: 'res-latch', role: 'senior-frontend', projectRoot, cancel: true })) as Any;
+      assert.equal(refused.status, 'running');
+      assert.equal(refused.applying, true);
+      assert.match(String(refused.message), /cancel refused/);
+    } finally {
+      clearOpenCodeApplyInProgress(projectRoot, 'res-latch', 'senior-frontend');
+    }
+    // Latch cleared → the cancel goes through.
+    const cancelled = (await delegateStatus({ runId: 'res-latch', role: 'senior-frontend', projectRoot, cancel: true })) as Any;
+    assert.equal(cancelled.status, 'done');
+    assert.equal(cancelled.result.action, 'cancelled');
   });
 });
 
@@ -479,7 +536,7 @@ test('an unpolled background delegation is cancelled by the watchdog (action: ab
       assert.equal(first.running, true);
       // No further polls: the watchdog should cancel after ~300ms + a tick.
       await new Promise((r) => setTimeout(r, 900));
-      const status = delegateStatus({ projectRoot, runId: 'aband-1', role: 'senior-frontend' }) as Any;
+      const status = (await delegateStatus({ projectRoot, runId: 'aband-1', role: 'senior-frontend' })) as Any;
       assert.equal(status.status, 'done');
       assert.equal(status.result?.action, 'abandoned');
       assert.match(status.result?.error || '', /stopped polling/);
@@ -537,7 +594,7 @@ test('plan batch watchdog abandon writes terminal batch.json (fail-open gate)', 
       const first = (await delegateFromPlanResumable(args, 100)) as Any;
       assert.equal(first.running, true);
       await new Promise((r) => setTimeout(r, 900));
-      const status = delegateStatus({ projectRoot, runId: 'aband-plan-1' }) as Any;
+      const status = (await delegateStatus({ projectRoot, runId: 'aband-plan-1' })) as Any;
       assert.equal(status.status, 'done');
       assert.equal(status.result?.action, 'abandoned');
       assert.ok(Array.isArray(status.result?.units));
