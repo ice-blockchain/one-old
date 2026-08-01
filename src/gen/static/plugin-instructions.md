@@ -13,11 +13,11 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 ## Codex Hook Trust
 
-- On the first Traffic One installation, Codex Desktop activation is an explicit user trust step: **Plugins → Traffic One → Hooks → Review**, inspect every command, then choose **Trust all** only when the review contains exactly the 15 hook keys and commands from the installed `hooks/hooks.json` fixture.
+- On the first Traffic One installation, Codex Desktop activation is an explicit user trust step: **Plugins → Traffic One → Hooks → Review**, inspect every command, then choose **Trust all** only when the review contains exactly the 16 hook keys and commands from the installed `hooks/hooks.json` fixture.
 - If the count, hook keys, or commands differ from that fixture, do not trust the set. Reinstall or update Traffic One, reopen the review, and compare again.
-- After approval, reload when Desktop offers it or fully restart Desktop, then open a new task in a trusted project. Doctor must report `HEALTHY` with **15 trusted / 15 runnable** Traffic One hooks before Traffic One implementation begins.
+- After approval, reload when Desktop offers it or fully restart Desktop, then open a new task in a trusted project. Doctor must report `HEALTHY` with **16 trusted / 16 runnable** Traffic One hooks before Traffic One implementation begins.
 - A partial selection, a cancelled review, or **Continue without trusting** remains `ACTION_NEEDED`. Never treat it as informational or continue in a degraded Traffic One mode.
-- CLI fallback: fully quit Desktop, start `codex` from a trusted project, run `/hooks`, inspect the 15 fixture entries, approve only Traffic One, exit the CLI, restart Desktop, open a new task, and rerun Doctor. Never ask the user to approve unrelated plugins.
+- CLI fallback: fully quit Desktop, start `codex` from a trusted project, run `/hooks`, inspect the 16 fixture entries, approve only Traffic One, exit the CLI, restart Desktop, open a new task, and rerun Doctor. Never ask the user to approve unrelated plugins.
 - Hook trust has no auto-approval path. Traffic One onboarding cannot activate, repair, or recover hooks that Codex has not trusted because the onboarding hook itself is inactive; require the explicit Desktop or CLI review above.
 
 ## Active Rules
