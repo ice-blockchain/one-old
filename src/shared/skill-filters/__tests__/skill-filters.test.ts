@@ -43,6 +43,17 @@ test('activeSkillsFor: pre-onboarding new project → no skills (bootstrap set i
   assert.equal(s.size, 0);
 });
 
+test('ionic-mobile is scoped to the Ionic profile, not plain react-vite', () => {
+  // Measured on 12co: the skill added ~10,958 chars (~2,700 tokens) to every
+  // react-vite frontend bootstrap although the project had no mobile surface.
+  const web = activeSkillsFor({ stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true });
+  assert.equal(web.has('ionic-mobile'), false);
+  assert.equal(web.has('vite-patterns'), true); // the rest of the bucket is intact
+
+  const ionic = activeSkillsFor({ stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'ionic-capacitor' }, onboardingComplete: true });
+  assert.equal(ionic.has('ionic-mobile'), true);
+});
+
 test('activeSkillsFor accepts a stack string (legacy alias)', () => {
   const s = activeSkillsFor('default');
   assert.ok(s.has('create-component'));

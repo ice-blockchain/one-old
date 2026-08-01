@@ -49,7 +49,7 @@ export const SKILL_FILTERS: Readonly<Record<string, Set<string>>> = {
   ]),
   api: new Set(['api-design', 'api-connector-builder']),
   'react-vite': new Set([
-    'frontend-design', 'frontend-patterns', 'accessibility', 'ionic-mobile',
+    'frontend-design', 'frontend-patterns', 'accessibility',
     'vite-patterns', 'click-path-audit', 'seo', 'e2e-testing', 'ai-regression-testing',
     'monorepo-architecture',
   ]),
