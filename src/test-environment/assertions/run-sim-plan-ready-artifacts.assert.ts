@@ -7,6 +7,9 @@
 // satisfy this — which is the whole point: the assertion proves the RUNTIME
 // published these, not that some files exist with the right names.
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 import {
   readCompiledArchitecture,
   readRuntimeAssignments,
@@ -83,6 +86,22 @@ export const assertion: Assertion = {
         expected: roles,
         actual: roles.filter((role) => !withoutBootstrap.includes(role)),
       });
+    }
+
+    // The per-run context-pack snapshot and its rules-ack receipts were REMOVED
+    // (children read the materialized `.traffic-one/rules|skills` tree; the
+    // envelope's {id, contentHash} refs are the integrity chain). A run that
+    // still grows a pack directory or a receipt means a resurrected writer.
+    const bootstrapRoot = path.join(ctx.cwd, '.traffic-one', 'runs', runId, 'bootstrap');
+    const packLeftovers = [
+      path.join(bootstrapRoot, 'context-pack'),
+      ...roles.flatMap((role) => [
+        path.join(bootstrapRoot, role, 'context-pack'),
+        path.join(bootstrapRoot, role, 'rules-ack.json'),
+      ]),
+    ].filter((target) => fs.existsSync(target));
+    if (packLeftovers.length > 0) {
+      return result(ctx, 'FAIL', `Removed context-pack machinery left artifacts in this run: ${packLeftovers.map((target) => path.relative(ctx.cwd, target)).join(', ')}.`);
     }
 
     // A run-sim case must exercise real diff evidence. A `file-manifest`

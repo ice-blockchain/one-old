@@ -10,7 +10,8 @@ import { hasMaterializedProjectAssets } from '../../shared/materialize';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import {  packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
-import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
+import { readActiveRunBootstrap, type RunBootstrapEnvelopeV2 } from '../../shared/run-bootstrap-policy';
+import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleKernel, roleSkillsDirective } from '../../shared/skill-filters';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
@@ -109,6 +110,17 @@ export function sessionProjectRoot(ctx: Ctx): string {
   return resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
 }
 
+// The active envelope, tolerated as absent: header decoration must never fail
+// the SessionStart hook, and a null envelope simply omits the kernel and
+// requirements sections (the deterministic gates still enforce both).
+function safeActiveEnvelope(cwd: string, runId: string, role: string): RunBootstrapEnvelopeV2 | null {
+  try {
+    return readActiveRunBootstrap(cwd, runId, role);
+  } catch {
+    return null;
+  }
+}
+
 // Build the role-scoped (or fix-cycle) rule context for a subagent whose run claim
 // resolved and whose project is already materialized. Shared by the subagent
 // SessionStart path and the legacy run-agent fast path.
@@ -136,11 +148,24 @@ export function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgent
     : pruneSkillsDirective(capabilityState, listAllSkills(), ctx.host);
   const { body } = packRuleIndex(root, rules);
   const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
+  // The envelope is the delivery surface for per-run contract extras since the
+  // per-run context-pack snapshot was removed: integration requirements ride
+  // the header (they exist nowhere else readable), and the compact role kernel
+  // rides it only when the host did not deliver the agent doc natively
+  // (roleSource 'plugin-injected-fallback' — e.g. Codex spawn_agent children).
+  const envelope = role && runId ? safeActiveEnvelope(cwd, runId, role) : null;
+  const kernel = envelope?.roleSource === 'plugin-injected-fallback' && role ? roleKernel(role) : null;
+  const requirements = envelope?.integrationRequirements?.length
+    ? '\n## Integration requirements (deterministic gates verify these)\n'
+      + `${envelope.integrationRequirements.map((line) => `- ${line}`).join('\n')}\n`
+    : '';
   const roleLabel = role || 'subagent';
   const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
     + '[subagent] Full rules already loaded by parent session and materialized to '
-    + '.traffic-one/rules/. This index lists role-scoped rules; Read them on demand.\n';
-  return context(`${header}${skillDirective}${graphPreview}\n${body}`);
+    + '.traffic-one/rules/. This index lists role-scoped rules; Read them on demand — '
+    + 'ONE file per Read/shell command, never several concatenated (host exec output '
+    + 'truncates middle-out and the middle files vanish silently).\n';
+  return context(`${header}${kernel ? `${kernel}\n` : ''}${requirements}${skillDirective}${graphPreview}\n${body}`);
 }
 
 // A subagent NEVER runs the full session-start hook. The auth gate and onboarding

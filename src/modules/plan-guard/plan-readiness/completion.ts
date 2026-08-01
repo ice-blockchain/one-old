@@ -179,9 +179,11 @@ export function digestCompletionGates(ctx: {
     // `max_output_tokens: 3000`), so all parts were "served", the ack was
     // complete — and the aggregated exec output was still truncated
     // (11k-28k tokens across five role children). The receipt proves the
-    // runner ran, not that the agent read it. A serve-order chain the agent
-    // cannot satisfy in parallel (part N+1 requires a nonce printed in part N)
-    // is the prerequisite for re-introducing enforcement here.
+    // runner ran, not that the agent read it. The pack + pager themselves were
+    // later removed with the same lesson applied: children read the
+    // materialized `.traffic-one/rules|skills` tree one file per command, and
+    // ingestion is enforced only by the deterministic output gates below —
+    // never by read receipts.
     const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
     const tooling = architecture
       ? compiledFormatToolchainForRole(architecture, ownerRole)

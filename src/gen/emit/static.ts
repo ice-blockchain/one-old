@@ -9,10 +9,13 @@ import type { GenRun } from '../lib/run';
 
 // Root docs copied verbatim. The repo-root AGENTS.md/CLAUDE.md are the
 // MAINTAINER guide and deliberately NOT shipped. The installable bundle keeps
-// end-user AGENTS.md/CLAUDE.md for cross-host compatibility and as the source
-// materialized into end-user projects; current Codex discovers plugin hooks but
-// does not inject a plugin-root AGENTS.md. Keeping the files distinct also means
-// a session inside the source repo never reads end-user project conventions.
+// end-user AGENTS.md/CLAUDE.md for cross-host compatibility (the Copilot
+// manifest's `instructions` field points at AGENTS.md); the project context in
+// end-user projects is rendered programmatically by
+// shared/materialize/render-agents, never copied from these files. Current
+// Codex discovers plugin hooks but does not inject a plugin-root AGENTS.md.
+// Keeping the files distinct also means a session inside the source repo never
+// reads end-user project conventions.
 const STATIC_TEXT_FILES = [
   'README.md',
   'ref.md',

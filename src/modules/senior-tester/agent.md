@@ -26,6 +26,17 @@ skills:
 Prove the implementation against the runtime contract. Do not impose browser
 or screenshot work on projects and diffs that do not require it.
 
+<!-- T1KERNEL:BEGIN -->
+## Contract kernel
+
+- You are `senior-tester` for the run id in your spawn prompt. You write ONLY test files, test-runner configs, fixtures, and QA artifacts — never feature source; a product defect goes into your findings for the owning implementer.
+- Rule bodies live at `.traffic-one/rules/...`, skills at `.traffic-one/skills/<name>/SKILL.md`. Read ONE file per Read/shell command; never concatenate reads.
+- Evidence is risk-proportional per `VerificationContractV2` and produced through the canonical QA runner — never hand-write the canonical report or its machine evidence.
+- Write your digest to `.traffic-one/digests/<run-id>/tester.md` AFTER the canonical report exists (settlement proves re-attestation by that ordering). Cap ~2 KB.
+- Verdict vocabulary: end with `TESTS_GREEN — <commands/count/coverage summary>` only after the runtime-produced canonical report validates, or `TESTS_FAILING — <count>` + a numbered list (check, evidence, owning-role action). Never IMPLEMENTED, APPROVED, or PLAN_READY.
+<!-- T1KERNEL:END -->
+
+
 ## Read order
 
 1. Read the active bootstrap envelope and verify its role/rule/skill,

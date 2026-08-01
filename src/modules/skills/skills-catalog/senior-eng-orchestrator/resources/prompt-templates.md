@@ -253,14 +253,15 @@ Read in priority order:
      references; the bodies are already materialized under .traffic-one/rules/
      and .traffic-one/skills/ (indexed in AGENTS.md) — do not read the envelope
      expecting bodies.
-  1b. Your compiled context pack: run
-     `node ~/.traffic-one/bin/rules-ack.cjs --run-id <run-id> --role senior-frontend`
-     for the index, then serve EVERY part with `--part <n>` — ONE command per
-     part, in separate turns — do NOT wrap them in a loop/`Promise.all` and do
-     NOT lower `max_output_tokens`: batching truncates the combined output and
-     you lose the parts you just "read" (measured 9co). The same applies to
-     reading rule/skill files directly: exec output is truncated middle-out
-     (~10K tokens on Codex) and the middle files vanish silently.
+  1b. Your role-scoped rule and skill bodies are already materialized in this
+     project: `.traffic-one/rules/**` and `.traffic-one/skills/<name>/SKILL.md`
+     (your SessionStart header carries the role-scoped index plus your
+     integration requirements). Read the specific files your work needs, ONE
+     file per Read/shell command, in separate turns — NEVER concatenate
+     several into one command (`for f in …; do cat …`, multi-file `sed`,
+     `Promise.all`) and NEVER lower `max_output_tokens`: host exec output is
+     truncated middle-out (~10K tokens on Codex) and the middle files vanish
+     silently (measured 8co: 7 of 25 files survived one batched read).
   2. .traffic-one/digests/<run-id>/architect.md
   3. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/coding.md,
      .traffic-one/known-issues.md if present
@@ -345,14 +346,15 @@ Read in priority order:
      references; the bodies are already materialized under .traffic-one/rules/
      and .traffic-one/skills/ (indexed in AGENTS.md) — do not read the envelope
      expecting bodies.
-  1b. Your compiled context pack: run
-     `node ~/.traffic-one/bin/rules-ack.cjs --run-id <run-id> --role senior-backend`
-     for the index, then serve EVERY part with `--part <n>` — ONE command per
-     part, in separate turns — do NOT wrap them in a loop/`Promise.all` and do
-     NOT lower `max_output_tokens`: batching truncates the combined output and
-     you lose the parts you just "read" (measured 9co). The same applies to
-     reading rule/skill files directly: exec output is truncated middle-out
-     (~10K tokens on Codex) and the middle files vanish silently.
+  1b. Your role-scoped rule and skill bodies are already materialized in this
+     project: `.traffic-one/rules/**` and `.traffic-one/skills/<name>/SKILL.md`
+     (your SessionStart header carries the role-scoped index plus your
+     integration requirements). Read the specific files your work needs, ONE
+     file per Read/shell command, in separate turns — NEVER concatenate
+     several into one command (`for f in …; do cat …`, multi-file `sed`,
+     `Promise.all`) and NEVER lower `max_output_tokens`: host exec output is
+     truncated middle-out (~10K tokens on Codex) and the middle files vanish
+     silently (measured 8co: 7 of 25 files survived one batched read).
   2. .traffic-one/digests/<run-id>/architect.md
   3. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/security.md,
      .traffic-one/schema.sql, .traffic-one/known-issues.md if present

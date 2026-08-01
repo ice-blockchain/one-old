@@ -8,6 +8,7 @@ import {
   copyActiveSkills,
   pruneSkillsDirective,
   roleAgentBody,
+  roleKernel,
 } from '../index';
 
 test('activeSkillsFor(default state) unions common + react-vite + supabase', () => {
@@ -158,4 +159,27 @@ test('roleAgentBody is null for malformed / unknown roles', () => {
   assert.equal(roleAgentBody('Not A Role'), null); // fails the [a-z0-9-] guard
   assert.equal(roleAgentBody(''), null);
   assert.equal(roleAgentBody('definitely-not-a-shipped-role'), null); // valid shape, no doc
+});
+
+// The kernel is the ONLY role-contract delivery on hosts without native
+// agent-doc injection (Codex spawn_agent children) since the context-pack
+// pager was removed — every senior role must carry one, and it must stay
+// compact enough that the whole child SessionStart header fits ~16k chars.
+test('every senior role doc carries a compact T1KERNEL contract kernel', () => {
+  const verdictBy: Record<string, string> = {
+    'senior-architect': 'PLAN_READY',
+    'senior-frontend': 'IMPLEMENTED',
+    'senior-backend': 'IMPLEMENTED',
+    'senior-reviewer': 'CHANGES_REQUESTED',
+    'senior-tester': 'TESTS_GREEN',
+    'senior-shipper': 'SHIPPED',
+  };
+  for (const [role, verdict] of Object.entries(verdictBy)) {
+    const kernel = roleKernel(role);
+    assert.ok(kernel, `${role} has a T1KERNEL section`);
+    assert.ok(kernel!.length <= 2_500, `${role} kernel is ${kernel!.length} chars (cap 2500)`);
+    assert.ok(kernel!.includes(verdict), `${role} kernel names its verdict token ${verdict}`);
+    assert.ok(kernel!.includes('ONE file per Read/shell command'), `${role} kernel keeps the anti-truncation discipline`);
+  }
+  assert.equal(roleKernel('definitely-not-a-shipped-role'), null);
 });

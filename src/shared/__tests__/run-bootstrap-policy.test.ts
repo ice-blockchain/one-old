@@ -653,3 +653,53 @@ test('repairRunBootstrapForBoundChild recovers a bounded scope from an invalidat
     assert.deepEqual(readActiveRunBootstrap(cwd, 'M', 'quick-fix'), repaired);
   });
 });
+
+// The child SessionStart header is the delivery surface for the per-run
+// contract extras since the context-pack snapshot was removed: integration
+// requirements always ride it, and the compact role kernel rides it only when
+// the host did NOT deliver the agent doc natively (roleSource
+// 'plugin-injected-fallback' — the Codex spawn_agent shape, which used to get
+// the role text solely through the removed pager).
+test('child SessionStart header renders requirements always, kernel only for plugin-injected-fallback', async () => {
+  const { subagentRoleContext } = await import('../../modules/session/session-start-setup');
+  const { pluginRoot } = await import('../paths');
+  withProject((cwd) => {
+    compileRun(cwd, 'R', STATE, UI_INPUT);
+    const options = {
+      host: 'codex' as const,
+      evidenceSource: 'spawn-task-name',
+      modelPolicyId: 'policy-header',
+    };
+    const fallback = ensureRunBootstrap(cwd, 'R', 'senior-frontend', STATE, {
+      ...options,
+      hostAgentType: null,
+    });
+    assert.ok(fallback);
+    assert.equal(fallback.roleSource, 'plugin-injected-fallback');
+    assert.ok((fallback.integrationRequirements || []).length > 0);
+
+    const ctx = { host: 'codex', cwd, input: { raw: {} } } as never;
+    const agentContext = { role: 'senior-frontend', runId: 'R', spawnIndex: 1 } as never;
+    const res = subagentRoleContext(ctx, STATE as never, agentContext, pluginRoot()) as { kind: string; context?: string };
+    assert.equal(res.kind, 'context');
+    const body = res.context || '';
+    assert.ok(body.includes('## Contract kernel'), 'kernel rides the fallback header');
+    assert.ok(body.includes('Integration requirements (deterministic gates verify these)'));
+    assert.ok(body.includes('STRUCT_ORPHAN_MODULE'));
+    assert.ok(body.length <= 16_000, `child header is ${body.length} chars (budget 16k)`);
+
+    // Host-native role delivery (hostAgentType set) drops the kernel but keeps
+    // the requirements — the agent doc reaches the child via the host's own
+    // agent file, and duplicating it would double the header for nothing.
+    const native = ensureRunBootstrap(cwd, 'R', 'senior-frontend', STATE, {
+      ...options,
+      hostAgentType: 'senior-frontend',
+    });
+    assert.ok(native);
+    assert.equal(native.roleSource, 'host-native');
+    const nativeRes = subagentRoleContext(ctx, STATE as never, agentContext, pluginRoot()) as { kind: string; context?: string };
+    const nativeBody = nativeRes.context || '';
+    assert.ok(!nativeBody.includes('## Contract kernel'), 'no kernel duplication on host-native delivery');
+    assert.ok(nativeBody.includes('Integration requirements (deterministic gates verify these)'));
+  });
+});

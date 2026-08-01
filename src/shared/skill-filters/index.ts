@@ -195,6 +195,21 @@ export function roleAgentBody(role: string): string | null {
   return null;
 }
 
+// The compact role contract delimited by T1KERNEL markers inside the role's
+// agent doc. Served in the child SessionStart header on hosts whose spawn does
+// NOT deliver the agent doc natively (envelope roleSource
+// 'plugin-injected-fallback' — e.g. Codex spawn_agent children, which used to
+// receive the role text only through the removed context-pack pager).
+// Fail-open: a doc without markers yields null and the child still has its
+// spawn prompt plus the rule/skill index.
+export function roleKernel(role: string): string | null {
+  const body = roleAgentBody(role);
+  if (!body) return null;
+  const match = /<!-- T1KERNEL:BEGIN -->\r?\n?([\s\S]*?)<!-- T1KERNEL:END -->/.exec(body);
+  const kernel = match?.[1]?.trim();
+  return kernel || null;
+}
+
 // Skills a role's agent doc declares in its `skills:` frontmatter. The agent doc
 // is the single source of truth for a role's skill set — parsing it here (instead
 // of mirroring a TS map) means the subagent directive can never drift from what

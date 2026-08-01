@@ -404,6 +404,30 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
 // config-only package omits `test` entirely.
 // 19c-F1: root aborted a tester that was mid-digest 11s after a successful tool
 // call, destroying a verdict, because nothing defined what "stalled" means.
+// The kernel is the ONLY role-contract delivery on hosts without native
+// agent-doc injection since the context-pack pager was removed; the runtime
+// extracts it from the EMITTED doc via pluginRoot(), so the markers must
+// survive generation for every senior role. Fail here, not silently at spawn.
+test('every emitted senior agent doc keeps its T1KERNEL markers', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-kernel-markers-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    for (const role of [
+      'senior-architect', 'senior-frontend', 'senior-backend',
+      'senior-reviewer', 'senior-tester', 'senior-shipper',
+    ]) {
+      const doc = fs.readFileSync(path.join(dir, 'agents', `${role}.md`), 'utf8');
+      const match = /<!-- T1KERNEL:BEGIN -->\r?\n?([\s\S]*?)<!-- T1KERNEL:END -->/.exec(doc);
+      assert.ok(match, `${role}.md carries T1KERNEL markers`);
+      const kernel = match![1]!.trim();
+      assert.ok(kernel.length > 0 && kernel.length <= 2_500,
+        `${role} kernel is ${kernel.length} chars (cap 2500 so the child header stays under its 16k budget)`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('generated role contracts agree on no-op test scripts and forbid interrupting a working agent', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-role-contract-coherence-'));
   try {

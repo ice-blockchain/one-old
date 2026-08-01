@@ -39,8 +39,7 @@ import {
 } from './envelope-io';
 import {
   compileIntegrationRequirements,
-  compileRoleContextPack,
-} from './context-pack';
+} from './integration-requirements';
 
 export function ensureRunBootstrap(
   cwd: string,
@@ -116,17 +115,10 @@ export function ensureRunBootstrap(
   writeJson(activeRunBootstrapPath(cwd, runId, role), envelope);
   const verified = readActiveRunBootstrap(cwd, runId, role);
   if (!verified || verified.envelopeHash !== envelopeHash) return null;
-  // Compile the readable context pack beside the envelope (best effort — a
-  // pack failure never fails the publish; the rules-ack completion gate keys
-  // on the manifest's existence).
-  compileRoleContextPack(
-    cwd,
-    runId,
-    role,
-    resolved.rules.map((rule) => rule.id),
-    resolved.skills.map((skill) => skill.id),
-    integrationRequirements,
-  );
+  // No per-run context-pack snapshot is compiled any more: rule/skill bodies
+  // live in the project's materialized `.traffic-one/rules|skills` tree, the
+  // envelope's {id, contentHash} refs are the integrity chain, and the child's
+  // SessionStart header renders integrationRequirements + the role kernel.
   pruneBootstrapHistory(cwd, runId);
   return verified;
 }
@@ -215,17 +207,5 @@ export {
 } from './envelope-io';
 
 export {
-  CONTEXT_PACK_PART_MAX_CHARS,
   compileIntegrationRequirements,
-  compileRoleContextPack,
-  contextPackDir,
-  contextPackPartDir,
-  sharedContextPackDir,
-  contextPackManifestPath,
-  readContextPackManifest,
-  readRulesAck,
-  rulesAckComplete,
-  rulesAckPath,
-  type ContextPackManifestV1,
-  type RulesAckV1,
-} from './context-pack';
+} from './integration-requirements';
