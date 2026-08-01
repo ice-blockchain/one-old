@@ -14,7 +14,7 @@ import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
-import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
+import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted, markVerifyGateDenied } from '../../../shared/opencode-roles';
 import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext, runLedgerAdmitsClaims, transitionRunStatus } from '../../../shared/state';
 import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
@@ -1676,6 +1676,9 @@ test('opencode role gate: a configured non-implementer role is denied until Open
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-X');
     queueDelegateRole(cwd, 'senior-tester');
+    // Burn the verify-gate budget (queued-but-unstarted batch would fire it
+    // first) — this test pins the PER-ROLE gate's own contract.
+    markVerifyGateDenied(cwd, 'run-X', 'senior-tester');
 
     // senior-tester is in the default delegateRoles → deny until OpenCode tried
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
@@ -1760,6 +1763,7 @@ test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-reviewer-reject');
     queueDelegateRole(cwd, 'senior-tester');
+    markVerifyGateDenied(cwd, 'run-reviewer-reject', 'senior-tester'); // pin the per-role gate alone
 
     // First spawn → denied (with the delegate instructions), deny recorded.
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
@@ -1778,6 +1782,7 @@ test('opencode role gate: deny block is clean (no leftover template placeholders
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-clean');
     queueDelegateRole(cwd, 'senior-tester');
+    markVerifyGateDenied(cwd, 'run-clean', 'senior-tester'); // pin the per-role gate alone
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
@@ -1798,6 +1803,7 @@ test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', (
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-codex');
     queueDelegateRole(cwd, 'senior-tester');
+    markVerifyGateDenied(cwd, 'run-codex', 'senior-tester'); // pin the per-role gate alone
 
     // A configured role on Codex is delegated to OpenCode first, exactly like Claude/Cursor.
     const denied = agentModelGate(codexSpawnCtx(cwd, {

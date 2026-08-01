@@ -8,6 +8,7 @@ import { context, deny } from '../../core/result';
 import { recordOpenCodeFallback } from '../../shared/opencode-queue';
 import {
   markOpenCodeGateDenied,
+  markVerifyGateDenied,
   openCodeGateDenied,
   openCodePlanBatchComplete,
   openCodePlanRoleCompleted,
@@ -16,6 +17,7 @@ import {
   roleHasQueuedUnits,
   shouldBlockImplementerForPlanBatch,
   shouldRunRoleOnOpenCode,
+  verifyGateDenied,
 } from '../../shared/opencode-roles';
 import {
   ensureCurrentRunId,
@@ -26,9 +28,14 @@ import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan/di
 import {
   block,
   isPlanBatchGatedRole,
+  isVerifyBatchGatedRole,
 } from './handler-prose';
 import type { HookResult } from '../../core/types';
 import type { GateContext } from './gate-context';
+
+// Verbatim mirror of the SKILL.md `verify-batch-running` block so a missing
+// block never softens the ordering deny into silence.
+const VERIFY_BATCH_RUNNING_FALLBACK = 'traffic-one — verification gate: `{{ROLE}}` must not start while the Step-0 OpenCode implementation batch for run `{{RUN_ID}}` is still pending — a review/test pass over pre-batch state wastes the whole round. Collect the terminal batch result in ONE bounded call: `opencode_status` with `{ runId: "{{RUN_ID}}", waitMs: 90000 }` (repeat while it returns running), or abandon the batch explicitly with `opencode_status {runId, cancel:true}` before falling back. Then re-issue this exact spawn — this gate denies at most once per run and role, so the retry always goes through.';
 
 export function openCodeFirstGates(g: GateContext): HookResult | null {
   const { ctx, cwd, state, role, spawnRunId } = g;
@@ -49,6 +56,31 @@ export function openCodeFirstGates(g: GateContext): HookResult | null {
         QUEUED_ROLES: pendingPlanRoles.join(', '),
       }), denyContext ? { context: denyContext } : {});
     }
+  }
+
+  // Verification ordering, enforced: the reviewer/tester must not START while
+  // the Step-0 implementation batch is still pending — a review/test pass over
+  // pre-batch state wastes the whole round (the prose contract alone did not
+  // hold). shouldBlockImplementerForPlanBatch is the exact predicate: it fails
+  // open on no-delegation, ineligible phase, empty queue, terminal batch AND —
+  // since the batch-liveness fix — on a `running` batch with no verifiable
+  // executor, so a dead batch stops gating within ~unitLivenessWindowMs.
+  // Deadlock-free by construction: at most ONE deny per (runId, role) through
+  // its OWN marker dir (verify-gate-denies — never the opencode-gate-denies
+  // budget: senior-tester sits in BOTH gates, and a shared dir would let one
+  // silently burn the other's single deny). Verified-write: no durable marker,
+  // no deny. Worst case for the tester is therefore two denies (this gate,
+  // then the per-role OpenCode-first deny below), after which the spawn always
+  // goes through.
+  if (isVerifyBatchGatedRole(role) && spawnRunId
+    && shouldBlockImplementerForPlanBatch(cwd, spawnRunId, state, ctx.host)
+    && !verifyGateDenied(cwd, spawnRunId, role)
+    && markVerifyGateDenied(cwd, spawnRunId, role)) {
+    return deny(block('verify-batch-running', {
+      ROLE: role,
+      RUN_ID: spawnRunId,
+      PROJECT_ROOT: cwd,
+    }, VERIFY_BATCH_RUNNING_FALLBACK));
   }
 
   // OpenCode role delegation (all modes, paid hosts only): a configured role MUST run

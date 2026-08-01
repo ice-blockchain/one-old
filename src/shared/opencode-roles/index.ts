@@ -42,6 +42,7 @@ export {
   markOpenCodeGatewayOutage,
   markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
+  markVerifyGateDenied,
   openCodeApplyInProgress,
   openCodeGateDenied,
   openCodeGatewayOutageActive,
@@ -49,4 +50,5 @@ export {
   openCodeRoleAttempted,
   pendingOpenCodePlanRoles,
   recordOpenCodeAttemptOutcome,
+  verifyGateDenied,
 } from './markers';

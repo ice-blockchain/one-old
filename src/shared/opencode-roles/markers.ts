@@ -237,6 +237,40 @@ export function openCodeGateDenied(cwd: string, runId: string, role: string): bo
   }
 }
 
+// ── Verify-gate deny marker ──────────────────────────────────────────────────
+// At most ONE reviewer/tester "the batch is still running" spawn deny per
+// (runId, role). Its OWN directory — sharing opencode-gate-denies would let
+// one gate silently burn the other's single-deny budget (senior-tester sits
+// in both). Verified-write convention: the deny may only fire when the marker
+// durably landed, so an unwritable state can never produce a deny loop.
+
+function verifyGateDenyPath(cwd: string, runId: string, role: string): string {
+  const safe = role.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(cwd, '.traffic-one', 'runs', runId, 'verify-gate-denies', safe);
+}
+
+export function verifyGateDenied(cwd: string, runId: string, role: string): boolean {
+  if (!runId || !role) return false;
+  try {
+    return fs.existsSync(verifyGateDenyPath(cwd, runId, role));
+  } catch {
+    return true; // unreadable marker state → treat as already denied (fail-open)
+  }
+}
+
+/** True only when the marker durably exists after the write. */
+export function markVerifyGateDenied(cwd: string, runId: string, role: string): boolean {
+  if (!runId || !role) return false;
+  try {
+    const target = verifyGateDenyPath(cwd, runId, role);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `${JSON.stringify({ deniedAt: new Date().toISOString() })}\n`, 'utf8');
+    return fs.existsSync(target);
+  } catch {
+    return false;
+  }
+}
+
 // ── Apply-back latch ─────────────────────────────────────────────────────────
 // Moved to ./apply-latch (batch-state needs it for batch liveness and markers
 // already imports batch-state — the sibling module breaks the cycle). Re-export

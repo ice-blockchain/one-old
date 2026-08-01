@@ -13,6 +13,11 @@ export const block = (
   fallback = '',
 ): string => skillBlock('agent-model', name, vars, fallback);
 const PLAN_BATCH_GATED_ROLES = new Set(['senior-frontend', 'senior-backend']);
+// Verification roles gated on a LIVE Step-0 batch (never on a dead or terminal
+// one): reviewing/testing pre-batch state wastes the whole round. Deliberately
+// separate from PLAN_BATCH_GATED_ROLES — implementers wait for terminality,
+// verifiers only for liveness, with their own at-most-once budget.
+const VERIFY_BATCH_GATED_ROLES = new Set(['senior-reviewer', 'senior-tester']);
 
 export const CURSOR_MODELS_CAPTURE_FALLBACK = `Cursor model-capture gate (required before the first team spawn, run {{RUN_ID}}). The spawn is blocked until Traffic One freezes the exact model ids offered by this Cursor build.
 Missing captured tiers for this run: {{MISSING_TIERS}}.
@@ -34,4 +39,8 @@ The architect must finish the required project-memory baseline, semantic \`.traf
 
 export function isPlanBatchGatedRole(role: string): boolean {
   return PLAN_BATCH_GATED_ROLES.has(role);
+}
+
+export function isVerifyBatchGatedRole(role: string): boolean {
+  return VERIFY_BATCH_GATED_ROLES.has(role);
 }

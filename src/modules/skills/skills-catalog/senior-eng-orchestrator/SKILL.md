@@ -495,7 +495,7 @@ Synthetic prompts — use only the Phase 2 template matching each eligible role 
 
 Implementers handle ONLY the senior units, plus any queued unit OpenCode did not deliver (Step 0 `units[].action !== "delegated"` → fall back). Pass each implementer the files OpenCode already produced (the batch's `touched`) so it builds on them, not over them. Architecture/contract/security/data work always uses the named subagents — never OpenCode.
 
-Wait for every spawned eligible implementer to return before Phase 3. Never wait for or require a digest from a role absent from the capability profile and assignments manifest.
+Wait for every spawned eligible implementer to return before Phase 3. Never wait for or require a digest from a role absent from the capability profile and assignments manifest. The verification ordering is also ENFORCED: a `senior-reviewer`/`senior-tester` spawn while the Step-0 OpenCode batch is still pending is denied once with the wait/cancel recipe (`opencode_status {runId, waitMs: 90000}` until terminal, or `{runId, cancel:true}`); the retry after a terminal batch always goes through.
 
 ### Phase 3 — Verify (subagents mode, parallel)
 

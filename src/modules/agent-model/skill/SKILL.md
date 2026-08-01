@@ -68,6 +68,10 @@ If Cursor REJECTS that value (invalid enum / unknown subagent type), the agent f
 Keep the exact per-role `model` from the spawn map either way. Never send a Traffic One role to a generic worker WITHOUT the role marker, and never simulate the role in the parent thread.
 <!-- T1BLOCK:END cursor-agent-type-required -->
 
+<!-- T1BLOCK:BEGIN verify-batch-running -->
+traffic-one — verification gate: `{{ROLE}}` must not start while the Step-0 OpenCode implementation batch for run `{{RUN_ID}}` is still pending — a review/test pass over pre-batch state wastes the whole round. Collect the terminal batch result in ONE bounded call: `opencode_status` with `{ runId: "{{RUN_ID}}", waitMs: 90000 }` (repeat while it returns running), or abandon the batch explicitly with `opencode_status {runId, cancel:true}` before falling back. Then re-issue this exact spawn — this gate denies at most once per run and role, so the retry always goes through.
+<!-- T1BLOCK:END verify-batch-running -->
+
 <!-- T1BLOCK:BEGIN agent-activity-exploration-cap -->
 traffic-one — exploration cap: `{{ROLE}}` has made {{COUNT}} tool calls in run `{{RUN_ID}}` and this search/read call is refused ONCE as a consolidation checkpoint (editing, shell verification, and digest writes are never blocked, and every later call — including search/read — goes through). Write down what you already know, then act on it: batch the remaining related reads, group coherent edits, run ONE combined verification command per surface, do not re-read rules or files already loaded, and finish the assignment before exploring further. Cap: {{CAP}} calls per child (config `agentActivity.explorationCap`, env `T1_EXPLORATION_CAP`; 0 disables).
 <!-- T1BLOCK:END agent-activity-exploration-cap -->
