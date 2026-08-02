@@ -63,7 +63,7 @@ fd019df51cd6e31a995df0605cf7fc00ebf7be7c40e7cfc8bc15b1ba472c477a  .cursor/rules/
 2ea473b72a7dc9769700cbc063efd655e9defcfb734d057c419d6e3b3577af3c  .cursor/rules/ionic-stores.mdc
 6c72585ffea6e078a0d295c32a4acd658cda213de9ab022e3224a863755c4942  .cursor/rules/ionic-styles.mdc
 588080258fe0581f27affff0ae9d9947e13646cba0adbf71257bf46744306820  .cursor/rules/ionic-testing.mdc
-480ca2e8c0905f108101fb0112e7bcee369259c9fd88a0c448e66c872d36be8a  .cursor/rules/mode-existing-codebase.mdc
+e59a0a5ff3be8be3e380d1214f2f07a01a48c00a2ca80621c0121b715081de45  .cursor/rules/mode-existing-codebase.mdc
 ca617123da816e120eb87d7de30efb8376010e50bce59e65ac71512d5a435d6c  .cursor/rules/mode-new-project-angular.mdc
 f733d88b7c4dc3a6865b2bbffeae10f57155eae65a8469e05593645cc8b3259d  .cursor/rules/mode-new-project-architecture.mdc
 4b1c45f7bf3222899c23b5d419741eca2f4340a4967156c8a4ebe914aa2de3b4  .cursor/rules/mode-new-project-astro.mdc
@@ -174,7 +174,7 @@ b9d7634662b934b79921f8101e049a921de4977d991938e2d4de3735f7e73e12  .devin/rules/f
 7bab5172a7feaea7c7f216f80efacc20774009f989bb8cf5a1f62c3e017c2fa2  .devin/rules/ionic-stores.md
 07df578ac14955f66a4b1f0646eb6f37b244d322fd722dd1848b7e13789aafdb  .devin/rules/ionic-styles.md
 b8e2a8fb800b3b568f78dd8831a3d2fb07702831f5f483fee30b490e6bf56567  .devin/rules/ionic-testing.md
-61f81f1b937c4fd6c27cc645fe6fca196d7f9e7a201a31861b4de421baa32c2b  .devin/rules/mode-existing-codebase.md
+47e71ef8674312507a83f4b90a6eb1b5a21747c4b74881e13ba61f5b5922d61a  .devin/rules/mode-existing-codebase.md
 806c85c6c613f8cb711070629bba918b54856e2210377f3b38aa6b7e42b77db4  .devin/rules/mode-new-project-angular.md
 3233f6abc11b64e5dfe562f18e7d559c0f578391571e08babc8766e60845bed8  .devin/rules/mode-new-project-architecture-01.md
 13ee3135c5e607065f1bf16971c7274451e8d547228defd201d059ecd1197924  .devin/rules/mode-new-project-architecture-02.md
@@ -320,7 +320,7 @@ bf288071026522a84ed20c9bc5da70457f90b98aaf31272e1cc5068b774399d4  rules/frontend
 f38ef0be9a150958bddb2c4fc723c4c6c4ac646c7e108e6b9899fb8df420f838  rules/frontend/typography.md
 02bd1daca595c98416d864cb1bf62bc6e4e9b17920d14d96e2979d03ba59c079  rules/frontend/ui-quality-reference.md
 2be41f5233a122a3a23f85c53a498b967b863e5bb61ee167b3f0677b92c67639  rules/frontend/ui-quality.md
-7b98112d9cd63968627ff3043fd729f0fa44223e95f90874c904c41091187e20  rules/modes/existing-codebase.md
+05cf86211d95db3637c733f6a05eca0827085360f7d6bef7d43f1653c93aa39c  rules/modes/existing-codebase.md
 f5aad4cd1542a42a42381568c07b88c96862d4536b6dc31499228fe1ddee2ec3  rules/modes/new-project-angular.md
 8051511add0b756e377c9ab6a11122ab2957ef04f0bdeee2ba2a076816a1428c  rules/modes/new-project-architecture.md
 fe4d702a9f3c25d01e599895637b0d98e92bda78cf1a2cb69d64bb4468b606a9  rules/modes/new-project-astro.md

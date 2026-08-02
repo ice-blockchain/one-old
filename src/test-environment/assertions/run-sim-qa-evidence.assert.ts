@@ -33,15 +33,22 @@ export const assertion: Assertion = {
     const transcript = readRunSimTranscript(ctx);
     if (!transcript) return result(ctx, 'FAIL', 'No run-sim transcript was persisted.');
 
-    // When a maintenance run followed, ITS report is the one that must validate
-    // now: the first run's evidence was correct when produced and is recorded
-    // in the transcript, but the tree has legitimately moved since.
-    const phase2RunId = str(rec(transcript.facts).phase2RunId);
-    const runId = phase2RunId || str(transcript.runId) || latestRunId(ctx.cwd, effState(ctx));
+    // The report that must validate NOW is the newest run that produced QA
+    // evidence: the maintenance pass when one ran, else the resolve-run leg,
+    // else the first run. Earlier runs' evidence was correct when produced and
+    // is recorded in the transcript, but the tree has legitimately moved since.
+    const facts = rec(transcript.facts);
+    const phase2RunId = str(facts.phase2RunId);
+    const lastQaRunId = str(facts.lastQaRunId);
+    const lastQaSource = str(facts.lastQaSource) ?? '';
+    const runId = lastQaRunId || phase2RunId || str(transcript.runId) || latestRunId(ctx.cwd, effState(ctx));
     if (!runId) return result(ctx, 'FAIL', 'The simulated run recorded no run id.');
-    const expectation = phase2RunId
-      ? ctx.testCase.runSim?.phase2?.qa
-      : ctx.testCase.runSim?.qa;
+    // The expectation travels with whichever pass produced this report.
+    const legMatch = /^leg-(\d+)$/.exec(lastQaSource);
+    const legSpec = legMatch ? ctx.testCase.runSim?.maintenance?.[Number(legMatch[1]) - 1] : undefined;
+    const expectation = legSpec && legSpec.kind === 'resolve-run'
+      ? legSpec.qa
+      : (runId === phase2RunId ? ctx.testCase.runSim?.phase2?.qa : ctx.testCase.runSim?.qa);
 
     const contract = readVerificationContract(ctx.cwd, runId);
     if (!contract) return result(ctx, 'FAIL', 'VerificationContractV2 is missing or fails its own hash self-check.');
@@ -58,7 +65,38 @@ export const assertion: Assertion = {
 
     const report = readQaReportV2(ctx.cwd, runId);
     if (!report.ok) {
-      return result(ctx, 'FAIL', `The published QA report was rejected by its own validator (${report.code}: ${report.message}).`);
+      // Maintenance legs that ran AFTER this report legitimately moved the
+      // tree — that is what the maintenance phase IS. Tolerate the validator's
+      // drift complaints if and only if the drift is attributable to writes a
+      // LATER leg put through the gate; anything else is real fabrication.
+      const lastQaLeg = /^leg-(\d+)$/.exec(lastQaSource);
+      const lastQaOrdinal = lastQaLeg ? Number(lastQaLeg[1]) : 0;
+      const legWritesAfterQa = (Array.isArray(transcript.writes) ? transcript.writes : [])
+        .map((row) => rec(row))
+        .filter((row) => {
+          if (row.denied === true) return false;
+          const leg = /^leg-(\d+)[.:]?/.exec(String(row.phase ?? ''));
+          return leg !== null && Number(leg[1]) > lastQaOrdinal;
+        });
+      const legPaths = new Set(legWritesAfterQa.map((row) => String(row.path)));
+      const message = String(report.message ?? '');
+      // Arm 1: the validator NAMES the offending paths — every one must be a
+      // later-leg write.
+      const drift = /changed paths outside verification contract: (.+)$/.exec(message);
+      const offending = drift ? drift[1]!.split(',').map((p) => p.trim()).filter(Boolean) : null;
+      const namedDriftTolerated = offending !== null
+        && legPaths.size > 0
+        && offending.every((p) => legPaths.has(p));
+      // Arm 2: the source hash went stale with no path attribution — accept
+      // only when later legs actually wrote source, which is the one honest
+      // explanation for a report that validated when it was produced.
+      const staleTolerated = report.code === 'source-mismatch' && legPaths.size > 0;
+      if (!(namedDriftTolerated || staleTolerated) || !report.report) {
+        return result(ctx, 'FAIL', `The published QA report was rejected by its own validator (${report.code}: ${report.message}).`);
+      }
+    }
+    if (!report.report) {
+      return result(ctx, 'FAIL', `The QA report could not be parsed (${report.ok === false ? `${report.code}: ${report.message}` : 'no report body'}).`);
     }
 
     const byId = new Map(report.report.checks.map((check) => [check.id, check]));

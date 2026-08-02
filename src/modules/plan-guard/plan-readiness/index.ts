@@ -18,6 +18,8 @@ import {
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
 import { profileHasWebUi } from '../../../shared/capabilities';
+import { collapsedLineNumber } from '../../../shared/collapsed-source';
+import { supersedeSkippedDelegationFallback } from '../../../shared/maintenance/fallback';
 import { isKnownStack } from '../../../shared/config';
 import { isPluginAuthoringRoot } from '../../../shared/authoring-root';
 import { detectMode } from '../../../shared/detection';
@@ -51,6 +53,7 @@ import {
   validateI18nCatalogs,
 } from '../../../shared/i18n-enforcement';
 import {
+  isExistingProjectMode,
   isMaterialized,
   isNativeState,
   legacyStatePath,
@@ -122,6 +125,12 @@ import {
 interface ReadinessArgs {
   filePath: string;          // project-relative target path
   content: string;           // write content (Write.content / Edit.new_string)
+  // The bytes THIS write authors (Write content, Edit new_string, patch added
+  // lines) as opposed to `content`, which for Edit/apply_patch is the whole
+  // reconstructed post-write file. The existing-mode collapse scoping keys on
+  // it: pre-existing collapse in the reconstructed file must not deny an
+  // unrelated maintenance edit. Absent → fall back to judging `content`.
+  addedContent?: string;
   // False when the target was inferred from a shell command whose write payload
   // cannot be reconstructed (e.g. `node -e` naming the file). Content-shape
   // gates then judge the on-disk artifact instead of an empty pseudo-payload.
@@ -365,10 +374,34 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       const isCrossLocaleParity = (finding: { id: string; crossLocaleParity?: boolean }): boolean => (
         finding.crossLocaleParity === true
       );
+      // Existing-codebase demotion: STRUCT_ROUTE_MODULE_MISMATCH enforces the
+      // compiled routing architecture, and a repo Traffic One did not create
+      // keeps its own routing conventions — a maintenance edit adding a route
+      // the plan never mentioned must not be hard-denied. It accumulates into
+      // the quality ledger as a warning instead. STRUCT_COLLAPSED_LINE demotes
+      // too UNLESS the collapse is in the bytes this write authors: the
+      // analyzer judges the reconstructed whole file, so a legacy wide line
+      // would otherwise deny every unrelated edit to that file forever
+      // (verified repro: a ~115-char pre-existing JSX row denied a one-token
+      // Edit on a different line, identically on every retry). The other
+      // blocking ids stay: allowlist gaps are ownership and catalog classes
+      // are data validation.
+      const existingCodebase = isExistingProjectMode(state);
+      const writeAuthorsCollapse = existingCodebase
+        && collapsedLineNumber(
+          filePath,
+          args.addedContent !== undefined ? args.addedContent : content,
+        ) !== null;
+      const demotedOnExisting = (finding: { id: string }): boolean => {
+        if (!existingCodebase) return false;
+        if (finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH') return true;
+        return finding.id === 'STRUCT_COLLAPSED_LINE' && !writeAuthorsCollapse;
+      };
       let blocking = allFindings.filter((finding) => (
         finding.severity === 'error'
         && HOT_WRITE_BLOCKING_IDS.has(finding.id)
         && !isCrossLocaleParity(finding)
+        && !demotedOnExisting(finding)
       ));
       // `STRUCT_COLLAPSED_LINE` is NOT waved through when a formatter could fix
       // it. That branch (v1.0.44) computed the formatted text, used it only as a
@@ -409,8 +442,10 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         // one fix-cycle document, and the completion structure scan still holds
         // the bar — batching changes the delivery, never the standard.
         const accumulated = allFindings
-          .filter((finding) => !HOT_WRITE_BLOCKING_IDS.has(finding.id) || isCrossLocaleParity(finding))
-          .map((finding) => (isCrossLocaleParity(finding)
+          .filter((finding) => !HOT_WRITE_BLOCKING_IDS.has(finding.id)
+            || isCrossLocaleParity(finding)
+            || demotedOnExisting(finding))
+          .map((finding) => (isCrossLocaleParity(finding) || demotedOnExisting(finding)
             ? { ...finding, severity: 'warning' as const }
             : finding));
         appendQualityFindings(projectRoot, currentRunId, writerRole || 'main-agent', accumulated);
@@ -498,6 +533,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
             isNative: isNativeState(state),
             enforceI18n: state.mode === 'new-project'
               || projectDeclaresI18nRuntime(projectRoot, compiled),
+            existingMode: isExistingProjectMode(state),
           });
           // Full queue checks: metadata (stable ids, depends edges, parseable
           // files, unit-kind heuristics) AND the file-vs-assignment scope
@@ -571,6 +607,11 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
                 compiled,
                 verification.contractHash,
               );
+              // A SKIPPED delegation's pending-fallback pin is superseded by
+              // the freshly compiled contracts — without this the bounded
+              // 2-file hashes veto every envelope this same accept path is
+              // about to publish (see supersedeSkippedDelegationFallback).
+              supersedeSkippedDelegationFallback(projectRoot, runId, compiled.contractHash);
               const settlement = writeRunSettlement(projectRoot, runId, {
                 status: 'active',
                 incompleteChecks: ['verification-not-started'],

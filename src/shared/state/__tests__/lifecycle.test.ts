@@ -4,12 +4,32 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { isMaintenancePhase, maintenanceLifecycle, markMaintenance, projectPhase } from '../lifecycle';
+import { isExistingProjectMode, isMaintenancePhase, maintenanceLifecycle, markMaintenance, projectPhase } from '../lifecycle';
 import { readState, statePath } from '../normalize';
+
+test('isExistingProjectMode keys on the raw mode only, never on lifecycle', () => {
+  assert.equal(isExistingProjectMode({ mode: 'existing-codebase' }), true);
+  assert.equal(isExistingProjectMode({ mode: 'existing-with-supabase' }), true);
+  assert.equal(isExistingProjectMode({ mode: ' Existing-Codebase ' }), true);
+  assert.equal(isExistingProjectMode({ mode: 'new-project' }), false);
+  assert.equal(isExistingProjectMode({}), false);
+  assert.equal(isExistingProjectMode(null), false);
+  assert.equal(isExistingProjectMode({ mode: 42 }), false);
+  // A completed new-project build is maintenance PHASE but not an existing
+  // codebase — its architecture gates keep applying.
+  assert.equal(
+    isExistingProjectMode({ mode: 'new-project', lifecycle: { phase: 'maintenance' } }),
+    false,
+  );
+});
 
 test('projectPhase infers maintenance for any existing-* mode and building for new-project', () => {
   assert.equal(projectPhase({ mode: 'existing-codebase' }), 'maintenance');
   assert.equal(projectPhase({ mode: 'existing-with-supabase' }), 'maintenance');
+  // Hand-edited casing/whitespace tolerance — and the SAME normalization the
+  // architecture-gate stand-down (isExistingProjectMode) uses, so one state
+  // can never read as existing to the gates and building to phase inference.
+  assert.equal(projectPhase({ mode: ' Existing-Codebase ' }), 'maintenance');
   assert.equal(projectPhase({ mode: 'new-project' }), 'building');
   assert.equal(projectPhase({}), 'building');
   // explicit mode argument takes precedence over state.mode for inference

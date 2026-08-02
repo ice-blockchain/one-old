@@ -15,6 +15,7 @@ import {
   formatFileWithPrettier,
   resolveProjectPrettier,
 } from '../../../shared/prettier-fix';
+import { isExistingProjectMode } from '../../../shared/state';
 import { consolidateQualityFindings } from '../../../shared/state/quality-findings';
 import {
   readVerificationContract,
@@ -194,6 +195,7 @@ export function digestCompletionGates(ctx: {
           architecture,
           'senior-frontend',
           state.mode === 'new-project',
+          isExistingProjectMode(state),
         );
         const errors = report.findings.filter((finding) => finding.severity === 'error');
         if (errors.length > 0) {
@@ -519,6 +521,7 @@ export function digestCompletionGates(ctx: {
           architecture,
           undefined,
           state.mode === 'new-project',
+          isExistingProjectMode(state),
         );
         const errors = report.findings.filter((finding) => finding.severity === 'error');
         if (errors.length > 0) {

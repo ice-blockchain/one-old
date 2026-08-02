@@ -14,7 +14,7 @@ import {
   readCompiledArchitecture,
   readRuntimeAssignments,
 } from '../../shared/architecture-contract';
-import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
+import { readActiveRunBootstrap, roleSkippableWithoutAssignment } from '../../shared/run-bootstrap-policy';
 import { readRunSettlement } from '../../shared/run-settlement';
 import { readVerificationContract } from '../../shared/verification-contract';
 import type { Assertion } from '../core/types';
@@ -79,12 +79,21 @@ export const assertion: Assertion = {
     // Every eligible role must have a resolvable bootstrap envelope: an
     // implementer that cannot read its work unit cannot legally write anything,
     // and that failure otherwise only surfaces much later as a confusing deny.
+    // Exception, matching the runtime's own preflight: a capability role the
+    // compiled contract assigns NOTHING is skippable (a supabase-backed repo
+    // whose plan is frontend-only lists senior-backend in the profile but
+    // compiles it no assignment — demanding its envelope denied PLAN_READY
+    // forever, observed run 1785623723274). senior-tester is never skippable.
     const roles = architecture.profile.roles;
-    const withoutBootstrap = roles.filter((role) => !readActiveRunBootstrap(ctx.cwd, runId, role));
+    const assignedRoles = new Set(assignments.assignments.map((entry) => entry.role));
+    const required = roles.filter((role) => (
+      !roleSkippableWithoutAssignment(role) || assignedRoles.has(role)
+    ));
+    const withoutBootstrap = required.filter((role) => !readActiveRunBootstrap(ctx.cwd, runId, role));
     if (withoutBootstrap.length > 0) {
-      return result(ctx, 'FAIL', `No active bootstrap envelope for [${withoutBootstrap.join(', ')}] (roles in the compiled profile: [${roles.join(', ')}]).`, {
-        expected: roles,
-        actual: roles.filter((role) => !withoutBootstrap.includes(role)),
+      return result(ctx, 'FAIL', `No active bootstrap envelope for [${withoutBootstrap.join(', ')}] (roles in the compiled profile: [${roles.join(', ')}]; assignment-less skippable roles excluded).`, {
+        expected: required,
+        actual: required.filter((role) => !withoutBootstrap.includes(role)),
       });
     }
 

@@ -69,3 +69,27 @@ export interface ScriptedWrite {
    */
   denyMatch?: string;
 }
+
+// One 'prompt' maintenance leg as it actually routed. The assertion reads these
+// instead of re-deriving, so a months-old transcript still explains itself.
+export interface MaintenanceLegFact {
+  ordinal: number;
+  kind: 'prompt' | 'open-run' | 'resolve-run';
+  prompt?: string;
+  // What the case pinned vs what the real router did.
+  expectedRouting?: string;
+  routing?: string;
+  expectedTier?: string;
+  tier?: string;
+  confidence?: string;
+  signals?: string[];
+  runIdBefore: string;
+  runIdAfter: string;
+  rotated: boolean;
+  // model-policy.json existed for runIdAfter when the leg finished — pins the
+  // beginFreshMaintenanceRun freeze (observed 11c: a missing policy denied the
+  // first followup to a retained implementer thread).
+  modelPolicyFrozen?: boolean;
+  // resolve-run: the canonical settlement status after settling.
+  settlementStatus?: string;
+}

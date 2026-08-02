@@ -36,7 +36,9 @@ import {
   ensureRunBootstrap,
   pendingMaintenanceDebtSources,
   readActiveRunBootstrap,
+  roleRequiresCompiledAssignment,
 } from '../../shared/run-bootstrap-policy';
+import { readRuntimeAssignments } from '../../shared/architecture-contract';
 import { readRunHostCapability } from '../../shared/host/capabilities';
 
 import {
@@ -318,6 +320,19 @@ export function agentModelGate(ctx: Ctx): HookResult {
           : {}),
       });
       if (!envelope) {
+        // Since PLAN_READY may now be accepted with a capability role the
+        // compiled contract assigns nothing (roleSkippableWithoutAssignment),
+        // spawning that role reaches this branch — and the generic "repair and
+        // retry" remedy can never succeed there, so a literal-minded
+        // orchestrator retried forever. Name the real cause and the real exit.
+        const publishedAssignments = readRuntimeAssignments(cwd, spawnRunId);
+        if (roleRequiresCompiledAssignment(role)
+          && publishedAssignments
+          && !publishedAssignments.assignments.some((entry) => entry.role === role)) {
+          return deny(
+            `traffic-one — spawn blocked: \`${role}\` has NO compiled assignment in run ${spawnRunId} — the plan gives this role nothing to build, so it is not part of this run. Do not spawn or retry it; proceed with the assigned roles (${publishedAssignments.assignments.map((entry) => entry.role).join(', ') || 'none'}). If this role genuinely has work, replan: change ArchitectureInputV1 so runtime compiles an assignment for it.`,
+          );
+        }
         return deny(
           `traffic-one — spawn blocked: parent could not resolve and atomically publish the role/rule/skill bootstrap `
           + `for ${role} in run ${spawnRunId}. No child was started. Repair the parent materialization/policy and retry.`,

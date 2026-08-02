@@ -13,6 +13,10 @@ import * as path from 'path';
 import { planReadinessViolations } from '../plan-readiness';
 import { collapsedProductSourceFile } from '../plan-readiness/checks';
 import {
+  architectureInputPath,
+  compileArchitectureForRun,
+} from '../../../shared/architecture-contract';
+import {
   appendQualityFindings,
   consolidateQualityFindings,
   readQualityFindings,
@@ -291,6 +295,94 @@ test('completion digest blocks source collapsed below the old 500-char bar', () 
       block: names,
     });
     assert.deepEqual(denied, ['frontend-collapse-gate']);
+  });
+});
+
+// Existing-codebase collapse scoping at the WRITE gate: the analyzer judges
+// the reconstructed whole file, so on existing modes collapse blocks only when
+// the collapse is in the bytes this write authors (addedContent); pre-existing
+// collapse accumulates into the quality ledger instead of denying forever.
+test('existing mode: hot collapse blocks authored bytes only, legacy collapse banks as a warning', () => {
+  withProject((dir) => {
+    const legacyFile = [
+      "import { useState } from 'react';",
+      'export function Home() {',
+      '  const [n] = useState(1);',
+      COLLAPSED_TSX.trim(),
+      '  return null;',
+      '}',
+      '',
+    ].join('\n');
+    const existingState = { ...DEFAULT_STATE, mode: 'existing-codebase', currentRunId: 'R' };
+    // Unrelated edit near legacy collapse → allowed, banked as a warning.
+    assert.deepEqual(planReadinessViolations({
+      ...hotWriteArgs(dir, legacyFile),
+      state: existingState,
+      addedContent: 'useState(2)',
+    }), []);
+    const banked = readQualityFindings(dir, 'R');
+    assert.ok(
+      banked.some((entry) => entry.id === 'STRUCT_COLLAPSED_LINE' && entry.severity === 'warning'),
+      `legacy collapse must reach the ledger, got: ${JSON.stringify(banked.map((entry) => entry.id))}`,
+    );
+    // The same write AUTHORING the collapse still denies on existing mode.
+    assert.deepEqual(planReadinessViolations({
+      ...hotWriteArgs(dir, legacyFile),
+      state: existingState,
+      addedContent: COLLAPSED_TSX,
+    }), ['frontend-structure-hot-gate']);
+    // No addedContent (plain Write): content IS the authored bytes — denied.
+    assert.deepEqual(planReadinessViolations({
+      ...hotWriteArgs(dir, COLLAPSED_TSX),
+      state: existingState,
+    }), ['frontend-structure-hot-gate']);
+  });
+});
+
+// Existing-codebase route demotion: a route the compiled contract cannot see
+// must not hard-deny a maintenance write; it accumulates as a warning. The
+// identical write on a new project keeps the deny.
+test('existing mode: route/module mismatch is ledger-only; new-project keeps the deny', () => {
+  withProject((dir) => {
+    const input = {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    };
+    const inputPath = architectureInputPath(dir, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify(input), 'utf8');
+    compileArchitectureForRun(dir, 'R', DEFAULT_STATE);
+    const appContent = [
+      'import { createBrowserRouter, RouterProvider } from "react-router-dom";',
+      'import { WrongHome } from "./components/WrongHome";',
+      'const router = createBrowserRouter([{ path: "/", element: <WrongHome /> }]);',
+      'export function App() { return <RouterProvider router={router} />; }',
+      '',
+    ].join('\n');
+    const args = {
+      filePath: 'apps/web/src/App.tsx',
+      content: appContent,
+      projectRoot: dir,
+      writingFeatureSource: true,
+      block: names,
+    };
+    assert.deepEqual(planReadinessViolations({
+      ...args,
+      state: { ...DEFAULT_STATE, mode: 'existing-codebase', currentRunId: 'R' },
+    }), []);
+    const banked = readQualityFindings(dir, 'R');
+    assert.ok(
+      banked.some((entry) => entry.id === 'STRUCT_ROUTE_MODULE_MISMATCH' && entry.severity === 'warning'),
+      `demoted mismatch must reach the ledger, got: ${JSON.stringify(banked.map((entry) => entry.id))}`,
+    );
+    assert.deepEqual(planReadinessViolations({
+      ...args,
+      state: { ...DEFAULT_STATE, currentRunId: 'R' },
+    }), ['frontend-structure-hot-gate']);
   });
 });
 

@@ -36,7 +36,7 @@ import {
   analyzeI18nSourceText,
   I18N_SOURCE_RE,
 } from '../../../shared/i18n-enforcement';
-import { planStaticViolations } from '../plan-static';
+import { assetExtensionMismatchViolations, planStaticViolations } from '../plan-static';
 import { analyzeStructureTextAgainstContract } from '../react-structure';
 
 import { roleContract } from './contracts';
@@ -55,6 +55,15 @@ interface SweepOptions {
   isNative: boolean;
   /** Mirror of the hot path's `enforceI18n` (new-project or declared runtime). */
   enforceI18n: boolean;
+  /**
+   * Mirror of the write gates' existing-codebase stand-down (existing-* modes):
+   * the sweep must judge outputs by the gates the implementer will ACTUALLY
+   * face, so where those gates stand down — the prescribed-stack static checks
+   * (asset integrity excepted), route/module mismatch, lexical i18n copy —
+   * their findings are not contract conflicts either. Ownership/scope findings
+   * keep counting in every mode.
+   */
+  existingMode?: boolean;
   /** Test seam, same shape as validateI18nCatalogs' contentOverrides. */
   contentOverrides?: Readonly<Record<string, string>>;
 }
@@ -113,8 +122,14 @@ export function contractSelfConflicts(
 
   for (const candidate of candidates) {
     // The static plan gate runs on every write target; its rules self-select by
-    // path/extension exactly as they do live.
-    planStaticViolations(candidate.path, candidate.content, options.isNative,
+    // path/extension exactly as they do live. On existing-* modes the write
+    // gate runs only the asset-integrity check, so the sweep replays only that.
+    const staticGate = options.existingMode
+      ? assetExtensionMismatchViolations
+      : (path_: string, content: string, blockFn: (name: string, fallback: string) => string) => (
+        planStaticViolations(path_, content, options.isNative, blockFn)
+      );
+    staticGate(candidate.path, candidate.content,
       (name, fallback) => {
         add(candidate.path, name, fallback);
         return name;
@@ -135,9 +150,14 @@ export function contractSelfConflicts(
       );
       for (const finding of structural) {
         if (finding.severity !== 'error') continue;
+        // The hot write path demotes route/module mismatch to the quality
+        // ledger on existing-* modes, so it cannot deadlock an implementer
+        // there and is not a contract conflict.
+        if (options.existingMode && finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH') continue;
         add(finding.file, finding.id, finding.message);
       }
     }
+    if (options.existingMode) continue;
     if (options.enforceI18n && I18N_SOURCE_RE.test(candidate.path)) {
       const source = analyzeI18nSourceText(
         candidate.path,

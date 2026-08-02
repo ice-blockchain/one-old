@@ -8,13 +8,21 @@ import * as path from 'path';
 import {
   captureMaintenanceFallbackBaseline,
   finalizePaidMaintenanceFallback,
+  supersedeSkippedDelegationFallback,
   workUnitAllowlistHash,
 } from '../maintenance/fallback';
+import { fallbackContractMatches } from '../run-bootstrap-policy/envelope-io';
 import { paidFallbackCompletionFromMaintenance } from '../maintenance/fallback-proof';
 import { maintenanceContractPreflight, recordMaintenanceDelegationOutcome } from '../../runners/opencode/maintenance';
 import { isMaintenanceTerminal } from '../maintenance/terminal';
 import { ensureRunBootstrap, quickFixDigestPath } from '../run-bootstrap-policy';
 import { readRunSettlement, writeRunSettlement } from '../run-settlement';
+import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+} from '../architecture-contract';
+import { compileVerificationContract } from '../verification-contract';
 
 const RUN_ID = 'paid-fallback';
 const SOURCE = 'src/value.ts';
@@ -114,6 +122,97 @@ function writeImplementedDigest(file: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, '# quick-fix\n\nverdict: IMPLEMENTED\n');
 }
+
+// The observed no-git existing-codebase deadlock: a delegation that never ran
+// left `fallback-pending` pinned to the bounded unit's hashes, and every
+// future work unit for the role — including the architect's freshly compiled
+// contracts — was vetoed by fallbackContractMatches. Superseding is legal only
+// for the skipped shape (nothing delegated, nothing touched); a delegation
+// that RAN and failed keeps its pending fallback and its proof chain.
+test('a skipped delegation fallback is superseded by compiled contracts; a failed one is not', () => {
+  withFallbackProject(({ cwd, markerPath, contractHash, allowlistHash }) => {
+    // As written by the harness the delegation FAILED — supersede refuses.
+    assert.equal(supersedeSkippedDelegationFallback(cwd, RUN_ID, 'arch-hash'), false);
+
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    fs.writeFileSync(markerPath, JSON.stringify({
+      ...marker,
+      outcome: 'skipped',
+      action: 'skipped',
+      failureKind: 'skipped',
+      touched: [],
+      error: 'No git HEAD to sandbox the delegation; run a normal subagent',
+    }));
+    assert.equal(supersedeSkippedDelegationFallback(cwd, RUN_ID, 'arch-hash'), true);
+
+    const after = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    assert.equal(after.overallOutcome, 'superseded');
+    assert.equal(after.fallbackAllowed, false);
+    assert.equal(after.supersededByArchitectureHash, 'arch-hash');
+    // Deliberately NON-terminal: a terminal outcome mid-run made per-prompt
+    // reconciliation read the re-planned run as a completed maintenance run.
+    assert.equal(isMaintenanceTerminal(after), false);
+
+    // The settlement pin is gone: no fallback state, no pinned hashes.
+    const settlement = readRunSettlement(cwd, RUN_ID);
+    assert.ok(settlement);
+    assert.equal(settlement!.fallback, undefined);
+    assert.equal(settlement!.workUnitContractHash, undefined);
+
+    // The per-role work-unit veto is lifted: a DIFFERENT contract now passes.
+    const supersededUnit = {
+      contractHash: `not-${contractHash}`,
+      allowlist: ['src/other.ts'],
+      allowlistExclude: [],
+    } as unknown as Parameters<typeof fallbackContractMatches>[3];
+    assert.equal(fallbackContractMatches(cwd, RUN_ID, marker.role, supersededUnit), true);
+    assert.notEqual(allowlistHash, '');
+
+    // Idempotent: a second call has nothing pending to supersede.
+    assert.equal(supersedeSkippedDelegationFallback(cwd, RUN_ID, 'arch-hash'), false);
+  }, { role: 'senior-frontend' });
+});
+
+// The ordering guarantee the PLAN_READY accept path relies on: while the
+// skipped-delegation pin is pending, publishing a COMPILED envelope for the
+// pinned role fails (fallbackContractMatches veto) — the supersede transition
+// must run before ensureRunPolicyBootstraps, or run 1785623723274's deadlock
+// silently returns with every unit test still green.
+test('a pending skipped-delegation pin vetoes compiled envelopes until superseded', () => {
+  withFallbackProject(({ cwd, markerPath }) => {
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    fs.writeFileSync(markerPath, JSON.stringify({
+      ...marker, outcome: 'skipped', action: 'skipped', touched: [],
+    }));
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const inputPath = architectureInputPath(cwd, RUN_ID);
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    }));
+    const architecture = compileArchitectureForRun(cwd, RUN_ID, state);
+    const verification = compileVerificationContract(cwd, RUN_ID, state, architecture, {
+      changedPaths: [],
+    });
+    publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const publish = () => ensureRunBootstrap(cwd, RUN_ID, 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'test-parent',
+      modelPolicyId: 'test-policy',
+    });
+    assert.equal(publish(), null, 'the stale bounded pin must veto the compiled envelope');
+    assert.equal(supersedeSkippedDelegationFallback(cwd, RUN_ID, architecture.contractHash), true);
+    const envelope = publish();
+    assert.ok(envelope, 'after supersede the compiled envelope publishes');
+    assert.equal(envelope!.workUnit.unitId, 'senior-frontend:bootstrap');
+  }, { role: 'senior-frontend' });
+});
 
 test('paid fallback finalizer requires a source delta and rejects wrong role/hash evidence', () => {
   withFallbackProject(({ cwd, markerPath, digestPath }) => {

@@ -7,7 +7,7 @@
 // PLAN_READY transaction, so nothing here may name one — the driver reads them
 // back from the published assignments instead.
 
-import type { Case } from '../../core/types';
+import type { Case, MaintenanceTriageLeg } from '../../core/types';
 
 // The user briefs these shapes simulate. Kept verbatim: the whole point is that
 // a real request walks the chain, not a synthetic one shaped to pass.
@@ -42,6 +42,8 @@ export const BRIEF_BROCHURE =
 
 export const BRIEF_BROCHURE_MAINTENANCE =
   'add a new page for our team with short bios';
+export const BRIEF_EXISTING_WEB =
+  'add a reviews section with a customer reviews listing to my app';
 
 // The learning-platform architecture, reused by every full-stack web shape. The
 // COMPILED paths differ per framework — that is the point — but the semantics
@@ -92,6 +94,21 @@ const API_ARCHITECTURE = {
   ],
 };
 
+const WEB_QA = {
+  mode: 'browser' as const,
+  expectChecks: {
+    'stack-build': 'passed' as const,
+    'playwright-local': 'passed' as const,
+    'dom-assertions': 'passed' as const,
+    actions: 'passed' as const,
+    routing: 'passed' as const,
+    hydration: 'passed' as const,
+    'console-errors': 'passed' as const,
+    'network-errors': 'passed' as const,
+    'responsive-screenshots': 'passed' as const,
+  },
+};
+
 // The same brief against a repository that already exists. It plans only what
 // is NEW: the existing repo already has its own store, and a plan that declared
 // one would compile to the same path and overwrite working code that the rest
@@ -107,6 +124,111 @@ const EXISTING_API_ARCHITECTURE = {
   ],
 };
 
+
+// The reviews delta against a WEB repository that already exists: a flat-src
+// React/Vite SPA that never met Traffic One. Plans only what is NEW — the
+// fixture's App/main stay untouched. The feature module matters twice: it is
+// where the section's logic naturally lives, and its compiled directory is
+// what puts the repo-convention extra writes below inside the frontend's
+// runtime allowlist.
+const EXISTING_WEB_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [{ id: 'reviews-route', path: '/reviews', moduleId: 'reviews' }],
+  modules: [
+    { id: 'reviews', name: 'Reviews', kind: 'page' as const },
+    { id: 'review-card', name: 'Review Card', kind: 'component' as const },
+    { id: 'reviews-feature', name: 'Reviews', kind: 'feature' as const },
+  ],
+};
+
+// Writes the repo's OWN conventions produce — each one a deny under the
+// prescribed-stack static checks on a new project (vanilla-extract import,
+// `.css.ts` import, default export in features/, `: any`, static inline
+// style). In existing-codebase mode every one must be ALLOWED: that is the
+// stand-down this case exists to prove, on the real composed gate rather than
+// the unit-tested guard.
+const EXISTING_WEB_EXTRA_WRITES = [
+  {
+    role: 'senior-frontend',
+    path: 'src/features/reviews/section.css.ts',
+    content: [
+      "import { style } from '@vanilla-extract/css';",
+      '',
+      'export const reviewsSection = style({',
+      "  display: 'grid',",
+      "  gap: '1rem',",
+      '});',
+      '',
+    ].join('\n'),
+  },
+  {
+    role: 'senior-frontend',
+    path: 'src/features/reviews/ReviewsPanel.tsx',
+    content: [
+      "import { reviewsSection } from './section.css.ts';",
+      '',
+      'export default function ReviewsPanel({ heading }: { heading: any }) {',
+      '  return (',
+      "    <section className={reviewsSection} style={{ marginTop: '2rem' }}>",
+      '      <h2>{heading}</h2>',
+      '    </section>',
+      '  );',
+      '}',
+      '',
+    ].join('\n'),
+  },
+];
+
+// The news delta the open-run leg plans on the existing web repo: everything
+// the first run built stays, one new page + card arrives.
+const EXISTING_WEB_NEWS_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [
+    { id: 'reviews-route', path: '/reviews', moduleId: 'reviews' },
+    { id: 'news-route', path: '/news', moduleId: 'news' },
+  ],
+  modules: [
+    { id: 'reviews', name: 'Reviews', kind: 'page' as const },
+    { id: 'review-card', name: 'Review Card', kind: 'component' as const },
+    { id: 'reviews-feature', name: 'Reviews', kind: 'feature' as const },
+    { id: 'news', name: 'News', kind: 'page' as const },
+    { id: 'news-card', name: 'News Card', kind: 'component' as const },
+  ],
+};
+
+// The quick-fix worker's bounded edit: the SAME repo-convention shape the
+// extra-writes row landed (vanilla-extract import, default export, `any`,
+// static inline style) with the "typo" corrected — in existing mode every one
+// of those conventions must survive the trivial tier too, not just the
+// orchestrated run.
+const EXISTING_WEB_QUICK_FIX_PANEL = [
+  "import { reviewsSection } from './section.css.ts';",
+  '',
+  'export default function ReviewsPanel({ heading }: { heading: any }) {',
+  '  return (',
+  "    <section className={reviewsSection} style={{ marginTop: '2rem' }}>",
+  '      <h2>{heading} — Customer Reviews</h2>',
+  '    </section>',
+  '  );',
+  '}',
+  '',
+].join('\n');
+
+// The small tier's bounded senior-frontend edit — one more variation of the
+// same panel, written through the `<role>:bounded-maintenance` WorkUnit.
+const EXISTING_WEB_SMALL_TIER_PANEL = [
+  "import { reviewsSection } from './section.css.ts';",
+  '',
+  'export default function ReviewsPanel({ heading }: { heading: any }) {',
+  '  return (',
+  "    <section className={reviewsSection} style={{ marginTop: '2rem' }}>",
+  '      <h2>{heading}</h2>',
+  '      <p>What our customers say about us.</p>',
+  '    </section>',
+  '  );',
+  '}',
+  '',
+].join('\n');
 
 // The api maintenance delta: one new endpoint alongside what exists.
 const API_MAINTENANCE_ARCHITECTURE = {
@@ -177,21 +299,6 @@ const AGENCY_MAINTENANCE_ARCHITECTURE = {
   ],
 };
 
-const WEB_QA = {
-  mode: 'browser' as const,
-  expectChecks: {
-    'stack-build': 'passed' as const,
-    'playwright-local': 'passed' as const,
-    'dom-assertions': 'passed' as const,
-    actions: 'passed' as const,
-    routing: 'passed' as const,
-    hydration: 'passed' as const,
-    'console-errors': 'passed' as const,
-    'network-errors': 'passed' as const,
-    'responsive-screenshots': 'passed' as const,
-  },
-};
-
 const WEB_ASSERTIONS = [
   { id: 'state-matches-selection' },
   { id: 'onboarding-complete' },
@@ -199,6 +306,64 @@ const WEB_ASSERTIONS = [
   { id: 'run-sim-plan-ready-artifacts' },
   { id: 'run-sim-qa-evidence' },
   { id: 'run-sim-settlement' },
+];
+
+// Every post-build follow-up shape the existing-web flow must route correctly.
+// Ordering is load-bearing: leg 4 pins that a FRESH quick-fix claim suppresses
+// the next edit prompt's triage (continuation-first — the parent messages the
+// live worker instead of minting a run), leg 5's rotation releases it, and the
+// resolved run in leg 7 is what lets leg 8 route again.
+const EXISTING_WEB_MAINTENANCE_LEGS: MaintenanceTriageLeg[] = [
+  // Runtime control stays with the parent: no directive, no run, no worker.
+  { kind: 'prompt', prompt: 'restart the dev server', expectRouting: 'none' },
+  // Chat is not an edit request.
+  { kind: 'prompt', prompt: 'thanks, looks great!', expectRouting: 'none' },
+  // The trivial tier, end to end: rotation, frozen model policy, parent
+  // fail-closed probe, bounded WorkUnit, out-of-scope deny, IMPLEMENTED digest.
+  {
+    kind: 'prompt',
+    prompt: 'fix the typo in the reviews section heading',
+    expectRouting: 'triage',
+    expectTier: 'trivial',
+    quickFix: {
+      files: [{ path: 'src/features/reviews/ReviewsPanel.tsx', content: EXISTING_WEB_QUICK_FIX_PANEL }],
+      outOfScope: { path: 'src/main.tsx', content: '// quick-fix must not touch this file\n' },
+    },
+  },
+  // The quick-fix claim is still fresh: triage is deliberately suppressed so
+  // the parent continues the LIVE worker instead of minting a second run.
+  {
+    kind: 'prompt',
+    prompt: 'change the reviews heading copy to Customer Stories',
+    expectRouting: 'none',
+    expectTier: 'trivial',
+  },
+  // The complex tier re-enters the orchestrator: a fresh single-feature run
+  // (this rotation is also what releases the quick-fix claim above).
+  { kind: 'open-run', brief: 'add new section news with listing and news info', architecture: EXISTING_WEB_NEWS_ARCHITECTURE },
+  // While that run is nonterminal (reviewer recorded findings), an edit prompt
+  // must preserve it — no rotation, no greenfield flow, no quick-fix.
+  {
+    kind: 'prompt',
+    prompt: 'fix the news card spacing on the news page',
+    expectRouting: 'unresolved',
+    expectTier: 'trivial',
+  },
+  { kind: 'resolve-run', qa: WEB_QA },
+  // A settled run releases routing again; the ambiguous prompt lands on the
+  // small tier (never trivial), and the directly-owning role writes through a
+  // `senior-frontend:bounded-maintenance` WorkUnit — the seam the small tier
+  // and the paid OpenCode-fallback worker both depend on.
+  {
+    kind: 'prompt',
+    prompt: 'make the reviews panel look nicer',
+    expectRouting: 'triage',
+    expectTier: 'small',
+    boundedRole: {
+      role: 'senior-frontend',
+      files: [{ path: 'src/features/reviews/ReviewsPanel.tsx', content: EXISTING_WEB_SMALL_TIER_PANEL }],
+    },
+  },
 ];
 
 export const RUN_SIM_CASES: Case[] = [
@@ -487,6 +652,50 @@ export const RUN_SIM_CASES: Case[] = [
           },
         },
       },
+      // The trivial tier on a backend-only repo: same bounded quick-fix
+      // machinery, Go feature source instead of web.
+      maintenance: [
+        {
+          kind: 'prompt',
+          prompt: 'fix the typo in the products store comment',
+          expectRouting: 'triage',
+          expectTier: 'trivial',
+          quickFix: {
+            files: [{
+              path: 'internal/store.go',
+              content: [
+                'package internal',
+                '',
+                '// Product is one catalogue entry.',
+                'type Product struct {',
+                '\tID    string',
+                '\tSlug  string',
+                '\tTitle string',
+                '}',
+                '',
+                '// Store holds the in-memory product catalogue.',
+                'type Store struct {',
+                '\tproducts []Product',
+                '}',
+                '',
+                '// NewStore builds a store seeded with the demo catalogue.',
+                'func NewStore() *Store {',
+                '\treturn &Store{products: []Product{',
+                '\t\t{ID: "p-1", Slug: "desk-lamp", Title: "Desk Lamp"},',
+                '\t}}',
+                '}',
+                '',
+                '// Products returns every product in the catalogue.',
+                'func (s *Store) Products() []Product {',
+                '\treturn s.products',
+                '}',
+                '',
+              ].join('\n'),
+            }],
+            outOfScope: { path: 'main.go', content: '// quick-fix must not touch this file\n' },
+          },
+        },
+      ],
     },
     assertions: [
       { id: 'state-matches-selection' },
@@ -496,8 +705,117 @@ export const RUN_SIM_CASES: Case[] = [
       { id: 'run-sim-qa-evidence' },
       { id: 'run-sim-settlement' },
       { id: 'run-sim-existing-mode' },
+      { id: 'run-sim-maintenance-triage' },
     ],
-    notes: 'Existing-codebase guard: no scaffolded config is written into a repo Traffic One did not create, and integration findings are advisory.',
+    notes: 'Existing-codebase guard: no scaffolded config is written into a repo Traffic One did not create, integration findings are advisory, and the trivial tier routes a bounded quick-fix on Go source.',
+  },
+  {
+    id: 'sim-existing-supabase-web',
+    category: 'run-sim',
+    layer: 'run-sim',
+    // The SECOND existing mode. `existing-with-supabase` must behave exactly
+    // like `existing-codebase` everywhere the `existing-*` family is the
+    // predicate: maintenance from detection, architecture stand-down, no
+    // scaffolded configs, and post-build triage routing. A regression that
+    // keys any of those on the literal `existing-codebase` string turns this
+    // case red while the sibling stays green.
+    fixture: 'existing-react-vite',
+    preSeed: {
+      mode: 'existing-with-supabase',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+    },
+    runSim: {
+      brief: BRIEF_EXISTING_WEB,
+      architecture: EXISTING_WEB_ARCHITECTURE,
+      qa: WEB_QA,
+      maintenance: [
+        {
+          kind: 'prompt',
+          prompt: 'fix the typo in the home page heading',
+          expectRouting: 'triage',
+          expectTier: 'trivial',
+          quickFix: {
+            files: [{
+              // The fixture's own pre-existing file, edited in place.
+              path: 'src/App.tsx',
+              content: [
+                "import React from 'react';",
+                '',
+                '// Minimal pre-existing app. Test cases edit this file (e.g. rename the button',
+                '// label, change the heading) or add components/pages alongside it.',
+                'export function App(): React.ReactElement {',
+                '  return (',
+                '    <main>',
+                '      <h1>Acme — Home</h1>',
+                '      <p>An existing React + Vite application.</p>',
+                '      <button type="button">Submit</button>',
+                '    </main>',
+                '  );',
+                '}',
+                '',
+              ].join('\n'),
+            }],
+            outOfScope: { path: 'src/main.tsx', content: '// quick-fix must not touch this file\n' },
+          },
+        },
+      ],
+    },
+    assertions: [
+      ...WEB_ASSERTIONS,
+      { id: 'run-sim-existing-mode' },
+      { id: 'run-sim-maintenance-triage' },
+    ],
+    notes: 'existing-with-supabase parity: the second existing-* mode gets the same stand-down, settlement, and triage behavior as existing-codebase.',
+  },
+  {
+    id: 'sim-existing-react-vite-web',
+    category: 'run-sim',
+    layer: 'run-sim',
+    // A real flat-src React/Vite SPA that never met Traffic One — the web
+    // counterpart of the existing-go-api guard, and the shape the observed
+    // false deny came from (an existing vanilla-extract repo refused its own
+    // `.css.ts` styling).
+    fixture: 'existing-react-vite',
+    preSeed: {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+    },
+    runSim: {
+      brief: BRIEF_EXISTING_WEB,
+      architecture: EXISTING_WEB_ARCHITECTURE,
+      // The rows the prescribed-stack checks would deny on a new project. The
+      // run must complete WITH them on disk: allowed at write time, and still
+      // standing through the completion gates and settlement.
+      extraWrites: EXISTING_WEB_EXTRA_WRITES,
+      qa: WEB_QA,
+      // The ownership/sidecar gates must KEEP denying while the stack opinions
+      // stand down — the inverse pair of the extraWrites proof above.
+      negativeGates: true,
+      // Then every post-build follow-up shape, routed through the real
+      // prompt-boundary machinery.
+      maintenance: EXISTING_WEB_MAINTENANCE_LEGS,
+    },
+    assertions: [
+      ...WEB_ASSERTIONS,
+      { id: 'run-sim-existing-mode' },
+      { id: 'run-sim-negative-gates' },
+      { id: 'run-sim-maintenance-triage' },
+    ],
+    notes: 'Existing-codebase stand-down on a WEB repo: off-stack styling/exports are allowed through the real plan-write gate, ownership gates still deny, and the full maintenance triage flow (trivial/quick-fix, claim suppression, unresolved-run preservation, small/bounded-role) routes correctly.',
   },
   {
     id: 'sim-new-laravel-inertia',

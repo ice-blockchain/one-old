@@ -1898,6 +1898,111 @@ test('postApplyQuality reads landed files and spares strings, types, and non-sou
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// Existing-* modes: whole-file post-apply architecture judgments (collapse,
+// module size, styling-system coherence) stand down — an existing repo's own
+// pre-collapsed, oversized, or atomic-CSS-styled files must not make every
+// delegated maintenance diff un-landable. Typecheck and catalog validation
+// keep applying.
+test('postApply quality/size/styling stand down on an existing codebase', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocq-existing-'));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    const collapsed = 'src/Nav.tsx';
+    fs.writeFileSync(path.join(dir, collapsed),
+      'export function Nav(){const [o,setO]=useState(false);return <header><nav><a href="/">H</a></nav><button>{o}</button></header>}\n');
+    const tailwindish = 'src/Card.tsx';
+    fs.writeFileSync(path.join(dir, tailwindish), [
+      'export function Card() {',
+      '  return (',
+      '    <article className="flex items-center justify-between">',
+      '      <h3 className="rounded-lg border px-4">x</h3>',
+      '      <p className="bg-white py-3 shadow-sm gap-4">y</p>',
+      '    </article>',
+      '  )',
+      '}',
+    ].join('\n'));
+    const oversized = 'src/legacy.ts';
+    fs.writeFileSync(path.join(dir, oversized),
+      Array.from({ length: 450 }, (_, i) => `export const v${i} = ${i};`).join('\n'));
+
+    const writeMode = (mode: string): void => {
+      fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+        mode, stack: 'minimal', backend: 'other', frontend: 'none', onboardingComplete: true,
+      }), 'utf8');
+    };
+    writeMode('existing-codebase');
+    // No git HEAD to attribute authorship → fail toward the stand-down.
+    assert.equal(postApplyQuality(dir, [collapsed]), null);
+    assert.equal(postApplyStyling(dir, [tailwindish]), null);
+    assert.equal(postApplySize(dir, [oversized]), null);
+
+    // With a HEAD, only files that existed there are the repo owner's: a file
+    // the delegated diff CREATED is wholly run-authored and judged normally
+    // even on an existing codebase (the 7co/8co delegated channel never
+    // passes the write gate).
+    const git = (...args: string[]): void => {
+      const r = spawnSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+      assert.equal(r.status, 0, `git ${args[0]} failed: ${r.stderr}`);
+    };
+    git('init', '-q');
+    git('add', collapsed, tailwindish, oversized);
+    git('commit', '-q', '-m', 'legacy');
+    assert.equal(postApplyQuality(dir, [collapsed]), null);
+    assert.equal(postApplyStyling(dir, [tailwindish]), null);
+    const created = 'src/FreshCard.tsx';
+    fs.writeFileSync(path.join(dir, created),
+      'export function FreshCard(){const [o,setO]=useState(false);return <header><nav><a href="/">H</a></nav><button>{o}</button></header>}\n');
+    assert.match(String(postApplyQuality(dir, [collapsed, created])), /src\/FreshCard\.tsx:1/);
+
+    // The same bytes on a new project keep the rollback everywhere.
+    writeMode('new-project');
+    assert.match(String(postApplyQuality(dir, [collapsed])), /src\/Nav\.tsx:1/);
+    assert.match(String(postApplyStyling(dir, [tailwindish])), /no tailwindcss dependency/);
+    assert.match(String(postApplySize(dir, [oversized])), /logical lines/);
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// An i18n runtime dependency with a catalog layout the detector cannot parse
+// used to reject EVERY delegated frontend diff on such repos. "Cannot judge"
+// means advise on an existing codebase, and keeps blocking on a new project.
+test('postApplyI18n: undetectable catalog contract advises instead of blocking on an existing codebase', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-existing-'));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'legacy',
+      dependencies: { react: '18.0.0', 'react-i18next': '13.0.0', i18next: '23.0.0' },
+    }));
+    const rel = 'src/Panel.tsx';
+    fs.writeFileSync(path.join(dir, rel), 'export const panelWidth = 320;\n');
+    const writeMode = (mode: string): void => {
+      fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+        mode, stack: 'custom-frontend', frontend: 'react-vite', backend: 'none', onboardingComplete: true,
+      }), 'utf8');
+    };
+    writeMode('new-project');
+    assert.match(String(postApplyI18n(dir, [rel])), /no existing catalog contract/);
+    writeMode('existing-codebase');
+    assert.equal(postApplyI18n(dir, [rel]), null);
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('postApplyQuality formats a collapsed landed file in place when the project prettier is reachable', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocq-fmt-'));
   try {

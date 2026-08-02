@@ -171,6 +171,7 @@ export function runFullStructureScan(
   contract: CompiledArchitectureV1,
   role?: string,
   greenfield = false,
+  existing = false,
 ): ReturnType<typeof analyzeProjectStructure> {
   const scopedContract = role ? roleContract(contract, role) : contract;
   const scopes = role ? assignmentScopesForRole(projectRoot, runId, role) : [];
@@ -180,8 +181,11 @@ export function runFullStructureScan(
   const report = analyzeProjectStructure(projectRoot, scopedContract, {
     allowlist: role && allowlist.length > 0 ? allowlist : undefined,
     // Integration findings block only where Traffic One owns the structure;
-    // on an existing codebase they stay advisory (StructureScanOptions).
+    // on an existing codebase they stay advisory, and existing-* modes also
+    // demote the entrypoint-convention, strict-collapse, and route/module-
+    // mismatch hard-errors (StructureScanOptions.existing lists the exact ids).
     greenfield,
+    existing,
   });
   writeStructureReport(projectRoot, runId, report);
   return report;

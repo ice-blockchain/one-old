@@ -266,6 +266,68 @@ function alreadyCompleted(
   };
 }
 
+// Runtime-owned supersede transition for a SKIPPED delegation's pending
+// fallback. A delegation that never ran (e.g. no git HEAD to sandbox — the
+// existing-codebase no-repo case) still recorded `fallback-pending` with the
+// bounded unit's hashes, and `fallbackContractMatches` then pinned every
+// FUTURE work unit for that role to those hashes — so when the run escalated
+// to the architect, the compiled contracts could never publish and PLAN_READY
+// was denied forever (observed run 1785623723274). Nothing was delegated and
+// nothing was touched, so a freshly compiled architecture legitimately
+// supersedes the bounded scope. The sentinel is deliberately NON-terminal
+// ('superseded' is not in MAINTENANCE_TERMINAL_OUTCOMES): a terminal outcome
+// mid-run made per-prompt reconciliation read the re-planned run as a
+// completed maintenance run — 'verified' → evidence-downgraded 'validating',
+// origin/HEAD spawn-survival ref stripped — before any implementer spawned.
+// With a non-terminal, non-pending sentinel every marker reader treats it as
+// inert and the run proceeds as a normal compiled run. A delegation that RAN
+// and failed keeps its pending fallback — the paid fallback proof chain
+// against the captured pre-image still applies there.
+export function supersedeSkippedDelegationFallback(
+  projectRoot: string,
+  runId: string,
+  architectureHash: string,
+): boolean {
+  if (!runId.trim() || /[\\/]/.test(runId)) return false;
+  try {
+    return withProjectStateLock(projectRoot, () => {
+      const markerPath = path.join(
+        projectRoot,
+        '.traffic-one',
+        'runs',
+        safeRunId(runId),
+        'maintenance.json',
+      );
+      const marker = readJson<Rec | null>(markerPath, null);
+      if (!marker
+        || marker.overallOutcome !== 'fallback-pending'
+        || marker.fallbackAllowed !== true
+        || marker.outcome !== 'skipped'
+        || (Array.isArray(marker.touched) && marker.touched.length > 0)) {
+        return false;
+      }
+      writeJson(markerPath, {
+        ...marker,
+        overallOutcome: 'superseded',
+        outcome: 'superseded',
+        fallbackAllowed: false,
+        supersededByArchitectureHash: architectureHash,
+        supersededAt: new Date().toISOString(),
+      });
+      // Re-derive the canonical settlement without the fallback pin: the
+      // writer drops `fallback`/`reason`/hashes that the update omits, and
+      // reconcile no longer re-pins once the marker is terminal 'skipped'.
+      writeRunSettlement(projectRoot, runId, {
+        status: 'active',
+        incompleteChecks: ['verification-not-started'],
+      });
+      return true;
+    });
+  } catch {
+    return false;
+  }
+}
+
 export function finalizePaidMaintenanceFallback(
   projectRoot: string,
   runId: string,

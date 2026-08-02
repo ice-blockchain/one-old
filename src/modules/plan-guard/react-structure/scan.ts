@@ -14,6 +14,7 @@ import {
   STRUCTURE_SCAN_DEFAULT_MAX_FILES,
   type CacheEntry,
   type SourceAnalysis,
+  type StructureFinding,
   type StructureReportV1,
   type StructureScanOptions,
   SKIP_RE,
@@ -220,7 +221,7 @@ export function analyzeProjectStructure(
       break;
     }
   }
-  const findings = analyses.flatMap((analysis) => (
+  let findings = analyses.flatMap((analysis) => (
     localFindings(analysis, contract.profile, contract.exceptions)
   ));
   findings.push(...contractFindings(
@@ -231,6 +232,26 @@ export function analyzeProjectStructure(
     options.assignmentScope,
     options.greenfield === true,
   ));
+  // Existing-codebase demotion (StructureScanOptions.existing): this complete
+  // scan judges every pre-existing file, so the remaining architectural
+  // hard-errors would block completion on conventions the plugin never
+  // authored — a user entrypoint that declares components, printWidth-120
+  // code the strict collapse mask reads as packed, or routing the compiled
+  // contract cannot see. The write gate keeps its own collapse check for
+  // bytes a run authors; ownership/scan-integrity/plan-delivery ids stay
+  // blocking above.
+  if (options.existing === true) {
+    const DEMOTED_ON_EXISTING = new Set<StructureFinding['id']>([
+      'STRUCT_ENTRYPOINT_COMPONENT',
+      'STRUCT_COLLAPSED_LINE',
+      'STRUCT_ROUTE_MODULE_MISMATCH',
+    ]);
+    findings = findings.map((finding) => (
+      finding.severity === 'error' && DEMOTED_ON_EXISTING.has(finding.id)
+        ? { ...finding, severity: 'warning' as const }
+        : finding
+    ));
+  }
   if (incomplete) {
     findings.push({
       id: 'STRUCT_SCAN_INCOMPLETE',

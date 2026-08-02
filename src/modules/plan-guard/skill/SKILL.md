@@ -26,6 +26,10 @@ New-project monorepo gate: root-level TypeScript app config files (`tsconfig.jso
 State gate: root .traffic-one/.one.json is missing or incomplete. Write the Traffic One state file with mode, stack, backend, realtime, confirmed, onboardingComplete, and confirmedAt before writing feature source. The .traffic-one/ folder is project memory, not the stack-selection state file.
 <!-- T1BLOCK:END state-gate -->
 
+<!-- T1BLOCK:BEGIN state-mode-downgrade -->
+State mode gate: this project was onboarded as `new-project`; rewriting `.traffic-one/.one.json` to an existing-* mode mid-run would disarm the architecture gates that mode selects. Mode changes go through onboarding, not a state-file edit. If the user explicitly wants this project treated as an existing codebase, re-run Traffic One onboarding.
+<!-- T1BLOCK:END state-mode-downgrade -->
+
 <!-- T1BLOCK:BEGIN materialization-gate -->
 Materialization gate: stack context for {{FINGERPRINT}} has not been materialized on disk yet. Run `node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','hook-runtime.cjs'))" materialize-project` from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, `.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.
 <!-- T1BLOCK:END materialization-gate -->

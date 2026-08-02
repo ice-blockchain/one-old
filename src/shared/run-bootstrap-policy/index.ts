@@ -215,5 +215,10 @@ export {
 } from './envelope-io';
 
 export {
+  roleRequiresCompiledAssignment,
+  roleSkippableWithoutAssignment,
+} from './work-unit';
+
+export {
   compileIntegrationRequirements,
 } from './integration-requirements';

@@ -8,7 +8,7 @@
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { readEffectiveState } from '../../shared/state';
+import { isExistingProjectMode, readEffectiveState } from '../../shared/state';
 import { capabilityProfileForProject } from '../../shared/capabilities';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { resolveToolScope } from '../../shared/tool-scope';
@@ -27,6 +27,9 @@ export function libraryAllowlistGate(ctx: Ctx): HookResult {
   if (!INSTALL_RE.test(command)) return noop();
 
   const state = readEffectiveState(projectRoot);
+  // Every rule this gate can emit enforces the prescribed stack; an existing
+  // codebase keeps its own dependency choices, so the whole gate stands down.
+  if (isExistingProjectMode(state)) return noop();
   const arg = state.stack ? state : null;
   const profile = capabilityProfileForProject(projectRoot, state);
   const hits = forbiddenForStack(arg, allowsNextjs(state, projectRoot), profile.uiSystem)

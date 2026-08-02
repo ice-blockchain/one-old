@@ -65,6 +65,13 @@ test('explicit or detected external UI library wins and blocks parallel shadcn',
     assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add @chakra-ui/react')).kind, 'deny');
   });
 
+});
+
+test('existing codebase: the forbidden-library install gate stands down entirely', () => {
+  // Every rule the gate can emit enforces the prescribed stack; a repository
+  // Traffic One did not create keeps its own dependency choices, so on
+  // existing-* modes even architectural conflicts (a second UI system, an
+  // off-stack state library) are the repo owner's call — guidance, never a deny.
   withProject({
     mode: 'existing-codebase',
     stack: 'custom-frontend',
@@ -74,7 +81,12 @@ test('explicit or detected external UI library wins and blocks parallel shadcn',
       dependencies: { react: '19.0.0', vite: '7.0.0', '@mui/material': '7.0.0' },
     }));
     assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add @mui/material')).kind, 'noop');
-    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D shadcn')).kind, 'deny');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add -D shadcn')).kind, 'noop');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add mobx')).kind, 'noop');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add @vanilla-extract/css')).kind, 'noop');
+  });
+  withProject({ mode: 'existing-with-supabase', stack: 'default', frontend: 'react-vite' }, (cwd) => {
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add mobx')).kind, 'noop');
   });
 });
 

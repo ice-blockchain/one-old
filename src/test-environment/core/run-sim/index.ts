@@ -19,8 +19,6 @@ import {
   readCompiledArchitecture,
   readRuntimeAssignments,
 } from '../../../shared/architecture-contract';
-import { main as qaMain } from '../../../runners/qa-evidence';
-import { readQaReportV2 } from '../../../shared/qa-report-v2';
 import { readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
 import { ensureRunHostCapability } from '../../../shared/host/capabilities';
 import type { Rec } from '../../../shared/obj';
@@ -30,18 +28,15 @@ import { materializeProjectFromState } from '../../../shared/materialize';
 import { readEffectiveState } from '../../../shared/state';
 import { listClaimedAgents, nextSpawnIndex } from '../../../shared/state/run-agent/claims-store';
 import { maybeFlipToMaintenance } from '../../../modules/materialize/build-complete';
-import { beginFreshMaintenanceRun } from '../../../modules/session/triage-directive';
 import { obj } from '../../../shared/obj';
 import {
   ensureCurrentRunId,
+  releaseRunClaims,
   runVerificationState,
   settleTerminalRunLedger,
 } from '../../../shared/state/run-agent';
-import {
-  readVerificationContract,
-  type VerificationContractV2,
-} from '../../../shared/verification-contract';
-import type { Case, RunSimSpec } from '../types';
+import { readVerificationContract } from '../../../shared/verification-contract';
+import type { Case } from '../types';
 
 import {
   AGENTIGNORE_BODY,
@@ -54,7 +49,9 @@ import {
   planBody,
 } from './content';
 import { buildImplementContext, type ImplementContext } from './assignments';
-import { buildDirFor, scenarioFor, writeBuildOutput } from './build-output';
+import { buildDirFor, writeBuildOutput } from './build-output';
+import { runMaintenanceLegs, runMaintenancePass } from './maintenance';
+import { runBrowserEvidence, runBrowserProbe, runStackEvidence } from './qa';
 import { sourceFor } from './sources';
 import type { RunSimTranscript, ScriptedWrite } from './types';
 import { applyAll, bindRole } from './write';
@@ -372,12 +369,26 @@ export async function runSimulatedRun(
   const implementers = ['senior-backend', 'senior-frontend']
     .filter((role) => implement.outputsFor(role).length > 0);
 
+  // Fail fast on a mis-addressed extra row: a role that owns no work unit
+  // would silently skip its rows, and the case would prove nothing.
+  for (const extra of spec.extraWrites ?? []) {
+    if (!implementers.includes(extra.role) && extra.role !== 'senior-tester') {
+      return finish(`phase-2 extraWrites name ${extra.role}, which owns no work unit in this run`);
+    }
+  }
+
   const authored = new Map<string, string[]>();
   for (const role of [...implementers, 'senior-tester']) {
     const writes: ScriptedWrite[] = [];
     for (const rel of implement.outputsFor(role)) {
       const content = sourceFor(rel, implement);
       if (content !== null) writes.push({ path: rel, content });
+    }
+    // Case-declared rows beyond the compiled outputs (an existing repo's own
+    // conventions). Same gate path, same claim; applyAll fails the run on a
+    // deny, so "allowed" is asserted, not hoped.
+    for (const extra of spec.extraWrites ?? []) {
+      if (extra.role === role) writes.push({ path: extra.path, content: extra.content });
     }
     authored.set(role, writes.map((write) => write.path));
     if (!bindRole(cwd, role)) return finish(`phase-2 could not bind a run claim for ${role}`);
@@ -499,6 +510,8 @@ export async function runSimulatedRun(
     }
     transcript.phasesCompleted.push('qa');
   }
+  transcript.facts.lastQaRunId = runId;
+  transcript.facts.lastQaSource = 'main';
 
   // `browser` must exit 0 on a contract with no browser surface. Before the v1
   // batch it fell through to loadRun, failed on the missing build manifest, and
@@ -564,6 +577,10 @@ export async function runSimulatedRun(
     if (leaked) {
       return finish(`phase-6 a gate that must deny allowed ${leaked.path}`);
     }
+    // The reviewer bind above is sim scaffolding on an already-settled run —
+    // production would hold no live claim here, and a leftover one would
+    // suppress the maintenance-triage legs' routing below.
+    releaseRunClaims(cwd, runId, 'run-sim-negative-rows-done');
     transcript.facts.negativeRows = rows.length;
     transcript.phasesCompleted.push('negative-gates');
   }
@@ -580,178 +597,16 @@ export async function runSimulatedRun(
     transcript.phasesCompleted.push('phase2');
   }
 
+  // --- Phase 8: maintenance triage legs -------------------------------------
+  // The user's post-build follow-up messages, one leg per prompt, routed
+  // through the REAL prompt-boundary machinery (see maintenance.ts).
+  if ((spec.maintenance ?? []).length > 0) {
+    const legsFailure = await runMaintenanceLegs(cwd, testCase, transcript);
+    if (legsFailure) return finish(legsFailure);
+    transcript.phasesCompleted.push('maintenance-legs');
+  }
+
   return finish();
-}
-
-// One follow-up run: rotate the run id the way triage does, re-plan, implement
-// the delta, and settle again. Returns a failure string, or null on success.
-async function runMaintenancePass(
-  cwd: string,
-  phase2: NonNullable<RunSimSpec['phase2']>,
-  transcript: RunSimTranscript,
-): Promise<string | null> {
-  const state = readEffectiveState(cwd) as Rec;
-  // The REAL rotation: settles the outgoing ledger, releases its claims, mints
-  // a new id, resets spawnIndex and freezes the new run's model policy.
-  beginFreshMaintenanceRun(cwd, state, 'claude');
-  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
-  if (!runId) return 'phase-7 the maintenance rotation minted no run id';
-  transcript.facts.phase2RunId = runId;
-
-  if (!bindRole(cwd, 'senior-architect')) return 'phase-7 could not bind the architect';
-  const planned = applyAll(cwd, 'phase2:architect', 'senior-architect', [
-    {
-      path: `.traffic-one/runs/${runId}/architecture-input-v1.json`,
-      content: `${JSON.stringify(phase2.architecture, null, 2)}\n`,
-    },
-    {
-      path: `.traffic-one/digests/${runId}/architect.md`,
-      content: digestBody({
-        role: 'senior-architect',
-        runId,
-        verdict: 'PLAN_READY',
-        summary: `Maintenance plan: ${phase2.brief}`,
-      }),
-    },
-  ], transcript);
-  if (planned) return `phase-7 PLAN_READY denied: ${planned.reason}`;
-
-  const architecture = readCompiledArchitecture(cwd, runId);
-  const verification = readVerificationContract(cwd, runId);
-  const assignments = readRuntimeAssignments(cwd, runId);
-  if (!architecture || !verification || !assignments) {
-    return 'phase-7 the maintenance contract triple did not read back';
-  }
-  transcript.facts.phase2UiImpact = verification.uiImpact;
-  transcript.facts.phase2ChangedRoutes = verification.changedRoutes;
-
-  const implement = buildImplementContext(runId, architecture, assignments, cwd);
-  const implementers = ['senior-backend', 'senior-frontend']
-    .filter((role) => implement.outputsFor(role).length > 0);
-  const authored = new Map<string, string[]>();
-  for (const role of [...implementers, 'senior-tester']) {
-    const writes: ScriptedWrite[] = [];
-    for (const rel of implement.outputsFor(role)) {
-      const content = sourceFor(rel, implement);
-      if (content !== null) writes.push({ path: rel, content });
-    }
-    authored.set(role, writes.map((write) => write.path));
-    if (!bindRole(cwd, role)) return `phase-7 could not bind ${role}`;
-    const denied = applyAll(cwd, `phase2:implement:${role}`, role, writes, transcript);
-    if (denied) return `phase-7 ${role} denied on ${denied.path}: ${denied.reason}`;
-  }
-  for (const role of implementers) {
-    const denied = applyAll(cwd, `phase2:digest:${role}`, role, [{
-      path: `.traffic-one/digests/${runId}/${role.replace(/^senior-/, '')}.md`,
-      content: digestBody({
-        role,
-        runId,
-        verdict: 'IMPLEMENTED',
-        summary: `Delivered the maintenance work unit for ${role}.`,
-        touched: authored.get(role) ?? [],
-      }),
-    }], transcript);
-    if (denied) return `phase-7 ${role} IMPLEMENTED denied: ${denied.reason}`;
-  }
-
-  if (verification.browserRequired) {
-    const buildDir = buildDirFor(architecture);
-    writeBuildOutput(cwd, buildDir);
-    const qa = await runBrowserEvidence(cwd, runId, buildDir, verification);
-    if (qa.code !== 0) return `phase-7 browser evidence failed (exit ${qa.code}): ${qa.detail}`;
-  } else {
-    const qa = await runStackEvidence(cwd, runId);
-    if (qa.code !== 0) return `phase-7 stack evidence failed (exit ${qa.code}): ${qa.detail}`;
-  }
-
-  for (const [role, verdict] of [
-    ['senior-reviewer', 'APPROVED'],
-    ['senior-tester', 'TESTS_GREEN'],
-  ] as const) {
-    if (!bindRole(cwd, role)) return `phase-7 could not bind ${role}`;
-    const denied = applyAll(cwd, `phase2:digest:${role}`, role, [{
-      path: `.traffic-one/digests/${runId}/${role.replace(/^senior-/, '')}.md`,
-      content: digestBody({
-        role,
-        runId,
-        verdict,
-        summary: `Verified the maintenance delta for run ${runId}.`,
-      }),
-    }], transcript);
-    if (denied) return `phase-7 ${verdict} denied: ${denied.reason}`;
-  }
-
-  const settled = settleTerminalRunLedger(cwd, runId, 'verified');
-  transcript.facts.phase2Settlement = readRunSettlement(cwd, runId)?.status;
-  transcript.facts.phase2State = runVerificationState(cwd, runId);
-  if (!settled) return 'phase-7 the maintenance run could not be settled';
-  return null;
-}
-
-// Run the real qa-evidence `stack` command in-process and report what it did.
-async function runStackEvidence(cwd: string, runId: string): Promise<{
-  code: number;
-  detail: string;
-  checks: Record<string, { status: string; summary: string }>;
-}> {
-  const code = await qaMain(
-    ['stack', '--run-id', runId, '--project-root', cwd],
-    cwd,
-  );
-  const report = readQaReportV2(cwd, runId);
-  const checks: Record<string, { status: string; summary: string }> = {};
-  let detail = '';
-  if (report.ok) {
-    // The SUMMARY is what separates "the project declares no such command"
-    // (a legitimate not-applicable) from "the command exists but could not be
-    // executed" (an environment gap that must never read as covered).
-    for (const check of report.report.checks) {
-      checks[check.id] = { status: check.status, summary: check.summary ?? '' };
-    }
-  } else {
-    detail = `${report.code}: ${report.message}`;
-  }
-  return { code, detail, checks };
-}
-
-async function runBrowserProbe(cwd: string, runId: string): Promise<number> {
-  return qaMain(['browser', '--run-id', runId, '--project-root', cwd], cwd);
-}
-
-// The real `browser` command: it serves the build dir, launches Chromium, walks
-// every changed route, and captures DOM/action/console/network/screenshot
-// evidence. Nothing here is simulated except the build artifact itself.
-async function runBrowserEvidence(
-  cwd: string,
-  runId: string,
-  buildDir: string,
-  verification: VerificationContractV2,
-): Promise<{
-  code: number;
-  detail: string;
-  checks: Record<string, { status: string; summary: string }>;
-}> {
-  const code = await qaMain([
-    'browser',
-    '--run-id', runId,
-    '--project-root', cwd,
-    '--build-dir', buildDir,
-    '--scenario-json', JSON.stringify(scenarioFor(verification)),
-  ], cwd);
-  const report = readQaReportV2(cwd, runId);
-  const checks: Record<string, { status: string; summary: string }> = {};
-  let detail = '';
-  if (report.ok) {
-    for (const check of report.report.checks) {
-      checks[check.id] = { status: check.status, summary: check.summary ?? '' };
-    }
-  } else {
-    detail = `${report.code}: ${report.message}`;
-    for (const check of report.report?.checks ?? []) {
-      checks[check.id] = { status: check.status, summary: check.summary ?? '' };
-    }
-  }
-  return { code, detail, checks };
 }
 
 function countAuthored(authored: Map<string, string[]>): number {
