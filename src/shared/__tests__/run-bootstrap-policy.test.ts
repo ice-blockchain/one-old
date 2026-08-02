@@ -654,6 +654,202 @@ test('repairRunBootstrapForBoundChild recovers a bounded scope from an invalidat
   });
 });
 
+function subagentPolicyFixture(cwd: string, runId: string) {
+  const env = {
+    ...process.env,
+    TRAFFIC_ONE_HOST: 'codex',
+    TRAFFIC_ONE_USER_PLAN: 'pro',
+    XDG_STATE_HOME: path.join(cwd, 'state'),
+    TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
+  };
+  const target = currentHostModelTarget('codex', 'pro', env);
+  const state = {
+    ...STATE,
+    currentRunId: runId,
+    performance: {
+      level: 'balanced',
+      source: 'prompted',
+      target: {
+        plan: 'pro',
+        appliedFingerprint: target.appliedFingerprint,
+        configVersion: target.configVersion,
+      },
+    },
+    team: { mode: 'subagents', approved: true, source: 'prompted' },
+  };
+  return { env, state };
+}
+
+function writeDebtMarker(
+  cwd: string,
+  runId: string,
+  role: string,
+  envelope: { workUnit: { allowlist: string[]; allowlistExclude: string[]; contractHash: string } } | null,
+  files: readonly string[] | null,
+): void {
+  const markerPath = path.join(cwd, '.traffic-one', 'runs', runId, 'maintenance.json');
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, JSON.stringify({
+    version: 1,
+    kind: 'opencode-delegation',
+    role,
+    outcome: 'failed',
+    overallOutcome: 'fallback-pending',
+    fallbackAllowed: true,
+    // A null envelope pins a contract this run can no longer reproduce — the
+    // shape a replan leaves behind once the compiled hashes have moved on.
+    workUnitContractHash: envelope ? envelope.workUnit.contractHash : sha256(`stale:${role}`),
+    allowlistHash: envelope
+      ? sha256(JSON.stringify({
+        include: envelope.workUnit.allowlist,
+        exclude: envelope.workUnit.allowlistExclude,
+      }))
+      : sha256(`stale-allowlist:${role}`),
+    ...(files
+      ? {
+          fallbackSourceBaseline: {
+            schemaVersion: 1,
+            capturedAt: new Date().toISOString(),
+            files: files.map((file) => ({
+              path: file,
+              state: 'file',
+              size: 1,
+              hash: sha256(file),
+            })),
+            stateHash: sha256(JSON.stringify(files)),
+            snapshotHash: sha256(`snapshot:${JSON.stringify(files)}`),
+          },
+        }
+      : {}),
+  }));
+}
+
+// 16co: the frontend's OpenCode unit failed with `fallback-pending`, so
+// `fallbackContractMatches` (correctly) refused to let the parent republish that
+// role's FULL-SCOPE envelope. The preflight treated the refusal as a run
+// failure, `ensureRunModelPolicy` returned null with a valid model-policy.json
+// on disk, and the onboarding gate then denied every parent Bash call — while
+// the only thing that can discharge the debt is a paid child the blocked parent
+// can no longer spawn. Permanent wedge.
+test('a pending maintenance debt narrows the parent preflight to the owed scope instead of wedging the run', () => {
+  withProject((cwd) => {
+    const { env, state } = subagentPolicyFixture(cwd, 'W');
+    compileRun(cwd, 'W', state, UI_INPUT);
+    const policy = ensureRunModelPolicy(cwd, 'W', 'codex', state, env);
+    assert.ok(policy);
+    assert.equal(
+      readActiveRunBootstrap(cwd, 'W', 'senior-frontend')?.workUnit.unitId,
+      'senior-frontend:bootstrap',
+    );
+
+    const debtFiles = [
+      'apps/web/src/pages/Home.tsx',
+      'packages/i18n/src/locales/en/home.json',
+    ];
+    const bounded = ensureRunBootstrap(cwd, 'W', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'opencode-maintenance-preflight',
+      modelPolicyId: policy.policyId,
+      boundedOutputs: debtFiles,
+      boundedAllowlist: debtFiles,
+      boundedAllowlistExclude: [],
+    });
+    assert.ok(bounded);
+    writeDebtMarker(cwd, 'W', 'senior-frontend', bounded, debtFiles);
+
+    // The debt voids the role's planned envelope for every reader — that part is
+    // the guard working as designed and must NOT change.
+    assert.equal(ensureRunBootstrap(cwd, 'W', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-policy-preflight',
+      modelPolicyId: policy.policyId,
+    }), null, 'a full-scope envelope must stay refused while the debt is pending');
+
+    // …but the RUN must stay alive, with the owed bounded scope republished.
+    const reopened = ensureRunModelPolicy(cwd, 'W', 'codex', state, env);
+    assert.ok(reopened, 'a pending maintenance debt must not block the immutable run policy');
+    const active = readActiveRunBootstrap(cwd, 'W', 'senior-frontend');
+    assert.ok(active);
+    assert.equal(active.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+    assert.deepEqual(active.workUnit.allowlist, [
+      '.traffic-one/digests/W/frontend.md',
+      'apps/web/src/pages/Home.tsx',
+      'packages/i18n/src/locales/en/home.json',
+    ]);
+    assert.equal(active.workUnit.contractHash, bounded.workUnit.contractHash);
+
+    // NEGATIVE: the unwedged preflight is not a widening backdoor.
+    assert.equal(ensureRunBootstrap(cwd, 'W', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-policy-preflight',
+      modelPolicyId: policy.policyId,
+      boundedOutputs: [...debtFiles, 'apps/web/src/pages/Other.tsx'],
+      boundedAllowlist: [...debtFiles, 'apps/web/src/pages/Other.tsx'],
+      boundedAllowlistExclude: [],
+    }), null, 'the owed scope may not be widened by one extra file');
+
+    // Discharge → the role gets its planned full-scope envelope back.
+    const markerPath = path.join(cwd, '.traffic-one', 'runs', 'W', 'maintenance.json');
+    const paid = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as Record<string, unknown>;
+    paid.overallOutcome = 'fallback-paid';
+    paid.outcome = 'fallback-paid';
+    fs.writeFileSync(markerPath, JSON.stringify(paid));
+    assert.ok(ensureRunModelPolicy(cwd, 'W', 'codex', state, env));
+    assert.equal(
+      readActiveRunBootstrap(cwd, 'W', 'senior-frontend')?.workUnit.unitId,
+      'senior-frontend:bootstrap',
+    );
+  });
+});
+
+// NEGATIVE: not publishing is not authorizing. When no bounded scope can be
+// derived — an unreadable debt baseline, or a role that cannot carry a bounded
+// unit at all — the preflight must skip the role WITHOUT leaving it a readable
+// envelope, so the spawn gate stays the enforcement point.
+test('a debt whose scope cannot be derived unwedges the preflight but publishes no envelope', () => {
+  withProject((cwd) => {
+    const { env, state } = subagentPolicyFixture(cwd, 'X');
+    compileRun(cwd, 'X', state, UI_INPUT);
+    const policy = ensureRunModelPolicy(cwd, 'X', 'codex', state, env);
+    assert.ok(policy);
+    assert.ok(readActiveRunBootstrap(cwd, 'X', 'senior-tester'));
+
+    // `senior-tester` can never mint a bounded maintenance unit, and its debt
+    // pins a contract this run can no longer reproduce, so NO envelope the
+    // preflight can build is admissible while the debt is pending.
+    writeDebtMarker(cwd, 'X', 'senior-tester', null, ['tests/e2e/home.spec.ts']);
+    assert.ok(ensureRunModelPolicy(cwd, 'X', 'codex', state, env));
+    assert.equal(
+      readActiveRunBootstrap(cwd, 'X', 'senior-tester'),
+      null,
+      'a skipped role must not keep a readable envelope',
+    );
+
+    // Same for a frontend debt with no readable baseline: nothing to scope to.
+    const debtFiles = ['apps/web/src/pages/Home.tsx'];
+    const bounded = ensureRunBootstrap(cwd, 'X', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'opencode-maintenance-preflight',
+      modelPolicyId: policy.policyId,
+      boundedOutputs: debtFiles,
+      boundedAllowlist: debtFiles,
+      boundedAllowlistExclude: [],
+    });
+    assert.ok(bounded);
+    writeDebtMarker(cwd, 'X', 'senior-frontend', null, null);
+    assert.ok(ensureRunModelPolicy(cwd, 'X', 'codex', state, env));
+    assert.equal(
+      readActiveRunBootstrap(cwd, 'X', 'senior-frontend'),
+      null,
+      'an unreadable debt baseline stays fail-closed for the role',
+    );
+  });
+});
+
 // The child SessionStart header is the delivery surface for the per-run
 // contract extras since the context-pack snapshot was removed: integration
 // requirements always ride it, and the compact role kernel rides it only when

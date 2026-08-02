@@ -212,6 +212,7 @@ export {
   canResolveRunBootstrapSet,
   pendingMaintenanceDebtSources,
   readActiveRunBootstrap,
+  roleOwesPendingMaintenanceFallback,
 } from './envelope-io';
 
 export {

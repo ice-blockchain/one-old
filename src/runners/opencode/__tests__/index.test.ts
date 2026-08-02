@@ -1642,6 +1642,94 @@ test('delegateFromPlan skips a unit whose declared dependency failed', () => {
   });
 });
 
+// 16co, the whole point of the kind-derived edge: `news-fixtures` (kind feature)
+// lost its diff to the 400-line cap, and `news-article-presentation` (kind page)
+// was STILL sent to the model — 565s, then `TS2305 … has no exported member
+// 'getNewsBySlug'` against exports that had just been rolled back. Their
+// allowlists are disjoint, so the overlap rule never demanded a `depends:` edge
+// and the plan declared none.
+test('delegateFromPlan skips a page unit whose same-role feature producer failed, with no declared edge', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: news-fixtures | role: frontend | kind: feature | files: src/features/news/index.tsx | task: Add the typed News fixtures and pure selectors.',
+      '- id: news-article | role: frontend | kind: page | files: unit-1.txt | task: Build the article presentation against the declared News selectors.',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-producer-skip' });
+    assert.equal(r.delegated, 0);
+    assert.equal(r.units.find((u) => u.id === 'news-fixtures')?.status, 'rejected_policy');
+    const consumer = r.units.find((u) => u.id === 'news-article');
+    assert.equal(consumer?.status, 'skipped');
+    assert.match(String(consumer?.error), /producer `news-fixtures` did not land/);
+    assert.match(String(consumer?.error), /declared no `depends:` edge/);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-1.txt')), false,
+      'the doomed consumer never reaches the model — this is the 565s 16co burned');
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'r-producer-skip', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses.find((s) => s.id === 'news-article')?.status, 'skipped');
+    assert.equal(statuses.find((s) => s.id === 'news-article')?.attempts?.[0]?.action, 'skipped-producer-failed',
+      'the INFERRED skip is distinguishable from a declared-dependency skip in the ledger');
+  });
+});
+
+// Negative row: the inferred edge must be inert in a healthy batch. A producer
+// that LANDS leaves its consumer delegated exactly as before — the inference can
+// never cost a delegation that would have succeeded.
+test('a landed feature producer leaves its same-role page unit delegated', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: news-fixtures | role: frontend | kind: feature | files: unit-1.txt | task: Add the typed News fixtures and pure selectors.',
+      '- id: news-article | role: frontend | kind: page | files: unit-2.txt | task: Build the article presentation against the declared News selectors.',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-producer-ok' });
+    assert.equal(r.delegated, 2);
+    assert.equal(r.units.find((u) => u.id === 'news-article')?.status, 'delegated');
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), true);
+  });
+});
+
+// Negative rows: the edge is strictly backwards-looking and strictly same-role.
+test('the inferred producer edge never points forward and never crosses roles', () => {
+  const memoryDir = ['.traffic', '-one'].join('');
+  // A consumer queued BEFORE the producer has no prerequisite to lose.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: news-article | role: frontend | kind: page | files: unit-1.txt | task: Build the article presentation.',
+      '- id: news-fixtures | role: frontend | kind: feature | files: src/features/news/index.tsx | task: Add the typed News fixtures and pure selectors.',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-producer-order' });
+    assert.equal(r.units.find((u) => u.id === 'news-fixtures')?.status, 'rejected_policy');
+    assert.equal(r.units.find((u) => u.id === 'news-article')?.status, 'delegated');
+  });
+  // A different role's failed feature is a different package; the plan gate
+  // orders cross-role work, and inferring here would strand whole shards.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: api-feature | role: backend | kind: feature | files: src/features/api/index.tsx | task: Add the typed API fixtures and pure selectors.',
+      '- id: news-article | role: frontend | kind: page | files: unit-1.txt | task: Build the article presentation.',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-producer-role' });
+    assert.equal(r.units.find((u) => u.id === 'api-feature')?.status, 'rejected_policy');
+    assert.equal(r.units.find((u) => u.id === 'news-article')?.status, 'delegated');
+  });
+});
+
 test('the delegated model is told its edit boundary before it works', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('prompt');

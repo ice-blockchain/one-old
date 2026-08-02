@@ -7,6 +7,7 @@ import * as path from 'path';
 import {
   buildOpenCodeQueue,
   hasRunningOpenCodeUnits,
+  implicitProducerDependencies,
   openCodeQueuePolicyViolations,
   readOpenCodeQueue,
   readOpenCodeUnitStatuses,
@@ -14,6 +15,7 @@ import {
   reconcileStaleRunningUnits,
   recordOpenCodeFallback,
   recordOpenCodeUnitStatus,
+  statusFromDelegateAction,
   writeOpenCodeQueue,
 } from '../opencode-queue';
 import { parsePlanDelegationUnits } from '../opencode-roles';
@@ -435,4 +437,67 @@ test('openCodeQueuePolicyViolations accepts a feature unit with a listed sibling
     '<!-- opencode-delegate:end -->',
   ].join('\n'));
   assert.deepEqual(openCodeQueuePolicyViolations(page), []);
+});
+
+// The kind-derived producer edge, in isolation. The 16co queue declared
+// `dependsOn: []` on all three units because their allowlists were disjoint —
+// the overlap rule needs intersecting paths and an import intersects nothing.
+test('implicitProducerDependencies derives the feature -> page edge the plan left out', () => {
+  const queue = buildOpenCodeQueue('', '', parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news-editorial/index.tsx, apps/web/src/features/news-editorial/selectors.ts | task: Add the typed News fixtures and pure selectors.',
+    '- id: news-listing | role: frontend | kind: page | files: apps/web/src/pages/NewsListingPage.tsx | task: Build the listing presentation.',
+    '- id: news-article | role: senior-frontend | kind: page | files: apps/web/src/pages/NewsArticlePage.tsx | task: Build the article presentation.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n')));
+  const edges = implicitProducerDependencies(queue.units);
+  assert.deepEqual(edges.get('news-listing'), ['news-fixtures']);
+  // `senior-frontend` and `frontend` are the same shard.
+  assert.deepEqual(edges.get('news-article'), ['news-fixtures']);
+  assert.equal(edges.has('news-fixtures'), false, 'a producer never depends on itself');
+});
+
+test('implicitProducerDependencies stays inert on shapes it must not touch', () => {
+  const edgesFor = (lines: string[]): Map<string, string[]> => implicitProducerDependencies(
+    buildOpenCodeQueue('', '', parsePlanDelegationUnits([
+      '<!-- opencode-delegate:start -->',
+      ...lines,
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'))).units,
+  );
+
+  // Negative row 1: a producer queued AFTER its consumer is not a prerequisite.
+  assert.equal(edgesFor([
+    '- id: news-article | role: frontend | kind: page | files: apps/web/src/pages/NewsArticlePage.tsx | task: Build the article presentation.',
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news/index.tsx, apps/web/src/features/news/selectors.ts | task: Add fixtures and selectors.',
+  ]).size, 0);
+
+  // Negative row 2: cross-role pairs are never inferred.
+  assert.equal(edgesFor([
+    '- id: api-service | role: backend | kind: service | files: packages/api-client/src/index.ts | task: Add the typed client.',
+    '- id: news-article | role: frontend | kind: page | files: apps/web/src/pages/NewsArticlePage.tsx | task: Build the article presentation.',
+  ]).size, 0);
+
+  // Negative row 3: an already-DECLARED edge is not duplicated, so the runner
+  // keeps reporting the plan's own field rather than an inferred one.
+  assert.equal(edgesFor([
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news/index.tsx, apps/web/src/features/news/selectors.ts | task: Add fixtures and selectors.',
+    '- id: news-article | role: frontend | kind: page | depends: news-fixtures | files: apps/web/src/pages/NewsArticlePage.tsx | task: Build the article presentation.',
+  ]).size, 0);
+
+  // Negative row 4: units with no `kind:` (the majority of legacy queues) are
+  // outside the vocabulary entirely — no edge in either direction.
+  assert.equal(edgesFor([
+    '- id: seed | role: backend | files: supabase/seed.sql | task: Add seed rows.',
+    '- id: readme | role: docs | files: README.md | task: Draft the readme.',
+  ]).size, 0);
+});
+
+// The inferred skip must be readable as a SKIP, not folded into `failed`, or
+// the batch finalizer would count a zero-cost skip as a delegation failure.
+test('statusFromDelegateAction maps the inferred producer skip to skipped', () => {
+  assert.equal(statusFromDelegateAction('skipped-producer-failed'), 'skipped');
+  assert.equal(statusFromDelegateAction('skipped-dependency-failed'), 'skipped');
+  // Negative row: an unrelated action is still a failure.
+  assert.equal(statusFromDelegateAction('failed', 'boom'), 'failed');
 });

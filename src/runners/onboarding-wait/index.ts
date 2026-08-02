@@ -218,7 +218,14 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     }
     process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
     const triage = postSetupTriage(cwd);
-    if (triage) {
+    if (triage && preSpawnRunIdBlocksSetup(triage)) {
+      // Triage refused to route: the run is blocked. Print the verdict BARE —
+      // wrapping it in "route the original request per this triage" is the same
+      // contradiction (route this / do not spawn) that this emitter and
+      // UserPromptSubmit were both producing. The run-id directive below repeats
+      // the verdict from its own surface and exits non-zero.
+      process.stdout.write(`\n${triage}\n`);
+    } else if (triage) {
       process.stdout.write(`\n[traffic-one] Route the original request per this triage BEFORE implementing:\n${triage}\n`);
     }
     // Front-load the gate-minted run-id so the orchestrator never fabricates an ISO id in spawn prompts.

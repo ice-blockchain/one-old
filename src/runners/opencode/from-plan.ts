@@ -21,6 +21,7 @@ import { restorePlanOpenCodeDelegateBlock } from '../../shared/opencode-plan/pre
 import {
   blockedByFailedDependencies,
   buildOpenCodeQueue,
+  implicitProducerDependencies,
   openCodeQueuePolicyReport,
   readOpenCodeUnitStatuses,
   recordOpenCodeUnitStatus,
@@ -159,20 +160,31 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
     if (runId) {
       for (const status of readOpenCodeUnitStatuses(cwd, runId)) unitOutcomes.set(status.id, status.status);
     }
+    // Kind-derived producer edges for the units whose `depends:` the plan left
+    // implicit. Built from the FULL queue, not the role shard, so every runner
+    // process derives the same map.
+    const implicitDeps = implicitProducerDependencies(formalQueue.units);
 
     for (const entry of entries) {
       const u = entry.unit;
       const formal = entry.formal;
       const normalizedRole = normalizePlanRole(u.role);
       const blockedBy = blockedByFailedDependencies(formal.dependsOn, unitOutcomes);
-      if (blockedBy.length > 0) {
-        const error = `skipped: dependency ${blockedBy.map((d) => `\`${d}\``).join(', ')} did not land, so this unit's prerequisites are missing`;
+      // Only when no DECLARED edge already blocks — the declared message names
+      // the plan's own field and is the one an operator should act on.
+      const producerBlockedBy = blockedBy.length > 0
+        ? []
+        : blockedByFailedDependencies(implicitDeps.get(formal.id), unitOutcomes);
+      if (blockedBy.length > 0 || producerBlockedBy.length > 0) {
+        const error = blockedBy.length > 0
+          ? `skipped: dependency ${blockedBy.map((d) => `\`${d}\``).join(', ')} did not land, so this unit's prerequisites are missing`
+          : `skipped: producer ${producerBlockedBy.map((d) => `\`${d}\``).join(', ')} did not land, so the exports this \`${formal.kind || 'consumer'}\` unit builds against were rolled back with that unit's diff. The queue declared no \`depends:\` edge for this pair — add one so the plan states the order it already relies on`;
         if (runId) {
           recordOpenCodeUnitStatus(cwd, runId, {
             id: formal.id,
             role: formal.role,
             status: 'skipped',
-            action: 'skipped-dependency-failed',
+            action: blockedBy.length > 0 ? 'skipped-dependency-failed' : 'skipped-producer-failed',
             failureKind: 'skipped',
             error,
             touched: [],

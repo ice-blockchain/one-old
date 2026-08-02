@@ -29,6 +29,8 @@ import { roleModelSelection } from './performance';
 import {
   canResolveRunBootstrapSet,
   ensureRunBootstrap,
+  pendingMaintenanceDebtSources,
+  roleOwesPendingMaintenanceFallback,
   type BootstrapRuntimeContractsV1,
 } from './run-bootstrap-policy';
 import { readVerificationContract } from './verification-contract';
@@ -267,12 +269,82 @@ export function ensureRunPolicyBootstraps(
     || ensureRunHostCapability(cwd, policy.runId, policy.host);
   if (!host) return false;
   const typed = host.typedSubagents === true;
-  return roles.every((role) => Boolean(ensureRunBootstrap(cwd, policy.runId, role, state, {
-    host: policy.host,
-    hostAgentType: typed ? role : null,
-    evidenceSource: 'parent-policy-preflight',
-    modelPolicyId: policy.policyId,
-  })));
+  return roles.every((role) => {
+    const options = {
+      host: policy.host,
+      hostAgentType: typed ? role : null,
+      evidenceSource: 'parent-policy-preflight',
+      modelPolicyId: policy.policyId,
+    };
+    // A role that owes a PENDING maintenance fallback cannot hold its planned
+    // full-scope envelope: until the debt is discharged `fallbackContractMatches`
+    // admits only the debts' own bounded scope, and a full-scope preflight
+    // publish is precisely the widening that guard exists to refuse. Failing the
+    // whole preflight on that refusal wedged the entire session — the policy
+    // read null, SessionStart emitted TRAFFIC_ONE_MODEL_POLICY_BLOCKED and the
+    // onboarding gate denied every parent tool call, while the only thing that
+    // can discharge the debt is a paid fallback child the blocked parent can no
+    // longer start (observed 16co, senior-frontend, permanent).
+    if (roleOwesPendingMaintenanceFallback(cwd, policy.runId, role)) {
+      const debtSources = pendingMaintenanceDebtSources(cwd, policy.runId, role);
+      // Publish the SAME bounded union the spawn gate derives, so the role stays
+      // live for the work it actually owes and the paid-fallback finalizer finds
+      // a valid active envelope. When no scope can be derived — an unreadable
+      // debt baseline, or a role that cannot carry a bounded unit — publish
+      // NOTHING and leave the spawn gate as the enforcement point. Skipping
+      // grants no authority: publication is what grants it, `ensureRunBootstrap`
+      // still denies the spawn, and every reader re-runs the same guard through
+      // `readActiveRunBootstrap`, so a stale envelope stays void either way.
+      if (debtSources) {
+        ensureRunBootstrap(cwd, policy.runId, role, state, {
+          ...options,
+          boundedOutputs: debtSources,
+          boundedAllowlist: debtSources,
+          boundedAllowlistExclude: [],
+        });
+      }
+      return true;
+    }
+    return Boolean(ensureRunBootstrap(cwd, policy.runId, role, state, options));
+  });
+}
+
+// "Will the parent gates refuse to work in this run?" — the read-only form of
+// the exact question SessionStart and the onboarding gate already answer, so a
+// THIRD surface (prompt-boundary maintenance routing) can defer to them instead
+// of re-deriving the chain. Two hooks contradicting each other inside one turn
+// is what burned 16co: 07:12:09Z SessionStart "Do not spawn a child", 07:12:10Z
+// the triage reminder "OpenCode runId for opencode_delegate: 1785619235671".
+// The agent followed the newer instruction and spent the session against a gate
+// that denies every parent tool call.
+//
+// The precondition is CREATE-ONCE, not "something failed": a run whose policy
+// path is already published can never be rebased, so no later prompt in that run
+// repairs it — all three arms below are permanent for this run id. A run with no
+// policy file yet is merely unfrozen: Performance still repairs it and the next
+// freeze can succeed, so routing stays best-effort there (the F3 rotation
+// contract) and this returns false.
+export function runBootstrapBlocked(
+  cwd: string,
+  runId: string,
+  hostInput: unknown,
+  state: unknown,
+): boolean {
+  if (!runId || isNonProjectRoot(cwd)) return false;
+  if (!fs.existsSync(runModelPolicyPath(cwd, runId))) return false;
+  // Published but unreadable/tampered: create-once forbids replacing it.
+  const policy = readRunModelPolicy(cwd, runId);
+  if (!policy) return true;
+  // Frozen for another host: only a NEW parent run can serve this one.
+  if (policy.host !== canonicalHost(hostInput)) return true;
+  try {
+    return !ensureRunPolicyBootstraps(cwd, policy, state);
+  } catch {
+    // Fail OPEN, matching every freeze call site: a throwing preflight must
+    // never be the thing that silences routing. The gates remain the
+    // enforcement point.
+    return false;
+  }
 }
 
 export function canPublishRunPolicyBootstraps(

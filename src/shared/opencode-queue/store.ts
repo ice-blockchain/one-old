@@ -435,7 +435,9 @@ export function statusFromDelegateAction(action: string, error?: string | null):
   if (action === 'delegated') return 'delegated';
   if (action === 'no-changes') return 'no_changes';
   if (action === 'skipped-no-units') return 'skipped_no_units';
-  if (action === 'skipped' || action === 'skipped-dependency-failed') return 'skipped';
+  if (action === 'skipped'
+    || action === 'skipped-dependency-failed'
+    || action === 'skipped-producer-failed') return 'skipped';
   if (action === 'abandoned') return 'abandoned';
   if (/outside .*allowlist|outside .*assignment scope|generated\/internal artifact|assignment scope changed/i.test(error || '')) {
     return 'rejected_policy';

@@ -20,7 +20,7 @@ import { obj, type Rec } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
-import { ensureRunModelPolicy } from '../../shared/run-model-policy';
+import { ensureRunModelPolicy, runBootstrapBlocked } from '../../shared/run-model-policy';
 import { makeSkillBlock } from '../../shared/skill-block';
 import {
   ensureRunLedger,
@@ -206,6 +206,28 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
   if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state, host);
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
+  // ── The run the routing would name is one the parent gates refuse ──────────
+  // Deliberately AFTER beginFreshMaintenanceRun, for two reasons.
+  //   1. Rotation is the escape hatch, and it is a SIDE EFFECT that has already
+  //      been written to disk by the time this runs — returning early here can
+  //      never suppress it. A wedged run that was allowed to rotate is gone;
+  //      the fresh id gets a fresh policy and answers "not blocked", so the
+  //      common maintenance prompt is untouched.
+  //   2. The two conditions are disjoint by construction: this predicate can
+  //      only fire on a run whose policy is already published, and a run whose
+  //      preflight covers implementer roles at all is one with published
+  //      `assignments.json` — which is exactly what makes the rotation guard
+  //      refuse to rotate it. So only a PINNED wedged run reaches this branch.
+  // Scoped to the same `team.mode === 'subagents'` condition the gates use, so
+  // this never speaks for a main-agent project the gates would let through.
+  if (team?.mode === 'subagents' && runId && runBootstrapBlocked(cwd, runId, host, state)) {
+    return [
+      'TRAFFIC_ONE_BOOTSTRAP_BLOCKED',
+      `Run "${runId}" is frozen (create-once) and Traffic One cannot bootstrap a child in it, so every parent tool call in this run is denied. There is nothing to route this request into.`,
+      'Do NOT spawn a role subagent, do NOT call `opencode_delegate`, do NOT start a quick-fix, and do NOT rotate or replace the run. Do not redo onboarding and do not replace `model-policy.json`.',
+      'Report the run id to the user and stop. The parent gate\'s own message for this run (SessionStart, or the first denied tool call) states the exact repair — do not invent a different one.',
+    ].join('\n');
+  }
   const ocActive = openCodeDelegationActive(state, host);
   // Render the OpenCode instruction only when delegation is actually active, so an
   // off state doesn't leave a dead-branch clause a literal reader must evaluate.

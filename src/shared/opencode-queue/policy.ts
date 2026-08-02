@@ -278,6 +278,59 @@ export function openCodeQueuePolicyReport(
   return { violations, byUnitId };
 }
 
+/**
+ * Unit kinds that PRODUCE the exported contracts other units in the same batch
+ * consume, and the kinds that consume them. The architecture compiles each
+ * module to its OWN file, so a consumer resolves a producer by module name —
+ * the two allowlists never intersect and the overlap rule above (which needs
+ * intersecting paths) is structurally blind to the edge.
+ */
+const PRODUCER_UNIT_KINDS = new Set(['feature', 'service', 'store']);
+const CONSUMER_UNIT_KINDS = new Set(['page', 'component', 'app-shell', 'test']);
+
+/**
+ * Producer→consumer edges the queue did NOT declare, inferred from unit kinds.
+ *
+ * Consulted ONLY through `blockedByFailedDependencies`, i.e. only once a unit
+ * has already FAILED: in a batch where nothing failed these edges change
+ * nothing, so the inference can never cost a delegation that would have run.
+ * When a producer HAS failed, its diff was rolled back with it and every later
+ * same-role consumer is about to spend a full model run against exports that no
+ * longer exist — measured 16co: `news-article-presentation` (kind page) burned
+ * 565s and then failed `TS2305 … has no exported member 'getNewsBySlug'`
+ * because `news-fixtures` (kind feature) had been reverted nine minutes
+ * earlier. Their allowlists were disjoint, so nothing in the queue could see
+ * the dependency and the plan declared no `depends:` edge.
+ *
+ * The prose asks the architect for that edge; this is the safety net for when
+ * it is missing, deliberately narrow: same role only, producer strictly EARLIER
+ * in the queue, declared edges never duplicated. A false edge costs one free
+ * delegation in a batch that is already degraded; a missing one costs a full
+ * model run plus, in maintenance, a fallback debt for work that never landed.
+ */
+export function implicitProducerDependencies(
+  units: readonly OpenCodeQueueUnit[],
+): Map<string, string[]> {
+  const producersByRole = new Map<string, string[]>();
+  const edges = new Map<string, string[]>();
+  for (const unit of units) {
+    const kind = (unit.kind || '').trim().toLowerCase();
+    const role = normalizeOpenCodeRole(unit.role);
+    if (CONSUMER_UNIT_KINDS.has(kind)) {
+      const declared = new Set(unit.dependsOn);
+      const inferred = (producersByRole.get(role) || [])
+        .filter((id) => id !== unit.id && !declared.has(id));
+      if (inferred.length > 0) edges.set(unit.id, inferred);
+    }
+    // Registered AFTER the consumer check so an edge is never derived from a
+    // producer that runs later — the queue is walked in order.
+    if (PRODUCER_UNIT_KINDS.has(kind)) {
+      producersByRole.set(role, [...(producersByRole.get(role) || []), unit.id]);
+    }
+  }
+  return edges;
+}
+
 // A unit whose declared `depends:` predecessor ended in one of these has no
 // prerequisites on disk: running it burns a full delegation to fail the same way
 // (17c: a tester unit spent 303s trying to CREATE the package its dependency

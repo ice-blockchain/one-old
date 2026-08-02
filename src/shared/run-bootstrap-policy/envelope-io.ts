@@ -344,6 +344,29 @@ export function pruneBootstrapHistory(cwd: string, runId: string): void {
 }
 
 /**
+ * Does a role owe a PENDING maintenance fallback?
+ *
+ * While it does, `fallbackContractMatches` admits ONLY the debts' own bounded
+ * scope for that role: every other envelope — including the role's planned
+ * full-scope one — is a widening and is refused by design. A publisher that
+ * cannot derive that bounded scope must therefore treat the refusal as "this
+ * role is temporarily unpublishable", never as "this run is broken".
+ */
+export function roleOwesPendingMaintenanceFallback(
+  cwd: string,
+  runId: string,
+  role: string,
+): boolean {
+  const marker = readJson<Record<string, unknown> | null>(
+    path.join(cwd, RUNS_REL_DIR, safePart(runId), 'maintenance.json'),
+    null,
+  );
+  return Boolean(marker
+    && marker.overallOutcome === 'fallback-pending'
+    && maintenanceRole(marker.role) === role);
+}
+
+/**
  * The union of every pending maintenance debt's pinned source files for a role,
  * or null when nothing is pending (or any pending debt's baseline is
  * unreadable — the union must never be a guess).

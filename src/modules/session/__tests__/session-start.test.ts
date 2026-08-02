@@ -353,6 +353,123 @@ test('SessionStart policy freeze does not resume or upgrade a completed legacy m
   });
 });
 
+// ── Parent policy preflight: a null policy has three distinct causes and only
+// one of them is repaired by Performance. ──
+
+function writeSubagentPrefs(): void {
+  writeLocalPrefs({
+    performance: { level: 'high', source: 'prompted' },
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  });
+}
+
+// The first SessionStart of a subagents project mints the run AND publishes
+// model-policy.json plus the capability/baseline bootstrap, so a follow-up
+// session can break exactly one layer and assert which message the parent gets.
+function freezeSubagentRun(cwd: string): { runId: string; runDir: string } {
+  writeSubagentPrefs();
+  const first = runSessionStartAuthed(ctx(cwd));
+  assert.equal(first.kind, 'context');
+  if (first.kind === 'context') {
+    assert.ok(first.context.startsWith('═══ traffic-one'), 'a fully bootstrapped run gets the normal header');
+    assert.doesNotMatch(first.context, /TRAFFIC_ONE_(MODEL_POLICY|BOOTSTRAP)_BLOCKED|TRAFFIC_ONE_CURSOR_MODELS_REQUIRED/);
+  }
+  const runId = String(JSON.parse(
+    fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'),
+  ).currentRunId);
+  const runDir = path.join(cwd, '.traffic-one', 'runs', runId);
+  assert.equal(fs.existsSync(path.join(runDir, 'model-policy.json')), true, 'the run froze its create-once policy');
+  return { runId, runDir };
+}
+
+function breakParentBootstrap(runDir: string): void {
+  fs.rmSync(path.join(runDir, 'capability-v1.json'), { force: true });
+  fs.writeFileSync(path.join(runDir, 'baseline-v1.json'), '{}\n', 'utf8');
+}
+
+test('SessionStart reports a frozen run whose parent bootstrap failed as BOOTSTRAP_BLOCKED', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    const { runId, runDir } = freezeSubagentRun(cwd);
+    breakParentBootstrap(runDir);
+    const blocked = runSessionStartAuthed(ctx(cwd));
+    assert.equal(blocked.kind, 'context');
+    if (blocked.kind !== 'context') return;
+    assert.ok(blocked.context.startsWith('TRAFFIC_ONE_BOOTSTRAP_BLOCKED'), blocked.context.slice(0, 120));
+    assert.ok(blocked.context.includes(`Run ${runId} already has a valid immutable model policy`));
+    assert.match(blocked.context, /capability baseline and parent bootstrap/);
+    assert.match(blocked.context, /do not redo onboarding/i);
+    // The wizard cannot rebase a create-once policy — never send the user there.
+    assert.doesNotMatch(blocked.context, /Reopen Performance/i);
+    assert.match(String(blocked.systemMessage), /capability baseline and parent bootstrap/);
+  });
+});
+
+test('SessionStart names the frozen host when the run belongs to another host', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    const { runId, runDir } = freezeSubagentRun(cwd);
+    breakParentBootstrap(runDir);
+    const blocked = runSessionStartAuthed(ctxHost(cwd, 'codex'));
+    assert.equal(blocked.kind, 'context');
+    if (blocked.kind !== 'context') return;
+    assert.ok(blocked.context.startsWith('TRAFFIC_ONE_MODEL_POLICY_BLOCKED'), blocked.context.slice(0, 120));
+    assert.ok(blocked.context.includes(`Run ${runId} is frozen for claude, not codex`));
+    assert.match(blocked.context, /Start a new parent run for the active host/);
+    assert.doesNotMatch(blocked.context, /Reopen Performance/i);
+    assert.doesNotMatch(blocked.context, /TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
+  });
+});
+
+// NEGATIVE: the new arms must not swallow the state they do not describe. A
+// published-but-unreadable create-once policy is NOT a bootstrap failure.
+test('SessionStart keeps the Performance message when no valid policy was ever frozen', () => {
+  withProject(newProjectSharedState({ currentRunId: 'run-corrupt' }), (cwd) => {
+    writeSubagentPrefs();
+    const policyPath = path.join(cwd, '.traffic-one', 'runs', 'run-corrupt', 'model-policy.json');
+    fs.mkdirSync(path.dirname(policyPath), { recursive: true });
+    fs.writeFileSync(policyPath, '{ not json', 'utf8');
+    const blocked = runSessionStartAuthed(ctx(cwd));
+    assert.equal(blocked.kind, 'context');
+    if (blocked.kind !== 'context') return;
+    assert.ok(blocked.context.startsWith('TRAFFIC_ONE_MODEL_POLICY_BLOCKED'), blocked.context.slice(0, 120));
+    assert.match(blocked.context, /Reopen Performance/);
+    assert.doesNotMatch(blocked.context, /TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
+  });
+});
+
+// NEGATIVE: capture is the only action that repairs an UNPUBLISHED Cursor
+// policy — offering it against a published one is busy-work that hid the real
+// blocker behind a model-picker chore.
+test('cursor: model capture is not offered once a create-once policy is published', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    const { runId, runDir } = freezeSubagentRun(cwd);
+    breakParentBootstrap(runDir);
+    const blocked = runSessionStartAuthed(ctxHost(cwd, 'cursor'));
+    assert.equal(blocked.kind, 'context');
+    if (blocked.kind !== 'context') return;
+    assert.doesNotMatch(blocked.context, /TRAFFIC_ONE_CURSOR_MODELS_REQUIRED/);
+    assert.doesNotMatch(blocked.context, /--capture-models/);
+    assert.ok(blocked.context.includes(`Run ${runId} is frozen for claude, not cursor`));
+  });
+});
+
+test('cursor: an unpublished run still asks for the Task-picker capture first', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    writeSubagentPrefs();
+    const blocked = runSessionStartAuthed(ctxHost(cwd, 'cursor'));
+    assert.equal(blocked.kind, 'context');
+    if (blocked.kind !== 'context') return;
+    assert.ok(blocked.context.startsWith('TRAFFIC_ONE_CURSOR_MODELS_REQUIRED'), blocked.context.slice(0, 120));
+    const runId = String(JSON.parse(
+      fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'),
+    ).currentRunId);
+    assert.equal(
+      fs.existsSync(path.join(cwd, '.traffic-one', 'runs', runId, 'model-policy.json')),
+      false,
+      'no incomplete create-once policy is published',
+    );
+  });
+});
+
 test('runSessionStartAuthed prunes stale pending run claims during startup hygiene', () => {
   withProject(existingState({ currentRunId: 'run-prune' }), (cwd) => {
     writeLocalPrefs();

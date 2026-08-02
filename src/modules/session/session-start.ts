@@ -55,7 +55,8 @@ import {
   type SessionOneMcpSync,
 } from './one-mcp-sync';
 import { sessionPerformanceContext } from '../../shared/session-performance-context';
-import { ensureRunModelPolicy } from '../../shared/run-model-policy';
+import { ensureRunModelPolicy, readRunModelPolicy, runModelPolicyPath } from '../../shared/run-model-policy';
+import { canonicalHost } from '../../shared/model-tiers';
 import { detectHostPlan } from '../../shared/host/plan';
 import { finalizePaidMaintenanceFallback } from '../../shared/maintenance/fallback';
 import { reconcileRunSettlement } from '../../shared/run-settlement';
@@ -294,13 +295,41 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
         { ...process.env, TRAFFIC_ONE_HOST: ctx.host },
       );
       if (!policy) {
+        // A null policy has three distinct causes and only one of them is
+        // repaired by Performance. Telling every session to "Reopen Performance"
+        // sends the user to a wizard that CANNOT touch a create-once policy that
+        // is already frozen — observed 16co, where a failing parent bootstrap
+        // preflight wedged every session behind an unactionable message. Same
+        // discrimination, token vocabulary, and ordering as the onboarding gate
+        // (modules/onboarding-gate/handler.ts) and the setup-completion runner
+        // (runners/onboarding-wait/pre-spawn-directives.ts).
+        const frozenPolicy = readRunModelPolicy(cwd, runId);
+        // Capture is the only action that can still make an UNPUBLISHED Cursor
+        // policy buildable; once the path exists (valid or corrupt) create-once
+        // forbids rebasing it, so capture would be busy-work.
         if (ctx.host === 'cursor'
+          && !fs.existsSync(runModelPolicyPath(cwd, runId))
           && freshCursorModels(cwd, detectHostPlan('cursor')).length === 0) {
           return context(
             `TRAFFIC_ONE_CURSOR_MODELS_REQUIRED\nBefore run ${runId} can be frozen, enumerate the exact model ids in Cursor's Task picker and run:\n`
             + `${modelCaptureCommand(cwd, 'cursor')}\n`
             + 'Then retry the parent action. Traffic One will create model-policy.json only after those exact runnable slugs are available.',
             { systemMessage: 'traffic-one: capture Cursor subagent models before starting the immutable run' },
+          );
+        }
+        if (frozenPolicy && frozenPolicy.host !== canonicalHost(ctx.host)) {
+          return context(
+            `TRAFFIC_ONE_MODEL_POLICY_BLOCKED\nRun ${runId} is frozen for ${frozenPolicy.host}, not ${canonicalHost(ctx.host)}. `
+            + 'Start a new parent run for the active host; do not rebase or replace model-policy.json.',
+            { systemMessage: 'traffic-one: this run is frozen for another host — start a new parent run' },
+          );
+        }
+        if (frozenPolicy) {
+          return context(
+            `TRAFFIC_ONE_BOOTSTRAP_BLOCKED\nRun ${runId} already has a valid immutable model policy and saved Performance choice, but Traffic One `
+            + 'could not publish or validate its capability baseline and parent bootstrap. Do not spawn a child and do not redo onboarding; '
+            + 'Performance cannot repair this. Update or repair Traffic One, then retry this parent session with the same run.',
+            { systemMessage: 'traffic-one: subagent spawning paused until the run capability baseline and parent bootstrap can be published' },
           );
         }
         return context(

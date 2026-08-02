@@ -36,6 +36,7 @@ export {
 } from './store';
 
 export {
+  implicitProducerDependencies,
   openCodeQueuePolicyReport,
   openCodeQueuePolicyViolations,
   unsafeAllowedFilePatterns,
