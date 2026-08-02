@@ -99,7 +99,7 @@ function bootstrapFallback(bootstrapCommand: string, waitCommand: string, hostSt
     + `${hostStep}\n\n`
     + 'The bootstrap prints `TRAFFIC_ONE_SETUP_READY` and a live `Setup link:`, then exits. Post that URL to the user as a standalone clickable link in a chat message — do not open it yourself with a browser tool. Immediately afterward run this normal waiter and keep the turn active:\n\n'
     + `${waitCommand}\n\n`
-    + 'When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. Building, installs, and subagent work remain blocked until completion.';
+    + 'When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. If it prints `TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED`, follow its printed classification instructions (inspect the repo, run the printed `--set-tech` command), then re-run. Building, installs, and subagent work remain blocked until completion.';
 }
 
 function compactBootstrapFallback(bootstrapCommand: string, waitCommand: string, code: string): string {

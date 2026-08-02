@@ -16,7 +16,8 @@ import { stampWindsurfBackend } from '../shared/windsurf-backend';
 import { devinPreToolDeny, hasValidPreToolPayload, isGatePreToolSubcommand } from './fail-closed';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { localFallbackSection } from '../shared/onboarding-server/wizard-links';
-import { onboardingSyncSessionId } from '../shared/onboarding-server/wait-command';
+import { onboardingSetTechCommandTemplate, onboardingSyncSessionId } from '../shared/onboarding-server/wait-command';
+import { techClassifyHints, techClassifyRequiredReason } from '../shared/onboarding-server/tech-classify-setup';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -31,8 +32,20 @@ function onboardingStopResult(stdin: string, cwd: string): string {
   // avoid an infinite loop if the model still refuses to issue the wait tool.
   if (data.stop_hook_active === true) return '';
   const root = resolveProjectRoot(cwd);
-  if (isNonProjectRoot(root) || computeOnboarding(root).done) return '';
+  if (isNonProjectRoot(root)) return '';
+  const onboarding = computeOnboarding(root);
+  if (onboarding.done) return '';
   const syncSession = onboardingSyncSessionId(data.session_id ?? data.sessionId);
+  // Setup pending on the AGENT (tech classification): no wizard server or link —
+  // block once with the classification recipe instead (this Stop block is the
+  // Devin backend's only re-delivery channel).
+  if (onboarding.step === 'tech-detect') {
+    const template = onboardingSetTechCommandTemplate(root, 'windsurf', syncSession);
+    return JSON.stringify({
+      decision: 'block',
+      reason: techClassifyRequiredReason(template, techClassifyHints(null)),
+    });
+  }
   const prepared = prepareOnboardingServer(root, 'windsurf', { syncSession });
   if (prepared.kind !== 'ready') {
     return JSON.stringify({ decision: 'block', reason: prepared.reason });

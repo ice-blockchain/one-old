@@ -130,8 +130,8 @@ export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: strin
     `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately${host === 'codex'
       ? '. Codex: run it via exec_command with `sandbox_permissions: "require_escalated"` — it stores the choice under `~/.traffic-one`, outside the workspace sandbox, so an unescalated run fails with EPERM'
       : ''}:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt, syncSession)}`,
-    '  2. Post that setup link to the user in a CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. The command output in step 1 does NOT count as showing it: several hosts collapse or hide it, and an agent that treats it as shown leaves the user with no link at all. Do NOT open the link yourself with a browser tool or an `open`/`xdg-open`/`start` command — the user clicks it and completes setup themselves. (Skip this step if step 1 printed TRAFFIC_ONE_SETUP_COMPLETE.)',
-    `  3. Run this command to wait for setup to finish — in the FOREGROUND of this turn, never as a background task, with a long timeout (~9 minutes / 540000 ms). Backgrounding it sends its output (including the setup link it re-prints) to a task file the user never opens, and the turn ends with the user waiting on a link they were never shown. When it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request:\n${onboardingWaitCommand(cwd, host, syncSession)}`,
+    '  2. Post that setup link to the user in a CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. The command output in step 1 does NOT count as showing it: several hosts collapse or hide it, and an agent that treats it as shown leaves the user with no link at all. Do NOT open the link yourself with a browser tool or an `open`/`xdg-open`/`start` command — the user clicks it and completes setup themselves. (Skip this step if step 1 printed TRAFFIC_ONE_SETUP_COMPLETE. If it printed TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED, follow its printed classification instructions first — inspect the repo, run the printed `--set-tech` command with the tech you identified — and it will print the setup link.)',
+    `  3. Run this command to wait for setup to finish — in the FOREGROUND of this turn, never as a background task, with a long timeout (~9 minutes / 540000 ms). Backgrounding it sends its output (including the setup link it re-prints) to a task file the user never opens, and the turn ends with the user waiting on a link they were never shown. When it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request; if it prints TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED, follow its printed classification instructions, then re-run it:\n${onboardingWaitCommand(cwd, host, syncSession)}`,
     `- If the user answers NO, run this command — the choice is saved outside the project (no files are added to it) and Traffic One stays silent here until the user explicitly asks for it again:\n${onboardingDeclineCommand(cwd, host)}`,
     '',
     'Run each command EXACTLY as printed — no pipes, redirection, `&&`, or extra arguments. '
@@ -146,4 +146,39 @@ export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: strin
 // synchronizes current model config, then starts the normal setup flow.
 export function onboardingReconsiderCommand(cwd: string, host?: HostId, syncSession?: string): string {
   return onboardingRunnerCommand(cwd, host, ['--reconsider'], syncSessionFlags(syncSession));
+}
+
+// The agent's manual tech classification for an UNDETECTABLE existing repo: the
+// deterministic tables derived no stack, so the session agent inspected the
+// codebase itself and submits the surfaces here. The stack id is DERIVED by the
+// runtime (classifyDetectedSurfaces) — never agent-supplied. Exact runnable form.
+export interface SetTechFlags {
+  frontend: string;
+  backend: string;
+  mobile?: string;
+  realtime?: string;
+  evidence?: string;
+}
+
+export function onboardingSetTechCommand(
+  cwd: string,
+  host: HostId | undefined,
+  tech: SetTechFlags,
+  syncSession?: string,
+): string {
+  const surfaceFlags = [
+    `--frontend=${tech.frontend}`,
+    `--backend=${tech.backend}`,
+    ...(tech.mobile && tech.mobile !== 'none' ? [`--mobile=${tech.mobile}`] : []),
+    ...(tech.realtime === 'light' ? ['--realtime=light'] : []),
+    ...(tech.evidence?.trim() ? [`--evidence=${tech.evidence.trim().slice(0, 400)}`] : []),
+  ];
+  return onboardingRunnerCommand(cwd, host, ['--set-tech'], [...surfaceFlags, ...syncSessionFlags(syncSession)]);
+}
+
+// The base command for directive PROSE: mode flag + cwd + host (+ sync-session),
+// fully quoted; the prose instructs appending the surface flags with ids from
+// the enumerated vocabularies.
+export function onboardingSetTechCommandTemplate(cwd: string, host?: HostId, syncSession?: string): string {
+  return onboardingRunnerCommand(cwd, host, ['--set-tech'], syncSessionFlags(syncSession));
 }

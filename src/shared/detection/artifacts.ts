@@ -137,7 +137,7 @@ export function detectMobileFromText(text: string): MobileDetection {
   return { enabled: true, framework: 'ionic-capacitor', source: 'explicit', intentDetected: true };
 }
 
-interface StackDetection {
+export interface StackDetection {
   stack: string | null;
   backend: string | null;
   frontend: string | null;
@@ -146,7 +146,11 @@ interface StackDetection {
   mobile?: { enabled: boolean; framework: string; source: string };
 }
 
-function classifyDetectedSurfaces(out: StackDetection): void {
+// Exported for the agent-classification path: the agent submits SURFACES
+// (frontend/backend/mobile/realtime) and this single rule derives the stack id —
+// the agent never picks a stack id directly, so both classification paths share
+// one derivation.
+export function classifyDetectedSurfaces(out: StackDetection): void {
   const hasWebUi = Boolean(out.frontend && out.frontend !== 'none');
   const hasNativeUi = Boolean(out.mobile?.enabled && out.mobile.framework !== 'none');
   const hasBackend = Boolean(out.backend && out.backend !== 'none');

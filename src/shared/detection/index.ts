@@ -283,6 +283,7 @@ export function isLikelyEditRequest(prompt: unknown): boolean {
 }
 export {
   SOURCE_EXTS,
+  classifyDetectedSurfaces,
   countSourceFiles,
   dependenciesFromPackage,
   detectBackendFromText,
@@ -292,4 +293,5 @@ export {
   detectStackFromCodebase,
   hasWorkspaces,
   loadPackageJson,
+  type StackDetection,
 } from './artifacts';

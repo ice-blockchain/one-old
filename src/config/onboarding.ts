@@ -58,12 +58,13 @@ interface TeamRole {
   blurb: string;
 }
 
-type StepKind = 'single_select' | 'form' | 'finalize' | 'done' | 'text_input';
+type StepKind = 'single_select' | 'form' | 'finalize' | 'done' | 'text_input' | 'waiting';
 
 // The steps that carry static copy (excludes the 'finalize'/'done'/null flow
 // states, which flow.ts builds inline).
 export type WizardStepId =
   | 'api-key'
+  | 'tech-detect'
   | 'open-code'
   | 'performance'
   | 'team-confirmation'
@@ -118,6 +119,14 @@ export const STEP_COPY: Record<WizardStepId, StepCopy> = {
     kind: 'text_input',
     title: 'Your API key',
     question: 'Paste your Traffic One API key to activate the plugin. It is a data/telemetry key that helps us make Traffic One better — not a password. You only enter it once; we will only ask again if the key stops working.',
+  },
+  // Passive page: the SESSION AGENT is the actor here (it inspects the repo and
+  // submits the tech via the allow-listed runner command); the wizard only shows
+  // progress and auto-advances when the classification lands.
+  'tech-detect': {
+    kind: 'waiting',
+    title: 'Analyzing your codebase',
+    question: 'Your coding agent is identifying this project’s tech stack. This page continues automatically once it submits — nothing to do here.',
   },
   'open-code': {
     kind: 'single_select',

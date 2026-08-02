@@ -5,6 +5,10 @@
 // so writes land in the isolated per-case paths.
 
 import { computeOnboarding, applyAnswer } from '../../shared/onboarding-server/flow';
+import {
+  applyAgentTechClassification,
+  type AgentTechSubmission,
+} from '../../shared/onboarding/detection-stamp';
 import type { ScriptedAnswer } from './types';
 
 export interface OnboardingSimResult {
@@ -48,6 +52,21 @@ export function driveOnboarding(cwd: string, answers: ScriptedAnswer[]): Onboard
       return { ok: false, steps, finalStep: step, done: false };
     }
     const value = queued.shift();
+
+    // Agent classification is NOT a wizard answer (POST /answer rejects it by
+    // design — the runner is the only writer). The scripted value is the agent's
+    // submission, applied through the REAL writer the `--set-tech` runner uses.
+    if (step === 'tech-detect') {
+      const result = applyAgentTechClassification(cwd, value as AgentTechSubmission);
+      steps.push({
+        step,
+        ok: result.ok,
+        ...(result.ok ? {} : { error: `${result.reason}${'issues' in result && result.issues ? `: ${result.issues.join('; ')}` : ''}` }),
+      });
+      if (!result.ok) return { ok: false, steps, finalStep: step, done: false };
+      continue;
+    }
+
     const outcome = applyAnswer(cwd, step, value);
     steps.push({ step, ok: outcome.ok, error: outcome.error });
     if (!outcome.ok) return { ok: false, steps, finalStep: step, done: false };

@@ -7,6 +7,7 @@ import * as path from 'path';
 import { runClaudeHook } from '../claude-entry';
 import { runCursorHook } from '../cursor-entry';
 import { writeOneSection } from '../../shared/one-settings';
+import { recordPluginUseChoice } from '../../shared/state/plugin-use';
 
 // Golden parity: the SAME canonical scenario must yield the SAME canonical
 // decision (deny / silent) across hosts, serialized into each host's wire shape
@@ -86,6 +87,11 @@ test('parity: AUTHED new-project + onboarding incomplete → DENY on both', asyn
 
 test('parity: AUTHED existing-codebase + benign shell → silent on both', async () => {
   await withScenario({ authed: true, state: { mode: 'existing-codebase' } }, async (cwd) => {
+    // Consent recorded: without it the ask-first question owns every tool. The
+    // stack-less state now routes to agent classification (tech-detect), where
+    // read-only orientation MUST stay silent — inspection is how the agent
+    // classifies the repo.
+    recordPluginUseChoice(cwd, true, 'command');
     const claude = await runClaudeHook('check-library-allowlist', JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls -la' }, cwd }));
     const cursor = await runCursorHook('before-shell-execution', JSON.stringify({ cwd, command: 'ls -la' }));
     assert.equal(claudeDecision(claude.stdout), 'silent');

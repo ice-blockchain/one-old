@@ -17,7 +17,13 @@ import { packBundle } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective } from '../../shared/skill-filters';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
-import {  onboardingSyncSessionId } from '../../shared/onboarding-server/wait-command';
+import {  onboardingSetTechCommandTemplate, onboardingSyncSessionId } from '../../shared/onboarding-server/wait-command';
+import {
+  techClassifyHints,
+  techClassifyRequiredCompactReason,
+  techClassifyRequiredReason,
+} from '../../shared/onboarding-server/tech-classify-setup';
+import { makeSkillBlock } from '../../shared/skill-block';
 import {  STACKS, stackSpecForState } from '../../shared/stacks';
 import {
   ensureCurrentRunId,
@@ -369,11 +375,25 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     // onboarding-wait runner can apply the SAME write at consent time (SessionStart
     // cannot: it writes nothing while the use-plugin question is pending). Mutates
     // `state` in place; persistence stays with the single writeState below, after
-    // stampMaterialization has added its fields. `floorMinimal` keeps this flow's
-    // historical behavior of inventing `minimal` when detection finds nothing —
-    // runners deliberately do not, so a sparse repo gains no wizard.
-    // Non-null: `floorMinimal` guarantees a stack, so it only returns null without it.
-    const detected = applyExistingCodebaseDetection(cwd, state, mode, { floorMinimal: true })!;
+    // stampMaterialization has added its fields.
+    const detected = applyExistingCodebaseDetection(cwd, state, mode);
+    // Undetectable: the deterministic tables derived no stack, and the historical
+    // `stack: 'minimal'` floor is gone — the SESSION AGENT classifies instead.
+    // ZERO writes here (the repo stays byte-identical until the agent's
+    // `--set-tech` submission lands through the shared writer).
+    if (!detected.stack) {
+      const template = onboardingSetTechCommandTemplate(cwd, ctx.host, onboardingSyncSessionId(hookSessionIdentity(ctx.input.raw).sessionId));
+      const hints = techClassifyHints(detected);
+      const reason = ctx.host === 'opencode' || ctx.host === 'kilo'
+        ? techClassifyRequiredCompactReason(template, hints)
+        : makeSkillBlock(pluginRoot)('onboarding-gate', 'tech-classify-required', {
+          SET_TECH_TEMPLATE: template,
+          HINTS: hints,
+        }, techClassifyRequiredReason(template, hints));
+      return context(reason, {
+        systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
+      });
+    }
 
     const capabilityState = capabilityStateForRun(cwd, state);
     const spec = stackSpecForState(capabilityState);

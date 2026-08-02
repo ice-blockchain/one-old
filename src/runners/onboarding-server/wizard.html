@@ -236,7 +236,7 @@
     var T1_TOKEN = (T1_INJECTED.charAt(0) !== "%" ? T1_INJECTED : "")
       || new URLSearchParams(location.search).get("t") || "";
     const NEW_PROJECT_STEPS = ["api-key", "open-code", "performance", "team-confirmation", "project-context", "mobile", "code-graph"];
-    const EXISTING_STEPS = ["api-key", "open-code", "performance", "team-confirmation", "code-graph"];
+    const EXISTING_STEPS = ["api-key", "tech-detect", "open-code", "performance", "team-confirmation", "code-graph"];
     // Presentation-only grouping for the long project-context form so the fields
     // read as a few scannable sections instead of one tall stack. Unknown keys
     // (e.g. a field added server-side later) fall through to "More details".
@@ -796,9 +796,39 @@
       if (v.error) { setActions(null); view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Setup error"])); return showError(v.error); }
       if (v.done) return verifyThenDone();
       if (v.step === "finalize") return submitAnswer("finalize", null, "Finishing setup…");
+      if (v.meta && v.meta.kind === "waiting") return renderWaiting(v);
       if (v.meta && v.meta.kind === "text_input") return renderApiKey(v);
       if (v.meta && v.meta.kind === "form") return renderForm(v);
       return renderSingleSelect(v);
+    }
+
+    // Passive step: the coding AGENT is the actor (tech classification); the page
+    // just shows progress and re-polls /state until the step moves on. Guarded so
+    // overlapping renders never stack two poll loops.
+    var waitingPollActive = false;
+    function renderWaiting(v) {
+      setActions(null);
+      view.innerHTML = "";
+      view.appendChild(el("div", { className: "step-title" }, [v.meta && v.meta.title ? v.meta.title : "Working…"]));
+      view.appendChild(el("div", { className: "step-question" }, [v.meta && v.meta.question ? v.meta.question : ""]));
+      view.appendChild(el("div", { className: "hint" }, ["Waiting for your coding agent…"]));
+      renderProgress(v);
+      if (waitingPollActive) return;
+      waitingPollActive = true;
+      (async function waitLoop() {
+        try {
+          for (;;) {
+            await new Promise((r) => setTimeout(r, 2000));
+            let next;
+            try { next = await api("/state"); } catch (_) { continue; }
+            if (!next || (next.step === "tech-detect" && !next.done)) continue;
+            waitingPollActive = false;
+            return render(next);
+          }
+        } catch (_) {
+          waitingPollActive = false;
+        }
+      })();
     }
 
     (async function start() {

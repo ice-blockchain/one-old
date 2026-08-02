@@ -17,7 +17,12 @@ import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { detectMode } from '../../shared/detection';
+import { detectMode, detectStackFromCodebase } from '../../shared/detection';
+import {
+  techClassifyHints,
+  techClassifyRequiredCompactReason,
+  techClassifyRequiredReason,
+} from '../../shared/onboarding-server/tech-classify-setup';
 import { isOnboardedProjectRoot } from '../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
@@ -54,7 +59,7 @@ import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutat
 import { browserOpenDeniedReason } from '../../shared/onboarding-server/browser-open';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
-import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
+import { onboardingDeclineCommand, onboardingSetTechCommandTemplate, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import {
   cursorRunPolicyMissingTiers,
   ensureRunModelPolicy,
@@ -191,7 +196,8 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // The model is allowed to write the canonical state file itself.
   if (isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput)) return noop();
 
-  const onboardingComplete = computeOnboarding(root).done;
+  const onboarding = computeOnboarding(root);
+  const onboardingComplete = onboarding.done;
   if (!onboardingComplete) {
     // A SUBAGENT must never be sent to the setup wizard. Onboarding is the parent/
     // main-agent's job, completed BEFORE any subagent spawns, and a worker thread
@@ -237,6 +243,26 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // the link, and then never posts it (observed 2cu/5cu).
     if (isBrowserOpenCommand(toolName, toolInput)) {
       return deny(block('browser-open-denied', {}, browserOpenDeniedReason()));
+    }
+    // Setup is pending on the AGENT (tech classification), not the user: the
+    // deterministic tables derived no stack, so the agent must inspect the repo
+    // and submit via `--set-tech`. No wizard/link ceremony here — reads stay
+    // allowed (inspection IS the classification work), the runner commands
+    // pass (the waiter/bootstrap self-direct with their own token), and every
+    // mutating tool gets the recipe. Ask-first still owns the pre-consent turn
+    // (its deny below asks the question instead).
+    if (onboarding.step === 'tech-detect' && !usePluginQuestionPending(root)) {
+      if (isOnboardingWaitCommand(toolName, toolInput)) return noop();
+      if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+      const template = onboardingSetTechCommandTemplate(root, ctx.host, syncSession);
+      const hints = techClassifyHints(detectStackFromCodebase(root));
+      const reason = ctx.host === 'opencode' || ctx.host === 'kilo'
+        ? techClassifyRequiredCompactReason(template, hints)
+        : block('tech-classify-required', {
+          SET_TECH_TEMPLATE: template,
+          HINTS: hints,
+        }, techClassifyRequiredReason(template, hints));
+      return deny(reason);
     }
     if (isOnboardingWaitCommand(toolName, toolInput)) {
       // Ask-first pending: the runner invocation IS the answer path (--use /

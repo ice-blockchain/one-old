@@ -253,10 +253,11 @@ test('existing codebase with a detectable but unstamped stack still gets the wiz
   });
 });
 
-test('sparse existing dir where detection finds nothing keeps the no-wizard behavior', () => {
+test('existing dir where detection finds nothing routes to AGENT classification (tech-detect)', () => {
   withProject(null, (cwd) => {
     // >5 source files so detectMode says existing-codebase, but no framework
-    // manifests — detectStackFromCodebase finds no stack.
+    // manifests — detectStackFromCodebase finds no stack. This used to read as
+    // done (the half-onboarded hole): now the session agent must classify.
     fs.mkdirSync(path.join(cwd, 'scripts'), { recursive: true });
     for (let i = 0; i < 7; i += 1) {
       fs.writeFileSync(path.join(cwd, 'scripts', `util${i}.py`), 'print(1)\n', 'utf8');
@@ -265,7 +266,9 @@ test('sparse existing dir where detection finds nothing keeps the no-wizard beha
 
     const view = computeOnboarding(cwd);
     assert.equal(view.mode, 'existing-codebase');
-    assert.equal(view.done, true, 'nothing detectable → local prefs are not required (unchanged)');
+    assert.equal(view.done, false, 'undetectable is no longer done — the agent classifies via --set-tech');
+    assert.equal(view.step, 'tech-detect');
+    assert.equal(view.meta?.kind, 'waiting', 'the wizard shows the passive waiting page for this step');
   });
 });
 

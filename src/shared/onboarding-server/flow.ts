@@ -118,11 +118,23 @@ export function computeOnboarding(
     // answer runs `--use --bootstrap-only` in the SAME session — so the whole
     // wizard (OpenCode, performance, team, code graph) was skipped for every
     // existing codebase on an already-authenticated machine. Route the step
-    // check through fresh detection instead; a sparse repo where detection
-    // finds nothing keeps today's no-wizard behavior.
-    const raw = nextLocalPreferenceStep(stackRoutingState(cwd, state), host, localPreferenceTarget);
-    step = (raw as WizardStep) ?? null;
-    done = raw == null;
+    // check through fresh detection instead.
+    const routed = stackRoutingState(cwd, state);
+    if (typeof routed.stack !== 'string' || !routed.stack) {
+      // The deterministic tables derived NO stack for a real existing repo (a
+      // genuinely-empty dir is `new-project` by detectMode's ≤5-file rule, so
+      // this is a repo the tables cannot see — e.g. bare Express). Setup is NOT
+      // done: the session agent must classify the tech and submit it via the
+      // allow-listed `--set-tech` runner command; the wizard shows a passive
+      // waiting page until the classification lands. This used to read as done
+      // and print a premature SETUP_COMPLETE, leaving the project half-onboarded.
+      step = 'tech-detect';
+      done = false;
+    } else {
+      const raw = nextLocalPreferenceStep(routed, host, localPreferenceTarget);
+      step = (raw as WizardStep) ?? null;
+      done = raw == null;
+    }
   }
 
   if (done && lacksDurableOnboardingState(cwd, state, host, env, localPreferenceTarget)) {

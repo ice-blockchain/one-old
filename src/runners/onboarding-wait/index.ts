@@ -3,11 +3,27 @@
 // self-heal, wait, and terminal banner emission. The stdout token protocol
 // documented in the sibling headers is the contract with the agent.
 
+import type { HostId } from '../../core/types';
 import { detectHost } from '../../shared/host';
 import { materializeProjectIfNeeded, writeOpenCodeHostAssets } from '../../shared/materialize';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { stampExistingCodebaseDetection } from '../../shared/onboarding/detection-stamp';
+import {
+  applyAgentTechClassification,
+  stampExistingCodebaseDetection,
+  type DetectionStampResult,
+} from '../../shared/onboarding/detection-stamp';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { askUsePluginFirst } from '../../shared/onboarding-server/flow-view';
+import {
+  TECH_CLASSIFY_REQUIRED_TOKEN,
+  TECH_INVALID_TOKEN,
+  TECH_RECORDED_TOKEN,
+  techClassifyHints,
+  techClassifyIdLists,
+  techClassifyRequiredReason,
+} from '../../shared/onboarding-server/tech-classify-setup';
+import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
+import { onboardingSetTechCommandTemplate, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import {
   isOnboardingPermissionError,
   onboardingBootstrapReason,
@@ -74,13 +90,26 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   // makes materializeProjectIfNeeded bail forever, so the wizard completes and the
   // build is still blocked on "materialization not complete". Deliberately NOT gated
   // on `!alreadyDone`: that is what repairs a project already stuck in the seed state.
-  // No `floorMinimal` here, so an undetectable repo is left exactly as it is today.
-  stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
+  // An undetectable repo is left untouched; its partial evidence feeds the
+  // agent-classification hints below.
+  const stampResult = stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
+  if (argv.includes('--set-tech')) {
+    runSetTech(cwd, host, argv);
+  }
   if (reconsider) {
     process.stdout.write(
       'TRAFFIC_ONE_RECONSIDER\n'
       + 'Traffic One is enabled for this project again. Starting setup now.\n',
     );
+  }
+  // Setup pending on the AGENT, not the user: the deterministic tables derived no
+  // stack, so classification must land before any wizard/link ceremony. Emitted
+  // for every non-set-tech invocation so bootstrap and waiter alike hand control
+  // back to the agent instead of printing a premature link or SETUP_COMPLETE.
+  // Never pre-consent: while ask-first is pending the question owns the turn.
+  if (!alreadyDone && !pluginUseDeclined(cwd) && !usePluginQuestionPending(cwd)
+    && computeOnboarding(cwd).step === 'tech-detect') {
+    emitTechClassifyRequired(cwd, host, argv, stampResult);
   }
   // "Yes, use Traffic One here" — record the answer, then continue straight into
   // the normal wait behavior below (start wizard, print the link, block). With
@@ -259,8 +288,119 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     }
     process.exit(0);
   }
+  if (outcome === 'tech-classify') {
+    // The user finished their part (e.g. api-key) and setup now waits on the
+    // AGENT's classification — hand control back with the recipe instead of
+    // burning the rest of the timeout.
+    emitTechClassifyRequired(cwd, host, argv, stampResult);
+  }
   rearmSetupLinkNudge(cwd, host);
   process.stdout.write('TRAFFIC_ONE_SETUP_PENDING\n');
+  process.exit(2);
+}
+
+// The agent's `--set-tech` submission: validate + stamp through the shared
+// writer (deterministic-first — a stack committed meanwhile wins), materialize,
+// then continue straight into the normal bootstrap so ONE command takes the
+// agent from "classified" to "here is the Setup link".
+function runSetTech(cwd: string, host: HostId, argv: readonly string[]): never {
+  const flag = (name: string): string | undefined => {
+    const prefix = `--${name}=`;
+    const arg = argv.find((a) => a.startsWith(prefix));
+    return arg ? arg.slice(prefix.length) : undefined;
+  };
+  const result = applyAgentTechClassification(cwd, {
+    frontend: flag('frontend') || '',
+    backend: flag('backend') || '',
+    mobile: flag('mobile'),
+    realtime: flag('realtime'),
+    evidence: flag('evidence'),
+  }, { requireRecordedConsent: askUsePluginFirst(process.env) });
+
+  if (!result.ok) {
+    if (result.reason === 'declined') {
+      process.stdout.write(declineOutput(cwd, host));
+      process.exit(0);
+    }
+    if (result.reason === 'consent-missing') {
+      process.stdout.write(`${TECH_INVALID_TOKEN}\n\nThe use-plugin choice is not recorded yet — ask the user first:\n\n${usePluginQuestion(cwd, host, undefined, syncSessionFromArgv(argv))}\n`);
+      process.exit(2);
+    }
+    const ids = techClassifyIdLists();
+    const detail = result.reason === 'invalid-submission'
+      ? (result.issues || []).map((issue) => `- ${issue}`).join('\n')
+      : `- classification rejected: ${result.reason}${result.reason === 'belongs-to-enclosing-project' || result.reason === 'workspace-sub-package'
+        ? ' — run it against the project ROOT directory instead of this subdirectory'
+        : ''}`;
+    process.stdout.write([
+      TECH_INVALID_TOKEN,
+      '',
+      detail,
+      '',
+      `Re-run with valid ids — frontend: ${ids.frontend} · backend: ${ids.backend} · mobile: ${ids.mobile} · realtime: none|light. Template:`,
+      onboardingSetTechCommandTemplate(cwd, host, syncSessionFromArgv(argv)),
+      '',
+    ].join('\n'));
+    process.exit(2);
+  }
+
+  // Assets ready before the wizard completes (the stamp set onboardingComplete,
+  // so convergence runs; idempotent + best-effort like the completion path).
+  try {
+    materializeProjectIfNeeded(cwd, { trigger: 'onboarding-wait set-tech (post-classification materialize)' });
+  } catch {
+    // best-effort; the PreToolUse gate's materialize-then-retry remains the backstop
+  }
+  const note = result.alreadyClassified
+    ? ' (a committed stack already existed — your submission was not needed and did not overwrite it)'
+    : '';
+  process.stdout.write(`${TECH_RECORDED_TOKEN}\nstack=${result.stack}${note}\n`);
+  bootstrapAndEmitReady(cwd, host);
+}
+
+// Ensure the wizard server and print the SETUP_READY link (or the terminal
+// bootstrap failure) — the tail of the `--bootstrap-only` contract, reused by
+// the set-tech success path.
+function bootstrapAndEmitReady(cwd: string, host: HostId): never {
+  let launchError: unknown;
+  let localUrl = '';
+  let dashboardUrl = '';
+  let token = '';
+  let launched = false;
+  try {
+    const server = ensureOnboardingServer(cwd, { host });
+    if (server.localWizardUrl && !server.localWizardUrl.includes(':0/')) {
+      localUrl = server.localWizardUrl;
+      dashboardUrl = server.dashboardUrl;
+      token = server.token;
+      launched = server.started;
+    }
+  } catch (error) {
+    launchError = error;
+  }
+  if (launchError || !localUrl) {
+    const failure = launchError || Object.assign(new Error('wizard did not publish a live URL'), { code: 'START_FAILED' });
+    process.stdout.write(`TRAFFIC_ONE_SETUP_BOOTSTRAP_FAILED\n\n${onboardingStartFailureReason(failure, host)}\n`);
+    process.exit(2);
+  }
+  ensureOnboardingWaitPermission(cwd, host);
+  if (launched) awaitDashboardHealth(cwd, process.env, host);
+  process.stdout.write(bootstrapReadyOutput(cwd, token, dashboardUrl, localUrl, host));
+  process.exit(0);
+}
+
+// Setup is pending on the agent's classification: print the token + the full
+// recipe (command template + partial-detection hints) and exit 2 so the agent
+// acts and re-runs — mirrors the SETUP_PENDING re-run contract.
+function emitTechClassifyRequired(
+  cwd: string,
+  host: HostId,
+  argv: readonly string[],
+  stampResult: DetectionStampResult,
+): never {
+  const template = onboardingSetTechCommandTemplate(cwd, host, syncSessionFromArgv(argv));
+  const hints = techClassifyHints(stampResult.detected ?? null);
+  process.stdout.write(`${TECH_CLASSIFY_REQUIRED_TOKEN}\n\n${techClassifyRequiredReason(template, hints)}\n`);
   process.exit(2);
 }
 

@@ -1501,6 +1501,51 @@ test('hybrid UI architecture compilation is blocked without a runtime/user-owned
   });
 });
 
+test('a snapshot frozen as unsupported-hybrid is superseded once architectureTarget arrives', () => {
+  // The 1785681001843 wedge: the run snapshot minted BEFORE the hybrid question
+  // was answered froze `unsupported-hybrid` (a fail-closed state that authorized
+  // no roots or roles), and mint-once then wedged the run forever — assignments
+  // could never compile, maintenance writes failed closed, rotation was refused.
+  // Completing the missing input must supersede the blocked profile in place.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'packages/dashboard/app'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'packages/dashboard/package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0', react: '19.0.0' },
+    }));
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { expo: '55.0.0', react: '19.0.0', 'react-native': '0.83.0' },
+    }));
+    const state: Record<string, unknown> = {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'none',
+      backend: 'none',
+      mobile: { framework: 'react-native-expo' },
+    };
+    const blocked = ensureArchitectureRunSnapshot(cwd, 'WEDGE', state);
+    assert.equal(blocked.profile.profileId, 'unsupported-hybrid');
+    assert.equal(blocked.profile.blockingIssues?.[0]?.code, 'CAPABILITY_HYBRID_UI_TARGET_REQUIRED');
+
+    // Still blocked: a re-ensure WITHOUT the target changes nothing.
+    const stillBlocked = ensureArchitectureRunSnapshot(cwd, 'WEDGE', state);
+    assert.equal(stillBlocked.snapshotHash, blocked.snapshotHash);
+
+    // The user answers the hybrid question → the SAME run supersedes in place:
+    // clean profile, SAME immutable baseline (diff evidence preserved), new hash.
+    const healed = ensureArchitectureRunSnapshot(cwd, 'WEDGE', { ...state, architectureTarget: 'native-ui' });
+    assert.equal(healed.profile.profileId, 'react-native');
+    assert.equal(healed.profile.blockingIssues, undefined);
+    assert.equal(healed.baselineHash, blocked.baselineHash);
+    assert.notEqual(healed.snapshotHash, blocked.snapshotHash);
+
+    // Mint-once resumes: a healthy snapshot is NEVER superseded, even when the
+    // live state would now resolve differently.
+    const stable = ensureArchitectureRunSnapshot(cwd, 'WEDGE', { ...state, architectureTarget: 'web-ui' });
+    assert.equal(stable.snapshotHash, healed.snapshotHash);
+    assert.equal(stable.profile.profileId, 'react-native');
+  });
+});
+
 test('Laravel UI routes compile routes/web.php into the page-owner assignment even in maintenance', () => {
   withProject((cwd) => {
     const state = {

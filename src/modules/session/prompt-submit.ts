@@ -10,13 +10,18 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { detectMode, isLikelyCodingPrompt, isRuntimeControlPrompt, promptHasStackSignal } from '../../shared/detection';
+import { detectMode, detectStackFromCodebase, isLikelyCodingPrompt, isRuntimeControlPrompt, promptHasStackSignal } from '../../shared/detection';
+import {
+  techClassifyHints,
+  techClassifyRequiredCompactReason,
+  techClassifyRequiredReason,
+} from '../../shared/onboarding-server/tech-classify-setup';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
-import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
+import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingSetTechCommandTemplate, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
@@ -196,7 +201,8 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // The wizard owns the questions + state writes; the agent only points the user
   // at it and waits. Covers new-project onboarding AND an already-configured
   // project missing this user's local preferences.
-  if (!computeOnboarding(cwd).done) {
+  const onboardingView = computeOnboarding(cwd);
+  if (!onboardingView.done) {
     // Subagents never onboard — onboarding is the parent/main-agent's job and a
     // worker thread cannot drive the wizard (see the onboarding-gate handler). If a
     // subagent prompt reaches here (e.g. a stray nested root), don't surface it.
@@ -217,6 +223,22 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       });
     }
     seedOriginalPrompt(cwd, promptText);
+    // Setup is pending on the AGENT (tech classification), not the user: no
+    // wizard server, no link — hand the classification recipe to the agent
+    // (the seeded prompt above still feeds postSetupTriage after completion).
+    if (onboardingView.step === 'tech-detect') {
+      const template = onboardingSetTechCommandTemplate(cwd, ctx.host, syncSession);
+      const hints = techClassifyHints(detectStackFromCodebase(cwd));
+      const reason = ctx.host === 'opencode' || ctx.host === 'kilo'
+        ? techClassifyRequiredCompactReason(template, hints)
+        : block('tech-classify-required', {
+          SET_TECH_TEMPLATE: template,
+          HINTS: hints,
+        }, techClassifyRequiredReason(template, hints));
+      return context(`[ACTIVE STACK: ${stack}]\n\n${reason}`, {
+        systemMessage: 'traffic-one [setup required]',
+      });
+    }
     const prepared = prepareOnboardingServer(cwd, ctx.host, { syncSession });
     if (prepared.kind !== 'ready') {
       return context(`[ACTIVE STACK: ${stack}]\n\n${prepared.reason}`, {

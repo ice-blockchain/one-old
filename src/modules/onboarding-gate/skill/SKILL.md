@@ -24,7 +24,7 @@ The bootstrap prints `TRAFFIC_ONE_SETUP_READY` and a live `Setup link:`, then ex
 
 {{WAIT_CMD}}
 
-When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. Building, installs, and subagent work remain blocked until completion.
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. If it prints `TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED`, follow its printed classification instructions (inspect the repo, run the printed `--set-tech` command), then re-run. Building, installs, and subagent work remain blocked until completion.
 <!-- T1BLOCK:END server-bootstrap-required -->
 
 <!-- T1BLOCK:BEGIN server-bootstrap-required-compact -->
@@ -338,3 +338,21 @@ Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user expli
 - complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW and run its phases INLINE via the roadmap checklist — plan the feature, decide the surface, implement, then self-review and test. Do not spawn subagents.
 Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.
 <!-- T1BLOCK:END maintenance-triage-main-agent -->
+
+<!-- T1BLOCK:BEGIN tech-classify-required -->
+traffic-one — this existing codebase could not be identified deterministically: none of the known stack markers matched, so YOU must classify it before setup can continue.
+
+1. Inspect the repo yourself — package manifests, lockfiles, entrypoints, framework configs. A few READS are enough; do not modify anything.
+2. Submit the tech by running this command with the surfaces you identified appended:
+{{SET_TECH_TEMPLATE}}
+   Append: `--frontend=<id>` and `--backend=<id>` (both REQUIRED — use `none` when that surface does not exist), plus optional `--mobile=<id>`, `--realtime=light` (when a websocket/realtime layer exists), and `--evidence='<short proof>'` (e.g. --evidence='express + mongoose in package.json').
+   frontend ids: none, react-vite, nextjs, nuxt, vue, svelte, angular, astro, solid, remix, other
+   backend ids: none, supabase, external-api, node, nestjs, python, django, fastapi, go, rust, java, kotlin, php, laravel, dotnet, firebase, mongo, other
+   mobile ids: ionic-capacitor, react-native-expo, swift-native, kotlin-android, flutter, none
+   Use `other`/`none` when nothing fits — NEVER invent an id; the command is denied unless every id is from these lists.
+
+Partial signals already detected:
+{{HINTS}}
+
+On success it prints TRAFFIC_ONE_TECH_RECORDED and then the setup wizard's `Setup link:` — post that link to the user in chat and run the printed waiter command, exactly as in the normal setup flow. Run the command EXACTLY as printed plus your surface flags — no pipes, redirection, or `&&`; the gate allow-lists the precise argv.
+<!-- T1BLOCK:END tech-classify-required -->

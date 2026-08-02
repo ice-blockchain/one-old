@@ -99,7 +99,7 @@ export function ensureArchitectureRunSnapshot(
     if (!baseline || baseline.baselineHash !== existing.baselineHash) {
       throw new Error('immutable run baseline is missing or corrupt');
     }
-    return existing;
+    return supersedeBlockedRunSnapshot(projectRoot, runId, state, existing) || existing;
   }
   if (fs.existsSync(architectureRunSnapshotPath(projectRoot, runId))) {
     throw new Error('immutable runtime capability snapshot is corrupt');
@@ -158,6 +158,51 @@ export function ensureArchitectureRunSnapshot(
       || persisted.baselineHash !== persistedBaseline.baselineHash) {
       throw new Error('runtime capability snapshot could not be persisted atomically');
     }
+    return persisted;
+  });
+}
+
+// Mint-once exists to stop mid-run steering of roots/roles by file drift. A
+// snapshot whose profile is a FAIL-CLOSED state (blockingIssues — e.g. a hybrid
+// repo frozen before `architectureTarget` was answered) authorized NO roots or
+// roles, so there is nothing a re-mint could steer — while keeping it wedges
+// the run forever: assignments can never compile, maintenance writes fail
+// closed, rotation is refused because the run already holds artifacts, and the
+// agent's only exit is asking the user for main-agent mode (observed live: run
+// 1785681001843 — `unsupported-hybrid` frozen, `architectureTarget: native-ui`
+// set moments later, run permanently uncompilable). When the CURRENT state now
+// resolves a CLEAN profile, replace the blocked profile in place: same run id,
+// same immutable baseline (diff evidence preserved), recomputed snapshotHash.
+// A healthy snapshot is NEVER superseded, and a still-blocked fresh profile
+// changes nothing — the fail-closed state stands until the input arrives.
+function supersedeBlockedRunSnapshot(
+  projectRoot: string,
+  runId: string,
+  state: unknown,
+  existing: ArchitectureRunSnapshotV1,
+): ArchitectureRunSnapshotV1 | null {
+  if ((existing.profile.blockingIssues || []).length === 0) return null;
+  const fresh = capabilityProfileForProject(projectRoot, state);
+  if ((fresh.blockingIssues || []).length > 0) return null;
+  const canonical = {
+    schemaVersion: ARCHITECTURE_RUN_SNAPSHOT_SCHEMA_VERSION,
+    runId,
+    profile: fresh,
+    baselineIdentity: existing.baselineIdentity,
+    baselineHash: existing.baselineHash,
+    capturedAt: existing.capturedAt,
+  };
+  const candidate: ArchitectureRunSnapshotV1 = {
+    ...canonical,
+    snapshotHash: contractHash(canonical),
+  };
+  return withProjectStateLock(projectRoot, () => {
+    // Re-check under the lock: a sibling process may have superseded already.
+    const current = readArchitectureRunSnapshot(projectRoot, runId);
+    if (!current || (current.profile.blockingIssues || []).length === 0) return current;
+    writeJson(architectureRunSnapshotPath(projectRoot, runId), candidate);
+    const persisted = readArchitectureRunSnapshot(projectRoot, runId);
+    if (!persisted) throw new Error('superseded runtime capability snapshot could not be persisted');
     return persisted;
   });
 }

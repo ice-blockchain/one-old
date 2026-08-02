@@ -8,6 +8,7 @@ import * as path from 'path';
 
 import { isSafeOneMcpModelId, ONE_MCP_MAX_AVAILABLE_MODELS } from '../config/one-mcp';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
+import { BACKEND_IDS, FRONTEND_IDS, MOBILE_FRAMEWORK_IDS } from '../config/state';
 import type { ToolClass, ToolInput } from '../core/types';
 import {
   parseApplyPatch,
@@ -291,6 +292,9 @@ interface OnboardingRunnerInvocation {
   // or `--use --bootstrap-only` for the yes path's exit-fast first half).
   decline: boolean;
   reconsider: boolean;
+  // The agent's manual tech classification for an undetectable existing repo
+  // (`--set-tech` + surface flags). Exit-fast like bootstrap/decline.
+  setTech: boolean;
 }
 
 function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): OnboardingRunnerInvocation | null {
@@ -311,10 +315,11 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
   let bootstrap = args[0] === '--bootstrap-only';
   const decline = args[0] === '--decline';
   const reconsider = args[0] === '--reconsider';
+  const setTech = args[0] === '--set-tech';
   // `--use` records the yes-choice then behaves exactly like the plain waiter,
   // so it keeps the wait-only flags available (unlike the exit-fast modes).
   const use = args[0] === '--use';
-  if (bootstrap || decline || reconsider || use) args.shift();
+  if (bootstrap || decline || reconsider || setTech || use) args.shift();
   // `--use --bootstrap-only` is the ask-first yes path's fast first half —
   // record the choice, print the setup link, exit. Grammar-wise it is a
   // bootstrap invocation (exit-fast, so the wait-only flags stay rejected).
@@ -353,13 +358,43 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       seen.add('sync-session');
       continue;
     }
+    // The agent-classification surface flags: valid only on `--set-tech`, once
+    // each, membership-checked against the SAME canonical id vocabularies the
+    // state writer enforces — an id outside the sets never reaches the runner.
+    if (arg.startsWith('--frontend=')) {
+      if (!setTech || seen.has('frontend') || !FRONTEND_IDS.has(arg.slice('--frontend='.length))) return null;
+      seen.add('frontend');
+      continue;
+    }
+    if (arg.startsWith('--backend=')) {
+      if (!setTech || seen.has('backend') || !BACKEND_IDS.has(arg.slice('--backend='.length))) return null;
+      seen.add('backend');
+      continue;
+    }
+    if (arg.startsWith('--mobile=')) {
+      if (!setTech || seen.has('mobile') || !MOBILE_FRAMEWORK_IDS.has(arg.slice('--mobile='.length))) return null;
+      seen.add('mobile');
+      continue;
+    }
+    if (arg.startsWith('--realtime=')) {
+      if (!setTech || seen.has('realtime') || !/^--realtime=(?:none|light)$/.test(arg)) return null;
+      seen.add('realtime');
+      continue;
+    }
+    // Short free-text proof; an inert quoted word by construction (like
+    // --seed-prompt), bounded so a command cannot smuggle a document.
+    if (arg.startsWith('--evidence=')) {
+      if (!setTech || seen.has('evidence') || arg.length > '--evidence='.length + 400) return null;
+      seen.add('evidence');
+      continue;
+    }
     if (arg === '--quiet-url') {
-      if (bootstrap || decline || reconsider || seen.has(arg)) return null;
+      if (bootstrap || decline || reconsider || setTech || seen.has(arg)) return null;
       seen.add(arg);
       continue;
     }
     if (arg === '--timeout-ms' || arg === '--interval-ms') {
-      if (bootstrap || decline || reconsider || seen.has(arg)) return null;
+      if (bootstrap || decline || reconsider || setTech || seen.has(arg)) return null;
       const value = args.shift() || '';
       if (!/^[1-9]\d*$/.test(value)) return null;
       seen.add(arg);
@@ -367,6 +402,9 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
     }
     return null;
   }
+  // A classification must state BOTH primary surfaces consciously (explicit
+  // `none` allowed); mobile/realtime/evidence are optional refinements.
+  if (setTech && (!seen.has('frontend') || !seen.has('backend'))) return null;
   if (envAssignments.size > 0) {
     if (host !== 'opencode') return null;
     const expected = resolveTrafficOneEnv(cwd, 'opencode');
@@ -375,7 +413,7 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       if (value !== expectedValue) return null;
     }
   }
-  return { bootstrap, decline, reconsider };
+  return { bootstrap, decline, reconsider, setTech };
 }
 
 // The blocking "wait for setup" command is allow-listed only when it invokes
@@ -387,6 +425,12 @@ export function isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): 
 
 export function isOnboardingBootstrapCommand(toolName: unknown, toolInput: unknown): boolean {
   return onboardingRunnerInvocation(toolName, toolInput)?.bootstrap === true;
+}
+
+// The agent's manual tech classification command for an undetectable existing
+// repo (`--set-tech --frontend=… --backend=…`). Same exact-argv allow-listing.
+export function isOnboardingSetTechCommand(toolName: unknown, toolInput: unknown): boolean {
+  return onboardingRunnerInvocation(toolName, toolInput)?.setTech === true;
 }
 
 // A launcher/runtime failure explicitly prescribes the bundled read-only

@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { applyExistingCodebaseDetection, stampExistingCodebaseDetection } from '../detection-stamp';
+import { applyAgentTechClassification, applyExistingCodebaseDetection, stampExistingCodebaseDetection } from '../detection-stamp';
 import { computeOnboarding } from '../../onboarding-server/flow';
 import { recordPluginUseChoice } from '../../state/plugin-use';
 import { readState, writeState } from '../../state';
@@ -94,29 +94,90 @@ test('writes nothing before consent is recorded, and never for a declined projec
   }, { files: laravelFiles(), consent: 'declined' });
 });
 
-test('an undetectable repo is left alone, so it keeps its no-wizard behavior', () => {
+test('an undetectable repo is left unstamped and routes to AGENT classification', () => {
   withProject((cwd) => {
     const result = stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
     assert.equal(result.stamped, false);
     assert.equal(result.reason, 'undetectable');
+    assert.ok(result.detected, 'the partial detection rides the skip as classification hints');
     assert.equal(readState(cwd).stack, undefined);
-    assert.equal(computeOnboarding(cwd).done, true, 'no invented stack → no wizard, exactly as today');
+    const view = computeOnboarding(cwd);
+    assert.equal(view.done, false, 'undetectable no longer reads as done — that was the half-onboarded hole');
+    assert.equal(view.step, 'tech-detect');
   }, { files: sparseFiles(), consent: true });
 });
 
-test('floorMinimal is what invents a stack — and it DOES open a wizard', () => {
+test('agent classification stamps the submitted surfaces with autoDetected:false', () => {
   withProject((cwd) => {
-    const result = stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true, floorMinimal: true });
-    assert.equal(result.stamped, true);
-    assert.equal(readState(cwd).stack, 'minimal');
-    // Documents the hazard: this is why runners never pass floorMinimal.
+    const result = applyAgentTechClassification(cwd, {
+      frontend: 'none',
+      backend: 'node',
+      realtime: 'light',
+      evidence: 'express + mongoose in package.json',
+    }, { requireRecordedConsent: true });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.stack, 'custom-backend', 'stack DERIVED from surfaces, never agent-supplied');
+      assert.equal(result.alreadyClassified, false);
+    }
+    const state = readState(cwd);
+    assert.equal(state.mode, 'existing-codebase');
+    assert.equal(state.backend, 'node');
+    assert.equal(state.realtime, 'light');
+    assert.equal(state.autoDetected, false);
+    assert.equal(state.onboardingComplete, true);
+    assert.equal((state.lifecycle as Record<string, unknown>)?.phase, 'maintenance');
+    assert.match(String((state.evidence as string[])[0]), /agent-classified: .*express \+ mongoose/);
+    // The classification unblocks the SHORT wizard (local preference steps).
     assert.equal(computeOnboarding(cwd).step, 'open-code');
   }, { files: sparseFiles(), consent: true });
 });
 
+test('agent classification rejects unknown ids, all-none, and never overwrites a committed stack', () => {
+  withProject((cwd) => {
+    const badId = applyAgentTechClassification(cwd, { frontend: 'reactjs', backend: 'node' });
+    assert.equal(badId.ok, false);
+    if (!badId.ok) assert.equal(badId.reason, 'invalid-submission');
+
+    const allNone = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'none' });
+    assert.equal(allNone.ok, false);
+    if (!allNone.ok) assert.match(String(allNone.issues?.[0]), /at least one surface/);
+
+    const first = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'go' });
+    assert.equal(first.ok && first.stack, 'custom-backend');
+    const second = applyAgentTechClassification(cwd, { frontend: 'react-vite', backend: 'none' });
+    assert.equal(second.ok, true);
+    if (second.ok) {
+      assert.equal(second.alreadyClassified, true, 'a committed stack wins — deterministic-first, race-safe');
+      assert.equal(second.stack, 'custom-backend');
+    }
+    assert.equal(readState(cwd).backend, 'go');
+  }, { files: sparseFiles(), consent: true });
+});
+
+test('agent classification enforces the same consent/decline/mode guards as the stamp', () => {
+  withProject((cwd) => {
+    const pending = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'node' }, { requireRecordedConsent: true });
+    assert.equal(pending.ok, false);
+    if (!pending.ok) assert.equal(pending.reason, 'consent-missing');
+  }, { files: sparseFiles() });
+
+  withProject((cwd) => {
+    const declined = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'node' });
+    assert.equal(declined.ok, false);
+    if (!declined.ok) assert.equal(declined.reason, 'declined');
+  }, { files: sparseFiles(), consent: 'declined' });
+
+  withProject((cwd) => {
+    const newProject = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'node' });
+    assert.equal(newProject.ok, false);
+    if (!newProject.ok) assert.equal(newProject.reason, 'not-existing-mode');
+  }, { files: { 'README.md': '# empty' }, consent: true });
+});
+
 test('a new project is skipped — its stack is owned by the wizard finalize answer', () => {
   withProject((cwd) => {
-    const result = stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true, floorMinimal: true });
+    const result = stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
     assert.equal(result.stamped, false);
     assert.equal(result.reason, 'not-existing-mode');
   }, { files: { 'README.md': '# empty' }, consent: true });
@@ -135,7 +196,7 @@ test('a directory that belongs to an enclosing project is skipped', () => {
       fs.writeFileSync(path.join(pkg, `s${i}.go`), 'package strategies\n', 'utf8');
     }
 
-    const result = stampExistingCodebaseDetection(pkg, { requireRecordedConsent: true, floorMinimal: true });
+    const result = stampExistingCodebaseDetection(pkg, { requireRecordedConsent: true });
     assert.equal(result.stamped, false);
     assert.equal(result.reason, 'belongs-to-enclosing-project');
     assert.equal(fs.existsSync(path.join(pkg, '.traffic-one')), false);
@@ -158,8 +219,8 @@ test('stamping is idempotent and preserves an existing originalPrompt seed', () 
 test('applyExistingCodebaseDetection mutates in place without persisting', () => {
   withProject((cwd) => {
     const state: Record<string, unknown> = {};
-    const detected = applyExistingCodebaseDetection(cwd, state, 'existing-codebase', { floorMinimal: true });
-    assert.ok(detected);
+    const detected = applyExistingCodebaseDetection(cwd, state, 'existing-codebase');
+    assert.ok(detected.stack);
     assert.equal(state.onboardingComplete, true);
     assert.equal(state.backend, 'laravel');
     // Nothing was written: SessionStart owns the single writeState.
@@ -167,10 +228,11 @@ test('applyExistingCodebaseDetection mutates in place without persisting', () =>
   }, { files: laravelFiles(), consent: true });
 });
 
-test('applyExistingCodebaseDetection returns null for an undetectable repo without a floor', () => {
+test('applyExistingCodebaseDetection returns the stack-less detection for an undetectable repo without stamping', () => {
   withProject((cwd) => {
     const state: Record<string, unknown> = {};
-    assert.equal(applyExistingCodebaseDetection(cwd, state, 'existing-codebase'), null);
+    const detected = applyExistingCodebaseDetection(cwd, state, 'existing-codebase');
+    assert.equal(detected.stack, null, 'the detection itself is returned — its evidence becomes the agent hints');
     assert.equal(state.stack, undefined);
     assert.equal(state.onboardingComplete, undefined, 'a skip must not half-stamp');
   }, { files: sparseFiles(), consent: true });

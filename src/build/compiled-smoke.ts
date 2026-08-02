@@ -286,10 +286,12 @@ async function main(): Promise<void> {
         onboardingBootstrapCommand(cwd: string, host: string): string;
         onboardingUseBootstrapCommand(cwd: string, host: string, seedPrompt?: string): string;
         onboardingWaitCommand(cwd: string, host: string): string;
+        onboardingSetTechCommand(cwd: string, host: string, tech: Record<string, string>): string;
       };
       const builtClassifier = require(path.join(scratch, 'shared', 'tool-classify.js')) as {
         isOnboardingBootstrapCommand(toolName: unknown, toolInput: unknown): boolean;
         isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): boolean;
+        isOnboardingSetTechCommand(toolName: unknown, toolInput: unknown): boolean;
       };
       const quotedBootstrap = builtWaitCommands.onboardingBootstrapCommand(quotedProject, 'codex');
       if (!builtClassifier.isOnboardingWaitCommand('exec_command', { command: quotedBootstrap })) {
@@ -321,6 +323,20 @@ async function main(): Promise<void> {
       }
       if (!builtClassifier.isOnboardingBootstrapCommand('exec_command', { command: quotedSeeded })) {
         fail('built classifier did not treat the seeded yes command as a bootstrap invocation');
+      }
+      // The agent tech-classification command (metachar-heavy evidence included)
+      // must survive quoting AND classify in the COMPILED bundle — this is how an
+      // undetectable existing repo gets its identity from the session agent.
+      const quotedSetTech = builtWaitCommands.onboardingSetTechCommand(quotedProject, 'codex', {
+        frontend: 'none',
+        backend: 'node',
+        evidence: "express + mongoose in package.json; it's an API",
+      });
+      if (!builtClassifier.isOnboardingSetTechCommand('exec_command', { command: quotedSetTech })) {
+        fail('built classifier rejected its metacharacter-safe --set-tech command');
+      }
+      if (builtClassifier.isOnboardingBootstrapCommand('exec_command', { command: quotedSetTech })) {
+        fail('built classifier mis-treated --set-tech as a bootstrap invocation');
       }
 
       const quotedEnv: NodeJS.ProcessEnv = {

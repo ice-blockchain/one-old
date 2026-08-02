@@ -21,7 +21,7 @@ export function bannerMarkerLabel(token: string): string {
   return `wizard-banner-printed:${createHash('sha256').update(token || 'pending', 'utf8').digest('hex').slice(0, 20)}`;
 }
 
-export type WaitOutcome = 'complete' | 'pending';
+export type WaitOutcome = 'complete' | 'pending' | 'tech-classify';
 
 export function positiveIntFlag(args: readonly string[], flag: string): number | null {
   const i = args.indexOf(flag);
@@ -53,11 +53,23 @@ export function onboardingDone(cwd: string): boolean {
   }
 }
 
+// True while setup is pending on the AGENT (tech classification), not the user.
+// The waiter must exit with its own token then, instead of blocking a full
+// timeout on a step the wizard cannot advance.
+export function techClassifyPending(cwd: string): boolean {
+  try {
+    return computeOnboarding(cwd).step === 'tech-detect';
+  } catch {
+    return false;
+  }
+}
+
 export interface WaitOptions {
   timeoutMs?: number;
   intervalMs?: number;
   // Seams for tests (avoid real clock + state IO).
   isComplete?: (cwd: string) => boolean;
+  isTechClassifyPending?: (cwd: string) => boolean;
   now?: () => number;
   sleep?: (ms: number) => void;
 }
@@ -66,11 +78,16 @@ export function waitForOnboarding(cwd: string, options: WaitOptions = {}): WaitO
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const isComplete = options.isComplete ?? onboardingDone;
+  const isTechClassify = options.isTechClassifyPending ?? techClassifyPending;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? sleepSync;
   const deadline = now() + timeoutMs;
   for (;;) {
     if (isComplete(cwd)) return 'complete';
+    // A mid-wait flip into agent classification (the user just finished api-key
+    // and the routed state has no stack): return control to the AGENT now —
+    // blocking the remaining timeout would stall on a step only it can advance.
+    if (isTechClassify(cwd)) return 'tech-classify';
     if (now() >= deadline) return 'pending';
     sleep(intervalMs);
   }
