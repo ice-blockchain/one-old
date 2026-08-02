@@ -157,6 +157,10 @@ Frontend completion gate: do not write `IMPLEMENTED` with collapsed source. `{{F
 Frontend completion gate: {{PROBLEMS}}. The stock Vite template emits compiled `.js`/`.d.ts` next to every source on the first build, and the stale output can shadow the module at import time. Fix exactly this: set `"noEmit": true` in the app tsconfig, remove `"composite": true`, and use `"build": "tsc --noEmit && vite build"`, `"typecheck": "tsc --noEmit"`. Then re-emit `IMPLEMENTED`.
 <!-- T1BLOCK:END frontend-emit-config-gate -->
 
+<!-- T1BLOCK:BEGIN frontend-eslint-survival-gate -->
+Frontend completion gate: {{PROBLEMS}}. The scaffolded eslint config is the project's quality bar — the error-grade rules (`max-lines`, `no-restricted-imports`) replaced retired deterministic gates and CI runs them after this build ends. Extend the config freely, but restore the scaffolded error rules before re-emitting `IMPLEMENTED`.
+<!-- T1BLOCK:END frontend-eslint-survival-gate -->
+
 <!-- T1BLOCK:BEGIN implementer-format-parity-gate -->
 Implementer format parity gate: role `{{ROLE}}` owns formatter config `{{CONFIG}}`, but `prettier` is not declared in `{{MANIFEST}}` dependencies/devDependencies. A script or config that names an absent tool makes verification meaningless. Add `prettier` with the selected package manager at tooling root `{{TOOLING_ROOT}}`, then re-emit `IMPLEMENTED`.
 <!-- T1BLOCK:END implementer-format-parity-gate -->
@@ -202,7 +206,7 @@ Page-speed claim gate: this digest reports Lighthouse performance {{CLAIMED}} �
 <!-- T1BLOCK:END lighthouse-claim-reconciliation-gate -->
 
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
-Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; `STRUCT_MODULE_LOC` blocks — split the module. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (`STRUCT_I18N_RUNTIME`), and catalog validation (`STRUCT_I18N_CATALOG` — keys non-empty in every declared locale). Hardcoded-copy findings (`STRUCT_HARDCODED_COPY`, `STRUCT_I18N_REACT_TRANS`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own `lint` run owns them. React child copy uses `<Trans>` with namespace, key, and fallback.
+Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; module size is owned by the compiled eslint `max-lines` rule — the project's own `lint` run refuses an oversized module, so split it. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (`STRUCT_I18N_RUNTIME`), and catalog validation (`STRUCT_I18N_CATALOG` — keys non-empty in every declared locale). Hardcoded-copy findings (`STRUCT_HARDCODED_COPY`, `STRUCT_I18N_REACT_TRANS`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own `lint` run owns them. React child copy uses `<Trans>` with namespace, key, and fallback.
 <!-- T1BLOCK:END frontend-structure-completion-gate -->
 
 <!-- T1BLOCK:BEGIN implementer-lint-toolchain-gate -->

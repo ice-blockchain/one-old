@@ -97,16 +97,87 @@ export function fallbackContractMatches(
     null,
   );
   if (!marker || marker.overallOutcome !== 'fallback-pending' || maintenanceRole(marker.role) !== role) return true;
-  const expectedContract = typeof marker.workUnitContractHash === 'string'
-    ? marker.workUnitContractHash
-    : '';
-  const expectedAllowlist = typeof marker.allowlistHash === 'string' ? marker.allowlistHash : '';
-  if (!expectedContract || !expectedAllowlist) return false;
   const observedAllowlist = sha256(JSON.stringify({
     include: workUnit.allowlist,
     exclude: workUnit.allowlistExclude,
   }));
-  return workUnit.contractHash === expectedContract && observedAllowlist === expectedAllowlist;
+  interface DebtPin { contract: string; allowlist: string; sources: string[] | null; paid: boolean }
+  const pins: DebtPin[] = [];
+  const pinOf = (record: Record<string, unknown> | null | undefined): void => {
+    if (!record) return;
+    const paid = record.overallOutcome === 'fallback-paid';
+    if (record.overallOutcome !== 'fallback-pending' && !paid) return;
+    const contract = typeof record.workUnitContractHash === 'string' ? record.workUnitContractHash : '';
+    const allowlist = typeof record.allowlistHash === 'string' ? record.allowlistHash : '';
+    const baseline = record.fallbackSourceBaseline as { files?: Array<{ path?: unknown }> } | undefined;
+    const sources = Array.isArray(baseline?.files)
+      ? baseline.files
+        .map((entry) => (typeof entry?.path === 'string' ? entry.path : ''))
+        .filter(Boolean)
+      : null;
+    if (contract && allowlist) pins.push({ contract, allowlist, sources, paid });
+  };
+  const units = marker.units && typeof marker.units === 'object'
+    ? Object.values(marker.units as Record<string, Record<string, unknown>>)
+    : null;
+  if (units) for (const record of units) pinOf(record);
+  else pinOf(marker);
+  const pending = pins.filter((pin) => !pin.paid);
+  // A pending marker whose pins are unreadable stays fail-closed, as before.
+  if (pending.length === 0) return false;
+  if (pending.some((pin) => workUnit.contractHash === pin.contract && observedAllowlist === pin.allowlist)) {
+    return true;
+  }
+  // The UNION envelope: exactly the debts' pinned source files, nothing more.
+  // With per-unit debts a single paid child must be able to hold ONE envelope
+  // covering every owed file — no publisher can synthesize a union otherwise,
+  // so two debts for one role could never both be discharged and the settlement
+  // stayed `fallback-pending` forever. SET EQUALITY, deliberately:
+  // `every(pin ⊆ candidate)` would admit the union plus one extra file, which
+  // is a widening — the exact backdoor this guard exists to refuse. A debt
+  // without a readable baseline fails the union closed.
+  //
+  // PAID debts stay in the union: after a partial discharge the same envelope —
+  // under which the paid child already delivered part of the batch — must stay
+  // readable so the finalizer can discharge the remaining debts from it. That
+  // admits nothing new (the identical envelope was admitted before the first
+  // discharge), and the pending-only union is accepted too so a fresh child
+  // scoped to just the remaining debts also binds.
+  if (workUnit.unitId === `${role}:bounded-maintenance`) {
+    const candidate = [...new Set(
+      workUnit.allowlist.filter((entry) => !entry.startsWith('.traffic-one/')),
+    )].sort();
+    const unionOf = (subset: DebtPin[]): string | null => (
+      subset.length > 0 && subset.every((pin) => pin.sources !== null)
+        ? JSON.stringify([...new Set(subset.flatMap((pin) => pin.sources!))].sort())
+        : null
+    );
+    const candidateKey = JSON.stringify(candidate);
+    if (candidate.length > 0
+      && (candidateKey === unionOf(pending) || candidateKey === unionOf(pins))) {
+      return true;
+    }
+  }
+  // A DISJOINT sibling bounded unit is not a widening. The guard exists so the
+  // owed fallback's contract cannot be widened or REPLACED before it is
+  // finalized — voiding every non-matching envelope was what killed unit 2 of
+  // the 16co news batch in 28ms pre-model. Each debt keeps its own pin in the
+  // per-unit ledger, so the admissibility test is per-debt:
+  //   - only `<role>:bounded-maintenance` (a batch shape) qualifies; quick-fix
+  //     is single-unit by design and a different scope IS a replacement;
+  //   - the candidate's source scope must be disjoint from EVERY pending
+  //     debt's pinned source files — touching an owed file is a takeover, and
+  //     every legal queue is disjoint anyway (overlap requires `depends:`, and
+  //     dependents of a failed producer are skipped pre-model);
+  //   - a pending debt without a readable baseline fails closed.
+  // Full-scope envelopes never qualify — that is the widening the guard was
+  // built against, and exactly the 21:44:55 write that wedged 16co.
+  if (workUnit.unitId !== `${role}:bounded-maintenance`) return false;
+  const candidateSources = workUnit.allowlist.filter((entry) => !entry.startsWith('.traffic-one/'));
+  return pending.every((pin) => (
+    pin.sources !== null
+    && candidateSources.every((candidate) => !pin.sources!.includes(candidate))
+  ));
 }
 
 function parseEnvelope(value: unknown, runId: string, role: string): RunBootstrapEnvelopeV2 | null {
@@ -270,4 +341,42 @@ export function pruneBootstrapHistory(cwd: string, runId: string): void {
       try { fs.rmSync(item.file, { force: true }); } catch { /* best effort */ }
     }
   }
+}
+
+/**
+ * The union of every pending maintenance debt's pinned source files for a role,
+ * or null when nothing is pending (or any pending debt's baseline is
+ * unreadable — the union must never be a guess).
+ *
+ * This is how a paid fallback child gets ONE envelope covering every owed file:
+ * the spawn gate derives its bounded scope from this union, the union branch in
+ * `fallbackContractMatches` admits exactly that envelope, and the finalizer
+ * discharges each covered debt on its own delta.
+ */
+export function pendingMaintenanceDebtSources(
+  cwd: string,
+  runId: string,
+  role: string,
+): string[] | null {
+  const marker = readJson<Record<string, unknown> | null>(
+    path.join(cwd, RUNS_REL_DIR, safePart(runId), 'maintenance.json'),
+    null,
+  );
+  if (!marker || marker.overallOutcome !== 'fallback-pending' || maintenanceRole(marker.role) !== role) return null;
+  const records = marker.units && typeof marker.units === 'object'
+    ? Object.values(marker.units as Record<string, Record<string, unknown>>)
+    : [marker];
+  const union = new Set<string>();
+  let pending = 0;
+  for (const record of records) {
+    if (record.overallOutcome !== 'fallback-pending') continue;
+    pending += 1;
+    const baseline = record.fallbackSourceBaseline as { files?: Array<{ path?: unknown }> } | undefined;
+    const files = Array.isArray(baseline?.files) ? baseline.files : null;
+    if (!files) return null;
+    for (const entry of files) {
+      if (typeof entry?.path === 'string' && entry.path) union.add(entry.path);
+    }
+  }
+  return pending > 0 && union.size > 0 ? [...union].sort() : null;
 }

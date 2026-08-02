@@ -952,7 +952,10 @@ test('maintenance delegation without a parent-published work-unit contract fails
     // The delegation still declines — the tool-result contract is unchanged, so
     // the orchestrator falls back to the paid role exactly as before.
     assert.equal(r.action, 'failed');
-    assert.equal(r.failureKind, 'diff-rejected');
+    // 'preflight-rejected', not 'diff-rejected': there was no diff. The old
+    // label sent 16co's orchestrator hunting an allowlist violation that did
+    // not exist while the real input to fix was the contract publication.
+    assert.equal(r.failureKind, 'preflight-rejected');
     const marker = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'maintenance.json'), 'utf8')) as any;
     // …but the preflight refused before anything ran, so this is NOT terminal:
     // a terminal `failed` here settled the whole run and deadlocked every later
@@ -961,7 +964,7 @@ test('maintenance delegation without a parent-published work-unit contract fails
     assert.equal(marker.overallOutcome, 'preflight-rejected');
     assert.equal(marker.preflightRejected, true);
     assert.equal(marker.fallbackAllowed, false);
-    assert.equal(marker.failureKind, 'diff-rejected');
+    assert.equal(marker.failureKind, 'preflight-rejected');
     assert.equal(marker.workUnitContractHash, undefined);
     assert.equal(marker.allowlistHash, undefined);
     // The SPECIFIC preflight reason survives (this fixture has no model policy).
@@ -1207,7 +1210,7 @@ test('maintenance frontend delegation without a parent model policy fails before
       allowedFiles: 'foo.txt',
     });
     assert.equal(result.action, 'failed');
-    assert.equal(result.failureKind, 'diff-rejected');
+    assert.equal(result.failureKind, 'preflight-rejected');
     assert.match(result.error || '', /no immutable parent model policy/i);
     assert.equal(fs.existsSync(path.join(dir, 'foo.txt')), false);
     assert.equal(readActiveRunBootstrap(dir, 'maint-frontend-no-policy', 'senior-frontend'), null);

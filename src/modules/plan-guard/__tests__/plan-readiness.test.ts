@@ -3399,3 +3399,86 @@ test('extension freedom: a module delivered at an allowed non-default variant co
     assert.equal(undeliveredContractOutputs(dir, runId, 'senior-frontend'), null);
   });
 });
+
+// The compiled eslint layer is where the retired STRUCT_* heuristics became real
+// enforcement — which holds only while the rules survive. 16co: an implementer
+// rewrote eslint.config.js and `max-lines` vanished silently; its absence later
+// let a 461-line barrel through and cost the whole news delegation batch. Prose
+// guarded the rule; prose does not refuse.
+test('frontend eslint-survival gate: deleting a scaffolded error rule blocks IMPLEMENTED', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    writeFormatterToolchain(dir);
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), 'export function App() {\n  return null;\n}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"noEmit":true}}', 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    // Untouched scaffold shape: both error rules present → no survival deny.
+    const scaffolded = [
+      'export default [',
+      '  {',
+      '    rules: {',
+      "      'max-lines': ['error', { max: 400, skipBlankLines: true, skipComments: true }],",
+      "      'no-restricted-imports': ['error', { patterns: [] }],",
+      '    },',
+      '  },',
+      '];',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(dir, 'eslint.config.js'), scaffolded, 'utf8');
+    assert.ok(
+      !planReadinessViolations(gateArgs).includes('frontend-eslint-survival-gate'),
+      'the untouched scaffold must pass',
+    );
+
+    // EXTENDED config (new plugins, reordered, extra rules) still passes — the
+    // gate protects the bar, never the file's shape.
+    fs.writeFileSync(path.join(dir, 'eslint.config.js'), [
+      "import react from 'eslint-plugin-react';",
+      'export default [',
+      "  { plugins: { react }, rules: { 'react/jsx-key': 'error' } },",
+      '  {',
+      '    rules: {',
+      "      complexity: ['warn', 12],",
+      "      'no-restricted-imports': ['error', { patterns: [] }],",
+      "      'max-lines': ['error', { max: 380 }],",
+      '    },',
+      '  },',
+      '];',
+      '',
+    ].join('\n'), 'utf8');
+    assert.ok(
+      !planReadinessViolations(gateArgs).includes('frontend-eslint-survival-gate'),
+      'an extended config keeps its freedom',
+    );
+
+    // The 16co shape: the rewrite drops max-lines. Blocked, and the deny names
+    // the rule.
+    fs.writeFileSync(path.join(dir, 'eslint.config.js'), [
+      'export default [',
+      "  { rules: { 'no-restricted-imports': ['error', { patterns: [] }] } },",
+      '];',
+      '',
+    ].join('\n'), 'utf8');
+    const denied = planReadinessViolations({ ...gateArgs, block: namesWithVars });
+    const survival = denied.find((entry) => entry.startsWith('frontend-eslint-survival-gate'));
+    assert.ok(survival, JSON.stringify(denied));
+    assert.match(survival, /max-lines/);
+
+    // Existing codebase: the user's lint config is the user's. Never denied.
+    assert.ok(
+      !planReadinessViolations({
+        ...gateArgs,
+        state: { ...DEFAULT_STATE, mode: 'existing-codebase', onboardingComplete: true },
+      }).includes('frontend-eslint-survival-gate'),
+      'an existing codebase keeps its own lint config',
+    );
+  });
+});

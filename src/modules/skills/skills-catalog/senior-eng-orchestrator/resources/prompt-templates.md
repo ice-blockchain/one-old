@@ -142,7 +142,7 @@ delegation queue" section is REQUIRED: list every bounded, low-risk unit
 mechanical refactors/renames, formatting/codemods) in the machine-readable
 `<!-- opencode-delegate:start -->`…`<!-- opencode-delegate:end -->` block (one
 self-contained `- id: … | role: … | kind: … | files: … | task: …` line each;
-add `depends: <earlier-id>` when a later unit overlaps an earlier files/area).
+add `depends: <earlier-id>` when a later unit overlaps an earlier files/area, AND when it consumes an earlier unit's exports even without overlap — a presentation unit built on a fixtures/selectors unit always declares the edge, so a failed producer skips its dependents pre-model instead of letting them burn full model runs against exports that no longer exist).
 The `files:` value is an enforced allowlist: list every legitimate source
 path/area the unit may touch, or the runner rejects the diff before apply.
 Derive paths from the modules you declared — runtime compiles per-role
@@ -163,10 +163,17 @@ stays outside the app's tsconfig/lint surface and gets no compiled unit test.
 Standing scaffold files are also unit-safe when the
 role owns them: `README.md`, the source i18n catalog, backend seed/migrations.
 There is NO compiled helpers/util file for the frontend when a backend role
-exists — never queue invented paths (`src/lib/format.ts`, `features/<x>/
-demo-content.ts`): the rejected unit's files are unwritable for the
-implementers too, so fold helper/demo content into the owning feature entry or
-a declared component instead. If
+exists — never queue paths OUTSIDE the compiled modules (`src/lib/format.ts`):
+a rejected unit's files are unwritable for the implementers too. But INSIDE a
+feature's own directory, sibling files are legal and REQUIRED planning: the
+role's compiled scope owns the whole `<features-root>/<kebab(name)>/`
+directory, and every source file is capped at 400 logical lines by the
+compiled lint rule — a `kind: feature` unit whose `files:` names only the
+barrel forces everything into one file and turns that cap into a coin flip
+(measured 16co: 461 lines into the single allowed barrel, the whole diff
+discarded). List the barrel PLUS the sibling files the content will need
+(`features/<x>/selectors.ts`, `features/<x>/fixtures.ts`); a listed sibling
+that ends up unneeded costs nothing. If
 the task mentions tests, testability, Vitest, Playwright, specs, or config/deps,
 the allowlist must include the exact test/spec/config/package files it may
 touch; otherwise remove that acceptance and leave verification/config work to

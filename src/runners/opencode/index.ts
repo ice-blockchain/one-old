@@ -93,6 +93,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       startedAt,
       opts.fallbackAllowed !== false,
       maintenancePreflight.bootstrap,
+      opts.unitId || null,
     );
     return enriched;
   };
@@ -103,7 +104,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       digest: null,
       touched: [],
       error: maintenancePreflight.error || 'OpenCode maintenance contract preflight failed closed',
-      failureKind: 'diff-rejected',
+      failureKind: 'preflight-rejected',
     });
   }
   if (i18nScope.error) {
@@ -239,6 +240,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       startedAt,
       opts.fallbackAllowed !== false,
       maintenancePreflight.bootstrap,
+      ledgerUnitId,
     );
     return enriched;
   };

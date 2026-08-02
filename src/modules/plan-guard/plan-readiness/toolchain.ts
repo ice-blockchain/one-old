@@ -2,6 +2,7 @@
 // Toolchain parity: emit-config, prettier format parity/coverage, typecheck
 // ownership, crawl-origin, test-runner gaps, and self-reported skips.
 
+import * as fs from 'fs';
 import * as path from 'path';
 import {
   webPackageRoot,
@@ -94,6 +95,45 @@ export function emitConfigProblems(projectRoot: string, profile: CapabilityProfi
     }
   }
   return problems;
+}
+
+// The two ERROR-grade rules the scaffolded eslint config carries. The compiled
+// lint layer is where the retired STRUCT_* heuristics went to become real
+// enforcement — which only works if the rules SURVIVE to the lint run. In 16co
+// an implementer rewrote `eslint.config.js` and `max-lines` silently vanished:
+// exactly the rule whose absence later let a 461-line barrel through and cost
+// the whole news delegation batch. Prose guarded it; prose does not refuse.
+// Warn-grade rules are not checked — deleting a warning is an opinion, deleting
+// an error is a bar.
+const ESLINT_SURVIVAL_RULES = ['max-lines', 'no-restricted-imports'] as const;
+const ESLINT_CONFIG_CANDIDATES = ['eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs'];
+
+export function eslintRuleSurvivalProblems(
+  projectRoot: string,
+  profile: CapabilityProfileV1,
+): string[] {
+  const webRoot = webPackageRoot(profile);
+  const candidates = [
+    ...ESLINT_CONFIG_CANDIDATES,
+    ...(webRoot === '.' ? [] : ESLINT_CONFIG_CANDIDATES.map((name) => `${webRoot}/${name}`)),
+  ];
+  for (const rel of candidates) {
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(projectRoot, rel), 'utf8');
+    } catch {
+      continue;
+    }
+    // Presence is textual on purpose: the config is executable JS and running
+    // it inside a hook is not an option. If the rule NAME is absent the rule is
+    // certainly gone; a name surviving only in a comment lets a determined
+    // evader through, but keeps every honest reshape (extending the config,
+    // reordering, adding plugins) out of this gate's way.
+    const missing = ESLINT_SURVIVAL_RULES
+      .filter((rule) => !new RegExp(`['"\`]?${rule}['"\`]?\\s*:`).test(text));
+    return missing.map((rule) => `\`${rel}\` no longer carries the scaffolded \`${rule}\` rule`);
+  }
+  return []; // no eslint config at all → other gates own that case
 }
 
 // quality-tooling parity: only emit a script/config whose tool is actually

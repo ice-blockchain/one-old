@@ -205,6 +205,22 @@ export function openCodeQueuePolicyReport(
         add(`OpenCode unit \`${unit.id}\` allowlist includes generated/internal path \`${allowed}\``, unit.id);
       }
     }
+    // A `feature` unit whose allowlist is ONLY the barrel forces the entire
+    // feature into one file, and every source file is capped at 400 logical
+    // lines by the compiled lint rule — so the unit's success becomes a coin
+    // flip on model verbosity. Measured 16co: `news-fixtures` wrote 461 lines
+    // into its single allowed `index.tsx`, the diff was discarded after 8
+    // minutes, and the failure cascaded through the batch. The role's compiled
+    // scope owns the feature DIRECTORY, so siblings are legal; requiring one in
+    // the allowlist costs nothing (an unneeded listed sibling is simply never
+    // written) and gives the model the escape hatch the size gate assumes.
+    if (
+      unit.kind === 'feature'
+      && unit.allowedFiles.length === 1
+      && /(^|\/)index\.[cm]?[jt]sx?$/.test(unit.allowedFiles[0] || '')
+    ) {
+      add(`OpenCode unit \`${unit.id}\` (kind feature) allows ONLY the barrel \`${unit.allowedFiles[0]}\`; with the 400-logical-line file cap this forces a coin flip on output size. Add the sibling files the content will need to \`files:\` (e.g. \`${(unit.allowedFiles[0] || '').replace(/index\.[cm]?[jt]sx?$/, 'selectors.ts')}\`) — the role owns the feature directory, and an unneeded listed sibling costs nothing`, unit.id);
+    }
     // A unit's declared files must be writable BY ITS OWN ROLE. validateDelegatedDiff
     // already fails closed on this, but only AFTER the model ran: observed 17c, unit
     // `seo-public-assets` (role frontend) listed `.env.example`, which the same

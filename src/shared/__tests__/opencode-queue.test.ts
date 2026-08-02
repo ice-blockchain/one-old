@@ -395,3 +395,44 @@ test('reconcileStaleRunningUnits marks long-running units failed', () => {
     assert.equal(hasRunningOpenCodeUnits(cwd, runId), false);
   });
 });
+
+// The 16co news-fixtures shape: a `kind: feature` unit whose allowlist is ONLY
+// the barrel. Every source file is capped at 400 logical lines by the compiled
+// lint rule, so a barrel-only allowlist turns the unit into a coin flip on model
+// verbosity — 16co lost 8 minutes to a 461-line barrel and the failure cascaded
+// through the batch. The role owns the feature DIRECTORY, so requiring a listed
+// sibling costs nothing.
+test('openCodeQueuePolicyViolations rejects a feature unit that allows only its barrel', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news-editorial/index.tsx | task: Add the bounded typed English News fixtures and pure selectors.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  const errors = openCodeQueuePolicyViolations(units);
+  assert.ok(
+    errors.some((error) => /allows ONLY the barrel/.test(error)),
+    JSON.stringify(errors),
+  );
+  // The named remedy must be a real sibling path, not prose.
+  assert.ok(errors.some((error) => error.includes('apps/web/src/features/news-editorial/selectors.ts')));
+});
+
+test('openCodeQueuePolicyViolations accepts a feature unit with a listed sibling, and non-feature single files', () => {
+  // Negative row 1: barrel + one sibling — the exact remedy — passes.
+  const withSibling = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news-editorial/index.tsx, apps/web/src/features/news-editorial/selectors.ts | task: Add the typed News fixtures and pure selectors.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(withSibling), []);
+
+  // Negative row 2: a single-file unit that is NOT a feature barrel (a page)
+  // stays legal — the check is about the barrel-monolith shape, not about
+  // single-file units in general.
+  const page = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: news-listing | role: frontend | kind: page | files: apps/web/src/pages/NewsListingPage.tsx | task: Build the listing presentation.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(page), []);
+});

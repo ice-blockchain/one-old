@@ -358,6 +358,22 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
     // source it may not touch, and the implementer test files it does not own.
     assert.match(orchestrator, /role that OWNS the flagged path/i);
     assert.match(orchestrator, /`senior-tester` owns test files/i);
+    // M5 (16co) — the depends: edge is required for CONSUMPTION, not just file
+    // overlap: unit 3 burned 565s building against exports a failed producer
+    // never delivered, because nothing asked for the edge. The runner's
+    // pre-model skip only helps when the edge exists.
+    assert.match(orchestrator, /REQUIRED when a later unit CONSUMES/);
+    assert.match(orchestrator, /skipped-dependency-failed/);
+    // M9 (16co) — "never blocks PLAN_READY" was false on every run with
+    // compiled assignments; the architect deny in 16co proved it live.
+    assert.doesNotMatch(orchestrator, /but it never blocks `PLAN_READY`/);
+    assert.match(testerPrompt, /consumes an earlier unit's exports/);
+    // M2 (16co) — the old guidance mandated the barrel monolith and forbade
+    // the sibling split the 400-line cap requires; the coin flip it produced
+    // cost the whole news batch.
+    assert.match(testerPrompt, /sibling files/);
+    assert.doesNotMatch(testerPrompt, /fold helper\/demo content into the owning feature entry/);
+
     // D26 — 88 `wait_agent` calls at 60s in 15co, 72 of them bare timeouts,
     // ≈9M input tokens for no information. The long ceiling is only safe because
     // a bare wait returns on the FIRST message, so both halves are pinned; and

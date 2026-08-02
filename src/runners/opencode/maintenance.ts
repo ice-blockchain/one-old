@@ -1,6 +1,7 @@
 // src/runners/opencode/maintenance.ts
 // Maintenance contract preflight and delegation outcome recording.
 
+import * as fs from 'fs';
 import * as path from 'path';
 import {
   parseAllowedFiles,
@@ -18,7 +19,8 @@ import {
   fallbackSourcePaths,
   workUnitAllowlistHash,
 } from '../../shared/maintenance/fallback';
-import { writeJson } from '../../shared/fsjson';
+import { projectMaintenanceMarker } from '../../shared/maintenance/fallback-proof';
+import { readJson, writeJson } from '../../shared/fsjson';
 import { isMaintenanceTerminal } from '../../shared/maintenance/terminal';
 import { writeRunSettlement } from '../../shared/run-settlement';
 
@@ -62,7 +64,10 @@ interface MaintenanceContractPreflight {
   error: string | null;
 }
 
-function exactMaintenancePaths(value: unknown): string[] | null {
+function exactMaintenancePaths(
+  cwd: string,
+  value: unknown,
+): string[] | null {
   const parsed = parseAllowedFiles(value);
   if (parsed.length === 0) return null;
   const exact: string[] = [];
@@ -76,6 +81,20 @@ function exactMaintenancePaths(value: unknown): string[] | null {
       || /[*?[\]{}]/.test(normalized)
       || normalized === '.traffic-one'
       || normalized.startsWith('.traffic-one/')) return null;
+    // The preflight's own error text has always said "globs and directories
+    // cannot authorize a paid fallback" — but this filter was pure string
+    // matching, so a bare DIRECTORY passed. The refusal then landed nine
+    // minutes later and one layer deeper: `captureFallbackSourceSnapshot`
+    // returns null for a directory, which records overallOutcome 'failed' and
+    // freezes an IMMUTABLE failed settlement — a dead run instead of the
+    // cheap, non-terminal 'preflight-rejected' this early return produces.
+    // (A listed file that does not exist YET is fine and snapshots as
+    // `state:"missing"` — only a path that IS a directory on disk is refused.)
+    try {
+      if (fs.statSync(path.join(cwd, normalized)).isDirectory()) return null;
+    } catch {
+      // absent path: a legal not-yet-created output
+    }
     exact.push(normalized);
   }
   return [...new Set(exact)].sort();
@@ -93,7 +112,7 @@ export function maintenanceContractPreflight(
   }
   const role = bootstrapRole(roleInput);
   const existing = readActiveRunBootstrap(cwd, runId, role);
-  const requested = exactMaintenancePaths(allowedFiles);
+  const requested = exactMaintenancePaths(cwd, allowedFiles);
   if (!requested) {
     return {
       required: true,
@@ -144,6 +163,28 @@ export function maintenanceContractPreflight(
   return { required: true, bootstrap, error: null };
 }
 
+/**
+ * The per-unit ledger inside `maintenance.json`.
+ *
+ * The marker used to be a single whole-file record, and `writeJson` below is
+ * unconditional in every branch — so on a batch of same-role units each unit's
+ * outcome REPLACED the previous unit's entry wholesale. Measured on 16co
+ * (three-unit news batch, reproduced end-to-end with controls): unit 1's
+ * `fallback-pending` debt was erased 52ms later by unit 2's preflight
+ * rejection, which also DISARMED `fallbackContractMatches` — opening the
+ * window in which the parent's policy preflight legally republished the
+ * full-scope envelope over the bounded one — and unit 3's failure then pinned
+ * hashes the active envelope no longer held. One slot, three writes, two
+ * defects.
+ *
+ * `units` keeps every unit's own record; the TOP-LEVEL fields become a
+ * projection of it (oldest still-pending debt first, else the latest write),
+ * so every existing reader — the finalizer, `isMaintenanceTerminal`,
+ * settlement reconcile — sees exactly the single-record shape it always did.
+ * A marker without `units` is a legacy single record and stays readable.
+ */
+type MaintenanceUnitRecord = Rec;
+
 export function recordMaintenanceDelegationOutcome(
   cwd: string,
   state: Rec,
@@ -153,6 +194,7 @@ export function recordMaintenanceDelegationOutcome(
   startedAt: number,
   fallbackAllowed: boolean,
   publishedBootstrap?: RunBootstrapEnvelopeV2 | null,
+  unitId?: string | null,
 ): void {
   if (!runId || !isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)) return;
   try {
@@ -187,9 +229,7 @@ export function recordMaintenanceDelegationOutcome(
         ? 'fallback-pending'
         : 'failed';
     const terminalOutcome = isMaintenanceTerminal({ overallOutcome });
-    writeJson(file, {
-      version: 1,
-      kind: 'opencode-delegation',
+    const unitRecord: MaintenanceUnitRecord = {
       role: canonicalRole,
       outcome: opencodeOutcome,
       opencodeOutcome,
@@ -215,38 +255,82 @@ export function recordMaintenanceDelegationOutcome(
       touched: result.touched,
       startedAt: new Date(startedAt).toISOString(),
       finishedAt: new Date().toISOString(),
+    };
+    // Merge into the per-unit ledger and re-project. A record with no unit id
+    // (a whole-role direct delegation) uses the role itself as key — those runs
+    // have exactly one delegation per role, which is the legacy single-slot
+    // shape. Records for OTHER units survive this write; the debt erasure and
+    // the disarm window both lived in the wholesale overwrite this replaces.
+    const previous = readJson<Rec | null>(file, null);
+    const units: Record<string, MaintenanceUnitRecord> = {
+      ...(previous && previous.units && typeof previous.units === 'object'
+        ? previous.units as Record<string, MaintenanceUnitRecord>
+        : previous && !previous.units && previous.overallOutcome
+          // Legacy single record from an older runtime: keep it as a unit row
+          // rather than silently dropping whatever debt it may pin.
+          ? { [`legacy:${String(previous.role || 'role')}`]: previous }
+          : {}),
+      [unitId || `direct:${canonicalRole}`]: unitRecord,
+    };
+    const projected = projectMaintenanceMarker(units) || unitRecord;
+    writeJson(file, {
+      version: 1,
+      kind: 'opencode-delegation',
+      ...projected,
+      units,
     });
     // A preflight rejection is not a lifecycle event for the RUN — nothing was
     // attempted — so it writes no settlement at all. Minting one here would
     // freeze a canonical V2 sidecar (terminal settlements are immutable) for a
     // run the orchestrator must still be able to drive with a paid worker.
     if (!boundContract) return;
-    writeRunSettlement(cwd, runId, result.ok
+    // The settlement follows the PROJECTION, not this unit's outcome. A sibling
+    // unit's success used to write `code-delivered` over a still-owed debt's
+    // `fallback-pending`, erasing the only settlement-side track of it — while a
+    // debt is pending anywhere in the batch, the run is neither delivered nor
+    // terminally failed, it is waiting on the paid fallback.
+    const pendingElsewhere = projected.overallOutcome === 'fallback-pending';
+    const pendingContract = pendingElsewhere ? String(projected.workUnitContractHash || '') : '';
+    const pendingAllowlist = pendingElsewhere ? String(projected.allowlistHash || '') : '';
+    writeRunSettlement(cwd, runId, pendingElsewhere && pendingContract && pendingAllowlist
       ? {
-          status: 'code-delivered',
-          workUnitContractHash: workUnitContractHash!,
-          allowlistHash: allowlistHash!,
-          incompleteChecks: ['verification-not-started'],
+          status: 'active',
+          reason: 'fallback-pending',
+          workUnitContractHash: pendingContract,
+          allowlistHash: pendingAllowlist,
+          fallback: {
+            state: 'pending',
+            workUnitContractHash: pendingContract,
+            allowlistHash: pendingAllowlist,
+          },
+          incompleteChecks: ['fallback-pending'],
         }
-      : !terminalOutcome
+      : result.ok
         ? {
-            status: 'active',
-            reason: 'fallback-pending',
+            status: 'code-delivered',
             workUnitContractHash: workUnitContractHash!,
             allowlistHash: allowlistHash!,
-            fallback: {
-              state: 'pending',
+            incompleteChecks: ['verification-not-started'],
+          }
+        : !terminalOutcome
+          ? {
+              status: 'active',
+              reason: 'fallback-pending',
               workUnitContractHash: workUnitContractHash!,
               allowlistHash: allowlistHash!,
-            },
-            incompleteChecks: ['fallback-pending'],
-          }
-        : {
-            status: 'failed',
-            reason: result.error || 'OpenCode delegation failed and fallback is not allowed',
-            workUnitContractHash: workUnitContractHash!,
-            allowlistHash: allowlistHash!,
-          });
+              fallback: {
+                state: 'pending',
+                workUnitContractHash: workUnitContractHash!,
+                allowlistHash: allowlistHash!,
+              },
+              incompleteChecks: ['fallback-pending'],
+            }
+          : {
+              status: 'failed',
+              reason: result.error || 'OpenCode delegation failed and fallback is not allowed',
+              workUnitContractHash: workUnitContractHash!,
+              allowlistHash: allowlistHash!,
+            });
   } catch {
     // best-effort diagnostics; never change delegation behavior
   }

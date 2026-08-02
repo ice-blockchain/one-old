@@ -29,7 +29,7 @@ export interface FallbackSourceSnapshotV1 {
   snapshotHash: string;
 }
 
-interface PaidFallbackCompletionV1 {
+export interface PaidFallbackCompletionV1 {
   schemaVersion: typeof PAID_FALLBACK_COMPLETION_SCHEMA_VERSION;
   authority: 'traffic-one-runtime';
   role: string;
@@ -223,4 +223,30 @@ export function paidFallbackCompletionFromMaintenance(
     || marker.workUnitContractHash !== completion.workUnitContractHash
     || marker.allowlistHash !== completion.allowlistHash) return null;
   return completion;
+}
+
+/**
+ * Project the per-unit maintenance ledger onto the single-record shape every
+ * legacy reader expects: the OLDEST still-pending debt wins (so the finalizer,
+ * `isMaintenanceTerminal` and settlement reconcile keep seeing a pending
+ * fallback until every debt is discharged), else the latest write.
+ *
+ * Lives here rather than beside the writer because the finalizer in
+ * `fallback.ts` re-projects after discharging a debt, and shared/ must not
+ * import from runners/.
+ */
+export function projectMaintenanceMarker(
+  units: Record<string, Rec>,
+): Rec | null {
+  const records = Object.values(units);
+  if (records.length === 0) return null;
+  const at = (record: Rec): number => {
+    const raw = typeof record.startedAt === 'string' ? Date.parse(record.startedAt) : NaN;
+    return Number.isFinite(raw) ? raw : 0;
+  };
+  const pending = records
+    .filter((record) => record.overallOutcome === 'fallback-pending')
+    .sort((a, b) => at(a) - at(b));
+  if (pending.length > 0) return pending[0]!;
+  return [...records].sort((a, b) => at(a) - at(b))[records.length - 1]!;
 }

@@ -100,7 +100,7 @@ When the current host is NOT OpenCode or Kilo and `openCode.enabled` is true in 
 
 How it works:
 
-1. **The architect classifies + queues (Phase 1, non-OpenCode/Kilo hosts only).** `senior-architect` emits an OpenCode delegation queue in `.traffic-one/plan.md` — a machine-readable block listing ONLY bounded units. This runs in a new-project build AND in a complex existing-codebase/maintenance build the architect was spawned for (e.g. a large revamp). Before `PLAN_READY`, runtime checks only the queue's OWN consistency (stable ids, `depends:` edges, parseable `files:`); the file-vs-assignment cross-check happens at Step-0 delegation, where each unit is validated against runtime-owned `runs/<runId>/assignments.json` and rejected pre-model (`rejected_policy`, paid fallback) if out of scope — so a stale or out-of-scope block still cannot run, but it never blocks `PLAN_READY` (the compiled allowlist does not exist yet while the architect writes the queue). Small maintenance fixes that never invoke the architect keep using per-unit `opencode_delegate`, not this batch. When the current host is OpenCode or Kilo, the architect must omit this section and the `opencode-delegate` markers entirely.
+1. **The architect classifies + queues (Phase 1, non-OpenCode/Kilo hosts only).** `senior-architect` emits an OpenCode delegation queue in `.traffic-one/plan.md` — a machine-readable block listing ONLY bounded units. This runs in a new-project build AND in a complex existing-codebase/maintenance build the architect was spawned for (e.g. a large revamp). Before `PLAN_READY`, runtime checks the queue's OWN consistency (stable ids, `depends:` edges, parseable `files:`) — and, whenever compiled assignments already exist for the run (every maintenance/re-architecture pass, and any replan after the first compile), ALSO the file-vs-assignment cross-check, which then BLOCKS `PLAN_READY` with the exact out-of-scope paths named (observed 16co: unit `news-i18n` was denied and corrected in one pass). Only on the very first architect pass of a build, where no compiled allowlist exists yet, does that cross-check wait for Step-0 delegation, where each unit is validated against runtime-owned `runs/<runId>/assignments.json` and rejected pre-model (`rejected_policy`, paid fallback) if out of scope. Small maintenance fixes that never invoke the architect keep using per-unit `opencode_delegate`, not this batch. When the current host is OpenCode or Kilo, the architect must omit this section and the `opencode-delegate` markers entirely.
 
    ```text
    <!-- opencode-delegate:start -->
@@ -115,9 +115,9 @@ How it works:
    (`dist`, `.turbo`, `.next`, `*.tsbuildinfo`, `.traffic-one`, etc.). List every
    legitimate source path the unit may touch. Derive the paths from the modules
    the plan declares (runtime compiles ownership from those modules): a unit
-   whose files land outside its role's compiled assignment is rejected at Step 0
-   before any model runs and its task falls to the paid implementer — wasted
-   delegation, but never a `PLAN_READY` blocker. If a unit mentions tests,
+   whose files land outside its role's compiled assignment is rejected — at
+   `PLAN_READY` itself when compiled assignments already exist for the run, or
+   at Step 0 pre-model otherwise — and its task falls to the paid implementer. If a unit mentions tests,
    testability, Vitest, Playwright, specs, or config/dependency changes, include
    the exact test/spec/config/package files it may touch; otherwise remove that
    acceptance and leave verification/config work to the paid implementer/reviewer.
@@ -129,7 +129,15 @@ How it works:
 
    Queue rows should include stable `id` values. If two units touch overlapping
    files/areas, the later unit must declare `depends: <earlier-id>`; otherwise
-   the plan gate rejects the queue before `PLAN_READY`. `depends_on:` or
+   the plan gate rejects the queue before `PLAN_READY`. The same edge is
+   REQUIRED when a later unit CONSUMES another unit's exports even with zero
+   file overlap — the canonical example above is exactly that shape
+   (`news-card` renders what `fixtures-news` defines, so it declares
+   `depends: fixtures-news`). The runner skips dependents of a failed producer
+   pre-model (`skipped-dependency-failed`, zero cost); without the edge the
+   dependent runs anyway and burns its whole budget building against exports
+   that were rolled back with the producer's diff — measured 16co: 565s for
+   nothing. `depends_on:` or
    `depends:` text inside the `task:` field is invalid; dependencies must be
    pipe-delimited fields so the runner can order them.
 

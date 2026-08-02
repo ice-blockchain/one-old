@@ -210,6 +210,7 @@ export {
 
 export {
   canResolveRunBootstrapSet,
+  pendingMaintenanceDebtSources,
   readActiveRunBootstrap,
 } from './envelope-io';
 

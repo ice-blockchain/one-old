@@ -47,6 +47,7 @@ import {
   compiledOutputPaths,
   crawlOriginProblem,
   emitConfigProblems,
+  eslintRuleSurvivalProblems,
   formatParityViolation,
   lintInvocationGap,
   lintParityViolation,
@@ -160,6 +161,20 @@ export function digestCompletionGates(ctx: {
           { PROBLEMS: problems }));
       }
     }
+    // The compiled lint layer is where the retired STRUCT_* heuristics became
+    // real enforcement — which holds only while the rules SURVIVE. 16co: an
+    // implementer rewrote eslint.config.js, `max-lines` vanished silently, and
+    // its absence later cost the whole news delegation batch. New-project only:
+    // an existing codebase's lint config is the user's.
+    if (state.mode === 'new-project') {
+      const missingRules = eslintRuleSurvivalProblems(projectRoot, frontendProfile);
+      if (missingRules.length > 0) {
+        const problems = missingRules.join('; ');
+        violations.push(block('frontend-eslint-survival-gate',
+          `Frontend completion gate: ${problems}. The scaffolded eslint config is the project's quality bar — the error-grade rules (\`max-lines\`, \`no-restricted-imports\`) replaced retired deterministic gates and CI runs them after this build ends. Extend the config freely, but restore the scaffolded error rules before re-emitting \`IMPLEMENTED\`.`,
+          { PROBLEMS: problems }));
+      }
+    }
     const runId = frontendRunId;
     const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
     if (architecture) {
@@ -184,7 +199,7 @@ export function digestCompletionGates(ctx: {
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
           violations.push(block('frontend-structure-completion-gate',
-            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; \`STRUCT_MODULE_LOC\` blocks — split the module. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (\`STRUCT_I18N_RUNTIME\`), and catalog validation (\`STRUCT_I18N_CATALOG\` — keys non-empty in every declared locale). Hardcoded-copy findings (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_REACT_TRANS\`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own \`lint\` run owns them. React child copy uses \`<Trans>\` with namespace, key, and fallback.`,
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; module size is owned by the compiled eslint \`max-lines\` rule — the project's own \`lint\` run refuses an oversized module, so split it. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (\`STRUCT_I18N_RUNTIME\`), and catalog validation (\`STRUCT_I18N_CATALOG\` — keys non-empty in every declared locale). Hardcoded-copy findings (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_REACT_TRANS\`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own \`lint\` run owns them. React child copy uses \`<Trans>\` with namespace, key, and fallback.`,
             { FINDINGS: summary }));
         }
       }

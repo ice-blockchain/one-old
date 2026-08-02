@@ -3,6 +3,7 @@
 // delegated task.
 
 import * as path from 'path';
+import { BLOCKING_MODULE_LOC } from '../../shared/collapsed-source';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
   normalizeOpenCodeRole,
@@ -130,6 +131,12 @@ export function delegationBoundaryPrompt(policy: DelegatedDiffPolicy): string {
   }
   lines.push('- NEVER touch: `.traffic-one/**` (including schema.sql and the project-memory docs), any `package.json`, any lockfile, or build/cache output.');
   lines.push('- Do NOT add dependencies, re-export from a barrel/index file, or register your module anywhere else — the paid implementer wires it up afterwards.');
+  // The size bar is verified AFTER apply and a miss discards the whole diff, so
+  // stating it here is load-bearing, not advice: 16co's news-fixtures unit wrote
+  // 461 logical lines into its one allowed file and lost 8 minutes of work to a
+  // limit it was never told. Sourced from the constant so prompt and verifier
+  // can never disagree.
+  lines.push(`- Keep EVERY source file at or under ${BLOCKING_MODULE_LOC} logical lines (comments and string bodies do not count). Split across the other allowed files when you have them; when only one file is allowed and the work does not fit, implement the most valuable ${BLOCKING_MODULE_LOC}-line subset and say what was left out — an oversized file discards ALL of your work.`);
   lines.push('- If the task cannot be completed inside this boundary, do as much as you can inside it and say what is missing in your final message. Editing outside it discards ALL of your work.');
   return lines.join('\n');
 }

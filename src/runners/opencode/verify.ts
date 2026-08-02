@@ -400,8 +400,11 @@ export function postApplyI18n(
 }
 
 /**
- * Module-size gate for delegated output, mirroring the write-time
- * `STRUCT_MODULE_LOC` limit.
+ * Module-size gate for delegated output, sharing `BLOCKING_MODULE_LOC` with the
+ * compiled eslint `max-lines` rule that owns module size in the project itself.
+ * (`STRUCT_MODULE_LOC` is retired — it has no emit site; the budget moved into
+ * the scaffolded lint layer. This gate is the DELEGATION-side enforcement of
+ * the same number, because a delegated diff lands before any lint run.)
  *
  * Without it the two paths applied opposite standards to the same file: Step-0
  * had NO size rule, so it accepted a 1233-logical-line module, and the write gate
@@ -420,7 +423,12 @@ export function postApplySize(cwd: string, touched: string[]): string | null {
     }
     const loc = logicalLoc(lexicalMask(text, true));
     if (loc > BLOCKING_MODULE_LOC) {
-      return `${rel} is approximately ${loc} logical lines, over the ${BLOCKING_MODULE_LOC} limit the structural write gate enforces — the owning role would be unable to edit it`;
+      // The authority named here is THIS gate, unconditionally true. Claiming
+      // the project's lint enforces it was false whenever the scaffolded
+      // max-lines rule had been deleted (16co) or never existed (a pre-existing
+      // project) — a deny whose justification the reader can disprove teaches
+      // them to argue with the gate instead of fixing the file.
+      return `${rel} is approximately ${loc} logical lines, over the ${BLOCKING_MODULE_LOC} limit this delegation gate enforces (the same budget the scaffolded eslint max-lines rule carries). Split it across the unit's other allowed files, or narrow the content to fit`;
     }
   }
   return null;

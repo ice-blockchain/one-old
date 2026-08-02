@@ -34,6 +34,7 @@ import {
 import {
   boundedMaintenanceSourceScope,
   ensureRunBootstrap,
+  pendingMaintenanceDebtSources,
   readActiveRunBootstrap,
 } from '../../shared/run-bootstrap-policy';
 import { readRunHostCapability } from '../../shared/host/capabilities';
@@ -273,7 +274,17 @@ export function agentModelGate(ctx: Ctx): HookResult {
       const explicitQuickFixScope = requestedQuickFixScope?.present
         ? (requestedQuickFixScope.valid ? requestedQuickFixScope : null)
         : null;
+      // The union of every pending debt's pinned files takes precedence over
+      // the active envelope's scope: `active.json` holds whichever unit's
+      // envelope was published LAST, so a paid child bound from it could only
+      // ever discharge that one debt and the run stayed `fallback-pending`
+      // forever. The union covers the single-debt case identically (union of
+      // one = that debt), and `fallbackContractMatches` admits exactly it.
+      const pendingDebtSources = !requestedQuickFixScope?.present && role !== 'quick-fix'
+        ? pendingMaintenanceDebtSources(cwd, spawnRunId, role)
+        : null;
       const boundedMaintenanceOutputs = explicitQuickFixScope?.outputs
+        || pendingDebtSources
         || (!requestedQuickFixScope?.present && activeBoundedMaintenance
           ? boundedMaintenanceSourceScope(
               spawnRunId,
@@ -291,6 +302,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
           ? {
               boundedOutputs: boundedMaintenanceOutputs,
               boundedAllowlist: explicitQuickFixScope?.allowlist
+                || pendingDebtSources
                 || (activeBoundedMaintenance
                   ? boundedMaintenanceSourceScope(
                       spawnRunId,
@@ -300,7 +312,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
                   : undefined)
                 || boundedMaintenanceOutputs,
               boundedAllowlistExclude: explicitQuickFixScope?.exclude
-                || activeBoundedMaintenance?.workUnit.allowlistExclude
+                || (pendingDebtSources ? [] : activeBoundedMaintenance?.workUnit.allowlistExclude)
                 || [],
             }
           : {}),

@@ -68,6 +68,11 @@ export type FailureKind =
   | 'verification-failed'
   | 'no-changes'
   | 'diff-rejected'
+  // The CONTRACT could not be published before delegation — no worktree, no
+  // diff, no model call. Labelling this 'diff-rejected' (there was no diff)
+  // sent 16co's orchestrator hunting an allowlist violation that did not
+  // exist while the actual input to fix was the bounded-envelope publication.
+  | 'preflight-rejected'
   | 'opencode-error'
   | 'environment'
   | 'skipped';
