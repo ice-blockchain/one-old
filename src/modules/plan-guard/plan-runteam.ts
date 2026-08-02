@@ -5,7 +5,12 @@
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 
 import { obj, type Rec } from '../../shared/obj';
-import { isTestInfraConfigPath, isTestScopePath, roleCanWriteFeatureSource } from '../../shared/feature-source';
+import {
+  isMaintenanceSourceWritePath,
+  isTestInfraConfigPath,
+  isTestScopePath,
+  roleCanWriteFeatureSource,
+} from '../../shared/feature-source';
 import { matchesScope } from '../../shared/scope';
 import {
   readCompiledArchitecture,
@@ -137,7 +142,15 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const assignedTargets = preManifest
     ? writeTargetPaths.filter((target) => preManifest.assignments.some((assignment) => matchesScope(target, assignment.scope)))
     : [];
-  const writingRunTeamTarget = writingFeatureSource || Boolean(writingBuildArtifact) || assignedTargets.length > 0;
+  // In maintenance, ANY source-code write is run-team territory — not only the
+  // prescribed web layouts FEATURE_SOURCE_RE models. See
+  // isMaintenanceSourceWritePath for why (the Go `internal/` hole).
+  const writingMaintenanceSource = isMaintenancePhase(state, state.mode)
+    && writeTargetPaths.some((target) => isMaintenanceSourceWritePath(target));
+  const writingRunTeamTarget = writingFeatureSource
+    || Boolean(writingBuildArtifact)
+    || assignedTargets.length > 0
+    || writingMaintenanceSource;
   if (!writingRunTeamTarget) return null;
 
   const suffix = block('run-team-suffix',

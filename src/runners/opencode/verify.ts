@@ -39,7 +39,7 @@ import {
   normalizeOpenCodeRole,
 } from '../../shared/opencode-queue';
 import { spawnTool } from '../../shared/spawn-tool';
-import {  readEffectiveState } from '../../shared/state';
+import {  isExistingProjectMode, readEffectiveState } from '../../shared/state';
 
 import {
   type Rec,
@@ -263,8 +263,31 @@ export function postApplyTypecheck(cwd: string, touched: string[]): string | nul
  * Returns an error string so the caller rolls the apply back exactly the way a
  * failed typecheck does and falls back to the paid implementer with a clean tree.
  */
+// Existing-codebase scoping for the whole-file post-apply judgments: a file
+// that existed at HEAD keeps the repo owner's conventions (pre-collapsed,
+// oversized, differently-styled legacy source must not make every delegated
+// maintenance edit un-landable), but a file the DIFF ITSELF CREATED is wholly
+// run-authored even on an existing codebase and is judged normally — this
+// channel never passes the write gate (git apply), so skipping created files
+// would reopen the exact 7co/8co holes these checks were built for. Returns
+// null when the project is not an existing-* mode (judge everything), else the
+// set of touched files that existed at HEAD (skip exactly those). Delegation
+// requires a git HEAD to sandbox; if git cannot answer, fail toward the
+// stand-down (skip all) — the pre-fix behavior, permissive on existing only.
+function preExistingAtHead(cwd: string, touched: string[]): Set<string> | null {
+  if (!isExistingProjectMode(readEffectiveState(cwd))) return null;
+  if (touched.length === 0) return new Set();
+  const r = spawnTool('git', ['ls-tree', '-z', '-r', '--name-only', 'HEAD', '--', ...touched], {
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000,
+  });
+  if (r.error || r.status !== 0) return new Set(touched);
+  return new Set(String(r.stdout || '').split('\0').filter(Boolean));
+}
+
 export function postApplyQuality(cwd: string, touched: string[]): string | null {
+  const preExisting = preExistingAtHead(cwd, touched);
   for (const rel of touched) {
+    if (preExisting?.has(rel)) continue;
     if (!isCollapseCandidate(rel)) continue;
     let text: string;
     try {
@@ -309,7 +332,13 @@ export function postApplyStyling(cwd: string, touched: string[], runId = ''): st
   // a Step-0 unit could never make it land. Only projects with no pinned Tailwind
   // are judged by what is reachable on disk.
   if (tailwindPinnedByContract(cwd, runId)) return null;
+  // Existing-codebase scoping (preExistingAtHead): the repo owner's own files
+  // may use Tailwind-compatible atomic CSS this walk cannot see (UnoCSS,
+  // Windi, a hoisted toolchain) — never judge those. A component the diff
+  // CREATED with inert Tailwind classes is still the 8co failure and rolls back.
+  const preExisting = preExistingAtHead(cwd, touched);
   for (const rel of touched) {
+    if (preExisting?.has(rel)) continue;
     if (!/\.(?:tsx|jsx|vue|svelte)$/i.test(rel)) continue;
     let text: string;
     try {
@@ -340,6 +369,7 @@ export function postApplyI18n(
   if (normalizeOpenCodeRole(role) !== 'frontend') return null;
   const contract = runId ? readCompiledArchitecture(cwd, runId) : null;
   if (!contract?.i18n && !projectDeclaresI18nRuntime(cwd, contract || undefined)) return null;
+  const existingMode = isExistingProjectMode(readEffectiveState(cwd));
   const profile = contract?.profile || capabilityProfileForProject(cwd, readEffectiveState(cwd));
   const i18n = contract?.i18n || detectExistingI18nContract(cwd);
   const references: I18nReference[] = [];
@@ -358,8 +388,14 @@ export function postApplyI18n(
     // config carries a real AST i18n rule (React-family, Vue), lexical copy
     // findings advise instead of triggering the apply rollback — the project's
     // own `lint` run owns that verdict. Catalog findings always block.
+    // Existing-codebase stand-down for the lexical half: an existing repo
+    // rarely has a plugin-compiled AST layer, so without this the copy policy
+    // was ENFORCED harder on delegated maintenance diffs than on the identical
+    // paid Write (where these ids never block). Catalog data validation below
+    // keeps applying — it guards the project's own declared contract.
+    const lexicalDemoted = uiAstLintLayer(profile) !== null || existingMode;
     findings.push(...source.findings.filter((finding) => (
-      !uiAstLintLayer(profile)
+      !lexicalDemoted
       || (finding.id !== 'STRUCT_HARDCODED_COPY' && finding.id !== 'STRUCT_I18N_REACT_TRANS')
     )));
   }
@@ -385,7 +421,11 @@ export function postApplyI18n(
         requireAllCatalogs: true,
       }));
     }
-  } else {
+  } else if (!existingMode) {
+    // On an existing codebase an undetectable catalog layout (compiled TS
+    // message modules, .po files, non-standard paths) means "cannot judge",
+    // not "reject every diff" — blocking here burned the whole delegation
+    // economy on repos whose i18n shape this detector simply cannot parse.
     findings.push({
       id: 'STRUCT_I18N_CATALOG' as const,
       file: '<catalog>',
@@ -413,6 +453,12 @@ export function postApplyI18n(
  * disabling `noUncheckedIndexedAccess` for the whole monorepo.
  */
 export function postApplySize(cwd: string, touched: string[]): string | null {
+  // Existing-codebase stand-down: the limit judges the whole on-disk file, so
+  // every legacy module already over the budget would become permanently
+  // un-editable via delegation — each maintenance diff rejected regardless of
+  // its own size. Module-size budgets on an existing repo belong to the
+  // project's own lint config, not this gate.
+  if (isExistingProjectMode(readEffectiveState(cwd))) return null;
   for (const rel of touched) {
     if (!isCollapseCandidate(rel)) continue;
     let text: string;

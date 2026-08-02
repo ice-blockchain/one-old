@@ -39,7 +39,7 @@ export type CurrentDistProof = 'host-install' | 'session-plugin-dir' | 'case-wra
 // that the plugin loaded before this exemption can apply.
 export type HeadlessSubagentSupport = 'supported' | 'unsupported' | 'unknown';
 
-export type ProjectMode = 'new-project' | 'existing-codebase';
+export type ProjectMode = 'new-project' | 'existing-codebase' | 'existing-with-supabase';
 
 export type FixtureKind =
   | 'empty'
@@ -99,6 +99,13 @@ export interface RunSimSpec {
   // Run the adversarial rows after settlement: writes that MUST be denied, each
   // pinned to the gate that has to refuse it.
   negativeGates?: boolean;
+  // Rows beyond the compiled outputs, written by the named role through the
+  // same gate path as its own outputs during phase 2, and REQUIRED to be
+  // allowed. An existing-codebase case uses this to land writes the
+  // prescribed-stack static checks deny on a new project — the repo's own
+  // conventions must survive the run, not merely be tolerated after it. The
+  // role must own a work unit in the run (or be senior-tester).
+  extraWrites?: Array<{ role: string; path: string; content: string }>;
   // A follow-up run in the SAME project — the user's maintenance message. This
   // is the only leg that diffs against a populated baseline, so it is where
   // uiImpact comes from changed code rather than from the greenfield floor.
@@ -107,7 +114,63 @@ export interface RunSimSpec {
     architecture: ArchitectureInputV1;
     qa: QaExpectation;
   };
+  // Post-build maintenance triage legs, run LAST in the SAME project. Each
+  // 'prompt' leg is one user message routed through the REAL prompt-boundary
+  // machinery (unresolvedRunDirective || maintenanceTriageDirective) — the
+  // composition prompt-submit.ts performs — so routing, run rotation, the
+  // classifier hint, and the bounded quick-fix write path are all exercised on
+  // the production functions rather than replicas. 'open-run'/'resolve-run'
+  // bracket an orchestrated maintenance run so a leg can probe the
+  // unresolved-run preservation guard while the run is genuinely nonterminal.
+  maintenance?: MaintenanceTriageLeg[];
 }
+
+export type MaintenanceTriageLeg =
+  | {
+      kind: 'prompt';
+      // The user's follow-up message, verbatim.
+      prompt: string;
+      // Which router must win:
+      //   'triage'     — the maintenance triage directive fires (and, in
+      //                  subagents mode, the run id rotates),
+      //   'unresolved' — the continue-run directive preserves the current run,
+      //   'none'       — no directive at all (chat / runtime control / a live
+      //                  fresh worker claim suppressing triage).
+      expectRouting: 'triage' | 'unresolved' | 'none';
+      // Pin the deterministic classifier hint at composition level.
+      expectTier?: 'trivial' | 'small' | 'complex';
+      // Simulate the routed quick-fix worker: parent publishes the bounded
+      // WorkUnit for exactly these files, the worker binds its claim and writes
+      // them through the real gate, then lands its IMPLEMENTED digest. The
+      // driver also probes that an out-of-scope write and an unattributed
+      // parent write are DENIED by the maintenance fail-closed branches.
+      quickFix?: {
+        files: Array<{ path: string; content: string }>;
+        outOfScope?: { path: string; content: string };
+      };
+      // Simulate the small tier's directly-owning role: parent publishes a
+      // `<role>:bounded-maintenance` WorkUnit and the bound role writes inside
+      // it. The write MUST be allowed — this is the seam that makes the small
+      // tier (and the paid OpenCode-fallback worker) viable at all.
+      boundedRole?: {
+        role: 'senior-frontend' | 'senior-backend';
+        files: Array<{ path: string; content: string }>;
+      };
+    }
+  | {
+      // Start an orchestrated maintenance run (rotate → plan → implement) and
+      // leave it NONTERMINAL: implementers deliver, then the reviewer records
+      // CHANGES_REQUESTED — verification has started but cannot settle. That is
+      // the exact regime the unresolved-run directive exists for.
+      kind: 'open-run';
+      brief: string;
+      architecture: ArchitectureInputV1;
+    }
+  | {
+      // Finish the open run: QA evidence, APPROVED + TESTS_GREEN, settle.
+      kind: 'resolve-run';
+      qa: QaExpectation;
+    };
 
 export interface QaExpectation {
   mode: 'stack' | 'browser';

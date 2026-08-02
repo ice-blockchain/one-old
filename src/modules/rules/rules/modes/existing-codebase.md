@@ -16,6 +16,10 @@ quantitative and absolute.
   the detected architecture and ask only missing local-preference steps.
 
 ## Active constraints
+- These constraints are guidance, not hard gates: on an existing codebase the
+  write gates never deny for stack, layout, or styling choices — when a
+  constraint conflicts with the repo's own established conventions
+  (styling system, export style, file placement), the local convention wins.
 - Do NOT rename, move, or restructure existing files
 - Max function length: 50 lines on new code
 - Max component length: 150 lines on new code

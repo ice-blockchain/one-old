@@ -72,16 +72,25 @@ function styleObjectIsStatic(objText: string): boolean {
   return sawEntry;
 }
 
+// File-integrity check, NOT an architecture opinion: SVG text in a bitmap path
+// is a broken asset in every project. Split out so the existing-codebase
+// stand-down in the plan-write dispatcher can keep it while the prescribed
+// stack/layout checks below stand down.
+export function assetExtensionMismatchViolations(filePath: string, content: string, block: Block): string[] {
+  if (/\.(png|jpe?g|webp|avif)$/i.test(filePath) && /^\s*(?:<\?xml\b|<svg\b)/i.test(content)) {
+    return [block('asset-extension-mismatch',
+      'Asset gate: do not write SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. Save SVG content with a `.svg` extension, or generate/provide a real bitmap asset for bitmap extensions.')];
+  }
+  return [];
+}
+
 // Collect plan gate violations for a single file write/edit. `isNative`
 // selects React Native vs web style/placement rules.
 export function planStaticViolations(filePath: string, content: string, isNative: boolean, block: Block): string[] {
   const violations: string[] = [];
   const INLINE_STYLE = 'style={' + '{';
 
-  if (/\.(png|jpe?g|webp|avif)$/i.test(filePath) && /^\s*(?:<\?xml\b|<svg\b)/i.test(content)) {
-    violations.push(block('asset-extension-mismatch',
-      'Asset gate: do not write SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. Save SVG content with a `.svg` extension, or generate/provide a real bitmap asset for bitmap extensions.'));
-  }
+  violations.push(...assetExtensionMismatchViolations(filePath, content, block));
 
   if (/(apps\/[^/]+\/)?src\/pages\/.*\.(service|store|hook|query|slice|api)\.(ts|tsx)$/.test(filePath)) {
     violations.push(block('pages-service-files',

@@ -28,7 +28,7 @@ import { projectRelativeHookPath } from '../../../shared/hook/paths';
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../../shared/materialize';
 import { pluginRoot } from '../../../shared/paths';
 import { makeSkillBlock } from '../../../shared/skill-block';
-import { activeAgentRole, explainUnresolvedRunAgent, hookSessionIdentity, isNativeState, readEffectiveState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
+import { activeAgentRole, explainUnresolvedRunAgent, hookSessionIdentity, isExistingProjectMode, isNativeState, readEffectiveState, readState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
 import { capturePlanGuardDebug } from '../../../shared/state/claim-capture';
 import { denyRepeatEscalation, denySignature, recordDenyRepeat } from '../../../shared/state/deny-repeat';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../../shared/tool-classify';
@@ -41,7 +41,7 @@ import { profileHasWebUi } from '../../../shared/capabilities';
 import { planReadinessViolations } from '../plan-readiness';
 import { runIdPathViolation } from '../plan-runid';
 import { openCodeReservedFilesViolation, runTeamEnforcementViolation } from '../plan-runteam';
-import { planStaticViolations, makePlanBlock } from '../plan-static';
+import { assetExtensionMismatchViolations, planStaticViolations, makePlanBlock } from '../plan-static';
 import { resolveToolScope } from '../../../shared/tool-scope';
 
 import {
@@ -259,6 +259,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
     appendUnique(violations, planReadinessViolations({
       filePath: target.filePath,
       content: target.resultContent,
+      addedContent: target.addedContent,
       // Shell-derived targets (staticCheck false) carry no reconstructable
       // payload; content-shape gates must judge the on-disk artifact, not ''.
       contentVerified: target.staticCheck,
@@ -275,6 +276,32 @@ export function planWriteGate(ctx: Ctx): HookResult {
   if ((ctx.host === 'opencode' || ctx.host === 'kilo') && writingExternalTempViaCommand) {
     violations.push(block('opencode-external-temp-shell',
       'OpenCode/Kilo external-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.'));
+  }
+  // Mode-downgrade guard: mode is set at onboarding, and the architecture-gate
+  // family now stands down on existing-* modes — so a CONFIRMED new-project
+  // state flipping itself to an existing-* mode mid-run would disarm every
+  // stack/layout/library gate in one write. Deny the transition on the
+  // content-verified write channels; onboarding and runtime state writes do
+  // not pass through this gate, and creating/repairing an UNCONFIRMED state
+  // (what the state-gate prose instructs) stays allowed.
+  const STATE_FILE_REL = '.traffic-one/.one.json';
+  for (const target of gateTargets) {
+    if (target.filePath !== STATE_FILE_REL || !target.staticCheck) continue;
+    const rawOnDisk = readState(projectRoot);
+    if (rawOnDisk.mode !== 'new-project'
+      || (rawOnDisk.confirmed !== true && rawOnDisk.onboardingComplete !== true)) continue;
+    let proposedMode = '';
+    try {
+      const parsed = JSON.parse(target.resultContent) as Record<string, unknown>;
+      proposedMode = typeof parsed.mode === 'string' ? parsed.mode.trim().toLowerCase() : '';
+    } catch {
+      continue; // not parseable JSON — other validation owns corrupt writes
+    }
+    if (proposedMode.startsWith('existing')) {
+      violations.push(block('state-mode-downgrade',
+        'State mode gate: this project was onboarded as `new-project`; rewriting `.traffic-one/.one.json` to an existing-* mode mid-run would disarm the architecture gates that mode selects. Mode changes go through onboarding, not a state-file edit. If the user explicitly wants this project treated as an existing codebase, re-run Traffic One onboarding.'));
+      break;
+    }
   }
   // Run-id write-guard: a stray (e.g. `date` ISO) run-id in a runs/<id> or
   // digests/<id> write path splits run state away from currentRunId. Check the
@@ -323,8 +350,18 @@ export function planWriteGate(ctx: Ctx): HookResult {
     block,
   });
   if (runTeam) violations.push(runTeam);
+  // Existing-codebase stand-down: the static checks enforce the prescribed
+  // stack/layout (Tailwind-only styling, component placement, named exports,
+  // …) and a repository Traffic One did not create keeps its own conventions
+  // (observed: an existing vanilla-extract repo was denied its own `.css.ts`
+  // styling). Only the file-integrity asset check survives; everything above
+  // (readiness, run-id, run-team ownership, reservations) already ran and
+  // keeps applying in every mode.
+  const staticViolationsFor = isExistingProjectMode(state)
+    ? (target: GateTarget) => assetExtensionMismatchViolations(target.filePath, target.addedContent, block)
+    : (target: GateTarget) => planStaticViolations(target.filePath, target.addedContent, isNative, block);
   for (const target of gateTargets.filter((candidate) => candidate.staticCheck)) {
-    appendUnique(violations, planStaticViolations(target.filePath, target.addedContent, isNative, block));
+    appendUnique(violations, staticViolationsFor(target));
   }
 
   if (violations.length === 0) return noop();

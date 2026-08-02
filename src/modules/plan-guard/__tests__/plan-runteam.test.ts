@@ -456,6 +456,44 @@ test('quick-fix writes require the exact parent-bounded bootstrap scope', () => 
   });
 });
 
+test('maintenance run-team applies to non-web source layouts (the Go internal/ hole)', () => {
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      materializedStack: 'custom-backend|none|go|none',
+    });
+    // `internal/store.go` is not feature source under FEATURE_SOURCE_RE (that
+    // regex models the prescribed web layouts), so the caller classifies it
+    // false — before the fix that bypassed run-team entirely and the parent
+    // could edit Go source directly in a subagents maintenance project.
+    const asProduction = { writingFeatureSource: false, featureTargetPaths: [] as string[] };
+    const parent = gate(dir, state, 'internal/store.go', {}, asProduction);
+    assert.ok(parent && parent.includes('maintenance writes fail closed'));
+    // A bound quick-fix without a contract fails closed on Go paths too…
+    assert.ok(claimThreadRole(dir, state, THREAD, 'quick-fix', { parentSessionId: 'orchestrator' }));
+    const noContract = gate(dir, state, 'internal/store.go', rawFor(THREAD), asProduction);
+    assert.ok(noContract && noContract.includes('no valid parent-published WorkUnitContract'));
+    // …inside the parent-bounded allowlist it is allowed, outside it stays denied.
+    const bootstrap = ensureRunBootstrap(dir, RUN, 'quick-fix', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'test-parent-maintenance',
+      modelPolicyId: 'test-policy',
+      boundedOutputs: ['internal/store.go'],
+    });
+    assert.ok(bootstrap);
+    assert.equal(gate(dir, state, 'internal/store.go', rawFor(THREAD), asProduction), null);
+    const outside = gate(dir, state, 'cmd/catalogue/main.go', rawFor(THREAD), asProduction);
+    assert.ok(outside && outside.includes('no valid parent-published WorkUnitContract'));
+    // Non-source parent writes (docs, configs outside the artifact set) are
+    // still not run-team targets — maintenance does not lock the whole repo.
+    assert.equal(gate(dir, state, 'README.md', {}, asProduction), null);
+  });
+});
+
 test('legacy mode (no manifest): an unowned path falls back to a first-write claim, not a deadlock', () => {
   withDir((dir) => {
     const state = baseState({ frontend: 'nextjs', materializedStack: 'default|nextjs|supabase|none' });
