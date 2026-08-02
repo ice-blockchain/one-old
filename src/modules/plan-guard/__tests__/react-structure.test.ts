@@ -402,6 +402,61 @@ test('route-module matching is route-specific and ignores unused imports in the 
   assert.deepEqual(mismatchMessages[0], mismatchMessages[1]);
 });
 
+// StructureScanOptions.existing (existing-* modes): the complete scan judges
+// every pre-existing file, so the remaining architectural hard-errors demote
+// to warnings — a maintenance run must not dead-end on the user's own
+// entrypoint conventions, line width, or routing. Ownership stays blocking.
+test('existing option demotes the remaining architectural hard-errors to warnings', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), [
+      'import { createRoot } from "react-dom/client";',
+      'import { App } from "./App";',
+      'function HomeShell(){ return <main>shell</main>; }',
+      'createRoot(document.getElementById("root")!).render(<App />);',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/App.tsx'), [
+      'import { createBrowserRouter, RouterProvider } from "react-router-dom";',
+      'import { WrongHome } from "./components/WrongHome";',
+      'import { News } from "./pages/News";',
+      'const router = createBrowserRouter([{ path: "/", element: <WrongHome /> }, { path: "/news", element: <News /> }]);',
+      'export function App() { return <RouterProvider router={router} />; }',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){return <main>Home</main>}\n');
+    // A pre-existing collapsed page the repo owner wrote.
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/News.tsx'),
+      'export function News(){const a=1;return <main><section><h1>News</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/components/WrongHome.tsx'),
+      'export function WrongHome(){return <main>Wrong</main>}\n');
+
+    const DEMOTED = ['STRUCT_COLLAPSED_LINE', 'STRUCT_ENTRYPOINT_COMPONENT', 'STRUCT_ROUTE_MODULE_MISMATCH'];
+    const strict = analyzeProjectStructure(cwd, contract);
+    for (const id of DEMOTED) {
+      assert.ok(ids(strict).includes(id), `${id} must be an error without the existing option`);
+    }
+
+    const relaxed = analyzeProjectStructure(cwd, contract, { existing: true });
+    for (const id of DEMOTED) {
+      assert.ok(!ids(relaxed).includes(id), `${id} must not be an error with existing: true`);
+      assert.ok(
+        relaxed.findings.some((finding) => finding.id === id && finding.severity === 'warning'),
+        `${id} is still reported, as a warning`,
+      );
+    }
+    assert.equal(relaxed.status, 'warnings');
+
+    // Ownership is not architecture: allowlist gaps stay errors in every mode.
+    const scoped = analyzeProjectStructure(cwd, contract, {
+      existing: true,
+      allowlist: ['apps/web/src/main.tsx'],
+    });
+    assert.ok(ids(scoped).includes('STRUCT_ASSIGNMENT_ALLOWLIST_GAP'));
+  });
+});
+
 test('hot contract analysis blocks an unplanned route and a route wired to the wrong module', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);

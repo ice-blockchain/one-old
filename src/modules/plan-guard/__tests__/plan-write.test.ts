@@ -993,6 +993,122 @@ test('static layout violation is denied even in a clean main-agent project', () 
   });
 });
 
+test('existing codebase: architectural static checks stand down, asset integrity stays', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    // The observed bug shape: an existing vanilla-extract repo denied its own
+    // `.css.ts` styling with "vanilla-extract is no longer in the active stack".
+    const vanilla = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/features/reviews/Section.css.ts',
+      content: "import { style } from '@vanilla-extract/css';\nexport const root = style({});",
+    }));
+    assert.equal(vanilla.kind, 'noop');
+    // Placement/export conventions are the repo's own too.
+    const layout = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'packages/ui/src/components/Btn.tsx',
+      content: 'export default function Btn() { return null; }',
+    }));
+    assert.equal(layout.kind, 'noop');
+    // File integrity is not an architecture opinion: SVG text written into a
+    // bitmap path is a broken asset in every project and still denies.
+    const asset = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/public/icon.png',
+      content: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    }));
+    assert.equal(asset.kind, 'deny');
+    if (asset.kind === 'deny') assert.match(asset.reason, /Asset gate/);
+  });
+  // existing-with-supabase gets the identical stand-down.
+  withMaterialized({
+    mode: 'existing-with-supabase',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/Legacy.tsx',
+      content: 'const x: any = 1;\nexport default function Legacy() { return <div style={{ color: "red" }} />; }\n',
+    }));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+// Verified-repro regression: the hot structural gate judges the reconstructed
+// whole file, so a legacy wide line used to deny every unrelated Edit to that
+// file forever on an existing codebase. Collapse now blocks there only when
+// the collapse is in the bytes the write authors.
+test('existing codebase: an Edit near a pre-existing wide line is not collapse-denied', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    const rel = 'apps/web/src/pages/News.tsx';
+    const wide = '      <tr><td>{u.id}</td><td>{u.name}</td><td>{u.email}</td><td>{u.team}</td><td>{u.role}</td></tr>';
+    const target = path.join(cwd, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, [
+      "import { useState } from 'react';",
+      'export function News() {',
+      '  const [n] = useState(1);',
+      wide,
+      '  return null;',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    const edit = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: rel,
+      old_string: 'useState(1)',
+      new_string: 'useState(2)',
+    }));
+    assert.equal(edit.kind, 'noop');
+    // A write that itself AUTHORS collapse still denies — even on existing mode.
+    const authored = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/pages/Packed.tsx',
+      content: 'export function Packed(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
+    }));
+    assert.equal(authored.kind, 'deny');
+    if (authored.kind === 'deny') assert.match(authored.reason, /STRUCT_COLLAPSED_LINE/);
+  });
+});
+
+// Mode is set at onboarding: a confirmed new-project state must not flip
+// itself to an existing-* mode mid-run — that single write would disarm the
+// whole architecture-gate family the stand-down keys on.
+test('a confirmed new-project state cannot rewrite itself to an existing mode', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const flip = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...onDisk, mode: 'existing-codebase' }),
+    }));
+    assert.equal(flip.kind, 'deny');
+    if (flip.kind === 'deny') assert.match(flip.reason, /State mode gate/);
+    // Rewrites that keep the mode stay allowed.
+    const keep = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...onDisk, stack: 'default' }),
+    }));
+    assert.equal(keep.kind, 'noop');
+  });
+  // CREATING the state file (no `.one.json` on disk) with an existing mode is
+  // what the state-gate prose instructs on first detection of an existing
+  // repo — that path stays allowed; only the onboarded new-project→existing
+  // TRANSITION is gated. (An "unconfirmed" on-disk new-project state is not a
+  // reliable third case: the gate's own materialization preflight converges
+  // it to onboarded before the guard reads it.)
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    fs.rmSync(path.join(cwd, '.traffic-one', '.one.json'));
+    const create = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({
+        mode: 'existing-codebase', stack: 'minimal', backend: 'other', frontend: 'none',
+        confirmed: true, onboardingComplete: true,
+      }),
+    }));
+    assert.equal(create.kind, 'noop');
+  });
+});
+
 test('Edit hot structural gate reconstructs the full file and banks monolithization findings in the quality ledger', () => {
   withMaterialized({ currentRunId: 'R', team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');

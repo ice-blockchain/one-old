@@ -41,6 +41,7 @@ import {
   stableEqual,
 } from './materials';
 import {
+  roleSkippableWithoutAssignment,
   workUnitForRole,
 } from './work-unit';
 
@@ -62,6 +63,14 @@ export function canResolveRunBootstrapSet(
     || contracts.assignments.architectureHash !== contracts.architecture.contractHash
     || contracts.assignments.verificationHash !== contracts.verification.contractHash) return false;
   return roles.every((role) => {
+    // A skippable scope-requiring role the compiled contract assigns nothing
+    // is not part of this run: it can never spawn, so it must not veto
+    // publication. See roleSkippableWithoutAssignment for the observed
+    // PLAN_READY deadlock and why senior-tester stays load-bearing.
+    if (roleSkippableWithoutAssignment(role)
+      && !contracts.assignments.assignments.some((entry) => entry.role === role)) {
+      return true;
+    }
     const resolved = resolvedRoleMaterials(cwd, role, {}, host, snapshot.profile);
     return Boolean(resolved && workUnitForRole(
       cwd,

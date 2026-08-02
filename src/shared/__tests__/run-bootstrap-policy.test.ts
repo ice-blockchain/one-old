@@ -6,12 +6,17 @@ import * as path from 'path';
 
 import {
   activeRunBootstrapPath,
+  canResolveRunBootstrapSet,
   ensureRunBootstrap,
   readActiveRunBootstrap,
   repairRunBootstrapForBoundChild,
   resolvedRoleSkillIds,
+  roleRequiresCompiledAssignment,
   RUN_BOOTSTRAP_MAX_PER_ROLE,
 } from '../run-bootstrap-policy';
+import { resolvedRoleMaterials } from '../run-bootstrap-policy/materials';
+import { workUnitForRole } from '../run-bootstrap-policy/work-unit';
+import { readArchitectureRunSnapshot } from '../architecture-contract';
 import { currentHostModelTarget } from '../current-model-tiers';
 import { ensureRunModelPolicy } from '../run-model-policy';
 import { roleAgentBody } from '../skill-filters';
@@ -180,6 +185,70 @@ test('precompile publishes only a complete architect planning envelope with real
         modelPolicyId: 'policy-1',
       }), null, `${role} must not receive an empty precompile work unit`);
     }
+  });
+});
+
+// Observed run 1785623723274 (existing-codebase, frontend-only maintenance
+// plan): the capability profile listed senior-backend (detected backend
+// "other") but the compiled contract assigned it nothing, and the bootstrap-set
+// preflight demanded an envelope for it anyway — PLAN_READY was denied forever.
+// A scope-requiring role with no compiled assignment is not part of the run.
+test('a capability role with no compiled assignment does not veto the bootstrap set', () => {
+  withProject((cwd) => {
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'other',
+      onboardingComplete: true,
+      mobile: { framework: 'none' },
+      currentRunId: 'R',
+    };
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify(state));
+    const contracts = compileRun(cwd, 'R', state, UI_INPUT);
+    assert.ok(
+      !contracts.assignments.assignments.some((entry) => entry.role === 'senior-backend'),
+      'fixture: the frontend-only plan must assign senior-backend nothing',
+    );
+    // The architect bootstrap creates the run snapshot + host capability.
+    assert.ok(ensureRunBootstrap(cwd, 'R', 'senior-architect', state, {
+      host: 'claude',
+      hostAgentType: null,
+      evidenceSource: 'test-parent',
+      modelPolicyId: 'test-policy',
+    }));
+    // The veto this pin exists for: backend cannot build a unit without an
+    // assignment — so the SET must skip it, not fail on it.
+    const snapshot = readArchitectureRunSnapshot(cwd, 'R');
+    assert.ok(snapshot);
+    const materials = resolvedRoleMaterials(cwd, 'senior-backend', {}, 'claude', snapshot!.profile);
+    assert.ok(materials);
+    assert.equal(
+      workUnitForRole(cwd, 'R', 'senior-backend', null, materials!, snapshot!, {}, {
+        architecture: contracts.architecture,
+        verification: contracts.verification,
+        assignments: contracts.assignments,
+      }),
+      null,
+    );
+    assert.equal(roleRequiresCompiledAssignment('senior-backend'), true);
+    assert.equal(roleRequiresCompiledAssignment('senior-reviewer'), false);
+    assert.equal(
+      canResolveRunBootstrapSet(
+        cwd,
+        'R',
+        ['senior-architect', 'senior-reviewer', 'senior-frontend', 'senior-backend', 'senior-tester'],
+        'claude',
+        false,
+        {
+          architecture: contracts.architecture,
+          verification: contracts.verification,
+          assignments: contracts.assignments,
+        },
+      ),
+      true,
+    );
   });
 });
 

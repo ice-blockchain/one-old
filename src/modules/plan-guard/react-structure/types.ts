@@ -67,6 +67,17 @@ export interface StructureScanOptions {
    * a preset are all legitimate shapes this scanner cannot see.
    */
   greenfield?: boolean;
+  /**
+   * True only for existing-* modes (`existing-codebase`, `existing-with-supabase`).
+   * NOT the negation of `greenfield`: an absent/unknown mode is neither. On an
+   * existing codebase the remaining architectural hard-errors — route/module
+   * wiring, entrypoint conventions, strict collapse on pre-existing files —
+   * demote to warnings so a maintenance run can never dead-end on the user's
+   * own code. Ownership (`STRUCT_ASSIGNMENT_ALLOWLIST_GAP`), scan integrity
+   * (`STRUCT_SCAN_INCOMPLETE`), plan delivery (`STRUCT_MISSING_PLANNED_MODULE`),
+   * and catalog data validation stay blocking in every mode.
+   */
+  existing?: boolean;
 }
 
 export interface ComponentDeclaration {

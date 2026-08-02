@@ -7,6 +7,7 @@
 import { activeAgentRole, isSubagentSession } from './state';
 import type { RunAgentContext } from './state/run-agent';
 import { parseApplyPatch, patchOperationPaths } from './apply-patch';
+import { SOURCE_EXTS } from './detection/artifacts';
 
 // Paths the architecture gate treats as "feature source" (monorepo + flat layouts).
 export const FEATURE_SOURCE_RE =
@@ -41,6 +42,25 @@ export function roleCanWriteFeatureSource(role: unknown, filePath: string): bool
       || roleCanWriteFeatureSource('senior-backend', filePath);
   }
   return false;
+}
+
+// Any source-code write is a run-team target in the MAINTENANCE phase, even
+// when the repo's layout is not one FEATURE_SOURCE_RE models (Go `internal/`,
+// Laravel `app/`, a flat `cmd/` tree, ...). FEATURE_SOURCE_RE encodes the
+// prescribed web layouts, which is right for the plan gate on a new project —
+// but the maintenance fail-closed contract ("no write without a hash-valid
+// assignment or a bounded WorkUnit") was VACUOUS on every backend repo whose
+// sources live outside `src/`: the parent could edit `internal/store.go`
+// directly and a bounded quick-fix allowlist had nothing to bite on (found by
+// the run-sim existing-go maintenance leg). Extension-based on the same set
+// mode detection counts as source, so the two ends of the pipeline agree on
+// what "code" means; `.traffic-one/**` bookkeeping is never a run-team target.
+export function isMaintenanceSourceWritePath(filePath: unknown): boolean {
+  if (typeof filePath !== 'string' || !filePath) return false;
+  const rel = filePath.replace(/\\/g, '/').replace(/^\.\/+/, '');
+  if (rel.startsWith('.traffic-one/') || rel.startsWith('.git/')) return false;
+  const ext = rel.slice(rel.lastIndexOf('.'));
+  return SOURCE_EXTS.has(ext);
 }
 
 // Role ownership check. Prefer the per-agent run claim resolved from the current

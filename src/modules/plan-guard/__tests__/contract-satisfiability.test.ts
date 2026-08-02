@@ -144,6 +144,64 @@ test('a demanded module output the write gates deny — or no allowlist covers �
   });
 });
 
+// The sweep judges outputs by the gates the implementer will ACTUALLY face.
+// On existing-* modes the prescribed-stack static checks and the lexical copy
+// policy stand down at the write gate, so their findings are not conflicts —
+// while ownership (allowlist coverage) keeps counting in every mode.
+test('existingMode mirrors the write-gate stand-down: static/lexical conflicts vanish, ownership stays', () => {
+  withProject((cwd) => {
+    const { compiled, assignments } = compiledWithAssignments(cwd, 'R', DEFAULT_STATE, INPUT);
+    const conflicted: CompiledArchitectureV1 = {
+      ...compiled,
+      modules: [
+        ...compiled.modules,
+        {
+          id: 'orders-service',
+          name: 'Orders Service',
+          kind: 'service',
+          ownerRole: 'senior-frontend',
+          output: 'apps/web/src/pages/orders.service.ts',
+        },
+      ],
+    };
+    const conflicts = contractSelfConflicts(conflicted, assignments, {
+      isNative: false,
+      enforceI18n: true,
+      existingMode: true,
+      contentOverrides: {
+        'apps/web/index.html': [
+          '<!doctype html>',
+          '<html lang="en">',
+          '  <body>',
+          '    <h1>Welcome to the platform</h1>',
+          '    <div id="root"></div>',
+          '  </body>',
+          '</html>',
+        ].join('\n'),
+      },
+    });
+    assert.ok(
+      !conflicts.some((conflict) => conflict.gate === 'pages-service-files'),
+      `static plan-gate conflicts must vanish on existing mode, got: ${JSON.stringify(conflicts)}`,
+    );
+    assert.ok(
+      !conflicts.some((conflict) => conflict.gate === 'STRUCT_HARDCODED_COPY'),
+      'lexical copy conflicts must vanish on existing mode',
+    );
+    assert.ok(
+      !conflicts.some((conflict) => conflict.gate === 'STRUCT_ROUTE_MODULE_MISMATCH'),
+      'route/module mismatch is ledger-only on existing mode, never a conflict',
+    );
+    assert.ok(
+      conflicts.some((conflict) => (
+        conflict.gate === 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP'
+        && conflict.output === 'apps/web/src/pages/orders.service.ts'
+      )),
+      'ownership coverage keeps counting in every mode',
+    );
+  });
+});
+
 test('the vite-react canonical entry html passes the sweep (13co) and its metadata carve-out stays narrow', () => {
   withProject((cwd) => {
     const { compiled, assignments } = compiledWithAssignments(cwd, 'R', DEFAULT_STATE, INPUT);

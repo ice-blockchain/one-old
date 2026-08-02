@@ -96,6 +96,25 @@ function roleRunArtifacts(
 // envelopes for identical inputs — rules/skills were always hashed here as
 // {id, contentHash} pairs. That stability is why maintenance.json fallback
 // markers (fallbackContractMatches) survive the v1→v2 envelope migration.
+// Implementer/tester roles have no meaning without a compiled assignment: their
+// whole scope IS the assignment.
+export function roleRequiresCompiledAssignment(role: string): boolean {
+  return ['senior-frontend', 'senior-backend', 'senior-tester'].includes(role);
+}
+
+// The subset of assignment-requiring roles the bootstrap-set preflight may
+// SKIP when the compiled contract assigns them nothing — a capability profile
+// may list a role (e.g. senior-backend on a project with a detected backend)
+// that a frontend-only maintenance plan never assigns, and demanding an
+// envelope for it denied PLAN_READY forever (observed run 1785623723274 on an
+// existing-codebase project). senior-tester is deliberately NOT skippable:
+// `verified` settlement requires tester evidence regardless of assignment, so
+// a tester-less contract must stay a loud PLAN_READY failure instead of a
+// silent post-accept deadlock where the tester can never spawn.
+export function roleSkippableWithoutAssignment(role: string): boolean {
+  return role === 'senior-frontend' || role === 'senior-backend';
+}
+
 export function workUnitForRole(
   cwd: string,
   runId: string,
@@ -180,7 +199,7 @@ export function workUnitForRole(
   const allowlist = [...new Set([...stringList(assignment?.scope.include), ...artifacts])].sort();
   const allowlistExclude = stringList(assignment?.scope.exclude);
   const outputs = [...new Set([...stringList(assignment?.scope.include), ...artifacts])].sort();
-  const requiresAssignment = ['senior-frontend', 'senior-backend', 'senior-tester'].includes(role);
+  const requiresAssignment = roleRequiresCompiledAssignment(role);
   if (
     !architecture
     || !verification

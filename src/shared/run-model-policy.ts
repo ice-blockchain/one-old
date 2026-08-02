@@ -31,6 +31,7 @@ import {
   ensureRunBootstrap,
   pendingMaintenanceDebtSources,
   roleOwesPendingMaintenanceFallback,
+  roleSkippableWithoutAssignment,
   type BootstrapRuntimeContractsV1,
 } from './run-bootstrap-policy';
 import { readVerificationContract } from './verification-contract';
@@ -263,8 +264,16 @@ export function ensureRunPolicyBootstraps(
   // Precompile is a planning phase: only the architect has a strict work unit
   // hashed to the immutable capability+baseline snapshot. Empty implementer,
   // tester, reviewer, shipper, or quick-fix envelopes are never published.
+  // A skippable scope-requiring role the compiled assignments give nothing to
+  // is not part of this run either — publishing must not demand an envelope
+  // for it (see roleSkippableWithoutAssignment: the frontend-only
+  // existing-codebase maintenance plan that senior-backend deadlocked at
+  // PLAN_READY; senior-tester deliberately stays load-bearing).
   const roles = (compiledReady ? capability.roles : ['senior-architect'])
-    .filter((role) => Boolean(policy.roles[role]));
+    .filter((role) => Boolean(policy.roles[role]))
+    .filter((role) => !compiledReady
+      || !roleSkippableWithoutAssignment(role)
+      || assignments!.assignments.some((entry) => entry.role === role));
   const host = readRunHostCapability(cwd, policy.runId, policy.host)
     || ensureRunHostCapability(cwd, policy.runId, policy.host);
   if (!host) return false;
