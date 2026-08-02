@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { maintenanceTriageDirective, unresolvedRunDirective } from '../triage-directive';
+import { maintenanceTriageDirective, maintenanceTriageFallbackDirective, unresolvedRunDirective } from '../triage-directive';
 import { transitionRunStatus } from '../../../shared/state';
 import { ensureRunModelPolicy, runModelPolicyPath } from '../../../shared/run-model-policy';
 import { currentHostModelTarget } from '../../../shared/current-model-tiers';
@@ -510,4 +510,77 @@ test('main-agent projects never see the refusal — the spawn gates do not deny 
     assert.match(directive, /MAINTENANCE PHASE/);
     assert.doesNotMatch(directive, /TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
   });
+});
+
+test('the headless fallback refuses a pinned wedged run instead of naming it for delegation', () => {
+  // The 16co hazard through the OTHER delivery path: the first-mutating-call
+  // fallback must apply the same refusal, and (like the prompt path) before the
+  // once-marker burns, so the full rubric is still owed once the run is usable.
+  withFrozenCodexRun({ compiled: true }, (dir, state) => {
+    fs.writeFileSync(runModelPolicyPath(dir, 'OLD'), '{ not json', 'utf8');
+    const blocked = maintenanceTriageFallbackDirective(dir, state, { session_id: 'headless-w' }, 'codex');
+    assert.match(blocked, /^TRAFFIC_ONE_BOOTSTRAP_BLOCKED\n/);
+    assert.doesNotMatch(blocked, /MAINTENANCE PHASE/);
+    // Refusal did not burn the marker: once usable, the full rubric emits.
+    fs.rmSync(runModelPolicyPath(dir, 'OLD'), { force: true });
+    const routed = maintenanceTriageFallbackDirective(dir, state, { session_id: 'headless-w' }, 'codex');
+    assert.match(routed, /MAINTENANCE PHASE — post-build triage/);
+  });
+});
+
+// ── The headless fallback ───────────────────────────────────────────────────
+// UserPromptSubmit never fires in `claude -p` sessions (verified live in the
+// ep-text-edit e2e), so the rubric rides the first mutating/spawn PreToolUse
+// via maintenanceTriageFallbackDirective instead. These pin its contract.
+
+test('headless fallback emits the rubric once, without rotating the run', () => {
+  const { dir, state } = setup({});
+  try {
+    const first = maintenanceTriageFallbackDirective(dir, state, { session_id: 'headless-1' }, 'claude');
+    assert.match(first, /MAINTENANCE PHASE — post-build triage/);
+    assert.match(first, /judge the tier yourself/);
+    assert.equal(state.currentRunId, 'OLD', 'the fallback must never rotate — rotation is prompt-boundary only');
+    // Same session: the once-marker suppresses a second emission.
+    assert.equal(maintenanceTriageFallbackDirective(dir, state, { session_id: 'headless-1' }, 'claude'), '');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('headless fallback and the prompt directive share one once-marker (no double full rubric)', () => {
+  const { dir, state } = setup({});
+  try {
+    const fallback = maintenanceTriageFallbackDirective(dir, state, { session_id: 's-shared' }, 'claude');
+    assert.match(fallback, /MAINTENANCE PHASE — post-build triage/);
+    // The prompt-boundary directive in the SAME session degrades to the
+    // reminder form instead of re-injecting the full block.
+    const prompt = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 's-shared' }, 'claude');
+    assert.match(prompt, /triage reminder/);
+    assert.doesNotMatch(prompt, /post-build triage\]/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('headless fallback stands down outside maintenance, for subagents, and under live claims', () => {
+  // Watermark safely in the past: a claim minted in the same millisecond as
+  // the lifecycle stamp would not read as "after" it (the sibling suppress
+  // test does the same).
+  const { dir, state } = setup({ completedAt: new Date(Date.now() - 60_000).toISOString() });
+  try {
+    // Building phase → silent.
+    const building = { ...state, lifecycle: { phase: 'building' } } as typeof state;
+    assert.equal(maintenanceTriageFallbackDirective(dir, building, { session_id: 's-b' }, 'claude'), '');
+    // Subagent thread → silent.
+    assert.equal(maintenanceTriageFallbackDirective(dir, state, {
+      session_id: 's-c',
+      agent_id: 'w1',
+      agent_type: 'traffic-one:senior-frontend',
+    }, 'claude'), '');
+    // A fresh live claim (worker mid-task) → continuation owns it, no rubric.
+    writeFreshClaim(dir);
+    assert.equal(maintenanceTriageFallbackDirective(dir, state, { session_id: 's-d' }, 'claude'), '');
+  } finally {
+    cleanup(dir);
+  }
 });

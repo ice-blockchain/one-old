@@ -98,6 +98,20 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const roleEvidence = roleResolution.evidence;
   const role = roleEvidence.role;
 
+  // A backgrounded role spawn detaches the child from the orchestrator turn:
+  // the parent's turn — and in a headless session the whole process — can end
+  // while the child is still working, killing it mid-run with its claim staked
+  // and nothing delivered (observed live: ep-new-feature run 1785662486571 —
+  // the architect was spawned with run_in_background:true, the parent ended
+  // its turn "while it completes", the headless session exited, and no plan
+  // or code ever landed while the host reported success). Same contract as
+  // the onboarding waiter's background deny: foreground only.
+  if (toolInput.run_in_background === true) {
+    return deny(
+      `traffic-one — spawn blocked: role agents must run in the FOREGROUND of the orchestrator turn. Re-issue this exact \`${role}\` spawn WITHOUT \`run_in_background\` and wait for the child's result in this same turn — a backgrounded role agent is killed when the turn or session ends, leaving its run claim dangling and nothing delivered.`,
+    );
+  }
+
   // A role spawn is imminent → make sure the version-stable runner shims exist
   // BEFORE any subagent runs prose that references ~/.traffic-one/bin. This is
   // the reliable cross-host site: Codex executes PreToolUse but not the
@@ -331,6 +345,20 @@ export function agentModelGate(ctx: Ctx): HookResult {
           && !publishedAssignments.assignments.some((entry) => entry.role === role)) {
           return deny(
             `traffic-one — spawn blocked: \`${role}\` has NO compiled assignment in run ${spawnRunId} — the plan gives this role nothing to build, so it is not part of this run. Do not spawn or retry it; proceed with the assigned roles (${publishedAssignments.assignments.map((entry) => entry.role).join(', ') || 'none'}). If this role genuinely has work, replan: change ArchitectureInputV1 so runtime compiles an assignment for it.`,
+          );
+        }
+        // A bounded-capable maintenance role spawned with NO scope in a run
+        // that has no compiled assignments: the envelope is unfulfillable by
+        // construction, so "repair and retry" loops forever. Observed live
+        // (ep-text-edit e2e, run 1785661319400): headless sessions get no
+        // UserPromptSubmit, so the parent never saw the triage directive's
+        // spawn recipe, sent bare quick-fix spawns, burned six denies, and
+        // silently gave up. Name the exact fix so the flow self-heals.
+        if (!boundedMaintenanceOutputs
+          && !publishedAssignments
+          && ['quick-fix', 'senior-frontend', 'senior-backend'].includes(role)) {
+          return deny(
+            `traffic-one — spawn blocked: \`${role}\` needs a parent-supplied bounded maintenance scope, and this spawn carried none (run ${spawnRunId} has no compiled assignments to scope it from). Re-send the SAME spawn and include the exact files this task may create or modify: either the structured \`allowedFiles\` field, or ONE line in the prompt of the form [t1-bounded-scope: {"outputs": ["src/App.tsx"]}] listing every exact repo-relative file path (globs and directories are rejected). The runtime publishes the bounded WorkUnitContract from that scope; without it no maintenance write can be authorized. Do not retry without adding the scope.`,
           );
         }
         return deny(

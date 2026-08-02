@@ -52,6 +52,23 @@ function cursorRealSlug(
   return pickCursorSlug(acceptable, captured) || family;
 }
 
+// Claude Code's Task tool schema accepts ONLY the bare aliases
+// (sonnet|opus|haiku|fable) as the `model` parameter — a concrete catalog slug
+// like "claude-sonnet-5" fails the host's input validation before any hook
+// runs. The catalog rows keep the bare alias at their tail precisely so alias
+// spawns are ACCEPTED by the gate; but the deny used to LEAD with the concrete
+// slug, and a literal-minded parent obeyed it straight into an
+// InputValidationError before reading the alternates clause (observed live:
+// ep-new-feature run 1785662486571). Lead with the model the schema can take.
+function claudeTaskParamModel(host: string, expected: string, acceptable: readonly string[]): string {
+  if (host !== 'claude') return expected;
+  const bare = acceptable.find((model) => /^(sonnet|opus|haiku|fable)$/.test(model.trim()));
+  if (bare) return bare.trim();
+  const lowered = expected.toLowerCase();
+  const alias = ['fable', 'opus', 'sonnet', 'haiku'].find((a) => lowered.includes(a));
+  return alias || expected;
+}
+
 export function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string, level: string, opts: { suppressAlternates?: boolean; policy?: RunModelPolicyV1 | null } = {}): HookResult {
   const passedNote = passedModel
     ? `You passed model="${passedModel}". `
@@ -61,17 +78,21 @@ export function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: 
   // never an uncaptured family guess. suppressAlternates: after "enable & retry" we don't
   // advertise fallbacks. A captured exact id may legitimately equal its family anchor.
   const policy = opts.policy || null;
-  const shownExpected = cursorRealSlug(ctx, cwd, expected, policy, role);
   const captured = ctx.host === 'cursor'
     ? (policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, detectHostPlan(ctx.host)))
     : [];
   const acceptable = policy
     ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
     : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
+  const shownExpected = claudeTaskParamModel(
+    ctx.host,
+    cursorRealSlug(ctx, cwd, expected, policy, role),
+    acceptable,
+  );
   const altFamilies = opts.suppressAlternates ? [] : acceptable.slice(1);
   const altModels = altFamilies
     .map((f) => (captured.length ? pickCursorSlug([f], captured) : f))
-    .filter((s): s is string => typeof s === 'string' && s.length > 0);
+    .filter((s): s is string => typeof s === 'string' && s.length > 0 && s !== shownExpected);
   const altNote = altModels.length
     ? ` If this host's subagent runner does NOT offer "${shownExpected}" (it rejects an unavailable slug as invalid), pass instead the FIRST of these same-tier models the runner DOES offer — any of them satisfies the gate: ${altModels.join(', ')}.`
     : '';

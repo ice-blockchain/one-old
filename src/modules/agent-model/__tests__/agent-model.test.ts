@@ -1431,6 +1431,87 @@ test('quick-fix spawn mints only the exact machine-readable bounded scope', () =
   });
 });
 
+test('a backgrounded role spawn is denied — foreground only', () => {
+  // ep-new-feature e2e: the parent spawned the architect with
+  // run_in_background:true, ended its turn "while it completes", and the
+  // headless session exited — child killed, claim dangling, nothing delivered,
+  // host exit 0. The gate must refuse the detach outright.
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const backgrounded = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'opus',
+      run_in_background: true,
+    }));
+    assert.equal(backgrounded.kind, 'deny');
+    if (backgrounded.kind === 'deny') {
+      assert.ok(backgrounded.reason.includes('FOREGROUND'));
+      assert.ok(backgrounded.reason.includes('run_in_background'));
+    }
+    // The same spawn without the flag passes.
+    const foreground = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'opus',
+    }));
+    assert.equal(foreground.kind, 'noop', foreground.kind === 'deny' ? foreground.reason : undefined);
+  });
+});
+
+test('claude model deny leads with the Task-schema alias, never a concrete slug the schema rejects', () => {
+  // Claude's Task tool only accepts sonnet|opus|haiku|fable for `model`; a deny
+  // that leads with "claude-sonnet-5" walks the parent into an
+  // InputValidationError (observed: ep-new-feature run 1785662486571).
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    const bare = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-architect' }));
+    assert.equal(bare.kind, 'deny');
+    if (bare.kind === 'deny') {
+      const named = /model:\s*"([^"]+)"/.exec(bare.reason)?.[1]
+        || /`model:\s*"?([A-Za-z0-9._-]+)/.exec(bare.reason)?.[1];
+      assert.ok(named, `deny must name a model to pass, got: ${bare.reason.slice(0, 200)}`);
+      assert.ok(['sonnet', 'opus', 'haiku', 'fable'].includes(String(named)),
+        `deny must lead with a Task-schema alias, got "${String(named)}" in: ${bare.reason.slice(0, 300)}`);
+    }
+  });
+});
+
+test('scope-less quick-fix spawn in a run with no compiled assignments names the bounded-scope remedy', () => {
+  // The ep-text-edit e2e failure: a headless session (no UserPromptSubmit → no
+  // triage directive) spawned quick-fix with NO bounded scope in a run that has
+  // no compiled assignments. The envelope is unfulfillable by construction, and
+  // the old generic "repair and retry" deny looped the parent six times before
+  // it silently gave up. The deny must name the actual fix.
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.mode = 'existing-codebase';
+    one.lifecycle = { phase: 'maintenance', source: 'test' };
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    const bare = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    assert.equal(bare.kind, 'deny');
+    if (bare.kind === 'deny') {
+      assert.ok(bare.reason.includes('t1-bounded-scope'), `deny must name the marker, got: ${bare.reason}`);
+      assert.ok(bare.reason.includes('allowedFiles'));
+      assert.ok(!bare.reason.includes('Repair the parent materialization/policy'), 'must not fall through to the unfollowable generic remedy');
+    }
+
+    // The remedy works: the SAME spawn with the marker publishes the bounded
+    // envelope and passes.
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+    const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+    const envelope = readActiveRunBootstrap(cwd, runId, 'quick-fix');
+    assert.equal(envelope?.workUnit.unitId, 'quick-fix:bootstrap');
+    assert.deepEqual(envelope?.workUnit.outputs, [
+      `.traffic-one/digests/${runId}/quick-fix.md`,
+      'src/bounded-fix.ts',
+    ]);
+  });
+});
+
 test('paid maintenance frontend spawn reuses the exact active bounded WorkUnit', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const onePath = path.join(cwd, '.traffic-one', '.one.json');

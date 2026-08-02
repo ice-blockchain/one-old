@@ -1126,6 +1126,39 @@ test('a fully materialized, complete new project lets tool use through (run-id a
   });
 });
 
+test('headless maintenance: the triage rubric rides the first MUTATING call (never a read), once', () => {
+  // `claude -p` sessions fire no UserPromptSubmit, so the prompt-boundary triage
+  // directive never lands there. The gate's completion path compensates: the
+  // first mutating/spawn call of a maintenance session whose 'maintenance-triage'
+  // once-marker is unburned gets the rubric as context.
+  const existingMaintenance = {
+    ...completeNewProject(),
+    mode: 'existing-codebase',
+    autoDetected: true,
+    lifecycle: { phase: 'maintenance', source: 'existing-detected', completedAt: '2026-01-01T00:00:00Z' },
+  };
+  withProject(existingMaintenance, (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    // A read-only call announces the run id but must NOT spend the rubric.
+    const read = onboardingGate(ctx(cwd, 'Read', 'file-read', { file_path: 'src/app.ts' }));
+    assert.equal(read.kind, 'context');
+    if (read.kind === 'context') {
+      assert.match(read.context, /build run-id: \d+/);
+      assert.doesNotMatch(read.context, /post-build triage/);
+    }
+    // The first mutating call gets the rubric (hint-less: nothing classified a prompt).
+    const write = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/App.tsx', content: 'export const x = 1;' }));
+    assert.equal(write.kind, 'context');
+    if (write.kind === 'context') {
+      assert.match(write.context, /MAINTENANCE PHASE — post-build triage/);
+      assert.match(write.context, /judge the tier yourself/);
+    }
+    // Once per session: the next mutating call falls through to noop.
+    assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/Other.tsx', content: 'export const y = 1;' })).kind, 'noop');
+  });
+});
+
 test('monorepo: a write from an onboarded workspace sub-package is NOT blocked (resolves up to the root)', () => {
   withProject(completeNewProject(), (cwd) => {
     writeLocalPrefs();

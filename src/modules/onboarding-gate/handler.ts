@@ -21,6 +21,7 @@ import { detectMode } from '../../shared/detection';
 import { isOnboardedProjectRoot } from '../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
+import { maintenanceTriageFallbackDirective } from '../session/triage-directive';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
@@ -554,6 +555,20 @@ export function onboardingGate(ctx: Ctx): HookResult {
     if (isMutatingPreToolUse(toolName, toolInput)) return deny(block('repaired-materialization'));
     return context(materialized.context, { systemMessage: materialized.systemMessage });
   }
+  // Headless sessions never fire UserPromptSubmit, so the prompt-boundary
+  // maintenance triage directive is never delivered there. An unburned
+  // 'maintenance-triage' once-marker at the first MUTATING/SPAWN gated call is
+  // that signature (an interactive edit prompt would have burned it before any
+  // tool ran) — emit the rubric here instead. Guidance only: rotation stays at
+  // the prompt boundary and the pre-mint above owns the run id.
+  const triageFallback = (isMutatingPreToolUse(toolName, toolInput) || ctx.input.tool?.class === 'spawn-agent')
+    ? maintenanceTriageFallbackDirective(
+      root,
+      buildRunId ? { ...effectiveState, currentRunId: buildRunId } : effectiveState,
+      raw,
+      ctx.host,
+    )
+    : '';
   // Announce the run-id ONCE, before the first spawn prompt is built, so the literal
   // value is salient (where the host surfaces PreToolUse context). The plan gate's
   // run-id write-guard enforces it regardless of whether this context lands.
@@ -565,7 +580,8 @@ export function onboardingGate(ctx: Ctx): HookResult {
       `\`.traffic-one/digests/${buildRunId}/\` paths, and "Run ID:" lines in spawn prompts. Do NOT run`,
       '`date` to mint one; the plan gate denies writing under any other run-id.',
     ].join(' ');
-    return context(orchestration ? `${runIdLines}\n\n${orchestration}` : runIdLines);
+    return context([runIdLines, orchestration, triageFallback].filter(Boolean).join('\n\n'));
   }
+  if (triageFallback) return context(triageFallback);
   return noop();
 }

@@ -194,40 +194,76 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   if (hasActiveRunClaims(cwd, state, { since: lifecycleCompletedAt(state) }) && !kiloPromptBoundary) return '';
 
   const hint = classifyPromptComplexity(promptText);
-  const team = obj(state.team);
-  const perf = obj(state.performance);
-  const level = perf && typeof perf.level === 'string' ? perf.level : '';
-  const teamMode = team && (team.mode === 'main-agent' || team.mode === 'subagents')
-    ? (team.mode as string)
-    : teamModeForLevel(level);
-  // Name the active local snapshot's concrete cheapest model so the agent can
-  // pass it on the quick-fix spawn without resolving a bundled indirection.
-  const cheapest = currentModelForTier('cheapest', host, detectHostPlan(host)) || 'the cheapest model for this host';
+  const teamMode = resolvedTeamMode(state);
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
   if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state, host);
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
-  // ── The run the routing would name is one the parent gates refuse ──────────
-  // Deliberately AFTER beginFreshMaintenanceRun, for two reasons.
-  //   1. Rotation is the escape hatch, and it is a SIDE EFFECT that has already
-  //      been written to disk by the time this runs — returning early here can
-  //      never suppress it. A wedged run that was allowed to rotate is gone;
-  //      the fresh id gets a fresh policy and answers "not blocked", so the
-  //      common maintenance prompt is untouched.
-  //   2. The two conditions are disjoint by construction: this predicate can
-  //      only fire on a run whose policy is already published, and a run whose
-  //      preflight covers implementer roles at all is one with published
-  //      `assignments.json` — which is exactly what makes the rotation guard
-  //      refuse to rotate it. So only a PINNED wedged run reaches this branch.
-  // Scoped to the same `team.mode === 'subagents'` condition the gates use, so
-  // this never speaks for a main-agent project the gates would let through.
-  if (team?.mode === 'subagents' && runId && runBootstrapBlocked(cwd, runId, host, state)) {
-    return [
-      'TRAFFIC_ONE_BOOTSTRAP_BLOCKED',
-      `Run "${runId}" is frozen (create-once) and Traffic One cannot bootstrap a child in it, so every parent tool call in this run is denied. There is nothing to route this request into.`,
-      'Do NOT spawn a role subagent, do NOT call `opencode_delegate`, do NOT start a quick-fix, and do NOT rotate or replace the run. Do not redo onboarding and do not replace `model-policy.json`.',
-      'Report the run id to the user and stop. The parent gate\'s own message for this run (SessionStart, or the first denied tool call) states the exact repair — do not invent a different one.',
-    ].join('\n');
+  // The refusal is evaluated AFTER rotation (the escape hatch has already been
+  // written to disk, so it can never be suppressed) and BEFORE the once-marker
+  // burn below — an agent that only ever received the refusal must still get
+  // the FULL rubric once the run is usable, never a reminder pointing at prose
+  // it has never seen.
+  const refusal = bootstrapBlockedRefusal(cwd, state, host);
+  if (refusal) return refusal;
+  const ocActive = openCodeDelegationActive(state, host);
+  // The rubric is ~95% static prose: inject it in full once per session, then a
+  // one-line reminder with the per-prompt variables (tier hint + fresh runId).
+  // beginFreshMaintenanceRun above still runs on every triage prompt.
+  if (!firstEmitThisSession(cwd, 'maintenance-triage', hookSessionIdentity(raw).sessionId)) {
+    const ocReminder = ocActive && teamMode === 'subagents'
+      ? ` OpenCode runId for \`opencode_delegate\`: "${runId}".`
+      : '';
+    return `[MAINTENANCE PHASE — triage reminder] hint: ${hint.tier} (confidence ${hint.confidence})${signals} — route per the maintenance-triage rubric from earlier in this session (full rubric: \`task-triage\` skill).${ocReminder}`;
   }
+  return triageRoutingBlock(state, host, {
+    HINT: hint.tier,
+    CONFIDENCE: hint.confidence,
+    SIGNALS: signals,
+  });
+}
+
+// ── The run the routing would name is one the parent gates refuse ────────────
+// 16co, 2026-08-02: SessionStart emitted TRAFFIC_ONE_MODEL_POLICY_BLOCKED ("Do
+// not spawn a child") and the triage reminder handed the agent that same run id
+// for `opencode_delegate` one second later. Two hooks, one turn, opposite
+// instructions. The precondition is CREATE-ONCE: only a run whose model policy
+// is already published is unrepairable in place, and a run whose preflight
+// covers implementer roles is one with published `assignments.json` — exactly
+// what makes the rotation guard PIN it. So only a pinned wedged run reaches
+// this refusal; a rotated-away wedge got a fresh id and answers "not blocked".
+// Scoped to the same `team.mode === 'subagents'` condition the gates use, so
+// this never speaks for a main-agent project the gates would let through.
+function bootstrapBlockedRefusal(cwd: string, state: Rec, host: string): string {
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
+  if (resolvedTeamMode(state) !== 'subagents' || !runId) return '';
+  if (!runBootstrapBlocked(cwd, runId, host, state)) return '';
+  return [
+    'TRAFFIC_ONE_BOOTSTRAP_BLOCKED',
+    `Run "${runId}" is frozen (create-once) and Traffic One cannot bootstrap a child in it, so every parent tool call in this run is denied. There is nothing to route this request into.`,
+    'Do NOT spawn a role subagent, do NOT call `opencode_delegate`, do NOT start a quick-fix, and do NOT rotate or replace the run. Do not redo onboarding and do not replace `model-policy.json`.',
+    'Report the run id to the user and stop. The parent gate\'s own message for this run (SessionStart, or the first denied tool call) states the exact repair — do not invent a different one.',
+  ].join('\n');
+}
+
+function resolvedTeamMode(state: Rec): string {
+  const team = obj(state.team);
+  const perf = obj(state.performance);
+  const level = perf && typeof perf.level === 'string' ? perf.level : '';
+  return team && (team.mode === 'main-agent' || team.mode === 'subagents')
+    ? (team.mode as string)
+    : teamModeForLevel(level);
+}
+
+// The full routing rubric for the ACTIVE team mode, with the per-prompt hint
+// variables supplied by the caller (the prompt-boundary directive) or a
+// judge-it-yourself substitute (the headless fallback below, which has no
+// prompt text to classify).
+function triageRoutingBlock(state: Rec, host: string, hintVars: Record<string, string>): string {
+  const teamMode = resolvedTeamMode(state);
+  // Name the active local snapshot's concrete cheapest model so the agent can
+  // pass it on the quick-fix spawn without resolving a bundled indirection.
+  const cheapest = currentModelForTier('cheapest', host, detectHostPlan(host)) || 'the cheapest model for this host';
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
   const ocActive = openCodeDelegationActive(state, host);
   // Render the OpenCode instruction only when delegation is actually active, so an
   // off state doesn't leave a dead-branch clause a literal reader must evaluate.
@@ -242,23 +278,47 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
       smallOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST for each chosen role ("senior-frontend" and/or "senior-backend"), using runId "${runId}", projectRoot, its bounded task, and \`allowedFiles\` as EXACT file paths — list every file you will create or modify; globs and directories are rejected in maintenance. Only if it declines, spawn that paid role subagent. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
     }
   }
-  // The rubric is ~95% static prose: inject it in full once per session, then a
-  // one-line reminder with the per-prompt variables (tier hint + fresh runId).
-  // beginFreshMaintenanceRun above still runs on every triage prompt.
-  if (!firstEmitThisSession(cwd, 'maintenance-triage', hookSessionIdentity(raw).sessionId)) {
-    const ocReminder = ocActive && teamMode === 'subagents'
-      ? ` OpenCode runId for \`opencode_delegate\`: "${runId}".`
-      : '';
-    return `[MAINTENANCE PHASE — triage reminder] hint: ${hint.tier} (confidence ${hint.confidence})${signals} — route per the maintenance-triage rubric from earlier in this session (full rubric: \`task-triage\` skill).${ocReminder}`;
-  }
   const blockName = teamMode === 'main-agent' ? 'maintenance-triage-main-agent' : 'maintenance-triage-subagents';
   return `${block(blockName, {
-    HINT: hint.tier,
-    CONFIDENCE: hint.confidence,
-    SIGNALS: signals,
+    ...hintVars,
     CHEAPEST_MODEL: cheapest,
     OPENCODE_CLAUSE: openCodeClause,
     QUICK_FIX_OPENCODE_CLAUSE: quickFixOpenCodeClause,
     SMALL_OPENCODE_CLAUSE: smallOpenCodeClause,
   })}`;
+}
+
+// Headless sessions never fire UserPromptSubmit (`claude -p` — verified live:
+// the ep-text-edit e2e transcript has SessionStart hook events and ZERO
+// UserPromptSubmit events), so the prompt-boundary triage directive above is
+// never delivered there and the parent improvises its routing blind. This
+// fallback rides the FIRST mutating/spawn PreToolUse of a maintenance session
+// instead (wired in the onboarding-gate handler): by the time a tool mutates,
+// an interactive session's edit prompt would already have burned the
+// 'maintenance-triage' once-marker — an unburned marker at mutation time IS
+// the headless signature (or a chat-first session about to do work; the rubric
+// is due either way). No prompt text exists here, so no classifier hint — the
+// agent judges the tier of the request it is executing. Rotation is
+// deliberately NOT performed: the run id is minted by the same handler's
+// pre-mint, and rotating outside the prompt boundary would double-rotate
+// interactive sessions.
+export function maintenanceTriageFallbackDirective(cwd: string, state: Rec, raw: unknown, host: string): string {
+  const mode = (state.mode as string) || detectMode(cwd);
+  if (!isMaintenancePhase(state, mode)) return '';
+  if (isSubagentThread(raw)) return '';
+  // Same suppression as the prompt boundary: fresh claims newer than the
+  // lifecycle watermark mean a worker is live — continuation owns the request.
+  const kiloBoundary = canonicalHost(host) === 'kilo';
+  if (hasActiveRunClaims(cwd, state, { since: lifecycleCompletedAt(state) }) && !kiloBoundary) return '';
+  // A pinned wedged run must not be named for routing here either (the 16co
+  // hazard), and the refusal precedes the marker burn for the same reason as
+  // the prompt path: the full rubric is still owed once the run is usable.
+  const refusal = bootstrapBlockedRefusal(cwd, state, host);
+  if (refusal) return refusal;
+  if (!firstEmitThisSession(cwd, 'maintenance-triage', hookSessionIdentity(raw).sessionId)) return '';
+  return triageRoutingBlock(state, host, {
+    HINT: 'unavailable in this session',
+    CONFIDENCE: 'judge the tier yourself from the request',
+    SIGNALS: '',
+  });
 }
