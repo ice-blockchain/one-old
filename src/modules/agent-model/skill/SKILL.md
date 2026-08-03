@@ -203,6 +203,14 @@ Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{A
 4. Only if that agent is genuinely unusable — {{CONTINUE_TOOL}} errors ("agent not found"/unavailable), or its replies show context exhaustion — re-spawn `{{ROLE}}` with the literal marker `{{MARKER}}` anywhere in the spawn prompt. The gate then allows ONE replacement spawn (same model-tier rules) and records the new agent id automatically.
 <!-- T1BLOCK:END agent-reuse-continue -->
 
+<!-- T1BLOCK:BEGIN agent-reuse-scope-regrant -->
+traffic-one — scope REGRANTED, no spawn needed: the bounded WorkUnit for `{{ROLE}}` in run {{RUN_ID}} now covers: {{PATHS}}. A live `{{ROLE}}` agent already exists ({{AGENT_ID}}) — do NOT respawn or replace it. Continue it now via {{CONTINUE_TOOL}}: {{CONTINUE_CALL}} — tell it the scope was widened to include the previously denied path(s), to retry the exact write, then finish the task and its digest.
+<!-- T1BLOCK:END agent-reuse-scope-regrant -->
+
+<!-- T1BLOCK:BEGIN agent-reuse-scope-debt -->
+traffic-one — scope widening BLOCKED by a pending OpenCode fallback: run {{RUN_ID}} still owes the delegated `{{ROLE}}` unit, and the bounded WorkUnitContract cannot change until that debt settles. Do NOT respawn. A live `{{ROLE}}` agent exists ({{AGENT_ID}}) — continue it via {{CONTINUE_TOOL}}: {{CONTINUE_CALL}} — tell it to finish every deliverable inside its CURRENT contract and report `BLOCKED: needs scope on {{PATHS}}` for anything outside it. After the unit is delivered and settled, start the extra path(s) as their OWN bounded task.
+<!-- T1BLOCK:END agent-reuse-scope-debt -->
+
 <!-- T1BLOCK:BEGIN agent-reuse-await-cursor-id -->
 Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` Cursor subagent, but Cursor has not exposed a valid Task `resume` UUID for it yet. The recorded `tool_*` id is only the subagentStart tool-call id and cannot resume the agent. Do NOT spawn a replacement and do NOT use `[t1-replace-agent]` unless the existing agent has actually failed or exhausted context. Wait for the current `{{ROLE}}` subagent to finish or produce a child transcript, then retry the same continuation; Traffic One will upgrade the registry to the real Cursor conversation id automatically.
 <!-- T1BLOCK:END agent-reuse-await-cursor-id -->

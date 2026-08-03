@@ -4,6 +4,7 @@
 // and exact-model enforcement, and the one-time advisories. Every ALLOW
 // exits through g.allowSpawn.
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { obj, type Rec } from '../../shared/obj';
 import {  deny, noop } from '../../core/result';
@@ -15,9 +16,20 @@ import {
   ensureRunAgentClaim,
   isTeamApproved,
   readEffectiveState,
+  runRoleHasBoundClaim,
 } from '../../shared/state';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
+import { isMaintenancePhase } from '../../shared/state/lifecycle';
+import {
+  architectureInputPath,
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+} from '../../shared/architecture-contract';
+import {
+  pendingMaintenanceDebtSources,
+  readActiveRunBootstrap,
+} from '../../shared/run-bootstrap-policy';
 import { openCodeGlobalAgentName } from '../../shared/materialize/opencode-assets';
 import { acceptableSpawnTypes } from '../../shared/host/spawn-types';
 import {
@@ -32,6 +44,7 @@ import {
   modelParamEnforced,
   modelSatisfiesTier,
   namedOpenCodeAgentDeny,
+  quickFixScopeFromSpawn,
   spawnAgentType,
 } from './spawn-shape';
 import {
@@ -105,7 +118,17 @@ export function modelEnforcementGates(g: GateContext): HookResult {
   // implementers to the current run's semantic architecture input, runtime
   // compiled contracts, exact assignments, and PLAN_READY digest. A resilient
   // or sibling manifest is never authority for a v2 run.
-  if (isPlanBatchGatedRole(role)) {
+  // EXCEPT the bounded-maintenance small tier: a maintenance run has no
+  // architect by design (triage sized it below the full flow), the write gate
+  // already binds these roles to their `${role}:bounded-maintenance` envelope,
+  // and demanding PLAN_READY here made the paid fallback unreachable — observed
+  // live on trading-bot-api: OpenCode failed the senior-backend unit, the paid
+  // fallback spawn was denied HERE, the orchestrator obeyed and spawned an
+  // architect into a fresh run, and the task's run died `fallback-pending`.
+  // Strictly scoped: maintenance phase, no compiled assignments for the run,
+  // and concrete bounded evidence (explicit exact-file scope on this spawn, an
+  // active bounded envelope, or a pending delegation debt for the role).
+  if (isPlanBatchGatedRole(role) && !boundedMaintenanceSpawnStandsDown(g)) {
     const incomplete = architectPhaseIncompleteReasons(cwd, state);
     if (incomplete.length > 0) {
       return deny(block('architect-phase-incomplete', {
@@ -211,4 +234,32 @@ export function modelEnforcementGates(g: GateContext): HookResult {
     });
   }
   return allowSpawn(advisory ?? noop());
+}
+
+// The bounded-maintenance stand-down for the architect-phase spawn gate.
+// True only when ALL hold: the project is in maintenance phase, the run shows
+// no architect involvement — no runtime-compiled assignments, no compiled
+// architecture (a corrupt assignments/verification sidecar must not read as
+// "assignment-less"), no authored ArchitectureInputV1, and no bound
+// senior-architect claim (maintenance phase is PROJECT-lifetime on existing
+// codebases, so a triage-complex run's whole planning window is "maintenance
+// with no assignments yet" — the gate must stay armed there) — and there is
+// concrete bounded evidence for this exact spawn: an explicit valid exact-file
+// `[t1-bounded-scope]`/allowedFiles scope, an already-published
+// `${role}:bounded-maintenance` envelope, or a pending OpenCode delegation
+// debt pinning the role's files. An unbounded senior spawn in maintenance
+// still hits the architect gate: triage decides which tier a task gets, and
+// anything without a bounded contract belongs to the full architect flow.
+function boundedMaintenanceSpawnStandsDown(g: GateContext): boolean {
+  const { cwd, state, toolInput, role, spawnRunId, spawnPromptText } = g;
+  if (!isMaintenancePhase(state, state.mode)) return false;
+  if (readRuntimeAssignments(cwd, spawnRunId)) return false;
+  if (readCompiledArchitecture(cwd, spawnRunId)) return false;
+  if (fs.existsSync(architectureInputPath(cwd, spawnRunId))) return false;
+  if (runRoleHasBoundClaim(cwd, spawnRunId, 'senior-architect')) return false;
+  const scope = quickFixScopeFromSpawn(toolInput, spawnPromptText);
+  if (scope.present && scope.valid && scope.outputs.length > 0) return true;
+  const active = readActiveRunBootstrap(cwd, spawnRunId, role);
+  if (active && active.workUnit.unitId === `${role}:bounded-maintenance`) return true;
+  return Boolean(pendingMaintenanceDebtSources(cwd, spawnRunId, role)?.length);
 }

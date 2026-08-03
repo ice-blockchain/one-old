@@ -7,6 +7,7 @@ import { execFileSync } from 'child_process';
 
 import {
   architectureInputPath,
+  buildRuntimeAssignments,
   captureArchitectureBaseline,
   compileArchitecture,
   ensureScaffoldContent,
@@ -1270,6 +1271,632 @@ test('run-start capability and non-Git baseline stay immutable before architect 
     assert.equal(compiled.baseline.identity, snapshot.baselineIdentity);
     assert.ok(!compiled.baseline.files?.some((entry) => entry.path === 'package.json'));
     assert.equal(readArchitectureRunSnapshot(cwd, 'R')?.snapshotHash, snapshot.snapshotHash);
+  });
+});
+
+test('backend-only Laravel compiles PSR-4 feature homes and the wiring-layer grants', () => {
+  // The test-laravel usage-API wedge: five feature modules compiled to
+  // `src/<id>/index.php` stems while database/migrations/, app/Http/**,
+  // config/, routes/api.php and bootstrap/app.php had no home in any
+  // allowlist — the run could only die BLOCKED.
+  withProject((cwd) => {
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'laravel',
+      mobile: { framework: 'none' },
+    };
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+    fs.writeFileSync(path.join(cwd, 'artisan'), '<?php\n');
+    for (const dir of ['app/Http/Controllers', 'app/Models', 'config', 'routes', 'database/migrations', 'bootstrap']) {
+      fs.mkdirSync(path.join(cwd, dir), { recursive: true });
+    }
+    fs.writeFileSync(path.join(cwd, 'routes/api.php'), '<?php\n');
+    fs.writeFileSync(path.join(cwd, 'bootstrap/app.php'), '<?php\n');
+    const compiled = compileArchitecture(cwd, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [
+        { id: 'api-usage-counter-store', name: 'API usage counter store', kind: 'store' },
+        { id: 'record-api-usage-middleware', name: 'Record API usage middleware', kind: 'feature' },
+        { id: 'usage-report-controller', name: 'Usage report controller', kind: 'feature' },
+        { id: 'api-usage-wiring-tests', name: 'API usage wiring tests', kind: 'test' },
+      ],
+      exceptions: [],
+    });
+    assert.equal(compiled.profile.profileId, 'backend-only');
+    assert.equal(compiled.profile.backendFramework, 'laravel');
+
+    // Feature modules live in the PSR-4 app tree, never `src/<id>/index.php`.
+    const outputs = new Map(compiled.modules.map((module) => [module.id, module.output]));
+    assert.equal(outputs.get('record-api-usage-middleware'), 'app/RecordAPIUsageMiddleware.php');
+    assert.equal(outputs.get('usage-report-controller'), 'app/UsageReportController.php');
+    assert.ok(!compiled.modules.some((module) => module.output.startsWith('src/')),
+      'no compiled module may land on a src/ stem on a Laravel backend');
+
+    // The wiring layer is compiled and backend-owned.
+    const wiring = (compiled.scaffoldOutputs || []).filter((output) => output.ownerRole === 'senior-backend');
+    for (const expected of ['app/', 'database/migrations/', 'config/', 'routes/', 'bootstrap/app.php']) {
+      assert.ok(wiring.some((output) => output.path === expected), `missing wiring grant ${expected}`);
+    }
+
+    // And the runtime assignments actually admit the real Laravel writes the
+    // observed run was denied on.
+    const assignments = buildRuntimeAssignments(compiled, 'vh');
+    const backend = assignments.assignments.find((entry) => entry.role === 'senior-backend');
+    assert.ok(backend);
+    for (const target of [
+      'database/migrations/2026_08_03_000000_create_api_usage_counters_table.php',
+      'app/Models/ApiUsageCounter.php',
+      'app/Http/Middleware/RecordApiUsage.php',
+      'app/Http/Controllers/UsageReportController.php',
+      'config/usage.php',
+      'routes/api.php',
+      'bootstrap/app.php',
+    ]) {
+      assert.ok(matchesScope(target, backend.scope), `senior-backend must own ${target}`);
+    }
+    // The grant is a bounded tree, not the repo: tests stay tester-owned and
+    // stray roots stay outside every include.
+    const tester = assignments.assignments.find((entry) => entry.role === 'senior-tester');
+    assert.ok(tester);
+    assert.ok(matchesScope('tests/api-usage-wiring-tests.php', tester.scope));
+    assert.ok(!matchesScope('tests/api-usage-wiring-tests.php', backend.scope));
+    assert.ok(!matchesScope('resources/js/app.ts', backend.scope));
+
+    // The PLAN_READY pipeline swallows the directory grants too: verification
+    // compiles from this architecture without choking on non-file outputs.
+    const verification = compileVerificationContract(cwd, 'R', state, compiled, { changedPaths: [] });
+    assert.ok(verification.contractHash);
+  });
+});
+
+// Shared shape for the backend wiring-family tests below.
+function backendOnlyState(backend: string): Record<string, unknown> {
+  return {
+    mode: 'existing-codebase',
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend,
+    mobile: { framework: 'none' },
+  };
+}
+
+function backendOnlyCompile(
+  cwd: string,
+  backend: string,
+  files: Record<string, string>,
+  modules: { id: string; name: string; kind: 'feature' | 'service' | 'store' | 'test' }[],
+  mode = 'existing-codebase',
+) {
+  for (const [rel, content] of Object.entries(files)) {
+    fs.mkdirSync(path.join(cwd, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, rel), content);
+  }
+  const state = { ...backendOnlyState(backend), mode };
+  const compiled = compileArchitecture(cwd, 'R', state, {
+    schemaVersion: 1,
+    routes: [],
+    modules,
+    exceptions: [],
+  });
+  const assignments = buildRuntimeAssignments(compiled, 'vh');
+  const roleScope = (role: string) => assignments.assignments.find((entry) => entry.role === role)?.scope;
+  return {
+    compiled,
+    outputs: new Map(compiled.modules.map((module) => [module.id, module.output])),
+    scaffoldPaths: (compiled.scaffoldOutputs || []).map((output) => output.path),
+    backend: roleScope('senior-backend'),
+    tester: roleScope('senior-tester'),
+  };
+}
+
+test('backend-only Rust compiles crate-tree wiring and snake_case homes', () => {
+  withProject((cwd) => {
+    const { outputs, scaffoldPaths, backend, tester } = backendOnlyCompile(cwd, 'rust', {
+      'Cargo.toml': '[package]\nname = "usage"\n',
+      'src/main.rs': 'fn main() {}\n',
+      'build.rs': 'fn main() {}\n',
+    }, [
+      { id: 'usage-counter-store', name: 'Usage counter store', kind: 'store' },
+      { id: 'usage-tracking', name: 'Usage tracking', kind: 'feature' },
+      { id: 'usage-wiring-tests', name: 'Usage wiring tests', kind: 'test' },
+    ]);
+    // Flat snake_case modules under the crate root, never `lib/<Pascal>.rs`
+    // or kebab `index.rs` stems rustc cannot resolve.
+    assert.equal(outputs.get('usage-tracking'), 'src/usage_tracking.rs');
+    assert.equal(outputs.get('usage-counter-store'), 'src/usage_counter_store.rs');
+    assert.equal(outputs.get('usage-wiring-tests'), 'tests/usage_wiring_tests.rs');
+    for (const expected of ['src/', 'migrations/', 'build.rs']) {
+      assert.ok(scaffoldPaths.includes(expected), `missing rust wiring grant ${expected}`);
+    }
+    // Baseline-evidenced extras stay out without evidence; manifests stay out
+    // always (the composer.json pin).
+    assert.ok(!scaffoldPaths.includes('.sqlx/'));
+    assert.ok(!scaffoldPaths.includes('diesel.toml'));
+    assert.ok(!scaffoldPaths.includes('Cargo.toml'));
+    assert.ok(backend && tester);
+    for (const target of ['src/lib.rs', 'src/routes.rs', 'migrations/20260803_create_usage.sql']) {
+      assert.ok(matchesScope(target, backend), `senior-backend must own ${target}`);
+    }
+    assert.ok(matchesScope('tests/usage_tracking_test.rs', tester));
+    assert.ok(!matchesScope('tests/usage_tracking_test.rs', backend));
+    assert.ok(!matchesScope('Cargo.toml', backend));
+  });
+});
+
+test('backend-only Java compiles Maven trees with tester-owned src/test', () => {
+  withProject((cwd) => {
+    const { outputs, backend, tester } = backendOnlyCompile(cwd, 'java', {
+      'pom.xml': '<project/>\n',
+      'src/main/java/com/acme/App.java': 'class App {}\n',
+      'src/test/java/com/acme/AppTest.java': 'class AppTest {}\n',
+    }, [
+      { id: 'usage-service', name: 'Usage service', kind: 'service' },
+      { id: 'usage-report', name: 'Usage report', kind: 'feature' },
+      { id: 'usage-wiring', name: 'Usage wiring', kind: 'test' },
+    ]);
+    // Class files in the repo's OWN base package — a class compiled into the
+    // unnamed package at the tree root cannot be imported by `com.acme` code
+    // at all (JLS 7.5), so it could never be wired into the codebase.
+    assert.equal(outputs.get('usage-report'), 'src/main/java/com/acme/UsageReport.java');
+    assert.equal(outputs.get('usage-service'), 'src/main/java/com/acme/UsageService.java');
+    assert.equal(outputs.get('usage-wiring'), 'src/test/java/com/acme/UsageWiringTest.java');
+    assert.ok(backend && tester);
+    for (const target of [
+      'src/main/java/com/acme/usage/UsageController.java',
+      'src/main/resources/application.yml',
+      'src/main/resources/db/migration/V2__usage.sql',
+    ]) {
+      assert.ok(matchesScope(target, backend), `senior-backend must own ${target}`);
+    }
+    // src/test/** is tester territory nested inside src/ — the trees must be
+    // disjoint by construction.
+    assert.ok(matchesScope('src/test/java/com/acme/UsageServiceTest.java', tester));
+    assert.ok(!matchesScope('src/test/java/com/acme/UsageServiceTest.java', backend));
+    assert.ok(!matchesScope('src/main/java/App.java', tester));
+    assert.ok(!matchesScope('pom.xml', backend));
+  });
+});
+
+test('backend-only Gradle Kotlin repos detected as java compile .kt homes', () => {
+  withProject((cwd) => {
+    // Filesystem detection has no Kotlin probe, so the framework id says
+    // `java`; the baseline tree decides the language.
+    const { outputs, scaffoldPaths, backend } = backendOnlyCompile(cwd, 'java', {
+      'pom.xml': '<project/>\n',
+      'src/main/kotlin/com/acme/App.kt': 'class App\n',
+    }, [
+      { id: 'usage-report', name: 'Usage report', kind: 'feature' },
+    ]);
+    assert.equal(outputs.get('usage-report'), 'src/main/kotlin/com/acme/UsageReport.kt');
+    assert.ok(scaffoldPaths.includes('src/main/kotlin/'));
+    assert.ok(backend && matchesScope('src/main/kotlin/usage/UsageService.kt', backend));
+  });
+});
+
+test('backend-only .NET compiles bounded conventional trees and fixed wiring files', () => {
+  withProject((cwd) => {
+    const { outputs, scaffoldPaths, backend } = backendOnlyCompile(cwd, 'dotnet', {
+      'Program.cs': 'var app = null;\n',
+      'Api.csproj': '<Project/>\n',
+    }, [
+      { id: 'usage-counter-store', name: 'Usage counter store', kind: 'store' },
+      { id: 'usage-report', name: 'Usage report', kind: 'feature' },
+    ]);
+    // Vertical slice inside the granted Features/ tree. A `src/<Pascal>/`
+    // home would hand the dirname grant a project directory — and with it
+    // that project's .csproj, the manifest the existing-mode pin excludes.
+    assert.equal(outputs.get('usage-report'), 'Features/UsageReport.cs');
+    assert.equal(outputs.get('usage-counter-store'), 'Services/UsageCounterStore.cs');
+    for (const expected of ['Controllers/', 'Models/', 'Services/', 'Features/', 'Migrations/', 'Program.cs', 'appsettings.json', 'appsettings.Development.json']) {
+      assert.ok(scaffoldPaths.includes(expected), `missing dotnet wiring grant ${expected}`);
+    }
+    assert.ok(backend);
+    for (const target of [
+      'Controllers/UsageController.cs',
+      'Migrations/20260803000000_InitialUsage.cs',
+      'appsettings.Development.json',
+    ]) {
+      assert.ok(matchesScope(target, backend), `senior-backend must own ${target}`);
+    }
+    // The manifest pin: project files never enter the allowlist.
+    assert.ok(!matchesScope('Api.csproj', backend));
+    assert.ok(!matchesScope('src/other.cs', backend));
+  });
+});
+
+test('a .NET feature named after a project cannot claim that project csproj', () => {
+  withProject((cwd) => {
+    // The natural module name "Api" collides with the conventional project
+    // directory; the compiled home must not turn that into a tree grant.
+    const { outputs, backend } = backendOnlyCompile(cwd, 'dotnet', {
+      'Program.cs': 'var app = null;\n',
+      'src/Api/Api.csproj': '<Project/>\n',
+      'src/Api/Controllers/UsersController.cs': 'class C {}\n',
+    }, [
+      { id: 'api', name: 'Api', kind: 'feature' },
+    ]);
+    assert.equal(outputs.get('api'), 'Features/Api.cs');
+    assert.ok(backend);
+    assert.ok(!matchesScope('src/Api/Api.csproj', backend));
+    assert.ok(!matchesScope('src/Api/Controllers/UsersController.cs', backend));
+  });
+});
+
+test('unevidenced backend layouts compile no wiring instead of phantom trees', () => {
+  // Declared stacks whose conventional layout the baseline cannot prove — a
+  // solution-layout .NET repo, a workspace Laravel app, a cargo workspace, a
+  // python package that is neither src/ nor app/ — must fail closed: no tree
+  // grants, bounded per-module stems, and the real source paths left denied
+  // so the run surfaces a recoverable BLOCKED instead of building into a
+  // phantom root the toolchain never reads.
+  const cases: { backend: string; files: Record<string, string>; phantom: string[] }[] = [
+    {
+      backend: 'dotnet',
+      files: { 'src/Api/Api.csproj': '<Project/>\n', 'src/Api/Program.cs': 'var a = 0;\n' },
+      phantom: ['Controllers/', 'Program.cs', 'appsettings.json'],
+    },
+    {
+      backend: 'laravel',
+      files: { 'apps/api/artisan': '<?php\n', 'apps/api/app/Models/User.php': '<?php\n' },
+      phantom: ['app/', 'config/', 'routes/', 'database/migrations/'],
+    },
+    {
+      backend: 'rust',
+      files: { 'Cargo.toml': '[workspace]\n', 'crates/api/src/main.rs': 'fn main() {}\n' },
+      phantom: ['src/', 'migrations/'],
+    },
+    {
+      backend: 'fastapi',
+      files: { 'requirements.txt': 'fastapi\n', 'mypkg/main.py': 'app = None\n' },
+      phantom: ['src/', 'app/'],
+    },
+  ];
+  for (const testCase of cases) {
+    withProject((cwd) => {
+      const { scaffoldPaths, backend } = backendOnlyCompile(cwd, testCase.backend, testCase.files, [
+        { id: 'billing', name: 'Billing', kind: 'feature' },
+      ]);
+      for (const phantom of testCase.phantom) {
+        assert.ok(!scaffoldPaths.includes(phantom),
+          `${testCase.backend} compiled an unevidenced grant ${phantom}`);
+      }
+      assert.ok(backend);
+      // Whatever bounded stem the module took, it may not open a source root.
+      for (const root of ['src', 'app']) {
+        assert.ok(!backend.include.includes(root),
+          `${testCase.backend} granted the whole ${root} tree`);
+      }
+    });
+  }
+});
+
+test('a Django feature may not claim the tester or settings package directory', () => {
+  withProject((cwd) => {
+    const files = {
+      'manage.py': '#!/usr/bin/env python\n',
+      'mysite/settings.py': 'DEBUG = False\n',
+      'tests/conftest.py': 'import pytest\n',
+    };
+    for (const reserved of ['Tests', 'Mysite']) {
+      assert.throws(
+        () => backendOnlyCompile(cwd, 'python', files, [
+          { id: 'reserved', name: reserved, kind: 'feature' },
+        ]),
+        /reserved directory/,
+        `feature named ${reserved} must not compile`,
+      );
+    }
+  });
+});
+
+test('new-project python compiles one package root for homes and grants alike', () => {
+  withProject((cwd) => {
+    // The wiring grant and the module homes must agree on the root: a run
+    // that scaffolds app/ while compiling modules into src/ hands the role
+    // two parallel package trees, neither of them importable as a whole.
+    const { outputs, scaffoldPaths, backend } = backendOnlyCompile(cwd, 'fastapi', {}, [
+      { id: 'usage-tracking', name: 'Usage tracking', kind: 'feature' },
+    ], 'new-project');
+    assert.equal(outputs.get('usage-tracking'), 'app/usage_tracking.py');
+    assert.ok(scaffoldPaths.includes('app/'));
+    assert.ok(backend);
+    assert.ok(!backend.include.includes('src'));
+  });
+});
+
+test('new-project Django compiles the canonical settings package', () => {
+  withProject((cwd) => {
+    // No baseline can evidence a settings package on a new project, so the
+    // canonical one is compiled — otherwise the run owns manage.py with no
+    // legal home for settings.py/urls.py and can never start.
+    const { scaffoldPaths } = backendOnlyCompile(cwd, 'django', {}, [
+      { id: 'billing', name: 'Billing', kind: 'feature' },
+    ], 'new-project');
+    for (const expected of ['manage.py', 'config/settings.py', 'config/urls.py', 'config/wsgi.py']) {
+      assert.ok(scaffoldPaths.includes(expected), `missing django new-project grant ${expected}`);
+    }
+  });
+});
+
+test('split-settings Django repos grant the settings package tree', () => {
+  withProject((cwd) => {
+    // cookiecutter-django: config/settings/base.py with no flat settings.py.
+    const { scaffoldPaths, backend } = backendOnlyCompile(cwd, 'python', {
+      'manage.py': '#!/usr/bin/env python\n',
+      'config/settings/base.py': 'DEBUG = False\n',
+      'config/urls.py': 'urlpatterns = []\n',
+      'accounts/models.py': 'class User: pass\n',
+    }, [
+      { id: 'billing', name: 'Billing', kind: 'feature' },
+    ]);
+    assert.ok(scaffoldPaths.includes('config/settings/'));
+    assert.ok(scaffoldPaths.includes('config/urls.py'));
+    assert.ok(!scaffoldPaths.includes('config/settings.py'));
+    assert.ok(backend);
+    assert.ok(matchesScope('config/settings/production.py', backend));
+    assert.ok(matchesScope('config/urls.py', backend));
+  });
+});
+
+test('python services share the package root their features and grants use', () => {
+  withProject((cwd) => {
+    // A run that scaffolds app/ while compiling services into src/ hands the
+    // role two parallel package trees, only one of which any grant covers.
+    const { outputs, backend } = backendOnlyCompile(cwd, 'fastapi', {}, [
+      { id: 'usage-counter-store', name: 'Usage counter store', kind: 'store' },
+      { id: 'usage-service', name: 'Usage service', kind: 'service' },
+      { id: 'usage-tracking', name: 'Usage tracking', kind: 'feature' },
+    ], 'new-project');
+    assert.equal(outputs.get('usage-tracking'), 'app/usage_tracking.py');
+    assert.equal(outputs.get('usage-counter-store'), 'app/usage_counter_store.py');
+    assert.equal(outputs.get('usage-service'), 'app/usage_service.py');
+    assert.ok(backend);
+    assert.ok(!backend.include.some((entry: string) => entry.startsWith('src')));
+  });
+});
+
+test('a nested python or Django test suite stays outside the implementer scope', () => {
+  withProject((cwd) => {
+    // full-stack-fastapi-template keeps its suite at app/tests/.
+    const { backend } = backendOnlyCompile(cwd, 'fastapi', {
+      'pyproject.toml': '[project]\n',
+      'app/main.py': 'app = None\n',
+      'app/tests/test_users.py': 'def test_users(): pass\n',
+    }, [
+      { id: 'billing', name: 'Billing', kind: 'feature' },
+    ]);
+    assert.ok(backend);
+    assert.ok(matchesScope('app/api/routes/users.py', backend));
+    assert.ok(!matchesScope('app/tests/test_users.py', backend),
+      'the implementer must not own the suite that judges it');
+  });
+  withProject((cwd) => {
+    // startapp puts an app's tests inside the app.
+    const { backend } = backendOnlyCompile(cwd, 'python', {
+      'manage.py': '#!/usr/bin/env python\n',
+      'mysite/settings.py': 'DEBUG = False\n',
+      'polls/models.py': 'class Poll: pass\n',
+      'polls/tests.py': 'def test_poll(): pass\n',
+    }, [
+      { id: 'billing', name: 'Billing', kind: 'feature' },
+    ]);
+    assert.ok(backend);
+    assert.ok(matchesScope('polls/views.py', backend));
+    assert.ok(!matchesScope('polls/tests.py', backend));
+    assert.ok(!matchesScope('polls/tests/test_views.py', backend));
+  });
+});
+
+test('pytest-django test settings never win the settings-package scan', () => {
+  withProject((cwd) => {
+    // Baselines arrive sorted, so `tests/settings.py` would otherwise beat
+    // the real project package for any name sorting after it.
+    const { scaffoldPaths, backend } = backendOnlyCompile(cwd, 'python', {
+      'manage.py': '#!/usr/bin/env python\n',
+      'tests/settings.py': 'from webapp.settings import *\n',
+      'tests/__init__.py': '',
+      'webapp/settings.py': 'DEBUG = False\n',
+      'webapp/urls.py': 'urlpatterns = []\n',
+    }, [
+      { id: 'billing', name: 'Billing', kind: 'feature' },
+    ]);
+    assert.ok(scaffoldPaths.includes('webapp/settings.py'));
+    assert.ok(!scaffoldPaths.some((candidate) => candidate.startsWith('tests/settings')));
+    assert.ok(backend);
+    assert.ok(matchesScope('webapp/settings.py', backend));
+    assert.ok(!matchesScope('tests/__init__.py', backend));
+  });
+});
+
+test('a Django feature may not claim an existing unrelated directory', () => {
+  withProject((cwd) => {
+    const files = {
+      'manage.py': '#!/usr/bin/env python\n',
+      'mysite/settings.py': 'DEBUG = False\n',
+      'media/uploads/a.png': 'x\n',
+      'polls/models.py': 'class Poll: pass\n',
+    };
+    // media/ is Django's own MEDIA_ROOT — real content no compiled output names.
+    assert.throws(
+      () => backendOnlyCompile(cwd, 'python', files, [
+        { id: 'media', name: 'Media', kind: 'feature' },
+      ]),
+      /reserved directory/,
+    );
+    // An existing app package is a legitimate home, and a fresh name is fine.
+    const { outputs } = backendOnlyCompile(cwd, 'python', files, [
+      { id: 'polls', name: 'Polls', kind: 'feature' },
+      { id: 'billing', name: 'Billing', kind: 'feature' },
+    ]);
+    assert.equal(outputs.get('polls'), 'polls/__init__.py');
+    assert.equal(outputs.get('billing'), 'billing/__init__.py');
+  });
+});
+
+test('a plan with no backend modules mints no backend wiring assignment', () => {
+  withProject((cwd) => {
+    // "Add regression tests" on a Laravel repo: the tester owns the work, and
+    // senior-backend must not receive the whole framework tree for nothing.
+    const { scaffoldPaths, backend } = backendOnlyCompile(cwd, 'laravel', {
+      'composer.json': '{"require":{"laravel/framework":"^12.0"}}\n',
+      'artisan': '<?php\n',
+      'app/Models/User.php': '<?php\n',
+    }, [
+      { id: 'usage-regression-tests', name: 'Usage regression tests', kind: 'test' },
+    ]);
+    assert.equal(backend, undefined);
+    for (const absent of ['app/', 'config/', 'routes/', 'database/migrations/']) {
+      assert.ok(!scaffoldPaths.includes(absent), `unearned wiring grant ${absent}`);
+    }
+  });
+});
+
+test('.NET solution layouts are not wired by a root appsettings.json alone', () => {
+  withProject((cwd) => {
+    // Solutions keep one at the root for docker/compose while the project
+    // lives under src/; only a root Program.cs proves the flat layout.
+    const { scaffoldPaths, backend } = backendOnlyCompile(cwd, 'dotnet', {
+      'App.sln': '\n',
+      'appsettings.json': '{}\n',
+      'src/Api/Api.csproj': '<Project/>\n',
+      'src/Api/Program.cs': 'var a = 0;\n',
+    }, [
+      { id: 'usage-report', name: 'Usage report', kind: 'feature' },
+    ]);
+    for (const phantom of ['Controllers/', 'Program.cs', 'Features/']) {
+      assert.ok(!scaffoldPaths.includes(phantom), `phantom dotnet grant ${phantom}`);
+    }
+    assert.ok(backend);
+    assert.ok(!matchesScope('Controllers/UsageController.cs', backend));
+  });
+});
+
+test('alembic grants follow the migrations directory the repo actually uses', () => {
+  withProject((cwd) => {
+    // alembic.ini's script_location routinely points at migrations/.
+    const { scaffoldPaths, backend } = backendOnlyCompile(cwd, 'fastapi', {
+      'app/main.py': 'app = None\n',
+      'alembic.ini': '[alembic]\nscript_location = migrations\n',
+      'migrations/env.py': 'from alembic import context\n',
+    }, [
+      { id: 'usage-tracking', name: 'Usage tracking', kind: 'feature' },
+    ]);
+    assert.ok(scaffoldPaths.includes('migrations/'));
+    assert.ok(!scaffoldPaths.includes('alembic/'));
+    assert.ok(backend && matchesScope('migrations/versions/9a1_usage.py', backend));
+  });
+});
+
+test('backend-only Django repos compile marker-evidenced app and settings grants', () => {
+  withProject((cwd) => {
+    // Declared as generic python — the manage.py marker is the authority.
+    const { outputs, scaffoldPaths, backend, tester } = backendOnlyCompile(cwd, 'python', {
+      'manage.py': '#!/usr/bin/env python\n',
+      'mysite/settings.py': 'DEBUG = False\n',
+      'mysite/urls.py': 'urlpatterns = []\n',
+      'polls/apps.py': 'class PollsConfig: pass\n',
+      'polls/models.py': 'class Poll: pass\n',
+      'requirements.txt': 'django\n',
+    }, [
+      { id: 'billing', name: 'Billing', kind: 'feature' },
+      { id: 'billing-tests', name: 'Billing tests', kind: 'test' },
+    ]);
+    // A Django feature is a new app package at the repo root.
+    assert.equal(outputs.get('billing'), 'billing/__init__.py');
+    assert.equal(outputs.get('billing-tests'), 'tests/test_billing_tests.py');
+    for (const expected of ['manage.py', 'mysite/settings.py', 'mysite/urls.py', 'mysite/asgi.py', 'polls/']) {
+      assert.ok(scaffoldPaths.includes(expected), `missing django wiring grant ${expected}`);
+    }
+    assert.ok(!scaffoldPaths.includes('mysite/'));
+    assert.ok(backend && tester);
+    for (const target of ['polls/migrations/0002_add_usage.py', 'billing/models.py', 'mysite/settings.py']) {
+      assert.ok(matchesScope(target, backend), `senior-backend must own ${target}`);
+    }
+    assert.ok(matchesScope('tests/test_billing.py', tester));
+    assert.ok(!matchesScope('tests/test_billing.py', backend));
+    assert.ok(!matchesScope('requirements.txt', backend));
+  });
+});
+
+test('backend-only FastAPI compiles the evidenced package root plus alembic', () => {
+  withProject((cwd) => {
+    const { outputs, scaffoldPaths, backend } = backendOnlyCompile(cwd, 'fastapi', {
+      'app/main.py': 'app = None\n',
+      'alembic.ini': '[alembic]\n',
+      'pyproject.toml': '[project]\n',
+    }, [
+      { id: 'usage-tracking', name: 'Usage tracking', kind: 'feature' },
+    ]);
+    assert.equal(outputs.get('usage-tracking'), 'app/usage_tracking.py');
+    for (const expected of ['app/', 'alembic.ini', 'alembic/']) {
+      assert.ok(scaffoldPaths.includes(expected), `missing fastapi wiring grant ${expected}`);
+    }
+    // Never the phantom `src` fallback.
+    assert.ok(!scaffoldPaths.includes('src/'));
+    assert.ok(backend);
+    for (const target of ['app/routers/usage.py', 'alembic/versions/9a1_usage.py']) {
+      assert.ok(matchesScope(target, backend), `senior-backend must own ${target}`);
+    }
+    assert.ok(!matchesScope('pyproject.toml', backend));
+  });
+});
+
+test('generic PHP without Laravel markers keeps bounded stems and no wiring', () => {
+  withProject((cwd) => {
+    // A Symfony-shaped repo declared `php`: no artisan, no bootstrap/app.php.
+    // It must NOT inherit Laravel grants, and the feature stem must stay
+    // bounded instead of widening the allowlist to the whole src/ tree.
+    const { outputs, scaffoldPaths, backend } = backendOnlyCompile(cwd, 'php', {
+      'composer.json': '{"require":{"symfony/framework-bundle":"^7.0"}}\n',
+      'src/Kernel.php': '<?php\n',
+    }, [
+      { id: 'usage-report', name: 'Usage report', kind: 'feature' },
+    ]);
+    assert.equal(outputs.get('usage-report'), 'src/usage-report/index.php');
+    for (const absent of ['app/', 'config/', 'routes/', 'bootstrap/app.php']) {
+      assert.ok(!scaffoldPaths.includes(absent), `stack-false laravel grant ${absent}`);
+    }
+    assert.ok(backend);
+    assert.ok(matchesScope('src/usage-report/index.php', backend));
+    assert.ok(!matchesScope('src/completely/unplanned.php', backend));
+  });
+});
+
+test('generic PHP with an artisan baseline resolves to the Laravel family', () => {
+  withProject((cwd) => {
+    const { outputs, scaffoldPaths } = backendOnlyCompile(cwd, 'php', {
+      'composer.json': '{"require":{"laravel/framework":"^12.0"}}\n',
+      'artisan': '<?php\n',
+      'app/Models/User.php': '<?php\n',
+    }, [
+      { id: 'usage-report', name: 'Usage report', kind: 'feature' },
+    ]);
+    assert.equal(outputs.get('usage-report'), 'app/UsageReport.php');
+    assert.ok(scaffoldPaths.includes('app/'));
+    assert.ok(scaffoldPaths.includes('database/migrations/'));
+  });
+});
+
+test('backend-only Go stays outside the wiring registry until test excludes exist', () => {
+  withProject((cwd) => {
+    // Go's colocated *_test.go tester outputs sit inside any source-tree
+    // grant, so a bare internal/ tree would swallow tester-owned paths —
+    // deferred, and the compiled shape must stay byte-identical to before.
+    const { outputs, scaffoldPaths } = backendOnlyCompile(cwd, 'go', {
+      'go.mod': 'module usage\n',
+      'internal/server.go': 'package internal\n',
+    }, [
+      { id: 'usage-tracking', name: 'Usage tracking', kind: 'feature' },
+      { id: 'usage-wiring-tests', name: 'Usage wiring tests', kind: 'test' },
+    ]);
+    assert.equal(outputs.get('usage-tracking'), 'internal/usage-tracking/index.go');
+    assert.equal(outputs.get('usage-wiring-tests'), 'tests/usage-wiring-tests.test.ts');
+    assert.ok(!scaffoldPaths.some((candidate) => candidate.endsWith('/')));
   });
 });
 

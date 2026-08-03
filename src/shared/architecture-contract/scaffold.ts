@@ -11,10 +11,15 @@ import {
   type CompiledArchitectureOutputV1,
 } from './types';
 import {
+  baselineContains,
   normalizeRelative,
 } from './core';
 import {
+  DJANGO_NEW_PROJECT_PKG,
+  backendWiringFamily,
   chosenRoot,
+  djangoLayout,
+  pythonPackageRoot,
 } from './naming';
 
 export function webPackageRoot(profile: CapabilityProfileV1): string {
@@ -455,6 +460,146 @@ export function nativeScaffoldOutputs(profile: CapabilityProfileV1): CompiledArc
     ].map((output) => ({ path: output, ownerRole: 'senior-frontend', kind: 'scaffold' as const }));
   }
   return [{ path: 'pubspec.yaml', ownerRole: 'senior-frontend', kind: 'scaffold' }];
+}
+
+// The per-family backend wiring layer for API-only (backend-only) profiles.
+// Same failure shape as PUBLIC_CRAWL_ASSETS and the Supabase block below:
+// paths every real task needs that nothing compiled, so the first
+// migration/controller/config write hard-denied with
+// STRUCT_ASSIGNMENT_ALLOWLIST_GAP and the run could only die BLOCKED
+// (observed test-laravel usage-API: database/migrations/, app/Http/**,
+// config/, routes/api.php and bootstrap/app.php had no home in any
+// allowlist). Unlike Supabase, deterministic file names cannot model this
+// layer — the toolchain owns the filenames (artisan/EF/sqlx migration
+// timestamps, PSR-4/javac class trees) — so each family mixes directory-prefix
+// grants (matchesScope treats a literal as a bounded tree) with its fixed
+// wiring files. Family membership is backendWiringFamily — the same dispatch
+// the module-home rules use, so homes and grants cannot drift apart.
+// backend-only ONLY: with a sole implementer a tree grant cannot collide with
+// another implementation role (server-rendered Laravel keeps per-file
+// compilation because routes/web.php is frontend-owned there), and the only
+// cross-role edge — JVM src/test/** — is granted to the TESTER explicitly.
+// Repo manifests (composer.json, Cargo.toml, pom.xml, *.csproj, pyproject)
+// stay out everywhere: new projects get them from backendScaffoldOutputs, and
+// on existing codebases the scaffold/config pin deliberately keeps them off
+// the re-plan surface.
+export function backendWiringOutputs(
+  profile: CapabilityProfileV1,
+  baselinePaths: ReadonlySet<string>,
+  isNewProject: boolean,
+): CompiledArchitectureOutputV1[] {
+  if (profile.profileId !== 'backend-only' || !profile.roles.includes('senior-backend')) return [];
+  const family = backendWiringFamily(profile, baselinePaths, isNewProject);
+  if (!family) return [];
+  const owned = (
+    ownerRole: string,
+    paths: string[],
+    excludes?: string[],
+  ): CompiledArchitectureOutputV1[] => (
+    paths.map((output) => ({
+      path: output,
+      ownerRole,
+      kind: 'scaffold' as const,
+      ...(excludes && excludes.length > 0 ? { excludes } : {}),
+    }))
+  );
+  if (family === 'laravel') {
+    return owned('senior-backend', [
+      'app/',
+      'database/migrations/',
+      'database/seeders/',
+      'database/factories/',
+      'config/',
+      'routes/',
+      'bootstrap/app.php',
+      'bootstrap/providers.php',
+    ]);
+  }
+  if (family === 'jvm') {
+    // Both source languages under either framework id: Gradle Kotlin repos
+    // always detect as `java`, and mixed builds are common. src/test/** is
+    // tester territory nested inside the same src/ tree — grant it to the
+    // tester and NEVER widen a backend grant to `src/` or `src/main`.
+    return [
+      ...owned('senior-backend', ['src/main/java/', 'src/main/kotlin/', 'src/main/resources/']),
+      ...owned('senior-tester', ['src/test/java/', 'src/test/kotlin/', 'src/test/resources/']),
+    ];
+  }
+  if (family === 'dotnet') {
+    // EF Core owns Migrations/ filenames (timestamped + Designer + snapshot
+    // rewrites). appsettings.Development.json is a separate literal because
+    // `appsettings.json` matches only itself, not its template siblings.
+    // Features/ is the vertical-slice home compiled feature modules land in.
+    return owned('senior-backend', [
+      'Controllers/',
+      'Models/',
+      'Services/',
+      'Features/',
+      'Migrations/',
+      'Program.cs',
+      'appsettings.json',
+      'appsettings.Development.json',
+    ]);
+  }
+  if (family === 'rust') {
+    // rustc owns the src/ layout through `mod` declarations — every new
+    // module edits main.rs/lib.rs, and diesel regenerates src/schema.rs in
+    // place — while sqlx/diesel own migrations/ filenames. The tester's
+    // compiled outputs all live under tests/, so the src/ tree is
+    // collision-free. Baseline-evidenced extras only: .sqlx/ (committed
+    // offline query cache, hash-named) and the fixed build.rs/diesel.toml are
+    // granted when the repo already carries them, never speculatively.
+    return owned('senior-backend', [
+      'src/',
+      'migrations/',
+      ...(baselineContains(baselinePaths, '.sqlx') ? ['.sqlx/'] : []),
+      ...(baselinePaths.has('build.rs') ? ['build.rs'] : []),
+      ...(baselinePaths.has('diesel.toml') ? ['diesel.toml'] : []),
+    ]);
+  }
+  if (family === 'django') {
+    // The project package is the baseline directory holding settings.py (or
+    // the split settings/ package); its wiring files have deterministic names,
+    // so they are fixed grants — a tree adds nothing the convention needs, and
+    // settings.py is security config. Apps are root directories evidenced by
+    // apps.py/models.py — each is a bounded tree because makemigrations owns
+    // the filenames inside <app>/migrations/. Never `*/`, never a repo-root
+    // tree. On a NEW project no baseline can evidence any of this, so the
+    // canonical startproject package is compiled instead of leaving the run
+    // with a manage.py it can never configure.
+    const { settingsPkg, splitSettings, appDirs } = djangoLayout(baselinePaths);
+    const projectPkg = settingsPkg || (isNewProject ? DJANGO_NEW_PROJECT_PKG : null);
+    return owned('senior-backend', [
+      'manage.py',
+      ...(projectPkg
+        ? [
+          ...(splitSettings ? [`${projectPkg}/settings/`] : [`${projectPkg}/settings.py`]),
+          ...['urls.py', 'wsgi.py', 'asgi.py', '__init__.py'].map((file) => `${projectPkg}/${file}`),
+        ]
+        : []),
+      ...appDirs.map((dir) => `${dir}/`),
+      // startapp puts an app's tests INSIDE the app, so the per-app trees
+      // would otherwise hand the implementer the suite that judges its work.
+    ], appDirs.flatMap((dir) => [`${dir}/tests.py`, `${dir}/tests/`]));
+  }
+  // Generic python / FastAPI: the package root carries nested developer-named
+  // files (routers/, schemas/, core/config.py) a closed list cannot model.
+  // pythonPackageRoot proves the root (or takes the canonical app/ on a new
+  // project) — never the phantom `src` fallback, and the family resolver has
+  // already refused this family when no root can be proven. Alembic's config
+  // comes with repo evidence, and its versions tree follows the directory the
+  // repo actually uses: `alembic.ini`'s script_location routinely points at
+  // migrations/ instead (the dominant FastAPI-template layout).
+  const pkgRoot = pythonPackageRoot(baselinePaths, isNewProject);
+  const alembicTree = baselineContains(baselinePaths, 'alembic')
+    ? 'alembic/'
+    : baselineContains(baselinePaths, 'migrations') ? 'migrations/' : 'alembic/';
+  return owned('senior-backend', [
+    ...(pkgRoot ? [`${pkgRoot}/`] : []),
+    ...(baselinePaths.has('alembic.ini') ? ['alembic.ini', alembicTree] : []),
+    // The package-root tree covers a nested suite (`app/tests/` is the
+    // full-stack-fastapi-template layout); the implementer never owns it.
+  ], pkgRoot ? [`${pkgRoot}/tests/`] : []);
 }
 
 export function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledArchitectureOutputV1[] {

@@ -1550,6 +1550,318 @@ test('paid maintenance frontend spawn reuses the exact active bounded WorkUnit',
   });
 });
 
+// ── Bounded-scope regrant (the Usage API trade.model.js dead end) ────────────
+// A senior implementer in an assignment-less maintenance run was denied a
+// task-related write outside its bounded allowlist with no mechanical way to
+// widen the contract. The explicit `[t1-bounded-scope]` marker is now honored
+// for senior-frontend/backend too (spawn-side), the marker on a DUPLICATE
+// spawn republishes the envelope and points at the live agent (reuse-side),
+// and compiled runs ignore the marker entirely (the architect owns scope).
+
+test('senior spawn with an explicit bounded scope mints the bounded-maintenance envelope', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.mode = 'existing-codebase';
+    one.lifecycle = { phase: 'maintenance', source: 'test' };
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-backend',
+      model: 'opus',
+      prompt: '[t1-role: senior-backend]\nAdd the trades endpoint.\n'
+        + '[t1-bounded-scope: {"outputs":["server/modules/trades/trade.routes.js"]}]',
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+    const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+    assert.ok(runId, 'maintenance spawn mints the run');
+    const envelope = readActiveRunBootstrap(cwd, runId, 'senior-backend');
+    assert.equal(envelope?.workUnit.unitId, 'senior-backend:bounded-maintenance');
+    assert.deepEqual(envelope?.workUnit.outputs, [
+      `.traffic-one/digests/${runId}/backend.md`,
+      'server/modules/trades/trade.routes.js',
+    ]);
+  });
+});
+
+test('the bounded-scope marker is ignored for senior roles in a compiled run', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // run-test has published runtime assignments (writeArchitectPhaseComplete),
+    // so the architect owns scope and the marker must not mint a bounded
+    // envelope or leak the marker path into the WorkUnit.
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+      prompt: 'Build the home page.\n[t1-bounded-scope: {"outputs":["src/anything-i-want.tsx"]}]',
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+    const envelope = readActiveRunBootstrap(cwd, 'run-test', 'senior-frontend');
+    assert.ok(envelope, 'the compiled-run spawn still publishes its envelope');
+    assert.notEqual(envelope.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+    assert.ok(
+      !envelope.workUnit.outputs.includes('src/anything-i-want.tsx'),
+      'a compiled WorkUnit must never absorb marker paths',
+    );
+  });
+});
+
+test('duplicate senior spawn with a widened scope REGRANTS the envelope and points at the live agent', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    withTeamsEnv(() => {
+      const onePath = path.join(cwd, '.traffic-one', '.one.json');
+      const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+      one.mode = 'existing-codebase';
+      one.lifecycle = { phase: 'maintenance', source: 'test' };
+      fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+      // First spawn (original narrow scope) mints the run + envelope.
+      const first = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'senior-backend',
+        model: 'opus',
+        prompt: '[t1-bounded-scope: {"outputs":["server/modules/trades/trade.routes.js"]}]',
+      }, 'parent-1'));
+      assert.equal(first.kind, 'noop', first.kind === 'deny' ? first.reason : undefined);
+      const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+      assert.ok(runId);
+      recordRunAgent(cwd, runId, 'senior-backend', {
+        agentId: 'abc123def456789',
+        parentSessionId: 'parent-1',
+      });
+
+      // Duplicate spawn carrying the WIDENED scope → the regrant: envelope
+      // republished with the union the parent submitted, deny points at the
+      // LIVE agent instead of allowing a respawn.
+      const widened = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'senior-backend',
+        model: 'opus',
+        prompt: '[t1-bounded-scope: {"outputs":["server/modules/trades/trade.routes.js","server/modules/trades/trade.model.js"]}]',
+      }, 'parent-1'));
+      assert.equal(widened.kind, 'deny');
+      if (widened.kind === 'deny') {
+        assert.ok(widened.reason.includes('scope REGRANTED'), `deny must confirm the regrant, got: ${widened.reason}`);
+        assert.ok(widened.reason.includes('abc123def456789'), 'deny names the live agent id');
+        assert.ok(widened.reason.includes('server/modules/trades/trade.model.js'), 'deny names the widened path');
+      }
+      const envelope = readActiveRunBootstrap(cwd, runId, 'senior-backend');
+      assert.deepEqual(envelope?.workUnit.outputs, [
+        `.traffic-one/digests/${runId}/backend.md`,
+        'server/modules/trades/trade.model.js',
+        'server/modules/trades/trade.routes.js',
+      ]);
+
+      // A duplicate WITHOUT a scope marker stays the plain continue deny — no
+      // envelope churn.
+      const plain = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'senior-backend',
+        model: 'opus',
+        prompt: 'continue the task',
+      }, 'parent-1'));
+      assert.equal(plain.kind, 'deny');
+      if (plain.kind === 'deny') {
+        assert.ok(!plain.reason.includes('scope REGRANTED'));
+        assert.ok(plain.reason.includes('abc123def456789'));
+      }
+
+      // With a PENDING OpenCode fallback debt for the role, a further widening
+      // attempt must NOT promise a regrant (fallbackContractMatches would
+      // refuse the republish) — the deny names the debt and the live agent.
+      writeMaintenanceDebt(cwd, runId, 'senior-backend', ['server/modules/trades/trade.routes.js']);
+      const debtDenied = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'senior-backend',
+        model: 'opus',
+        prompt: '[t1-bounded-scope: {"outputs":["server/modules/trades/trade.routes.js","server/modules/reports/report.model.js"]}]',
+      }, 'parent-1'));
+      assert.equal(debtDenied.kind, 'deny');
+      if (debtDenied.kind === 'deny') {
+        assert.ok(debtDenied.reason.includes('scope widening BLOCKED'), debtDenied.reason);
+        assert.ok(debtDenied.reason.includes('pending OpenCode fallback'));
+        assert.ok(debtDenied.reason.includes('abc123def456789'));
+        assert.ok(!debtDenied.reason.includes('scope REGRANTED'));
+      }
+    });
+  });
+});
+
+// A pending-debt marker: enough for roleOwesPendingMaintenanceFallback and
+// pendingMaintenanceDebtSources (baseline files present); pin hashes are
+// irrelevant to the spawn-side checks these tests exercise.
+function writeMaintenanceDebt(cwd: string, runId: string, role: string, files: string[]): void {
+  const dir = path.join(cwd, '.traffic-one', 'runs', runId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'maintenance.json'), JSON.stringify({
+    version: 1,
+    kind: 'opencode-delegation',
+    role,
+    outcome: 'failed',
+    opencodeOutcome: 'failed',
+    overallOutcome: 'fallback-pending',
+    fallbackAllowed: true,
+    workUnitContractHash: 'pinned-contract',
+    allowlistHash: 'pinned-allowlist',
+    fallbackSourceBaseline: {
+      schemaVersion: 1,
+      capturedAt: '2026-08-02T14:13:59Z',
+      files: files.map((p) => ({ path: p, state: 'file', size: 1, hash: 'x' })),
+    },
+  }), 'utf8');
+}
+
+// Persist mode/lifecycle/currentRunId so the architect-phase gate is ARMED
+// (requiresRunContracts needs a persisted run id + subagents team) — the state
+// every real maintenance session is in once triage rotates the run.
+function armMaintenanceRun(cwd: string, runId: string): void {
+  const onePath = path.join(cwd, '.traffic-one', '.one.json');
+  const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+  one.mode = 'existing-codebase';
+  one.lifecycle = { phase: 'maintenance', source: 'test' };
+  one.currentRunId = runId;
+  fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+}
+
+test('marker-less senior spawn reuses the active bounded envelope with the architect gate armed', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    armMaintenanceRun(cwd, 'run-mnt-clause2');
+    freezeRunPolicy(cwd, 'claude', 'run-mnt-clause2');
+
+    // Control: no bounded evidence at all → the architect gate still denies.
+    const bare = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+      prompt: 'continue the task',
+    }));
+    assert.equal(bare.kind, 'deny');
+    if (bare.kind === 'deny') assert.ok(bare.reason.includes('Architect phase gate'), bare.reason);
+
+    // The OpenCode maintenance-preflight shape: envelope published BEFORE the
+    // paid fallback spawn, which then arrives with NO marker. This is the
+    // trading-bot-api dead end — it must clear the gate via the envelope.
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' });
+    const policy = readRunModelPolicy(cwd, 'run-mnt-clause2');
+    assert.ok(policy);
+    const bounded = ensureRunBootstrap(cwd, 'run-mnt-clause2', 'senior-frontend', state, {
+      host: 'claude',
+      hostAgentType: 'senior-frontend',
+      evidenceSource: 'opencode-maintenance-preflight',
+      modelPolicyId: policy.policyId,
+      boundedOutputs: ['src/pages/Pricing.tsx'],
+      boundedAllowlist: ['src/pages/Pricing.tsx'],
+    });
+    assert.ok(bounded);
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+      prompt: 'Implement only the parent-published maintenance WorkUnit.',
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+  });
+});
+
+test('a pending fallback debt alone stands the architect gate down and binds the union envelope', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    armMaintenanceRun(cwd, 'run-mnt-clause3');
+    freezeRunPolicy(cwd, 'claude', 'run-mnt-clause3');
+    writeMaintenanceDebt(cwd, 'run-mnt-clause3', 'senior-backend', ['server/store.js']);
+
+    // Marker-less paid fallback spawn: the debt is the only bounded evidence.
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-backend',
+      model: 'opus',
+      prompt: 'Deliver the owed delegated unit.',
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+    const envelope = readActiveRunBootstrap(cwd, 'run-mnt-clause3', 'senior-backend');
+    assert.equal(envelope?.workUnit.unitId, 'senior-backend:bounded-maintenance');
+    assert.deepEqual(envelope?.workUnit.outputs, [
+      '.traffic-one/digests/run-mnt-clause3/backend.md',
+      'server/store.js',
+    ]);
+  });
+});
+
+test('a marker spawn is still architect-gated while the run has an authored ArchitectureInputV1', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    armMaintenanceRun(cwd, 'run-mnt-arch');
+    freezeRunPolicy(cwd, 'claude', 'run-mnt-arch');
+    // The architect is mid-flight: input authored, nothing compiled yet.
+    // Maintenance phase is project-lifetime on existing codebases, so this is
+    // exactly a triage-complex run's planning window — the stand-down must
+    // NOT open a bounded side door that races the architect.
+    const runDir = path.join(cwd, '.traffic-one', 'runs', 'run-mnt-arch');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'architecture-input-v1.json'), JSON.stringify({
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'app-service', name: 'App Service', kind: 'service' }],
+    }), 'utf8');
+
+    const denied = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-backend',
+      model: 'opus',
+      prompt: '[t1-bounded-scope: {"outputs":["server/api/billing.js"]}]',
+    }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('Architect phase gate'), denied.reason);
+    assert.equal(
+      readActiveRunBootstrap(cwd, 'run-mnt-arch', 'senior-backend'),
+      null,
+      'no bounded envelope may be minted while the architect owns the run',
+    );
+  });
+});
+
+test('new-project runs never honor the bounded-scope marker', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    // Default fixture mode is new-project (building phase): the marker must
+    // not stand the architect gate down and no envelope may appear.
+    const denied = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+      prompt: '[t1-bounded-scope: {"outputs":["src/App.tsx"]}]',
+    }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('Architect phase gate'), denied.reason);
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+    assert.ok(runId, 'the spawn minted the run id');
+    assert.equal(
+      readActiveRunBootstrap(cwd, runId, 'senior-frontend'),
+      null,
+      'a new-project run must never absorb a bounded-maintenance envelope from the marker',
+    );
+  });
+});
+
+test('a compiled-run duplicate spawn with a marker gets the plain continue deny, never a regrant', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-compiled-dup');
+      freezeRunPolicy(cwd, 'claude', 'run-compiled-dup');
+      recordRunAgent(cwd, 'run-compiled-dup', 'senior-frontend', {
+        agentId: 'abc123def456789',
+        parentSessionId: 'parent-1',
+      });
+      // The readRuntimeAssignments guard is the ONLY thing between this marker
+      // and an architect-scope hijack (the envelope would be republished with
+      // parent-chosen files) — pin it.
+      const dup = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'senior-frontend',
+        model: 'opus',
+        prompt: 'part 2\n[t1-bounded-scope: {"outputs":["src/anything.tsx"]}]',
+      }, 'parent-1'));
+      assert.equal(dup.kind, 'deny');
+      if (dup.kind === 'deny') {
+        assert.ok(!dup.reason.includes('scope REGRANTED'), dup.reason);
+        assert.ok(dup.reason.includes('abc123def456789'));
+      }
+      const envelope = readActiveRunBootstrap(cwd, 'run-compiled-dup', 'senior-frontend');
+      assert.ok(
+        !envelope || envelope.workUnit.unitId !== 'senior-frontend:bounded-maintenance',
+        'a compiled run envelope must never be clobbered by the marker',
+      );
+    });
+  });
+});
+
 test('quick-fix pin is enforced on existing codebases too, and stakes a run claim', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // The per-role tier gate is new-project-only, but quick-fix must stay pinned

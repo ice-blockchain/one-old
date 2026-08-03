@@ -41,6 +41,20 @@ export function runtimeAssignmentsPath(projectRoot: string, runId: string): stri
   return path.join(projectRoot, MEMORY_DIR, 'runs', runId, 'assignments.json');
 }
 
+// Paths carved out of this role's tree grants — the only way to keep scopes
+// disjoint where a framework nests another role's territory inside a granted
+// tree (Django's `<app>/tests.py`, a python package's `app/tests/`). Absent on
+// pre-existing sidecars, which keeps their scopes exactly as compiled.
+function assignmentExcludes(
+  architecture: CompiledArchitectureV1,
+  role: string,
+): string[] {
+  const excludes = (architecture.scaffoldOutputs || [])
+    .filter((output) => output.ownerRole === role)
+    .flatMap((output) => output.excludes || []);
+  return [...new Set(excludes)].sort();
+}
+
 function assignmentOutputs(
   architecture: CompiledArchitectureV1,
   role: string,
@@ -83,7 +97,7 @@ function runtimeAssignmentForRole(
       : 'Runtime-owned compiled architecture and scaffold outputs',
     scope: {
       include,
-      exclude: [],
+      exclude: assignmentExcludes(architecture, role),
     },
   };
 }

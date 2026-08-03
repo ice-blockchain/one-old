@@ -36,9 +36,13 @@ import {
   ensureRunBootstrap,
   pendingMaintenanceDebtSources,
   readActiveRunBootstrap,
+  roleOwesPendingMaintenanceFallback,
   roleRequiresCompiledAssignment,
 } from '../../shared/run-bootstrap-policy';
-import { readRuntimeAssignments } from '../../shared/architecture-contract';
+import {
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+} from '../../shared/architecture-contract';
 import { readRunHostCapability } from '../../shared/host/capabilities';
 
 import {
@@ -284,7 +288,22 @@ export function agentModelGate(ctx: Ctx): HookResult {
         )
         ? activeRoleBootstrap
         : null;
-      const requestedQuickFixScope = role === 'quick-fix'
+      // The explicit bounded-scope marker is honored for quick-fix always, and
+      // for the senior implementers ONLY while the run has no compiled
+      // assignments (the maintenance small-tier): it is the parent's
+      // scope-REGRANT vehicle when a bounded task turns out to need one more
+      // file (observed: senior-backend denied on server/modules/trades/
+      // trade.model.js — task-related, but outside the original bounded
+      // allowlist, with no mechanical way to widen it). In a compiled run the
+      // architect owns scope and the marker is deliberately ignored.
+      // "Compiled" means EITHER hash-valid assignments OR a published compiled
+      // architecture: a corrupt/truncated assignments sidecar must not make a
+      // compiled run read as assignment-less and re-open the marker.
+      const boundedScopeEligible = role === 'quick-fix'
+        || ((role === 'senior-frontend' || role === 'senior-backend')
+          && !readRuntimeAssignments(cwd, spawnRunId)
+          && !readCompiledArchitecture(cwd, spawnRunId));
+      const requestedQuickFixScope = boundedScopeEligible
         ? quickFixScopeFromSpawn(toolInput, spawnPromptText)
         : null;
       const explicitQuickFixScope = requestedQuickFixScope?.present
@@ -359,6 +378,17 @@ export function agentModelGate(ctx: Ctx): HookResult {
           && ['quick-fix', 'senior-frontend', 'senior-backend'].includes(role)) {
           return deny(
             `traffic-one — spawn blocked: \`${role}\` needs a parent-supplied bounded maintenance scope, and this spawn carried none (run ${spawnRunId} has no compiled assignments to scope it from). Re-send the SAME spawn and include the exact files this task may create or modify: either the structured \`allowedFiles\` field, or ONE line in the prompt of the form [t1-bounded-scope: {"outputs": ["src/App.tsx"]}] listing every exact repo-relative file path (globs and directories are rejected). The runtime publishes the bounded WorkUnitContract from that scope; without it no maintenance write can be authorized. Do not retry without adding the scope.`,
+          );
+        }
+        // A scope that fails the envelope preflight while this role owes a
+        // pending OpenCode fallback is the debt refusing the contract change
+        // (fallbackContractMatches admits only the pinned unit or its exact
+        // union) — the generic "repair and retry" below can never succeed and
+        // does not name the real blocker.
+        if (requestedQuickFixScope?.present
+          && roleOwesPendingMaintenanceFallback(cwd, spawnRunId, role)) {
+          return deny(
+            `traffic-one — spawn blocked: run ${spawnRunId} still owes a pending OpenCode fallback for \`${role}\`, so its bounded WorkUnitContract cannot be changed to this spawn's [t1-bounded-scope] (the runtime admits only the pinned delegated unit or its exact union until the debt settles). Re-send the SAME spawn WITHOUT the scope marker — the runtime binds the child to the owed unit automatically. Any additional files become their OWN bounded task after this unit is delivered and settled.`,
           );
         }
         return deny(

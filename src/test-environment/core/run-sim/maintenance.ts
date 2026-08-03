@@ -264,11 +264,14 @@ function runQuickFixLeg(
 
   const rows: ScriptedWrite[] = quickFix.files.map((file) => ({ path: file.path, content: file.content }));
   if (quickFix.outOfScope) {
+    // The envelope EXISTS here, so an uncovered target gets the scope-REGRANT
+    // deny (names the exact path + widening recipe), not the missing-contract
+    // refusal — that one still fires when no envelope was published at all.
     rows.push({
       path: quickFix.outOfScope.path,
       content: quickFix.outOfScope.content,
       expectDeny: true,
-      denyMatch: 'no valid parent-published WorkUnitContract',
+      denyMatch: `does not cover: ${quickFix.outOfScope.path}`,
     });
   }
   rows.push({

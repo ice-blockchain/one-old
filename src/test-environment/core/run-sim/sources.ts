@@ -973,16 +973,26 @@ function pyTest(rel: string): string {
   ].join('\n');
 }
 
-function pySource(rel: string): string | null {
+function pySource(rel: string, ctx: ImplementContext): string | null {
   const base = path.basename(rel);
   if (base === 'conftest.py') {
+    // The package root follows the COMPILED module homes — the architecture
+    // compiler picks it per repo shape (an evidenced src/ or app/, the
+    // canonical app/ on a new project), so hardcoding one here would make the
+    // suite unable to import the very modules the run just wrote.
+    const roots = [...new Set(ctx.architecture.modules
+      .filter((module) => module.kind !== 'test' && module.output.endsWith('.py'))
+      .map((module) => module.output.split('/')[0])
+      .filter((root) => root && root !== 'tests'))];
     return [
       '"""Make the project modules importable from the test suite."""',
       '',
       'import sys',
       'from pathlib import Path',
       '',
-      'sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))',
+      ...(roots.length > 0 ? roots : ['src']).map((root) => (
+        `sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "${root}"))`
+      )),
       '',
     ].join('\n');
   }
@@ -1083,7 +1093,7 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   // (apps/web/routes/web.php), so an exact root match authored nothing at all.
   if (rel.endsWith('routes/web.php')) return laravelRoutes(ctx);
   if (rel.endsWith('.go')) return goSource(rel, ctx);
-  if (rel.endsWith('.py')) return pySource(rel);
+  if (rel.endsWith('.py')) return pySource(rel, ctx);
   if (rel === 'pyproject.toml') {
     // Presence of this file is what resolveStackCommand keys on for the Python
     // byte-compile build AND for pytest; without it neither check resolves and

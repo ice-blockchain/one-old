@@ -88,7 +88,21 @@ function testOutputForModule(
     return module.output.replace(/\.go$/, '_test.go');
   }
   if (['python', 'django', 'fastapi'].includes(profile.backendFramework) && module.output.endsWith('.py')) {
-    return `tests/test_${snake(basename)}.py`;
+    // Django features compile to `<app>/__init__.py`; every such basename is
+    // `__init__`, so stem the derived test from the app directory instead.
+    const stem = basename === '__init__'
+      ? path.posix.basename(path.posix.dirname(module.output))
+      : basename;
+    return `tests/test_${snake(stem)}.py`;
+  }
+  if (profile.backendFramework === 'rust' && module.output.endsWith('.rs')) {
+    return `tests/${snake(basename)}_test.rs`;
+  }
+  if (module.output.startsWith('src/main/java/') && module.output.endsWith('.java')) {
+    return module.output.replace('src/main/java/', 'src/test/java/').replace(/\.java$/, 'Test.java');
+  }
+  if (module.output.startsWith('src/main/kotlin/') && module.output.endsWith('.kt')) {
+    return module.output.replace('src/main/kotlin/', 'src/test/kotlin/').replace(/\.kt$/, 'Test.kt');
   }
   if (['laravel', 'php'].includes(profile.backendFramework) && module.output.endsWith('.php')) {
     const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';

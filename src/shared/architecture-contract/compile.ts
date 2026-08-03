@@ -36,6 +36,7 @@ import {
   REPOSITORY_SCAFFOLD_OUTPUTS,
   appendUniqueScaffoldOutputs,
   backendQualityOutputs,
+  backendWiringOutputs,
   backendScaffoldOutputs,
   environmentScaffoldOutputs,
   frontendScaffoldOutputs,
@@ -271,6 +272,9 @@ export function compileArchitecture(
   const compiledBaseline = baseline
     || captureArchitectureBaseline(projectRoot, { ...profile, sourceRoots: compiledSourceRoots });
   const immutablePaths = baselinePathSet(projectRoot, compiledBaseline);
+  // Resolved before the module homes: the backend wiring family is
+  // evidence-first, and on a new project there is no baseline to evidence.
+  const isNewProject = obj(state)?.mode === 'new-project';
   const routesByModule = new Map(input.routes.map((route) => [route.moduleId, route]));
   const modules = input.modules.map((module) => {
     const resolved = resolveModuleOutput(
@@ -279,6 +283,7 @@ export function compileArchitecture(
       module,
       routesByModule.get(module.id),
       immutablePaths,
+      isNewProject,
     );
     return {
       ...module,
@@ -319,7 +324,6 @@ export function compileArchitecture(
     : parentBackedEntrypoints.length > 0
       ? [parentBackedEntrypoints[0]!]
       : entrypointCandidates.slice(0, 1);
-  const isNewProject = obj(state)?.mode === 'new-project';
   const i18n = resolveArchitectureI18n(profile, input, isNewProject, selectedEntrypoints);
   const scaffoldOutputs = resolveInitialScaffoldOwners(profile, [
     ...(isNewProject ? frontendScaffoldOutputs(profile) : []),
@@ -331,6 +335,16 @@ export function compileArchitecture(
     ...(isNewProject ? nativeScaffoldOutputs(profile) : []),
     ...((isNewProject || input.i18n) ? i18nScaffoldOutputs(i18n) : []),
     ...(isNewProject ? backendScaffoldOutputs(profile) : []),
+    // Not new-project-gated: existing backend APIs are the population that
+    // hits the missing wiring layer (maintenance/complex runs on real repos).
+    // Gated on the plan actually giving senior-backend something to build,
+    // though — a frontend-only or tests-only plan must not mint a backend
+    // assignment covering the whole framework tree for a role with no compiled
+    // output, which would both force a pointless spawn and let the
+    // post-implementation refresh authorize changes anywhere under it.
+    ...(modules.some((module) => module.ownerRole === 'senior-backend')
+      ? backendWiringOutputs(profile, immutablePaths, isNewProject)
+      : []),
     ...routeRegistrationOutputs(profile, input.routes),
     ...testerOutputs(profile, modules),
   ]);

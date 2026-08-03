@@ -13,7 +13,8 @@ import {
   type RunAgentContext,
 } from '../../../shared/state';
 import { recordMainOnboardingSession } from '../../../shared/onboarding-server/onboarding-session';
-import { ensureRunBootstrap } from '../../../shared/run-bootstrap-policy';
+import { ensureRunBootstrap, type RunBootstrapEnvelopeV2 } from '../../../shared/run-bootstrap-policy';
+import { workUnitAllowlistHash } from '../../../shared/maintenance/fallback';
 import {
   architectureInputPath,
   compileArchitectureForRun,
@@ -451,8 +452,23 @@ test('quick-fix writes require the exact parent-bounded bootstrap scope', () => 
     assert.ok(bootstrap);
     assert.equal(gate(dir, state, 'src/components/Button.tsx', rawFor(THREAD)), null);
     assert.equal(gate(dir, state, 'src/app/api/join/route.ts', rawFor(THREAD)), null);
+    // Envelope EXISTS but misses the target → the scope-regrant deny, which
+    // names the exact uncovered path and the widening recipe instead of the
+    // generic no-contract refusal (the Usage API trade.model.js dead end).
     const outside = gate(dir, state, 'src/components/Other.tsx', rawFor(THREAD));
-    assert.ok(outside && outside.includes('no valid parent-published WorkUnitContract'));
+    assert.ok(outside && outside.includes('does not cover: src/components/Other.tsx'));
+    assert.ok(outside && outside.includes('BLOCKED: needs scope on src/components/Other.tsx'));
+    assert.ok(outside && outside.includes('[t1-bounded-scope'));
+
+    // Same uncovered write while quick-fix owes a pending fallback debt → the
+    // debt protocol replaces the (impossible) regrant recipe.
+    writeDebtMarker(dir, RUN, 'quick-fix', bootstrap!, [
+      'src/components/Button.tsx',
+      'src/app/api/join/route.ts',
+    ]);
+    const debtDenied = gate(dir, state, 'src/components/Other.tsx', rawFor(THREAD));
+    assert.ok(debtDenied && debtDenied.includes('owes a pending OpenCode fallback'));
+    assert.ok(debtDenied && !debtDenied.includes('re-issue the SAME role spawn'));
   });
 });
 
@@ -487,7 +503,7 @@ test('maintenance run-team applies to non-web source layouts (the Go internal/ h
     assert.ok(bootstrap);
     assert.equal(gate(dir, state, 'internal/store.go', rawFor(THREAD), asProduction), null);
     const outside = gate(dir, state, 'cmd/catalogue/main.go', rawFor(THREAD), asProduction);
-    assert.ok(outside && outside.includes('no valid parent-published WorkUnitContract'));
+    assert.ok(outside && outside.includes('does not cover: cmd/catalogue/main.go'));
     // Non-source parent writes (docs, configs outside the artifact set) are
     // still not run-team targets — maintenance does not lock the whole repo.
     assert.equal(gate(dir, state, 'README.md', {}, asProduction), null);
@@ -605,12 +621,76 @@ test('maintenance: a senior implementer with a bounded contract may write inside
     );
 
     // Negative row 1: the contract binds, so a target OUTSIDE the allowlist is
-    // still refused. Without this the fix would be a hole, not a door.
+    // still refused. Without this the fix would be a hole, not a door — but the
+    // deny is now the scope-REGRANT, which names the uncovered path and the
+    // parent's widening recipe instead of a dead-end refusal.
     const outside = gate(dir, state, 'src/pages/Checkout.tsx', rawFor(THREAD));
     assert.ok(outside, 'a target outside the bounded allowlist must still be denied');
-    assert.match(String(outside), /maintenance writes fail closed/);
+    assert.match(String(outside), /does not cover: src\/pages\/Checkout\.tsx/);
+    assert.match(String(outside), /BLOCKED: needs scope on src\/pages\/Checkout\.tsx/);
+    assert.match(String(outside), /\[t1-bounded-scope/);
+
+    // Widened contract (the regrant applied by the spawn gate) → the previously
+    // denied target is now allowed.
+    const widened = ensureRunBootstrap(dir, 'MNT', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'bounded-scope-regrant',
+      modelPolicyId: 'policy-maintenance',
+      boundedOutputs: ['src/pages/Pricing.tsx', 'src/pages/Checkout.tsx'],
+      boundedAllowlist: ['src/pages/Pricing.tsx', 'src/pages/Checkout.tsx'],
+    });
+    assert.ok(widened, 'the regrant must republish the bounded envelope');
+    assert.equal(
+      gate(dir, state, 'src/pages/Checkout.tsx', rawFor(THREAD)),
+      null,
+      'after the regrant the previously denied write must be allowed',
+    );
+
+    // With a PENDING OpenCode fallback debt pinning this exact unit, the
+    // widening recipe is mechanically impossible (fallbackContractMatches
+    // refuses any changed envelope) — the deny must switch to the debt
+    // protocol: finish the current contract, follow up after settlement. A
+    // regrant deny here would livelock parent and child.
+    writeDebtMarker(dir, 'MNT', 'senior-frontend', widened, ['src/pages/Pricing.tsx', 'src/pages/Checkout.tsx']);
+    const debtDenied = gate(dir, state, 'src/pages/Landing.tsx', rawFor(THREAD));
+    assert.ok(debtDenied, 'an uncovered write during a pending debt must still deny');
+    assert.match(String(debtDenied), /owes a pending OpenCode fallback/);
+    assert.match(String(debtDenied), /BLOCKED: needs scope on src\/pages\/Landing\.tsx/);
+    assert.ok(
+      !String(debtDenied).includes('re-issue the SAME role spawn'),
+      'the impossible regrant recipe must not be promised while the debt is pending',
+    );
   });
 });
+
+// A pending-debt marker pinning the ACTIVE envelope's exact hashes — the shape
+// the OpenCode delegation runner records, and the only shape under which
+// readActiveRunBootstrap keeps serving the envelope while the debt is owed.
+function writeDebtMarker(
+  dir: string,
+  runId: string,
+  role: string,
+  envelope: RunBootstrapEnvelopeV2,
+  files: string[],
+): void {
+  fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'maintenance.json'), JSON.stringify({
+    version: 1,
+    kind: 'opencode-delegation',
+    role,
+    outcome: 'failed',
+    opencodeOutcome: 'failed',
+    overallOutcome: 'fallback-pending',
+    fallbackAllowed: true,
+    workUnitContractHash: envelope.workUnit.contractHash,
+    allowlistHash: workUnitAllowlistHash(envelope),
+    fallbackSourceBaseline: {
+      schemaVersion: 1,
+      capturedAt: '2026-08-02T14:13:59Z',
+      files: files.map((p) => ({ path: p, state: 'file', size: 1, hash: 'x' })),
+    },
+  }), 'utf8');
+}
 
 test('maintenance: a senior implementer with NO bounded contract is still refused', () => {
   withDir((dir) => {

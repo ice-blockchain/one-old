@@ -33,6 +33,17 @@ import {
 import {
   continuationRecipe,
 } from './spawn-hygiene';
+import { quickFixScopeFromSpawn } from './spawn-shape';
+import {
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+} from '../../shared/architecture-contract';
+import {
+  ensureRunBootstrap,
+  readActiveRunBootstrap,
+  roleOwesPendingMaintenanceFallback,
+} from '../../shared/run-bootstrap-policy';
+import { canonicalHost } from '../../shared/model-tiers';
 import {
   exhaustedModelRotationDeny,
   replacementJustified,
@@ -108,6 +119,10 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
             MARKER: REPLACE_AGENT_MARKER,
           }));
         }
+        // A raced retire can still be a scope-widening re-spawn: republish the
+        // envelope and point at the CONCURRENT live agent instead.
+        const regrant = boundedScopeRegrantDeny(g, runId, role, concurrentResume);
+        if (regrant) return regrant;
         const recipe = continuationRecipe('cursor', concurrentResume, role);
         return deny(block('agent-reuse-continue', {
           ROLE: role,
@@ -173,6 +188,8 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
         }
         if (live && !cursorAwaitingResume && !markerJustified && !unbindableLive) {
           if (resumeTarget) {
+            const regrant = boundedScopeRegrantDeny(g, runId, role, resumeTarget);
+            if (regrant) return regrant;
             const recipe = continuationRecipe(ctx.host, resumeTarget, role);
             return deny(block('agent-reuse-continue', {
               ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
@@ -245,6 +262,8 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
               return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
             }
           } else {
+            const regrant = boundedScopeRegrantDeny(g, runId, role, resumeTarget);
+            if (regrant) return regrant;
             const recipe = continuationRecipe(ctx.host, resumeTarget, role);
             return deny(block('agent-reuse-continue', {
               ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
@@ -256,4 +275,67 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
     }
   }
   return null;
+}
+
+// Scope-REGRANT on a duplicate spawn. A parent re-spawn that carries an
+// explicit `[t1-bounded-scope]`/allowedFiles for a bounded-capable role in an
+// assignment-less run is not a respawn attempt — it is the sanctioned way to
+// WIDEN the live agent's bounded WorkUnit after a write was denied on a
+// task-related path the original allowlist missed (observed: senior-backend
+// blocked on server/modules/trades/trade.model.js in a maintenance small-tier
+// run, with no mechanical way to extend the contract). Republish the envelope
+// with the submitted scope, then STILL deny the spawn — pointing at the live
+// agent, which retries its write under the new contract. Compiled runs are
+// untouched: the architect owns their scope, so published assignments disable
+// this path entirely. A pending fallback debt also blocks it (the envelope
+// publisher refuses a contract that does not hash-match the debt).
+function boundedScopeRegrantDeny(
+  g: GateContext,
+  runId: string,
+  role: string,
+  resumeTarget: string,
+): HookResult | null {
+  if (role !== 'quick-fix' && role !== 'senior-frontend' && role !== 'senior-backend') return null;
+  if (!g.runPolicy) return null;
+  const scope = quickFixScopeFromSpawn(g.toolInput, g.spawnPromptText);
+  if (!scope.present || !scope.valid || scope.outputs.length === 0) return null;
+  // "Compiled" is assignments OR compiled architecture — a corrupt sidecar on
+  // a compiled run must not let a marker spawn clobber the architect's scope.
+  if (readRuntimeAssignments(g.cwd, runId)) return null;
+  if (readCompiledArchitecture(g.cwd, runId)) return null;
+  // A pending OpenCode fallback pins the contract: fallbackContractMatches
+  // refuses any widened set until the debt settles, so ensureRunBootstrap below
+  // would fail silently and the parent would loop on the plain continue deny.
+  // Name the debt and the real exit instead.
+  if (roleOwesPendingMaintenanceFallback(g.cwd, runId, role)) {
+    const debtRecipe = continuationRecipe(g.ctx.host, resumeTarget, role);
+    return deny(block('agent-reuse-scope-debt', {
+      ROLE: role,
+      RUN_ID: runId,
+      AGENT_ID: resumeTarget,
+      PATHS: scope.outputs.join(', '),
+      CONTINUE_CALL: debtRecipe.call,
+      CONTINUE_TOOL: debtRecipe.tool,
+    }, `traffic-one — scope widening BLOCKED by a pending OpenCode fallback: run ${runId} still owes the delegated \`${role}\` unit, and the bounded WorkUnitContract cannot change until that debt settles. Do NOT respawn. A live \`${role}\` agent exists (${resumeTarget}) — continue it via ${debtRecipe.tool}: ${debtRecipe.call} — tell it to finish every deliverable inside its CURRENT contract and report \`BLOCKED: needs scope on ${scope.outputs.join(', ')}\` for anything outside it. After the unit is delivered and settled, start the extra path(s) as their OWN bounded task.`));
+  }
+  const active = readActiveRunBootstrap(g.cwd, runId, role);
+  const envelope = ensureRunBootstrap(g.cwd, runId, role, g.state, {
+    host: canonicalHost(g.ctx.host),
+    hostAgentType: active?.hostAgentType || null,
+    evidenceSource: 'bounded-scope-regrant',
+    modelPolicyId: g.runPolicy.policyId,
+    boundedOutputs: scope.outputs,
+    boundedAllowlist: scope.allowlist,
+    boundedAllowlistExclude: scope.exclude,
+  });
+  if (!envelope) return null;
+  const recipe = continuationRecipe(g.ctx.host, resumeTarget, role);
+  return deny(block('agent-reuse-scope-regrant', {
+    ROLE: role,
+    RUN_ID: runId,
+    AGENT_ID: resumeTarget,
+    PATHS: scope.outputs.join(', '),
+    CONTINUE_CALL: recipe.call,
+    CONTINUE_TOOL: recipe.tool,
+  }, `traffic-one — scope REGRANTED, no spawn needed: the bounded WorkUnit for \`${role}\` in run ${runId} now covers: ${scope.outputs.join(', ')}. A live \`${role}\` agent already exists (${resumeTarget}) — do NOT respawn or replace it. Continue it now via ${recipe.tool}: ${recipe.call} — tell it the scope was widened to include the previously denied path(s), to retry the exact write, then finish the task and its digest.`));
 }

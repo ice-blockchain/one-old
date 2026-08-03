@@ -285,6 +285,14 @@ Run-team enforcement gate: the active Traffic One role `{{ROLE}}` does not own `
 Run-team enforcement gate: unexpected denial for {{ROLE}} writing `{{FILEPATH}}`. This is a gate bug — please report.
 <!-- T1BLOCK:END run-team-unexpected -->
 
+<!-- T1BLOCK:BEGIN run-team-bounded-scope-regrant -->
+Run-team enforcement gate: `{{ROLE}}`'s bounded maintenance WorkUnit does not cover: {{PATHS}}. If these files are genuinely part of the task, do NOT edit around them and do NOT retry this write. CHILD: stop now and end your reply with exactly `BLOCKED: needs scope on {{PATHS}}`. PARENT: re-issue the SAME role spawn including ONE prompt line `[t1-bounded-scope: {"outputs":[<every ORIGINAL file plus these paths>]}]` — the spawn gate updates the bounded contract in place and answers with the live agent to continue; then tell that agent the scope was widened and to retry the exact write. Never widen scope by hand-editing state or run files.
+<!-- T1BLOCK:END run-team-bounded-scope-regrant -->
+
+<!-- T1BLOCK:BEGIN run-team-bounded-scope-debt -->
+Run-team enforcement gate: `{{ROLE}}`'s bounded maintenance WorkUnit does not cover: {{PATHS}}, and this run still owes a pending OpenCode fallback for that unit — the contract cannot be widened until the debt settles. CHILD: do NOT edit around it and do NOT retry this write; finish every deliverable inside your CURRENT contract, then end your reply with exactly `BLOCKED: needs scope on {{PATHS}}`. PARENT: let the bounded unit finish and settle (that discharges the fallback debt), then start the extra path(s) as their OWN bounded task — a fresh spawn with ONE prompt line `[t1-bounded-scope: {"outputs":[<these paths>]}]`. Never widen scope by hand-editing state or run files.
+<!-- T1BLOCK:END run-team-bounded-scope-debt -->
+
 <!-- T1BLOCK:BEGIN run-team-suffix -->
 If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.
 <!-- T1BLOCK:END run-team-suffix -->

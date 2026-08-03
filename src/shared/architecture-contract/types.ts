@@ -125,6 +125,15 @@ export interface CompiledArchitectureOutputV1 {
   path: string;
   ownerRole: string;
   kind: CompiledOutputKindV1;
+  /**
+   * Paths carved OUT of this grant when it is a directory tree. Frameworks
+   * that nest one role's territory inside another's — Django's per-app
+   * `<app>/tests.py`, a FastAPI package's `app/tests/` — cannot be modelled by
+   * include lists alone, because a literal include matches everything beneath
+   * it. Additive: sidecars compiled before this field keep their exact
+   * include-only scopes.
+   */
+  excludes?: string[];
 }
 
 export type CompiledI18nCatalogFormatV1 =

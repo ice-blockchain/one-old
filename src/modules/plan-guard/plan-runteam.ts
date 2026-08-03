@@ -18,7 +18,11 @@ import {
 } from '../../shared/architecture-contract';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import { reservedOpenCodeFiles } from '../../shared/opencode-roles';
-import { readActiveRunBootstrap, repairRunBootstrapForBoundChild } from '../../shared/run-bootstrap-policy';
+import {
+  readActiveRunBootstrap,
+  repairRunBootstrapForBoundChild,
+  roleOwesPendingMaintenanceFallback,
+} from '../../shared/run-bootstrap-policy';
 import {
   activeAgentRole,
   assignmentForContext,
@@ -223,7 +227,13 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     const scope = bootstrap
       ? { include: bootstrap.workUnit.allowlist, exclude: bootstrap.workUnit.allowlistExclude }
       : null;
-    if (!scope || !writeTargetPaths.every((target) => matchesScope(target, scope))) {
+    if (scope && !writeTargetPaths.every((target) => matchesScope(target, scope))) {
+      const uncovered = writeTargetPaths.filter((target) => !matchesScope(target, scope));
+      return deny(stateRunId && roleOwesPendingMaintenanceFallback(projectRoot, stateRunId, 'quick-fix')
+        ? boundedScopeDebtDeny(block, 'quick-fix', uncovered)
+        : boundedScopeRegrantDeny(block, 'quick-fix', uncovered));
+    }
+    if (!scope) {
       return deny(block('run-team-quick-fix-contract',
         'Run-team enforcement gate: the quick-fix worker has no valid parent-published WorkUnitContract covering every requested output. No maintenance or fallback write is allowed without the exact original contract and allowlist hash; re-run parent preflight with a bounded runtime-owned contract.',
         { TARGETS: writeTargetPaths.join(', ') }));
@@ -260,7 +270,22 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
         exclude: maintenanceBootstrap.workUnit.allowlistExclude,
       }
       : null;
-    if (!boundedScope || !writeTargetPaths.every((target) => matchesScope(target, boundedScope))) {
+    // An EXISTING contract that misses some targets is the scope-REGRANT case,
+    // not a missing-contract case: name the exact paths and the widening
+    // recipe so neither side improvises (observed: senior-backend blocked on a
+    // task-related model file its bounded allowlist never listed, with only a
+    // generic fail-closed message to go on).
+    if (boundedScope && !writeTargetPaths.every((target) => matchesScope(target, boundedScope))) {
+      const uncovered = writeTargetPaths.filter((target) => !matchesScope(target, boundedScope));
+      // While the role owes a pending OpenCode fallback, the regrant recipe is
+      // mechanically impossible (fallbackContractMatches refuses any widened
+      // envelope) — promising it would livelock parent and child. Name the
+      // debt and the finish-then-follow-up exit instead.
+      return deny(acRole && stateRunId && roleOwesPendingMaintenanceFallback(projectRoot, stateRunId, acRole)
+        ? boundedScopeDebtDeny(block, acRole, uncovered)
+        : boundedScopeRegrantDeny(block, acRole || 'this role', uncovered));
+    }
+    if (!boundedScope) {
       return deny(block('run-team-maintenance-contract',
         'Run-team enforcement gate: maintenance writes fail closed without a hash-valid runtime assignment or a bounded quick-fix WorkUnitContract. No unattributed or legacy-scope write was made; publish the parent-owned contract before retrying.'));
     }
@@ -414,4 +439,37 @@ export function openCodeReservedFilesViolation(args: {
     }
   }
   return null;
+}
+
+// The bounded-maintenance scope-regrant deny: a bound worker's write hit a
+// task-related path its parent-published allowlist never listed. The child must
+// STOP and report; the parent widens the contract by re-issuing the SAME role
+// spawn with the full `[t1-bounded-scope]` — the spawn gate updates the
+// WorkUnit in place and points back at the live agent (agent-model/gate-reuse
+// boundedScopeRegrantDeny), which then retries the exact write.
+function boundedScopeRegrantDeny(
+  block: Block,
+  role: string,
+  uncoveredPaths: readonly string[],
+): string {
+  const paths = uncoveredPaths.join(', ');
+  return block('run-team-bounded-scope-regrant',
+    `Run-team enforcement gate: \`${role}\`'s bounded maintenance WorkUnit does not cover: ${paths}. If these files are genuinely part of the task, do NOT edit around them and do NOT retry this write. CHILD: stop now and end your reply with exactly \`BLOCKED: needs scope on ${paths}\`. PARENT: re-issue the SAME role spawn including ONE prompt line \`[t1-bounded-scope: {"outputs":[<every ORIGINAL file plus these paths>]}]\` — the spawn gate updates the bounded contract in place and answers with the live agent to continue; then tell that agent the scope was widened and to retry the exact write. Never widen scope by hand-editing state or run files.`,
+    { ROLE: role, PATHS: paths });
+}
+
+// The debt variant: while the role still owes a pending OpenCode fallback,
+// `fallbackContractMatches` refuses every widened envelope, so the regrant
+// recipe above is mechanically impossible — a deny that promised it would
+// ping-pong parent and child forever. The only real exit is finish-then-
+// follow-up.
+function boundedScopeDebtDeny(
+  block: Block,
+  role: string,
+  uncoveredPaths: readonly string[],
+): string {
+  const paths = uncoveredPaths.join(', ');
+  return block('run-team-bounded-scope-debt',
+    `Run-team enforcement gate: \`${role}\`'s bounded maintenance WorkUnit does not cover: ${paths}, and this run still owes a pending OpenCode fallback for that unit — the contract cannot be widened until the debt settles. CHILD: do NOT edit around it and do NOT retry this write; finish every deliverable inside your CURRENT contract, then end your reply with exactly \`BLOCKED: needs scope on ${paths}\`. PARENT: let the bounded unit finish and settle (that discharges the fallback debt), then start the extra path(s) as their OWN bounded task — a fresh spawn with ONE prompt line \`[t1-bounded-scope: {"outputs":[<these paths>]}]\`. Never widen scope by hand-editing state or run files.`,
+    { ROLE: role, PATHS: paths });
 }
