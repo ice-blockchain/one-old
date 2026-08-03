@@ -16,7 +16,7 @@ import type { HostId } from '../../core/types';
 import { detectHost } from '../host';
 import { pluginRoot } from '../paths';
 import { resolveTrafficOneEnv } from '../state/traffic-one-paths';
-import { writeLaunchConfig } from './launch-config';
+import type { LocalFallback } from './wizard-links';
 import { clearLegacyOnboardingRuntime, clearServerRecord, readServerRecord, serverLockPath } from './registry';
 
 // A launch lock older than this is presumed abandoned (holder crashed between
@@ -37,7 +37,7 @@ export interface EnsureResult {
   started: boolean;
 }
 
-export interface EnsureOptions {
+interface EnsureOptions {
   env?: NodeJS.ProcessEnv;
   isAlive?: (pid: number) => boolean;
   launch?: (cwd: string, env: NodeJS.ProcessEnv, host?: string) => number;
@@ -49,21 +49,24 @@ export interface EnsureOptions {
   host?: string;
 }
 
-// Append the setup link to a banner. The onboarding UI now lives on the traffic.io
-// dashboard and opens in an external browser on EVERY host (no more Claude-preview /
-// Codex-only special-casing), so any host with a non-empty dashboard URL surfaces
-// it. The placeholder (port 0 → empty dashboardUrl) is never surfaced. `url` here is
-// the dashboard URL (agentOnboardingUrl). Single source for both the SessionStart and
+// Append the setup link to a banner. The onboarding UI lives on the traffic.io
+// dashboard and the USER opens it themselves in their browser on EVERY host, so any
+// host with a non-empty dashboard URL surfaces it. The placeholder (port 0 → empty
+// dashboardUrl) is never surfaced. Single source for both the SessionStart and
 // UserPromptSubmit setup-pending paths.
+//
+// `localFallback` is a rendered fragment, empty when the hosted dashboard probed
+// healthy — a working page earns exactly one link, not two. Typed as LocalFallback
+// so a raw localWizardUrl cannot be passed here by accident.
 export function formatWizardBanner(
   _host: string,
   dashboardUrl: string,
-  localWizardUrl: string,
+  localFallback: LocalFallback,
   banner: string,
 ): string {
-  return dashboardUrl
-    ? `${banner} — open Traffic One setup: ${dashboardUrl} — local fallback: ${localWizardUrl}`
-    : banner;
+  if (!dashboardUrl) return banner;
+  const base = `${banner} — open Traffic One setup: ${dashboardUrl}`;
+  return localFallback ? `${base} — ${String(localFallback)}` : base;
 }
 
 export function processAlive(pid: number): boolean {
@@ -159,23 +162,17 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   const placeholder = (): EnsureResult =>
     ({ ...agentOnboardingUrls(env, 0, ''), port: 0, token: '', started: false });
 
-  // The plugin's own repo/install never onboards: no server spawn, no
-  // .claude/launch.json, no registry record — hand back the inert placeholder.
+  // The plugin's own repo/install never onboards: no server spawn, no registry
+  // record — hand back the inert placeholder.
   if (isNonProjectRoot(cwd)) {
     return placeholder();
   }
 
-  // Register the in-app preview entry (.claude/launch.json) SYNCHRONOUSLY before
-  // returning, so preview_start finds it the instant the gate denies — never rely
-  // on the detached child's own async self-registration having landed yet. No-op
-  // for port 0 (the NO_SPAWN placeholder skips this entirely). Also stamps the
-  // dashboard deep link (fragment-carried port+token) that the gate surfaces.
-  const finalize = (result: { port: number; token: string; started: boolean }): EnsureResult => {
-    // `.claude/launch.json` is Claude Code's single preview entry. A parallel
-    // Cursor/Codex wizard must never replace Claude's recorded preview port.
-    if (host === 'claude' && result.port > 0) writeLaunchConfig(cwd, result.port);
-    return { ...result, ...agentOnboardingUrls(env, result.port, result.token) };
-  };
+  // Stamps the dashboard deep link (fragment-carried port+token) that the gate
+  // surfaces. No host gets an in-app preview entry: Traffic One never opens the
+  // wizard for the user, it hands them a link to click.
+  const finalize = (result: { port: number; token: string; started: boolean }): EnsureResult =>
+    ({ ...result, ...agentOnboardingUrls(env, result.port, result.token) });
 
   clearLegacyOnboardingRuntime(cwd, env);
 
@@ -191,9 +188,9 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   const live0 = reuseIfLive();
   if (live0) return live0;
 
-  // Test/CI guard (mirrors TRAFFIC_ONE_ONE_MCP_NO_SPAWN): never spawn a real
-  // detached server. Reuse a pre-seeded record if present, else hand back a
-  // placeholder URL so the gate can still render its deny prose deterministically.
+  // Test/CI guard: never spawn a real detached server. Reuse a pre-seeded
+  // record if present, else hand back a placeholder URL so the gate can still
+  // render its deny prose deterministically.
   if (env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN === '1') {
     if (existing) return finalize({ port: existing.port, token: existing.token, started: false });
     return placeholder();

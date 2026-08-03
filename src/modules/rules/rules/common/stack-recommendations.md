@@ -123,9 +123,11 @@ and CrUX/RUM field data; mark field data `UNVERIFIED` when unavailable.
   that need a backend. Use Supabase Auth for auth, Supabase Storage for app
   files, Supabase Realtime when real-time is needed, and RLS-backed
   authorization. Keep Traffic One's RTK Query/Redux, **Tailwind v4 + shadcn/ui**
-  (Radix + CVA + tailwind-merge + lucide-react), Jest, and React Hook Form + Zod
-  rules unless the user explicitly chooses another stack. Add new UI primitives
-  via `npx shadcn@latest add <name>` — never hand-roll a button/dialog/input.
+  (Radix + CVA + tailwind-merge + lucide-react), Vitest, and React Hook Form + Zod
+  rules unless the user explicitly chooses another stack. Search the official
+  live catalog for every requested control/state and add only the exact
+  product-required primitives via `npx shadcn@latest add <name>` into
+  `packages/ui`; never use a fixed starter batch or hand-roll a catalog match.
 - React Native + Expo: NativeWind v4 + React Native Reusables (`rn-primitives`)
   for UI; add primitives via `npx @react-native-reusables/cli@latest add <name>`.
 - Explicit Next.js: do not add a new Traffic One stack id. When the user
@@ -135,6 +137,11 @@ and CrUX/RUM field data; mark field data `UNVERIFIED` when unavailable.
   or server actions for server code, Next.js Cache for framework caching,
   Traffic One `/deploy` for deployment, Supabase Storage for app file storage,
   and Drizzle + PostgreSQL when adding a new SQL layer.
+- Vue/Nuxt and Svelte/SvelteKit recommendations that include Tailwind v4 also
+  include `shadcn-vue` and `shadcn-svelte` respectively unless the user chose
+  another UI library. Astro follows its React/Vue/Svelte renderer. Laravel
+  Inertia follows its React/Vue adapter; Blade, Angular, renderer-free Astro,
+  and unknown frameworks keep native primitives.
 - Python/FastAPI: prefer FastAPI, PostgreSQL, SQLModel, pytest, Redis
   for shared cache, and Celery for durable jobs; deploy via Traffic One `/deploy`.
   Do not default to hand-rolled

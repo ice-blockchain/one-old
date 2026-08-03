@@ -5,11 +5,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { onboardingGate } from '../handler';
+import { onboardingStopGate } from '../stop';
 import { recordMainOnboardingSession } from '../../../shared/onboarding-server/onboarding-session';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { onboardingBootstrapCommand, onboardingDeclineCommand, onboardingUseBootstrapCommand, onboardingUseCommand, onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
-import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
+import type { Ctx, HookInput, HookResult, HostId, ToolClass } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
@@ -18,7 +19,11 @@ import { captureCursorModels } from '../../../shared/materialize/cursor-models';
 import { modelGateCommand } from '../../../shared/model-gate-command';
 import { runModelPolicyPath } from '../../../shared/run-model-policy';
 import { doctorCommand } from '../../../shared/doctor-command';
-import { commitWizardLinksShown } from '../../../shared/onboarding-server/wizard-links';
+import {  type LocalFallback } from '../../../shared/onboarding-server/wizard-links';
+import { noteBrowserArrival } from '../../../shared/onboarding-server/browser-arrival';
+import { claudeWaitBackgroundDeniedReason, claudeWaitLinkFirstReason, stopSetupLinkPostedReason, stopSetupLinksShownReason, stopSetupRequiredReason } from '../../../shared/onboarding-server/claude-setup';
+import { codexWaitLinkFirstReason } from '../../../shared/onboarding-server/codex-setup';
+import { cursorWaitLinkFirstReason } from '../../../shared/onboarding-server/cursor-setup';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
 // ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
@@ -30,6 +35,9 @@ process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
 // in the fragment; default dashboard base since no TRAFFIC_ONE_DASHBOARD_URL is set).
 const DASH_URL = 'https://traffic.io/onboarding/agent#p=55222&t=tok';
 const LOCAL_URL = 'http://127.0.0.1:55222/local?t=tok';
+
+// `noop` carries no meta, so narrow before reading the user-facing channel.
+const sysMsg = (r: HookResult): string => ('systemMessage' in r ? r.systemMessage ?? '' : '');
 
 function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
@@ -101,7 +109,7 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   // Seed a live server record so the gate's ensureOnboardingServer() (NO_SPAWN) hands
   // back a real dashboard URL for the deny prose instead of the inert placeholder.
   // pid=process.pid is guaranteed alive → the reuse path computes dashboardUrl.
-  for (const host of ['claude', 'codex', 'cursor', 'opencode', 'windsurf'] as const) {
+  for (const host of ['claude', 'codex', 'cursor', 'opencode', 'kilo', 'copilot', 'windsurf'] as const) {
     writeServerRecord(
       dir,
       { pid: process.pid, port: 55222, token: 'tok', url: 'http://127.0.0.1:55222/?t=tok', startedAt: 'x' },
@@ -216,7 +224,13 @@ test('ask-first: mutating work is denied with the host-chat question — no wiza
       if (denied.kind === 'deny') {
         assert.match(denied.reason, /Do you want to use the Traffic One plugin/);
         assert.ok(denied.reason.includes("'--use' '--bootstrap-only'"), 'yes path leads with the link-first bootstrap command');
-        assert.ok(denied.reason.includes('IN THE BACKGROUND'), 'yes path tells the agent to background the waiter');
+        // Foreground, deliberately: backgrounding the waiter sends its output —
+        // including the setup link it re-prints — to a task file the user never
+        // opens, which is how a turn ended with the user waiting on a link they had
+        // never been shown. Must agree with the SKILL block's own wording.
+        assert.match(denied.reason, /in the FOREGROUND of this turn, never as a background task/,
+          'yes path keeps the waiter in the visible turn');
+        assert.ok(!denied.reason.includes('IN THE BACKGROUND'), 'no contradictory background instruction');
         assert.ok(denied.reason.includes('--decline'), 'no path names the --decline command');
         assert.ok(!denied.reason.includes('http://127.0.0.1'), 'NO setup URL before the user says yes');
       }
@@ -245,6 +259,35 @@ test('declined project: the gate stands down entirely and creates nothing', () =
 
 test('noop inside the plugin authoring root', () => {
   assert.equal(onboardingGate(ctx(process.cwd(), 'Write', 'file-write', { file_path: 'x.ts', content: 'x' })).kind, 'noop');
+});
+
+test('plugin authoring cwd does not stand down for an absolute target in an incomplete real project', () => {
+  withProject({
+    mode: 'new-project',
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    mobile: { framework: 'none' },
+    onboardingComplete: false,
+  }, (project) => {
+    const authoring = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-authoring-target-'));
+    try {
+      fs.mkdirSync(path.join(authoring, 'src', 'gen'), { recursive: true });
+      fs.writeFileSync(path.join(authoring, 'src', 'gen', 'index.ts'), 'export {};\n');
+      fs.writeFileSync(path.join(authoring, 'package.json'), JSON.stringify({ name: 'traffic-one' }));
+      const result = onboardingGate(ctx(authoring, 'Write', 'file-write', {
+        file_path: path.join(project, 'src', 'server.go'),
+        content: 'package main\n',
+      }));
+      assert.equal(result.kind, 'deny');
+      const command = `cd "${project}" && touch src/worker.go`;
+      const shellResult = onboardingGate(ctx(authoring, 'Bash', 'shell', { command }));
+      assert.equal(shellResult.kind, 'deny');
+      assert.equal(fs.existsSync(path.join(authoring, '.traffic-one')), false);
+    } finally {
+      fs.rmSync(authoring, { recursive: true, force: true });
+    }
+  });
 });
 
 test('noop when the session cwd is $HOME or the machine state dir — home is never onboarded as a project', () => {
@@ -333,6 +376,26 @@ test('OpenCode setup deny stops after onboarding and asks the user to restart be
   });
 });
 
+// Kilo shares OpenCode's wrapper and the same prompt-injection sensitivity: the
+// full multi-host deny block (code blocks + "do NOT…" overrides) reads as a
+// hijack attempt and the model refuses it. Kilo used to fall through to that
+// block while prompt-submit/session-start already treated it like OpenCode.
+test('Kilo setup deny is minimal: link + wait command, no restart sentinel, no behavioral overrides', () => {
+  withProject(null, (cwd) => {
+    const r = onboardingGate(ctxHost('kilo', cwd, 'write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes(DASH_URL), 'deny reason carries the dashboard setup URL');
+      assert.ok(r.reason.includes('immediately run this wait command'), 'agent must run wait without another user prompt');
+      assert.ok(!r.reason.includes('TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED'),
+        'the waiter emits the restart sentinel only on OpenCode — promising it on Kilo is false prose');
+      assert.ok(!r.reason.includes('do NOT'), 'no behavioral overrides that trip the injection filter');
+      assert.ok(!r.reason.includes('```'), 'no code blocks that trip the injection filter');
+      assert.ok(!r.reason.includes('CONTINUE AUTOMATICALLY'), 'the full multi-host walkthrough must not leak to Kilo');
+    }
+  });
+});
+
 test('Windsurf setup deny is compact and never includes another host recipe', () => {
   withProject(null, (cwd) => {
     const url = 'http://127.0.0.1:51444/?t=windsurf';
@@ -349,6 +412,285 @@ test('Windsurf setup deny is compact and never includes another host recipe', ()
       }
     }
   });
+});
+
+// Cursor collapses a blocked command into "ran N commands", so this deny is
+// agent-visible but NOT user-visible. Observed live (cursor-17c): the agent got the
+// block, never reposted the URL, and told the user to "use the setup link from the
+// previous message" — a message that never contained one.
+test('Cursor first wait deny ORDERS the agent to post the setup link in chat', () => {
+  withProject(null, (cwd) => {
+    const url = 'http://127.0.0.1:51500/?t=curwait';
+    const dashboardUrl = 'https://traffic.io/onboarding/agent#p=51500&t=curwait';
+    const localUrl = 'http://127.0.0.1:51500/local?t=curwait';
+    writeServerRecord(cwd, { pid: process.pid, port: 51500, token: 'curwait', url, startedAt: 'x' }, process.env, 'cursor');
+    const wait = onboardingWaitCommand(cwd, 'cursor');
+    const r = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-main'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes(dashboardUrl), 'the hosted link must be present');
+      assert.ok(r.reason.includes(localUrl),
+        'with no probe verdict yet the local fallback is included — the safe default');
+      assert.match(r.reason, /NEXT CHAT MESSAGE/,
+        'the agent must be told to repost the link where the user can actually see it');
+      assert.match(r.reason, /NOT visible to the user/,
+        'the deny must name its own invisibility, or the agent assumes the link was shown');
+      assert.ok(r.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+  });
+});
+
+// Suppression must require evidence the user actually RECEIVED the link, never
+// evidence that some surface produced text containing it. The old marker was
+// stamped by the bootstrap's collapsed stdout and by agent-facing deny reasons, so
+// one invisible producer silenced every visible one (2cu, 5cu).
+test('Cursor wait deny is suppressed only once the server sees the browser arrive', () => {
+  withProject(null, (cwd) => {
+    const url = 'http://127.0.0.1:51500/?t=curwait';
+    const dashboardUrl = 'https://traffic.io/onboarding/agent#p=51500&t=curwait';
+    writeServerRecord(cwd, { pid: process.pid, port: 51500, token: 'curwait', url, startedAt: 'x' }, process.env, 'cursor');
+    const wait = onboardingWaitCommand(cwd, 'cursor');
+
+    // Producing the link somewhere is NOT delivery — the deny must still fire.
+    const before = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-main'));
+    assert.equal(before.kind, 'deny', 'without an observed browser the link keeps being offered');
+
+    // The wizard actually loaded in a browser.
+    noteBrowserArrival(cwd, 'curwait', process.env, 'cursor');
+    const after = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: wait }, 'cursor-second'));
+    assert.equal(after.kind, 'noop', 'the wait proceeds instead of demanding a post over an open wizard');
+  });
+});
+
+test('a shell command that opens the setup URL in a browser is denied during onboarding', () => {
+  withProject(null, (cwd) => {
+    const url = 'http://127.0.0.1:51500/?t=curwait';
+    writeServerRecord(cwd, { pid: process.pid, port: 51500, token: 'curwait', url, startedAt: 'x' }, process.env, 'cursor');
+    for (const command of [
+      "open 'https://traffic.io/onboarding/agent#p=51500&t=curwait'",
+      'xdg-open https://traffic.io/onboarding/agent',
+      'open http://127.0.0.1:51500/local?t=curwait',
+    ]) {
+      const r = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command }, 'cursor-main'));
+      assert.equal(r.kind, 'deny', `${command} must not auto-open the wizard`);
+      if (r.kind === 'deny') assert.match(r.reason, /does not open the setup link for the user/);
+    }
+    // An ordinary orientation command is not treated as a browser open. (Cursor
+    // still denies the first gated tool with the setup recipe — that is the
+    // onboarding gate doing its normal job, not this check firing.)
+    const ls = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command: 'ls -la' }, 'cursor-main'));
+    if (ls.kind === 'deny') {
+      assert.doesNotMatch(ls.reason, /does not open the setup link for the user/);
+    }
+  });
+});
+
+// Claude Code collapses hook output and blocked commands the same way Cursor
+// collapses "ran N commands" — observed live on 1.0.43: ask-first yes, bootstrap
+// + wait ran, the wait was retried as a background task, and the user never saw
+// a link. The first wait deny orders the visible repost; the retry proceeds.
+test('Claude first wait deny ORDERS the agent to post the setup link in chat, then the retry proceeds', () => {
+  withProject(null, (cwd) => {
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    const first = onboardingGate(ctxHost('claude', cwd, 'Bash', 'shell', { command: wait }));
+    assert.equal(first.kind, 'deny');
+    if (first.kind === 'deny') {
+      assert.ok(first.reason.includes(DASH_URL), 'the hosted link must be present');
+      assert.match(first.reason, /NEXT CHAT MESSAGE/,
+        'the agent must be told to repost the link where the user can actually see it');
+      assert.match(first.reason, /NOT visible to the user/,
+        'the deny must name its own invisibility, or the agent assumes the link was shown');
+      assert.match(first.reason, /run_in_background: false/,
+        'the foreground requirement is spelled out where the agent decides how to re-run');
+      assert.ok(first.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+    const second = onboardingGate(ctxHost('claude', cwd, 'Bash', 'shell', { command: wait }));
+    assert.notEqual(second.kind, 'deny', 'the allowed retry proceeds into the blocking wait');
+  });
+});
+
+test('Claude wait deny is suppressed only once the server sees the browser arrive', () => {
+  withProject(null, (cwd) => {
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    noteBrowserArrival(cwd, 'tok', process.env, 'claude');
+    const r = onboardingGate(ctxHost('claude', cwd, 'Bash', 'shell', { command: wait }));
+    assert.notEqual(r.kind, 'deny', 'the wait proceeds instead of demanding a post over an open wizard');
+  });
+});
+
+test('Claude: a backgrounded onboarding runner is denied EVERY time; foreground never hits that deny', () => {
+  withProject(null, (cwd) => {
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const r = onboardingGate(ctxHost('claude', cwd, 'Bash', 'shell', { command: wait, run_in_background: true }));
+      assert.equal(r.kind, 'deny', `backgrounded attempt ${attempt} is denied — no once/session pass`);
+      if (r.kind === 'deny') {
+        assert.match(r.reason, /requested with run_in_background: true/);
+        assert.match(r.reason, /run_in_background: false/);
+        assert.ok(r.reason.includes(DASH_URL), 'the live link rides the deny');
+        assert.ok(r.reason.includes(wait), 'the SAME command is prescribed for the foreground re-run');
+      }
+    }
+    // A backgrounded ask-first bootstrap is caught by the same deny.
+    const bootstrap = onboardingUseBootstrapCommand(cwd, 'claude');
+    const b = onboardingGate(ctxHost('claude', cwd, 'Bash', 'shell', { command: bootstrap, run_in_background: true }));
+    assert.equal(b.kind, 'deny', 'a backgrounded --use --bootstrap-only buries the printed link too');
+    // Foreground may still get the link-first deny, but never the background one.
+    const fg = onboardingGate(ctxHost('claude', cwd, 'Bash', 'shell', { command: wait, run_in_background: false }));
+    if (fg.kind === 'deny') {
+      assert.doesNotMatch(fg.reason, /requested with run_in_background: true/,
+        'a foreground run must never be blamed for backgrounding');
+    }
+  });
+});
+
+test('Claude: ask-first pending still denies a backgrounded runner but releases the foreground consent path', () => {
+  const prev = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+  process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+  try {
+    withProject(null, (cwd) => {
+      const bootstrap = onboardingUseBootstrapCommand(cwd, 'claude');
+      const bg = onboardingGate(ctxHost('claude', cwd, 'Bash', 'shell', { command: bootstrap, run_in_background: true }));
+      assert.equal(bg.kind, 'deny', 'the background deny precedes the ask-first release');
+      const fg = onboardingGate(ctxHost('claude', cwd, 'Bash', 'shell', { command: bootstrap }));
+      assert.equal(fg.kind, 'noop', 'the foreground consent command stays released while ask-first is pending');
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = prev;
+  }
+});
+
+test('the Claude wait-link TS fallback stays verbatim with its skill block', () => {
+  const block = fs.readFileSync(
+    path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8',
+  ).split('<!-- T1BLOCK:BEGIN claude-wait-link-first -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(block.length > 0, 'the skill block must exist');
+  const rendered = block
+    .replace(/\{\{URL\}\}/g, 'U')
+    .replace(/\{\{LOCAL_FALLBACK\}\}/g, 'L')
+    .replace(/\{\{WAIT_CMD\}\}/g, 'W');
+  assert.equal(claudeWaitLinkFirstReason('U', 'L' as LocalFallback, 'W'), rendered,
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical');
+});
+
+test('the Claude background-deny TS fallback stays verbatim with its skill block', () => {
+  const block = fs.readFileSync(
+    path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8',
+  ).split('<!-- T1BLOCK:BEGIN claude-wait-background-denied -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(block.length > 0, 'the skill block must exist');
+  const rendered = block
+    .replace(/\{\{URL_LINE\}\}/g, 'U')
+    .replace(/\{\{WAIT_CMD\}\}/g, 'W');
+  assert.equal(claudeWaitBackgroundDeniedReason('U', 'W'), rendered,
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical');
+});
+
+// Copilot renders systemMessage on both wire surfaces including a deny, so the
+// wait command rides the nudge and the mutating denies carry the banner — one
+// TTL cadence for both.
+test('Copilot wait command carries the banner in systemMessage; TTL and browser arrival suppress it', () => {
+  withProject(null, (cwd) => {
+    const wait = onboardingWaitCommand(cwd, 'copilot');
+    const first = onboardingGate(ctxHost('copilot', cwd, 'bash', 'shell', { command: wait }));
+    assert.notEqual(first.kind, 'deny', 'the copilot waiter is never blocked');
+    assert.ok(sysMsg(first).includes(DASH_URL), 'the user gets the link at the moment the agent blocks');
+    const again = onboardingGate(ctxHost('copilot', cwd, 'bash', 'shell', { command: wait }));
+    assert.equal(sysMsg(again), '', 'the TTL keeps one banner per cadence');
+  });
+  withProject(null, (cwd) => {
+    noteBrowserArrival(cwd, 'tok', process.env, 'copilot');
+    const wait = onboardingWaitCommand(cwd, 'copilot');
+    const r = onboardingGate(ctxHost('copilot', cwd, 'bash', 'shell', { command: wait }));
+    assert.equal(sysMsg(r), '', 'no re-offer over an open wizard');
+  });
+});
+
+test('Copilot mutating deny carries the banner once per TTL', () => {
+  withProject(null, (cwd) => {
+    const first = onboardingGate(ctxHost('copilot', cwd, 'write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(first.kind, 'deny');
+    assert.ok(sysMsg(first).includes(DASH_URL), 'the deny is the guaranteed user-visible moment on Copilot');
+    const second = onboardingGate(ctxHost('copilot', cwd, 'write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(second.kind, 'deny', 'the repeat deny still blocks');
+    assert.equal(sysMsg(second), '', 'the banner respects the shared TTL cadence');
+  });
+});
+
+test('Windsurf wait command carries the banner — Cascade renders hook stdout under show_output', () => {
+  withProject(null, (cwd) => {
+    const wait = onboardingWaitCommand(cwd, 'windsurf');
+    const r = onboardingGate(ctxWindsurf(cwd, 'run_command', 'shell', { command: wait }));
+    assert.notEqual(r.kind, 'deny', 'the windsurf waiter is never blocked');
+    assert.ok(sysMsg(r).includes(DASH_URL), 'the banner reaches Cascade stdout via systemMessage');
+  });
+});
+
+// On Codex the deny reason is the ONLY channel that reaches the model, so the
+// first wait command carries a self-contained link-first deny with a marker
+// independent of the orientation walkthrough's.
+test('Codex first wait command is denied once with the clickable link, then the retry proceeds', () => {
+  withProject(null, (cwd) => {
+    const wait = onboardingWaitCommand(cwd, 'codex');
+    const first = onboardingGate(ctxHost('codex', cwd, 'exec_command', 'shell', { command: wait }));
+    assert.equal(first.kind, 'deny');
+    if (first.kind === 'deny') {
+      assert.ok(first.reason.includes(DASH_URL), 'the hosted link must be present');
+      assert.match(first.reason, /NEXT MESSAGE/, 'the repost order is explicit');
+      assert.ok(first.reason.includes(wait), 'the exact wait command rides the deny');
+      assert.ok(first.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+    const second = onboardingGate(ctxHost('codex', cwd, 'exec_command', 'shell', { command: wait }));
+    assert.notEqual(second.kind, 'deny', 'the allowed retry proceeds into the blocking wait');
+  });
+});
+
+test('Codex wait deny is independent of the orientation walkthrough marker', () => {
+  withProject(null, (cwd) => {
+    // Burn the walkthrough marker on an orientation call first (its deny carries
+    // the recipe but the agent may never post the link).
+    const orientation = onboardingGate(ctxHost('codex', cwd, 'exec_command', 'shell', { command: 'pwd' }));
+    assert.equal(orientation.kind, 'deny', 'codex orientation gets the full walkthrough deny');
+    const wait = onboardingWaitCommand(cwd, 'codex');
+    const r = onboardingGate(ctxHost('codex', cwd, 'exec_command', 'shell', { command: wait }));
+    assert.equal(r.kind, 'deny', 'the wait link-first deny still fires on its own marker');
+    if (r.kind === 'deny') assert.match(r.reason, /only channel that reaches you/);
+  });
+});
+
+test('Codex wait deny is suppressed only once the server sees the browser arrive', () => {
+  withProject(null, (cwd) => {
+    noteBrowserArrival(cwd, 'tok', process.env, 'codex');
+    const wait = onboardingWaitCommand(cwd, 'codex');
+    const r = onboardingGate(ctxHost('codex', cwd, 'exec_command', 'shell', { command: wait }));
+    assert.notEqual(r.kind, 'deny', 'the wait proceeds instead of demanding a post over an open wizard');
+  });
+});
+
+test('the Codex wait-link TS fallback stays verbatim with its skill block', () => {
+  const block = fs.readFileSync(
+    path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8',
+  ).split('<!-- T1BLOCK:BEGIN codex-wait-link-first -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(block.length > 0, 'the skill block must exist');
+  const rendered = block
+    .replace(/\{\{URL\}\}/g, 'U')
+    .replace(/\{\{LOCAL_FALLBACK\}\}/g, 'L')
+    .replace(/\{\{WAIT_CMD\}\}/g, 'W');
+  assert.equal(codexWaitLinkFirstReason('U', 'L' as LocalFallback, 'W'), rendered,
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical');
+});
+
+test('the Cursor wait-link TS fallback stays verbatim with its skill block', () => {
+  const block = fs.readFileSync(
+    path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8',
+  ).split('<!-- T1BLOCK:BEGIN cursor-wait-link-first -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(block.length > 0, 'the skill block must exist');
+  const rendered = block
+    .replace(/\{\{URL\}\}/g, 'U')
+    .replace(/\{\{LOCAL_FALLBACK\}\}/g, 'L')
+    .replace(/\{\{WAIT_CMD\}\}/g, 'W');
+  assert.equal(cursorWaitLinkFirstReason('U', 'L' as LocalFallback, 'W'), rendered,
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical');
 });
 
 test('Windsurf setup allows read-only orientation and gates the first mutation', () => {
@@ -383,13 +725,25 @@ test('existing project with missing local prefs: claude orientation flows; the f
   withProject(existingState(), (cwd) => {
     // Claude renders a denied read as a failed tool card and its prompt-hook
     // context is reliable, so read-only orientation flows during setup and the
-    // one-time full recipe lands on the first mutating call instead.
-    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    // one-time full recipe lands on the first mutating call instead. The release
+    // now RIDES the setup link in the user-facing systemMessage: a session that only
+    // reads used to produce no visible surface at all, leaving the link in a
+    // collapsed tool result the user never saw.
+    const orientation = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.notEqual(orientation.kind, 'deny', 'orientation is never blocked');
+    assert.match(sysMsg(orientation), /setup required/, 'the user sees the link');
+    assert.ok(sysMsg(orientation).includes(DASH_URL));
+    if (orientation.kind === 'context') {
+      assert.equal(orientation.context, '', 'empty context → zero prompt tokens on Claude');
+    }
     const first = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(first.kind, 'deny');
     if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
-    // Recipe delivered this session → read-only orientation still flows.
-    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    // Recipe delivered this session → read-only orientation still flows, and the
+    // nudge is rate-limited so a read burst yields one line, not one per call.
+    const again = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.notEqual(again.kind, 'deny');
+    assert.equal(sysMsg(again), '', 'within the TTL the nudge stays quiet');
   });
 });
 
@@ -422,13 +776,17 @@ test('existing project with complete local prefs: mutating tools proceed normall
 
 test('incomplete new project: claude orientation (ls) flows, the first write gets the recipe, later writes get the repeat', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
-    // Read-only orientation flows on claude even before any deny was delivered.
-    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    // Read-only orientation flows on claude even before any deny was delivered —
+    // and carries the setup link in the user-facing systemMessage, so a read-only
+    // opening turn still shows the user something clickable.
+    const orientation = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.notEqual(orientation.kind, 'deny', 'orientation is never blocked');
+    assert.ok(sysMsg(orientation).includes(DASH_URL), 'the release carries the link');
     // fd/discard redirects on a compound orientation command are not writes (B6):
     // this exact shape was denied as "setup still pending" in tests/claude/3.
-    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', {
+    assert.notEqual(onboardingGate(ctx(cwd, 'Bash', 'shell', {
       command: `ls -la ${cwd} 2>/dev/null; echo "---"; ls -la ${cwd}/.traffic-one 2>/dev/null | head -40`,
-    })).kind, 'noop');
+    })).kind, 'deny');
     const first = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(first.kind, 'deny');
     if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
@@ -439,38 +797,74 @@ test('incomplete new project: claude orientation (ls) flows, the first write get
   });
 });
 
-test('claude: link suppression stays within the conversation that already saw them', () => {
+// A session that only READS used to produce no user-visible surface at all while
+// setup was pending: the link lived in a collapsed tool result and a background task
+// output file, so the user had nothing to click and setup could never complete.
+// The waiter is often the LAST tool call of the turn — the agent runs it and blocks
+// for minutes, frequently as a background task whose banner lands in a file the user
+// never opens. Observed live: "Ran 2 commands → Waiting for setup completion", four
+// minutes, no link anywhere visible. After this call there are no more PreToolUse
+// events, so it is the final chance to put the link in front of the user.
+test('claude: the wait command carries the link on every layer — link-first deny, then the nudge on the allowed retry', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
-    // Session A already received the complete recipe from another surface
-    // (session-start/prompt-submit/wait banner), before its first tool denial.
-    assert.equal(commitWizardLinksShown(
-      cwd,
-      'tok',
-      `${DASH_URL}\n${LOCAL_URL}`,
-      DASH_URL,
-      LOCAL_URL,
-      'claude-main',
-    ), true);
-    // Another surface in the SAME conversation points at the links instead of
-    // re-printing them (which can race setup completion).
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    // First attempt: the link-first deny orders the visible repost (the nudge
+    // alone proved insufficient — hook output renders collapsed on Claude).
+    const first = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: wait }));
+    assert.equal(first.kind, 'deny');
+    if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL));
+    // The retry proceeds into the blocking wait, and the user still gets the
+    // link at the moment the agent blocks — nothing fires after it.
+    const retry = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: wait }));
+    assert.notEqual(retry.kind, 'deny', 'the retry must never be blocked');
+    assert.ok(sysMsg(retry).includes(DASH_URL), 'the user gets the link at the moment the agent blocks');
+  });
+});
+
+test('claude: read-only orientation stops nudging once the browser demonstrably arrives', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const before = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.ok(sysMsg(before).includes(DASH_URL), 'the link is offered while setup is pending');
+
+    // The wizard actually loaded in the user's browser → re-offering would read as
+    // "start over" mid-setup, so the nudge stands down.
+    noteBrowserArrival(cwd, 'tok', process.env, 'claude');
+    const after = onboardingGate(ctx(cwd, 'Read', 'file-read', { file_path: 'src/app.ts' }));
+    assert.equal(after.kind, 'noop', 'no surface once the user has it open');
+  });
+});
+
+test('a wizard record with no usable URL never nudges (no placeholder links)', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    // Port 0 / tokenless → agentOnboardingUrls yields an empty dashboard URL.
+    writeServerRecord(cwd, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/', startedAt: 'x' }, process.env, 'claude');
+    const r = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.equal(sysMsg(r), '', 'never emit a placeholder URL');
+  });
+});
+
+test('claude: the link keeps being offered until the server sees the wizard open', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    // Producing the links on some other surface is NOT evidence the user saw them:
+    // the bootstrap's stdout is collapsed on several hosts and deny reasons are
+    // agent-facing. Every deny must therefore still carry the URL.
+    const rawA = { tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' }, session_id: 'claude-main' };
+    const inputA: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: rawA, tool: { class: 'file-write', rawName: 'Write' } };
+    const a = onboardingGate({ input: inputA, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
+    assert.equal(a.kind, 'deny');
+    if (a.kind === 'deny') assert.ok(a.reason.includes(DASH_URL), 'first deny carries the clickable URL');
+
+    // The wizard actually loaded in the user's browser.
+    noteBrowserArrival(cwd, 'tok', process.env, 'claude');
     const rawB = { tool_name: 'Write', tool_input: { file_path: 'src/b.ts', content: 'x' }, session_id: 'claude-main' };
     const inputB: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: rawB, tool: { class: 'file-write', rawName: 'Write' } };
     const b = onboardingGate({ input: inputB, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
     assert.equal(b.kind, 'deny');
     if (b.kind === 'deny') {
-      assert.ok(!b.reason.includes(DASH_URL), 'links-shown deny must not re-print the dashboard URL');
-      assert.ok(/already\s+surfaced/i.test(b.reason), 'names the links as already surfaced');
+      assert.ok(!b.reason.includes(DASH_URL), 'do not re-print a link over a wizard the user has open');
+      assert.ok(/open in their browser/i.test(b.reason), 'the claim is backed by an observed arrival');
       assert.ok(b.reason.includes("'--host=claude'"), 'still prescribes the wait command');
-      assert.ok(b.reason.includes("'--sync-session=claude-main'"), 'waiter shares the conversation-scoped marker');
     }
-
-    // A new conversation can reuse the same live server/token, but it has not
-    // seen session A's chat. Its first deny must include the clickable URL.
-    const rawC = { tool_name: 'Write', tool_input: { file_path: 'src/c.ts', content: 'x' }, session_id: 'claude-second' };
-    const inputC: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: rawC, tool: { class: 'file-write', rawName: 'Write' } };
-    const c = onboardingGate({ input: inputC, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx);
-    assert.equal(c.kind, 'deny');
-    if (c.kind === 'deny') assert.ok(c.reason.includes(DASH_URL));
   });
 });
 
@@ -634,6 +1028,57 @@ test('Cursor: capture cannot repair or replace a corrupt create-once run policy'
   });
 });
 
+test('Cursor: a saved model policy with an unavailable bootstrap reports repair, not repeated onboarding', () => {
+  withProject(completeNewProject(), (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    fs.rmSync(path.join(cwd, 'CLAUDE.md'));
+    fs.symlinkSync('AGENTS.md', path.join(cwd, 'CLAUDE.md'));
+    assert.equal(captureCursorModels(cwd, [
+      'claude-fable-5-thinking-high',
+      'gpt-5.6-terra-medium',
+      'composer-2.5-fast',
+    ], 'pro'), true);
+
+    const first = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: 'pwd' },
+      'cursor-parent-bootstrap',
+      '/x/transcript.jsonl',
+    ));
+    assert.notEqual(first.kind, 'deny');
+    const state = JSON.parse(
+      fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'),
+    ) as { currentRunId?: string };
+    assert.ok(state.currentRunId);
+    const runDir = path.join(cwd, '.traffic-one', 'runs', state.currentRunId!);
+    const baselinePath = path.join(runDir, 'baseline-v1.json');
+    assert.equal(fs.existsSync(baselinePath), true);
+
+    fs.rmSync(path.join(runDir, 'capability-v1.json'));
+    fs.rmSync(baselinePath);
+    fs.writeFileSync(baselinePath, '{}\n', 'utf8');
+
+    const blocked = onboardingGate(ctxCursor(
+      cwd,
+      'before-shell-execution',
+      'shell',
+      { command: 'pwd' },
+      'cursor-parent-bootstrap',
+      '/x/transcript.jsonl',
+    ));
+    assert.equal(blocked.kind, 'deny');
+    if (blocked.kind === 'deny') {
+      assert.match(blocked.reason, /run bootstrap unavailable/);
+      assert.match(blocked.reason, /Performance and immutable model policy are already saved/);
+      assert.match(blocked.reason, /Do not redo onboarding/);
+      assert.doesNotMatch(blocked.reason, /Reopen Performance/);
+    }
+  });
+});
+
 test('non-Cursor hosts freeze policy without Cursor availableModels', () => {
   const hosts: HostId[] = ['claude', 'codex', 'opencode', 'copilot', 'windsurf', 'kilo'];
   for (const host of hosts) {
@@ -678,6 +1123,39 @@ test('a fully materialized, complete new project lets tool use through (run-id a
     if (first.kind === 'context') assert.match(first.context, /build run-id: \d+/);
     // The announce fired once → subsequent calls fall through to noop.
     assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'apps/web/src/y.ts', content: 'export const y = 1;' })).kind, 'noop');
+  });
+});
+
+test('headless maintenance: the triage rubric rides the first MUTATING call (never a read), once', () => {
+  // `claude -p` sessions fire no UserPromptSubmit, so the prompt-boundary triage
+  // directive never lands there. The gate's completion path compensates: the
+  // first mutating/spawn call of a maintenance session whose 'maintenance-triage'
+  // once-marker is unburned gets the rubric as context.
+  const existingMaintenance = {
+    ...completeNewProject(),
+    mode: 'existing-codebase',
+    autoDetected: true,
+    lifecycle: { phase: 'maintenance', source: 'existing-detected', completedAt: '2026-01-01T00:00:00Z' },
+  };
+  withProject(existingMaintenance, (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    // A read-only call announces the run id but must NOT spend the rubric.
+    const read = onboardingGate(ctx(cwd, 'Read', 'file-read', { file_path: 'src/app.ts' }));
+    assert.equal(read.kind, 'context');
+    if (read.kind === 'context') {
+      assert.match(read.context, /build run-id: \d+/);
+      assert.doesNotMatch(read.context, /post-build triage/);
+    }
+    // The first mutating call gets the rubric (hint-less: nothing classified a prompt).
+    const write = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/App.tsx', content: 'export const x = 1;' }));
+    assert.equal(write.kind, 'context');
+    if (write.kind === 'context') {
+      assert.match(write.context, /MAINTENANCE PHASE — post-build triage/);
+      assert.match(write.context, /judge the tier yourself/);
+    }
+    // Once per session: the next mutating call falls through to noop.
+    assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/Other.tsx', content: 'export const y = 1;' })).kind, 'noop');
   });
 });
 
@@ -767,4 +1245,323 @@ test('Cursor: first onboarding wait command is denied once with a clickable wiza
     const second = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command }, 'main-conv', '/x/transcript.jsonl'));
     assert.equal(second.kind, 'noop', 'after the visible link, the wait command is allowed');
   });
+});
+
+// ── The Stop backstop: a turn must not END with setup pending, a live wizard,
+// and no delivered link. Every in-turn surface is agent-facing or collapsed on
+// Claude/Codex (observed live on 1.0.43) — Stop is the last enforcement point. ──
+
+function ctxStop(host: HostId, cwd: string, rawExtra: Record<string, unknown> = {}): Ctx {
+  const raw = { session_id: `${host}-stop-main`, ...rawExtra };
+  const input: HookInput = { event: 'Stop', host, cwd, raw };
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+test('Stop backstop blocks a pending-setup turn end and re-delivers the link (claude + codex)', () => {
+  for (const host of ['claude', 'codex'] as const) {
+    withProject(null, (cwd) => {
+      const r = onboardingStopGate(ctxStop(host, cwd));
+      assert.equal(r.kind, 'deny', `${host}: the turn end is blocked once`);
+      if (r.kind === 'deny') {
+        assert.ok(r.reason.includes(DASH_URL), `${host}: the block carries the live link`);
+        assert.match(r.reason, /run_in_background: false/, `${host}: the foreground wait is prescribed`);
+        assert.ok(r.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+      }
+    });
+  }
+});
+
+test('Stop backstop passes when stop_hook_active is set — one forced continuation per turn', () => {
+  withProject(null, (cwd) => {
+    const r = onboardingStopGate(ctxStop('claude', cwd, { stop_hook_active: true }));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+test('Stop backstop stays quiet without a LIVE wizard record — unengaged sessions end normally', () => {
+  withProject(null, (cwd) => {
+    // Overwrite the seeded record with a dead pid: liveWizardLink must treat it
+    // as no engagement (a Q&A turn in an un-onboarded directory must end freely).
+    writeServerRecord(cwd, { pid: 999999999, port: 55222, token: 'tok', url: 'http://127.0.0.1:55222/?t=tok', startedAt: 'x' }, process.env, 'claude');
+    const r = onboardingStopGate(ctxStop('claude', cwd));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+test('Stop backstop never fights the ask-first question or a declined project', () => {
+  const prev = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+  process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+  try {
+    withProject(null, (cwd) => {
+      const r = onboardingStopGate(ctxStop('claude', cwd));
+      assert.equal(r.kind, 'noop', 'ask-first pending: the turn must end so the user can answer');
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = prev;
+  }
+  withProject(null, (cwd) => {
+    recordPluginUseChoice(cwd, false, 'command');
+    const r = onboardingStopGate(ctxStop('claude', cwd));
+    assert.equal(r.kind, 'noop', 'a declined project never re-surfaces setup at turn end');
+  });
+});
+
+test('Stop backstop stands down on a complete project and on subagent threads', () => {
+  withProject(existingState(), (cwd) => {
+    writeLocalPrefs();
+    const r = onboardingStopGate(ctxStop('claude', cwd));
+    assert.equal(r.kind, 'noop', 'complete onboarding: nothing to deliver');
+  });
+  withProject(null, (cwd) => {
+    const r = onboardingStopGate(ctxStop('claude', cwd, { parent_session_id: 'parent-session' }));
+    assert.equal(r.kind, 'noop', 'subagents never onboard');
+  });
+});
+
+test('Stop backstop with the wizard open swaps to the links-shown prose instead of reposting', () => {
+  withProject(null, (cwd) => {
+    noteBrowserArrival(cwd, 'tok', process.env, 'claude');
+    const r = onboardingStopGate(ctxStop('claude', cwd));
+    assert.equal(r.kind, 'deny', 'the backstop still keeps the turn on the waiter (Devin precedent)');
+    if (r.kind === 'deny') {
+      assert.ok(!r.reason.includes(DASH_URL), 'no repost over an open wizard');
+      assert.match(r.reason, /open in their browser/);
+      assert.ok(r.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+  });
+});
+
+test('the stop-setup TS fallbacks stay verbatim with their skill blocks', () => {
+  const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+  const required = skill.split('<!-- T1BLOCK:BEGIN stop-setup-required -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(required.length > 0, 'stop-setup-required block must exist');
+  assert.equal(
+    stopSetupRequiredReason('U', 'L' as LocalFallback, 'W'),
+    required.replace(/\{\{URL\}\}/g, 'U').replace(/\{\{LOCAL_FALLBACK\}\}/g, 'L').replace(/\{\{WAIT_CMD\}\}/g, 'W'),
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical',
+  );
+  const linksShown = skill.split('<!-- T1BLOCK:BEGIN stop-setup-links-shown -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(linksShown.length > 0, 'stop-setup-links-shown block must exist');
+  assert.equal(
+    stopSetupLinksShownReason('W'),
+    linksShown.replace(/\{\{WAIT_CMD\}\}/g, 'W'),
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical',
+  );
+});
+
+test('Cursor Stop enqueues the setup followup while pending, and defers to the open wizard', () => {
+  withProject(null, (cwd) => {
+    recordMainOnboardingSession(cwd, 'cursor-stop-main');
+    const r = onboardingStopGate(ctxStop('cursor', cwd));
+    assert.equal(r.kind, 'context', 'cursor gets a followup, not a deny');
+    if (r.kind === 'context') {
+      assert.ok(r.followupMessage, 'the continuation rides followup_message');
+      assert.ok(String(r.followupMessage).includes(DASH_URL), 'the followup carries the live link');
+      assert.ok(String(r.followupMessage).includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+  });
+  withProject(null, (cwd) => {
+    recordMainOnboardingSession(cwd, 'cursor-stop-main');
+    noteBrowserArrival(cwd, 'tok', process.env, 'cursor');
+    const r = onboardingStopGate(ctxStop('cursor', cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(!String(r.followupMessage).includes(DASH_URL), 'no repost over an open wizard');
+      assert.match(String(r.followupMessage), /open in their browser/);
+    }
+  });
+});
+
+test('Cursor Stop stays quiet on a foreign (subagent) conversation', () => {
+  withProject(null, (cwd) => {
+    recordMainOnboardingSession(cwd, 'orchestrator-conv');
+    const r = onboardingStopGate(ctxStop('cursor', cwd, { session_id: 'some-child-conv' }));
+    assert.equal(r.kind, 'noop', 'a non-main Cursor conversation is a subagent — never trap it on setup');
+  });
+});
+
+test('the onboarding Stop handler outranks agent-model on the cursor-stop followup slot', async () => {
+  const gate = await import('../index');
+  const agentModel = await import('../../agent-model/index');
+  const stopHandler = gate.handlers.find((h) => h.id === 'onboarding-gate.stop');
+  assert.ok(stopHandler, 'the Stop handler must be registered');
+  assert.ok(stopHandler.subcommands?.includes('cursor-stop'), 'cursor-stop must route to the backstop');
+  assert.ok(stopHandler.subcommands?.includes('onboarding-stop'), 'onboarding-stop must route to the backstop');
+  const agentModelStop = agentModel.handlers.find((h) => h.id === 'agent-model.cursor-stop');
+  assert.ok(agentModelStop, 'the agent-model cursor-stop handler still exists');
+  assert.ok(stopHandler.priority < agentModelStop.priority,
+    'mergeResults keeps the FIRST followup — setup re-delivery must run first');
+});
+
+test('OpenCode/Kilo session.idle gets the one-line toast text, TTL-bounded, silent over an open wizard', () => {
+  for (const host of ['opencode', 'kilo'] as const) {
+    withProject(null, (cwd) => {
+      const first = onboardingStopGate(ctxStop(host, cwd));
+      assert.equal(first.kind, 'context', `${host}: idle delivery is a context/systemMessage, never a deny`);
+      const message = sysMsg(first);
+      assert.ok(message.includes(DASH_URL), `${host}: the toast text carries the link`);
+      assert.ok(!message.includes('```'), `${host}: injection-safe one-line form`);
+      assert.ok(!message.includes('do NOT'), `${host}: no behavioral overrides`);
+      const second = onboardingStopGate(ctxStop(host, cwd));
+      assert.equal(second.kind, 'noop', `${host}: session.idle can fire every turn — the TTL bounds it`);
+    });
+  }
+  withProject(null, (cwd) => {
+    noteBrowserArrival(cwd, 'tok', process.env, 'opencode');
+    const r = onboardingStopGate(ctxStop('opencode', cwd));
+    assert.equal(r.kind, 'noop', 'a toast adds nothing while the user is mid-setup');
+  });
+});
+
+// ── Assistant-posted link = delivery evidence. Validated live (16cl/019fbca1 on
+// 1.0.45): the compliant model posted the link right after bootstrap, and the
+// arrival-only link-first deny ordered a DUPLICATE post in the seconds before
+// the user could click. A link in an assistant transcript message now stands the
+// deny down; tool output alone never does. ──
+
+const CLAUDE_ASSISTANT_POST = JSON.stringify({
+  type: 'assistant',
+  message: { role: 'assistant', content: [{ type: 'text', text: `Open this link to complete setup:\n\n${DASH_URL}` }] },
+});
+const CLAUDE_TOOL_RESULT_ONLY = JSON.stringify({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'tool_result', content: `TRAFFIC_ONE_SETUP_READY\nSetup link: ${DASH_URL}` }] },
+});
+
+function ctxClaudeWait(cwd: string, command: string, transcriptPath: string): Ctx {
+  const raw = { tool_name: 'Bash', tool_input: { command }, session_id: 'claude-main', transcript_path: transcriptPath };
+  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw, tool: { class: 'shell', rawName: 'Bash' } };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+test('Claude wait proceeds with no deny once the assistant has posted the link', () => {
+  withProject(null, (cwd) => {
+    const transcript = path.join(cwd, 'session.jsonl');
+    fs.writeFileSync(transcript, `${CLAUDE_ASSISTANT_POST}\n`, 'utf8');
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    const r = onboardingGate(ctxClaudeWait(cwd, wait, transcript));
+    assert.equal(r.kind, 'noop', 'a posted link is delivery evidence — no deny, no duplicate order');
+  });
+});
+
+test('Claude wait deny still fires when the link exists ONLY in tool output', () => {
+  withProject(null, (cwd) => {
+    const transcript = path.join(cwd, 'session.jsonl');
+    fs.writeFileSync(transcript, `${CLAUDE_TOOL_RESULT_ONLY}\n`, 'utf8');
+    const wait = onboardingWaitCommand(cwd, 'claude');
+    const r = onboardingGate(ctxClaudeWait(cwd, wait, transcript));
+    assert.equal(r.kind, 'deny', 'collapsed tool output is exactly the invisible producer that must not suppress');
+    if (r.kind === 'deny') assert.match(r.reason, /NOT visible to the user/);
+  });
+});
+
+test('Codex wait proceeds with no deny once the assistant has posted the link in the rollout', () => {
+  const codexHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-codexhome-')));
+  const prev = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHome;
+  try {
+    withProject(null, (cwd) => {
+      const dayDir = path.join(codexHome, 'sessions', '2026', '08', '01');
+      fs.mkdirSync(dayDir, { recursive: true });
+      fs.writeFileSync(path.join(dayDir, 'rollout-2026-08-01T12-00-00-codex-main.jsonl'), `${JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'agent_message', message: `Complete the Traffic One setup here:\n\n${DASH_URL}` },
+      })}\n`, 'utf8');
+      const wait = onboardingWaitCommand(cwd, 'codex');
+      const r = onboardingGate(ctxHost('codex', cwd, 'exec_command', 'shell', { command: wait }));
+      assert.equal(r.kind, 'noop', 'the rollout is the Codex transcript — a posted link stands the deny down');
+    });
+  } finally {
+    if (prev === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = prev;
+    fs.rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+// Cursor twins of the Claude/Codex rows above. Cursor was the host left with NO
+// evidence path on either the wait gate or Stop — it reads its own transcript
+// from `~/.cursor/projects/<slug-of-cwd>/agent-transcripts/<id>/<id>.jsonl`, and
+// the slug is derived from the cwd, so dropping `cwd` from the evidence input
+// silently makes every Cursor session look like the link was never posted.
+function withCursorTranscript(
+  cwd: string,
+  sessionId: string,
+  line: string,
+  fn: () => void,
+): void {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursorproj-')));
+  const prev = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+  process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = root;
+  try {
+    const slug = path.resolve(fs.realpathSync(cwd))
+      .replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
+      .replace(/[/:\s]+/g, '-');
+    const dir = path.join(root, slug, 'agent-transcripts', sessionId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), `${line}\n`, 'utf8');
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = prev;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const CURSOR_ASSISTANT_POST = JSON.stringify({
+  role: 'assistant',
+  message: { content: [{ type: 'text', text: `Complete the Traffic One setup here:\n\n${DASH_URL}` }] },
+});
+// The dominant real shape, and the one the unit fixture only half-covered: the
+// URL reaches the transcript inside a TOOL CALL (`open '<url>'`), which the user
+// never sees. That must not stand the deny down.
+const CURSOR_TOOL_USE_ONLY = JSON.stringify({
+  role: 'assistant',
+  message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `open '${DASH_URL}'` } }] },
+});
+
+test('Cursor wait proceeds with no deny once the assistant has posted the link', () => {
+  withProject(null, (cwd) => {
+    withCursorTranscript(cwd, 'cursor-main', CURSOR_ASSISTANT_POST, () => {
+      const wait = onboardingWaitCommand(cwd, 'cursor');
+      const r = onboardingGate(ctxHost('cursor', cwd, 'Bash', 'shell', { command: wait }));
+      assert.equal(r.kind, 'noop', 'a posted link is delivery evidence on Cursor too');
+    });
+  });
+});
+
+test('Cursor wait deny still fires when the link exists ONLY inside a tool call', () => {
+  withProject(null, (cwd) => {
+    withCursorTranscript(cwd, 'cursor-main', CURSOR_TOOL_USE_ONLY, () => {
+      const wait = onboardingWaitCommand(cwd, 'cursor');
+      const r = onboardingGate(ctxHost('cursor', cwd, 'Bash', 'shell', { command: wait }));
+      assert.equal(r.kind, 'deny', 'an `open` call is not the user seeing the link');
+      if (r.kind === 'deny') assert.match(r.reason, /NOT visible to the user/);
+    });
+  });
+});
+
+test('Stop with the link already posted keeps the turn on the waiter WITHOUT reposting', () => {
+  withProject(null, (cwd) => {
+    const transcript = path.join(cwd, 'session.jsonl');
+    fs.writeFileSync(transcript, `${CLAUDE_ASSISTANT_POST}\n`, 'utf8');
+    const r = onboardingStopGate(ctxStop('claude', cwd, { transcript_path: transcript }));
+    assert.equal(r.kind, 'deny', 'the backstop still holds the turn open on the waiter');
+    if (r.kind === 'deny') {
+      assert.ok(!r.reason.includes(DASH_URL), 'no repost — the link is already in the conversation');
+      assert.match(r.reason, /already posted in the conversation/);
+      assert.ok(r.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+  });
+});
+
+test('the stop-setup-link-posted TS fallback stays verbatim with its skill block', () => {
+  const block = fs.readFileSync(
+    path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8',
+  ).split('<!-- T1BLOCK:BEGIN stop-setup-link-posted -->')[1]?.split('<!-- T1BLOCK:END')[0]?.trim() || '';
+  assert.ok(block.length > 0, 'the skill block must exist');
+  assert.equal(
+    stopSetupLinkPostedReason('W'),
+    block.replace(/\{\{WAIT_CMD\}\}/g, 'W'),
+    'a missing SKILL.md must never soften this gate — keep the TS fallback byte-identical',
+  );
 });

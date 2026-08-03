@@ -95,7 +95,7 @@ test('noop when not authenticated (no auth state)', () => {
 
 // A fully-onboarded project fixture with local prefs resolved via applyAnswer so
 // computeOnboarding(...).done === true, plus a real-codebase marker. Individual
-// tests add canonical auth when they exercise the report trigger.
+// tests may add canonical auth for unrelated post-stack gates.
 function withDoneProject(extraOne: Record<string, unknown>, fn: (dir: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-pss-done-')));
   const env = process.env;

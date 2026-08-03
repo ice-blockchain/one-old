@@ -48,8 +48,8 @@ export function writeSimpleAuth(apiKey: string, env: NodeJS.ProcessEnv = process
   }, env);
 }
 
-// A rejected report credential is no longer trusted: remove only the auth
-// section so hosts and code-graph settings survive and the wizard reopens.
+// Invalidate only the auth section so hosts and code-graph settings survive
+// and the wizard reopens.
 // Return false when another writer prevents a safe locked update; callers must
 // surface that failure instead of silently continuing to trust the rejected key.
 export function clearAuthentication(env: NodeJS.ProcessEnv = process.env): boolean {

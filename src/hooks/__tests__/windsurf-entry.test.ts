@@ -123,3 +123,20 @@ test('windsurf entry: genuine Cascade trajectory still runs Traffic One', async 
     assert.match(out.stderr, /Traffic One/i);
   });
 });
+
+test('windsurf entry: the wait command itself surfaces the setup banner on stdout (show_output)', async () => {
+  await withEnv(async (cwd) => {
+    process.env.TRAFFIC_ONE_AUTH = 'off';
+    recordPluginUseChoice(cwd, true, 'command');
+    writeServerRecord(cwd, { pid: process.pid, port: 56859, token: 't', url: 'http://127.0.0.1:56859/?t=t', startedAt: 'x' }, process.env, 'windsurf');
+    const { onboardingWaitCommand } = await import('../../shared/onboarding-server/wait-command');
+    const stdin = JSON.stringify({
+      agent_action_name: 'pre_run_command',
+      tool_info: { command_line: onboardingWaitCommand(cwd, 'windsurf'), cwd },
+    });
+    const out = await runWindsurfHook('pre_run_command', stdin);
+    assert.equal(out.exitCode, 0, 'the waiter is never blocked');
+    assert.match(out.stdout, /onboarding\/agent#p=56859&t=t/i,
+      'Cascade renders hook stdout under show_output — the banner is the user-visible link surface');
+  });
+});

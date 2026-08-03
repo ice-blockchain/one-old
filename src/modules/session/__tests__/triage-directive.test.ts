@@ -4,7 +4,16 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { maintenanceTriageDirective } from '../triage-directive';
+import { maintenanceTriageDirective, maintenanceTriageFallbackDirective, unresolvedRunDirective } from '../triage-directive';
+import { transitionRunStatus } from '../../../shared/state';
+import { ensureRunModelPolicy, runModelPolicyPath } from '../../../shared/run-model-policy';
+import { currentHostModelTarget } from '../../../shared/current-model-tiers';
+import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+} from '../../../shared/architecture-contract';
+import { compileVerificationContract } from '../../../shared/verification-contract';
 import type { Rec } from '../../../shared/obj';
 
 // The maintenance triage directive starts a FRESH run (rotates currentRunId,
@@ -145,7 +154,7 @@ test('rotation releases the settled run\'s claims (terminal sweep)', () => {
     assert.notEqual(state.currentRunId, 'OLD');
     const released = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
     assert.equal(released.status, 'released');
-    assert.equal(released.releasedReason, 'run-rotated');
+    assert.equal(released.releasedReason, 'terminal-verified-evidence');
   } finally {
     cleanup(dir);
   }
@@ -157,6 +166,64 @@ test('rotates when there is no orchestrated run (no assignments) — common main
     maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
     assert.notEqual(state.currentRunId, 'OLD', 'a plain maintenance edit with no orchestrated run still rotates');
     assert.match(String(state.currentRunId), /^\d{13}$/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('Codex child prompt with root session id does not mint a sibling maintenance run', () => {
+  const { dir, state } = setup({});
+  try {
+    const directive = maintenanceTriageDirective(dir, state, PROMPT, {
+      session_id: '019fa11e-ad9b-7123-95e6-e41008289e76',
+      transcript_path: '/tmp/rollout-2026-07-27T04-11-13-019fa120-4089-7261-9067-1cd3f8dfce65.jsonl',
+    }, 'codex');
+    assert.equal(directive, '', 'Codex child UserPromptSubmit never receives parent maintenance routing');
+    assert.equal(state.currentRunId, 'OLD', 'child startup cannot rotate the parent run id');
+    assert.deepEqual(state.spawnIndex, { 'senior-frontend': 1, 'senior-backend': 1 });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('F3: a rotated maintenance run freezes model-policy at mint (first followup is not denied)', () => {
+  const { dir, state } = setup({});
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_HOST = 'codex';
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  // The MERGED state must carry the acknowledged catalog (readState strips
+  // performance as a host pref, so beginFreshMaintenanceRun freezes off the
+  // passed-in state, matching the build-run handler's effectiveState).
+  const target = currentHostModelTarget('codex', 'pro', process.env);
+  state.performance = {
+    level: 'high',
+    source: 'prompted',
+    target: { plan: 'pro', appliedFingerprint: target.appliedFingerprint, configVersion: target.configVersion },
+  };
+  try {
+    maintenanceTriageDirective(dir, state, PROMPT, {}, 'codex');
+    assert.notEqual(state.currentRunId, 'OLD', 'a fresh maintenance run should rotate');
+    assert.ok(fs.existsSync(runModelPolicyPath(dir, String(state.currentRunId))),
+      'the maintenance run must freeze its model-policy at mint so the first followup_task is not denied on a missing policy');
+  } finally {
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    cleanup(dir);
+  }
+});
+
+test('F3: maintenance rotation stays best-effort when the model policy cannot be frozen', () => {
+  // No performance level in state → buildRunModelPolicy returns null; the freeze
+  // must no-op WITHOUT throwing, and the run must still rotate + route.
+  const { dir, state } = setup({});
+  try {
+    let directive = '';
+    assert.doesNotThrow(() => { directive = maintenanceTriageDirective(dir, state, PROMPT, {}, 'codex'); });
+    assert.notEqual(state.currentRunId, 'OLD', 'rotation still happens even if the policy freeze no-ops');
+    assert.ok(directive.length > 0, 'triage must still return its routing directive');
   } finally {
     cleanup(dir);
   }
@@ -231,6 +298,288 @@ test('active claims still suppress triage on resumable hosts', () => {
     const directive = maintenanceTriageDirective(dir, state, 'create a new page named news', { session_id: 'cursor-parent' }, 'cursor');
     assert.equal(directive, '', 'Cursor keeps its live role session instead of splitting the active run');
     assert.equal(state.currentRunId, 'OLD');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// ── empty failed-run husk: rotate instead of wedging ─────────────────────────
+// A `failed` ledger has no transition out, so no role can ever claim in it. When
+// the run also holds nothing, capturing every later prompt with the unresolved
+// continuation directive left the project permanently stuck.
+
+function failRun(dir: string, runId = 'OLD'): void {
+  assert.ok(transitionRunStatus(dir, runId, { status: 'active' }));
+  assert.ok(transitionRunStatus(dir, runId, { status: 'failed', outcome: 'agent-failed' }));
+}
+
+test('an EMPTY failed run yields no unresolved directive, so triage rotates it away', () => {
+  const { dir, state } = setup({});
+  try {
+    failRun(dir);
+    assert.equal(unresolvedRunDirective(dir, state, PROMPT, {}), '', 'an empty failed run has nothing to continue');
+    maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
+    assert.notEqual(state.currentRunId, 'OLD', 'the husk is replaced with a fresh run id');
+    assert.match(String(state.currentRunId), /^\d{13}$/);
+    assert.deepEqual(state.spawnIndex, {});
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('a failed run that DID produce work still routes to the unresolved continuation', () => {
+  const { dir, state } = setup({ assignments: true });
+  try {
+    failRun(dir);
+    const directive = unresolvedRunDirective(dir, state, PROMPT, {});
+    assert.match(directive, /UNRESOLVED TRAFFIC ONE RUN/, 'assignments prove real work — never discard it');
+    assert.equal(state.currentRunId, 'OLD');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('a failed run with a live claim still routes to the unresolved continuation', () => {
+  const { dir, state } = setup({});
+  try {
+    failRun(dir);
+    writeFreshClaim(dir);
+    assert.match(unresolvedRunDirective(dir, state, PROMPT, {}), /UNRESOLVED TRAFFIC ONE RUN/);
+    assert.equal(state.currentRunId, 'OLD');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('a BLOCKED run is untouched: it keeps its explicit user-authorized resume', () => {
+  const { dir, state } = setup({});
+  try {
+    assert.ok(transitionRunStatus(dir, 'OLD', { status: 'active' }));
+    assert.ok(transitionRunStatus(dir, 'OLD', { status: 'blocked', outcome: 'review-cycle-cap' }));
+    assert.match(unresolvedRunDirective(dir, state, PROMPT, {}), /UNRESOLVED TRAFFIC ONE RUN/);
+    assert.equal(state.currentRunId, 'OLD');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// ── routing must never name a run the parent gates refuse ────────────────────
+// 16co, 2026-08-02: SessionStart emitted TRAFFIC_ONE_MODEL_POLICY_BLOCKED ("Do
+// not spawn a child") at 07:12:09Z and the triage reminder handed the agent that
+// same run id for `opencode_delegate` at 07:12:10Z. Two hooks, one turn, opposite
+// instructions; the agent followed the newer one and spent the session against a
+// gate that denies every parent tool call.
+//
+// The precondition is CREATE-ONCE: only a run whose model policy is already
+// published is unrepairable in place. An unfrozen run is left alone (Performance
+// still fixes it) and — critically — the refusal is evaluated AFTER rotation, so
+// it can never swallow the escape hatch.
+
+function withFrozenCodexRun(
+  opts: { compiled?: boolean },
+  fn: (dir: string, state: Rec) => void,
+): void {
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_HOST = 'codex';
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  const { dir, state } = setup({});
+  const target = currentHostModelTarget('codex', 'pro', process.env);
+  state.mobile = { framework: 'none' };
+  state.performance = {
+    level: 'high',
+    source: 'prompted',
+    target: { plan: 'pro', appliedFingerprint: target.appliedFingerprint, configVersion: target.configVersion },
+  };
+  try {
+    if (opts.compiled) {
+      // A compiled run is exactly the shape the rotation guard PINS, so it is the
+      // only shape that can stay wedged across prompts.
+      const inputPath = architectureInputPath(dir, 'OLD');
+      fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+      fs.writeFileSync(inputPath, JSON.stringify({
+        schemaVersion: 1,
+        routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+        modules: [
+          { id: 'app-shell', name: 'App', kind: 'app-shell' },
+          { id: 'home', name: 'Home', kind: 'page' },
+          { id: 'catalog', name: 'Catalog', kind: 'feature' },
+        ],
+      }));
+      const architecture = compileArchitectureForRun(dir, 'OLD', state);
+      const verification = compileVerificationContract(dir, 'OLD', state, architecture, { changedPaths: [] });
+      publishRuntimeAssignments(dir, architecture, verification.contractHash);
+      assert.ok(
+        ensureRunModelPolicy(dir, 'OLD', 'codex', state, process.env),
+        'the run must freeze cleanly BEFORE each wedge is introduced',
+      );
+    }
+    fn(dir, state);
+  } finally {
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    cleanup(dir);
+  }
+}
+
+function writePendingFallbackDebt(dir: string, runId = 'OLD', role = 'senior-frontend'): void {
+  fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'maintenance.json'), JSON.stringify({
+    version: 1,
+    kind: 'opencode-delegation',
+    role,
+    outcome: 'failed',
+    overallOutcome: 'fallback-pending',
+    fallbackAllowed: true,
+    workUnitContractHash: 'b'.repeat(64),
+    allowlistHash: 'c'.repeat(64),
+    fallbackSourceBaseline: {
+      schemaVersion: 1,
+      capturedAt: new Date().toISOString(),
+      files: [{ path: 'apps/web/src/pages/NewsArticlePage.tsx', state: 'file', size: 223, hash: 'd'.repeat(64) }],
+    },
+  }));
+}
+
+test('a PINNED run whose frozen policy is unreadable stops routing instead of naming it for delegation', () => {
+  withFrozenCodexRun({ compiled: true }, (dir, state) => {
+    // Create-once: the parent may never replace this file, so no later prompt in
+    // this run repairs it — SessionStart and the PreToolUse gate both refuse it.
+    fs.writeFileSync(runModelPolicyPath(dir, 'OLD'), '{ not json', 'utf8');
+    const directive = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 'parent' }, 'codex');
+    assert.match(directive, /^TRAFFIC_ONE_BOOTSTRAP_BLOCKED\n/);
+    assert.match(directive, /Run "OLD"/);
+    assert.doesNotMatch(directive, /MAINTENANCE PHASE/, 'no routing rubric may accompany the refusal');
+    assert.doesNotMatch(directive, /Keyword hint/, 'no tier hint either — there is nothing to route');
+    assert.equal(state.currentRunId, 'OLD', 'a pinned wedged run is not rotated away by the refusal');
+  });
+});
+
+test('a pinned run frozen for ANOTHER host stops routing, and the rubric is still owed once it is usable', () => {
+  withFrozenCodexRun({ compiled: true }, (dir, state) => {
+    const blocked = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 'parent' }, 'claude');
+    assert.match(blocked, /^TRAFFIC_ONE_BOOTSTRAP_BLOCKED\n/);
+    // The refusal returns BEFORE the once-per-session marker is burned: an agent
+    // that never received the full rubric must not later get the one-line
+    // reminder pointing back at prose it has never seen.
+    const routed = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 'parent' }, 'codex');
+    assert.match(routed, /MAINTENANCE PHASE — post-build triage/);
+    assert.doesNotMatch(routed, /triage reminder/);
+  });
+});
+
+test('a fallback-pending debt does NOT stop routing — the paid fallback child is what discharges it', () => {
+  // The exact 16co shape. The preflight publishes the debt's bounded scope, so
+  // the run stays usable; refusing to route here would re-wedge the one path
+  // that can settle the debt.
+  withFrozenCodexRun({ compiled: true }, (dir, state) => {
+    writePendingFallbackDebt(dir);
+    const directive = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 'parent' }, 'codex');
+    assert.match(directive, /MAINTENANCE PHASE/);
+    assert.doesNotMatch(directive, /TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
+    assert.equal(state.currentRunId, 'OLD', 'the debt-owing run is preserved, not rotated away');
+  });
+});
+
+test('a wedged run with no orchestrated artifacts still ROTATES — the refusal never eats the escape hatch', () => {
+  withFrozenCodexRun({}, (dir, state) => {
+    fs.mkdirSync(path.dirname(runModelPolicyPath(dir, 'OLD')), { recursive: true });
+    fs.writeFileSync(runModelPolicyPath(dir, 'OLD'), '{ not json', 'utf8');
+    const directive = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 'parent' }, 'codex');
+    assert.notEqual(state.currentRunId, 'OLD', 'rotation already happened — the check runs after it');
+    assert.match(directive, /MAINTENANCE PHASE/, 'the fresh run is usable, so the request routes normally');
+    assert.doesNotMatch(directive, /TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
+  });
+});
+
+test('an UNFROZEN pinned run keeps routing: create-once has not closed the door on it', () => {
+  withFrozenCodexRun({ compiled: true }, (dir, state) => {
+    fs.rmSync(runModelPolicyPath(dir, 'OLD'), { force: true });
+    const directive = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 'parent' }, 'codex');
+    assert.match(directive, /MAINTENANCE PHASE/);
+    assert.doesNotMatch(directive, /TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
+  });
+});
+
+test('main-agent projects never see the refusal — the spawn gates do not deny them either', () => {
+  withFrozenCodexRun({ compiled: true }, (dir, state) => {
+    fs.writeFileSync(runModelPolicyPath(dir, 'OLD'), '{ not json', 'utf8');
+    state.team = { mode: 'main-agent', approved: true };
+    const directive = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 'parent' }, 'codex');
+    assert.match(directive, /MAINTENANCE PHASE/);
+    assert.doesNotMatch(directive, /TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
+  });
+});
+
+test('the headless fallback refuses a pinned wedged run instead of naming it for delegation', () => {
+  // The 16co hazard through the OTHER delivery path: the first-mutating-call
+  // fallback must apply the same refusal, and (like the prompt path) before the
+  // once-marker burns, so the full rubric is still owed once the run is usable.
+  withFrozenCodexRun({ compiled: true }, (dir, state) => {
+    fs.writeFileSync(runModelPolicyPath(dir, 'OLD'), '{ not json', 'utf8');
+    const blocked = maintenanceTriageFallbackDirective(dir, state, { session_id: 'headless-w' }, 'codex');
+    assert.match(blocked, /^TRAFFIC_ONE_BOOTSTRAP_BLOCKED\n/);
+    assert.doesNotMatch(blocked, /MAINTENANCE PHASE/);
+    // Refusal did not burn the marker: once usable, the full rubric emits.
+    fs.rmSync(runModelPolicyPath(dir, 'OLD'), { force: true });
+    const routed = maintenanceTriageFallbackDirective(dir, state, { session_id: 'headless-w' }, 'codex');
+    assert.match(routed, /MAINTENANCE PHASE — post-build triage/);
+  });
+});
+
+// ── The headless fallback ───────────────────────────────────────────────────
+// UserPromptSubmit never fires in `claude -p` sessions (verified live in the
+// ep-text-edit e2e), so the rubric rides the first mutating/spawn PreToolUse
+// via maintenanceTriageFallbackDirective instead. These pin its contract.
+
+test('headless fallback emits the rubric once, without rotating the run', () => {
+  const { dir, state } = setup({});
+  try {
+    const first = maintenanceTriageFallbackDirective(dir, state, { session_id: 'headless-1' }, 'claude');
+    assert.match(first, /MAINTENANCE PHASE — post-build triage/);
+    assert.match(first, /judge the tier yourself/);
+    assert.equal(state.currentRunId, 'OLD', 'the fallback must never rotate — rotation is prompt-boundary only');
+    // Same session: the once-marker suppresses a second emission.
+    assert.equal(maintenanceTriageFallbackDirective(dir, state, { session_id: 'headless-1' }, 'claude'), '');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('headless fallback and the prompt directive share one once-marker (no double full rubric)', () => {
+  const { dir, state } = setup({});
+  try {
+    const fallback = maintenanceTriageFallbackDirective(dir, state, { session_id: 's-shared' }, 'claude');
+    assert.match(fallback, /MAINTENANCE PHASE — post-build triage/);
+    // The prompt-boundary directive in the SAME session degrades to the
+    // reminder form instead of re-injecting the full block.
+    const prompt = maintenanceTriageDirective(dir, state, PROMPT, { session_id: 's-shared' }, 'claude');
+    assert.match(prompt, /triage reminder/);
+    assert.doesNotMatch(prompt, /post-build triage\]/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('headless fallback stands down outside maintenance, for subagents, and under live claims', () => {
+  // Watermark safely in the past: a claim minted in the same millisecond as
+  // the lifecycle stamp would not read as "after" it (the sibling suppress
+  // test does the same).
+  const { dir, state } = setup({ completedAt: new Date(Date.now() - 60_000).toISOString() });
+  try {
+    // Building phase → silent.
+    const building = { ...state, lifecycle: { phase: 'building' } } as typeof state;
+    assert.equal(maintenanceTriageFallbackDirective(dir, building, { session_id: 's-b' }, 'claude'), '');
+    // Subagent thread → silent.
+    assert.equal(maintenanceTriageFallbackDirective(dir, state, {
+      session_id: 's-c',
+      agent_id: 'w1',
+      agent_type: 'traffic-one:senior-frontend',
+    }, 'claude'), '');
+    // A fresh live claim (worker mid-task) → continuation owns it, no rubric.
+    writeFreshClaim(dir);
+    assert.equal(maintenanceTriageFallbackDirective(dir, state, { session_id: 's-d' }, 'claude'), '');
   } finally {
     cleanup(dir);
   }

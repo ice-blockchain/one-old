@@ -19,7 +19,7 @@ export const GITNEXUS_ROOT_DIRNAME = '.gitnexus';
 // Where Traffic One keeps them (relative to the project root).
 export const GRAPHIFY_OUT_REL = path.join('.traffic-one', 'graphify-out');
 export const GRAPHIFY_REPORT_REL = path.join(GRAPHIFY_OUT_REL, 'GRAPH_REPORT.md');
-export const GRAPHIFY_GRAPH_JSON_REL = path.join(GRAPHIFY_OUT_REL, 'graph.json');
+const GRAPHIFY_GRAPH_JSON_REL = path.join(GRAPHIFY_OUT_REL, 'graph.json');
 export const GITNEXUS_REL = path.join('.traffic-one', '.gitnexus');
 
 // Plugin/host-generated paths that are NOT project source — they must be kept
@@ -279,6 +279,22 @@ export function relocateUnderTrafficOne(cwd: string, rootDirname: string, destRe
 // they are not manifest-tracked). Existing destinations are preserved; emptied
 // group dirs (and an emptied .claude/skills) are removed. Returns the relocated
 // skill names. Best-effort: never throws.
+// Kept next to the adopted skill so a name collision never silently drops the
+// provider's version. `.provider` is not a valid skill-name character elsewhere,
+// so it cannot collide with a real skill id.
+const PROVIDER_SUFFIX = '.provider';
+
+// `SKILL.md` is the skill's identity file; equal bodies mean the destination
+// already IS this skill and the source is a re-emitted duplicate.
+function sameSkillBody(sourceDir: string, destDir: string): boolean {
+  try {
+    return fs.readFileSync(path.join(sourceDir, 'SKILL.md'), 'utf8')
+      === fs.readFileSync(path.join(destDir, 'SKILL.md'), 'utf8');
+  } catch {
+    return false; // unreadable → treat as different and preserve both
+  }
+}
+
 export function relocateProviderSkills(cwd: string): string[] {
   const sourceRoot = path.join(cwd, '.claude', 'skills');
   const destRoot = path.join(cwd, '.traffic-one', 'skills');
@@ -302,7 +318,25 @@ export function relocateProviderSkills(cwd: string): string[] {
       const name = path.basename(skillDir);
       const dest = path.join(destRoot, name);
       try {
-        if (fs.existsSync(dest)) continue; // never clobber an existing skill
+        if (fs.existsSync(dest)) {
+          // Adoption already happened (the provider re-ran and rewrote its skills)
+          // — the source is now a DUPLICATE. Leaving it behind was what kept
+          // `.claude/skills/<provider>/` non-empty forever, so the sweep below
+          // never fired and every project accumulated a stray host directory.
+          // A name COLLISION with a different skill is still never clobbered: the
+          // provider's copy is kept under a suffixed name instead. Either way the
+          // host directory keeps nothing.
+          if (sameSkillBody(skillDir, dest)) {
+            fs.rmSync(skillDir, { recursive: true, force: true });
+          } else {
+            const alt = path.join(destRoot, `${name}${PROVIDER_SUFFIX}`);
+            fs.rmSync(alt, { recursive: true, force: true });
+            fs.mkdirSync(destRoot, { recursive: true });
+            fs.renameSync(skillDir, alt);
+            relocated.push(`${name}${PROVIDER_SUFFIX}`);
+          }
+          continue;
+        }
         fs.mkdirSync(destRoot, { recursive: true });
         fs.renameSync(skillDir, dest);
         relocated.push(name);

@@ -18,7 +18,7 @@ import { writeTextIfChanged } from '../fs-text';
 
 const WINDSURF_LEGACY_SKILLS_REL = path.join('.windsurf', 'skills');
 
-export interface WindsurfAssetsResult {
+interface WindsurfAssetsResult {
   rules: number;
   skills: number;
   written: number;

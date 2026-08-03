@@ -149,11 +149,11 @@ test('routes: validated API key persists through the server ctx.env custom state
     TRAFFIC_ONE_AUTH: '1',
     TRAFFIC_ONE_STATE_PATH: customState,
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'preferences.json'),
-    TRAFFIC_ONE_MCP_KEY_ENDPOINT: `http://127.0.0.1:${authPort}/mcp`,
   } as NodeJS.ProcessEnv;
   const server = await startOnboardingServer({
     cwd: dir,
     env: customEnv,
+    authEndpoint: `http://127.0.0.1:${authPort}/mcp`,
     token: 'secret',
     standalone: false,
     idleMs: 60_000,
@@ -219,6 +219,65 @@ test('routes: a failed install task surfaces as error so the frontend withholds 
     const taskStatus = await waitForTask(server.port, String(taskId));
     assert.equal(taskStatus, 'error');
   }, 'fail');
+});
+
+test('routes: NDJSON progress snapshots surface on /task/:id while running; the final action still parses', async () => {
+  // A stand-in for the toolchain runner's progress protocol: one snapshot line,
+  // a pause (the poll window), a second snapshot, then the result summary as the
+  // LAST stdout line — exactly the interleaving actionFrom must tolerate.
+  const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 't1-progress-')), 'task.cjs');
+  const snapshot = (status: string) => JSON.stringify({
+    t1Progress: {
+      steps: [
+        { id: 'graph-install', label: 'Installing GitNexus', status, weight: 40 },
+        { id: 'graph-scan', label: 'Scanning your codebase', status: status === 'done' ? 'done' : 'pending', weight: 30 },
+      ],
+    },
+  });
+  fs.writeFileSync(script, [
+    "const fs = require('fs');",
+    `fs.writeSync(1, ${JSON.stringify(snapshot('running'))} + '\\n');`,
+    'setTimeout(() => {',
+    `  fs.writeSync(1, ${JSON.stringify(snapshot('done'))} + '\\n');`,
+    "  fs.writeSync(1, JSON.stringify({ action: 'progress-script' }) + '\\n');",
+    '}, 400);',
+  ].join('\n'), 'utf8');
+  try {
+    await withServer(existing, async (server) => {
+      await call(server.port, 'POST', '/answer', { step: 'open-code', value: 'not_now' });
+      await call(server.port, 'POST', '/answer', { step: 'performance', value: 'low' });
+      const res = await call(server.port, 'POST', '/answer', { step: 'code-graph', value: 'gitnexus' });
+      const taskId = String(rec(res.json).taskId);
+
+      // The first snapshot must be visible WHILE the task is still running —
+      // that is the entire point of the progress channel.
+      let sawRunningProgress = false;
+      for (let i = 0; i < 100; i += 1) {
+        const poll = await call(server.port, 'GET', `/task/${taskId}`);
+        const state = rec(poll.json);
+        if (state.status !== 'running') break;
+        const steps = rec(state.progress).steps;
+        if (Array.isArray(steps) && steps.length === 2) {
+          assert.equal(rec(steps[0]).id, 'graph-install');
+          assert.equal(rec(steps[0]).status, 'running');
+          sawRunningProgress = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(sawRunningProgress, true);
+
+      assert.equal(await waitForTask(server.port, taskId), 'done');
+      const done = await call(server.port, 'GET', `/task/${taskId}`);
+      // Last-line parsing: the summary action survives the interleaved
+      // progress lines, and the final snapshot stays on the finished task.
+      assert.equal(rec(done.json).action, 'progress-script');
+      const doneSteps = rec(rec(done.json).progress).steps;
+      assert.ok(Array.isArray(doneSteps) && doneSteps.every((s) => rec(s).status === 'done'));
+    }, script);
+  } finally {
+    fs.rmSync(path.dirname(script), { recursive: true, force: true });
+  }
 });
 
 test('routes: /complete acknowledges regardless of the server active host', async () => {

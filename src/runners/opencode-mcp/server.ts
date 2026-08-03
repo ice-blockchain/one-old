@@ -25,14 +25,14 @@ const TOOLS = [
   {
     name: OPENCODE_MCP_TOOL_DELEGATE,
     description:
-      'Run the locally-installed OpenCode CLI (`opencode run`) to implement ONE bounded, low-risk coding unit in this workspace. The edit happens in an isolated throwaway git worktree and only a clean, error-free diff inside `allowedFiles` is applied back; a review digest is written. RESUMABLE: the run executes in the background and this call waits a bounded window, so it survives the host\'s ~120s tool-call timeout. It returns one of: {ok:true, action:"delegated", digest, touched} → proceed to review; {ok:false, action:"skipped"|"failed"|"no-changes"} → re-spawn the paid role (fallback); or {running:true} → still running, so call opencode_delegate AGAIN with the SAME arguments to keep waiting. The user enabled this delegation in the Traffic One setup wizard; OpenCode selects its own model (a free model by default), so no `model` argument is needed.',
+      'Run the locally-installed OpenCode CLI (`opencode run`) to implement ONE bounded, low-risk coding unit in this workspace. The edit happens in an isolated throwaway git worktree and only a clean, error-free diff inside `allowedFiles` is applied back; a review digest is written. RESUMABLE: the run executes in the background and this call waits a bounded window, so it survives the host\'s ~120s tool-call timeout. It returns one of: {ok:true, action:"delegated", digest, touched} → proceed to review; {ok:false, action:"skipped"|"failed"|"no-changes"} → re-spawn the paid role (fallback); or {running:true, reservedFiles} → still running. On {running:true}: the background worker keeps ITSELF alive (your calls are not its keep-alive), so do useful work, then wait long in one turn via opencode_status {runId, role, waitMs: 90000}; to abandon it, call opencode_status {cancel:true} — never just go silent. Re-calling after a terminal result with the SAME `task`/`allowedFiles`/`model` just replays that same terminal result (observed 1cu-cursor: seven delegations of one unit because terminal results were read as "still running"). CHANGING `task`, `allowedFiles`, or `model` starts a genuinely new delegation — that is how you retry after fixing a rejected allowlist. The user enabled this delegation in the Traffic One setup wizard; OpenCode selects its own model (a free model by default), so no `model` argument is needed.',
     inputSchema: {
       type: 'object',
       properties: {
         role: { type: 'string', description: 'Traffic One role being delegated, e.g. senior-frontend.' },
         task: { type: 'string', description: "The role's self-contained task: its assigned scope + acceptance criteria, with no external context the run cannot see. Required on the first call; ignored on re-calls of a run already in progress." },
         runId: { type: 'string', description: 'The current run id (currentRunId) — scopes the attempt marker, digest, and the background run.' },
-        allowedFiles: { type: 'string', description: 'Required comma/newline-separated repo-relative allowlist for this bounded unit, e.g. apps/web/src/features/courses/**. Any diff outside this scope is rejected.' },
+        allowedFiles: { type: 'string', description: 'Required comma/newline-separated repo-relative allowlist for this bounded unit, e.g. `src/routes/api.ts, src/controllers/batch.ts`. In MAINTENANCE phase these must be EXACT FILE paths — globs and directories (`src/**`, `src/routes/`) are rejected before the run starts, because they cannot authorize a paid fallback; list every file you intend to create or modify. Product files ONLY: `.traffic-one/**` (digests included — the runner writes those itself), `node_modules/`, and build output are refused. Any diff outside this scope is rejected.' },
         projectRoot: { type: 'string', description: 'Absolute path to the project root (the directory containing .traffic-one). Must match the gate cwd. Defaults to the server cwd.' },
         model: { type: 'string', description: 'Optional model pin (e.g. a paid `opencode/gpt-5.5`, which requires `opencode auth login`). Omit to let OpenCode use its default free model.' },
       },
@@ -42,7 +42,7 @@ const TOOLS = [
   {
     name: OPENCODE_MCP_TOOL_DELEGATE_FROM_PLAN,
     description:
-      "Run the locally-installed OpenCode CLI to implement EVERY bounded unit the architect queued in <projectRoot>/.traffic-one/plan.md, in one background batch (each in its own isolated worktree, only clean diffs applied). RESUMABLE (same as opencode_delegate): returns {total, delegated, units:[...]} when finished, or {running:true} → call again with the SAME arguments. Best-effort: a unit OpenCode does not deliver falls back to a paid subagent. The user enabled this delegation in the Traffic One setup wizard; OpenCode picks its own free model unless `model` is set.",
+      "Run the locally-installed OpenCode CLI to implement EVERY bounded unit the architect queued in <projectRoot>/.traffic-one/plan.md, in one background batch (each in its own isolated worktree, only clean diffs applied). RESUMABLE (same as opencode_delegate): returns {total, delegated, units:[...]} when finished, or {running:true, reservedFiles} → the batch worker keeps ITSELF alive; do useful work, then wait long in one turn via opencode_status {runId, waitMs: 90000}, or abandon explicitly via opencode_status {cancel:true}. Best-effort: a unit OpenCode does not deliver falls back to a paid subagent. The user enabled this delegation in the Traffic One setup wizard; OpenCode picks its own free model unless `model` is set.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -56,13 +56,15 @@ const TOOLS = [
   {
     name: OPENCODE_MCP_TOOL_STATUS,
     description:
-      'Non-blocking status of a background delegation. Returns {status:"running"|"done"|"unknown", result?}. Use to poll without blocking; opencode_delegate already waits, so this is optional.',
+      'Status + control of a background delegation. Returns {status:"running"|"done"|"unknown", result?, reservedFiles?}. With `waitMs` it becomes a bounded LONG WAIT: it blocks up to waitMs (server-clamped safely under the ~120s host tool ceiling — ask for 90000) and returns the terminal result the moment the run finishes; one long wait replaces several short re-polls, and the worker keeps itself alive either way. With `cancel:true` it explicitly abandons the delegation: the worker is killed BEFORE any diff applies (a cancel that lands while a clean diff is mid-apply is refused with {applying:true} — call again without cancel to collect the imminent terminal result). Cancel is the ONLY sanctioned way to walk away to the paid fallback; going silent is not.',
     inputSchema: {
       type: 'object',
       properties: {
         runId: { type: 'string', description: 'The run id used for the delegation.' },
         role: { type: 'string', description: 'The delegated role; omit for the plan-batch run.' },
         projectRoot: { type: 'string', description: 'Absolute path to the project root. Defaults to the server cwd.' },
+        waitMs: { type: 'number', description: 'Optional bounded long-wait in milliseconds (recommended: 90000). Server-clamped under the host tool-call ceiling; 0/omitted returns immediately.' },
+        cancel: { type: 'boolean', description: 'Explicitly cancel the delegation and mark it abandoned; refused while a clean diff is being applied to the working tree.' },
       },
       required: ['runId'],
     },
@@ -82,7 +84,14 @@ async function handleToolCall(id: Id, params: unknown): Promise<object> {
   const name = asString(p.name);
   const args = asRecord(p.arguments);
   if (name === OPENCODE_MCP_TOOL_STATUS) {
-    const status = delegateStatus({ runId: asString(args.runId), role: asString(args.role), projectRoot: asString(args.projectRoot) });
+    const rawWait = args.waitMs;
+    const status = await delegateStatus({
+      runId: asString(args.runId),
+      role: asString(args.role),
+      projectRoot: asString(args.projectRoot),
+      waitMs: typeof rawWait === 'number' ? rawWait : Number(asString(rawWait)) || 0,
+      cancel: args.cancel === true || asString(args.cancel) === 'true',
+    });
     return result(id, { content: [{ type: 'text', text: JSON.stringify(status) }], isError: false });
   }
   let runnerResult;

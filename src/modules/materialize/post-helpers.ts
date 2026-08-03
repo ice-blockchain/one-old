@@ -9,14 +9,18 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { hasPluginAuthoringMarkers } from '../../shared/authoring-root';
-import { isOnboardedProjectRoot } from '../../shared/hook-paths';
+import { isOnboardedProjectRoot } from '../../shared/hook/paths';
 import { hasStateFile } from '../../shared/tool-classify';
 
 type Rec = Record<string, unknown>;
 
 // PostToolUse dispatch route patterns.
 export const FUNCTION_PATH_RE = /\/supabase\/functions\/([^/]+)\/(index|deno)\.(ts|tsx|mts|js)$/;
-export const DIGEST_PATH_RE = /(?:^|\/)\.traffic-one\/digests\/[^/]+\/(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
+// Accepts the senior-/opencode- spellings too: the finished_at host-stamp and
+// size warning must cover every digest spelling the runtime can produce —
+// an unstamped opencode-frontend.md kept a stale finished_at through a whole
+// fix cycle (observed 8co).
+export const DIGEST_PATH_RE = /(?:^|\/)\.traffic-one\/digests\/[^/]+\/(?:senior-|opencode-)?(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
 export const DIGEST_HARD_BYTES = 3 * 1024; // warn over 3 KB; target is ≤2 KB
 const DIGEST_RUN_ID_RE = /\/\.traffic-one\/digests\/([^/]+)\//;
 
@@ -40,9 +44,9 @@ export function runStartMsForDigest(digestPath: string): number | undefined {
   }
 }
 
-export const PROJECT_ROOT_HINT_FIELDS = ['file_path', 'path', 'cwd', 'workdir'];
-export const PROJECT_COMMAND_HINT_FIELDS = ['command', 'cmd', 'shell_command'];
-export const PROJECT_PATH_TOKEN_RE = /(?:^|[\s"'`=])((?:\.{1,2}\/)?(?:[A-Za-z0-9_.@-]+\/)+(?:[A-Za-z0-9_.@-]+)?)(?=$|[\s"'`,;|&])/g;
+const PROJECT_ROOT_HINT_FIELDS = ['file_path', 'path', 'cwd', 'workdir'];
+const PROJECT_COMMAND_HINT_FIELDS = ['command', 'cmd', 'shell_command'];
+const PROJECT_PATH_TOKEN_RE = /(?:^|[\s"'`=])((?:\.{1,2}\/)?(?:[A-Za-z0-9_.@-]+\/)+(?:[A-Za-z0-9_.@-]+)?)(?=$|[\s"'`,;|&])/g;
 
 // Walk up from a path hint to the nearest dir that carries a .traffic-one state
 // file. Returns null for flags, URLs, var-expansions, or no enclosing project.

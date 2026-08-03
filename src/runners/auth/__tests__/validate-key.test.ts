@@ -43,31 +43,31 @@ function mockAuthServer(): Promise<{ url: string; close: () => Promise<void> }> 
 test('validateApiKey: a valid key passes the Bearer gate (tools/list result) → ok', async () => {
   const srv = await mockAuthServer();
   try {
-    const env = { TRAFFIC_ONE_MCP_KEY_ENDPOINT: srv.url } as NodeJS.ProcessEnv;
-    assert.deepEqual(await validateApiKey('sk-good', env), { ok: true });
+    assert.deepEqual(await validateApiKey('sk-good', { endpoint: srv.url }), { ok: true });
   } finally { await srv.close(); }
 });
 
 test('validateApiKey: a rejected key (401) → invalid-api-key (not accepted)', async () => {
   const srv = await mockAuthServer();
   try {
-    const env = { TRAFFIC_ONE_MCP_KEY_ENDPOINT: srv.url } as NodeJS.ProcessEnv;
-    const r = await validateApiKey('test', env);
+    const r = await validateApiKey('test', { endpoint: srv.url });
     assert.equal(r.ok, false);
     assert.equal(r.ok === false && r.reason, 'invalid-api-key');
   } finally { await srv.close(); }
 });
 
 test('validateApiKey: empty key → invalid-api-key, no network call', async () => {
-  const r = await validateApiKey('   ', {} as NodeJS.ProcessEnv);
+  const r = await validateApiKey('   ');
   assert.equal(r.ok, false);
   assert.equal(r.ok === false && r.reason, 'invalid-api-key');
 });
 
 test('validateApiKey: unreachable endpoint → auth-endpoint-unreachable (fail-closed)', async () => {
   // Dead loopback port with no listener → connection refused.
-  const env = { TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'http://127.0.0.1:1/mcp' } as NodeJS.ProcessEnv;
-  const r = await validateApiKey('sk-x', env, 2000);
+  const r = await validateApiKey('sk-x', {
+    endpoint: 'http://127.0.0.1:1/mcp',
+    timeoutMs: 2000,
+  });
   assert.equal(r.ok, false);
   assert.equal(r.ok === false && r.reason, 'auth-endpoint-unreachable');
 });
@@ -83,8 +83,10 @@ test('validateApiKey: a 2xx without a JSON-RPC result (server anomaly) fails clo
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const port = (server.address() as AddressInfo).port;
   try {
-    const env = { TRAFFIC_ONE_MCP_KEY_ENDPOINT: `http://127.0.0.1:${port}/mcp` } as NodeJS.ProcessEnv;
-    const r = await validateApiKey('sk-x', env, 2000);
+    const r = await validateApiKey('sk-x', {
+      endpoint: `http://127.0.0.1:${port}/mcp`,
+      timeoutMs: 2000,
+    });
     assert.equal(r.ok, false);
     assert.equal(r.ok === false && r.reason, 'auth-endpoint-unreachable');
   } finally {

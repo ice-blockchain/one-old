@@ -1,10 +1,9 @@
 ---
 name: tdd-workflow
 description: >
-  Use this skill
-  when writing new features, fixing bugs, or refactoring code.
-  Enforces test-driven development with 80%+ coverage including unit, integration,
-  and E2E tests.
+  Apply test-driven development to features, bug fixes, and behavior-preserving
+  refactors in any supported stack. Select tests and tools from the runtime
+  capability and verification contracts; never assume React, npm, or a browser.
 metadata:
   source: everything-claude-code
   source_path: skills/tdd-workflow/SKILL.md
@@ -12,403 +11,95 @@ metadata:
   adapted_for: traffic-one
 ---
 
-# Test-Driven Development Workflow
-
-This skill ensures all code development follows TDD principles with comprehensive test coverage.
-
-## When to Activate
-
-- Writing new features or functionality
-- Fixing bugs or issues
-- Refactoring existing code
-- Adding API endpoints
-- Creating new components
-
-## Core Principles
-
-### 1. Tests BEFORE Code (RED-GREEN-REFACTOR)
-ALWAYS write tests first, then implement code to make tests pass. The canonical
-cycle every change follows:
-- **RED** — write a failing test that pins the intended behavior; run it and
-  confirm it fails for the right reason.
-- **GREEN** — write the minimal code to make the test pass; run it and confirm.
-- **REFACTOR** — improve the code while keeping tests green.
-
-The detailed gated steps are in TDD Workflow Steps below.
-
-### 2. Coverage Requirements
-Coverage tiers (the canonical targets all testing skills defer to):
-- Critical paths (auth, payments, data mutations): 100%
-- Public API surface (exported functions, endpoints, components): 90%
-- Overall (unit + integration + E2E): 80% minimum
-
-All edge cases, error scenarios, and boundary conditions must be tested regardless of tier.
-
-### 3. Test Types
-
-#### Unit Tests
-- Individual functions and utilities
-- Component logic
-- Pure functions
-- Helpers and utilities
-
-#### Integration Tests
-- API endpoints
-- Database operations
-- Service interactions
-- External API calls
-
-#### E2E Tests (Playwright)
-- Critical user flows
-- Complete workflows
-- Browser automation
-- UI interactions
-
-### 4. Git Checkpoints
-- If the repository is under Git, create a checkpoint commit after each TDD stage
-- Do not squash or rewrite these checkpoint commits until the workflow is complete
-- Each checkpoint commit message must describe the stage and the exact evidence captured
-- Count only commits created on the current active branch for the current task
-- Do not treat commits from other branches, earlier unrelated work, or distant branch history as valid checkpoint evidence
-- Before treating a checkpoint as satisfied, verify that the commit is reachable from the current `HEAD` on the active branch and belongs to the current task sequence
-- The preferred compact workflow is:
-  - one commit for failing test added and RED validated
-  - one commit for minimal fix applied and GREEN validated
-  - one optional commit for refactor complete
-- Separate evidence-only commits are not required if the test commit clearly corresponds to RED and the fix commit clearly corresponds to GREEN
-
-## TDD Workflow Steps
-
-### Step 1: Write User Journeys
-```
-As a [role], I want to [action], so that [benefit]
-
-Example:
-As a user, I want to search for markets semantically,
-so that I can find relevant markets even without exact keywords.
-```
-
-### Step 2: Generate Test Cases
-For each user journey, create comprehensive test cases:
-
-```typescript
-describe('Semantic Search', () => {
-  it('returns relevant markets for query', async () => {
-    // Test implementation
-  })
-
-  it('handles empty query gracefully', async () => {
-    // Test edge case
-  })
-
-  it('falls back to substring search when Redis unavailable', async () => {
-    // Test fallback behavior
-  })
-
-  it('sorts results by similarity score', async () => {
-    // Test sorting logic
-  })
-})
-```
-
-### Step 3: Run Tests (They Should Fail)
-```bash
-npm test
-# Tests should fail - we haven't implemented yet
-```
-
-This step is mandatory and is the RED gate for all production changes.
-
-Before modifying business logic or other production code, you must verify a valid RED state via one of these paths:
-- Runtime RED:
-  - The relevant test target compiles successfully
-  - The new or changed test is actually executed
-  - The result is RED
-- Compile-time RED:
-  - The new test newly instantiates, references, or exercises the buggy code path
-  - The compile failure is itself the intended RED signal
-- In either case, the failure is caused by the intended business-logic bug, undefined behavior, or missing implementation
-- The failure is not caused only by unrelated syntax errors, broken test setup, missing dependencies, or unrelated regressions
-
-A test that was only written but not compiled and executed does not count as RED.
-
-Do not edit production code until this RED state is confirmed.
-
-If the repository is under Git, create a checkpoint commit immediately after this stage is validated.
-Recommended commit message format:
-- `test: add reproducer for <feature or bug>`
-- This commit may also serve as the RED validation checkpoint if the reproducer was compiled and executed and failed for the intended reason
-- Verify that this checkpoint commit is on the current active branch before continuing
-
-### Step 4: Implement Code
-Write minimal code to make tests pass:
-
-```typescript
-// Implementation guided by tests
-export async function searchMarkets(query: string) {
-  // Implementation here
-}
-```
-
-If the repository is under Git, stage the minimal fix now but defer the checkpoint commit until GREEN is validated in Step 5.
-
-### Step 5: Run Tests Again
-```bash
-npm test
-# Tests should now pass
-```
-
-Rerun the same relevant test target after the fix and confirm the previously failing test is now GREEN.
-
-Only after a valid GREEN result may you proceed to refactor.
-
-If the repository is under Git, create a checkpoint commit immediately after GREEN is validated.
-Recommended commit message format:
-- `fix: <feature or bug>`
-- The fix commit may also serve as the GREEN validation checkpoint if the same relevant test target was rerun and passed
-- Verify that this checkpoint commit is on the current active branch before continuing
-
-### Step 6: Refactor
-Improve code quality while keeping tests green:
-- Remove duplication
-- Improve naming
-- Optimize performance
-- Enhance readability
-
-If the repository is under Git, create a checkpoint commit immediately after refactoring is complete and tests remain green.
-Recommended commit message format:
-- `refactor: clean up after <feature or bug> implementation`
-- Verify that this checkpoint commit is on the current active branch before considering the TDD cycle complete
-
-### Step 7: Verify Coverage
-```bash
-npm run test:coverage
-# Verify 80%+ coverage achieved
-```
-
-## Testing Patterns
-
-Every test follows the canonical **Arrange-Act-Assert (AAA)** structure:
-**Arrange** the inputs and dependencies, **Act** by invoking the code under
-test, **Assert** the observable outcome. One logical behavior per test.
-
-### Unit Test Pattern (Jest/Vitest)
-```typescript
-import { render, screen, fireEvent } from '@testing-library/react'
-import { Button } from './Button'
-
-describe('Button Component', () => {
-  it('renders with correct text', () => {
-    render(<Button>Click me</Button>)
-    expect(screen.getByText('Click me')).toBeInTheDocument()
-  })
-
-  it('calls onClick when clicked', () => {
-    const handleClick = jest.fn()
-    render(<Button onClick={handleClick}>Click</Button>)
-
-    fireEvent.click(screen.getByRole('button'))
-
-    expect(handleClick).toHaveBeenCalledTimes(1)
-  })
-
-  it('is disabled when disabled prop is true', () => {
-    render(<Button disabled>Click</Button>)
-    expect(screen.getByRole('button')).toBeDisabled()
-  })
-})
-```
-
-### API Integration Test Pattern
-```typescript
-import { NextRequest } from 'next/server'
-import { GET } from './route'
-
-describe('GET /api/markets', () => {
-  it('returns markets successfully', async () => {
-    const request = new NextRequest('http://localhost/api/markets')
-    const response = await GET(request)
-    const data = await response.json()
-
-    expect(response.status).toBe(200)
-    expect(data.success).toBe(true)
-    expect(Array.isArray(data.data)).toBe(true)
-  })
-
-  it('validates query parameters', async () => {
-    const request = new NextRequest('http://localhost/api/markets?limit=invalid')
-    const response = await GET(request)
-
-    expect(response.status).toBe(400)
-  })
-
-  it('handles database errors gracefully', async () => {
-    // Mock database failure
-    const request = new NextRequest('http://localhost/api/markets')
-    // Test error handling
-  })
-})
-```
-
-### E2E Tests
-E2E tests exercise critical user flows end-to-end (Playwright). For Page Object
-Model, config, flakiness control, artifacts, and CI integration, use the
-`e2e-testing` skill.
-
-## Test File Organization
-
-```
-src/
-├── components/
-│   ├── Button/
-│   │   ├── Button.tsx
-│   │   ├── Button.test.tsx          # Unit tests
-│   │   └── Button.stories.tsx       # Storybook
-│   └── MarketCard/
-│       ├── MarketCard.tsx
-│       └── MarketCard.test.tsx
-├── app/
-│   └── api/
-│       └── markets/
-│           ├── route.ts
-│           └── route.test.ts         # Integration tests
-└── e2e/
-    ├── markets.spec.ts               # E2E tests
-    ├── trading.spec.ts
-    └── auth.spec.ts
-```
-
-## Mocking External Services
-
-Isolate units by stubbing their external dependencies (DB, cache, third-party
-APIs) at the module boundary so the dependency is never actually called:
-
-```typescript
-vi.mock('@/lib/db', () => ({
-  getUser: vi.fn(() => Promise.resolve({ id: 1, name: 'Test' }))
-}))
-```
-
-For framework- and library-specific mocking idioms (Supabase, Redis, OpenAI,
-Prisma, etc.), use the matching language testing skill. For browser/network
-mocking in full user flows, use the `e2e-testing` skill.
-
-## Test Coverage Verification
-
-### Run Coverage Report
-```bash
-npm run test:coverage
-```
-
-### Coverage Thresholds
-```json
-{
-  "jest": {
-    "coverageThresholds": {
-      "global": {
-        "branches": 80,
-        "functions": 80,
-        "lines": 80,
-        "statements": 80
-      }
-    }
-  }
-}
-```
-
-## Common Testing Mistakes to Avoid
-
-### BAD Testing Implementation Details
-```typescript
-// Don't test internal state
-expect(component.state.count).toBe(5)
-```
-
-### GOOD Test User-Visible Behavior
-```typescript
-// Test what users see
-expect(screen.getByText('Count: 5')).toBeInTheDocument()
-```
-
-### BAD Brittle Selectors
-```typescript
-// Breaks easily
-await page.click('.css-class-xyz')
-```
-
-### GOOD Semantic Selectors
-```typescript
-// Resilient to changes
-await page.click('button:has-text("Submit")')
-await page.click('[data-testid="submit-button"]')
-```
-
-### BAD No Test Isolation
-```typescript
-// Tests depend on each other
-test('creates user', () => { /* ... */ })
-test('updates same user', () => { /* depends on previous test */ })
-```
-
-### GOOD Independent Tests
-```typescript
-// Each test sets up its own data
-test('creates user', () => {
-  const user = createTestUser()
-  // Test logic
-})
-
-test('updates user', () => {
-  const user = createTestUser()
-  // Update logic
-})
-```
-
-## Continuous Testing
-
-### Watch Mode During Development
-```bash
-npm test -- --watch
-# Tests run automatically on file changes
-```
-
-### Pre-Commit Hook
-```bash
-# Runs before every commit
-npm test && npm run lint
-```
-
-### CI/CD Integration
-```yaml
-# GitHub Actions
-- name: Run Tests
-  run: npm test -- --coverage
-- name: Upload Coverage
-  uses: codecov/codecov-action@v3
-```
-
-## Best Practices
-
-1. **Write Tests First** - Always TDD
-2. **One Assert Per Test** - Focus on single behavior
-3. **Descriptive Test Names** - Explain what's tested
-4. **Arrange-Act-Assert** - Clear test structure
-5. **Mock External Dependencies** - Isolate unit tests
-6. **Test Edge Cases** - Null, undefined, empty, large
-7. **Test Error Paths** - Not just happy paths
-8. **Keep Tests Fast** - Unit tests < 50ms each
-9. **Clean Up After Tests** - No side effects
-10. **Review Coverage Reports** - Identify gaps
-
-## Success Metrics
-
-- 80%+ code coverage achieved
-- All tests passing (green)
-- No skipped or disabled tests
-- Fast test execution (< 30s for unit tests)
-- E2E tests cover critical user flows
-- Tests catch bugs before production
-
----
-
-**Remember**: Tests are not optional. They are the safety net that enables confident refactoring, rapid development, and production reliability.
+# Test-driven development
+
+## Authority
+
+Before choosing a test:
+
+1. Read the active capability profile, `WorkUnitContractV1`, and
+   `VerificationContractV2` when present.
+2. Use only the test adapters and output paths enabled by those contracts.
+3. Detect the repository's real commands from its manifests, task files, and
+   existing tests. Do not invent npm scripts, frameworks, or directory layouts.
+4. Treat explicit project thresholds as exact gates. Existing repository
+   thresholds remain authoritative. In their absence, coverage is evidence and
+   a review signal, not a fabricated universal percentage gate.
+
+The runtime-owned contracts override examples in this skill. An agent may raise
+test rigor or `uiImpact`, but may not lower a required check.
+
+## RED → GREEN → REFACTOR
+
+For each observable behavior:
+
+1. **RED** — add the smallest regression test that exercises the missing or
+   broken behavior. Run that target and confirm it fails for the intended
+   reason.
+2. **GREEN** — implement the smallest production change that makes the same
+   target pass.
+3. **REFACTOR** — improve names and structure without changing behavior, then
+   rerun the focused target.
+4. Run the broader checks required by `VerificationContractV2`.
+
+A compile-time failure is valid RED only when the new test deliberately
+references the missing contract and the failure is not setup noise. If the
+repository has no suitable harness, record that limitation and use the nearest
+deterministic executable check; do not claim TDD evidence that was not run.
+
+Do not create commits merely because this skill is active. Commit only when the
+user or the current workflow explicitly authorizes it.
+
+## Select the test by capability
+
+- `api`: unit tests for domain logic plus handler/contract/integration tests for
+  changed boundaries.
+- `cli`: argument, exit-code, stdout/stderr, filesystem, and error-path tests.
+- `worker`: job input/output, retry, idempotency, and failure-path tests.
+- `data`: migration/query/serialization tests using the repository's safe local
+  adapter.
+- `web-ui` + `nonvisual`: unit or component tests; no browser is required solely
+  because the repository contains a frontend.
+- `web-ui` + `behavioral`: Playwright headless on the identified build for
+  routing, hydration, forms, state, navigation, console, and network failures.
+  A screenshot is required only on failure.
+- `web-ui` + `visual`: the behavioral checks plus contract screenshots at 390
+  and 1440 for changed routes; add 768 only for detected tablet/breakpoint risk.
+- `native-ui`: use the declared simulator/emulator adapter and native UI tests;
+  never substitute browser QA.
+- no UI surface: do not load or invoke browser, design, accessibility-DOM, or
+  screenshot workflows.
+
+Playwright is for browser behavior that cannot be established by unit or
+component tests. The interactive browser plugin is never a TDD prerequisite.
+
+## Test quality
+
+- Assert observable behavior, not private implementation state.
+- Cover the happy path, boundaries, invalid inputs, and meaningful failures.
+- Keep tests independent and deterministic; replace sleeps with observable
+  readiness conditions.
+- Stub external services at owned boundaries. Never call production systems.
+- Prefer semantic selectors for UI and stable public contracts for APIs.
+- Preserve existing test organization unless the compiled architecture contract
+  permits a new test root.
+- Add generated fixtures only inside the work-unit allowlist.
+
+Use the stack-specific testing skill when active, for example Go, Python,
+Laravel, Django, Spring, Kotlin, C#, C++, Rust, Perl, or the repository's
+JavaScript runner. Those skills supply syntax and commands; this skill owns the
+RED/GREEN evidence protocol.
+
+## Evidence
+
+Report:
+
+- the exact RED command and intended failure;
+- the exact GREEN command and result;
+- broader contract checks and their results;
+- coverage only when measured, with the repository/plan threshold identified;
+- skipped or blocked checks with the exact reason;
+- UI impact and adapter used, if any.
+
+Never mark a run verified from test prose alone. The tester evidence,
+`VerificationContractV2`, QA report, and canonical settlement must agree.

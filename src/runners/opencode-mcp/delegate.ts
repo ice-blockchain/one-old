@@ -16,17 +16,18 @@ import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../config/opencode-mcp';
 import {
   abandonAfterMs,
   childKeepAliveEnabled,
+  clampStatusWaitMs,
   pollAfterMs,
   RESUME_WAIT_MS,
   watchdogTickMs,
 } from '../../config/opencode-timeouts';
-import { planDelegationQueueRoles } from '../../shared/opencode-roles';
+import { openCodeApplyInProgress, planDelegationQueueRoles, touchPlanBatchHeartbeat } from '../../shared/opencode-roles';
 import {
   finalizePlanBatch,
   markPlanBatchRunningIfNeeded,
   mergeMissingQueueUnits,
   type PlanBatchResult,
-} from '../../shared/opencode-plan-batch';
+} from '../../shared/opencode-plan/batch';
 import {
   finalizeOpenCodeUnitsForBatch,
   hasRunningOpenCodeUnits,
@@ -34,6 +35,7 @@ import {
   persistBatchUnitsToStatus,
   readOpenCodeQueue,
   reconcileAllRunningUnits,
+  touchOpenCodeUnitRunning,
 } from '../../shared/opencode-queue';
 import { markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted } from '../../shared/opencode-roles';
 
@@ -197,7 +199,7 @@ function finalizePlanBatchResult(projectRoot: string, runId: string, merged: Run
 }
 
 // Run the plan's queued roles as ONE runner each, SEQUENTIALLY — never concurrently.
-async function startFromPlan(projectRoot: string, runId: string, model: string | undefined, onChild?: (child: ReturnType<typeof spawn>) => void): Promise<RunnerResult> {
+async function startFromPlan(projectRoot: string, runId: string, model: string | undefined, onChild?: (child: ReturnType<typeof spawn>) => void, isAborted?: () => boolean): Promise<RunnerResult> {
   markPlanBatchRunningIfNeeded(projectRoot, runId);
   const modelArgs = (model || '').trim() ? ['--model', (model as string).trim()] : [];
   const roles = planQueueRoles(projectRoot);
@@ -208,7 +210,13 @@ async function startFromPlan(projectRoot: string, runId: string, model: string |
   const merged: RunnerResult = { total: 0, delegated: 0, units: [] };
   const errors: string[] = [];
   for (const role of roles) {
+    // A cancel/abandon killed the current shard and finalized the batch on
+    // disk; spawning the NEXT role's runner here would land diffs underneath
+    // the paid fallback the orchestrator already moved to.
+    if (isAborted?.()) break;
+    touchPlanBatchHeartbeat(projectRoot, runId);
     const r = await runRunner(['--run-id', runId, '--from-plan', '--roles', role, ...modelArgs], projectRoot, onChild);
+    if (isAborted?.()) break;
     if (Array.isArray(r.units) && r.units.length > 0) {
       (merged.units as NonNullable<RunnerResult['units']>).push(...r.units);
       merged.total = (merged.total || 0) + (typeof r.total === 'number' ? r.total : r.units.length);
@@ -244,6 +252,7 @@ export interface ResumableResult extends RunnerResult {
   role?: string;
   message?: string;
   pollAfterMs?: number;
+  reservedFiles?: string[];
 }
 
 interface TrackedChild {
@@ -258,16 +267,57 @@ interface BgRun {
   projectRoot: string;
   runId: string;
   batchKey: string;
+  fingerprint: string;
   lastPolledAt: number;
   children: TrackedChild[];
   watchdog?: NodeJS.Timeout;
+  /** Repo-relative files this delegation may write — surfaced while running so
+   *  the orchestrator knows exactly what to leave alone in the meantime. */
+  reservedFiles: string[];
+  /** Set by cancel/abandon BEFORE killing: the sequential plan loop checks it
+   *  between roles so a cancelled batch never spawns its NEXT role's runner
+   *  (an adversarial review proved post-cancel shards kept landing diffs). */
+  aborted?: boolean;
 }
 
 const PLAN_KEY = '__plan__';
+// A finished run is kept so an identical re-call replays its terminal result
+// instead of starting a second delegation (observed 1cu-cursor: seven
+// delegations of one unit). Nothing evicts them otherwise, so cap the map.
+const DONE_RUN_CAP = 64;
 const runs = new Map<string, BgRun>();
 
 function runKey(projectRoot: string, runId: string, key: string): string {
   return `${projectRoot}\0${runId}\0${key}`;
+}
+
+// Identity of the WORK a delegation was started with. The run key is only
+// (projectRoot, runId, role), so without this a corrected re-call — new task or
+// a fixed allowlist — silently replays the previous failure and the runner is
+// never spawned (observed: a glob allowlist rejected, then two valid exact-file
+// retries returned the byte-identical glob error). Allowlist entries are split,
+// trimmed, de-duped and SORTED so the same set written comma- or newline-
+// separated fingerprints equal and still replays rather than re-delegating.
+function delegateFingerprint(task: unknown, allowedFiles: unknown, model: unknown): string {
+  const files = String(allowedFiles ?? '')
+    .split(/[,;\n]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return [
+    String(task ?? '').trim(),
+    [...new Set(files)].sort().join(','),
+    String(model ?? '').trim(),
+  ].join('\0');
+}
+
+// Drop the oldest FINISHED runs once the cache outgrows its cap. A `running`
+// entry is never evicted: its promise, children, and watchdog are live.
+function pruneFinishedRuns(): void {
+  if (runs.size <= DONE_RUN_CAP) return;
+  const done = [...runs.entries()]
+    .filter(([, run]) => run.status === 'done')
+    .sort((a, b) => a[1].lastPolledAt - b[1].lastPolledAt);
+  for (const [key] of done.slice(0, runs.size - DONE_RUN_CAP)) runs.delete(key);
 }
 
 function parseRunKey(key: string): { projectRoot: string; runId: string; batchKey: string } | null {
@@ -289,6 +339,7 @@ function refreshChildKeepAlive(run: BgRun): void {
 }
 
 function abandonPlanBatch(run: BgRun, abandonError: string): void {
+  run.aborted = true; // stop the sequential loop from spawning the NEXT role
   for (const tracked of run.children) killChildGroup(tracked.child);
   const merged: RunnerResult = { ok: false, action: 'abandoned', error: abandonError, units: [] };
   mergeMissingQueueUnits(run.projectRoot, run.runId, merged);
@@ -306,7 +357,7 @@ function abandonPlanBatch(run: BgRun, abandonError: string): void {
   run.result = merged;
 }
 
-function getOrStart(key: string, meta: { projectRoot: string; runId: string; batchKey: string }, start: (onChild: (child: ReturnType<typeof spawn>) => void) => Promise<RunnerResult>): BgRun {
+function getOrStart(key: string, meta: { projectRoot: string; runId: string; batchKey: string; fingerprint: string; reservedFiles?: string[] }, start: (onChild: (child: ReturnType<typeof spawn>) => void, isAborted: () => boolean) => Promise<RunnerResult>): BgRun {
   const existing = runs.get(key);
   if (existing) { existing.lastPolledAt = Date.now(); return existing; }
   const run: BgRun = {
@@ -315,10 +366,12 @@ function getOrStart(key: string, meta: { projectRoot: string; runId: string; bat
     projectRoot: meta.projectRoot,
     runId: meta.runId,
     batchKey: meta.batchKey,
+    fingerprint: meta.fingerprint,
     lastPolledAt: Date.now(),
     children: [],
+    reservedFiles: meta.reservedFiles ?? [],
   };
-  run.promise = start((child) => { run.children.push({ child, startedAt: Date.now() }); });
+  run.promise = start((child) => { run.children.push({ child, startedAt: Date.now() }); }, () => run.aborted === true);
   const settle = (res: RunnerResult): void => {
     if (run.status === 'done') return;
     run.status = 'done';
@@ -332,19 +385,36 @@ function getOrStart(key: string, meta: { projectRoot: string; runId: string; bat
   run.watchdog = setInterval(() => {
     if (run.status !== 'running') { if (run.watchdog) clearInterval(run.watchdog); return; }
     refreshChildKeepAlive(run);
+    // Disk-visible liveness: the batch heartbeat sidecar (never batch.json —
+    // that would race the terminal writer) and the running units' updatedAt.
+    // Role-SCOPED for single-role delegations: this run may only vouch for its
+    // OWN units — an unscoped touch resurrected rows a dead batch left
+    // `running` for other roles and re-wedged the spawn gate.
+    if (run.batchKey === PLAN_KEY) {
+      touchPlanBatchHeartbeat(run.projectRoot, run.runId);
+      touchOpenCodeUnitRunning(run.projectRoot, run.runId);
+    } else {
+      touchOpenCodeUnitRunning(run.projectRoot, run.runId, run.batchKey);
+    }
     if (Date.now() - run.lastPolledAt <= abandonAfterMs()) return;
-    const abandonError = `delegation cancelled: the orchestrator stopped polling for ${Math.round(abandonAfterMs() / 60000)}+ minutes (it moved on); the worker was killed BEFORE applying any diff`;
+    // Never kill mid-apply: defer the abandon while the runner's apply-back
+    // latch is live (pid-verified) — the next tick re-checks. The latch's own
+    // hard cap bounds how long a hung runner can defer this.
+    if (openCodeApplyInProgress(run.projectRoot, run.runId)) return;
+    const abandonError = `delegation cancelled: the orchestrator stopped polling for ${Math.round(abandonAfterMs() / 60000)}+ minutes (it moved on); the worker was killed and no FURTHER diff will apply from it. If a unit had already completed its apply-and-verify, that diff remains in the tree — check the role digest and git status before the paid fallback`;
     run.status = 'done';
     clearInterval(run.watchdog as NodeJS.Timeout);
     if (run.batchKey === PLAN_KEY) {
       abandonPlanBatch(run, abandonError);
     } else {
+      run.aborted = true;
       for (const tracked of run.children) killChildGroup(tracked.child);
       run.result = { ok: false, action: 'abandoned', error: abandonError };
     }
   }, watchdogTickMs());
   run.watchdog.unref?.();
   runs.set(key, run);
+  pruneFinishedRuns();
   return run;
 }
 
@@ -358,11 +428,16 @@ function waitBounded(run: BgRun, waitMs: number): Promise<RunnerResult | null> {
   });
 }
 
-function stillRunning(runId: string, role: string, tool: string): ResumableResult {
+function stillRunning(run: BgRun, role: string, tool: string): ResumableResult {
+  const reserved = run.reservedFiles.length
+    ? ` Files reserved by this delegation (leave them alone meanwhile): ${run.reservedFiles.join(', ')}.`
+    : '';
+  const idArgs = run.batchKey === PLAN_KEY ? '{runId' : '{runId, role';
   return {
-    running: true, runId, role, action: 'running', error: null,
+    running: true, runId: run.runId, role, action: 'running', error: null,
     pollAfterMs: pollAfterMs(),
-    message: `OpenCode is still running for ${role} (run ${runId}). Call ${tool} again with the SAME arguments to keep waiting; it returns ok:true (delegated → review) or ok:false (declined → fall back) once finished.`,
+    reservedFiles: run.reservedFiles,
+    message: `OpenCode is still running for ${role} (run ${run.runId}). The worker keeps itself alive — your calls are NOT its keep-alive, so do useful work now (transcribe digests, prepare fix-cycle context, update the ledger) instead of re-calling in a tight loop. To wait long in ONE turn, call opencode_status with ${idArgs}, waitMs: 90000}; it returns the terminal result the moment the run finishes.${reserved} To abandon this delegation and use the paid fallback, call opencode_status with ${idArgs}, cancel: true} — an explicit cancel, never just silence. Re-calling ${tool} with the SAME arguments also keeps waiting (ok:true → review; ok:false → fall back).`,
   };
 }
 
@@ -374,10 +449,21 @@ export async function delegateResumable(a: DelegateArgs, waitMs = RESUME_WAIT_MS
   if (!role) return { ok: false, action: 'skipped', error: 'role is required' };
   if (!runId) return { ok: false, action: 'skipped', error: 'runId is required' };
   const key = runKey(projectRoot, runId, role);
+  const fingerprint = delegateFingerprint(a.task, allowedFiles, a.model);
+  // A FINISHED run whose work no longer matches this call is stale: the caller
+  // corrected the task or the allowlist and is asking for a real re-delegation.
+  // Evicting here (before the guards below re-assert task/allowedFiles) is what
+  // makes the retry actually spawn the runner. Only `done` runs are dropped, so
+  // a {running:true} poll can never start a second concurrent delegation.
+  const cached = runs.get(key);
+  if (cached && cached.status === 'done' && (a.task || '').trim() && cached.fingerprint !== fingerprint) {
+    runs.delete(key);
+  }
   if (!runs.has(key) && !(a.task || '').trim()) return { ok: false, action: 'skipped', error: 'task is required to start a delegation' };
   if (!runs.has(key) && !allowedFiles) return { ok: false, action: 'skipped', error: 'allowedFiles is required to start a delegation' };
 
-  const run = getOrStart(key, { projectRoot, runId, batchKey: role }, (onChild) => {
+  const reservedFiles = [...new Set(allowedFiles.split(/[,;\n]+/).map((entry) => entry.trim()).filter(Boolean))].sort();
+  const run = getOrStart(key, { projectRoot, runId, batchKey: role, fingerprint, reservedFiles }, (onChild) => {
     let dir: string | null = null;
     try {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmcp-'));
@@ -396,7 +482,7 @@ export async function delegateResumable(a: DelegateArgs, waitMs = RESUME_WAIT_MS
   });
 
   const res = await waitBounded(run, waitMs);
-  return res ?? stillRunning(runId, role, 'opencode_delegate');
+  return res ?? stillRunning(run, role, 'opencode_delegate');
 }
 
 export async function delegateFromPlanResumable(a: FromPlanArgs, waitMs = RESUME_WAIT_MS): Promise<ResumableResult> {
@@ -404,20 +490,118 @@ export async function delegateFromPlanResumable(a: FromPlanArgs, waitMs = RESUME
   const runId = (a.runId || '').trim();
   if (!runId) return { ok: false, error: 'runId is required' };
   const key = runKey(projectRoot, runId, PLAN_KEY);
-  const run = getOrStart(key, { projectRoot, runId, batchKey: PLAN_KEY }, (onChild) => startFromPlan(projectRoot, runId, a.model, onChild));
+  // Every queued unit's allowlist, surfaced while the batch runs. Best-effort:
+  // an unreadable queue just yields an empty reservation list.
+  const queueForBatch = ((): ReturnType<typeof readOpenCodeQueue> => {
+    try {
+      return readOpenCodeQueue(projectRoot, runId);
+    } catch {
+      return null;
+    }
+  })();
+  const reservedFiles = [...new Set((queueForBatch?.units ?? []).flatMap((u) => u.allowedFiles))].sort();
+  // The batch's work identity is the ASSIGNMENTS HASH it runs against: a
+  // replan republishes assignments, and replaying the pre-replan batch result
+  // for the fresh queue would silently skip Step-0 on the new units
+  // (adversarial review — the on-disk supersession never saw the in-memory
+  // replay cache). A finished batch under a DIFFERENT hash is evicted so the
+  // re-call genuinely re-delegates; a {running:true} batch is never evicted.
+  const planFingerprint = `plan:${queueForBatch?.assignmentHash || 'none'}`;
+  const cachedPlan = runs.get(key);
+  if (cachedPlan && cachedPlan.status === 'done' && cachedPlan.fingerprint !== planFingerprint) {
+    runs.delete(key);
+  }
+  const run = getOrStart(key, { projectRoot, runId, batchKey: PLAN_KEY, fingerprint: planFingerprint, reservedFiles }, (onChild, isAborted) => startFromPlan(projectRoot, runId, a.model, onChild, isAborted));
   const res = await waitBounded(run, waitMs);
-  return res ?? stillRunning(runId, PLAN_KEY, 'opencode_delegate_from_plan');
+  return res ?? stillRunning(run, PLAN_KEY, 'opencode_delegate_from_plan');
 }
 
-export interface DelegateStatus { status: 'running' | 'done' | 'unknown'; runId: string; role: string; result?: RunnerResult; }
+export interface DelegateStatus {
+  status: 'running' | 'done' | 'unknown';
+  runId: string;
+  role: string;
+  result?: RunnerResult;
+  reservedFiles?: string[];
+  /** Set on a refused cancel: a clean diff is being applied to the real tree. */
+  applying?: boolean;
+  message?: string;
+}
 
-export function delegateStatus(a: { projectRoot?: string; runId?: string; role?: string }): DelegateStatus {
+export interface DelegateStatusArgs {
+  projectRoot?: string;
+  runId?: string;
+  role?: string;
+  /** Bounded long-wait: block up to this long for the terminal result (server-clamped under the ~120s host tool ceiling). */
+  waitMs?: number;
+  /** Explicitly cancel the delegation: kills the worker BEFORE any diff applies and marks it abandoned. */
+  cancel?: boolean;
+}
+
+export async function delegateStatus(a: DelegateStatusArgs): Promise<DelegateStatus> {
   const projectRoot = (a.projectRoot || '').trim() || process.cwd();
   const runId = (a.runId || '').trim();
-  const role = (a.role || '').trim() || PLAN_KEY;
-  const run = runs.get(runKey(projectRoot, runId, role));
-  if (!run) return { status: 'unknown', runId, role };
-  return run.status === 'done' ? { status: 'done', runId, role, result: run.result } : { status: 'running', runId, role };
+  const explicitRole = (a.role || '').trim();
+  let role = explicitRole || PLAN_KEY;
+  let run = runs.get(runKey(projectRoot, runId, role));
+  if (!run && !explicitRole) {
+    // A role-less call defaults to the plan batch, but the orchestrator prose
+    // shows bare {cancel:true} for single-role delegations too — and a missed
+    // lookup answered "nothing to cancel" while the worker kept running.
+    // When exactly one delegation is tracked for this (projectRoot, runId),
+    // target it; ambiguity still requires the explicit role.
+    const matches = [...runs.entries()].filter(([, candidate]) => (
+      candidate.projectRoot === projectRoot && candidate.runId === runId
+    ));
+    if (matches.length === 1) {
+      run = matches[0]![1];
+      role = run.batchKey;
+    } else if (matches.length > 1) {
+      return {
+        status: 'unknown', runId, role,
+        message: `multiple delegations are tracked for this run (${matches.map(([, candidate]) => candidate.batchKey).join(', ')}) — pass the exact \`role\` (or omit it only for the plan batch)`,
+      };
+    }
+  }
+  if (!run) {
+    return {
+      status: 'unknown', runId, role,
+      ...(a.cancel ? { message: 'nothing to cancel: no delegation is tracked for this run/role (a restarted server forgets finished runs; a running worker would be tracked)' } : {}),
+    };
+  }
+  run.lastPolledAt = Date.now();
+  if (run.status === 'done') return { status: 'done', runId, role, result: run.result };
+
+  if (a.cancel) {
+    // Never kill mid-apply: run-model arms a pid-verified latch around the
+    // apply-back critical section (patch + verifications on the REAL tree);
+    // killing the group there strands a partial diff the backup/restore pair
+    // would otherwise have rolled back.
+    if (openCodeApplyInProgress(projectRoot, runId)) {
+      return {
+        status: 'running', runId, role, applying: true,
+        message: 'cancel refused: a clean diff is being applied to the working tree right now; call opencode_status again (without cancel) to collect the imminent terminal result',
+      };
+    }
+    const cancelError = 'delegation cancelled: the orchestrator explicitly cancelled via opencode_status {cancel:true}; the worker was killed and no FURTHER diff will apply from it. If a unit had already completed its apply-and-verify, that diff remains in the tree — check the role digest and git status before the paid fallback';
+    run.status = 'done';
+    if (run.watchdog) clearInterval(run.watchdog);
+    if (run.batchKey === PLAN_KEY) {
+      abandonPlanBatch(run, cancelError);
+    } else {
+      run.aborted = true;
+      for (const tracked of run.children) killChildGroup(tracked.child);
+      run.result = { ok: false, action: 'cancelled', error: cancelError };
+    }
+    return { status: 'done', runId, role, result: run.result };
+  }
+
+  const waitMs = clampStatusWaitMs(a.waitMs);
+  if (waitMs > 0) {
+    const res = await waitBounded(run, waitMs);
+    run.lastPolledAt = Date.now();
+    if (res) return { status: 'done', runId, role, result: res };
+  }
+  return { status: 'running', runId, role, reservedFiles: run.reservedFiles };
 }
 
 // Exported for tests that need to inspect run-key parsing.

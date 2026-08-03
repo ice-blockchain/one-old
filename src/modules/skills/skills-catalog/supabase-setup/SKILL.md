@@ -1,22 +1,31 @@
 ---
 name: supabase-setup
-description: PROACTIVELY connect a real Supabase backend and apply its local migrations. TRIGGER on "set up/configure/connect Supabase", "where's my anon key", "how do I link my project", "run migrations", "apply schema", or a fresh scaffold with `supabase/migrations/*.sql` but empty `.env.local`. Cloud-first, with a Docker local path; ends with schema live and `<EnvBanner />` gone.
+description: PROACTIVELY finalize the platform-connected Supabase contract — committed config/migrations/functions, env contract, EnvBanner CTA to traffic.io. TRIGGER on "set up/configure/connect Supabase", "where's my anon key", "how do I link my project", "run migrations", "apply schema", or a fresh scaffold with `supabase/migrations/*.sql` but empty `.env.local`. Never boots a local stack and never walks the Supabase dashboard; the user connects through the traffic.io platform.
 ---
 
-# Supabase setup — get keys, link, and push migrations
+# Supabase setup — author the contract, connect through traffic.io
 
-Goal: take a project that has `backend=supabase` in `.traffic-one/.one.json` plus
-local migrations under `supabase/migrations/`, and end with a Supabase
-project provisioned, keys pasted, **migrations applied to that project**,
-types generated, and the `<EnvBanner />` gone.
+Goal: take a project that has `backend=supabase` in `.traffic-one/.one.json` and
+end with the complete COMMITTED Supabase contract — `supabase/config.toml`,
+`supabase/migrations/*.sql`, `supabase/functions/**`, the env contract
+(`.env.example` + Zod validation), and every not-configured surface pointing at
+the traffic.io platform — while the app runs cleanly in demo mode until the
+user connects.
+
+**What this skill never does:** it never installs or boots the local Supabase
+stack (`supabase start`, `db:start`, Docker/OrbStack/Colima containers), never
+links or pushes during the build, and never walks the user through the
+Supabase dashboard or "open the SQL editor". Provisioning, env keys, and
+migration apply all happen through the **traffic.io platform** — that is where
+the user connects their project. A PreToolUse gate denies local-stack
+commands; do not try to work around it.
 
 ## When to invoke this skill
 
 - Right after scaffolding a new project that includes Supabase migrations —
-  do not finish the scaffold with "open the SQL editor and run this file"
-  in README. Run this skill so the schema actually lands.
+  to verify the committed contract is complete and the CTA wiring is correct.
 - When the user explicitly asks ("set up Supabase", "where's my anon key",
-  "how do I run migrations", "auto run the supabase scripts").
+  "how do I run migrations", "connect my project").
 - When generating Supabase code in a project where `.env.local` is missing or
   `VITE_SUPABASE_URL` is empty.
 
@@ -24,212 +33,86 @@ types generated, and the `<EnvBanner />` gone.
 
 1. Confirm `.traffic-one/.one.json` has `backend: "supabase"`. If not, this skill
    isn't the right call — complete onboarding (`rules/common/onboarding.md`) first.
-2. Confirm `package.json` has `supabase` as a `devDependency` and the standard
-   scripts (`db:start`, `db:push`, `db:reset`, `gen:types`, `functions:deploy`,
-   `link`). If missing, write them per `rules/modes/new-project.md` Step 6
-   before continuing.
+2. Confirm `package.json` has `supabase` as a `devDependency` and only the
+   linked/deploy-side scripts (`db:push`, `db:diff`, `gen:types`,
+   `functions:new`, `functions:deploy`, `secrets:set`, `link`). No
+   `db:start`/`db:stop`/`db:reset` — the local stack is not part of this flow.
 3. Confirm `supabase/` exists with at least `config.toml` and one
    `migrations/<timestamp>_*.sql` file. If empty, scaffold migrations first.
 
-## Two paths — pick one with the user before you start
+## The flow — author, verify, hand off to the platform
 
-Ask once, in one short paragraph:
+### 1. Committed schema is the deliverable
 
-> "I can wire Supabase one of two ways:
->  **(A) Cloud** — you create a remote project at supabase.com (~2 min,
->  free tier), I link your repo and push the migrations for you. Best when
->  you want a real internet-reachable URL right away.
->  **(B) Local auto-run** — I run `pnpm db:start` (requires Docker Desktop)
->  which boots Postgres + Auth + Storage in containers, applies your
->  migrations on boot, and prints the local URL + keys — fully automatic,
->  zero dashboard. Best when you just want to keep building.
->  Which one?"
+Every table, index, RLS policy, trigger, and storage bucket the code expects
+lives in `supabase/migrations/*.sql`, committed. Edge functions live under
+`supabase/functions/**`. Verify SQL by review — reversible statements,
+explicit RLS on every exposed table, no service-role assumptions in
+client-reachable paths. Do NOT verify against a live database: there is no
+local stack, and the remote project may not exist yet.
 
-Default to **(A) Cloud** if the user gives no answer. Each path below is
-self-contained — do not interleave.
+### 2. Env contract
 
----
-
-## Path A — Cloud (link + push migrations)
-
-### A1. Create the Supabase project (Dashboard)
-> "Open https://supabase.com/dashboard in a new tab → click **New project**.
->  Pick the region closest to your users, set a strong DB password (save it
->  in a password manager — you'll need it in a moment for `supabase link`).
->  Free plan is fine to start. Click Create. Wait ~60 seconds for
->  provisioning."
-
-Sign-up takes a minute if they don't have an account.
-
-### A2. Copy the keys
-> "Once provisioned, go to **Settings → API**. Copy three values:
->  - **Project URL** (looks like `https://abcd1234.supabase.co`)
->  - **anon public** key (long JWT, safe to expose to the browser)
->  - **service_role** key (long JWT, **server-side only — never put in browser code**)
->
->  Paste them into chat — I'll write `.env.local` for you."
-
-### A3. Write the env files
-
-When the user pastes keys, write **both**:
-
-`.env.local` (gitignored — actual values):
-```env
-VITE_SUPABASE_URL=https://abcd1234.supabase.co
-VITE_SUPABASE_ANON_KEY=<paste-anon-here>
-SUPABASE_SERVICE_ROLE_KEY=<paste-service-role-here>
-```
-
-`.env.example` (committed — placeholder values for teammates):
+`.env.example` (committed — placeholders only):
 ```env
 VITE_SUPABASE_URL=https://<project-ref>.supabase.co
 VITE_SUPABASE_ANON_KEY=<anon-key>
 SUPABASE_SERVICE_ROLE_KEY=<service-role-key>   # server-side only — never VITE_*
 ```
 
-Confirm `.env.local` is in `.gitignore` (and `.env.example` is **not**).
+`.env.local` stays gitignored and is written by the USER (or the platform
+flow) — never fabricate values into it. Validate `VITE_SUPABASE_URL` /
+`VITE_SUPABASE_ANON_KEY` at startup with Zod; missing values must produce the
+not-configured state, never a crash.
 
-### A4. Link the local project to the remote
+### 3. Not-configured surfaces point at traffic.io
 
-> "Linking your local `supabase/` folder to the remote project. The project
->  ref is the bit before `.supabase.co` in your URL — e.g. `abcd1234`."
+Lazy client + `<EnvBanner />` + null-safe RTK Query `baseQuery` per
+`rules/frontend/react/supabase-client.md`. Every setup/configure CTA —
+`<EnvBanner />`, `<SupabaseConfigAlert />`, `<ConfigurePromptCard />`,
+protected-route fallbacks, empty states — links to `https://traffic.io/`,
+because Traffic is where users set up their Supabase credentials. Keep the
+unit/E2E regression test asserting that exact `href`.
 
-Run: `pnpm link <project-ref>`
+### 4. Hand off in one short line
 
-(Maps to `supabase link --project-ref <project-ref>` via the npm script.)
+> "Supabase contract is committed (`N` migrations, `M` functions, env
+>  contract + demo mode). Connect your project at https://traffic.io/ — it
+>  provisions the backend, applies the migrations, and gives the app its
+>  keys. The app runs in demo mode until then."
 
-If the CLI asks for the DB password, the user pastes what they set in A1.
-
-### A5. Push migrations to the linked project
-
-> "Now applying every file under `supabase/migrations/` to your remote
->  project. This is the step that creates the tables, indexes, RLS policies,
->  triggers, and storage buckets your code expects."
-
-Run: `pnpm db:push`
-
-(Maps to `supabase db push --linked`.)
-
-If it errors:
-- "no remote linked" → repeat A4.
-- migration syntax error → fix the SQL file, re-run.
-- shadow DB / Docker error on `db:push` → not all CLI versions need Docker
-  for `db:push --linked`; if Docker is required and unavailable, fall back
-  to pasting the migration into **SQL Editor** in the dashboard (still acceptable
-  for the very first run, but not the default).
-
-### A6. Generate types from the live schema
-
-```bash
-pnpm gen:types
-```
-
-Writes `packages/api-client/src/database.types.ts` from the now-applied
-schema. Re-run any time the schema changes.
-
-### A7. Restart Vite & verify
-
-> "Stop `pnpm dev` (Ctrl-C), restart it. The `<EnvBanner />` should
->  disappear. If it doesn't, double-check `VITE_SUPABASE_URL` doesn't have
->  surrounding quotes and that you restarted after editing `.env.local`
->  (Vite caches env vars per-build)."
-
-### A8. Confirm in one short line
-
-> "Saved keys to `.env.local`. Linked project `<project-ref>`. Pushed
->  N migrations. Generated types. Continuing with your build."
-
----
-
-## Path B — Local auto-run (Docker)
-
-### B1. Confirm Docker
-
-> "`pnpm db:start` needs Docker Desktop running. Quick check: is Docker
->  Desktop open and the whale icon green? If not, open it and let it
->  finish booting before I continue."
-
-If Docker is not installed, fall back to Path A — do not block on
-installing Docker mid-session.
-
-### B2. Start the local Supabase stack
-
-```bash
-pnpm db:start
-```
-
-(Maps to `supabase start`.) On first run this pulls images (~1–2 min).
-The CLI applies every file under `supabase/migrations/` on boot and prints,
-on success:
-
-```
-Started supabase local development setup.
-
-         API URL: http://127.0.0.1:54321
-          DB URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-      Studio URL: http://127.0.0.1:54323
-        anon key: eyJhbGciOiJI…
-service_role key: eyJhbGciOiJI…
-```
-
-### B3. Write `.env.local` from the printed values
-
-Copy `API URL` into `VITE_SUPABASE_URL`, `anon key` into
-`VITE_SUPABASE_ANON_KEY`, `service_role key` into `SUPABASE_SERVICE_ROLE_KEY`
-(server-side only). Also write `.env.example` with the documented placeholders
-(same shape as Path A3).
-
-### B4. Generate types from the local schema
-
-```bash
-pnpm gen:types
-```
-
-Local-flavoured invocation: if the project script targets `--linked`,
-either swap to `--local` for this run, or run `pnpm gen:types` after
-`pnpm link <ref>` once a cloud project exists.
-
-### B5. Restart Vite & verify
-
-Same as A7 — banner gone, app live against `http://127.0.0.1:54321`.
-
-### B6. Confirm in one short line
-
-> "Started local Supabase (Docker), migrations applied on boot, keys
->  written to `.env.local`. Studio at http://127.0.0.1:54323. Continuing
->  with your build."
-
-Note: local Supabase data lives in Docker volumes — `pnpm db:reset`
-re-applies migrations from scratch; `pnpm db:stop` stops the containers
-without deleting state.
-
----
+Deploy-time note: `pnpm db:push` (`supabase db push --linked`) and
+`pnpm functions:deploy` are SHIPPER actions, allowed only through the deploy
+flow after the platform connection exists — never during the build.
 
 ## Variations the user might ask for
 
 ### "I already have a Supabase project, just need to connect it"
-Path A; skip A1, jump to A2 (they read keys from their existing project's
-Settings → API).
+Same answer: connect it through https://traffic.io/ — the platform links the
+project and applies committed migrations. If the user insists on pasting keys
+manually, they write `.env.local` themselves from their project's
+Settings → API; never paste secrets into chat.
 
 ### "I want to use our own Supabase fork"
-Path A. The fork's API is identical to vanilla Supabase. Set
-`VITE_SUPABASE_URL` to the fork URL and use the fork's keys. State file
-`.traffic-one/.one.json` should have `backend: "our-fork"` instead of `"supabase"`.
+The fork's API is identical to vanilla Supabase. Set `VITE_SUPABASE_URL` to
+the fork URL in `.env.local`; `.traffic-one/.one.json` should have
+`backend: "our-fork"` instead of `"supabase"`.
 
 ### "Migrations changed — re-apply"
-- Cloud (linked): `pnpm db:push`.
-- Local (Docker): `pnpm db:reset` to wipe + re-apply, or write a new
-  timestamped migration and `pnpm db:reset`.
-Always follow with `pnpm gen:types`.
+Author a new timestamped migration (never edit an applied one) and hand off to
+the platform again; `pnpm gen:types` refreshes types once a linked project
+exists (deploy-side).
 
 ## Don't
+- Don't run `supabase start`/`stop`, `supabase db reset`, or `db:start`-family
+  scripts, and don't boot Docker/OrbStack/Colima for Supabase — the gate
+  denies them and the platform owns provisioning.
 - Don't run `supabase init` if `supabase/` already exists — it overwrites config.
 - Don't commit `.env.local`. Don't put `SUPABASE_SERVICE_ROLE_KEY` behind a
   `VITE_*` prefix; Vite inlines `VITE_*` into the client bundle.
 - Don't finish a scaffold by listing "open the SQL editor and paste this"
-  in README. Push migrations through `pnpm db:push` (Path A) or boot the
-  local stack with `pnpm db:start` (Path B).
+  in README — the README points at https://traffic.io/ for connection.
 - Don't pitch "our fork" again in this skill — the migration pitch is in the
   auto-detect banner; this skill is purely setup.
-- Don't proceed to feature code until either Path A or Path B has produced
-  a working `.env.local` and the `<EnvBanner />` is gone.
+- Don't block feature work on a live backend: demo mode behind `<EnvBanner />`
+  IS the supported pre-connection state.

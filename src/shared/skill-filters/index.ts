@@ -7,7 +7,19 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { BOOTSTRAP_SKILLS, SKILL_FILTERS } from '../../config/skill-filters';
+import {
+  BOOTSTRAP_SKILLS,
+  HOST_SKILL_FILTERS,
+  PROJECT_UNAVAILABLE_SKILLS,
+  SKILL_FILTERS,
+} from '../../config/skill-filters';
+import type { HostId } from '../../core/types';
+import {
+  defaultStateForStack,
+  skillBucketsForState,
+  type CapabilityProfileV1,
+} from '../capabilities';
+import { capabilityProfileForRun } from '../architecture-contract';
 import { isInPluginCache, pluginRoot } from '../paths';
 
 const SKILLS_TEMPLATES_DIR = 'skills-catalog';
@@ -19,6 +31,14 @@ function addSkillSet(out: Set<string>, name: string): void {
   for (const skillName of stackSet) out.add(skillName);
 }
 
+function finalizeProjectSkills(out: Set<string>, host?: HostId): Set<string> {
+  if (host) {
+    for (const skillName of HOST_SKILL_FILTERS[host] || []) out.add(skillName);
+  }
+  for (const skillName of PROJECT_UNAVAILABLE_SKILLS) out.delete(skillName);
+  return out;
+}
+
 interface SkillState {
   mode: string;
   stack: string;
@@ -26,6 +46,9 @@ interface SkillState {
   backend: string;
   onboardingComplete: boolean;
   mobile: { enabled?: boolean; framework?: string; source?: string };
+  capabilitySurfaces: string[];
+  capabilitySkillBuckets: string[];
+  databaseProvider: string;
 }
 
 function normalizedSkillState(input: unknown): SkillState {
@@ -37,51 +60,93 @@ function normalizedSkillState(input: unknown): SkillState {
       frontend: (i.frontend as string) || 'none',
       backend: (i.backend as string) || 'none',
       onboardingComplete: i.onboardingComplete === true,
+      capabilitySurfaces: Array.isArray(i.capabilitySurfaces)
+        ? i.capabilitySurfaces.filter((value): value is string => typeof value === 'string')
+        : Array.isArray(i.surfaces)
+          ? i.surfaces.filter((value): value is string => typeof value === 'string')
+          : [],
+      capabilitySkillBuckets: Array.isArray(i.capabilitySkillBuckets)
+        ? i.capabilitySkillBuckets.filter((value): value is string => typeof value === 'string')
+        : [],
+      databaseProvider: [
+        i.databaseProvider,
+        i.database_provider,
+        i.database,
+        i.dbProvider,
+        i.db,
+      ].find((value): value is string => typeof value === 'string') || '',
       mobile: i.mobile && typeof i.mobile === 'object'
         ? (i.mobile as SkillState['mobile'])
         : { enabled: false, framework: 'none', source: 'none' },
     };
   }
   const stack = typeof input === 'string' ? input : 'minimal';
-  const none = { enabled: false, framework: 'none', source: 'none' };
-  if (stack === 'default' || stack === 'react-realtime-monorepo') {
-    return { mode: 'unknown', stack: 'default', frontend: 'react-vite', backend: 'supabase', onboardingComplete: true, mobile: none };
-  }
-  if (stack === 'react-frontend-only') {
-    return { mode: 'unknown', stack: 'custom-backend', frontend: 'react-vite', backend: 'none', onboardingComplete: true, mobile: none };
-  }
   if (stack === 'react-native-expo-monorepo' || stack === 'react-native-expo-app') {
-    return { mode: 'unknown', stack: 'custom-frontend', frontend: 'none', backend: 'supabase', onboardingComplete: true, mobile: { enabled: true, framework: 'react-native-expo', source: 'explicit' } };
+    return {
+      mode: 'unknown',
+      stack: 'custom-frontend',
+      frontend: 'none',
+      backend: 'supabase',
+      onboardingComplete: true,
+      capabilitySurfaces: [],
+      capabilitySkillBuckets: [],
+      databaseProvider: '',
+      mobile: { enabled: true, framework: 'react-native-expo', source: 'explicit' },
+    };
   }
-  return { mode: 'unknown', stack, frontend: 'none', backend: 'none', onboardingComplete: true, mobile: none };
+  if (stack === 'react-realtime-monorepo' || stack === 'react-frontend-only') {
+    return {
+      mode: 'unknown',
+      stack: stack === 'react-realtime-monorepo' ? 'default' : 'custom-backend',
+      frontend: 'react-vite',
+      backend: stack === 'react-realtime-monorepo' ? 'supabase' : 'none',
+      onboardingComplete: true,
+      capabilitySurfaces: [],
+      capabilitySkillBuckets: [],
+      databaseProvider: '',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+    };
+  }
+  const defaults = defaultStateForStack(stack);
+  return {
+    mode: 'unknown',
+    stack,
+    frontend: String(defaults.frontend || 'none'),
+    backend: String(defaults.backend || 'none'),
+    onboardingComplete: true,
+    capabilitySurfaces: [],
+    capabilitySkillBuckets: [],
+    databaseProvider: '',
+    mobile: defaults.mobile as SkillState['mobile'],
+  };
 }
 
-export function activeSkillsFor(stackOrState: unknown): Set<string> {
+export function activeSkillsFor(stackOrState: unknown, host?: HostId): Set<string> {
   const state = normalizedSkillState(stackOrState);
   if (state.mode === 'new-project' && state.onboardingComplete !== true) {
     return new Set(BOOTSTRAP_SKILLS);
   }
   const out = new Set(SKILL_FILTERS._common);
-  if (state.frontend === 'react-vite') addSkillSet(out, 'react-vite');
-  else if (state.frontend === 'nextjs') addSkillSet(out, 'nextjs');
-  else if (state.frontend && state.frontend !== 'none') addSkillSet(out, 'custom-web');
-
-  if (state.mobile && state.mobile.framework === 'ionic-capacitor') addSkillSet(out, 'ionic-capacitor');
-  if (state.mobile && state.mobile.framework === 'react-native-expo') addSkillSet(out, 'react-native-expo');
-
-  if (state.backend === 'supabase' || state.backend === 'our-fork') addSkillSet(out, 'supabase');
-  else if (state.backend === 'nestjs') addSkillSet(out, 'node');
-  else if (state.backend === 'fastapi') addSkillSet(out, 'python');
-  else if (state.backend === 'laravel') addSkillSet(out, 'php');
-  else if (state.backend === 'csharp') addSkillSet(out, 'dotnet');
-  else if (state.backend && state.backend !== 'none' && state.backend !== 'external-api' && state.backend !== 'other') {
-    addSkillSet(out, state.backend);
-  }
-  return out;
+  for (const bucket of skillBucketsForState(state)) addSkillSet(out, bucket);
+  return finalizeProjectSkills(out, host);
 }
 
-export function pruneSkillsDirective(stackOrState: unknown, allSkills: Iterable<string>): string {
-  const active = activeSkillsFor(stackOrState);
+export function activeSkillsForProject(cwd: string, state: unknown, host?: HostId): Set<string> {
+  return activeSkillsForProfile(capabilityProfileForRun(cwd, state), host);
+}
+
+export function activeSkillsForProfile(profile: CapabilityProfileV1, host?: HostId): Set<string> {
+  const out = new Set(SKILL_FILTERS._common);
+  for (const bucket of profile.skillBuckets) addSkillSet(out, bucket);
+  return finalizeProjectSkills(out, host);
+}
+
+export function pruneSkillsDirective(
+  stackOrState: unknown,
+  allSkills: Iterable<string>,
+  host?: HostId,
+): string {
+  const active = activeSkillsFor(stackOrState, host);
   const wrongStack: string[] = [];
   for (const name of allSkills) {
     if (!active.has(name)) wrongStack.push(name);
@@ -130,6 +195,21 @@ export function roleAgentBody(role: string): string | null {
   return null;
 }
 
+// The compact role contract delimited by T1KERNEL markers inside the role's
+// agent doc. Served in the child SessionStart header on hosts whose spawn does
+// NOT deliver the agent doc natively (envelope roleSource
+// 'plugin-injected-fallback' — e.g. Codex spawn_agent children, which used to
+// receive the role text only through the removed context-pack pager).
+// Fail-open: a doc without markers yields null and the child still has its
+// spawn prompt plus the rule/skill index.
+export function roleKernel(role: string): string | null {
+  const body = roleAgentBody(role);
+  if (!body) return null;
+  const match = /<!-- T1KERNEL:BEGIN -->\r?\n?([\s\S]*?)<!-- T1KERNEL:END -->/.exec(body);
+  const kernel = match?.[1]?.trim();
+  return kernel || null;
+}
+
 // Skills a role's agent doc declares in its `skills:` frontmatter. The agent doc
 // is the single source of truth for a role's skill set — parsing it here (instead
 // of mirroring a TS map) means the subagent directive can never drift from what
@@ -166,12 +246,17 @@ export function roleDeclaredSkills(role: string): Set<string> | null {
 // stack-active skills and the role's declared skills is listed, and the long
 // [DO NOT INVOKE] name dump is replaced by one sentence — a subagent's spawn
 // context should not pay ~30 wrong-stack skill names every time.
-export function roleSkillsDirective(stackOrState: unknown, role: string, allSkills: Iterable<string>): string {
+export function roleSkillsDirective(
+  stackOrState: unknown,
+  role: string,
+  allSkills: Iterable<string>,
+  host?: HostId,
+): string {
   const declared = roleDeclaredSkills(role);
-  if (!declared) return pruneSkillsDirective(stackOrState, allSkills);
-  const active = activeSkillsFor(stackOrState);
+  if (!declared) return pruneSkillsDirective(stackOrState, allSkills, host);
+  const active = activeSkillsFor(stackOrState, host);
   const roleActive = [...active].filter((name) => declared.has(name)).sort();
-  if (roleActive.length === 0) return pruneSkillsDirective(stackOrState, allSkills);
+  if (roleActive.length === 0) return pruneSkillsDirective(stackOrState, allSkills, host);
   return `[ACTIVE SKILLS for ${role} on stack=${normalizedSkillState(stackOrState).stack}]: ${roleActive.join(', ')}\n`
     + '[SKILL SCOPE]: other materialized skills are out of scope for this role — do not invoke them.\n';
 }
@@ -224,7 +309,7 @@ export function cleanActiveSkills(): number {
   return removed;
 }
 
-export function copyActiveSkills(stackOrState: unknown): number {
+export function copyActiveSkills(stackOrState: unknown, host?: HostId): number {
   if (!isInPluginCache()) return 0;
   const templatesDir = path.join(pluginRoot(), SKILLS_TEMPLATES_DIR);
   const activeDir = path.join(pluginRoot(), SKILLS_ACTIVE_DIR);
@@ -237,7 +322,7 @@ export function copyActiveSkills(stackOrState: unknown): number {
     }
   }
   let copied = 0;
-  for (const name of activeSkillsFor(stackOrState)) {
+  for (const name of activeSkillsFor(stackOrState, host)) {
     if (BOOTSTRAP_SKILLS.has(name)) continue;
     const src = path.join(templatesDir, name);
     const dst = path.join(activeDir, name);

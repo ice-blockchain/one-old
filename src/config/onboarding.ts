@@ -52,18 +52,19 @@ export interface FormField {
   hint?: string;
 }
 
-export interface TeamRole {
+interface TeamRole {
   role: string;
   label: string;
   blurb: string;
 }
 
-export type StepKind = 'single_select' | 'form' | 'finalize' | 'done' | 'text_input';
+type StepKind = 'single_select' | 'form' | 'finalize' | 'done' | 'text_input' | 'waiting';
 
 // The steps that carry static copy (excludes the 'finalize'/'done'/null flow
 // states, which flow.ts builds inline).
 export type WizardStepId =
   | 'api-key'
+  | 'tech-detect'
   | 'open-code'
   | 'performance'
   | 'team-confirmation'
@@ -94,7 +95,7 @@ export const TEAM_ROLES: TeamRole[] = [
 
 // Human-friendly label + placeholder for each PROJECT_CONTEXT_ANSWER_KEY, so the
 // wizard form reads like questions instead of camelCase identifiers.
-export const PROJECT_CONTEXT_FIELDS: FormField[] = [
+const PROJECT_CONTEXT_FIELDS: FormField[] = [
   { key: 'audience', label: 'Who is it for?', hint: 'Primary users / audience' },
   { key: 'coreFlows', label: 'Core user flows', hint: 'The main things a user does, end to end' },
   { key: 'v1Features', label: 'V1 features', hint: 'What must ship in the first version' },
@@ -118,6 +119,14 @@ export const STEP_COPY: Record<WizardStepId, StepCopy> = {
     kind: 'text_input',
     title: 'Your API key',
     question: 'Paste your Traffic One API key to activate the plugin. It is a data/telemetry key that helps us make Traffic One better — not a password. You only enter it once; we will only ask again if the key stops working.',
+  },
+  // Passive page: the SESSION AGENT is the actor here (it inspects the repo and
+  // submits the tech via the allow-listed runner command); the wizard only shows
+  // progress and auto-advances when the classification lands.
+  'tech-detect': {
+    kind: 'waiting',
+    title: 'Analyzing your codebase',
+    question: 'Your coding agent is identifying this project’s tech stack. This page continues automatically once it submits — nothing to do here.',
   },
   'open-code': {
     kind: 'single_select',

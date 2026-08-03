@@ -175,6 +175,28 @@
     .loading { display: flex; align-items: center; gap: 12px; color: var(--muted); padding: 10px 0; }
     .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Install progress (toolchain setup) ─────────── */
+    .install-bar { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 20px; }
+    .install-fill { height: 100%; width: 0%; border-radius: 999px; position: relative; overflow: hidden;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .45s ease; }
+    .install-fill::after { content: ""; position: absolute; inset: 0;
+      background: linear-gradient(110deg, transparent 20%, rgba(255,255,255,.4) 50%, transparent 80%);
+      animation: install-shine 1.8s linear infinite; }
+    @keyframes install-shine { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+    .install-meta { display: flex; justify-content: space-between; margin-top: 8px;
+      font-size: 12px; color: var(--muted); font-family: var(--mono); }
+    .install-steps { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+    .install-step { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted-2); }
+    .install-step .ic { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center;
+      justify-content: center; border-radius: 50%; font-size: 11px; font-weight: 700;
+      border: 1.5px solid var(--line-2); color: transparent; }
+    .install-step.running { color: var(--ink); font-weight: 600; }
+    .install-step.running .ic { border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+    .install-step.done { color: var(--ink-2); }
+    .install-step.done .ic { background: #dff3e6; border-color: #dff3e6; color: var(--ok); }
+    .install-step.warn { color: var(--ink-2); }
+    .install-step.warn .ic { background: #fbeedd; border-color: #fbeedd; color: var(--warn); }
     @media (prefers-reduced-motion: reduce) {
       * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
     }
@@ -214,7 +236,7 @@
     var T1_TOKEN = (T1_INJECTED.charAt(0) !== "%" ? T1_INJECTED : "")
       || new URLSearchParams(location.search).get("t") || "";
     const NEW_PROJECT_STEPS = ["api-key", "open-code", "performance", "team-confirmation", "project-context", "mobile", "code-graph"];
-    const EXISTING_STEPS = ["api-key", "open-code", "performance", "team-confirmation", "code-graph"];
+    const EXISTING_STEPS = ["api-key", "tech-detect", "open-code", "performance", "team-confirmation", "code-graph"];
     // Presentation-only grouping for the long project-context form so the fields
     // read as a few scannable sections instead of one tall stack. Unknown keys
     // (e.g. a field added server-side later) fall through to "More details".
@@ -336,7 +358,6 @@
         return render({ error: err.message });
       }
       if (resp && resp.taskId) {
-        showLoading("Installing — this can take a minute…");
         const task = await pollTask(resp.taskId);
         if (task.status === "error" || task.status === "timeout") {
           // A required dependency (the code-graph tool) failed to install — gate
@@ -348,13 +369,113 @@
     }
 
     async function pollTask(id) {
-      for (let i = 0; i < 600; i++) {
+      installView = null;
+      renderInstallProgress(null);
+      // Liveness-keyed deadline instead of a fixed cap: every runner phase is
+      // internally time-bounded well under this window (npm 180s, runtime
+      // download / warm-up / scan ≤ 5 min each), so a healthy install always
+      // changes the snapshot — or finishes — in time; only a wedged install
+      // (or a dead runner) trips the wall. A fixed 5-minute cap used to fire
+      // spuriously while a slow first-time install was still working.
+      var lastChange = Date.now();
+      var lastSig = "";
+      while (Date.now() - lastChange < 360000) {
         let t;
         try { t = await api("/task/" + id); } catch (_) { return { status: "error", error: "Lost contact with the setup server during install." }; }
         if (t.status === "done" || t.status === "error") return t;
+        var sig = JSON.stringify(t.progress || null);
+        if (sig !== lastSig) { lastSig = sig; lastChange = Date.now(); }
+        renderInstallProgress(t);
         await new Promise((r) => setTimeout(r, 500));
       }
-      return { status: "timeout", error: "Install timed out after 5 minutes." };
+      return { status: "timeout", error: "The install stopped making progress. Retry to run it again." };
+    }
+
+    // ── Install progress ────────────────────────────────────────────────────
+    // The install task exposes weighted step snapshots (task.progress.steps)
+    // emitted by the toolchain runner. Percent = completed weight share plus an
+    // eased slice of the running step, so the bar keeps creeping through a long
+    // npm/pip install or runtime download instead of freezing; it never reaches
+    // 100% while the task is still running. Absent snapshots (test-injected
+    // commands) degrade to the indeterminate spinner.
+    var installView = null;
+
+    function installPercent(steps) {
+      var total = 0, done = 0, running = null;
+      steps.forEach(function (s) {
+        var w = s.weight > 0 ? s.weight : 1;
+        total += w;
+        if (s.status === "done" || s.status === "warn") done += w;
+        else if (s.status === "running" && !running) running = s;
+      });
+      if (!total) return 0;
+      var pct = done / total;
+      if (running) {
+        if (installView.runningId !== running.id) {
+          installView.runningId = running.id;
+          installView.runningSince = Date.now();
+        }
+        var sec = (Date.now() - installView.runningSince) / 1000;
+        var w2 = running.weight > 0 ? running.weight : 1;
+        pct += (w2 / total) * (1 - Math.exp(-sec / 75));
+      }
+      return Math.min(97, Math.round(pct * 100));
+    }
+
+    function fmtElapsed(ms) {
+      var s = Math.max(0, Math.floor(ms / 1000));
+      return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    }
+
+    function renderInstallProgress(task) {
+      var steps = task && task.progress && Array.isArray(task.progress.steps) ? task.progress.steps : [];
+      if (!installView || !installView.mounted) {
+        setActions(null);
+        view.innerHTML = "";
+        var wrap = el("div", {});
+        wrap.appendChild(el("div", { className: "step-title" }, ["Setting up your toolchain"]));
+        wrap.appendChild(el("p", { className: "step-desc" }, [
+          "Traffic One is installing the tools it needs on your machine. The first run downloads a few dependencies and can take several minutes — it's safe to keep this tab open.",
+        ]));
+        var bar = el("div", { className: "install-bar" });
+        var fill = el("div", { className: "install-fill" });
+        bar.appendChild(fill);
+        var pctEl = el("span", {}, ["Starting…"]);
+        var elapsedEl = el("span", {}, ["0:00"]);
+        wrap.appendChild(bar);
+        wrap.appendChild(el("div", { className: "install-meta" }, [pctEl, elapsedEl]));
+        var list = el("div", { className: "install-steps" });
+        wrap.appendChild(list);
+        view.appendChild(wrap);
+        installView = { mounted: true, fill: fill, pct: pctEl, elapsed: elapsedEl, list: list,
+          signature: null, runningId: null, runningSince: Date.now(), startedAt: Date.now() };
+      }
+      if (task && task.startedAt) installView.startedAt = task.startedAt;
+      installView.elapsed.textContent = fmtElapsed(Date.now() - installView.startedAt);
+      if (!steps.length) {
+        if (installView.signature !== "spinner") {
+          installView.signature = "spinner";
+          installView.list.innerHTML = "";
+          installView.list.appendChild(el("div", { className: "loading" }, [el("span", { className: "spinner" }), "Preparing the install…"]));
+        }
+        return;
+      }
+      var pct = installPercent(steps);
+      installView.fill.style.width = pct + "%";
+      installView.pct.textContent = pct + "%";
+      // Rebuild the checklist only on real transitions so the running row's
+      // spinner animation isn't restarted by every 500ms poll.
+      var signature = JSON.stringify(steps.map(function (s) { return [s.id, s.status, s.label]; }));
+      if (installView.signature !== signature) {
+        installView.signature = signature;
+        installView.list.innerHTML = "";
+        steps.forEach(function (s) {
+          var row = el("div", { className: "install-step " + s.status });
+          row.appendChild(el("span", { className: "ic" }, [s.status === "done" ? "✓" : s.status === "warn" ? "!" : ""]));
+          row.appendChild(el("span", {}, [s.label || s.id]));
+          installView.list.appendChild(row);
+        });
+      }
     }
 
     function stepHead(v) {
@@ -675,9 +796,39 @@
       if (v.error) { setActions(null); view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Setup error"])); return showError(v.error); }
       if (v.done) return verifyThenDone();
       if (v.step === "finalize") return submitAnswer("finalize", null, "Finishing setup…");
+      if (v.meta && v.meta.kind === "waiting") return renderWaiting(v);
       if (v.meta && v.meta.kind === "text_input") return renderApiKey(v);
       if (v.meta && v.meta.kind === "form") return renderForm(v);
       return renderSingleSelect(v);
+    }
+
+    // Passive step: the coding AGENT is the actor (tech classification); the page
+    // just shows progress and re-polls /state until the step moves on. Guarded so
+    // overlapping renders never stack two poll loops.
+    var waitingPollActive = false;
+    function renderWaiting(v) {
+      setActions(null);
+      view.innerHTML = "";
+      view.appendChild(el("div", { className: "step-title" }, [v.meta && v.meta.title ? v.meta.title : "Working…"]));
+      view.appendChild(el("div", { className: "step-question" }, [v.meta && v.meta.question ? v.meta.question : ""]));
+      view.appendChild(el("div", { className: "hint" }, ["Waiting for your coding agent…"]));
+      renderProgress(v);
+      if (waitingPollActive) return;
+      waitingPollActive = true;
+      (async function waitLoop() {
+        try {
+          for (;;) {
+            await new Promise((r) => setTimeout(r, 2000));
+            let next;
+            try { next = await api("/state"); } catch (_) { continue; }
+            if (!next || (next.step === "tech-detect" && !next.done)) continue;
+            waitingPollActive = false;
+            return render(next);
+          }
+        } catch (_) {
+          waitingPollActive = false;
+        }
+      })();
     }
 
     (async function start() {

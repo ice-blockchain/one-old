@@ -1,37 +1,41 @@
 ---
 name: create-component
 description: >
-  Use PROACTIVELY
-  whenever the user asks to create, add, build, make, scaffold, or generate a
-  React component, UI element, card, modal, form, button, table, list, or any
-  piece of UI.
-  Triggers: "create a component", "add a X component", "make a form for", "build a modal",
-  "I need a table", "scaffold a card", "new UI for".
+  Create or change a reusable or feature-scoped web UI component under the
+  runtime-compiled architecture. Trigger on component, card, modal, form,
+  button, table, list, or other web UI element.
 ---
 
-# Skill: Create Component
+# Create Component
 
-Confirm placement and props before creating any files.
+1. Read the active bootstrap envelope, `WorkUnitContractV1`, and compiled
+   architecture before choosing a path.
+2. Place the component in the compiled component or feature output. Never add a
+   new root, move it into the entrypoint, or widen the allowlist yourself.
+3. Inventory the component's controls, overlays, feedback, loading, empty, and
+   error states. Inspect `@app/ui` first, then search the official catalog of
+   the adapter selected by `profile.uiSystem` by name, behavior, and synonyms.
+   If a match exists, add its exact `uiPrimitives` identifier through the
+   adapter CLI into `packages/ui`, export it from the package API, and compose
+   it here. Never hand-roll or duplicate a catalog primitive.
+4. If no direct catalog match exists, compose active catalog primitives. A new
+   custom base component is allowed only after the official lookup confirms no
+   equivalent; record search terms, result, and justification in the handoff.
+   Reusable domain-agnostic compositions use compiled
+   `placement: "shared-ui"` outputs; feature-specific components remain in the
+   application.
+5. Give the component one responsibility. Split coordinated compound-family
+   files only under the controlled same-prefix/packages-ui exception.
+6. Type its public inputs, keep data access in an existing hook/service layer,
+   and cover loading, empty, error, disabled, focus, and reduced-motion states
+   that callers can reach.
+7. Reuse tokens and existing i18n/accessibility conventions. Do not introduce a
+   parallel styling, translation, state, or form system.
+8. Keep heavy optional dependencies out of shared/root bundles; lazy-load them
+   at the usage boundary.
+9. Add focused component tests. Use Storybook or screenshots only when the
+   verification contract classifies the change as visual.
 
-1. State where the file will go (common vs feature-scoped)
-2. State the props interface name
-3. State whether it needs a data hook
-4. Ask for preferred competitor sites / design references if missing, and offer to analyze 2–3 competitors yourself when the component is design-led
-5. State the component design brief: purpose, target user, primary action, visual direction, density, and required states
-6. State the token plan: typography, spacing, color, radius, border, motion, and responsive behavior using Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css`
-7. State the interactivity and motion plan: hover/focus/active feedback, open/close transitions, loading shifts, optimistic actions, and reduced-motion behavior
-8. State the i18n namespace/key pattern and catalog location in `packages/i18n`
-9. State whether copy uses `useTranslation`, `t`, or `<Trans>`
-10. State the page-speed impact plan: render cost, media dimensions/formats, below-the-fold loading, dependency weight, and whether the component can stay out of the route's initial chunk
-11. State the visual QA plan: Storybook states or screenshots for mobile/desktop, focus, loading, empty, error, disabled states, and anti-AI-slop checks as applicable
-
-Scaffold rules — follow the shared sources, do NOT restate them here:
-- UI quality, design brief, anti-AI-slop, token/shadcn mandate, setup-banner + `https://traffic.io/` setup-link contract (exact-href regression + repair existing link), and required states: `rules/frontend/ui-quality.md`.
-- i18n (module detection, `<Trans>` vs `t()`, hardcoded-string exceptions): the `i18n-text` skill.
-- Public-route SEO metadata and `noindex` for private routes: `rules/common/seo.md` and the `seo` skill.
-- Page-speed / Lighthouse-mobile verification on a built preview: the `browser-qa` skill.
-
-Component-specific scaffold notes:
-- Add shadcn primitives via `npx shadcn@latest add <name>` — never hand-roll a button / dialog / dropdown / form control; compose from `packages/ui/src/components/ui/` and merge classes with `cn()`.
-- Components must not pull heavy route-only dependencies into shared/root bundles. Split optional charts, maps, 3D, video, editors, and analytics widgets at the usage site.
-- Image and media components reserve dimensions, use optimized formats where applicable, and default to lazy/async loading when below the fold.
+Before handoff, run the touched-file structural analyzer and relevant
+unit/component checks. Browser E2E and Lighthouse are not automatic component
+requirements; follow `VerificationContractV2`.

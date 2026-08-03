@@ -16,7 +16,7 @@ import {
 } from '../../config/model-tiers';
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
-  ONE_MCP_LIVE_RELEASE_SNAPSHOT_SCHEMA_VERSION,
+  ONE_MCP_MAX_MODELS_PER_TIER,
   ONE_MCP_MAX_PUBLISHED_PAYLOAD_BYTES,
   ONE_MCP_OPERATOR_CAS_SQL_FILE,
   ONE_MCP_OPERATOR_MANIFEST_FILE,
@@ -31,7 +31,6 @@ import {
 import { parseOneMcpModelConfigPayload } from '../../shared/one-mcp/get-config';
 import { runGen } from '../index';
 import {
-  assertOneMcpLiveReleaseSnapshot,
   oneMcpOperatorCasSql,
   oneMcpOperatorManifest,
 } from '../sources/one-mcp-operator';
@@ -89,11 +88,14 @@ test('operator payload fails generation for rows the shipped decoder cannot cons
     plans: { pro: { balanced: ['not-a-supported-opencode-plan'] } },
   }), /unsupported opencode plan override: pro/);
 
-  const tooMany = Array.from({ length: 4 }, (_, index) => `model-${index}`) as unknown as readonly [string, ...string[]];
+  const tooMany = Array.from(
+    { length: ONE_MCP_MAX_MODELS_PER_TIER + 1 },
+    (_, index) => `model-${index}`,
+  ) as unknown as readonly [string, ...string[]];
   assert.throws(() => bundledOneMcpPayload('codex', {
     ...base,
     tiers: { ...base.tiers, highest: tooMany },
-  }), /decoder allows 3/);
+  }), new RegExp(`decoder allows ${ONE_MCP_MAX_MODELS_PER_TIER}`));
 });
 
 test('operator generation requires two models except for explicit single-choice host plans', () => {
@@ -199,144 +201,6 @@ test('operator manifest is a valid deterministic versionless projection of every
       );
     }
   }
-});
-
-test('Milestone-2 release snapshot must be fresh and match all seven live rows exactly', () => {
-  const endpoint = 'https://mcp.traffic-one.example/public-mcp';
-  const now = Date.parse('2026-07-17T12:00:00.000Z');
-  const manifest = oneMcpOperatorManifest();
-  const checkedAt = new Date(now).toISOString();
-  const snapshot = {
-    schemaVersion: ONE_MCP_LIVE_RELEASE_SNAPSHOT_SCHEMA_VERSION,
-    endpoint,
-    capturedAt: checkedAt,
-    rows: manifest.rows.map((row) => ({
-      host: row.host,
-      configName: row.configName,
-      version: 2,
-      updatedAt: '2026-07-17T11:59:00.000Z',
-      servedPublicly: true,
-      payloadFingerprint: row.payloadFingerprint,
-      payload: row.payload,
-    })),
-    evidence: {
-      hostedOnboarding: {
-        checkedAt,
-        route: '/onboarding/agent',
-        outcome: 'passed',
-      },
-      publicProbes: manifest.rows.map((row) => ({
-        host: row.host,
-        configName: row.configName,
-        checkedAt,
-        json: {
-          outcome: 'full', requestedVersion: 0, observedVersion: 2, payloadFingerprint: row.payloadFingerprint,
-        },
-        sse: {
-          outcome: 'full', requestedVersion: 0, observedVersion: 2, payloadFingerprint: row.payloadFingerprint,
-        },
-        upToDate: { outcome: 'up-to-date', requestedVersion: 2, observedVersion: 2 },
-      })),
-      codexHookObservation: {
-        checkedAt,
-        outcome: 'passed',
-        observations: [
-          { tier: 'highest', model: 'gpt-5.6-sol', hookEvent: 'SubagentStart' },
-          { tier: 'balanced', model: 'gpt-5.6-terra', hookEvent: 'PreToolUse' },
-        ],
-      },
-    },
-  };
-  assert.doesNotThrow(() => assertOneMcpLiveReleaseSnapshot(snapshot, endpoint, manifest, now));
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot({ ...snapshot, endpoint: 'https://stale.example/mcp' }, endpoint, manifest, now),
-    /endpoint does not match/,
-  );
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot({ ...snapshot, capturedAt: '2026-07-17T11:00:00.000Z' }, endpoint, manifest, now),
-    /stale or from the future/,
-  );
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot({ ...snapshot, rows: snapshot.rows.slice(1) }, endpoint, manifest, now),
-    /exactly seven rows/,
-  );
-  const wrong = {
-    ...snapshot,
-    rows: snapshot.rows.map((row, index) => index === 0 ? {
-      ...row,
-      payload: {
-        ...row.payload,
-        tiers: { ...row.payload.tiers, high: ['cross-host-model'] },
-      },
-    } : row),
-  };
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(wrong, endpoint, manifest, now),
-    /payload fingerprint differs/,
-  );
-  const additive = structuredClone(snapshot);
-  (additive.rows[0]!.payload as unknown as Record<string, unknown>).unexpected = 'not-reviewed';
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(additive, endpoint, manifest, now),
-    /payload differs from HOST_MODELS/,
-  );
-  const legacyVersionFlag = structuredClone(snapshot);
-  (legacyVersionFlag.rows[0]!.payload as unknown as Record<string, unknown>).payloadSchemaVersion = 2;
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(legacyVersionFlag, endpoint, manifest, now),
-    /payload differs from HOST_MODELS/,
-  );
-  const unincremented = structuredClone(snapshot);
-  unincremented.rows[0]!.version = 1;
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(unincremented, endpoint, manifest, now),
-    /version was not incremented/,
-  );
-  const staleRow = structuredClone(snapshot);
-  staleRow.rows[0]!.updatedAt = '2026-07-17T11:40:00.000Z';
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(staleRow, endpoint, manifest, now),
-    /claude updatedAt is stale or from the future/,
-  );
-  const futureRow = structuredClone(snapshot);
-  futureRow.rows[0]!.updatedAt = '2026-07-17T12:06:00.000Z';
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(futureRow, endpoint, manifest, now),
-    /claude updatedAt is stale or from the future/,
-  );
-
-  const missingEvidence = { ...snapshot } as Record<string, unknown>;
-  delete missingEvidence.evidence;
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(missingEvidence, endpoint, manifest, now),
-    /unsupported schema/,
-  );
-  const failedSse = structuredClone(snapshot);
-  failedSse.evidence.publicProbes[0]!.sse.observedVersion = 1;
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(failedSse, endpoint, manifest, now),
-    /SSE probe did not observe the published version/,
-  );
-  const staleOnboarding = structuredClone(snapshot);
-  staleOnboarding.evidence.hostedOnboarding.checkedAt = '2026-07-17T11:00:00.000Z';
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(staleOnboarding, endpoint, manifest, now),
-    /hosted onboarding smoke evidence is stale/,
-  );
-  const wrongCodex = structuredClone(snapshot);
-  wrongCodex.evidence.codexHookObservation.observations[0]!.model = 'gpt-5.6-terra';
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(wrongCodex, endpoint, manifest, now),
-    /did not observe exact Sol and Terra models/,
-  );
-  const identityBearingEvidence = structuredClone(snapshot) as unknown as {
-    evidence: { codexHookObservation: Record<string, unknown> };
-  };
-  identityBearingEvidence.evidence.codexHookObservation.sessionId = 'must-not-be-recorded';
-  assert.throws(
-    () => assertOneMcpLiveReleaseSnapshot(identityBearingEvidence, endpoint, manifest, now),
-    /live Codex hook evidence is missing or failed/,
-  );
 });
 
 test('operator CAS SQL is fail-closed, versioned, and carries exactly the generated rows', () => {

@@ -6,6 +6,7 @@ import {
   commandFromToolInput,
   isMutatingPreToolUse,
   isOnboardingBootstrapCommand,
+  isOnboardingSetTechCommand,
   isOnboardingWaitCommand,
   isReadOnlyOrientationToolUse,
   isShellToolName,
@@ -16,7 +17,7 @@ import {
   parsedToolInput,
 } from '../tool-classify';
 import type { ToolInput } from '../../core/types';
-import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingUseBootstrapCommand, onboardingUseCommand, onboardingWaitCommand } from '../onboarding-server/wait-command';
+import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingSetTechCommand, onboardingSetTechCommandTemplate, onboardingUseBootstrapCommand, onboardingUseCommand, onboardingWaitCommand } from '../onboarding-server/wait-command';
 
 test('tool-name classification (host-prefixed names normalized)', () => {
   assert.equal(normalizedToolName('mcp.Bash'), 'Bash');
@@ -189,4 +190,56 @@ test('REGRESSION: a Cursor wait command + orientation read now classify as allow
   assert.equal(isOnboardingWaitCommand(canonicalToolName(waitTool), parsedToolInput(waitTool) || {}), true);
   const readTool = cursorTool({ class: 'file-read', rawName: 'before-read-file', filePath: '/proj/x.ts' });
   assert.equal(isReadOnlyOrientationToolUse(canonicalToolName(readTool), parsedToolInput(readTool) || {}), true);
+});
+
+// ── The agent tech-classification command (--set-tech) ──────────────────────
+
+test('isOnboardingSetTechCommand round-trips the generated command and enforces the id vocabularies', () => {
+  const full = onboardingSetTechCommand('/proj', 'claude', {
+    frontend: 'none',
+    backend: 'node',
+    realtime: 'light',
+    evidence: 'express + mongoose in package.json',
+  }, 'sess-1');
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: full }), true, full);
+  // A set-tech command is also a recognized runner invocation (gates admit it).
+  assert.equal(isOnboardingWaitCommand('Bash', { command: full }), true);
+  // But it is NOT a bootstrap.
+  assert.equal(isOnboardingBootstrapCommand('Bash', { command: full }), false);
+
+  const withMobile = onboardingSetTechCommand('/proj', 'codex', {
+    frontend: 'react-vite',
+    backend: 'supabase',
+    mobile: 'react-native-expo',
+  });
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: withMobile }), true, withMobile);
+
+  const template = onboardingSetTechCommandTemplate('/proj', 'claude');
+  // The bare template misses the REQUIRED surfaces — never allowed as-is.
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: template }), false);
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${template} '--frontend=none' '--backend=node'` }), true);
+  // Frontend AND backend are both required.
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${template} '--backend=node'` }), false);
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${template} '--frontend=none'` }), false);
+});
+
+test('set-tech rejects unknown ids, duplicates, oversized evidence, and cross-mode flags', () => {
+  const base = onboardingSetTechCommandTemplate('/proj', 'claude');
+  // Unknown ids never reach the runner.
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} '--frontend=reactjs' '--backend=node'` }), false);
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} '--frontend=none' '--backend=express'` }), false);
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} '--frontend=none' '--backend=node' '--mobile=cordova'` }), false);
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} '--frontend=none' '--backend=node' '--realtime=heavy'` }), false);
+  // Duplicate flags are rejected.
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} '--frontend=none' '--frontend=none' '--backend=node'` }), false);
+  // Oversized evidence is rejected.
+  const bigEvidence = 'x'.repeat(401);
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} '--frontend=none' '--backend=node' '--evidence=${bigEvidence}'` }), false);
+  // Wait-only flags stay rejected on the exit-fast set-tech mode.
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} '--frontend=none' '--backend=node' '--quiet-url'` }), false);
+  // Surface flags never leak onto OTHER modes.
+  const wait = onboardingWaitCommand('/proj', 'claude');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${wait} '--frontend=none'` }), false);
+  const decline = onboardingDeclineCommand('/proj', 'claude');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${decline} '--backend=node'` }), false);
 });

@@ -14,6 +14,12 @@ import {
   RUNTIME_PROOF_FILE_ENV,
   stageCodexMarketplace,
 } from './current-dist';
+import {
+  cleanupCodexE2EProfile,
+  codexRunArgsWithE2EProfile,
+  createCodexE2EProfile,
+  verifyCodexE2EProfilePromptInput,
+} from './codex-e2e-profile';
 
 function makeDist(): { root: string; dispose: () => void } {
   const owner = fs.mkdtempSync(path.join(os.tmpdir(), 't1-current-dist-'));
@@ -33,6 +39,91 @@ function makeDist(): { root: string; dispose: () => void } {
   ]) fs.writeFileSync(path.join(root, 'scripts', entry), 'module.exports = {};\n', 'utf8');
   return { root, dispose: () => fs.rmSync(owner, { recursive: true, force: true }) };
 }
+
+function makeCodexHome(): { root: string; dispose: () => void } {
+  const owner = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codex-home-'));
+  const root = path.join(owner, 'codex-home');
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(root, 'config.toml'), [
+    '[plugins."traffic-one@traffic-one-local"]',
+    'enabled = true',
+    '',
+    '[plugins."traffic-one@traffic-one-previous-e2e"]',
+    'enabled = true',
+    '',
+  ].join('\n'), { mode: 0o600 });
+  return { root, dispose: () => fs.rmSync(owner, { recursive: true, force: true }) };
+}
+
+function promptInputForProfile(codexHome: string, profileName: string, skillRoot?: string): string {
+  const profilePath = path.join(codexHome, `${profileName}.config.toml`);
+  const markerLine = fs.readFileSync(profilePath, 'utf8')
+    .split(/\r?\n/)
+    .find((line) => line.startsWith('# traffic-one-codex-e2e-profile-v1 '));
+  assert.ok(markerLine);
+  const encoded = markerLine.slice('# traffic-one-codex-e2e-profile-v1 '.length);
+  const marker = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+    cacheVersion: string;
+    marketplaceName: string;
+  };
+  const skillLines = skillRoot ? [
+    '### Skill roots',
+    `- r9 = \`${skillRoot}\``,
+    '### Available skills',
+    '- traffic-one:task-triage: E2E sentinel. (file: r9/task-triage/SKILL.md)',
+  ] : [];
+  return JSON.stringify([{
+    type: 'message',
+    role: 'developer',
+    content: [{
+      type: 'input_text',
+      text: [
+        ...skillLines,
+        '### Available plugins',
+        '- `Traffic One`: E2E sentinel.',
+      ].join('\n'),
+    }],
+  }]);
+}
+
+function successfulCodexRunner(
+  codexHome: string,
+  calls: Array<{ cmd: string; args: string[] }> = [],
+  rootOverride?: string,
+): (cmd: string, args: string[]) => { ok: boolean; out: string } {
+  return (cmd, args) => {
+    calls.push({ cmd, args: [...args] });
+    const profileIndex = args.indexOf('--profile-v2');
+    if (args.includes('debug') && args.includes('prompt-input') && profileIndex >= 0) {
+      return { ok: true, out: promptInputForProfile(codexHome, args[profileIndex + 1]!, rootOverride) };
+    }
+    return { ok: true, out: '' };
+  };
+}
+
+test('manual-only certification uses stable pre-proof bytes and arms no automated host runtime', (t) => {
+  const dist = makeDist();
+  t.after(dist.dispose);
+  const config = defaultConfig();
+  config.build = { refreshDist: false, updateHosts: true };
+  const before = distTreeFingerprint(dist.root);
+
+  const result = buildAndInstall(config, [], {
+    distRoot: dist.root,
+    commandRunner() {
+      throw new Error('manual-only certification must not install or invoke a host');
+    },
+  });
+
+  assert.equal(result.releaseFingerprint, before);
+  assert.equal(result.distFingerprint, before);
+  assert.equal(result.runtimeProof, null);
+  assert.deepEqual(result.installed, []);
+  assert.deepEqual(result.sessionProof, []);
+  assert.deepEqual(result.perCaseProof, []);
+  assert.equal(distTreeFingerprint(dist.root), before);
+  assert.deepEqual(cleanupBuildInstall(result).failures, []);
+});
 
 test('Codex uses a discoverable copied marketplace and install failure fails current-dist proof', (t) => {
   const dist = makeDist();
@@ -80,6 +171,7 @@ test('Codex uses a discoverable copied marketplace and install failure fails cur
 test('Claude direct-session, per-case wrappers, and Cursor fingerprint exemption need no scripted install', (t) => {
   const dist = makeDist();
   t.after(dist.dispose);
+  const stableFingerprint = distTreeFingerprint(dist.root);
   const config = defaultConfig();
   config.build = { refreshDist: false, updateHosts: true };
 
@@ -92,6 +184,8 @@ test('Claude direct-session, per-case wrappers, and Cursor fingerprint exemption
   t.after(() => { cleanupBuildInstall(result, () => ({ ok: true, out: '' })); });
 
   assert.equal(result.currentDistReady, true);
+  assert.equal(result.releaseFingerprint, stableFingerprint);
+  assert.notEqual(result.distFingerprint, stableFingerprint, 'runtime token must not alter the release fingerprint');
   assert.deepEqual(result.sessionProof, ['claude']);
   assert.deepEqual(result.perCaseProof, ['opencode', 'kilo']);
   assert.deepEqual(result.exempted, ['cursor']);
@@ -179,6 +273,131 @@ test('content changes create a different Codex cache key even when the package v
   assert.notEqual(first.name, second.name);
 });
 
+test('Codex profile-v2 disables every pre-existing Traffic One selector and exposes only staged skills', (t) => {
+  const dist = makeDist();
+  const codexHome = makeCodexHome();
+  const stagesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-marketplaces-'));
+  t.after(dist.dispose);
+  t.after(codexHome.dispose);
+  t.after(() => fs.rmSync(stagesRoot, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dist.root, 'skills', 'task-triage'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dist.root, 'skills', 'task-triage', 'SKILL.md'),
+    '---\nname: task-triage\ndescription: E2E sentinel.\n---\n',
+    'utf8',
+  );
+  const marketplace = stageCodexMarketplace(dist.root, stagesRoot);
+  const baseConfig = [
+    fs.readFileSync(path.join(codexHome.root, 'config.toml'), 'utf8'),
+    `[plugins.${JSON.stringify(marketplace.pluginSelector)}]`,
+    'enabled = true',
+    '',
+  ].join('\n');
+
+  const profile = createCodexE2EProfile(codexHome.root, marketplace, baseConfig);
+  assert.equal(profile.expectsBootstrapSkills, true);
+  assert.equal(fs.statSync(profile.path).mode & 0o777, 0o600);
+  assert.deepEqual(profile.disabledSelectors, [
+    'traffic-one@traffic-one-local',
+    'traffic-one@traffic-one-previous-e2e',
+  ]);
+  const contents = fs.readFileSync(profile.path, 'utf8');
+  assert.match(contents, /\[plugins\."traffic-one@traffic-one-local"\]\nenabled = false/);
+  assert.match(contents, /\[plugins\."traffic-one@traffic-one-previous-e2e"\]\nenabled = false/);
+  assert.match(contents, new RegExp(`\\[plugins\\.${JSON.stringify(marketplace.pluginSelector).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\nenabled = true`));
+
+  const args = codexRunArgsWithE2EProfile(
+    defaultConfig().hosts.codex.runArgs,
+    profile.name,
+  );
+  assert.deepEqual(args.slice(0, 4), ['exec', '--profile-v2', profile.name, '--json']);
+  assert.equal(args.some((arg) => arg.includes('traffic-one@traffic-one-local') && arg.includes('enabled=false')), false);
+
+  const cleanPrompt = promptInputForProfile(codexHome.root, profile.name, profile.expectedSkillsRoot);
+  assert.equal(verifyCodexE2EProfilePromptInput(cleanPrompt, profile).ok, true);
+  const contaminated = promptInputForProfile(
+    codexHome.root,
+    profile.name,
+    path.join(codexHome.root, 'plugins', 'cache', 'traffic-one-local', 'traffic-one', 'old', 'skills'),
+  );
+  const rejected = verifyCodexE2EProfilePromptInput(contaminated, profile);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.detail, /additional Traffic One roots|not exclusive/);
+  assert.equal(cleanupCodexE2EProfile(profile).ok, true);
+});
+
+test('Codex profile-v2 accepts the shipped empty bootstrap tree and still proves one plugin entry', (t) => {
+  const dist = makeDist();
+  const codexHome = makeCodexHome();
+  const stagesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-marketplaces-'));
+  t.after(dist.dispose);
+  t.after(codexHome.dispose);
+  t.after(() => fs.rmSync(stagesRoot, { recursive: true, force: true }));
+  const marketplace = stageCodexMarketplace(dist.root, stagesRoot);
+  const profile = createCodexE2EProfile(
+    codexHome.root,
+    marketplace,
+    fs.readFileSync(path.join(codexHome.root, 'config.toml'), 'utf8'),
+  );
+
+  assert.equal(profile.expectsBootstrapSkills, false);
+  assert.equal(
+    verifyCodexE2EProfilePromptInput(promptInputForProfile(codexHome.root, profile.name), profile).ok,
+    true,
+  );
+  assert.equal(cleanupCodexE2EProfile(profile).ok, true);
+});
+
+test('Codex E2E fails before the LLM when profile-v2 prompt input remains contaminated', (t) => {
+  const dist = makeDist();
+  const codexHome = makeCodexHome();
+  const stagesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-marketplaces-'));
+  t.after(dist.dispose);
+  t.after(codexHome.dispose);
+  t.after(() => fs.rmSync(stagesRoot, { recursive: true, force: true }));
+  const config = defaultConfig();
+  config.build = { refreshDist: false, updateHosts: true };
+  const originalArgs = [...config.hosts.codex.runArgs];
+  const staleRoot = path.join(codexHome.root, 'plugins', 'cache', 'traffic-one-local', 'traffic-one', 'old', 'skills');
+
+  const result = buildAndInstall(config, ['codex'], {
+    distRoot: dist.root,
+    stagesRoot,
+    codexHome: codexHome.root,
+    commandRunner: successfulCodexRunner(codexHome.root, [], staleRoot),
+  });
+  assert.equal(result.currentDistReady, false);
+  assert.deepEqual(result.installed, []);
+  assert.match(result.currentDistFailures[0]?.detail ?? '', /additional Traffic One roots|unexpected Traffic One bootstrap skills/);
+  assert.deepEqual(config.hosts.codex.runArgs, originalArgs, 'failed preflight must not activate the profile');
+  const cleanup = cleanupBuildInstall(result, () => ({ ok: true, out: '' }));
+  assert.deepEqual(cleanup.failures, []);
+});
+
+test('Codex profile cleanup preserves a tampered profile and reports the mismatch', (t) => {
+  const dist = makeDist();
+  const codexHome = makeCodexHome();
+  const stagesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-marketplaces-'));
+  t.after(dist.dispose);
+  t.after(codexHome.dispose);
+  t.after(() => fs.rmSync(stagesRoot, { recursive: true, force: true }));
+  const config = defaultConfig();
+  config.build = { refreshDist: false, updateHosts: true };
+
+  const result = buildAndInstall(config, ['codex'], {
+    distRoot: dist.root,
+    stagesRoot,
+    codexHome: codexHome.root,
+    commandRunner: successfulCodexRunner(codexHome.root),
+  });
+  const profile = result.codexProfiles.codex;
+  assert.ok(profile);
+  fs.appendFileSync(profile.path, '# tampered\n', 'utf8');
+  const cleanup = cleanupBuildInstall(result, () => ({ ok: true, out: '' }));
+  assert.match(cleanup.failures[0]?.detail ?? '', /profile contents changed/);
+  assert.equal(fs.existsSync(profile.path), true, 'tampered profile must remain for inspection');
+});
+
 test('failed Codex staging removes its just-created marketplace root', (t) => {
   const owner = fs.mkdtempSync(path.join(os.tmpdir(), 't1-bad-current-dist-'));
   const distRoot = path.join(owner, 'dist');
@@ -193,7 +412,9 @@ test('failed Codex staging removes its just-created marketplace root', (t) => {
 
 test('cleanup rejects lookalike commands instead of executing them', (t) => {
   const dist = makeDist();
+  const codexHome = makeCodexHome();
   t.after(dist.dispose);
+  t.after(codexHome.dispose);
   const stagesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-marketplaces-'));
   t.after(() => fs.rmSync(stagesRoot, { recursive: true, force: true }));
   const config = defaultConfig();
@@ -201,7 +422,8 @@ test('cleanup rejects lookalike commands instead of executing them', (t) => {
   const result = buildAndInstall(config, ['codex'], {
     distRoot: dist.root,
     stagesRoot,
-    commandRunner: () => ({ ok: true, out: '' }),
+    codexHome: codexHome.root,
+    commandRunner: successfulCodexRunner(codexHome.root),
   });
   const marketplace = result.marketplaces.codex!;
   result.cleanupSteps[0]!.args = ['plugin', 'remove', `${marketplace.pluginSelector}-lookalike`];
@@ -218,7 +440,9 @@ test('cleanup rejects lookalike commands instead of executing them', (t) => {
 
 test('cleanup requires staging containment and exact marker contents before recursive removal', (t) => {
   const dist = makeDist();
+  const codexHome = makeCodexHome();
   t.after(dist.dispose);
+  t.after(codexHome.dispose);
   const stagesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-marketplaces-'));
   t.after(() => fs.rmSync(stagesRoot, { recursive: true, force: true }));
   const config = defaultConfig();
@@ -227,7 +451,8 @@ test('cleanup requires staging containment and exact marker contents before recu
   const containment = buildAndInstall(config, ['codex'], {
     distRoot: dist.root,
     stagesRoot,
-    commandRunner: () => ({ ok: true, out: '' }),
+    codexHome: codexHome.root,
+    commandRunner: successfulCodexRunner(codexHome.root),
   });
   containment.cleanupSteps = [];
   containment.marketplaces.codex!.stagesRoot = path.join(stagesRoot, 'not-the-recorded-parent');
@@ -239,7 +464,8 @@ test('cleanup requires staging containment and exact marker contents before recu
   const marker = buildAndInstall(config, ['codex'], {
     distRoot: dist.root,
     stagesRoot,
-    commandRunner: () => ({ ok: true, out: '' }),
+    codexHome: codexHome.root,
+    commandRunner: successfulCodexRunner(codexHome.root),
   });
   marker.cleanupSteps = [];
   const markerPath = path.join(marker.marketplaces.codex!.root, '.traffic-one-e2e.json');
@@ -253,7 +479,9 @@ test('cleanup requires staging containment and exact marker contents before recu
 
 test('successful Codex staging is cleaned with only its unique E2E ids', (t) => {
   const dist = makeDist();
+  const codexHome = makeCodexHome();
   t.after(dist.dispose);
+  t.after(codexHome.dispose);
   const stagesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-marketplaces-'));
   t.after(() => fs.rmSync(stagesRoot, { recursive: true, force: true }));
   const config = defaultConfig();
@@ -264,9 +492,14 @@ test('successful Codex staging is cleaned with only its unique E2E ids', (t) => 
   const result = buildAndInstall(config, ['codex'], {
     distRoot: dist.root,
     stagesRoot,
-    commandRunner: () => ({ ok: true, out: '' }),
+    codexHome: codexHome.root,
+    commandRunner: successfulCodexRunner(codexHome.root),
   });
-  assert.equal(result.currentDistReady, true);
+  assert.equal(
+    result.currentDistReady,
+    true,
+    JSON.stringify(result.currentDistFailures),
+  );
   assert.deepEqual(result.installed, ['codex']);
   const proofFile = path.join(stagesRoot, 'runtime-proof.json');
   const probe = spawnSync(process.execPath, [runtimePath], {
@@ -297,13 +530,12 @@ test('successful Codex staging is cleaned with only its unique E2E ids', (t) => 
   assert.equal(readDistRuntimeProof(dist.root), null);
 });
 
-test('production E2E is strict and keeps the generic Codex bypass separate from the mandatory trust proof', () => {
+test('production E2E is strict and Codex never relies on a hook-trust bypass', () => {
   const pkg = JSON.parse(fs.readFileSync(`${REPO_ROOT_PATH}/package.json`, 'utf8')) as {
     scripts?: Record<string, string>;
   };
   assert.match(pkg.scripts?.['test:env:e2e'] ?? '', /(?:^|\s)--strict(?:\s|$)/);
-  // The content-addressed generic matrix needs this bypass, but it is not a
-  // persisted-trust assertion. run.ts separately gates every Codex E2E suite.
-  assert.ok(defaultConfig().hosts.codex.runArgs.includes('--dangerously-bypass-hook-trust'));
+  assert.equal(defaultConfig().hosts.codex.runArgs.includes('--dangerously-bypass-hook-trust'), false);
+  assert.equal(defaultConfig().hosts.codex.testModel, 'gpt-5.4');
   assert.equal(codexTrustUpgradeProofRequired(new Set(['codex'])), true);
 });

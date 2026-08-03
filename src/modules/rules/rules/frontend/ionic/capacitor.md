@@ -14,7 +14,8 @@ paths:
 
 ## App configuration
 
-- `webDir` points to the Vite build output (`dist` by default).
+- `webDir` points to the selected profile's compiled web artifact (`dist`,
+  `www`, or the framework-specific static output); never assume Vite.
 - App id uses reverse-DNS format and is stable before native platforms are added.
 - App name, bundle id, version, build number, icon, and splash config are
   treated as release settings, not incidental defaults.
@@ -34,8 +35,9 @@ paths:
 
 - Add Capacitor plugins only for a concrete user-facing requirement.
 - Wrap plugin calls in `services/` or feature hooks with explicit return types.
-- Validate plugin results before they cross into app state — the zod inbound-
-  payload rule is owned by `rules/frontend/ionic/security.md`.
+- Validate plugin results with the selected stack's schema validator before
+  they cross into app state; the inbound-payload rule is owned by
+  `rules/frontend/ionic/security.md`.
 
 ## Permissions (canonical for the Ionic stack)
 

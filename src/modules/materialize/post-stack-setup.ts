@@ -14,7 +14,7 @@
 // exact wording against the legacy when both are side-by-side.
 
 import { asString } from '../../adapters/coerce';
-import { obj, type Rec } from '../../shared/obj';
+import { obj } from '../../shared/obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -34,13 +34,21 @@ import {
   patchTextFromToolInput,
 } from '../../shared/tool-classify';
 import { parseApplyPatch } from '../../shared/apply-patch';
+import { firstEmitThisSession } from '../../shared/once';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import {
+  AGENT_ACTIVITY_WARN_THRESHOLD,
+  hookSessionIdentity,
+  isMaintenancePhase,
+  readEffectiveState,
+  readRunAgentActivity,
+  resolveRunAgentContext,
+} from '../../shared/state';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { ensureOpenCodeDelegationReady } from '../session/session-start-lib';
 import { maybeFlipToMaintenance } from './build-complete';
-import { buildPostPlanReadyOpenCodeDirective } from '../../shared/opencode-plan-directive';
+import { buildPostPlanReadyOpenCodeDirective } from '../../shared/opencode-plan/directive';
 import { ONE_UID_FIELD } from '../../config/reporting';
 import {
   type MaterializeOutcome,
@@ -54,7 +62,7 @@ import { normalizeDigestFinishedAt } from './digest-finished-at';
 const skillBlock = makeSkillBlock(pluginRoot);
 const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|followup_task|send_message|send_input|wait_agent)$/i;
 
-export interface PostStackSetupDeps {
+interface PostStackSetupDeps {
   logTokenUse?: (cwd: string, payload: unknown) => void;
   functionEditDeploy?: (filePath: string) => string | null;
   reportOneMcp?: ReportOneMcp;
@@ -172,9 +180,9 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   // Single one-mcp report gate: fire ONLY once onboarding is finalized — new-project
   // (canonical state committed) or existing-project (local prefs resolved), via
-  // computeOnboarding(...).done. Runs before the auth gate below so an explicit
-  // TRAFFIC_ONE_AUTH=off dev/test run still reports; prepareReport owns the
-  // real-codebase, canonical-auth, and once-per-project checks.
+  // computeOnboarding(...).done. The anonymous report is independent of auth;
+  // prepareReport owns the real-codebase, exact plugin-use opt-in, and
+  // once-per-project checks.
   const oneUidMissing = !(typeof state[ONE_UID_FIELD] === 'string' && state[ONE_UID_FIELD]);
   if (reportOneMcp && oneUidMissing && computeOnboarding(reportRoot).done) {
     reportOneMcp(reportRoot, state, 'onboarding-complete');
@@ -234,7 +242,18 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     if (/\bPLAN_READY\b/.test(content)) {
       const planReadyDirective = buildPostPlanReadyOpenCodeDirective(reportRoot);
       if (planReadyDirective) {
-        return context(planReadyDirective, {
+        // This fires on every PostToolUse write while the batch is pending, so
+        // the ~2 KB recipe would repeat per tool call. Inject it in full once
+        // per session, then a one-line reminder that keeps the load-bearing
+        // fact; the spawn gate (not this directive) is the enforcement.
+        const full = firstEmitThisSession(
+          reportRoot,
+          'opencode-step0-plan-ready',
+          hookSessionIdentity(raw).sessionId,
+        );
+        return context(full
+          ? planReadyDirective
+          : '[traffic-one] PLAN_READY — OpenCode Step 0 is still required before implementer spawns; run the plan batch via `opencode_delegate_from_plan` (full recipe earlier this session).', {
           systemMessage: 'traffic-one — run OpenCode Step 0 before spawning implementers',
         });
       }
@@ -254,6 +273,34 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     }
     if (digestStampNotes.length > 0) return context('', { systemMessage: digestStampNotes.join('\n') });
     return noop();
+  }
+
+  // 3b. Turn-count nudge, once per session: a role past the warn threshold gets
+  //     ONE consolidation directive (12co: frontend at 163 calls, no signal).
+  //     Deliberately AFTER the digest branch — an early return here once
+  //     swallowed the digest finished_at host-stamp for the very write it rode
+  //     (adversarial review) — and before the generic convergence steps, which
+  //     re-fire on every later write and lose nothing. Fail-open, never a deny.
+  try {
+    const runIdForActivity = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    const activityContext = runIdForActivity
+      ? resolveRunAgentContext(reportRoot, state, raw, { claimPending: false, host: ctx.host })
+      : null;
+    const activityRole = typeof activityContext?.role === 'string' ? activityContext.role : '';
+    if (runIdForActivity && activityRole) {
+      const tally = readRunAgentActivity(reportRoot, runIdForActivity, activityRole);
+      if (tally.total >= AGENT_ACTIVITY_WARN_THRESHOLD
+        && firstEmitThisSession(reportRoot, `agent-activity-warn-${runIdForActivity}-${activityRole}`, hookSessionIdentity(raw).sessionId)) {
+        return context(
+          `[traffic-one] ${activityRole} has made ${tally.total} tool calls in run ${runIdForActivity}. Consolidate: `
+          + 'batch the remaining related reads, group coherent edits, run ONE combined verification command per '
+          + 'surface, and do not re-read rules or files already loaded — finish the assignment, then emit your digest.',
+          { systemMessage: `traffic-one — ${activityRole}: ${tally.total} tool calls this run; consolidate` },
+        );
+      }
+    }
+  } catch {
+    // telemetry must never affect the tool call
   }
 
   // 4. Non-state-file write → write-triggered convergence.

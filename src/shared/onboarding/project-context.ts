@@ -5,7 +5,7 @@
 // from _helpers.cjs (PROJECT_CONTEXT_ANSWER_KEYS:1044, projectContextOriginalPrompt,
 // projectContextDomainQuestionLines).
 
-import { obj, type Rec } from '../obj';
+import { obj } from '../obj';
 
 // The user's first request, used to tailor onboarding questions. Checks the
 // persisted projectContext.originalPrompt first, then loose top-level aliases.
@@ -36,7 +36,16 @@ export function projectContextDomainQuestionLines(originalPrompt = ''): string[]
   const lines: string[] = [];
   const prompt = String(originalPrompt || '').toLowerCase();
   const isLearning = promptMatches(prompt, /\b(course|courses|lesson|lessons|learn|learning|academy|education|student|students|instructor|teacher|lms|curriculum|cohort|cohorts)\b/);
-  const isMarketplace = promptMatches(prompt, /\b(marketplace|buyer|seller|vendor|provider|providers|freelancer|freelancers|employer|employers|candidate|candidates|job|jobs|listing|listings|commission|payout|payouts)\b/);
+  // `listing`/`listings` is brochure vocabulary at least as often as market
+  // vocabulary ("one landing page with projects listing, latest news, reviews"),
+  // and standalone it asked an agency site about commissions, payouts, and
+  // disputes. It qualifies only alongside the MARKET ACT — someone posting,
+  // renting, or selling what someone else browses and pays for. `job`/`jobs`
+  // stays standalone: a job board is a two-sided market in one word.
+  const marketListing = promptMatches(prompt, /\blistings?\b/)
+    && promptMatches(prompt, /\b(post|posts|posting|publish|apply|applications?|rent|rentals?|lease|sell|sale|buy|purchase|bid|bids|auctions?|classifieds?|agents?|brokers?)\b/);
+  const isMarketplace = promptMatches(prompt, /\b(marketplace|buyer|seller|vendor|provider|providers|freelancer|freelancers|employer|employers|candidate|candidates|job|jobs|commission|payout|payouts)\b/)
+    || marketListing;
   const isEcommerce = promptMatches(prompt, /\b(ecommerce|e-commerce|shop|store|cart|checkout|product|products|order|orders|inventory|sku|subscription|subscriptions|billing|pricing|paid|payment|payments)\b/);
   const isBooking = promptMatches(prompt, /\b(booking|bookings|reservation|reservations|appointment|appointments|calendar|availability|schedule|scheduling|slot|slots)\b/);
   const isSaasAdmin = promptMatches(prompt, /\b(saas|dashboard|crm|erp|admin|administrator|manage|management|analytics|reporting|workflow|workflows|approval|approvals)\b/);

@@ -1,238 +1,51 @@
-// Immutable per-run model policy. Machine-global One MCP state may change while
-// a team is already running; every spawn, retry, and child verification must use
-// the catalog frozen for that run instead of re-reading the mutable sidecar.
+// src/shared/run-model-policy.ts
+// Locked model-policy writes: freeze, ensure, and bootstrap publication.
 
-import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-
 import { AGENT_ROLES } from '../config/performance';
 import {
-  isSafeOneMcpModelId,
-  ONE_MCP_MAX_AVAILABLE_MODELS,
   ONE_MCP_MAX_CONFIG_VERSION,
-  ONE_MCP_MAX_MODELS_PER_TIER,
 } from '../config/one-mcp';
-import type { HostModelKey, TierId, UserPlan } from '../config/model-tiers';
-import { RUNS_REL_DIR, VALID_AGENT_ROLES } from '../config/state';
+import type {  TierId } from '../config/model-tiers';
+import {  VALID_AGENT_ROLES } from '../config/state';
 import { isNonProjectRoot } from './authoring-root';
+import {
+  capabilityProfileForRun,
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+} from './architecture-contract';
+import {
+  ensureRunHostCapability,
+  readRunHostCapability,
+  RUN_HOST_CAPABILITY_RELATIVE_FILE,
+} from './host/capabilities';
 import { currentHostModelTarget } from './current-model-tiers';
-import { detectHostPlan } from './host-plan';
+import { detectHostPlan } from './host/plan';
 import { freshCursorModels } from './materialize/cursor-models';
-import { canonicalHost, canonicalPlan, modelMatchesExpected, type ModelTierSnapshot } from './model-tiers';
+import { canonicalHost, canonicalPlan } from './model-tiers';
 import { obj, type Rec } from './obj';
 import { roleModelSelection } from './performance';
+import {
+  canResolveRunBootstrapSet,
+  ensureRunBootstrap,
+  pendingMaintenanceDebtSources,
+  roleOwesPendingMaintenanceFallback,
+  roleSkippableWithoutAssignment,
+  type BootstrapRuntimeContractsV1,
+} from './run-bootstrap-policy';
+import { readVerificationContract } from './verification-contract';
 
-export const RUN_MODEL_POLICY_SCHEMA_VERSION = 1;
-const POLICY_FILE = 'model-policy.json';
-const POLICY_LOCK_TIMEOUT_MS = 1_000;
-const POLICY_LOCK_STALE_MS = 10_000;
-
-export interface RunRoleModelPolicy {
-  readonly tier: TierId;
-  readonly preferredModel: string;
-  readonly acceptableModels: readonly string[];
-}
-
-export interface RunModelPolicyV1 {
-  readonly schemaVersion: 1;
-  readonly policyId: string;
-  readonly runId: string;
-  readonly host: HostModelKey;
-  readonly plan: UserPlan;
-  readonly source: 'remote' | 'bundled';
-  readonly configVersion: number | null;
-  readonly payloadFingerprint: string;
-  readonly appliedFingerprint: string;
-  readonly performanceLevel: string;
-  readonly teamOverrides: Readonly<Record<string, TierId>>;
-  readonly tiers: ModelTierSnapshot;
-  readonly roles: Readonly<Record<string, RunRoleModelPolicy>>;
-  readonly cursorAvailableModels?: readonly string[];
-  readonly capturedAt: string;
-}
-
-export interface RunPolicyFallbackRequest {
-  readonly tier: TierId;
-  readonly exhaustedModels?: readonly string[];
-  readonly unavailableModels?: readonly string[];
-  readonly capturedModels?: readonly string[];
-}
-
-export interface RunPolicyFallbackCandidate {
-  readonly family: string;
-  readonly model: string;
-}
-
-function sameModelFamily(left: string, right: string): boolean {
-  return modelMatchesExpected(left, right) || modelMatchesExpected(right, left);
-}
-
-export function resolveRunPolicyFallback(
-  policy: RunModelPolicyV1,
-  request: RunPolicyFallbackRequest,
-): RunPolicyFallbackCandidate | null {
-  const row = policy.tiers[request.tier] || [];
-  const excluded = [
-    ...(request.exhaustedModels || []),
-    ...(request.unavailableModels || []),
-  ].filter((model) => typeof model === 'string' && model.trim().length > 0);
-  for (const family of row) {
-    if (excluded.some((model) => sameModelFamily(model, family))) continue;
-    if (request.capturedModels !== undefined) {
-      const model = request.capturedModels.find((candidate) => modelMatchesExpected(candidate, family));
-      if (!model) continue;
-      return { family, model };
-    }
-    return { family, model: family };
-  }
-  return null;
-}
-
-export function policyModelsForExpected(
-  policy: RunModelPolicyV1,
-  expected: string,
-): readonly string[] {
-  for (const row of Object.values(policy.tiers)) {
-    const preferred = row[0];
-    if (preferred && sameModelFamily(expected, preferred)) return row;
-  }
-  for (const row of Object.values(policy.tiers)) {
-    if (row.some((candidate) => sameModelFamily(expected, candidate))) return row;
-  }
-  return expected ? [expected] : [];
-}
-
-function safeRunId(value: string): string {
-  return value.trim().replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 160);
-}
-
-export function runModelPolicyPath(cwd: string, runId: string): string {
-  return path.join(cwd, RUNS_REL_DIR, safeRunId(runId), POLICY_FILE);
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
-}
-
-function validFingerprint(value: unknown): value is string {
-  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
-}
-
-function validModel(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length > 0
-    && value.length <= 256
-    && value === value.trim()
-    && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
-}
-
-function parseTierRows(value: unknown): ModelTierSnapshot | null {
-  const raw = obj(value);
-  if (!raw) return null;
-  const out = {} as Record<TierId, readonly string[]>;
-  for (const tier of ['highest', 'balanced', 'cheapest'] as const) {
-    const row = raw[tier];
-    if (!Array.isArray(row)
-      || row.length === 0
-      || row.length > ONE_MCP_MAX_MODELS_PER_TIER
-      || !row.every(validModel)) return null;
-    if (new Set(row).size !== row.length) return null;
-    out[tier] = [...row];
-  }
-  return out;
-}
-
-function parsePolicy(value: unknown, expectedRunId?: string): RunModelPolicyV1 | null {
-  const raw = obj(value);
-  if (!raw
-    || raw.schemaVersion !== RUN_MODEL_POLICY_SCHEMA_VERSION
-    || typeof raw.policyId !== 'string'
-    || !validFingerprint(raw.policyId)
-    || typeof raw.runId !== 'string'
-    || (expectedRunId && raw.runId !== expectedRunId)
-    || typeof raw.host !== 'string'
-    || typeof raw.plan !== 'string'
-    || (raw.source !== 'remote' && raw.source !== 'bundled')
-    || !(raw.configVersion === null || (typeof raw.configVersion === 'number'
-      && Number.isInteger(raw.configVersion)
-      && raw.configVersion >= 0
-      && raw.configVersion <= ONE_MCP_MAX_CONFIG_VERSION))
-    || !validFingerprint(raw.payloadFingerprint)
-    || !validFingerprint(raw.appliedFingerprint)
-    || typeof raw.performanceLevel !== 'string'
-    || typeof raw.capturedAt !== 'string') return null;
-  const host = canonicalHost(raw.host);
-  if (host !== raw.host) return null;
-  const plan = canonicalPlan(host, raw.plan);
-  if (plan !== raw.plan) return null;
-  const tiers = parseTierRows(raw.tiers);
-  const rolesRaw = obj(raw.roles);
-  const overridesRaw = obj(raw.teamOverrides);
-  if (!tiers || !rolesRaw || !overridesRaw) return null;
-  const roles: Record<string, RunRoleModelPolicy> = {};
-  for (const [role, value] of Object.entries(rolesRaw)) {
-    if (!VALID_AGENT_ROLES.has(role)) return null;
-    const item = obj(value);
-    const tier = item?.tier;
-    const acceptable = item?.acceptableModels;
-    if ((tier !== 'highest' && tier !== 'balanced' && tier !== 'cheapest')
-      || !validModel(item?.preferredModel)
-      || !Array.isArray(acceptable)
-      || acceptable.length === 0
-      || !acceptable.every(validModel)
-      || new Set(acceptable).size !== acceptable.length
-      || acceptable[0] !== item.preferredModel
-      || acceptable.length !== tiers[tier].length
-      || acceptable.some((model) => !tiers[tier].includes(model))
-      || tiers[tier].some((model) => !acceptable.includes(model))) return null;
-    roles[role] = { tier, preferredModel: item.preferredModel, acceptableModels: [...acceptable] };
-  }
-  for (const role of [...AGENT_ROLES, 'quick-fix']) {
-    if (!roles[role]) return null;
-  }
-  const teamOverrides: Record<string, TierId> = {};
-  for (const [role, tier] of Object.entries(overridesRaw)) {
-    if (!VALID_AGENT_ROLES.has(role)) continue;
-    if (tier === 'highest' || tier === 'balanced' || tier === 'cheapest') teamOverrides[role] = tier;
-  }
-  const cursorAvailableModels = raw.cursorAvailableModels;
-  if (host === 'cursor') {
-    if (!Array.isArray(cursorAvailableModels)
-      || cursorAvailableModels.length === 0
-      || cursorAvailableModels.length > ONE_MCP_MAX_AVAILABLE_MODELS
-      || !cursorAvailableModels.every((model) => isSafeOneMcpModelId(model, 'cursor'))
-      || new Set(cursorAvailableModels).size !== cursorAvailableModels.length
-      || missingCursorPolicyTiers(roles, cursorAvailableModels).length > 0) return null;
-  } else if (cursorAvailableModels !== undefined) {
-    return null;
-  }
-  const canonical = {
-    schemaVersion: 1 as const,
-    runId: raw.runId,
-    host,
-    plan,
-    source: raw.source as 'remote' | 'bundled',
-    configVersion: raw.configVersion,
-    payloadFingerprint: raw.payloadFingerprint,
-    appliedFingerprint: raw.appliedFingerprint,
-    performanceLevel: raw.performanceLevel,
-    teamOverrides,
-    tiers,
-    roles,
-    ...(host === 'cursor' ? { cursorAvailableModels: [...(cursorAvailableModels as string[])] } : {}),
-  };
-  if (sha256(JSON.stringify(canonical)) !== raw.policyId) return null;
-  return { ...canonical, policyId: raw.policyId, capturedAt: raw.capturedAt };
-}
-
-export function readRunModelPolicy(cwd: string, runId: string): RunModelPolicyV1 | null {
-  try {
-    return parsePolicy(JSON.parse(fs.readFileSync(runModelPolicyPath(cwd, runId), 'utf8')), runId);
-  } catch {
-    return null;
-  }
-}
+import {
+  POLICY_LOCK_STALE_MS,
+  POLICY_LOCK_TIMEOUT_MS,
+  readRunModelPolicy,
+  runModelPolicyPath,
+  sha256,
+  type RunModelPolicyV1,
+  type RunRoleModelPolicy,
+  missingCursorPolicyTiers,
+} from './run-model-policy-schema';
 
 function sleepSync(ms: number): void {
   try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* bounded retry */ }
@@ -285,18 +98,6 @@ function normalizedOverrides(value: unknown): Record<string, TierId> {
   return out;
 }
 
-export function missingCursorPolicyTiers(
-  roles: Readonly<Record<string, RunRoleModelPolicy>>,
-  capturedModels: readonly string[],
-): TierId[] {
-  const missing = new Set<TierId>();
-  for (const role of Object.values(roles)) {
-    if (!capturedModels.some((model) => role.acceptableModels.some((family) => modelMatchesExpected(model, family)))) {
-      missing.add(role.tier);
-    }
-  }
-  return (['highest', 'balanced', 'cheapest'] as const).filter((tier) => missing.has(tier));
-}
 
 function resolvedRunPolicyInputs(
   cwd: string,
@@ -372,6 +173,9 @@ export function buildRunModelPolicy(
   const inputs = resolvedRunPolicyInputs(cwd, hostInput, stateInput, env);
   if (!inputs) return null;
   const { host, plan, target, level, overrides, roles, cursorAvailableModels } = inputs;
+  const capability = readRunHostCapability(cwd, runId, host)
+    || ensureRunHostCapability(cwd, runId, host);
+  if (!capability) return null;
   // Cursor's concrete Task slugs are runner-owned capability state. A policy
   // must cover every role row before create-once publication. A non-empty but
   // partial capture would otherwise strand unmatched roles for the entire run,
@@ -384,6 +188,7 @@ export function buildRunModelPolicy(
     schemaVersion: 1 as const,
     runId,
     host,
+    hostCapabilityFile: RUN_HOST_CAPABILITY_RELATIVE_FILE as typeof RUN_HOST_CAPABILITY_RELATIVE_FILE,
     plan,
     source: target.source === 'one-mcp' ? 'remote' as const : 'bundled' as const,
     configVersion: target.source === 'one-mcp' ? target.configVersion : null,
@@ -415,7 +220,7 @@ export function ensureRunModelPolicy(
   if (!runId || isNonProjectRoot(cwd)) return null;
   const filePath = runModelPolicyPath(cwd, runId);
   const existing = readRunModelPolicy(cwd, runId);
-  if (existing) return existing;
+  if (existing) return ensureRunPolicyBootstraps(cwd, existing, state) ? existing : null;
   // Create-once is stronger than "valid existing wins": once the path has
   // been published, a malformed/tampered snapshot must never be silently
   // replaced from mutable machine-global state. Children and parents both fail
@@ -424,22 +229,161 @@ export function ensureRunModelPolicy(
   const candidate = buildRunModelPolicy(cwd, runId, host, state, env);
   if (!candidate) return null;
   const lockPath = acquirePolicyLock(filePath);
-  if (!lockPath) return readRunModelPolicy(cwd, runId);
+  if (!lockPath) {
+    const raced = readRunModelPolicy(cwd, runId);
+    return raced && ensureRunPolicyBootstraps(cwd, raced, state) ? raced : null;
+  }
   try {
     const underLock = readRunModelPolicy(cwd, runId);
-    if (underLock) return underLock;
+    if (underLock) return ensureRunPolicyBootstraps(cwd, underLock, state) ? underLock : null;
     if (fs.existsSync(filePath)) return null;
     writePolicyAtomic(filePath, candidate);
-    return readRunModelPolicy(cwd, runId);
+    const published = readRunModelPolicy(cwd, runId);
+    return published && ensureRunPolicyBootstraps(cwd, published, state) ? published : null;
   } finally {
     try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
 }
 
-export function runRoleModelPolicy(
+export function ensureRunPolicyBootstraps(
+  cwd: string,
+  policy: RunModelPolicyV1,
+  state: unknown,
+): boolean {
+  const capability = capabilityProfileForRun(cwd, state);
+  const architecture = readCompiledArchitecture(cwd, policy.runId);
+  const verification = readVerificationContract(cwd, policy.runId);
+  const assignments = readRuntimeAssignments(cwd, policy.runId);
+  const compiledReady = Boolean(
+    architecture
+    && verification
+    && assignments
+    && assignments.architectureHash === architecture.contractHash
+    && assignments.verificationHash === verification.contractHash,
+  );
+  // Precompile is a planning phase: only the architect has a strict work unit
+  // hashed to the immutable capability+baseline snapshot. Empty implementer,
+  // tester, reviewer, shipper, or quick-fix envelopes are never published.
+  // A skippable scope-requiring role the compiled assignments give nothing to
+  // is not part of this run either — publishing must not demand an envelope
+  // for it (see roleSkippableWithoutAssignment: the frontend-only
+  // existing-codebase maintenance plan that senior-backend deadlocked at
+  // PLAN_READY; senior-tester deliberately stays load-bearing).
+  const roles = (compiledReady ? capability.roles : ['senior-architect'])
+    .filter((role) => Boolean(policy.roles[role]))
+    .filter((role) => !compiledReady
+      || !roleSkippableWithoutAssignment(role)
+      || assignments!.assignments.some((entry) => entry.role === role));
+  const host = readRunHostCapability(cwd, policy.runId, policy.host)
+    || ensureRunHostCapability(cwd, policy.runId, policy.host);
+  if (!host) return false;
+  const typed = host.typedSubagents === true;
+  return roles.every((role) => {
+    const options = {
+      host: policy.host,
+      hostAgentType: typed ? role : null,
+      evidenceSource: 'parent-policy-preflight',
+      modelPolicyId: policy.policyId,
+    };
+    // A role that owes a PENDING maintenance fallback cannot hold its planned
+    // full-scope envelope: until the debt is discharged `fallbackContractMatches`
+    // admits only the debts' own bounded scope, and a full-scope preflight
+    // publish is precisely the widening that guard exists to refuse. Failing the
+    // whole preflight on that refusal wedged the entire session — the policy
+    // read null, SessionStart emitted TRAFFIC_ONE_MODEL_POLICY_BLOCKED and the
+    // onboarding gate denied every parent tool call, while the only thing that
+    // can discharge the debt is a paid fallback child the blocked parent can no
+    // longer start (observed 16co, senior-frontend, permanent).
+    if (roleOwesPendingMaintenanceFallback(cwd, policy.runId, role)) {
+      const debtSources = pendingMaintenanceDebtSources(cwd, policy.runId, role);
+      // Publish the SAME bounded union the spawn gate derives, so the role stays
+      // live for the work it actually owes and the paid-fallback finalizer finds
+      // a valid active envelope. When no scope can be derived — an unreadable
+      // debt baseline, or a role that cannot carry a bounded unit — publish
+      // NOTHING and leave the spawn gate as the enforcement point. Skipping
+      // grants no authority: publication is what grants it, `ensureRunBootstrap`
+      // still denies the spawn, and every reader re-runs the same guard through
+      // `readActiveRunBootstrap`, so a stale envelope stays void either way.
+      if (debtSources) {
+        ensureRunBootstrap(cwd, policy.runId, role, state, {
+          ...options,
+          boundedOutputs: debtSources,
+          boundedAllowlist: debtSources,
+          boundedAllowlistExclude: [],
+        });
+      }
+      return true;
+    }
+    return Boolean(ensureRunBootstrap(cwd, policy.runId, role, state, options));
+  });
+}
+
+// "Will the parent gates refuse to work in this run?" — the read-only form of
+// the exact question SessionStart and the onboarding gate already answer, so a
+// THIRD surface (prompt-boundary maintenance routing) can defer to them instead
+// of re-deriving the chain. Two hooks contradicting each other inside one turn
+// is what burned 16co: 07:12:09Z SessionStart "Do not spawn a child", 07:12:10Z
+// the triage reminder "OpenCode runId for opencode_delegate: 1785619235671".
+// The agent followed the newer instruction and spent the session against a gate
+// that denies every parent tool call.
+//
+// The precondition is CREATE-ONCE, not "something failed": a run whose policy
+// path is already published can never be rebased, so no later prompt in that run
+// repairs it — all three arms below are permanent for this run id. A run with no
+// policy file yet is merely unfrozen: Performance still repairs it and the next
+// freeze can succeed, so routing stays best-effort there (the F3 rotation
+// contract) and this returns false.
+export function runBootstrapBlocked(
   cwd: string,
   runId: string,
-  role: string,
-): RunRoleModelPolicy | null {
-  return readRunModelPolicy(cwd, runId)?.roles[role] || null;
+  hostInput: unknown,
+  state: unknown,
+): boolean {
+  if (!runId || isNonProjectRoot(cwd)) return false;
+  if (!fs.existsSync(runModelPolicyPath(cwd, runId))) return false;
+  // Published but unreadable/tampered: create-once forbids replacing it.
+  const policy = readRunModelPolicy(cwd, runId);
+  if (!policy) return true;
+  // Frozen for another host: only a NEW parent run can serve this one.
+  if (policy.host !== canonicalHost(hostInput)) return true;
+  try {
+    return !ensureRunPolicyBootstraps(cwd, policy, state);
+  } catch {
+    // Fail OPEN, matching every freeze call site: a throwing preflight must
+    // never be the thing that silences routing. The gates remain the
+    // enforcement point.
+    return false;
+  }
 }
+
+export function canPublishRunPolicyBootstraps(
+  cwd: string,
+  policy: RunModelPolicyV1,
+  state: unknown,
+  contracts: BootstrapRuntimeContractsV1,
+): boolean {
+  const capability = capabilityProfileForRun(cwd, state);
+  const roles = capability.roles.filter((role) => Boolean(policy.roles[role]));
+  const host = readRunHostCapability(cwd, policy.runId, policy.host);
+  if (!host) return false;
+  return canResolveRunBootstrapSet(
+    cwd,
+    policy.runId,
+    roles,
+    policy.host,
+    host.typedSubagents === true,
+    contracts,
+  );
+}
+
+export {
+  RUN_MODEL_POLICY_SCHEMA_VERSION,
+  policyModelsForExpected,
+  readRunModelPolicy,
+  resolveRunPolicyFallback,
+  runModelPolicyPath,
+  type RunModelPolicyV1,
+  type RunPolicyFallbackCandidate,
+  type RunPolicyFallbackRequest,
+  type RunRoleModelPolicy,
+} from './run-model-policy-schema';

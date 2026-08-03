@@ -4,6 +4,7 @@ import { planWriteGate } from './plan-write';
 import { deployGate } from './deploy-gate';
 import { libraryAllowlistGate } from './handler';
 import { scaffoldGate } from './scaffold-gate';
+import { supabaseLocalGate } from './supabase-local-gate';
 
 export const handlers: Handler[] = [
   {
@@ -25,6 +26,18 @@ export const handlers: Handler[] = [
     subcommands: ['check-library-allowlist'],
     priority: 22,
     run: (ctx) => scaffoldGate(ctx),
+  },
+  {
+    // Supabase local-stack gate, all hosts: the platform-connected flow never
+    // boots `supabase start`/local containers (observed 3cl: OrbStack launch +
+    // minutes of Docker polling). Priority 24: after scaffold (22), before
+    // deploy (25) so lifecycle commands are classified before deploy patterns.
+    id: 'plan-guard.supabase-local',
+    event: 'PreToolUse',
+    tools: ['shell'],
+    subcommands: ['check-library-allowlist'],
+    priority: 24,
+    run: (ctx) => supabaseLocalGate(ctx),
   },
   {
     // Deploy gate shares the check-library-allowlist subcommand; priority 25 runs

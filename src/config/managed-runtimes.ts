@@ -17,8 +17,8 @@
 
 export type RuntimeKind = 'python' | 'node';
 
-export interface NodePin { version: string; }
-export interface PythonPin { version: string; releaseTag: string; }
+interface NodePin { version: string; }
+interface PythonPin { version: string; releaseTag: string; }
 
 // Node: official LTS line satisfying gitnexus' Node >=22 (and opencode's >=18).
 export const NODE_PIN: NodePin = { version: '22.11.0' };

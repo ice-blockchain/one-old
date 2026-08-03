@@ -26,7 +26,7 @@ to the canonical path when that can be done without dropping newer content.
 ## Canonical docs
 
 The canonical documentation set — which files exist (`README.md`, `AGENTS.md`,
-`CLAUDE.md`, `.cursor/rules/*.mdc`, `.traffic-one/plan.md`, ADRs, api/database/
+`CLAUDE.md`, `.traffic-one/plan.md`, ADRs, api/database/
 deployment/security/environment-setup docs, `CHANGELOG.md`, `CONTRIBUTING.md`,
 `llms.txt`), what each is for, and its required content — is defined in the
 `auto-documentation-generator` skill's Documentation Set table. That table is

@@ -1,11 +1,32 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'child_process';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { planReadinessViolations, architectPhaseIncompleteReasons, isArchitectPhaseComplete } from '../plan-readiness';
+import { refreshVerificationAfterImplementation } from '../plan-readiness/contracts';
 import { writeArchitectPhaseComplete } from './architect-phase-fixtures';
+import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+  readCompiledArchitecture,
+  readRuntimeAssignments,
+} from '../../../shared/architecture-contract';
+import { formatParityViolation, roleOwnedTsOutputs } from '../plan-readiness/toolchain';
+import {
+  missingPlannedModulesForRole,
+  noImplementerRoleSummary,
+  undeliveredContractOutputs,
+} from '../plan-readiness/checks';
+import {
+  compileVerificationContract,
+  readVerificationContract,
+} from '../../../shared/verification-contract';
+import { ensureRunBootstrap } from '../../../shared/run-bootstrap-policy';
+import { effectiveLegacyRunStatus } from '../../../shared/run-settlement';
 
 const names = (name: string): string => name;
 
@@ -54,7 +75,12 @@ function writeRequiredScaffold(dir: string): void {
     private: true,
     packageManager: 'pnpm@10.12.1',
     workspaces: ['apps/*', 'packages/*'],
+    scripts: { 'format:check': 'prettier --check .' },
+    // Script/config parity: the fixture declares the tool its script names,
+    // matching the owner-scoped implementer-format-parity-gate contract.
+    devDependencies: { prettier: '^3.0.0' },
   }), 'utf8');
+  fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100, "singleQuote": true }\n', 'utf8');
   for (const rel of [
     'apps/web',
     'packages/ui/src',
@@ -104,9 +130,50 @@ function writeRequiredMemory(dir: string, state: Record<string, unknown> = DEFAU
   }
 }
 
+function writeArchitectureInputAndAssignments(
+  dir: string,
+  runId = 'R',
+  state: Record<string, unknown> = DEFAULT_STATE,
+  input?: Record<string, unknown>,
+): void {
+  writeArchitectureInputOnly(dir, runId, input);
+  const architecture = compileArchitectureForRun(dir, runId, state);
+  const verification = compileVerificationContract(dir, runId, state, architecture, {
+    changedPaths: [],
+  });
+  publishRuntimeAssignments(dir, architecture, verification.contractHash);
+}
+
+function writeArchitectureInputOnly(
+  dir: string,
+  runId = 'R',
+  input?: Record<string, unknown>,
+): void {
+  const inputPath = architectureInputPath(dir, runId);
+  fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+  fs.writeFileSync(inputPath, JSON.stringify(input || {
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [
+      { id: 'app-shell', name: 'App', kind: 'app-shell' },
+      { id: 'home', name: 'Home', kind: 'page' },
+    ],
+  }), 'utf8');
+}
+
 const DEFAULT_STATE = {
   mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
 };
+
+// Satisfies the owner-scoped implementer format gate for fixtures exercising OTHER
+// frontend completion gates (the gate itself is covered by its own tests).
+function writeFormatterToolchain(dir: string): void {
+  fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100 }\n', 'utf8');
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    private: true,
+    devDependencies: { prettier: '^3.0.0' },
+  }), 'utf8');
+}
 
 test('monorepo-package-json: a non-workspace root package.json on a monorepo stack is blocked', () => {
   withProject((dir) => {
@@ -233,7 +300,7 @@ test('plan-architect-self-gate: the architect is told to write the plan itself, 
   });
 });
 
-test('plan gates: architect baseline scaffold writes never trip the plan-missing gate (B8)', () => {
+test('architect planning allowlist denies package and Tailwind scaffold writes', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -250,8 +317,8 @@ test('plan gates: architect baseline scaffold writes never trip the plan-missing
         filePath, content, projectRoot: dir,
         state, writingFeatureSource: true, block: names,
       });
-      assert.ok(!v.includes('plan-gate') && !v.includes('plan-architect-self-gate'), `${filePath}: ${v.join(', ')}`);
-      assert.ok(!v.includes('architect-pre-ready-feature'), `${filePath}: ${v.join(', ')}`);
+      assert.ok(v.includes('architect-planning-allowlist-gate'), `${filePath}: ${v.join(', ')}`);
+      assert.ok(!v.includes('plan-gate'), `${filePath}: ${v.join(', ')}`);
     }
   });
 });
@@ -267,7 +334,7 @@ test('plan-gate: legacy architecture.md does not satisfy readiness', () => {
   });
 });
 
-test('architect completion gate: PLAN_READY requires the baseline monorepo scaffold', () => {
+test('architect completion gate requires semantic input and memory, never an agent scaffold', () => {
   withProject((dir) => {
     const state = { ...DEFAULT_STATE, onboardingComplete: true };
     const v = planReadinessViolations({
@@ -278,8 +345,21 @@ test('architect completion gate: PLAN_READY requires the baseline monorepo scaff
       writingFeatureSource: false,
       block: names,
     });
-    assert.ok(v.includes('architect-scaffold-gate'));
+    assert.ok(!v.includes('architect-scaffold-gate'));
     assert.ok(v.includes('architect-memory-baseline-gate'));
+    assert.ok(!v.includes('architecture-contract-gate'),
+      'runtime compilation starts only after earlier PLAN_READY prerequisites pass');
+
+    writeRequiredMemory(dir, state);
+    const missingInput = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(missingInput.includes('architecture-contract-gate'));
 
     const nonTerminal = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
@@ -293,10 +373,883 @@ test('architect completion gate: PLAN_READY requires the baseline monorepo scaff
   });
 });
 
-test('architect completion gate: PLAN_READY is allowed once scaffold files exist', () => {
+test('capability-no-implementer-gate: a zero-implementer profile denies PLAN_READY before compilation', () => {
+  withProject((dir) => {
+    // The exact state the classifier used to mint for a brochure brief. The
+    // capability profile compiles to backend-only with zero surfaces, so
+    // profile.roles is UNIVERSAL_ROLES only: nobody may write code.
+    const state = {
+      mode: 'new-project',
+      stack: 'minimal',
+      frontend: 'none',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeRequiredMemory(dir, state);
+    writeArchitectureInputOnly(dir);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(v.includes('capability-no-implementer-gate'), `got: ${v.join(', ')}`);
+    // Pre-compile: the architect's semantic input is never blamed for a defect
+    // that lives in .one.json. Post-compile this deny is unreachable — the
+    // compiler throws on the first UI module for a no-UI profile.
+    assert.ok(!v.includes('architecture-contract-gate'), `got: ${v.join(', ')}`);
+    // …and nothing runtime-owned is minted for a run that can never build.
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'capability-v1.json')), false);
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(readCompiledArchitecture(dir, 'R'), null);
+  });
+});
+
+test('capability-no-implementer-gate: every profile with an implementer passes it', () => {
+  // One implementer is enough. These are the shapes the gate must never touch:
+  // frontend-only web, backend-only api, native-only, and the existing-codebase
+  // floor (stack `minimal` + backend `other`, which is NOT in BACKEND_NONE).
+  const rows: Array<[string, Record<string, unknown>]> = [
+    ['react-vite frontend, no backend', {
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'react-vite', backend: 'none',
+      mobile: { framework: 'none' },
+    }],
+    ['go api, no frontend', {
+      mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'go',
+      mobile: { framework: 'none' },
+    }],
+    ['python api, no frontend', {
+      mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'python',
+      mobile: { framework: 'none' },
+    }],
+    ['expo native only', {
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'none', backend: 'none',
+      mobile: { framework: 'react-native-expo' },
+    }],
+    ['ionic over react-vite', {
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'react-vite', backend: 'none',
+      mobile: { framework: 'ionic-capacitor' },
+    }],
+    ['floored existing codebase', {
+      mode: 'existing-codebase', stack: 'minimal', frontend: 'none', backend: 'other',
+      mobile: { framework: 'none' },
+    }],
+    ['laravel with an unspecified web UI', {
+      mode: 'new-project', stack: 'custom-stack', frontend: 'other', backend: 'laravel',
+      mobile: { framework: 'none' },
+    }],
+  ];
+  for (const [label, state] of rows) {
+    withProject((dir) => {
+      assert.equal(noImplementerRoleSummary(dir, state), null, label);
+    });
+  }
+});
+
+test('capability-no-implementer-gate: an external-api project with no UI has no implementer either', () => {
+  // Documented consequence, not an accident: backend `external-api` is in
+  // BACKEND_NONE, and on a fresh project there is no api/cli/worker/data surface
+  // to earn senior-backend. Such a run already deadlocked silently — the
+  // compiler assigns service modules to a senior-frontend the profile declares
+  // ineligible, and the orchestration directive forbids spawning one. The gate
+  // turns that deadlock into an actionable deny.
+  withProject((dir) => {
+    const summary = noImplementerRoleSummary(dir, {
+      mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'external-api',
+      mobile: { framework: 'none' },
+    });
+    assert.ok(summary && summary.includes('external-api'), `got: ${summary}`);
+  });
+});
+
+test('a rejected PLAN_READY prerequisite publishes no assignments or implementation bootstrap', () => {
+  withProject((dir) => {
+    writeArchitectureInputOnly(dir);
+    const missingMemory = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(missingMemory.includes('architect-memory-baseline-gate'));
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'bootstrap', 'senior-frontend', 'active.json')), false);
+
+    writeRequiredMemory(dir);
+    writePlan(dir);
+    const queueState = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    const missingQueue = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: queueState,
+      writingFeatureSource: false,
+      host: 'claude',
+      block: names,
+    });
+    assert.ok(missingQueue.includes('architect-opencode-queue-gate'));
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'bootstrap', 'senior-frontend', 'active.json')), false);
+
+    // Preserved-queue repair at the PLAN_READY touchpoint: with a durable
+    // snapshot for run R, the same write re-appends the block to plan.md on
+    // disk instead of denying the architect for a rewrite it cannot undo.
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'runs', 'R'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', 'R', 'opencode-plan-block.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: i18n | role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
+      '- id: seed | role: backend | files: supabase/seed.sql | task: seed demo rows',
+      '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
+      '<!-- opencode-delegate:end -->',
+      '',
+    ].join('\n'), 'utf8');
+    const restored = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: queueState,
+      writingFeatureSource: false,
+      host: 'claude',
+      block: names,
+    });
+    assert.ok(!restored.includes('architect-opencode-queue-gate'));
+    const repairedPlan = fs.readFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'utf8');
+    assert.ok(repairedPlan.includes('opencode-delegate:start'));
+    assert.ok(repairedPlan.includes('- id: smoke | role: tester'));
+  });
+});
+
+test('completion denies out-of-scope queue units with the compiled lists and accepts once retargeted; static queue errors deny WITHOUT persisting the compile', () => {
+  const QUEUE_STATE = {
+    ...DEFAULT_STATE,
+    onboardingComplete: true,
+    openCode: { enabled: true },
+    toolchain: { opencode: { installedVersion: '1.0.0' } },
+  };
+  const digestArgs = (dir: string) => ({
+    filePath: '.traffic-one/digests/R/architect.md',
+    content: 'verdict: PLAN_READY\n',
+    projectRoot: dir,
+    state: QUEUE_STATE,
+    writingFeatureSource: false,
+    host: 'claude' as const,
+    block: names,
+  });
+  const planWithQueue = (dir: string, rows: string[]): void => {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      'plan',
+      '<!-- opencode-delegate:start -->',
+      ...rows,
+      '<!-- opencode-delegate:end -->',
+      '',
+    ].join('\n'), 'utf8');
+  };
+  // Scope history: after 2cl this check was deferred to Step-0 because the
+  // deny left the architect guessing compiled paths. Deferring it silently
+  // wasted whole batches instead (5cl-claude: 0/3 units delegable, no signal
+  // to the architect). The check is back at completion because the deny now
+  // renders from the candidate assignments born in this same call and lists
+  // the owning role's REAL in-scope files — a denied queue is always fixable
+  // by retargeting `files:` to those exact paths. A denied completion still
+  // persists NO compiled sidecar.
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir, QUEUE_STATE);
+    writeArchitectureInputOnly(dir);
+    planWithQueue(dir, [
+      '- id: demo-content | role: frontend | kind: seed-data | files: apps/web/src/lib/never-compiled.ts | task: self-contained demo catalog data module',
+      '- id: locales-en | role: frontend | kind: i18n | files: packages/i18n/src/locales/en/common.json | task: draft english copy catalog',
+      '- id: readme-draft | role: docs | kind: docs | files: README.md | task: project readme draft',
+    ]);
+    const denied = planReadinessViolations(digestArgs(dir));
+    assert.ok(denied.includes('architect-opencode-queue-policy-gate'),
+      `out-of-scope unit files must deny PLAN_READY with the compiled lists, got: ${denied.join(', ')}`);
+    // deny persists nothing (2cl lockout stays fixed)
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'architecture-v1.json')), false);
+    // retargeting to compiled in-scope files (named by the deny) is accepted
+    planWithQueue(dir, [
+      '- id: demo-content | role: frontend | kind: seed-data | files: packages/i18n/src/index.ts | task: self-contained demo catalog data module',
+      '- id: locales-en | role: frontend | kind: i18n | files: packages/i18n/src/locales/en/common.json | task: draft english copy catalog',
+      '- id: readme-draft | role: docs | kind: docs | files: README.md | task: project readme draft',
+    ]);
+    const v = planReadinessViolations(digestArgs(dir));
+    assert.deepEqual(v, []);
+    // full accept: compiled + assignments actually published by the gate
+    assert.ok(readRuntimeAssignments(dir, 'R'));
+    assert.ok(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'architecture-v1.json')));
+  });
+  // static authoring error (duplicate id): still denies — and the denied
+  // completion leaves NO compiled sidecar behind (2cl lockout: a persisted
+  // compile next to a denied digest invalidated the live architect bootstrap)
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir, QUEUE_STATE);
+    writeArchitectureInputOnly(dir);
+    planWithQueue(dir, [
+      '- id: dup-unit | role: frontend | kind: seed-data | files: apps/web/src/lib/a.ts | task: data module a',
+      '- id: dup-unit | role: frontend | kind: seed-data | files: apps/web/src/lib/b.ts | task: data module b',
+      '- id: readme-draft | role: docs | kind: docs | files: README.md | task: project readme draft',
+    ]);
+    const v = planReadinessViolations(digestArgs(dir));
+    assert.ok(v.includes('architect-opencode-queue-policy-gate'));
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'architecture-v1.json')), false);
+  });
+});
+
+test('architect completion gate does not require agent-authored formatter scaffold', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir);
+    writeArchitectureInputAndAssignments(dir);
+    // strip only the formatting pieces (observed 10c: collapsed one-line code
+    // shipped because nothing forced a formatter into the scaffold)
+    fs.rmSync(path.join(dir, '.prettierrc'));
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as Record<string, unknown>;
+    delete pkg.scripts;
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg), 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // a "prettier" key in package.json + the script satisfies both requirements
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      ...pkg,
+      prettier: { printWidth: 100 },
+      scripts: { 'format:check': 'prettier --check .' },
+    }), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+  });
+});
+
+test('architect completion gate compiles and publishes runtime assignments without physical scaffold files', () => {
+  withProject((dir) => {
+    writeRequiredMemory(dir);
+    writeArchitectureInputAndAssignments(dir);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, []);
+    const assignments = readRuntimeAssignments(dir, 'R');
+    assert.ok(assignments);
+    assert.ok(assignments.assignments.some((entry) => (
+      entry.role === 'senior-frontend'
+      && entry.scope.include.includes('apps/web/package.json')
+    )));
+    const runDir = path.join(dir, '.traffic-one', 'runs', 'R');
+    const ledger = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8'));
+    assert.equal(ledger.status, 'failed');
+    assert.equal(ledger.outcome, 'agent-failed');
+    assert.equal(effectiveLegacyRunStatus(ledger, '1.0.19'), 'failed');
+    assert.equal(effectiveLegacyRunStatus(ledger, '1.0.20'), 'active');
+    assert.ok(fs.existsSync(path.join(runDir, 'verification-v2.json')));
+    assert.ok(fs.existsSync(path.join(runDir, 'settlement-v2.json')));
+  });
+});
+
+test('PLAN_READY rejects malformed strict verification intent without publishing runtime contracts', () => {
+  withProject((dir) => {
+    writeRequiredMemory(dir);
+    writeArchitectureInputOnly(dir);
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '# Plan',
+      '<!-- traffic-one-verification:start -->',
+      '{"schemaVersion":1,"redesign":"yes"}',
+      '<!-- traffic-one-verification:end -->',
+      '',
+    ].join('\n'));
+
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+
+    assert.ok(violations.includes('architecture-contract-gate'));
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
+    assert.equal(readVerificationContract(dir, 'R'), null);
+  });
+});
+
+test('PLAN_READY consumes strict verification intent and IMPLEMENTED refreshes uiImpact from the real diff', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+      currentRunId: 'R',
+      team: { mode: 'main-agent' },
+    };
+    for (const rel of ['apps/web/src/pages', 'apps/web/src/components', 'apps/web/src/features']) {
+      fs.mkdirSync(path.join(dir, rel), { recursive: true });
+    }
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: { react: '19', 'react-dom': '19', 'react-router-dom': '7', vite: '7' },
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/main.tsx'),
+      "import { createRoot } from 'react-dom/client';\nimport { App } from './App';\ncreateRoot(document.getElementById('root')!).render(<App />);\n",
+    );
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/App.tsx'),
+      "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\nimport { Home } from './pages/Home';\nconst router = createBrowserRouter([{ path: '/', element: <Home /> }]);\nexport function App(){ return <RouterProvider router={router} />; }\n",
+    );
+    const page = path.join(dir, 'apps/web/src/pages/Home.tsx');
+    fs.writeFileSync(page, 'export function Home(){ return <main>Home</main>; }\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+
+    writeRequiredMemory(dir, state);
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '# Plan',
+      '<!-- traffic-one-verification:start -->',
+      '{"schemaVersion":1,"redesign":true,"explicitLighthouse":{"performanceMin":95,"seoMin":95}}',
+      '<!-- traffic-one-verification:end -->',
+      '',
+    ].join('\n'));
+    writeArchitectureInputOnly(dir, 'R');
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
+
+    const ready = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(ready, []);
+    const planned = readVerificationContract(dir, 'R');
+    assert.equal(planned?.performance.required, true);
+    assert.equal(planned?.performance.reason, 'explicit');
+    assert.deepEqual(planned?.performance.explicitThresholds, {
+      performanceMin: 95,
+      seoMin: 95,
+    });
+    assert.equal(planned?.uiImpact, 'nonvisual');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R', 'architect.md'), 'verdict: PLAN_READY\n');
+
+    fs.writeFileSync(page, 'export function Home(){ return <main className="wide">Updated</main>; }\n');
+    const implemented = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(implemented, []);
+    const refreshed = readVerificationContract(dir, 'R');
+    assert.equal(refreshed?.uiImpact, 'visual');
+    assert.deepEqual(refreshed?.requiredScreenshotWidths, [390, 1440]);
+    assert.deepEqual(refreshed?.performance.explicitThresholds, {
+      performanceMin: 95,
+      seoMin: 95,
+    });
+    assert.notEqual(refreshed?.contractHash, planned?.contractHash);
+    assert.equal(readRuntimeAssignments(dir, 'R')?.verificationHash, refreshed?.contractHash);
+
+    fs.writeFileSync(path.join(dir, 'apps/web/src/rogue.ts'), 'export const rogue = true;\n');
+    const review = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/reviewer.md',
+      content: 'verdict: APPROVED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    // Verdict-specific id: one block per verdict, so the reviewer is never told
+    // that `IMPLEMENTED` is forbidden (observed 10co, where the tester writing
+    // TESTS_GREEN received the IMPLEMENTED wording from the shared block).
+    assert.ok(review.includes('verification-contract-refresh-gate-approved'),
+      'an unplanned source path must require replanning before review');
+    assert.ok(!review.includes('verification-contract-refresh-gate'),
+      'the reviewer must not render the IMPLEMENTED-worded block');
+  });
+});
+
+// REGRESSION (observed live, 13cl/14cl): VerificationContractV2 froze the exact
+// planned-output list while the assignment scope for a folder-shaped feature
+// module authorizes the whole DIRECTORY. Legitimate sibling files landed
+// through the write gate, then the refresh gate denied every verdict as
+// "changed paths outside the frozen verification/WorkUnit authority" — with
+// eslint max-lines:400 making the single-file alternative illegal, the two
+// constraints were unsatisfiable and 14cl's frontend deleted its sibling split
+// to pass. The verification authority must be the SAME set the assignment
+// already authorizes.
+test('refresh authority accepts assignment-scoped siblings, tester tests, and runtime context, still denying unowned paths', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+      currentRunId: 'R',
+      team: { mode: 'main-agent' },
+    };
+    for (const rel of ['apps/web/src/pages', 'apps/web/src/components', 'apps/web/src/features']) {
+      fs.mkdirSync(path.join(dir, rel), { recursive: true });
+    }
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: { react: '19', 'react-dom': '19', 'react-router-dom': '7', vite: '7' },
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/main.tsx'),
+      "import { createRoot } from 'react-dom/client';\nimport { App } from './App';\ncreateRoot(document.getElementById('root')!).render(<App />);\n",
+    );
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/App.tsx'),
+      "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\nimport { Home } from './pages/Home';\nconst router = createBrowserRouter([{ path: '/', element: <Home /> }]);\nexport function App(){ return <RouterProvider router={router} />; }\n",
+    );
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'), 'export function Home(){ return <main>Home</main>; }\n');
+    // Runtime-maintained root context, tracked in the baseline like any real
+    // onboarded project.
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Project agents\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+
+    writeRequiredMemory(dir, state);
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'plan', 'utf8');
+    writeArchitectureInputOnly(dir, 'R', {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'contact', name: 'Contact', kind: 'feature' },
+      ],
+    });
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
+
+    const ready = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(ready, []);
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R', 'architect.md'), 'verdict: PLAN_READY\n');
+
+    const architecture = readCompiledArchitecture(dir, 'R');
+    assert.ok(architecture);
+    const feature = architecture.modules.find((module) => module.kind === 'feature');
+    assert.ok(feature?.outputBase, 'fixture guard: the feature module must be folder-shaped');
+    const featureDir = path.posix.dirname(feature.outputBase!);
+    const assignments = readRuntimeAssignments(dir, 'R');
+    assert.ok(assignments?.assignments.some((entry) => (
+      entry.role === 'senior-frontend' && entry.scope.include.includes(featureDir)
+    )), 'fixture guard: the frontend assignment covers the feature DIRECTORY');
+
+    // The implementer splits the feature: barrel + a sibling file the planned
+    // output list never named. The sibling is inside the assigned scope.
+    fs.mkdirSync(path.join(dir, featureDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, feature.output), [
+      "export { ContactChannels } from './ContactChannels';",
+      '',
+      'export function Contact() {',
+      '  return <section className="feature-contact" />;',
+      '}',
+      '',
+    ].join('\n'));
+    const sibling = `${featureDir}/ContactChannels.tsx`;
+    fs.writeFileSync(path.join(dir, sibling), [
+      'export function ContactChannels() {',
+      '  return <ul className="contact-channels" />;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const implemented = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(implemented, [], 'a sibling inside the assigned feature scope must pass the refresh gate');
+    const refreshed = readVerificationContract(dir, 'R');
+    assert.ok(refreshed?.changedPaths.includes(sibling),
+      'the refreshed contract must adopt the sibling into the verification identity');
+
+    // Runtime-maintained context: materialization re-appends AGENTS.md on
+    // every session. That must never block a verdict nor churn the contract.
+    fs.appendFileSync(path.join(dir, 'AGENTS.md'), '\n<!-- GENERATED BY traffic-one: project-local active rules -->\n');
+    const review = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/reviewer.md',
+      content: 'verdict: APPROVED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(review, [], 'an AGENTS.md re-append must never block a verdict');
+    assert.equal(readVerificationContract(dir, 'R')?.changedPaths.includes('AGENTS.md'), false,
+      'runtime-maintained context stays out of the contract identity');
+
+    // Tester-owned test file the plan never named, under the run-team gate's
+    // own tester-ownership rule (13cl: tests/i18n-parity.test.ts).
+    fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'tests/i18n-parity.test.ts'), 'export const parity = true;\n');
+    const testerRefresh = refreshVerificationAfterImplementation(dir, 'R', state);
+    assert.equal(testerRefresh.error, null, 'a tester-owned test file must be authorized');
+
+    // A genuinely unowned path (the 12co llms.txt class) still denies.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/rogue.ts'), 'export const rogue = true;\n');
+    const rogueRefresh = refreshVerificationAfterImplementation(dir, 'R', state);
+    assert.match(rogueRefresh.error || '', /outside the frozen verification\/WorkUnit authority.*rogue\.ts/);
+  });
+});
+
+test('frontend completion gate: IMPLEMENTED is denied while product source is collapsed, allowed once split/formatted', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src/pages'), { recursive: true });
+    writeFormatterToolchain(dir);
+    const collapsedLine = `function App() { ${'const x = <div className="a">hi</div>; return <section>{x}</section>; '.repeat(12)} }`;
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), `${collapsedLine}\n`, 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\nTouched: apps/web/src/App.tsx\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    assert.ok(collapsedLine.length > 500, 'fixture line is a genuine collapse');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-collapse-gate'));
+
+    // Split into multi-line, formatted source — the gate clears.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), [
+      'export function App() {',
+      '  const x = <div className="a">hi</div>;',
+      '  return <section>{x}</section>;',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+  });
+});
+
+test('frontend completion gate scans capability roots and still blocks collapsed CSS/SCSS', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'frontend/src/styles'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'frontend/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    fs.writeFileSync(path.join(dir, 'frontend/src/main.tsx'), 'export {};\n');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\nTouched: frontend/src/styles/app.css\n',
+      projectRoot: dir,
+      state: {
+        ...DEFAULT_STATE,
+        mode: 'existing-codebase',
+        stack: 'custom-frontend',
+        frontend: 'none',
+        backend: 'none',
+        onboardingComplete: true,
+      },
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    const collapsedCss = `.app{${'color:red;background:black;border:0;'.repeat(20)}}`;
+    assert.ok(collapsedCss.length > 500);
+    fs.writeFileSync(path.join(dir, 'frontend/src/styles/app.css'), `${collapsedCss}\n`);
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-collapse-gate'));
+
+    fs.writeFileSync(path.join(dir, 'frontend/src/styles/app.css'), '.app {\n  color: red;\n}\n');
+    const collapsedScss = `.panel{${'$gap:1rem;margin:$gap;padding:$gap;'.repeat(20)}}`;
+    assert.ok(collapsedScss.length > 500);
+    fs.writeFileSync(path.join(dir, 'frontend/src/styles/app.scss'), `${collapsedScss}\n`);
+    assert.ok(planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: IMPLEMENTED\nTouched: frontend/src/styles/app.scss\n',
+    }).includes('frontend-collapse-gate'));
+  });
+});
+
+// REGRESSION (observed live, 10co): the compiled `tests/route-smoke.test.ts` was never
+// written, but the ONLY gate checking planned-module existence ran at the reviewer's
+// APPROVED — after both fix cycles were spent. The run hit the two-cycle cap and needed a
+// user authorization to recover. The tester owns that path, so it must fail here first.
+test('tester completion gate: TESTS_GREEN is denied while a tester-owned planned module is missing', () => {
+  withProject((dir) => {
+    const runId = 'R';
+    // Exactly the 10co shape: the architect declares a `test` module and the
+    // compiler assigns it `ownerRole: senior-tester` + `tests/<kebab>.test.ts`.
+    writeArchitectureInputAndAssignments(dir, runId, DEFAULT_STATE, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'route-smoke', name: 'Route smoke', kind: 'test' },
+      ],
+    });
+    const compiled = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'architecture-v1.json'),
+      'utf8',
+    )) as { modules: Array<Record<string, unknown>> };
+    const testerModule = compiled.modules.find((module) => module.ownerRole === 'senior-tester');
+    assert.ok(testerModule, 'the compiler must own the declared test module to senior-tester');
+    const testerOutput = String(testerModule!.output);
+
+    const gateArgs = {
+      filePath: `.traffic-one/digests/${runId}/tester.md`,
+      content: 'verdict: TESTS_GREEN\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    assert.ok(planReadinessViolations(gateArgs).includes('tester-planned-module-gate'),
+      'a missing tester-owned module must be caught at the tester verdict, not at APPROVED');
+
+    // Writing the module clears the gate — the tester can self-serve the fix.
+    fs.mkdirSync(path.join(dir, path.dirname(testerOutput)), { recursive: true });
+    fs.writeFileSync(path.join(dir, testerOutput), 'export {};\n', 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('tester-planned-module-gate'));
+  });
+});
+
+// Observed live (13cl): the tester looped 6+ times in 90 seconds on a
+// byte-identical "invalid-schema: QA sidecar does not match QaReportV2." deny
+// that named no field, hand-editing the JSON blindly between attempts. The
+// deny must name the offending fields and point at the runner that PRODUCES
+// the sidecar — hand-authoring can never carry the machine evidence anyway.
+test('tester completion gate: an invalid-schema deny names the offending fields and the runner command', () => {
+  withProject((dir) => {
+    const runId = 'R';
+    writeArchitectureInputAndAssignments(dir, runId);
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', runId);
+    fs.mkdirSync(qaDir, { recursive: true });
+    // The 13cl shape: a hand-written sidecar — missing required field
+    // (sourceHash), wrong-typed field (routes), unknown top-level key
+    // (screenshots).
+    fs.writeFileSync(path.join(qaDir, 'report-v2.json'), JSON.stringify({
+      schemaVersion: 2,
+      runId,
+      verificationContractHash: 'a'.repeat(64),
+      generatedAt: '2026-07-30T00:00:00.000Z',
+      producer: 'senior-tester',
+      status: 'passed',
+      checks: [],
+      routes: 'all good',
+      screenshots: [],
+    }), 'utf8');
+
+    const denies = planReadinessViolations({
+      filePath: `.traffic-one/digests/${runId}/tester.md`,
+      content: 'verdict: TESTS_GREEN\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: (_name: string, fallback: string) => fallback,
+    });
+    const deny = denies.find((entry) => entry.includes('VerificationContractV2 rejected this verdict'));
+    assert.ok(deny, `expected the tester-qa-v2-gate deny, got: ${denies.join(' | ')}`);
+    // The concrete violations are enumerated, not a bare "does not match".
+    assert.match(deny!, /invalid-schema/);
+    assert.match(deny!, /sourceHash: missing \(required\)/);
+    assert.match(deny!, /routes: must be an array of route objects/);
+    assert.match(deny!, /unknown top-level key: screenshots/);
+    // The exit is the runner, named by its stable shim and its installed-plugin
+    // path (scripts/..., never src/...).
+    assert.match(deny!, /qa-evidence-runner\.cjs/);
+    assert.match(deny!, /scripts\/qa-evidence-runner\.cjs/);
+    assert.ok(!deny!.includes('src/'), 'deny prose must never point at src/ paths');
+  });
+});
+
+// REGRESSION (observed live, cursor-16c): the frontend re-emitted its digest 11s AFTER the
+// tester generated the QA report, so the settlement freshness floor silently refused the
+// report — reviewer APPROVED + tester TESTS_GREEN + a `passed` sweep still left the run
+// non-terminal, and it only recovered by accident when an unrelated request triggered a new
+// sweep. The gate makes the stale verdict fail loudly at write time instead.
+test('tester completion gate: TESTS_GREEN is denied while the QA report predates the implementation', () => {
+  withProject((dir) => {
+    const runId = 'R';
+    const digests = path.join(dir, '.traffic-one', 'digests', runId);
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', runId);
+    fs.mkdirSync(digests, { recursive: true });
+    fs.mkdirSync(qaDir, { recursive: true });
+    const reportAt = '2026-07-25T16:44:58.194Z';
+    fs.writeFileSync(path.join(qaDir, 'report.json'),
+      JSON.stringify({ schemaVersion: 1, runId, generatedAt: reportAt, producer: 'senior-tester', status: 'passed', routes: [] }), 'utf8');
+
+    const gateArgs = {
+      filePath: `.traffic-one/digests/${runId}/tester.md`,
+      content: 'verdict: TESTS_GREEN\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    // Frontend digest NEWER than the report → the sweep never saw the current code.
+    fs.writeFileSync(path.join(digests, 'frontend.md'), 'verdict: IMPLEMENTED\n', 'utf8');
+    const newer = new Date(Date.parse(reportAt) + 11_000);
+    fs.utimesSync(path.join(digests, 'frontend.md'), newer, newer);
+    assert.ok(planReadinessViolations(gateArgs).includes('tester-stale-qa-gate'));
+
+    // A fresh sweep (report now newer than every implementer digest) clears the gate.
+    fs.writeFileSync(path.join(qaDir, 'report.json'),
+      JSON.stringify({ schemaVersion: 1, runId, generatedAt: new Date(newer.getTime() + 60_000).toISOString(), producer: 'senior-tester', status: 'passed', routes: [] }), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // TESTS_FAILING is never gated — an honest failure must always be writable.
+    fs.writeFileSync(path.join(qaDir, 'report.json'),
+      JSON.stringify({ schemaVersion: 1, runId, generatedAt: reportAt, producer: 'senior-tester', status: 'passed', routes: [] }), 'utf8');
+    assert.deepEqual(planReadinessViolations({ ...gateArgs, content: 'verdict: TESTS_FAILING\n' }), []);
+
+    // A heredoc-published digest is judged identically. Heredocs targeting
+    // `.traffic-one/digests/` are exempt from the shell-write deny as run-state
+    // bookkeeping, so `content` is empty on that channel and the whole implementer
+    // battery used to be blind on it — the same digest was denied through `Write`
+    // and accepted through `cat > … <<'EOF'`.
+    assert.deepEqual(planReadinessViolations({
+      ...gateArgs,
+      content: '',
+      shellBody: 'verdict: TESTS_FAILING\n',
+    }), []);
+
+    // …including one that EXPLAINS why it cannot claim the green token. The gate
+    // reads the verdict line, not the whole body: matching the token anywhere
+    // punished the honest report for naming what it could not claim, which is
+    // the exact failure contracts.ts records ("selecting for phrasing, not truth").
+    assert.deepEqual(planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: TESTS_FAILING\n\nCannot emit TESTS_GREEN until stack-build passes.\n',
+    }), []);
+
+    // No QA report at all → other gates own that case, this one stays silent.
+    fs.rmSync(path.join(qaDir, 'report.json'));
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+  });
+});
+
+// Observed live in cursor-17c: a leftover `vite preview` from the PREVIOUS project
+// still held port 4173, so the sweep scored 21/21 `passed` against a different
+// application. Every existing freshness check is temporal and passed — the sweep
+// really did run, just not against this build.
+test('tester completion gate: TESTS_GREEN is denied when the sweep loaded another build', () => {
+  withProject((dir) => {
+    const runId = 'R';
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', runId);
+    fs.mkdirSync(qaDir, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'apps', 'web', 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'apps', 'web', 'dist', 'index.html'),
+      '<!doctype html><html><head><script type="module" crossorigin src="/assets/index-de4D0Waz.js"></script></head><body></body></html>\n', 'utf8');
+
+    const gateArgs = {
+      filePath: `.traffic-one/digests/${runId}/tester.md`,
+      content: 'verdict: TESTS_GREEN\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+    const report = (extra: Record<string, unknown>) => JSON.stringify({
+      schemaVersion: 1,
+      runId,
+      generatedAt: new Date().toISOString(),
+      producer: 'senior-tester',
+      status: 'passed',
+      routes: [],
+      ...extra,
+    });
+
+    // The 17c shape: a report that never says which build answered.
+    fs.writeFileSync(path.join(qaDir, 'report.json'), report({}), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('tester-qa-build-identity-missing'));
+
+    // The 17c failure itself: the served bundle belongs to another project.
+    fs.writeFileSync(path.join(qaDir, 'report.json'), report({ verifiedBuild: 'index-C6Xhh6Ut.js' }), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('tester-qa-build-identity-mismatch'));
+
+    // The served bundle IS this run's build → the gate clears.
+    fs.writeFileSync(path.join(qaDir, 'report.json'), report({ verifiedBuild: 'index-de4D0Waz.js' }), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // An honest failure is never gated.
+    fs.writeFileSync(path.join(qaDir, 'report.json'), report({}), 'utf8');
+    assert.deepEqual(planReadinessViolations({ ...gateArgs, content: 'verdict: TESTS_FAILING\n' }), []);
+
+    // Nothing built yet → nothing to compare against; other gates own that case.
+    fs.rmSync(path.join(dir, 'apps', 'web', 'dist'), { recursive: true, force: true });
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+  });
+});
+
+test('frontend completion gate: a long single-string/data-URI line is NOT flagged as collapse', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    writeFormatterToolchain(dir);
+    // A 900-char string literal has no statement/JSX punctuation — real code, not collapse.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/logo.ts'), `export const LOGO = "data:image/svg+xml;base64,${'A'.repeat(900)}"\n`, 'utf8');
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, [], 'a long single literal must not trip the collapse gate');
+  });
+});
+
+test('architect completion gate: an upgraded packages/ui/src/index.tsx barrel still satisfies PLAN_READY', () => {
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir);
+    writeArchitectureInputAndAssignments(dir);
+    // A sibling role legitimately upgrades the empty barrel to .tsx once
+    // components land in it (observed 12c: after the swap, every PLAN_READY-
+    // bearing architect digest rewrite — including pure ownership-transfer
+    // bookkeeping — was refused because the gate re-required index.ts).
+    fs.rmSync(path.join(dir, 'packages/ui/src/index.ts'));
+    fs.writeFileSync(path.join(dir, 'packages/ui/src/index.tsx'), 'export const ProgressBar = () => null;\n', 'utf8');
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
       content: 'verdict: PLAN_READY\n',
@@ -313,11 +1266,13 @@ test('architect completion gate: PLAN_READY accepts pnpm-workspace.yaml plus roo
   withProject((dir) => {
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir);
+    writeArchitectureInputAndAssignments(dir);
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
       name: 'devlearn',
       private: true,
       packageManager: 'pnpm@10.23.0',
       engines: { node: '>=22' },
+      scripts: { 'format:check': 'prettier --check .' },
     }), 'utf8');
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
@@ -334,6 +1289,7 @@ test('architect completion gate: PLAN_READY accepts pnpm-workspace.yaml plus roo
 test('architect memory baseline gate: PLAN_READY requires project memory for every new project', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);
+    writeArchitectureInputAndAssignments(dir);
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
       content: 'verdict: PLAN_READY\n',
@@ -348,9 +1304,16 @@ test('architect memory baseline gate: PLAN_READY requires project memory for eve
 
 test('architect memory baseline gate: no-backend projects require N/A reasons for backend docs', () => {
   withProject((dir) => {
-    const state = { ...DEFAULT_STATE, stack: 'custom-backend', backend: 'none', onboardingComplete: true };
+    const state = {
+      ...DEFAULT_STATE,
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      onboardingComplete: true,
+    };
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir, state);
+    writeArchitectureInputAndAssignments(dir, 'R', state);
     fs.writeFileSync(path.join(dir, '.traffic-one', 'api.md'), '# API\n', 'utf8');
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
@@ -535,6 +1498,99 @@ test('plan-opencode-queue-gate: ignores incomplete delegate rows the runner cann
   });
 });
 
+test('plan-opencode-queue-gate: a prose rewrite that drops the block is preserved once a queue was accepted', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      currentRunId: 'R1',
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '# Plan v1',
+      '<!-- opencode-delegate:start -->',
+      '- id: i18n | role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
+      '- id: seed | role: backend | files: supabase/seed.sql | task: seed demo rows',
+      '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
+      '<!-- opencode-delegate:end -->',
+      '',
+    ].join('\n'), 'utf8');
+    const args = {
+      filePath: '.traffic-one/plan.md',
+      content: '## Rewritten prose, no delegate block\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      host: 'claude',
+      block: names,
+    };
+    // The accepted queue exists on disk: the rewrite is preserved, not denied.
+    assert.deepEqual(planReadinessViolations(args), []);
+    // The prior block was durably snapshotted for the run before the overwrite…
+    const snapshot = path.join(dir, '.traffic-one', 'runs', 'R1', 'opencode-plan-block.md');
+    assert.ok(fs.readFileSync(snapshot, 'utf8').includes('- id: smoke | role: tester'));
+    // …so once the blockless rewrite LANDS, further prose rewrites still pass.
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), '## Rewritten prose, no delegate block\n', 'utf8');
+    assert.deepEqual(planReadinessViolations(args), []);
+    // A write that AUTHORS an incomplete block is the architect at work on the
+    // queue itself — that still denies with the concrete fix.
+    const authoring = {
+      ...args,
+      content: [
+        '<!-- opencode-delegate:start -->',
+        '- role: frontend | files: apps/web/src/App.tsx',
+        '<!-- opencode-delegate:end -->',
+      ].join('\n'),
+    };
+    assert.deepEqual(planReadinessViolations(authoring), ['plan-opencode-queue-gate']);
+  });
+});
+
+test('plan-opencode-queue-gate: compiled queue json preserves a rewrite; a first-ever write denies with a concrete example', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      currentRunId: 'R1',
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const prose = (_name: string, fallback: string): string => fallback;
+    const args = {
+      filePath: '.traffic-one/plan.md',
+      content: '## Prose only\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      host: 'claude',
+      block: prose,
+    };
+    // First-ever plan write with nothing recoverable anywhere: deny, and the
+    // deny carries a runnable example row instead of only naming the format.
+    const denied = planReadinessViolations(args);
+    assert.equal(denied.length, 1);
+    assert.match(denied[0]!, /Concrete example of a runnable unit row/);
+    assert.match(denied[0]!, /- id: seed-demo-data \| role: backend \| files: supabase\/seed\.sql/);
+    // The compiled queue sidecar from the accepted run is a durable source too.
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'runs', 'R1'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', 'R1', 'opencode-queue.json'), JSON.stringify({
+      version: 1,
+      runId: 'R1',
+      assignmentHash: null,
+      queueHash: 'x',
+      units: [
+        { id: 'i18n', role: 'frontend', kind: null, allowedFiles: ['packages/i18n/src/locales/en/common.json'], task: 'seed strings', dependsOn: [] },
+        { id: 'seed', role: 'backend', kind: null, allowedFiles: ['supabase/seed.sql'], task: 'seed demo rows', dependsOn: [] },
+        { id: 'smoke', role: 'tester', kind: null, allowedFiles: ['apps/web/e2e/smoke.spec.ts'], task: 'scaffold smoke coverage', dependsOn: [] },
+      ],
+    }), 'utf8');
+    assert.deepEqual(planReadinessViolations(args), []);
+  });
+});
+
 test('plan-opencode-queue-policy-gate: rejects overlapping OpenCode units without depends edge', () => {
   withProject((dir) => {
     const state = {
@@ -619,7 +1675,7 @@ test('plan-opencode-queue-policy-gate: rejects testable unit without exact test/
   });
 });
 
-test('assignments-shape-gate: rejects non-canonical roles-object assignments.json', () => {
+test('runtime assignments owner gate rejects non-canonical direct writes', () => {
   withProject((dir) => {
     const v = planReadinessViolations({
       filePath: '.traffic-one/runs/R/assignments.json',
@@ -629,11 +1685,11 @@ test('assignments-shape-gate: rejects non-canonical roles-object assignments.jso
       writingFeatureSource: false,
       block: names,
     });
-    assert.deepEqual(v, ['assignments-shape-gate']);
+    assert.deepEqual(v, ['runtime-assignments-owner-gate']);
   });
 });
 
-test('assignments-roles-gate: assignments manifest is limited to implementer roles', () => {
+test('runtime assignments owner gate rejects even plausible agent-authored manifests', () => {
   withProject((dir) => {
     const v = planReadinessViolations({
       filePath: '.traffic-one/runs/R/assignments.json',
@@ -650,11 +1706,11 @@ test('assignments-roles-gate: assignments manifest is limited to implementer rol
       writingFeatureSource: false,
       block: names,
     });
-    assert.deepEqual(v, ['assignments-roles-gate']);
+    assert.deepEqual(v, ['runtime-assignments-owner-gate']);
   });
 });
 
-test('assignments-owner-gate: tester cannot rewrite assignments after PLAN_READY', () => {
+test('runtime assignments owner gate rejects tester rewrites after PLAN_READY', () => {
   withProject((dir) => {
     fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R', 'architect.md'), 'verdict: PLAN_READY\n', 'utf8');
@@ -673,7 +1729,202 @@ test('assignments-owner-gate: tester cannot rewrite assignments after PLAN_READY
       writingFeatureSource: false,
       block: names,
     });
-    assert.deepEqual(v, ['assignments-owner-gate']);
+    assert.deepEqual(v, ['runtime-assignments-owner-gate']);
+  });
+});
+
+test('runtime-owned run sidecars are read-only while ArchitectureInput stays architect-owned', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      currentRunId: 'R',
+      team: { mode: 'subagents' },
+      activeAgentRole: 'senior-architect',
+    };
+    for (const target of [
+      '.traffic-one/runs/R/capability-v1.json',
+      '.traffic-one/runs/R/baseline-v1.json',
+      '.traffic-one/runs/R/architecture-v1.json',
+      '.traffic-one/runs/R/verification-v2.json',
+      '.traffic-one/runs/R/model-policy.json',
+      '.traffic-one/runs/R/bootstrap/senior-architect/active.json',
+      '.traffic-one/runs/R/settlement-v2.json',
+      '.traffic-one/runs/R/claims.json',
+      '.traffic-one/runs/R/qa-acceptance-v1.json',
+    ]) {
+      const violations = planReadinessViolations({
+        filePath: target,
+        content: '{}',
+        projectRoot: dir,
+        state,
+        writingFeatureSource: false,
+        block: names,
+      });
+      assert.ok(violations.includes('runtime-sidecar-owner-gate'), target);
+    }
+    const semanticInput = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: JSON.stringify({
+        schemaVersion: 1,
+        routes: [],
+        modules: [{ id: 'service', name: 'Service', kind: 'service' }],
+      }),
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!semanticInput.includes('runtime-sidecar-owner-gate'));
+  });
+});
+
+// Regression (3co, 1.0.28): a `node -e` diagnostic naming the architecture
+// input was classified as an unverifiable shell write; the gate then parsed an
+// EMPTY pseudo-payload and denied with "must be valid JSON" while the on-disk
+// file was valid the whole time. Shell-inferred targets must judge the disk.
+test('architecture-input: unverifiable shell target passes when the on-disk file is valid', () => {
+  withProject((dir) => {
+    writeArchitectureInputOnly(dir, 'R');
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: '',
+      contentVerified: false,
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, currentRunId: 'R', activeAgentRole: 'senior-architect' },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!violations.includes('architecture-input-gate'), violations.join(','));
+  });
+});
+
+test('architecture-input: unverifiable shell target still denies when the on-disk file is missing or invalid', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, currentRunId: 'R', activeAgentRole: 'senior-architect' };
+    const missing = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: '',
+      contentVerified: false,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(missing.includes('architecture-input-shell-unverified'));
+
+    const inputPath = architectureInputPath(dir, 'R');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, '{ not json', 'utf8');
+    const invalid = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: '',
+      contentVerified: false,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(invalid.includes('architecture-input-shell-unverified'));
+  });
+});
+
+test('architecture-input: reconstructed write content is still validated directly', () => {
+  withProject((dir) => {
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/architecture-input-v1.json',
+      content: '{ not json',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, currentRunId: 'R', activeAgentRole: 'senior-architect' },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(violations.includes('architecture-input-gate'));
+  });
+});
+
+test('digests and QA reports require the exact active child WorkUnitContract', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      currentRunId: 'R',
+      team: { mode: 'subagents' },
+      activeAgentRole: 'senior-frontend',
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    const options = {
+      host: 'codex' as const,
+      hostAgentType: null,
+      modelPolicyId: 'policy-artifacts',
+    };
+    assert.ok(ensureRunBootstrap(dir, 'R', 'senior-frontend', state, options));
+    const frontend = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'IMPLEMENTED',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!frontend.includes('run-artifact-work-unit-gate'));
+
+    const wrongRole = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/tester.md',
+      content: 'TESTS_GREEN',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(wrongRole.includes('run-artifact-work-unit-gate'));
+
+    const testerState = { ...state, activeAgentRole: 'senior-tester' };
+    assert.ok(ensureRunBootstrap(dir, 'R', 'senior-tester', testerState, options));
+    const report = planReadinessViolations({
+      filePath: '.traffic-one/reports/qa/R/report-v2.json',
+      content: '{}',
+      projectRoot: dir,
+      state: testerState,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(!report.includes('run-artifact-work-unit-gate'));
+  });
+});
+
+test('architect records new ADRs freely, but prior decisions stay append-only', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    const decide = (filePath: string): string[] => planReadinessViolations({
+      filePath,
+      content: '# Decision',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    const gate = 'architect-planning-allowlist-gate';
+
+    assert.ok(!decide('.traffic-one/decisions/R-architecture.md').includes(gate));
+    // 1cu-cursor: the documented ADR shapes (`project-memory` names both) were
+    // denied because only the run-prefixed filename was accepted.
+    assert.ok(!decide('.traffic-one/decisions/README.md').includes(gate));
+    assert.ok(!decide('.traffic-one/decisions/0001-seed-only-course-content.md').includes(gate));
+
+    // an ADR that already exists belongs to whoever recorded it
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'decisions'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'decisions', 'unrelated.md'), '# Earlier decision\n');
+    assert.ok(decide('.traffic-one/decisions/unrelated.md').includes(gate));
+    // …except this run's own records, which stay rewritable
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'decisions', 'R-architecture.md'), '# Mine\n');
+    assert.ok(!decide('.traffic-one/decisions/R-architecture.md').includes(gate));
+
+    // still confined to that directory
+    assert.ok(decide('.traffic-one/decisions/nested/adr.md').includes(gate));
+    assert.ok(decide('.traffic-one/decisions/adr.json').includes(gate));
   });
 });
 
@@ -686,6 +1937,25 @@ test('architectPhaseIncompleteReasons: flags partial baseline after plan exists'
     assert.ok(missing.some((m) => m.includes('assignments.json')));
     assert.ok(missing.some((m) => m.includes('architect.md')));
     assert.equal(isArchitectPhaseComplete(dir, { ...DEFAULT_STATE, currentRunId: 'R' }), false);
+  });
+});
+
+test('existing-codebase subagent runs require current-run architecture contracts', () => {
+  withProject((dir) => {
+    const active = {
+      ...DEFAULT_STATE,
+      mode: 'existing-codebase',
+      currentRunId: 'R',
+      team: { mode: 'subagents' },
+    };
+    const missing = architectPhaseIncompleteReasons(dir, active);
+    assert.ok(missing.some((entry) => entry.includes('architecture-input-v1.json')));
+    assert.ok(missing.some((entry) => entry.includes('assignments.json')));
+    assert.ok(missing.some((entry) => entry.includes('architect.md')));
+    assert.deepEqual(architectPhaseIncompleteReasons(dir, {
+      ...active,
+      team: { mode: 'main-agent' },
+    }), []);
   });
 });
 
@@ -705,15 +1975,7 @@ test('isArchitectPhaseComplete: ignores PLAN_READY from a stale run id', () => {
     writePlan(dir);
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir, state);
-    fs.mkdirSync(path.join(dir, '.traffic-one', 'runs', 'R2'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', 'R2', 'assignments.json'), JSON.stringify({
-      version: 1,
-      runId: 'R2',
-      assignments: [
-        { role: 'senior-frontend', scope: { include: ['apps/web/**', 'packages/ui/**', 'packages/i18n/**', 'packages/tailwind-config/**'] } },
-        { role: 'senior-backend', scope: { include: ['supabase/**', 'packages/api-client/**'] } },
-      ],
-    }), 'utf8');
+    writeArchitectureInputAndAssignments(dir, 'R2', state);
     fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R1'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R1', 'architect.md'), 'verdict: PLAN_READY\n', 'utf8');
 
@@ -723,7 +1985,7 @@ test('isArchitectPhaseComplete: ignores PLAN_READY from a stale run id', () => {
   });
 });
 
-test('architect-pre-ready-feature: denies senior-architect app implementation before PLAN_READY', () => {
+test('architect planning allowlist denies app implementation before PLAN_READY', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -744,11 +2006,11 @@ test('architect-pre-ready-feature: denies senior-architect app implementation be
       writingFeatureSource: true,
       block: names,
     });
-    assert.deepEqual(v, ['architect-pre-ready-feature']);
+    assert.deepEqual(v, ['architect-planning-allowlist-gate']);
   });
 });
 
-test('architect-pre-ready-feature: allows senior-architect Tailwind globals baseline before PLAN_READY', () => {
+test('architect planning allowlist denies Tailwind globals before PLAN_READY', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -769,11 +2031,11 @@ test('architect-pre-ready-feature: allows senior-architect Tailwind globals base
       writingFeatureSource: true,
       block: names,
     });
-    assert.deepEqual(v, []);
+    assert.deepEqual(v, ['architect-planning-allowlist-gate']);
   });
 });
 
-test('missingArchitectScaffold: accepts packages/tsconfig/base.json instead of root tsconfig.base.json', () => {
+test('architect phase completeness has no formatter or tsconfig scaffold requirement', () => {
   withProject((dir) => {
     writeStateFile(dir, DEFAULT_STATE);
     writeRequiredScaffold(dir);
@@ -783,5 +2045,1440 @@ test('missingArchitectScaffold: accepts packages/tsconfig/base.json instead of r
     const missing = architectPhaseIncompleteReasons(dir, DEFAULT_STATE)
       .filter((m) => m.includes('tsconfig'));
     assert.deepEqual(missing, []);
+  });
+});
+
+// Block stub that also exposes the substituted vars, so assertions can name the
+// exact file/problem a deny carries (the plain `names` stub returns only ids).
+const namesWithVars = (
+  name: string,
+  _fallback: string,
+  vars: Record<string, string | number | null | undefined> = {},
+): string => `${name}:${vars.FILE ?? vars.PROBLEMS ?? vars.CONFIG ?? ''}`;
+
+test('frontend emit-config gate denies the stock Vite template and passes the prescribed shape', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    writeFormatterToolchain(dir);
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), 'export function App() {\n  return null;\n}\n', 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    // (a) composite: true forces declaration emit.
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"composite":true,"noEmit":true}}', 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+
+    // (b) tsc -b / tsc --build scripts emit next to sources.
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"noEmit":true}}', 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({
+      name: 'web',
+      scripts: { build: 'tsc -b && vite build' },
+    }), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({
+      name: 'web',
+      scripts: { typecheck: 'tsc --build' },
+    }), 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+
+    // (c) noEmit declared nowhere.
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({
+      name: 'web',
+      scripts: { build: 'tsc --noEmit && vite build' },
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"jsx":"react-jsx"}}', 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+
+    // Unparseable tsconfig is a visible deny, never a silent pass.
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions": !!!}', 'utf8');
+    assert.ok(planReadinessViolations(gateArgs).includes('frontend-emit-config-gate'));
+
+    // Prescribed shape passes — JSONC comments + trailing commas included,
+    // noEmit inherited from tsconfig.base.json.
+    fs.writeFileSync(path.join(dir, 'tsconfig.base.json'), '{"compilerOptions":{"noEmit":true}}', 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), [
+      '{',
+      '  // app config extends the workspace base',
+      '  "extends": "../../tsconfig.base.json",',
+      '  /* jsx for vite */',
+      '  "compilerOptions": {',
+      '    "jsx": "react-jsx",',
+      '  },',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // packages/* legitimately use composite/tsc -b — never gated.
+    fs.mkdirSync(path.join(dir, 'packages/ui'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'packages/ui/tsconfig.json'), '{"compilerOptions":{"composite":true}}', 'utf8');
+    assert.deepEqual(planReadinessViolations(gateArgs), []);
+
+    // BLOCKED stays writable with the stock template still on disk.
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"composite":true}}', 'utf8');
+    assert.deepEqual(planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: BLOCKED tsconfig cleanup pending\n',
+    }), []);
+
+    // Existing codebases keep their own tsc -b choice — maintenance never dead-ends.
+    assert.deepEqual(planReadinessViolations({
+      ...gateArgs,
+      state: { ...DEFAULT_STATE, mode: 'existing-codebase', onboardingComplete: true },
+    }), []);
+  });
+});
+
+test('frontend collapse gate skips emitted .js/.d.ts twins and reports the real collapsed source', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src/pages'), { recursive: true });
+    const collapsedLine = `function CourseDetailPage() { ${'const x = <div className="a">hi</div>; return <section>{x}</section>; '.repeat(12)} }`;
+    // Emitted twins (what a stock `tsc -b` build leaves behind) sort BEFORE the
+    // real source alphabetically — the 1co masking shape.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.d.ts'), `${collapsedLine}\n`, 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.js'), `${collapsedLine}\n`, 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.tsx'), `${collapsedLine}\n`, 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: namesWithVars,
+    };
+    const violations = planReadinessViolations(gateArgs);
+    const collapse = violations.find((violation) => violation.startsWith('frontend-collapse-gate:'));
+    assert.ok(collapse, 'collapse gate still fires');
+    assert.match(collapse!, /CourseDetailPage\.tsx:1$/, 'the REAL source is reported, not the emitted twin');
+
+    // Without a source sibling, a hand-written .js is still caught.
+    fs.rmSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.tsx'));
+    fs.rmSync(path.join(dir, 'apps/web/src/pages/CourseDetailPage.d.ts'));
+    const orphan = planReadinessViolations(gateArgs).find((violation) => violation.startsWith('frontend-collapse-gate:'));
+    assert.ok(orphan);
+    assert.match(orphan!, /CourseDetailPage\.js:1$/);
+  });
+});
+
+test('implementer format gates follow the compiled frontend owner and preserve parity semantics', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true };
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{ "printWidth": 100 }\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+    const formatViolations = (): string[] => planReadinessViolations(gateArgs)
+      .filter((violation) => violation.startsWith('implementer-format-'));
+    assert.deepEqual(formatViolations(), ['implementer-format-parity-gate']);
+
+    // Declaring the dependency restores parity.
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0' },
+    }), 'utf8');
+    assert.deepEqual(formatViolations(), []);
+
+    // A format:check script alone (no config file) also requires the dependency.
+    fs.rmSync(path.join(dir, '.prettierrc'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      scripts: { 'format:check': 'prettier --check .' },
+    }), 'utf8');
+    assert.deepEqual(formatViolations(), ['implementer-format-parity-gate']);
+
+    // Regression (3co, 1.0.28): NO config, NO script, NO dependency used to
+    // pass ("nothing to keep in parity") — which shipped collapsed one-liner
+    // code with a formatter the collapse-gate remedy could never run. The
+    // absent toolchain is now its own deterministic deny.
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+    assert.deepEqual(formatViolations(), ['implementer-format-toolchain-gate']);
+
+    // An alternative formatter toolchain (biome) satisfies the gate.
+    fs.writeFileSync(path.join(dir, 'biome.json'), '{}\n', 'utf8');
+    assert.deepEqual(formatViolations(), []);
+    fs.rmSync(path.join(dir, 'biome.json'));
+
+    // The architect digest and non-terminal implementer prose never carry this gate.
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const architectViolations = planReadinessViolations({
+      ...gateArgs,
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'PLAN_READY\n',
+    });
+    assert.ok(!architectViolations.some((violation) => violation.startsWith('implementer-format-')));
+    const nonTerminalViolations = planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: NOT_IMPLEMENTED\n',
+    });
+    assert.ok(!nonTerminalViolations.some((violation) => violation.startsWith('implementer-format-')));
+  });
+});
+
+test('implementer lint gates prove the compiled AST lint layer is runnable and reaching', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true };
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+    const lintViolations = (): string[] => planReadinessViolations(gateArgs)
+      .filter((violation) => violation.startsWith('implementer-lint-'));
+
+    // React-family compiles the AST i18n lint layer, so a manifest that names
+    // neither the tool nor the script is an enforcement gap: the lexical copy
+    // scanners were demoted on the promise that this toolchain runs.
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+    assert.deepEqual(lintViolations(), ['implementer-lint-toolchain-gate']);
+
+    // Declaring the dependency and the script restores parity.
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { eslint: '^9.0.0' },
+      scripts: { lint: 'eslint .' },
+    }), 'utf8');
+    assert.deepEqual(lintViolations(), []);
+
+    // A delegating root lint whose filter never names a member that carries
+    // its own lint script is installed-but-never-run: the 10co typecheck
+    // shape, now closed for the quality verdict too.
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { eslint: '^9.0.0' },
+      scripts: { lint: 'pnpm --filter @app/web lint' },
+    }), 'utf8');
+    fs.mkdirSync(path.join(dir, 'packages/i18n'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'packages/i18n/package.json'), JSON.stringify({
+      name: '@app/i18n',
+      scripts: { lint: 'eslint .' },
+    }), 'utf8');
+    assert.deepEqual(lintViolations(), ['implementer-lint-invocation-gate']);
+
+    // Broadcasting reaches every member.
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { eslint: '^9.0.0' },
+      scripts: { lint: 'pnpm -r lint' },
+    }), 'utf8');
+    assert.deepEqual(lintViolations(), []);
+  });
+});
+
+test('implementer format gates support backend ownership and ignore the non-owner digest', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+
+    const violationsFor = (role: 'frontend' | 'backend'): string[] =>
+      planReadinessViolations({
+        filePath: `.traffic-one/digests/R/${role}.md`,
+        content: 'verdict: IMPLEMENTED\n',
+        projectRoot: dir,
+        state,
+        writingFeatureSource: false,
+        block: names,
+      }).filter((violation) => violation.startsWith('implementer-format-'));
+
+    assert.deepEqual(violationsFor('backend'), ['implementer-format-parity-gate']);
+    assert.deepEqual(violationsFor('frontend'), [], 'frontend does not own backend-only tooling');
+
+    fs.rmSync(path.join(dir, '.prettierrc'));
+    assert.deepEqual(violationsFor('backend'), ['implementer-format-toolchain-gate']);
+  });
+});
+
+test('implementer format gate resolves config, manifest, scripts, and dependency at one tooling root', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-frontend',
+      frontend: 'nextjs',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    fs.mkdirSync(path.join(dir, 'apps', 'web', 'app'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'apps', 'web', 'package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0' },
+      devDependencies: { prettier: '^3.0.0' },
+    }), 'utf8');
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      workspaces: ['apps/*', 'packages/*'],
+    }), 'utf8');
+
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: namesWithVars,
+    };
+    const formatViolations = (): string[] => planReadinessViolations(gateArgs)
+      .filter((violation) => violation.startsWith('implementer-format-'));
+    assert.deepEqual(
+      formatViolations(),
+      ['implementer-format-parity-gate:.prettierrc'],
+      'an app dependency cannot satisfy root workspace tooling',
+    );
+
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      workspaces: ['apps/*', 'packages/*'],
+      devDependencies: { prettier: '^3.0.0' },
+    }), 'utf8');
+    assert.deepEqual(formatViolations(), []);
+
+    const backendDigest = planReadinessViolations({
+      ...gateArgs,
+      filePath: '.traffic-one/digests/R/backend.md',
+    });
+    assert.ok(!backendDigest.some((violation) => violation.startsWith('implementer-format-')));
+  });
+});
+
+test('implementer format coverage gate: narrowed prettier globs cannot pass while compiled outputs go unchecked', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'course-catalog', name: 'Course Catalog', kind: 'service' },
+      ],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const withLint = (lint: string): void => {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3' },
+        scripts: { lint, typecheck: 'tsc --noEmit' },
+      }), 'utf8');
+    };
+    const coverage = (): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).filter((violation) => violation === 'implementer-format-coverage-gate');
+
+    // Verbatim 6co: this exact script passed while `prettier --check .` failed
+    // on 25 owned files — all of packages/api-client, every test, vitest.config.
+    withLint('prettier --check "apps/web/src/**/*.{ts,tsx}" "packages/{i18n,tailwind-config,ui}/**/*.{ts,css,json}" && pnpm typecheck');
+    assert.deepEqual(coverage(), ['implementer-format-coverage-gate']);
+
+    // Whole-project check is the passing shape; exclusions belong in
+    // .prettierignore, which this gate deliberately does not second-guess.
+    withLint('prettier --check . && pnpm typecheck');
+    assert.deepEqual(coverage(), []);
+
+    // A non-prettier lint script is out of scope for this gate.
+    withLint('eslint .');
+    assert.deepEqual(coverage(), []);
+  });
+});
+
+test('implementer format gate T1BLOCK prose is byte-identical to both TypeScript fallbacks', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+
+    const captured = new Map<string, {
+      fallback: string;
+      vars: Record<string, string | number | null | undefined>;
+    }>();
+    const capture = (
+      name: string,
+      fallback: string,
+      vars: Record<string, string | number | null | undefined> = {},
+    ): string => {
+      if (name.startsWith('implementer-')) captured.set(name, { fallback, vars });
+      return name;
+    };
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: capture,
+    };
+
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    planReadinessViolations(gateArgs);
+    fs.rmSync(path.join(dir, '.prettierrc'));
+    planReadinessViolations(gateArgs);
+    // Typecheck twin plus the self-reported-skip gate render from the same
+    // T1BLOCK contract; capture them in the same pass.
+    planReadinessViolations({
+      ...gateArgs,
+      content: 'verdict: IMPLEMENTED\n- typecheck was skipped: `tsc` not found.\n',
+    });
+    // Coverage gate needs a real toolchain plus a narrowed prettier script.
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3' },
+      scripts: { lint: 'prettier --check "docs/**/*.md"' },
+    }), 'utf8');
+    planReadinessViolations(gateArgs);
+
+    const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+    for (const blockId of [
+      'implementer-format-parity-gate',
+      'implementer-format-toolchain-gate',
+      'implementer-format-coverage-gate',
+      'implementer-typecheck-toolchain-gate',
+      'implementer-verification-skipped-gate',
+    ]) {
+      const found = captured.get(blockId);
+      assert.ok(found, `missing TypeScript fallback for ${blockId}`);
+      const begin = `<!-- T1BLOCK:BEGIN ${blockId} -->`;
+      const end = `<!-- T1BLOCK:END ${blockId} -->`;
+      const beginAt = skill.indexOf(begin);
+      const endAt = skill.indexOf(end);
+      assert.ok(beginAt >= 0 && endAt > beginAt, `missing T1BLOCK ${blockId}`);
+      let rendered = skill.slice(beginAt + begin.length, endAt).trim();
+      for (const [key, value] of Object.entries(found.vars)) {
+        rendered = rendered.split(`{{${key}}}`).join(String(value ?? ''));
+      }
+      assert.equal(rendered, found.fallback, `${blockId} prose/fallback drift`);
+    }
+  });
+});
+
+test('each verification-refresh verdict renders its own T1BLOCK, never another verdict token', () => {
+  // Observed 10co: completion.ts emitted three carefully-worded fallbacks for
+  // IMPLEMENTED / APPROVED / TESTS_GREEN but reused ONE block id, so deny prose
+  // always rendered the IMPLEMENTED wording from SKILL.md and the three
+  // fallbacks were dead. The tester, writing TESTS_GREEN, was told
+  // "`IMPLEMENTED` is forbidden". One semantic, one block id.
+  const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+  const cases: Array<[string, string, string[]]> = [
+    ['verification-contract-refresh-gate', 'IMPLEMENTED', ['APPROVED', 'TESTS_GREEN']],
+    ['verification-contract-refresh-gate-approved', 'APPROVED', ['IMPLEMENTED', 'TESTS_GREEN']],
+    ['verification-contract-refresh-gate-tests-green', 'TESTS_GREEN', ['IMPLEMENTED', 'APPROVED']],
+  ];
+  for (const [blockId, verdict, foreign] of cases) {
+    const begin = `<!-- T1BLOCK:BEGIN ${blockId} -->`;
+    const end = `<!-- T1BLOCK:END ${blockId} -->`;
+    const beginAt = skill.indexOf(begin);
+    const endAt = skill.indexOf(end);
+    assert.ok(beginAt >= 0 && endAt > beginAt, `missing T1BLOCK ${blockId}`);
+    const body = skill.slice(beginAt + begin.length, endAt);
+    assert.ok(body.includes(`\`${verdict}\``), `${blockId} must name ${verdict}`);
+    for (const other of foreign) {
+      assert.ok(!body.includes(`\`${other}\``), `${blockId} must not name ${other}`);
+    }
+  }
+});
+
+test('a BLOCKED verdict digest is not run through the IMPLEMENTED completion gates even when its body cites the token', () => {
+  withProject((dir) => {
+    // Strongest case: collapsed source on disk — the collapse gate would fire
+    // if the digest were treated as IMPLEMENTED. 5co-codex regression: an
+    // honest `verdict: BLOCKED …` report was denied because its blocker prose
+    // said "…before this role can emit `IMPLEMENTED`", so the agent got
+    // through only by rewording the truth.
+    fs.mkdirSync(path.join(dir, 'apps/web/src/pages'), { recursive: true });
+    writeFormatterToolchain(dir);
+    const collapsedLine = `function App() { ${'const x = <div className="a">hi</div>; return <section>{x}</section>; '.repeat(12)} }`;
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), `${collapsedLine}\n`, 'utf8');
+    const blocked = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: [
+        'verdict: BLOCKED verification authority excludes the lockfile',
+        '',
+        '## Open questions / blockers',
+        '- A runtime refresh is required before this role can emit `IMPLEMENTED`.',
+        '- The reviewer previously returned APPROVED for the sibling.',
+        '',
+      ].join('\n'),
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(blocked, []);
+    // No verdict line at all → the body word-match fallback stays fail-closed.
+    const proseOnly = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'The frontend is IMPLEMENTED and ready.\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(proseOnly.includes('frontend-collapse-gate'));
+  });
+});
+
+test('implementer typecheck gate: TS outputs with no reachable compiler deny IMPLEMENTED until typescript/typecheck exists', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    // format toolchain satisfied so only the typecheck gap is exercised
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0' },
+    }), 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+    // 5co-codex regression: the backend shipped `IMPLEMENTED` while writing
+    // "tsc is not installed" in the digest; its 7 strict-TS errors surfaced two
+    // fix cycles later in the sibling frontend's build.
+    assert.ok(planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0', typescript: '^5.0.0' },
+    }), 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+
+    // a typecheck script alone (e.g. tsc via workspace tooling) also satisfies
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0' },
+      scripts: { typecheck: 'tsc --noEmit' },
+    }), 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+  });
+});
+
+test('implementer typecheck gate: a delegating root script does not cover a member package that has none', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'course-catalog', name: 'Course Catalog', kind: 'service' },
+      ],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    // The exact 6co shape: root fans out to workspace members, the member that
+    // owns the compiled TS outputs declares nothing, so `turbo run typecheck`
+    // finds no target and exits 0. The old resolver returned clean on the first
+    // qualifying manifest in the set, and root was always in that set.
+    const writeManifests = (member: Record<string, unknown>): void => {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.0.0', typescript: '^5.8.3', turbo: '^2.5.4' },
+        scripts: { typecheck: 'turbo run typecheck' },
+      }), 'utf8');
+      fs.mkdirSync(path.join(dir, 'packages/api-client'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'packages/api-client/package.json'), JSON.stringify(member), 'utf8');
+    };
+
+    writeManifests({ name: '@app/api-client', scripts: {} });
+    assert.ok(planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+
+    // The member gaining its own compiler closes the gap.
+    writeManifests({ name: '@app/api-client', scripts: { typecheck: 'tsc --noEmit' } });
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+
+    // So does a root that compiles directly instead of fanning out — project
+    // references genuinely do cover their members.
+    writeManifests({ name: '@app/api-client', scripts: {} });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0', typescript: '^5.8.3' },
+      scripts: { typecheck: 'tsc -b' },
+    }), 'utf8');
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-toolchain-gate'));
+  });
+});
+
+test('edge-function outputs are Deno and stay out of the app typecheck/format parity surface', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    fs.mkdirSync(path.join(dir, 'apps/web/src/pages'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }), 'utf8');
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'send-invite', name: 'Send Invite', kind: 'edge-function' },
+      ],
+    });
+    const architecture = readCompiledArchitecture(dir, 'R')!;
+    const tsOutputs = roleOwnedTsOutputs(architecture, 'senior-backend');
+    // The backend's own TS package still counts — only the Deno file is exempt,
+    // because no app tsconfig can ever compile it.
+    assert.ok(tsOutputs.includes('packages/api-client/src/supabase.ts'));
+    assert.equal(tsOutputs.includes('supabase/functions/send-invite/index.ts'), false);
+
+    // Same exemption for format coverage: a script that never reaches
+    // `supabase/functions/**` is not thereby incomplete.
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0' },
+      scripts: { 'format:check': 'prettier --check "apps/**" "packages/**"' },
+    }), 'utf8');
+    const target = { configPath: '.prettierrc', manifestPath: 'package.json', toolingRoot: '.' };
+    assert.equal(formatParityViolation(dir, target, [
+      'apps/web/src/App.tsx',
+      'packages/api-client/src/supabase.ts',
+      'supabase/functions/send-invite/index.ts',
+    ]), null);
+    // and an ordinary app output the script misses still fails
+    assert.equal(formatParityViolation(dir, target, ['tests/e2e/smoke.spec.ts'])?.kind, 'uncovered-outputs');
+  });
+});
+
+test('implementer crawl origin gate: an invented or relative sitemap origin cannot be IMPLEMENTED', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    // The manifest must exist BEFORE compilation or the profile never resolves
+    // to a web target and no crawl assets are compiled at all.
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+      devDependencies: {
+        prettier: '^3.5.3', typescript: '^5.8.3', vitest: '3.2.2', '@playwright/test': '1.52.0',
+      },
+      scripts: { typecheck: 'tsc --noEmit', test: 'vitest run', 'test:e2e': 'playwright test' },
+    }), 'utf8');
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+    fs.mkdirSync(path.join(dir, 'apps/web/public'), { recursive: true });
+    const sitemap = (loc: string): void => {
+      fs.writeFileSync(
+        path.join(dir, 'apps/web/public/sitemap.xml'),
+        `<?xml version="1.0" encoding="UTF-8"?>\n<urlset><url><loc>${loc}</loc></url></urlset>\n`,
+        'utf8',
+      );
+    };
+    const gate = (): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).filter((violation) => violation === 'implementer-crawl-origin-gate');
+
+    // Verbatim 6co: the reviewer caught this, the completion gate did not.
+    sitemap('https://workshop.example/');
+    assert.deepEqual(gate(), ['implementer-crawl-origin-gate']);
+
+    for (const invented of [
+      'http://localhost:5173/',
+      'https://your-domain.com/',
+      'https://example.org/',
+      '/courses',
+    ]) {
+      sitemap(invented);
+      assert.deepEqual(gate(), ['implementer-crawl-origin-gate'], invented);
+    }
+
+    // A real origin the user supplied is not this gate's business — "supplied
+    // but unverified" is not decidable here and stays a reviewer concern.
+    sitemap('https://acme-learning.co/');
+    assert.deepEqual(gate(), []);
+
+    // robots.txt carries the same directive and the same failure mode.
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/public/robots.txt'),
+      'User-agent: *\nAllow: /\nSitemap: https://workshop.example/sitemap.xml\n',
+      'utf8',
+    );
+    assert.deepEqual(gate(), ['implementer-crawl-origin-gate']);
+  });
+});
+
+test('implementer test toolchain gate: the manifest owner must ship the runner the tester is handed configs for', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const writeManifest = (extra: {
+      devDependencies?: Record<string, string>;
+      scripts?: Record<string, string>;
+    }): void => {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3', ...extra.devDependencies },
+        scripts: { typecheck: 'tsc --noEmit', ...extra.scripts },
+      }), 'utf8');
+    };
+    const gate = (): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).filter((violation) => violation === 'implementer-test-toolchain-gate');
+
+    // 6co: the tester owned vitest/playwright configs while the frontend owned
+    // the only manifest, so it inherited configs for tools nobody installed.
+    writeManifest({});
+    assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
+
+    // Dependency without an entry point is still unusable.
+    writeManifest({ devDependencies: { vitest: '3.2.2', '@playwright/test': '1.52.0' } });
+    assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
+
+    // A script naming an absent tool is the same anti-pattern the format
+    // parity gate rejects.
+    writeManifest({ scripts: { test: 'vitest run', 'test:e2e': 'playwright test' } });
+    assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
+
+    // 8co: this visual contract requires performance evidence, so the manifest
+    // owner must also ship project-local `lighthouse` — the tester does not
+    // own the manifest and cannot install it (the canonical runner refuses a
+    // global binary).
+    writeManifest({
+      devDependencies: { vitest: '3.2.2', '@playwright/test': '1.52.0' },
+      scripts: { test: 'vitest run', 'test:e2e': 'playwright test' },
+    });
+    assert.deepEqual(gate(), ['implementer-test-toolchain-gate']);
+
+    writeManifest({
+      devDependencies: { vitest: '3.2.2', '@playwright/test': '1.52.0', lighthouse: '12.0.0' },
+      scripts: { test: 'vitest run', 'test:e2e': 'playwright test' },
+    });
+    assert.deepEqual(gate(), []);
+
+    // Only the manifest owner is answerable; a sibling implementer is not.
+    writeManifest({});
+    assert.deepEqual(planReadinessViolations({
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).filter((violation) => violation === 'implementer-test-toolchain-gate'), []);
+
+    // Deny prose renders from SKILL.md; the TypeScript fallback must be its
+    // byte-identical twin (this gate needs a web-UI profile, which the shared
+    // prose-parity fixture deliberately does not have).
+    let captured: { fallback: string; vars: Record<string, string | number | null | undefined> } | null = null;
+    planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: (name, fallback, vars = {}) => {
+        if (name === 'implementer-test-toolchain-gate') captured = { fallback, vars };
+        return name;
+      },
+    });
+    assert.ok(captured, 'missing TypeScript fallback for implementer-test-toolchain-gate');
+    const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+    const begin = '<!-- T1BLOCK:BEGIN implementer-test-toolchain-gate -->';
+    const end = '<!-- T1BLOCK:END implementer-test-toolchain-gate -->';
+    const beginAt = skill.indexOf(begin);
+    const endAt = skill.indexOf(end);
+    assert.ok(beginAt >= 0 && endAt > beginAt, 'missing T1BLOCK implementer-test-toolchain-gate');
+    let rendered = skill.slice(beginAt + begin.length, endAt).trim();
+    for (const [key, value] of Object.entries((captured as { vars: Record<string, unknown> }).vars)) {
+      rendered = rendered.split(`{{${key}}}`).join(String(value ?? ''));
+    }
+    assert.equal(rendered, (captured as { fallback: string }).fallback);
+  });
+});
+
+test('implementer verification gate: a digest that reports a required command as skipped cannot be IMPLEMENTED', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'nestjs',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    // Toolchain fully present, so only the self-reported skip is exercised.
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0', typescript: '^5.0.0' },
+      scripts: { typecheck: 'tsc --noEmit' },
+    }), 'utf8');
+    const gate = (content: string): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/backend.md',
+      content,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+
+    // Verbatim from the 6co backend digest, one line above `verdict: IMPLEMENTED`.
+    assert.ok(gate([
+      'verdict: IMPLEMENTED',
+      '- TypeScript execution was skipped because dependencies are not installed'
+        + ' and frontend work is concurrent; `pnpm exec tsc --version` reported `tsc` not found.',
+    ].join('\n')).includes('implementer-verification-skipped-gate'));
+
+    // Reports of absence are not confessions.
+    for (const clean of [
+      'verdict: IMPLEMENTED\n- Ran pnpm typecheck: 0 errors. Ran pnpm lint: clean.',
+      'verdict: IMPLEMENTED\n- prettier --check .: 42 files checked, 0 skipped.',
+      'verdict: IMPLEMENTED\n- All required checks ran; no checks were skipped.',
+    ]) assert.ok(!gate(clean).includes('implementer-verification-skipped-gate'), clean);
+
+    // A BLOCKED digest may narrate the same fact — that is the honest path.
+    assert.ok(!gate('verdict: BLOCKED\n- typecheck could not run: tsc not found.')
+      .includes('implementer-verification-skipped-gate'));
+
+    // The SAME digest published through a heredoc is judged identically.
+    // Heredocs targeting `.traffic-one/digests/` are exempt from the shell-write
+    // deny as run-state bookkeeping, so `content` is empty on that channel — and
+    // the whole implementer battery was blind on it. Deny through `Write` and
+    // accept through `cat > … <<'EOF'` is not a gate, it is a coin flip.
+    const heredoc = (shellBody: string): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: '',
+      shellBody,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(heredoc([
+      'verdict: IMPLEMENTED',
+      '- TypeScript execution was skipped because dependencies are not installed.',
+    ].join('\n')).includes('implementer-verification-skipped-gate'),
+    'the heredoc channel must not launder a confession past the gate');
+    // Negative row: the honest heredoc digest still passes.
+    assert.ok(!heredoc('verdict: IMPLEMENTED\n- Ran pnpm typecheck: 0 errors.')
+      .includes('implementer-verification-skipped-gate'));
+  });
+});
+
+test('finding-allowlist-gap: a reviewer finding no role can carry out is denied, not shipped as an order', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true };
+    writeStateFile(dir, { ...state, currentRunId: 'R' });
+    writeMaterialized(dir);
+    writePlan(dir);
+    writeRequiredMemory(dir, state);
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    const gate = (content: string): string[] => planReadinessViolations({
+      filePath: '.traffic-one/digests/R/reviewer.md',
+      content,
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+
+    // The 12co deadlock, verbatim in shape: finding 5 ordered a path that is in
+    // NO role's compiled allowlist, so the implementer's write was hard-denied,
+    // the reviewer could never approve, and the run could not settle. The
+    // specific path below is chosen to still be unowned AFTER llms.txt got a
+    // compiled home — the gate must catch the next one, not just that one.
+    const denied = gate([
+      'verdict: CHANGES_REQUESTED',
+      '5. Create `apps/web/public/ai-plugin.json` describing the assistant manifest.',
+    ].join('\n'));
+    assert.ok(denied.includes('finding-allowlist-gap'),
+      'a path outside every allowlist must not be emitted as a plain order');
+
+    // Same finding, explicitly parked: satisfiable, because the role is told the
+    // item is not its to carry out.
+    assert.ok(!gate([
+      'verdict: CHANGES_REQUESTED',
+      '5. DEFERRED — `apps/web/public/ai-plugin.json` is in no allowlist; replan next run.',
+    ].join('\n')).includes('finding-allowlist-gap'));
+
+    // Paths a role DOES own are ordinary findings.
+    assert.ok(!gate([
+      'verdict: CHANGES_REQUESTED',
+      '1. `apps/web/public/robots.txt` names a fabricated origin.',
+      '2. `apps/web/public/llms.txt` is missing.',
+      '3. Update `.traffic-one/known-issues.md` and `README.md`.',
+    ].join('\n')).includes('finding-allowlist-gap'),
+    'compiled outputs and ungated docs are satisfiable orders');
+
+    // An APPROVED digest carries no orders; the gate stays out of its way.
+    assert.ok(!gate('verdict: APPROVED\n- reviewed `apps/web/public/ai-plugin.json` history\n')
+      .includes('finding-allowlist-gap'));
+
+    // The orchestrator's verbatim transcription is the same order on a second
+    // surface, so it is judged by the same rule.
+    assert.ok(planReadinessViolations({
+      filePath: '.traffic-one/fix-cycles/R/senior-frontend-fix-1.md',
+      content: '5. Create `apps/web/public/ai-plugin.json`.\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).includes('finding-allowlist-gap'));
+  });
+});
+
+test('finding-allowlist-gap: the reviewer writes by heredoc, so the gate reads the shell payload', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true };
+    writeStateFile(dir, { ...state, currentRunId: 'R' });
+    writeMaterialized(dir);
+    writePlan(dir);
+    writeRequiredMemory(dir, state);
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    // `content` is empty exactly as it is for a `cat > … <<'EOF'` write: the
+    // reviewer is read-only by contract and has no Write tool.
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/reviewer.md',
+      content: '',
+      contentVerified: false,
+      shellBody: 'verdict: CHANGES_REQUESTED\n5. Create `apps/web/public/ai-plugin.json`.\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(violations.includes('finding-allowlist-gap'),
+      'a heredoc-published finding must be judged, not waved through as empty content');
+  });
+});
+
+test('implementer contract-delivery gate: a role that wrote none of its compiled modules cannot report IMPLEMENTED', () => {
+  withProject((dir) => {
+    // Observed 10co-e2e: verification-v2.json asserted 15 changed files because
+    // `changedPaths = observedChangedPaths ∪ plannedOutputs` and
+    // observedChangedPaths was EMPTY — on disk exactly one of the 15 existed,
+    // and the role still reported IMPLEMENTED.
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'course-catalog', name: 'Course Catalog', kind: 'service' },
+      ],
+    });
+    const architecture = readCompiledArchitecture(dir, 'R');
+    assert.ok(architecture);
+    const ownedBy = (role: string): string[] => architecture.modules
+      .filter((module) => module.ownerRole === role)
+      .map((module) => module.output);
+    const backendOutputs = ownedBy('senior-backend');
+    const frontendOutputs = ownedBy('senior-frontend');
+    assert.ok(backendOutputs.length > 0 && frontendOutputs.length > 0);
+
+    const gateArgs = (role: 'backend' | 'frontend'): Parameters<typeof planReadinessViolations>[0] => ({
+      filePath: `.traffic-one/digests/R/${role}.md`,
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(planReadinessViolations(gateArgs('backend')).includes('implementer-contract-delivery-gate'));
+
+    // Delivering the role's own contract clears it — and the sibling's missing
+    // modules are never this role's finding.
+    for (const rel of backendOutputs) {
+      fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), 'export const value = 1;\n', 'utf8');
+    }
+    assert.ok(!planReadinessViolations(gateArgs('backend')).includes('implementer-contract-delivery-gate'));
+    assert.ok(planReadinessViolations(gateArgs('frontend')).includes('implementer-contract-delivery-gate'),
+      'the frontend still owes its own compiled modules');
+  });
+});
+
+test('implementer typecheck gate: a filtered root script that never invokes the demanded per-package typecheck is not coverage', () => {
+  withProject((dir) => {
+    // Observed 10co-e2e: the gate demanded a `typecheck` script in
+    // packages/api-client and packages/i18n, both got one, and the root read
+    // `"typecheck": "pnpm --filter @app/web typecheck"` — which invokes
+    // neither. A real reported failure stopped reproducing.
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'course-catalog', name: 'Course Catalog', kind: 'service' },
+      ],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+    const writeRoot = (script: string): void => {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.0.0', typescript: '^5.8.3' },
+        scripts: { typecheck: script },
+      }), 'utf8');
+      fs.mkdirSync(path.join(dir, 'packages/api-client'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'packages/api-client/package.json'), JSON.stringify({
+        name: '@app/api-client',
+        scripts: { typecheck: 'tsc --noEmit' },
+      }), 'utf8');
+    };
+
+    writeRoot('pnpm --filter @app/web typecheck');
+    const gated = planReadinessViolations(gateArgs);
+    assert.ok(gated.includes('implementer-typecheck-invocation-gate'));
+    // The demanded per-package script exists, so the ownership gate is silent —
+    // this is exactly the hole: satisfied, and never run.
+    assert.ok(!gated.includes('implementer-typecheck-toolchain-gate'));
+
+    // Broadcasts reach every member.
+    writeRoot('pnpm -r typecheck');
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-invocation-gate'));
+    writeRoot('turbo run typecheck');
+    assert.ok(!planReadinessViolations(gateArgs).includes('implementer-typecheck-invocation-gate'));
+
+    // So does a filter that names the package — by name, by path, or by glob.
+    for (const script of [
+      'pnpm --filter @app/api-client typecheck',
+      'pnpm --filter=@app/web --filter=@app/api-client run typecheck',
+      'pnpm --filter "./packages/api-client" typecheck',
+      'pnpm --filter "@app/*" typecheck',
+      // A negation EXCLUDES one member and broadcasts to the rest. Read as a
+      // narrowing target it matched nothing and reported the whole workspace
+      // unreached — a deny on a script that does run the demanded compiler.
+      'pnpm --filter=!./docs typecheck',
+      'pnpm --filter=@app/api-client --filter=!./docs typecheck',
+    ]) {
+      writeRoot(script);
+      assert.ok(
+        !planReadinessViolations(gateArgs).includes('implementer-typecheck-invocation-gate'),
+        `"${script}" reaches the member`,
+      );
+    }
+
+    // A negation must not make a genuinely narrowed script pass either.
+    writeRoot('pnpm --filter=@app/web --filter=!./docs typecheck');
+    assert.ok(
+      planReadinessViolations(gateArgs).includes('implementer-typecheck-invocation-gate'),
+      'dropping the negation still leaves a filter that misses the member',
+    );
+  });
+});
+
+test('page-speed claim gate: a digest may not quote a Lighthouse score the runner never measured', () => {
+  withProject((dir) => {
+    // Observed 10co-e2e: the frontend self-ran Lighthouse 13.2.0 before the
+    // ^12.8.2 pin existed, scored 0.98, and shipped "performance 98" downstream
+    // with verdict IMPLEMENTED against a canonical 74.
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', 'R');
+    fs.mkdirSync(qaDir, { recursive: true });
+    const writeEvidence = (performance: number): void => {
+      fs.writeFileSync(path.join(qaDir, 'report-v2.json'), JSON.stringify({
+        lighthouse: { evidencePath: 'lighthouse-evidence-v1.json' },
+      }), 'utf8');
+      fs.writeFileSync(path.join(qaDir, 'lighthouse-evidence-v1.json'), JSON.stringify({
+        schemaVersion: 1,
+        producer: 'traffic-one-qa-runner',
+        runId: 'R',
+        performance,
+      }), 'utf8');
+    };
+    const digest = (claim: string, role = 'frontend', verdict = 'IMPLEMENTED'): string[] => (
+      planReadinessViolations({
+        filePath: `.traffic-one/digests/R/${role}.md`,
+        content: `verdict: ${verdict}\n${claim}\n`,
+        projectRoot: dir,
+        state,
+        writingFeatureSource: false,
+        block: names,
+      })
+    );
+
+    // No canonical evidence at all: a self-run number is not contradicted here.
+    assert.ok(!digest('- Lighthouse performance 98 on the production preview.')
+      .includes('lighthouse-claim-reconciliation-gate'));
+
+    writeEvidence(74);
+    assert.ok(digest('- Lighthouse performance 98 on the production preview.')
+      .includes('lighthouse-claim-reconciliation-gate'));
+    // The tester's TESTS_GREEN is reconciled against the same evidence.
+    assert.ok(digest('- Lighthouse: performance 98, accessibility 100.', 'tester', 'TESTS_GREEN')
+      .includes('lighthouse-claim-reconciliation-gate'));
+
+    // Audit noise inside the tolerance band is not a false claim, a LOWER
+    // honest number is never one, and an LCP figure is not a score.
+    assert.ok(!digest('- Lighthouse performance 78 after the fix.')
+      .includes('lighthouse-claim-reconciliation-gate'));
+    assert.ok(!digest('- Lighthouse performance 70; below the target.')
+      .includes('lighthouse-claim-reconciliation-gate'));
+    assert.ok(!digest('- Lighthouse LCP performance 4527 ms on mobile.')
+      .includes('lighthouse-claim-reconciliation-gate'));
+    // A number with no page-speed context is not read as a score at all.
+    assert.ok(!digest('- Query performance 98 percentile improved.')
+      .includes('lighthouse-claim-reconciliation-gate'));
+  });
+});
+
+test('the delivery, typecheck-invocation and page-speed claim gates render byte-identical T1BLOCK prose', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'react-vite',
+      frontend: 'react',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    writeArchitectureInputAndAssignments(dir, 'R', state, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'course-catalog', name: 'Course Catalog', kind: 'service' },
+      ],
+    });
+    fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      private: true,
+      devDependencies: { prettier: '^3.0.0', typescript: '^5.8.3' },
+      scripts: { typecheck: 'pnpm --filter @app/web typecheck' },
+    }), 'utf8');
+    fs.mkdirSync(path.join(dir, 'packages/api-client'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'packages/api-client/package.json'), JSON.stringify({
+      name: '@app/api-client',
+      scripts: { typecheck: 'tsc --noEmit' },
+    }), 'utf8');
+    const qaDir = path.join(dir, '.traffic-one', 'reports', 'qa', 'R');
+    fs.mkdirSync(qaDir, { recursive: true });
+    fs.writeFileSync(path.join(qaDir, 'report-v2.json'), JSON.stringify({
+      lighthouse: { evidencePath: 'lighthouse-evidence-v1.json' },
+    }), 'utf8');
+    fs.writeFileSync(path.join(qaDir, 'lighthouse-evidence-v1.json'), JSON.stringify({
+      schemaVersion: 1, producer: 'traffic-one-qa-runner', runId: 'R', performance: 74,
+    }), 'utf8');
+
+    const wanted = [
+      'implementer-contract-delivery-gate',
+      'implementer-typecheck-invocation-gate',
+      'lighthouse-claim-reconciliation-gate',
+    ];
+    const captured = new Map<string, {
+      fallback: string;
+      vars: Record<string, string | number | null | undefined>;
+    }>();
+    planReadinessViolations({
+      filePath: '.traffic-one/digests/R/backend.md',
+      content: 'verdict: IMPLEMENTED\n- Lighthouse performance 98 on the production preview.\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: (name, fallback, vars = {}) => {
+        if (wanted.includes(name)) captured.set(name, { fallback, vars });
+        return name;
+      },
+    });
+
+    const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+    for (const blockId of wanted) {
+      const found = captured.get(blockId);
+      assert.ok(found, `${blockId} never fired`);
+      const begin = `<!-- T1BLOCK:BEGIN ${blockId} -->`;
+      const end = `<!-- T1BLOCK:END ${blockId} -->`;
+      const beginAt = skill.indexOf(begin);
+      const endAt = skill.indexOf(end);
+      assert.ok(beginAt >= 0 && endAt > beginAt, `missing T1BLOCK ${blockId}`);
+      let rendered = skill.slice(beginAt + begin.length, endAt).trim();
+      for (const [key, value] of Object.entries(found.vars)) {
+        rendered = rendered.split(`{{${key}}}`).join(String(value ?? ''));
+      }
+      assert.equal(rendered, found.fallback, `${blockId} prose/fallback drift`);
+    }
+  });
+});
+
+test('extension freedom: a module delivered at an allowed non-default variant counts as delivered', () => {
+  withProject((dir) => {
+    const runId = 'R-ext';
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    };
+    const inputPath = architectureInputPath(dir, runId);
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'auth', name: 'Auth', kind: 'feature' }],
+    }), 'utf8');
+    const architecture = compileArchitectureForRun(dir, runId, state);
+    const feature = architecture.modules.find((module) => module.id === 'auth')!;
+    assert.ok(feature.output.endsWith('/index.tsx'), feature.output);
+    assert.deepEqual(feature.allowedExtensions, ['.tsx', '.ts']);
+    // Nothing on disk: both completion checks report the DEFAULT path.
+    assert.deepEqual(missingPlannedModulesForRole(dir, runId, 'senior-frontend'), [feature.output]);
+    assert.deepEqual(
+      undeliveredContractOutputs(dir, runId, 'senior-frontend')?.missing,
+      [feature.output],
+    );
+    // Deliver ONLY the headless `.ts` variant: both checks settle — the
+    // contract pinned the base path, the toolchain owns the form (12co).
+    const variant = feature.output.replace(/\.tsx$/, '.ts');
+    fs.mkdirSync(path.join(dir, path.dirname(variant)), { recursive: true });
+    fs.writeFileSync(path.join(dir, variant), 'export const auth = true;\n', 'utf8');
+    assert.deepEqual(missingPlannedModulesForRole(dir, runId, 'senior-frontend'), []);
+    assert.equal(undeliveredContractOutputs(dir, runId, 'senior-frontend'), null);
+  });
+});
+
+// The compiled eslint layer is where the retired STRUCT_* heuristics became real
+// enforcement — which holds only while the rules survive. 16co: an implementer
+// rewrote eslint.config.js and `max-lines` vanished silently; its absence later
+// let a 461-line barrel through and cost the whole news delegation batch. Prose
+// guarded the rule; prose does not refuse.
+test('frontend eslint-survival gate: deleting a scaffolded error rule blocks IMPLEMENTED', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, 'apps/web/src'), { recursive: true });
+    writeFormatterToolchain(dir);
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), 'export function App() {\n  return null;\n}\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'apps/web/tsconfig.json'), '{"compilerOptions":{"noEmit":true}}', 'utf8');
+    const gateArgs = {
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    };
+
+    // Untouched scaffold shape: both error rules present → no survival deny.
+    const scaffolded = [
+      'export default [',
+      '  {',
+      '    rules: {',
+      "      'max-lines': ['error', { max: 400, skipBlankLines: true, skipComments: true }],",
+      "      'no-restricted-imports': ['error', { patterns: [] }],",
+      '    },',
+      '  },',
+      '];',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(dir, 'eslint.config.js'), scaffolded, 'utf8');
+    assert.ok(
+      !planReadinessViolations(gateArgs).includes('frontend-eslint-survival-gate'),
+      'the untouched scaffold must pass',
+    );
+
+    // EXTENDED config (new plugins, reordered, extra rules) still passes — the
+    // gate protects the bar, never the file's shape.
+    fs.writeFileSync(path.join(dir, 'eslint.config.js'), [
+      "import react from 'eslint-plugin-react';",
+      'export default [',
+      "  { plugins: { react }, rules: { 'react/jsx-key': 'error' } },",
+      '  {',
+      '    rules: {',
+      "      complexity: ['warn', 12],",
+      "      'no-restricted-imports': ['error', { patterns: [] }],",
+      "      'max-lines': ['error', { max: 380 }],",
+      '    },',
+      '  },',
+      '];',
+      '',
+    ].join('\n'), 'utf8');
+    assert.ok(
+      !planReadinessViolations(gateArgs).includes('frontend-eslint-survival-gate'),
+      'an extended config keeps its freedom',
+    );
+
+    // The 16co shape: the rewrite drops max-lines. Blocked, and the deny names
+    // the rule.
+    fs.writeFileSync(path.join(dir, 'eslint.config.js'), [
+      'export default [',
+      "  { rules: { 'no-restricted-imports': ['error', { patterns: [] }] } },",
+      '];',
+      '',
+    ].join('\n'), 'utf8');
+    const denied = planReadinessViolations({ ...gateArgs, block: namesWithVars });
+    const survival = denied.find((entry) => entry.startsWith('frontend-eslint-survival-gate'));
+    assert.ok(survival, JSON.stringify(denied));
+    assert.match(survival, /max-lines/);
+
+    // Existing codebase: the user's lint config is the user's. Never denied.
+    assert.ok(
+      !planReadinessViolations({
+        ...gateArgs,
+        state: { ...DEFAULT_STATE, mode: 'existing-codebase', onboardingComplete: true },
+      }).includes('frontend-eslint-survival-gate'),
+      'an existing codebase keeps its own lint config',
+    );
   });
 });

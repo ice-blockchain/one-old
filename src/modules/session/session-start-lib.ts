@@ -304,7 +304,7 @@ export interface ToolStatus {
   minimum?: string;
   recommended?: string;
 }
-export interface ToolchainProbe {
+interface ToolchainProbe {
   toolStatus(name: string, installedVersion: unknown): ToolStatus;
   getToolSpec(name: string): { installCommand?: string } | null;
 }

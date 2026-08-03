@@ -7,7 +7,7 @@
 
 import { STACK_IDS } from '../../config/stacks';
 import { detectMode } from '../../shared/detection';
-import { isPathWithin, projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
+import { isPathWithin, projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook/paths';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import {
   hasMaterializedProjectAssets,

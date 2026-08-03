@@ -8,6 +8,7 @@ import {
   copyActiveSkills,
   pruneSkillsDirective,
   roleAgentBody,
+  roleKernel,
 } from '../index';
 
 test('activeSkillsFor(default state) unions common + react-vite + supabase', () => {
@@ -18,6 +19,23 @@ test('activeSkillsFor(default state) unions common + react-vite + supabase', () 
   assert.ok(s.has('create-component')); // react-vite
   assert.ok(s.has('postgres-patterns')); // supabase
   assert.ok(!s.has('django-patterns'));
+  assert.equal(s.has('security-scan'), false, 'host-scoped skills require an explicit host');
+  assert.equal(s.has('model-tier-sync'), false, 'maintainer-only skills are unavailable in projects');
+});
+
+test('host-scoped skills activate only on their declared host', () => {
+  const state = {
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    mobile: { framework: 'none' },
+    onboardingComplete: true,
+  };
+  assert.equal(activeSkillsFor(state, 'claude').has('security-scan'), true);
+  for (const host of ['codex', 'cursor', 'opencode', 'kilo', 'copilot', 'windsurf'] as const) {
+    assert.equal(activeSkillsFor(state, host).has('security-scan'), false, host);
+  }
+  assert.equal(activeSkillsFor(state, 'claude').has('model-tier-sync'), false);
 });
 
 test('activeSkillsFor: pre-onboarding new project → no skills (bootstrap set is empty)', () => {
@@ -26,10 +44,58 @@ test('activeSkillsFor: pre-onboarding new project → no skills (bootstrap set i
   assert.equal(s.size, 0);
 });
 
+test('ionic-mobile is scoped to the Ionic profile, not plain react-vite', () => {
+  // Measured on 12co: the skill added ~10,958 chars (~2,700 tokens) to every
+  // react-vite frontend bootstrap although the project had no mobile surface.
+  const web = activeSkillsFor({ stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true });
+  assert.equal(web.has('ionic-mobile'), false);
+  assert.equal(web.has('vite-patterns'), true); // the rest of the bucket is intact
+
+  const ionic = activeSkillsFor({ stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'ionic-capacitor' }, onboardingComplete: true });
+  assert.equal(ionic.has('ionic-mobile'), true);
+});
+
 test('activeSkillsFor accepts a stack string (legacy alias)', () => {
   const s = activeSkillsFor('default');
   assert.ok(s.has('create-component'));
   assert.ok(s.has('postgres-patterns'));
+});
+
+test('stateless Go/Python state does not inherit Postgres or API-only skills', () => {
+  const go = activeSkillsFor({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    onboardingComplete: true,
+    mobile: { framework: 'none' },
+  });
+  assert.equal(go.has('golang-patterns'), true);
+  assert.equal(go.has('postgres-patterns'), false);
+  assert.equal(go.has('database-migrations'), false);
+  assert.equal(go.has('app-launch-checklist'), false);
+
+  const python = activeSkillsFor({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'python',
+    onboardingComplete: true,
+    capabilitySurfaces: ['cli'],
+    mobile: { framework: 'none' },
+  });
+  assert.equal(python.has('python-patterns'), true);
+  assert.equal(python.has('api-design'), false);
+  assert.equal(python.has('postgres-patterns'), false);
+
+  const pythonData = activeSkillsFor({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'python',
+    onboardingComplete: true,
+    capabilitySurfaces: ['cli', 'data'],
+    mobile: { framework: 'none' },
+  });
+  assert.equal(pythonData.has('postgres-patterns'), true);
+  assert.equal(pythonData.has('database-migrations'), true);
 });
 
 test('pruneSkillsDirective lists active + flags wrong-stack skills', () => {
@@ -93,4 +159,27 @@ test('roleAgentBody is null for malformed / unknown roles', () => {
   assert.equal(roleAgentBody('Not A Role'), null); // fails the [a-z0-9-] guard
   assert.equal(roleAgentBody(''), null);
   assert.equal(roleAgentBody('definitely-not-a-shipped-role'), null); // valid shape, no doc
+});
+
+// The kernel is the ONLY role-contract delivery on hosts without native
+// agent-doc injection (Codex spawn_agent children) since the context-pack
+// pager was removed — every senior role must carry one, and it must stay
+// compact enough that the whole child SessionStart header fits ~16k chars.
+test('every senior role doc carries a compact T1KERNEL contract kernel', () => {
+  const verdictBy: Record<string, string> = {
+    'senior-architect': 'PLAN_READY',
+    'senior-frontend': 'IMPLEMENTED',
+    'senior-backend': 'IMPLEMENTED',
+    'senior-reviewer': 'CHANGES_REQUESTED',
+    'senior-tester': 'TESTS_GREEN',
+    'senior-shipper': 'SHIPPED',
+  };
+  for (const [role, verdict] of Object.entries(verdictBy)) {
+    const kernel = roleKernel(role);
+    assert.ok(kernel, `${role} has a T1KERNEL section`);
+    assert.ok(kernel!.length <= 2_500, `${role} kernel is ${kernel!.length} chars (cap 2500)`);
+    assert.ok(kernel!.includes(verdict), `${role} kernel names its verdict token ${verdict}`);
+    assert.ok(kernel!.includes('ONE file per Read/shell command'), `${role} kernel keeps the anti-truncation discipline`);
+  }
+  assert.equal(roleKernel('definitely-not-a-shipped-role'), null);
 });

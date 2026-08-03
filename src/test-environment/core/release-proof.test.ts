@@ -43,6 +43,7 @@ function context(project: string, dist: string): AssertionContext {
   const config = defaultConfig();
   return {
     cwd: project,
+    caseFolder: project,
     env: {
       TRAFFIC_ONE_PLUGIN_ROOT: dist,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(project, 'preferences.json'),
@@ -97,7 +98,7 @@ test('runtime fingerprint requires the selected compiled entry token and rejects
   assert.equal((await fingerprintAssertion.run(unarmed)).status, 'FAIL');
 });
 
-test('declared headless subagent absence is informational but unknown absence remains strict', async (t) => {
+test('declared headless subagent absence is explicit and still blocks strict certification', async (t) => {
   const roots = tempRoots();
   t.after(roots.dispose);
   const ctx = context(roots.project, roots.dist);
@@ -106,7 +107,18 @@ test('declared headless subagent absence is informational but unknown absence re
 
   assert.equal((await digestAssertion.run(digestCtx)).status, 'UNSUPPORTED');
   assert.equal((await manifestAssertion.run(manifestCtx)).status, 'UNSUPPORTED');
-  assert.equal(releaseResultFailed({ fail: 0, skip: 0, inconclusive: 0 }, true), false);
+  assert.equal(releaseResultFailed({
+    fail: 0,
+    skip: 0,
+    inconclusive: 0,
+    unsupported: 2,
+  }, true), true);
+  assert.equal(releaseResultFailed({
+    fail: 0,
+    skip: 0,
+    inconclusive: 0,
+    unsupported: 2,
+  }, false), false);
 
   const runDir = path.join(roots.project, '.traffic-one', 'runs', '123');
   fs.mkdirSync(runDir, { recursive: true });
@@ -155,7 +167,7 @@ test('declared headless subagent absence is informational but unknown absence re
   assert.equal(releaseResultFailed({ fail: 1, skip: 0, inconclusive: 0 }, true), true);
 });
 
-test('reports count UNSUPPORTED separately from strict failures', (t) => {
+test('reports count UNSUPPORTED separately and strict policy rejects the summary', (t) => {
   const roots = tempRoots();
   t.after(roots.dispose);
   const result: CaseRunResult = {
@@ -177,5 +189,6 @@ test('reports count UNSUPPORTED separately from strict failures', (t) => {
   const summary = writeReport([result], defaultConfig(), new Date().toISOString(), roots.root);
   assert.equal(summary.unsupported, 1);
   assert.equal(summary.fail + summary.skip + summary.inconclusive, 0);
+  assert.equal(releaseResultFailed(summary, true), true);
   assert.match(fs.readFileSync(summary.reportPath, 'utf8'), /Assertions \(P\/F\/S\/I\/U\)/);
 });

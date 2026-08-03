@@ -26,9 +26,9 @@ const FUTURE_SKEW_MS = 2 * 60 * 1000;
 // keeps a generous compose-then-write margin while catching that failure mode.
 const STALE_PAST_MS = 5 * 60 * 1000;
 
-export type FinishedAtReason = 'missing' | 'malformed' | 'future' | 'before-run' | 'stale';
+type FinishedAtReason = 'missing' | 'malformed' | 'future' | 'before-run' | 'stale';
 
-export interface FinishedAtFix {
+interface FinishedAtFix {
   /** Digest content with the finished_at line stamped to the real write-time. */
   readonly content: string;
   /** The rejected value (trimmed), or null when the line was absent/empty. */

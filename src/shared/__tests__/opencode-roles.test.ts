@@ -87,7 +87,7 @@ test('parsePlanDelegationBlock counts only runnable role/files/task units', () =
     '- role: backend | files: supabase/seed.sql',
     '- role: tester | task: add smoke test',
     '- role: docs | files: README.md | task: draft usage notes',
-    '- role: senior-frontend | files: packages/i18n/src/ro.json | task: seed translated copy',
+    '- role: senior-frontend | files: packages/i18n/src/locales/ro/common.json | task: seed translated copy',
     '<!-- opencode-delegate:end -->',
   ].join('\n');
   const parsed = parsePlanDelegationBlock(plan);

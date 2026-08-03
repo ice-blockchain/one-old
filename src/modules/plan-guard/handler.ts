@@ -8,22 +8,32 @@
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { readEffectiveState } from '../../shared/state';
+import { isExistingProjectMode, readEffectiveState } from '../../shared/state';
+import { capabilityProfileForProject } from '../../shared/capabilities';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { resolveToolScope } from '../../shared/tool-scope';
 import { INSTALL_RE, allowsNextjs, forbiddenForStack } from './forbidden';
 
 export function libraryAllowlistGate(ctx: Ctx): HookResult {
-  if (pluginUseDeclined(ctx.cwd)) return noop();
+  const scope = resolveToolScope(ctx);
+  if (scope.standsDown) return noop();
+  const projectRoot = scope.projectRoot;
+  if (pluginUseDeclined(projectRoot)) return noop();
   // The plugin authoring repo has a null-stack state that would fall into the
   // web forbidden table — never police installs there.
-  if (isNonProjectRoot(ctx.cwd)) return noop();
+  if (isNonProjectRoot(projectRoot)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!INSTALL_RE.test(command)) return noop();
 
-  const state = readEffectiveState(ctx.cwd);
+  const state = readEffectiveState(projectRoot);
+  // Every rule this gate can emit enforces the prescribed stack; an existing
+  // codebase keeps its own dependency choices, so the whole gate stands down.
+  if (isExistingProjectMode(state)) return noop();
   const arg = state.stack ? state : null;
-  const hits = forbiddenForStack(arg, allowsNextjs(state, ctx.cwd)).filter(([pattern]) => new RegExp(pattern).test(command));
+  const profile = capabilityProfileForProject(projectRoot, state);
+  const hits = forbiddenForStack(arg, allowsNextjs(state, projectRoot), profile.uiSystem)
+    .filter(([pattern]) => new RegExp(pattern).test(command));
   if (hits.length === 0) return noop();
 
   const lines = hits.map(([pattern, tip]) => `  - ${pattern}: ${tip}`).join('\n');

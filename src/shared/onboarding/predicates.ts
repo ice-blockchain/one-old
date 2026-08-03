@@ -4,7 +4,7 @@
 // whether Team Confirmation is still pending. Ported 1:1 from _helpers.cjs
 // (isNewProjectOnboardingIncomplete:969, needsTeamConfirmation:1420).
 
-import { obj, type Rec } from '../obj';
+import { obj } from '../obj';
 import { isKnownStack } from '../config';
 import { canonicalHost } from '../model-tiers';
 import { teamModeForLevel } from '../performance';

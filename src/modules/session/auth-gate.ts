@@ -5,8 +5,9 @@
 import { noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { resolveToolScope } from '../../shared/tool-scope';
 import { onboardingGate } from '../onboarding-gate/handler';
 
 // While unauthenticated, reuse the onboarding gate so every host opens the
@@ -14,8 +15,11 @@ import { onboardingGate } from '../onboarding-gate/handler';
 // succeeds. The explicit pluginUse check below makes a decline stand down before
 // the canonical auth state is read.
 export function authPreToolGate(ctx: Ctx): HookResult {
-  if (isPluginAuthoringRoot(ctx.cwd)) return noop();
-  if (pluginUseDeclined(ctx.cwd)) return noop();
+  const scope = resolveToolScope(ctx);
+  if (scope.standsDown) return noop();
+  const root = scope.projectRoot;
+  if (isNonProjectRoot(root)) return noop();
+  if (pluginUseDeclined(root)) return noop();
   if (!authEnforced() || isLocallyAuthenticated()) return noop();
   return onboardingGate(ctx);
 }

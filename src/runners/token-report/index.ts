@@ -18,9 +18,13 @@ import {
 } from './discovery';
 import { projectSlugFromCwd } from './projectSlugFromCwd';
 import { renderMarkdown } from './render';
+import {
+  AGENT_ACTIVITY_REGRESSION_THRESHOLD,
+  listRunAgentActivity,
+} from '../../shared/state';
 
 type Rec = Record<string, unknown>;
-export interface TokenReportArgs {
+interface TokenReportArgs {
   json: boolean; all: boolean; source: string;
   session?: string; project?: string; out?: string; cwd?: string;
 }
@@ -57,6 +61,36 @@ export function selectTargetSessions<T extends Rec>(sessions: T[], args: TokenRe
   }
   if (args.all) return sessions;
   return sessions.length > 0 ? [sessions[0] as T] : [];
+}
+
+// Per-role tool-call telemetry recorded by the PreToolUse identity gate
+// (12co: a frontend child made 163 calls with nothing counting them). The
+// regression threshold is fail-open — a chatty run still settles; the flag is
+// the benchmark signal the next e2e campaign reads.
+export function renderRunActivitySection(cwd: string): string {
+  try {
+    const runsRoot = path.join(cwd, '.traffic-one', 'runs');
+    const lines: string[] = [];
+    for (const runId of fs.readdirSync(runsRoot).sort().reverse().slice(0, 5)) {
+      const tally = listRunAgentActivity(cwd, runId);
+      const entries = Object.entries(tally).filter(([, activity]) => activity.total > 0);
+      if (entries.length === 0) continue;
+      if (lines.length === 0) {
+        lines.push('', '## Run agent activity (tool calls per role)', '', '| Run | Role | Tool calls | Flag |', '|-----|------|-----------:|------|');
+      }
+      for (const [role, activity] of entries.sort((a, b) => b[1].total - a[1].total)) {
+        const flag = activity.total > AGENT_ACTIVITY_REGRESSION_THRESHOLD
+          ? `REGRESSION > ${AGENT_ACTIVITY_REGRESSION_THRESHOLD}`
+          : '';
+        lines.push(`| ${runId} | ${role} | ${activity.total} | ${flag} |`);
+      }
+    }
+    if (lines.length === 0) return '';
+    lines.push('', `- Counted by the PreToolUse identity gate per child tool call; > ${AGENT_ACTIVITY_REGRESSION_THRESHOLD} calls per role flags a turn-count regression (fail-open, never a deny).`, '');
+    return `${lines.join('\n')}`;
+  } catch {
+    return '';
+  }
 }
 
 export function main(argv: string[] = process.argv.slice(2)): void {
@@ -103,7 +137,9 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     return;
   }
 
-  const body = args.json ? `${JSON.stringify(reports, null, 2)}\n` : reports.map(renderMarkdown).join('\n---\n\n');
+  const body = args.json
+    ? `${JSON.stringify(reports, null, 2)}\n`
+    : reports.map(renderMarkdown).join('\n---\n\n') + renderRunActivitySection(cwd);
 
   if (args.out) {
     try {

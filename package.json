@@ -1,6 +1,6 @@
 {
   "name": "traffic-one",
-  "version": "1.0.3",
+  "version": "1.0.52",
   "private": true,
   "type": "commonjs",
   "description": "Build + codegen tooling for the Traffic One plugin. Readable source lives in src/; generated plugin output lives in ignored dist/.",
@@ -16,6 +16,7 @@
     "golden:update": "tsx src/build/golden-update.ts",
     "plugin:build": "npm run gen && npm run build",
     "plugin:check": "npm run gen:check && npm run build:verify",
+    "plugin:sync": "node src/build/sync-hosts.cjs",
     "smoke": "tsx src/build/compiled-smoke.ts",
     "test": "node --import ./src/build/test-preload.mjs --import tsx --test \"src/**/*.test.ts\" \"tests/**/*.test.ts\"",
     "test:env": "tsx src/test-environment/run.ts",

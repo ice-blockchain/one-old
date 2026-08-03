@@ -30,6 +30,24 @@ test('projectContextDomainQuestionLines selects domain questions by keyword', ()
   assert.ok(shop.some((l) => l.startsWith('Payment integration')));
 });
 
+test('projectContextDomainQuestionLines: a bare `listing` is not marketplace vocabulary', () => {
+  // The agency brief ("one landing page with projects listing, latest news,
+  // reviews") used to be asked about commissions, payouts, and disputes.
+  const agency = projectContextDomainQuestionLines(
+    'create modern an agency presentation website. one landing page with projects listing, latest news, reviews.',
+  );
+  assert.ok(!agency.some((l) => l.startsWith('Marketplace')), agency.join(' | '));
+  assert.ok(!agency.some((l) => l.startsWith('Payment integration')), agency.join(' | '));
+
+  // `job`/`jobs` still triggers on its own — a job board is a two-sided market.
+  assert.ok(projectContextDomainQuestionLines('a job board').some((l) => l.startsWith('Marketplace')));
+  assert.ok(projectContextDomainQuestionLines('a site for jobs').some((l) => l.startsWith('Marketplace')));
+
+  // `listings` qualifies alongside the market act.
+  assert.ok(projectContextDomainQuestionLines('an apartment listings site where owners post rentals')
+    .some((l) => l.startsWith('Marketplace')));
+});
+
 test('projectContextDomainQuestionLines always returns a generic fallback when nothing matches', () => {
   const lines = projectContextDomainQuestionLines('a thing');
   assert.equal(lines.length, 1);

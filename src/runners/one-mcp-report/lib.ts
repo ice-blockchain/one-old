@@ -13,11 +13,13 @@ import * as path from 'path';
 import {
   ONE_MCP_REPORTED_FILE_EXTENSIONS,
   ONE_MCP_REPORT_TIMEOUT_MS,
-} from '../../config/one-mcp';
+  SKIP_DIRS,
+  SKIP_FILES,
+} from '../../config/reporting';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
-import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
 import { stripLocalPreferenceFields } from '../../shared/state/local-prefs';
 import {
+  preserveCurrentRunId,
   preserveOneMcpReportId,
   withProjectStateLock,
 } from '../../shared/state/project-state-lock';
@@ -104,11 +106,11 @@ export function writeProjectState(cwd: string, state: unknown): void {
   const replacement = stripLocalPreferenceFields(state && typeof state === 'object' ? state : {});
   withProjectStateLock(cwd, () => {
     const current = readJson(filePath, {});
-    writeJson(filePath, preserveOneMcpReportId(current, replacement));
+    writeJson(filePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)));
   });
 }
 
-export function shouldSkipFile(relPath: string, fileName: string): boolean {
+function shouldSkipFile(relPath: string, fileName: string): boolean {
   const normalized = relPath.replace(/\\/g, '/');
   if (SKIP_FILES.has(fileName)) return true;
   if (/\.(min|bundle)\.(js|css)$/i.test(fileName)) return true;
@@ -151,7 +153,7 @@ export function countLines(text: string | null): number {
   return text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length;
 }
 
-export function packageJsonFiles(cwd: string): string[] {
+function packageJsonFiles(cwd: string): string[] {
   const files: string[] = [];
   walkFiles(cwd, (absPath, relPath) => {
     if (path.basename(relPath) === 'package.json') files.push(absPath);
@@ -228,7 +230,6 @@ export async function mcpRequest(
   endpoint: string,
   payload: unknown,
   timeoutMs = ONE_MCP_REPORT_TIMEOUT_MS,
-  _env: NodeJS.ProcessEnv = process.env,
   requestImpl?: typeof https.request,
 ): Promise<string> {
   const request: OneMcpJsonRpcRequest = buildMcpPayload(payload);

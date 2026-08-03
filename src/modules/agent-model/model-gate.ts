@@ -13,7 +13,7 @@ import { askUser } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
 import { cursorPickedModelUnavailableNotice, cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { readEffectiveState } from '../../shared/state';
 import { canonicalToolName, isModelCaptureCommand, isModelGateCommand, parsedToolInput } from '../../shared/tool-classify';
 

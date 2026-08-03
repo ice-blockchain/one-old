@@ -12,6 +12,7 @@ import { LEGACY_STACK_ALIASES, STACK_IDS } from '../../config/stacks';
 import { LEGACY_LOCK_FILE, LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { isNonProjectRoot } from '../authoring-root';
 import { readJson, readText, writeJson } from '../fsjson';
+import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import {
   canonicalizeStateShape,
   canonicalMobileSource,
@@ -27,13 +28,14 @@ import { KNOWN_ADDONS } from '../../config/state';
 import { stateTimestamp, stateVersion } from './io';
 import { hasLocalPreferenceFields, splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
 import { initializeToolchainState } from './toolchain';
-import { preserveOneMcpReportId, withProjectStateLock } from './project-state-lock';
+import { preserveCurrentRunId, preserveOneMcpReportId, withProjectStateLock } from './project-state-lock';
+import { defaultStateForStack } from '../capabilities';
 
 function defaultMobileState(): Rec {
   return { enabled: false, framework: 'none', source: 'none' };
 }
 
-export function defaultTechnologiesFor(state: Rec): { frontend: string[]; backend: string[]; mobile: string[] } {
+function defaultTechnologiesFor(state: Rec): { frontend: string[]; backend: string[]; mobile: string[] } {
   const frontend: string[] = [];
   const backend: string[] = [];
   const mobile: string[] = [];
@@ -124,6 +126,19 @@ export function writeState(cwd: string, state: unknown): void {
   // no-op here covers every state writer (onboarding server, run claims, session
   // flows) in one place. See authoring-root.test.ts + normalize tests.
   if (isNonProjectRoot(cwd)) return;
+  // Never CREATE state in a directory that belongs to an enclosing project. Same
+  // single-funnel reasoning as above: 30+ writers land here, including ones the
+  // resolver never sees (the onboarding-wait runners take their cwd from argv, and
+  // post-stack-setup's digestRoot bypasses resolveProjectRoot outright). Without
+  // this, a Go package could still be initialized as its own project.
+  //
+  // Creation-time only — a dir that already owns state keeps updating, so a
+  // legitimately nested project is untouched and an already-strayed root can still
+  // be written until the retention sweep heals it.
+  const ownsState = fs.existsSync(statePath(cwd)) || fs.existsSync(legacyStatePath(cwd));
+  if (!ownsState
+    && !dirOwnsProject(cwd)
+    && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) return;
   let source: Rec = obj(state) ? { ...(state as Rec) } : {};
   delete source.pluginVersion;
   if (source.stack) {
@@ -138,7 +153,7 @@ export function writeState(cwd: string, state: unknown): void {
   const replacement = { ...source, version: stateVersion() };
   withProjectStateLock(cwd, () => {
     const current = readJson<Rec>(filePath, {});
-    writeJson(filePath, preserveOneMcpReportId(current, replacement));
+    writeJson(filePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)));
   });
 }
 
@@ -182,7 +197,7 @@ export function normalizeState(state: unknown, defaultMode?: string): boolean {
   if (!s.confirmedAt) { s.confirmedAt = stateTimestamp(); changed = true; }
   if (!s.realtime) { s.realtime = 'none'; changed = true; }
   if (!s.frontend) {
-    s.frontend = s.stack === 'default' || s.stack === 'custom-backend' ? 'react-vite' : 'none';
+    s.frontend = defaultStateForStack(s.stack).frontend;
     changed = true;
   }
   if (!s.backend) { s.backend = s.stack === 'minimal' ? 'none' : 'supabase'; changed = true; }
@@ -285,7 +300,7 @@ export function normalizeState(state: unknown, defaultMode?: string): boolean {
   return changed;
 }
 
-export interface AddonGate {
+interface AddonGate {
   approved: boolean;
   skipped: boolean;
   status: string;

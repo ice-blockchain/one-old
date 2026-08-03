@@ -28,7 +28,7 @@ still decide whether a package can be added.
 - HTTP and server data: `axios` in services, RTK Query for cached server state.
 - UI and motion: `lucide-react`, `framer-motion`, Storybook.
 - i18n: `i18next`, `react-i18next`.
-- Testing and mocks: Jest in Traffic One React/Expo stacks, Playwright for E2E,
+- Testing and mocks: Vitest + jsdom in Traffic One Vite-based stacks (Jest in Expo), Playwright for E2E,
   MSW for HTTP mocks.
 - CLI/config: `commander` or `yargs`, `dotenv`, `envalid` or Zod schemas.
 - Observability: `@sentry/react` for React SPAs, Sentry Capacitor/Expo/native
@@ -49,8 +49,10 @@ still decide whether a package can be added.
 - React/Vite: keep Traffic One defaults: RTK Query/Redux, **Tailwind v4 +
   shadcn/ui** (Radix primitives, `class-variance-authority`, `clsx`,
   `tailwind-merge`, `tw-animate-css`), `lucide-react`, React Hook Form
-  + Zod, Jest, Playwright, MSW. Add new UI primitives via
-  `npx shadcn@latest add <name>`; do not hand-roll buttons / dialogs / etc.
+  + Zod, Vitest, Playwright, MSW. Search the live official catalog for every UI
+  need and add the exact required primitive via
+  `npx shadcn@latest add <name>` into `packages/ui`; never use a fixed starter
+  batch or hand-roll a catalog match.
   Versions come from the stack rules — never probe the npm registry to pick
   them; "latest tech" means latest within this contract.
 - Supabase: Supabase Auth, Storage, Realtime, RLS policies, and
@@ -72,6 +74,22 @@ still decide whether a package can be added.
   validated on v3), plus a small in-repo CSS bridge file mapping shadcn HSL
   tokens to Ionic `--ion-color-*` variables. Tailwind config sets
   `corePlugins.preflight: false` to avoid colliding with Ionic's reset.
+
+## Vue, Svelte, Astro, and Laravel UI
+
+- Vue and Nuxt with Tailwind v4 and no explicit/detected alternative use
+  `shadcn-vue`; Svelte and SvelteKit use `shadcn-svelte`.
+- Astro uses the adapter of its detected React, Vue, or Svelte renderer. Astro
+  without one keeps native primitives.
+- Laravel Inertia React uses `shadcn`; Inertia Vue uses `shadcn-vue`. Blade
+  keeps Laravel/framework-native primitives.
+- Angular and unknown frameworks keep native primitives unless the user
+  explicitly selects a compatible library.
+- In every adapter profile, search the official live catalog by name,
+  behavior, and synonyms and add only the product's compiled
+  `uiPrimitives` through that adapter's CLI into `packages/ui`.
+- An explicit or detected component library always wins. Preserve it and never
+  add a parallel shadcn system.
 
 ## Python
 

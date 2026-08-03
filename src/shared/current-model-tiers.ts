@@ -5,9 +5,9 @@
 
 import type { HostModelKey, TierId } from '../config/model-tiers';
 import {
+  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
 } from '../config/one-mcp';
 import {
   canonicalHost,
@@ -17,7 +17,7 @@ import {
   modelMatchesExpected,
   type HostModelSnapshot,
 } from './model-tiers';
-import { readOneMcpConfigCacheEntry, type OneMcpConfigCacheEntry } from './one-mcp-cache';
+import { readOneMcpConfigCacheEntry, type OneMcpConfigCacheEntry } from './one-mcp/cache';
 import {
   bundledOneMcpPayload,
   mapOneMcpTiers,
@@ -27,9 +27,9 @@ import {
   parseOneMcpModelConfigPayload,
 } from './one-mcp';
 
-export type CurrentHostModelSource = 'one-mcp' | 'bundled';
+type CurrentHostModelSource = 'one-mcp' | 'bundled';
 
-export interface CurrentHostModelTarget {
+interface CurrentHostModelTarget {
   readonly snapshot: HostModelSnapshot;
   readonly payloadFingerprint: string;
   readonly appliedFingerprint: string;
@@ -40,10 +40,10 @@ export interface CurrentHostModelTarget {
 export function usableOneMcpConfigCacheEntry(
   host: HostModelKey,
   entry: OneMcpConfigCacheEntry | null,
-  env: NodeJS.ProcessEnv = process.env,
+  endpoint: string = DEFAULT_PUBLIC_ENDPOINT,
 ): OneMcpConfigCacheEntry | null {
   if (!entry
-    || entry.endpoint !== publicEndpoint(env)
+    || entry.endpoint !== endpoint
     || entry.configName !== ONE_MCP_CONFIG_NAME_BY_HOST[host]
     || entry.decoderVersion !== ONE_MCP_DECODER_VERSION) return null;
   const payload = parseOneMcpModelConfigPayload(entry.payload, host);
@@ -55,6 +55,7 @@ export function currentHostModelTarget(
   hostInput: unknown,
   planInput: unknown,
   env: NodeJS.ProcessEnv = process.env,
+  endpoint: string = DEFAULT_PUBLIC_ENDPOINT,
 ): CurrentHostModelTarget {
   const host = canonicalHost(hostInput);
   const plan = canonicalPlan(host, planInput);
@@ -62,7 +63,7 @@ export function currentHostModelTarget(
     const cached = usableOneMcpConfigCacheEntry(
       host,
       readOneMcpConfigCacheEntry(host, env),
-      env,
+      endpoint,
     );
     if (cached) {
       const payload = parseOneMcpModelConfigPayload(cached.payload, host)!;
@@ -122,7 +123,7 @@ export function currentModelForTier(
   return currentModelsForTier(tierInput, hostInput, planInput, env)[0] ?? null;
 }
 
-export interface TierFallbackRequest {
+interface TierFallbackRequest {
   /** The role's tier at the time the failed subagent was started. */
   readonly tier: TierId;
   /** Models already proven API-limited for this role in the current run. */
@@ -137,7 +138,7 @@ export interface TierFallbackRequest {
   readonly capturedModels?: readonly string[];
 }
 
-export interface TierFallbackCandidate {
+interface TierFallbackCandidate {
   /** Family entry from the configured tier row. */
   readonly family: string;
   /** Exact runnable slug (or the family itself when no capture is supplied). */
@@ -219,18 +220,3 @@ export function currentAcceptableModels(
 // Cursor slug resolution happens at spawn time). '' when the row offers no untried
 // same-tier model. Shared by the PreToolUse spawn gate (the only rotation point on
 // Cursor, which emits no post-spawn stop event) and the PostToolUse stop recorder.
-export function nextSameTierFallback(
-  exhausted: unknown,
-  hostInput: unknown,
-  planInput: unknown,
-  alsoExhausted: readonly string[] = [],
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const model = typeof exhausted === 'string' ? exhausted.trim() : '';
-  if (!model) return '';
-  const row = currentAcceptableModels(model, hostInput, planInput, env);
-  const isExhausted = (candidate: string): boolean =>
-    modelMatchesExpected(model, candidate)
-    || alsoExhausted.some((x) => modelMatchesExpected(x, candidate) || modelMatchesExpected(candidate, x));
-  return row.find((entry) => !isExhausted(entry)) || '';
-}

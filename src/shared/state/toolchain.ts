@@ -7,7 +7,7 @@ import * as path from 'path';
 import { readJson } from '../fsjson';
 import { pluginRoot } from '../paths';
 
-export interface ToolStamp {
+interface ToolStamp {
   installedVersion: string | null;
   installedAt: string | null;
   binPath?: string;
@@ -15,7 +15,7 @@ export interface ToolStamp {
 
 const FALLBACK_TOOLS = ['gitnexus', 'graphify', 'opencode', 'gitleaks', 'trufflehog'];
 
-export function toolNamesFromSpec(): string[] {
+function toolNamesFromSpec(): string[] {
   try {
     const specPath = path.join(pluginRoot(), 'scripts', 'toolchain-versions.json');
     const parsed = readJson<{ tools?: Record<string, unknown> }>(specPath, {});

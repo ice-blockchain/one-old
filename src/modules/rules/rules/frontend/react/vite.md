@@ -23,6 +23,13 @@ development, and security behavior that the general React rules do not.
 - For TypeScript apps, add either `vite-plugin-checker` or a CI/local
   `typecheck` script. `vite build` transpiles and bundles; it does not replace
   `tsc --noEmit`.
+- The `build` script must run `tsc --noEmit && vite build`, and the app
+  `tsconfig.json` must set `"noEmit": true`. Never keep the stock template's
+  `tsc -b`: build mode EMITS, so the first `pnpm build` drops a compiled `.js`
+  next to every source file (observed 2cu — 11 stray siblings that then look
+  like product source to the verification diff and can shadow the module at
+  import time). If emitted siblings already exist, list them for the user and
+  ask before deleting; never leave them unreported.
 
 ## Env safety (Vite mechanics)
 

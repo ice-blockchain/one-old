@@ -22,11 +22,14 @@ import {
   hasActiveRunClaims,
   hasRunAgentState,
   inferRoleFromTranscript,
+  isCursorToolSubagentId,
+  isResumeCapableAgentId,
   listCursorSpawnObservations,
   listCursorSubagentTranscriptCandidates,
   markCursorSpawnObservationFollowupEmitted,
   markCursorSpawnObservationRetryHandled,
   markRunAgentReplaced,
+  normalizeHostCallId,
   pruneExpiredPendingClaims,
   readRunAgentRegistry,
   readRunAssignments,
@@ -34,11 +37,14 @@ import {
   refreshCursorRunAgentFromTranscriptCache,
   recordCursorSpawnObservation,
   recordRunAgent,
+  explainUnresolvedRunAgent,
+  reconcileRunIdentityDrift,
   releaseRunClaims,
   resolveRunAgentContext,
   roleForRunSessionId,
   runHasOrchestratedArtifacts,
   runIdNow,
+  runLedgerAdmitsClaims,
   runReachedTerminalVerdict,
   runSettledForRotation,
   runVerificationState,
@@ -54,8 +60,15 @@ import {
 import { resetAuthoringRootCache } from '../../authoring-root';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { ensureRunModelPolicy } from '../../run-model-policy';
-import { stackFingerprint } from '../materialization';
+import { stackFingerprint, UNKNOWN_STACK_FINGERPRINT } from '../materialization';
 import { observeCodexChildModel } from '../codex-model-observation';
+import {
+  activateRunV2RollbackBarrier,
+  effectiveLegacyRunStatus,
+  readRunSettlement,
+  reconcileRunSettlement,
+  writeRunSettlement,
+} from '../../run-settlement';
 
 function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
   const d = path.join(dir, '.traffic-one', 'digests', runId);
@@ -464,6 +477,273 @@ test('runReachedTerminalVerdict requires terminal verdict tokens, not mere diges
   }
 });
 
+test('role digests resolve NEWEST-WINS across the canonical and senior- spellings', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-digest-newest-'));
+  try {
+    const runId = 'r-newest';
+    const d = path.join(dir, '.traffic-one', 'digests', runId);
+
+    // Only the prefixed spelling exists → it must still be found (legacy fallback).
+    writeDigest(dir, runId, 'senior-reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'senior-tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, runId), true,
+      'a run whose orchestrator only ever wrote senior-*.md digests must still settle');
+
+    // CONFLICTING verdicts across the two spellings must FAIL CLOSED, exactly like
+    // conflicting verdict lines inside one file. Letting mtime crown a winner would let a
+    // newer senior-reviewer.md APPROVED override a canonical CHANGES_REQUESTED and
+    // settle/rotate a rejected run.
+    writeDigest(dir, runId, 'reviewer.md', 'CHANGES_REQUESTED');
+    fs.utimesSync(path.join(d, 'reviewer.md'), new Date(60_000), new Date(60_000));
+    fs.utimesSync(path.join(d, 'senior-reviewer.md'), new Date(120_000), new Date(120_000));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a newer senior-reviewer.md APPROVED must NOT override a canonical CHANGES_REQUESTED');
+    fs.utimesSync(path.join(d, 'reviewer.md'), new Date(180_000), new Date(180_000));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'the conflict fails closed in BOTH mtime directions');
+
+    // Agreeing verdicts across spellings still settle (the conflict guard must not
+    // punish an orchestrator that simply wrote the digest under both names).
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    assert.equal(runReachedTerminalVerdict(dir, runId), true,
+      'both spellings agreeing on APPROVED must still settle');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// REGRESSION (found by adversarial review of the newest-wins change, proved by
+// differential execution): an EMPTY-but-newer `senior-<role>.md` must never mask a
+// content-bearing canonical digest. When it did, the backend-only QA exemption was
+// falsely granted and a frontend run with ZERO QA evidence settled `verified` — a
+// fake-green hole in the very gate built to stop fake-green.
+test('an empty newer senior-*.md cannot mask a content-bearing digest', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-digest-empty-'));
+  try {
+    const runId = 'r-empty';
+    const d = path.join(dir, '.traffic-one', 'digests', runId);
+    // A frontend run: reviewer APPROVED + tester TESTS_GREEN but NO QA report at all.
+    // The frontend digest exists, so the backend-only exemption must NOT apply.
+    writeDigest(dir, runId, 'frontend.md', 'IMPLEMENTED');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a frontend run with no QA evidence is not terminal');
+
+    // Now drop an EMPTY, NEWER senior-frontend.md next to it.
+    fs.writeFileSync(path.join(d, 'senior-frontend.md'), '', 'utf8');
+    fs.utimesSync(path.join(d, 'frontend.md'), new Date(60_000), new Date(60_000));
+    fs.utimesSync(path.join(d, 'senior-frontend.md'), new Date(120_000), new Date(120_000));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'an empty newer senior-frontend.md must not hide the frontend digest and grant the backend-only QA exemption');
+
+    // Whitespace-only is the same trap as zero-byte.
+    fs.writeFileSync(path.join(d, 'senior-frontend.md'), '   \n\t\n', 'utf8');
+    fs.utimesSync(path.join(d, 'senior-frontend.md'), new Date(180_000), new Date(180_000));
+    assert.equal(runReachedTerminalVerdict(dir, runId), false,
+      'a whitespace-only newer senior-frontend.md must not grant the exemption either');
+
+    // Verification state must still see the implementer + verifier output (union), so the
+    // run stays nonterminal instead of collapsing to not-started (which would flip the
+    // project to maintenance and silence the unresolved-run directive).
+    assert.equal(runVerificationState(dir, runId), 'nonterminal',
+      'empty sibling digests must not downgrade nonterminal to not-started');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('normalizeHostCallId strips the chunk-length line Cursor leaks into spawn ids', () => {
+  // Cursor 3.12.30 emitted `subagent_id`/`tool_call_id` as "16\nfc_…" and "78\nfc_…"
+  // (the number varies per spawn — that is what identifies it as an HTTP chunk header).
+  assert.equal(normalizeHostCallId('16\nfc_otWVB6Z-3LYxF7-0393d566-aws_ue1_1'),
+    'fc_otWVB6Z-3LYxF7-0393d566-aws_ue1_1');
+  assert.equal(normalizeHostCallId('78\r\nfc_otWf1Ee-3LYxF7-8f7ebcd6-aws_ue1_0'),
+    'fc_otWf1Ee-3LYxF7-8f7ebcd6-aws_ue1_0');
+  // Clean ids pass through untouched, including the documented tool_<uuid> shape.
+  assert.equal(normalizeHostCallId('tool_2b1e4c60-0f6a-4a41-9d4a-2c2f1c3a5f77'),
+    'tool_2b1e4c60-0f6a-4a41-9d4a-2c2f1c3a5f77');
+  assert.equal(normalizeHostCallId('  fc_plain  '), 'fc_plain');
+  // Non-ids stay null so a missing field is never turned into a bogus key.
+  assert.equal(normalizeHostCallId(''), null);
+  assert.equal(normalizeHostCallId('\n\n'), null);
+  assert.equal(normalizeHostCallId(undefined), null);
+  assert.equal(normalizeHostCallId(42), null);
+});
+
+// REGRESSION (found by adversarial review): normalizing only the READ side made the two
+// Cursor stores diverge — cursor-spawns.json got the clean id while agents.json kept the
+// raw "16\nfc_…" — which breaks every cross-store comparison (live-agent match,
+// replace-if-matches retirement, PostToolUse correlation, lifecycle followup targeting).
+// The id is normalized at its single WRITE source instead, so both stores agree.
+test('both Cursor stores agree on the spawn id after a chunk-prefixed host payload', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-storeagree-'));
+  try {
+    const runId = 'r-agree';
+    const raw = '16\nfc_chunky-spawn-id';
+    const clean = normalizeHostCallId(raw) as string;
+    assert.equal(clean, 'fc_chunky-spawn-id');
+
+    recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-agree',
+      toolCallId: clean,
+      role: 'senior-frontend',
+      requestedModel: 'composer-2.5-fast',
+      tier: 'cheapest',
+      expectedModel: 'composer-2.5',
+    });
+    recordRunAgent(dir, runId, 'senior-frontend', {
+      agentId: clean,
+      toolCallId: clean,
+      parentSessionId: 'parent-agree',
+      model: 'composer-2.5-fast',
+      roleSource: 'host-subagent-type',
+      transcriptPath: null,
+    });
+
+    const ledgerId = listCursorSpawnObservations(dir, runId)[0]?.toolCallId;
+    const registry = readRunAgentRegistry(dir, runId)['senior-frontend'];
+    assert.equal(ledgerId, clean, 'spawn ledger holds the clean id');
+    assert.equal(registry?.agentId, clean, 'agent registry holds the SAME clean id');
+    assert.equal(registry?.agentId, ledgerId,
+      'the two stores must agree byte-for-byte or every cross-store comparison silently misses');
+    assert.ok(!String(registry?.agentId ?? '').includes('\n'),
+      'no store may keep a multi-line id');
+    assert.equal(registry?.toolCallId, clean,
+      'an `fc_`-shaped spawn id is a TOOL-CALL id, never a Task `resume` target');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Cursor spawn tool-call ids are classified as tool-call ids, not resume targets', () => {
+  // Cursor 3.13.10 announces `subagent_id === tool_call_id` in the `fc_…` shape
+  // (verified across every captured SubagentStart payload of the 17c e2e run).
+  for (const id of [
+    'fc_otfDrth-6SkKZu-979542d5-aws_ue1_1',
+    'fc_ca69e1eb-5152-9fc8-a440-364d5be5166d_0',
+    'tool_0f9c1d2e-1111-2222-3333-444455556666',
+  ]) {
+    assert.equal(isCursorToolSubagentId(id), true, `${id} is a tool-call id`);
+    assert.equal(isResumeCapableAgentId(id), false, `${id} cannot resume a Cursor agent`);
+  }
+  for (const id of [
+    'ff342cbb-0b3a-451e-a1a8-f4450808a4a3',
+    'agent-old',
+    'ses_opencode123',
+    'senior-frontend background agent',
+  ]) {
+    assert.equal(isCursorToolSubagentId(id), false, `${id} is not a tool-call id`);
+    assert.equal(isResumeCapableAgentId(id), true, `${id} may resume an agent`);
+  }
+});
+
+test('one Cursor spawn plus N continuations keep ONE real resume id', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-continuation-'));
+  try {
+    const runId = 'r-continue';
+    const child = 'ff342cbb-0b3a-451e-a1a8-f4450808a4a3';
+    const record = (agentId: string, transcriptPath: string | null) => recordRunAgent(dir, runId, 'senior-frontend', {
+      agentId,
+      ...(agentId.startsWith('fc_') ? { toolCallId: agentId } : {}),
+      parentSessionId: 'parent-continue',
+      model: 'composer-2.5-fast',
+      roleSource: 'host-subagent-type',
+      transcriptPath,
+    });
+    // spawn → child's first claim upgrades to the real UUID → two continuations,
+    // each announcing a BRAND NEW tool-call id (17c: fc_otfDrth → fc_otfHfVX → fc_otfLVXY).
+    record('fc_otfDrth-6SkKZu-979542d5-aws_ue1_0', null);
+    record(child, `/transcripts/${child}.jsonl`);
+    record('fc_otfHfVX-6SkKZu-1a248eaf-aws_ue1_0', null);
+    record('fc_otfLVXY-6SkKZu-2b359fb1-aws_ue1_0', null);
+
+    const entry = readRunAgentRegistry(dir, runId)['senior-frontend'];
+    assert.equal(entry?.agentId, child, 'the real child UUID survives every continuation');
+    assert.equal(entry?.resumeId, child, 'resume still targets the live child, not a tool-call id');
+    assert.equal(entry?.toolCallId, 'fc_otfLVXY-6SkKZu-2b359fb1-aws_ue1_0',
+      'the tool-call id tracks the CURRENT start');
+    assert.equal(entry?.transcriptPath, `/transcripts/${child}.jsonl`,
+      'the child-owned transcript is never clobbered by a continuation');
+    assert.equal(entry?.tasks, 4, 'tasks counts the spawn plus each continuation');
+    assert.equal(entry?.replaced, false);
+    const history = (JSON.parse(
+      fs.readFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'agents.json'), 'utf8'),
+    ) as { history?: unknown[] }).history || [];
+    assert.equal(history.length, 0,
+      'continuing the same agent must not forge a replacement history row');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a retired agent never lends its resume id to the replacement spawn', () => {
+  for (const nextCallId of ['fc_otfNEWx-6SkKZu-9c0d1e2f-aws_ue1_0', 'tool_11112222-3333-4444-5555-666677778888']) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-retired-'));
+    try {
+      const runId = 'r-retire';
+      const dead = 'ff342cbb-0b3a-451e-a1a8-f4450808a4a3';
+      recordRunAgent(dir, runId, 'senior-frontend', {
+        agentId: dead,
+        parentSessionId: 'parent-retire',
+        model: 'composer-2.5-fast',
+        roleSource: 'host-subagent-type',
+        transcriptPath: null,
+      });
+      markRunAgentReplaced(dir, runId, 'senior-frontend');
+      recordRunAgent(dir, runId, 'senior-frontend', {
+        agentId: nextCallId,
+        toolCallId: nextCallId,
+        parentSessionId: 'parent-retire',
+        model: 'composer-2.5-fast',
+        roleSource: 'host-subagent-type',
+        transcriptPath: null,
+      });
+
+      const entry = readRunAgentRegistry(dir, runId)['senior-frontend'];
+      assert.equal(entry?.agentId, nextCallId, 'the replacement keeps its own id');
+      assert.equal(entry?.resumeId, null, 'a dead agent must not become the resume target');
+      assert.equal(continuationAgentId(entry!, 'cursor'), '',
+        'no continuation recipe may name the retired agent');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('a spawn observation recorded with a chunk-prefixed id is keyed by the clean id', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-chunkid-'));
+  try {
+    const runId = 'r-chunk';
+    const recorded = recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-1',
+      toolCallId: '16\nfc_leaked-chunk-header',
+      role: 'senior-architect',
+      requestedModel: 'composer-2.5-fast',
+      tier: 'cheapest',
+      expectedModel: 'composer-2.5',
+    });
+    assert.ok(recorded, 'the observation must record despite the malformed host id');
+    assert.equal(recorded.toolCallId, 'fc_leaked-chunk-header',
+      'the ledger key must be the single-line id, not the chunk-prefixed one');
+    // Re-recording under the SANITIZED spelling must dedupe onto the same row, which is
+    // what makes later claim/consume matching work across both spellings.
+    const again = recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-1',
+      toolCallId: 'fc_leaked-chunk-header',
+      role: 'senior-architect',
+      requestedModel: 'composer-2.5-fast',
+      tier: 'cheapest',
+      expectedModel: 'composer-2.5',
+    });
+    assert.equal(again?.toolCallId, 'fc_leaked-chunk-header');
+    assert.equal(listCursorSpawnObservations(dir, runId).length, 1,
+      'the sanitized and raw spellings must resolve to ONE observation, not two');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('runReachedTerminalVerdict treats terminal maintenance markers as settled runs', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-maint-verdict-'));
   try {
@@ -657,6 +937,169 @@ test('run ledger transitions are validated, terminal writes are idempotent, and 
     assert.deepEqual(
       (shipped!.transitionHistory as Array<Record<string, unknown>>).map((entry) => entry.to),
       ['active', 'blocked', 'active', 'completed', 'completed'],
+    );
+  });
+});
+
+test('current V2 ledger writes preserve the irreversible raw rollback projection', () => {
+  withPrefs((dir) => {
+    const runId = 'v2-raw-projection';
+    assert.ok(transitionRunStatus(dir, runId, { status: 'active', kind: 'orchestration' }));
+    assert.ok(activateRunV2RollbackBarrier(dir, runId));
+
+    // Exercise the ordinary metadata writer after activation. Its atomic write
+    // must itself remain legacy-failed; correctness cannot depend on the later
+    // settlement reconciliation rewriting a transient raw `active` ledger.
+    const canonical = ensureRunLedger(dir, runId, { kind: 'orchestration' });
+    assert.equal(canonical?.status, 'active');
+    const raw = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'run.json'),
+      'utf8',
+    ));
+    assert.equal(raw.status, 'failed');
+    assert.equal(raw.outcome, 'agent-failed');
+    assert.equal(effectiveLegacyRunStatus(raw, '1.0.19'), 'failed');
+    assert.equal(effectiveLegacyRunStatus(raw, '1.0.20'), 'active');
+  });
+});
+
+// Regression for the 10co deadlock. Every prior blocked-resume test built a V1
+// ledger, so `syncCanonicalSettlementFromLedger` bailed before it ever reached
+// `writeRunSettlement` and the sidecar never existed. With a V2 ledger AND a
+// canonical settlement, the settlement's terminal-immutability guard treated
+// `blocked` as absorbing, re-projected the stale settlement over the run.json
+// the ledger had just advanced, and reported success anyway — so the run stayed
+// canonically blocked and no NEW child could ever claim a role in it.
+function seedBlockedV2Run(dir: string, runId: string): void {
+  assert.ok(transitionRunStatus(dir, runId, { status: 'active', kind: 'orchestration' }));
+  assert.ok(activateRunV2RollbackBarrier(dir, runId));
+  // Mirrors plan-readiness: barrier activation is always followed by the first
+  // canonical settlement write, which is what creates the sidecar.
+  assert.ok(writeRunSettlement(dir, runId, {
+    status: 'active',
+    incompleteChecks: ['verification-not-started'],
+  }));
+  assert.ok(transitionRunStatus(dir, runId, { status: 'blocked', outcome: 'review-cycle-cap' }));
+  const blocked = readRunSettlement(dir, runId);
+  assert.equal(blocked?.status, 'blocked');
+  assert.equal(blocked?.reason, 'review-cycle-cap');
+}
+
+function rawLedger(dir: string, runId: string): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(
+    path.join(dir, '.traffic-one', 'runs', runId, 'run.json'),
+    'utf8',
+  ));
+}
+
+test('an authorized resume of a V2 blocked run advances the canonical settlement and lets a new child claim', () => {
+  withPrefs((dir) => {
+    const runId = 'v2-authorized-resume';
+    seedBlockedV2Run(dir, runId);
+    const blockedRevision = readRunSettlement(dir, runId)!.revision;
+    assert.equal(rawLedger(dir, runId).canonicalStatus, 'blocked');
+
+    const resumed = transitionRunStatus(dir, runId, {
+      status: 'active',
+      reason: 'user-authorized-extra-cycle',
+    });
+    assert.ok(resumed, 'an authorized resume must not report failure');
+    assert.equal(resumed!.status, 'active');
+
+    const settlement = readRunSettlement(dir, runId);
+    assert.equal(settlement?.status, 'active', 'the canonical settlement must actually advance');
+    assert.equal(settlement!.revision, blockedRevision + 1);
+
+    const raw = rawLedger(dir, runId);
+    assert.equal(raw.canonicalStatus, 'active');
+    assert.equal(
+      (raw.runtimeV2RollbackGuard as Record<string, unknown>).canonicalStatus,
+      'active',
+    );
+    // The rollback barrier itself must survive the resume untouched: runtime
+    // 1.0.19 still has to read an irreversible failed run.
+    assert.equal(raw.status, 'failed');
+    assert.equal(raw.outcome, 'agent-failed');
+    assert.equal(effectiveLegacyRunStatus(raw, '1.0.19'), 'failed');
+
+    // Exactly one resume entry — the live defect produced two, the second still
+    // reading `from: "blocked"`, which is what proved the status never advanced.
+    const history = raw.transitionHistory as Array<Record<string, unknown>>;
+    const resumes = history.filter((entry) => entry.from === 'blocked' && entry.to === 'active');
+    assert.equal(resumes.length, 1);
+    assert.equal(resumes[0]!.reason, 'user-authorized-extra-cycle');
+
+    // The user-visible symptom: this is the exact call claim-thread-role makes.
+    assert.equal(runLedgerAdmitsClaims(dir, runId), true);
+    const claimLedger = ensureRunLedger(dir, runId, { status: 'active', kind: 'agent-claim' });
+    assert.equal(claimLedger?.status, 'active', 'a new child must be able to stake a claim');
+  });
+});
+
+test('a blocked V2 run stays blocked for every writer that lacks the resume authorization', () => {
+  withPrefs((dir) => {
+    const runId = 'v2-resume-hatch';
+    seedBlockedV2Run(dir, runId);
+    const before = readRunSettlement(dir, runId)!;
+
+    assert.equal(transitionRunStatus(dir, runId, { status: 'active' }), null,
+      'a resume without the authorization reason must fail');
+    assert.equal(ensureRunLedger(dir, runId, { status: 'active', kind: 'agent-claim' }), null,
+      'a claim attempt must never double as a resume');
+    assert.equal(reconcileRunSettlement(dir, runId)?.status, 'blocked',
+      'a prompt-boundary reconciliation must not reopen blocked work');
+    // A stale writer must not be able to launder the authorization into a
+    // non-`active` target either.
+    assert.ok(writeRunSettlement(dir, runId, {
+      status: 'verified',
+      authorizedResume: 'user-authorized-extra-cycle',
+    }));
+
+    const after = readRunSettlement(dir, runId)!;
+    assert.equal(after.status, 'blocked');
+    assert.equal(after.reason, 'review-cycle-cap');
+    assert.equal(after.revision, before.revision);
+    assert.equal(after.settlementHash, before.settlementHash);
+    assert.equal(rawLedger(dir, runId).canonicalStatus, 'blocked');
+    // And the blocked outcome must not decay into the generic environment one.
+    assert.equal(
+      (rawLedger(dir, runId).runtimeV2RollbackGuard as Record<string, unknown>).canonicalOutcome,
+      'review-cycle-cap',
+    );
+  });
+});
+
+test('verified settlement releases terminal role claims atomically and direct completion fails closed while claims are active', () => {
+  withPrefs((dir) => {
+    const runId = 'run-active-claim-settlement';
+    assert.ok(transitionRunStatus(dir, runId, { status: 'active', kind: 'orchestration' }));
+    writeDigest(dir, runId, 'backend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, runId, 'reviewer.md', 'APPROVED');
+    writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
+    const pendingDir = path.join(dir, '.traffic-one', 'runs', runId, 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(path.join(pendingDir, 'tester-claim.json'), JSON.stringify({
+      version: 1,
+      runId,
+      claimId: 'tester-claim',
+      role: 'senior-tester',
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    }));
+
+    assert.equal(
+      transitionRunStatus(dir, runId, { status: 'completed', outcome: 'verified' }),
+      null,
+      'a generic ledger transition may not bypass an active claim',
+    );
+    const settled = settleTerminalRunLedger(dir, runId);
+    assert.equal(settled?.status, 'completed');
+    assert.equal(settled?.outcome, 'verified');
+    assert.equal(fs.existsSync(path.join(pendingDir, 'tester-claim.json')), false);
+    assert.equal(
+      fs.existsSync(path.join(dir, '.traffic-one', 'runs', runId, 'settlement-v2.json')),
+      false,
+      'a V1 compatibility run is not silently promoted into a canonical V2 settlement',
     );
   });
 });
@@ -1028,6 +1471,50 @@ test('a released claim reactivates in place on resume — metadata intact, relea
     assert.notEqual(file.createdAt, oldCreatedAt, 'resume refreshes the claim freshness window');
     assert.equal(file.releasedAt, undefined, 'release markers are cleared on reactivation');
     assert.equal(file.releasedReason, undefined);
+  });
+});
+
+test('a rebuilt claim preserves the record it supersedes instead of destroying it', () => {
+  withPrefs((dir) => {
+    const state = { ...materializedState(), currentRunId: '1784600000009' };
+    const first = claimThreadRole(dir, state, FRONTEND_THREAD, 'senior-frontend', {
+      parentSessionId: 'orchestrator',
+      model: 'opus',
+    });
+    assert.ok(first);
+    const runId = String(first!.runId);
+    const claimFile = path.join(dir, '.traffic-one', 'runs', runId, `${FRONTEND_THREAD}.json`);
+    const original = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    // Age the claim past the freshness window so the next bind REBUILDS the file
+    // in place — the write that used to erase cycle-1 claim history, leaving
+    // `previousClaimId` pointing at a record that no longer existed anywhere.
+    const stale = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(claimFile, JSON.stringify({
+      ...original,
+      claimId: 'senior-frontend-0-earlier',
+      createdAt: stale,
+      claimedAt: stale,
+    }), 'utf8');
+
+    const second = claimThreadRole(dir, state, FRONTEND_THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' });
+    assert.ok(second);
+    const rebuilt = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    assert.equal(rebuilt.previousClaimId, 'senior-frontend-0-earlier');
+    const archiveDir = path.join(dir, '.traffic-one', 'runs', runId, 'superseded');
+    const archived = fs.readdirSync(archiveDir)
+      .map((name) => JSON.parse(fs.readFileSync(path.join(archiveDir, name), 'utf8')));
+    assert.equal(archived.length, 1, 'the superseded claim keeps a file of its own');
+    assert.equal(archived[0].claimId, 'senior-frontend-0-earlier');
+    assert.equal(archived[0].model, 'opus', 'cycle-1 metadata is recoverable');
+    assert.equal(archived[0].supersededBy, rebuilt.claimId);
+    // Archived records live in a SUBDIRECTORY, so they never re-enter claim
+    // resolution or the spawn-index count (both read only the run dir's files).
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, '.traffic-one', 'runs', runId), { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && entry.name !== 'run.json')
+        .map((entry) => entry.name),
+      [`${FRONTEND_THREAD}.json`],
+    );
   });
 });
 
@@ -1502,6 +1989,128 @@ test('inferRoleFromTranscript retains a marker anywhere in a recognized user rec
   });
 });
 
+function rolelessCodexMeta(records: Record<string, unknown>[]): Record<string, unknown> {
+  const meta = JSON.parse(JSON.stringify(records[0])) as {
+    payload: Record<string, unknown> & {
+      source: { subagent: { thread_spawn: Record<string, unknown> } };
+    };
+  };
+  meta.payload.agent_path = null;
+  meta.payload.agent_type = 'default';
+  meta.payload.source.subagent.thread_spawn.agent_path = null;
+  meta.payload.source.subagent.thread_spawn.agent_role = null;
+  return meta as unknown as Record<string, unknown>;
+}
+
+function codexUserRecord(text: string): Record<string, unknown> {
+  return {
+    timestamp: '2026-07-16T08:16:00.000Z',
+    type: 'response_item',
+    payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+  };
+}
+
+test('inferRoleFromTranscript recovers the spawn-prompt marker even when host context precedes it', () => {
+  withPrefs((dir) => {
+    const records = codexCollaborationV2FixtureRecords();
+    // A spawn issued WITHOUT task_name leaves agent_path/agent_role null in the
+    // child's line-zero session_meta. The spawn prompt carries the marker, but it
+    // is NOT the first user record — the host injects its own context first
+    // (observed 14c-codex: `<recommended_plugins>` is user record #1, the marker
+    // rides record #2; a first-record-only scan looped forever on "role not
+    // observable"). The head-capped scan must read every user record.
+    const injectedContext = codexUserRecord('<recommended_plugins>\nHere is a list of plugins that are available but not installed.\n- GitHub');
+    const spawnPrompt = codexUserRecord('[t1-role: senior-architect]\nRun ID: 1784885645038\nUser request: build the platform.');
+    const file = writeTranscriptRecords(dir, 'codex-roleless-context-then-marker.jsonl', [
+      rolelessCodexMeta(records),
+      injectedContext,
+      spawnPrompt,
+      ...records.slice(2),
+    ]);
+    assert.equal(
+      inferRoleFromTranscript(file),
+      'senior-architect',
+      'a task_name-less spawn resolves from the spawn-prompt marker in a non-first user record',
+    );
+  });
+});
+
+test('ensureCurrentRunId adopts a concurrently persisted id instead of minting a sibling run', () => {
+  withPrefs((dir) => {
+    const freshState = () => ({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
+    });
+    const first = ensureCurrentRunId(dir, freshState());
+    // A second hook process whose state snapshot predates the mint (parallel
+    // first tool calls each read .one.json before anyone wrote it) must adopt
+    // the persisted id under the state lock — three sibling runs/<id>/ trees
+    // with divergent model policies were minted this way (observed 13c-codex).
+    const stale: Record<string, unknown> = freshState();
+    const second = ensureCurrentRunId(dir, stale);
+    assert.equal(second, first);
+    assert.equal(stale.currentRunId, first, 'the adopting caller syncs its in-memory state');
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, '.traffic-one', 'runs')).filter((name) => /^\d{13}$/.test(name)),
+      [first],
+      'no sibling runs/<id>/ ledger is created by the adopting caller',
+    );
+  });
+});
+
+test('ensureCurrentRunId adopts a recent runs/ ledger when currentRunId was blanked, re-persisting it', () => {
+  withPrefs((dir) => {
+    const freshState = () => ({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
+    });
+    const first = ensureCurrentRunId(dir, freshState());
+    // Simulate a writer that rewrote .one.json WITHOUT currentRunId (11c F1
+    // residual observed 14c: a fresh id was minted 3.7s later while spawn-gate
+    // ledgers already existed). The on-disk read now misses the live run, but
+    // the runs/ scan must adopt it rather than mint a sibling.
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    const blanked = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    delete blanked.currentRunId;
+    fs.writeFileSync(statePath, JSON.stringify(blanked), 'utf8');
+
+    const again = ensureCurrentRunId(dir, freshState());
+    assert.equal(again, first, 'the blanked id is recovered from the runs/ ledger, not re-minted');
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, '.traffic-one', 'runs')).filter((name) => /^\d{13}$/.test(name)),
+      [first],
+      'no sibling run is created',
+    );
+    const rePersisted = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    assert.equal(rePersisted.currentRunId, first, 'the blanked currentRunId is re-persisted to .one.json');
+  });
+});
+
+test('ensureCurrentRunId adopts a rollback-guarded V2 run by its effective status', () => {
+  withPrefs((dir) => {
+    const freshState = () => ({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
+    });
+    const first = ensureCurrentRunId(dir, freshState());
+    assert.ok(activateRunV2RollbackBarrier(dir, first));
+    const runFile = path.join(dir, '.traffic-one', 'runs', first, 'run.json');
+    const raw = JSON.parse(fs.readFileSync(runFile, 'utf8')) as Record<string, unknown>;
+    assert.equal(raw.status, 'failed', 'the old runtime keeps the irreversible projection');
+    assert.equal(effectiveLegacyRunStatus(raw), 'active');
+
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    const blanked = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    delete blanked.currentRunId;
+    fs.writeFileSync(statePath, JSON.stringify(blanked), 'utf8');
+
+    const again = ensureCurrentRunId(dir, freshState());
+    assert.equal(again, first);
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, '.traffic-one', 'runs')).filter((name) => /^\d{13}$/.test(name)),
+      [first],
+      'the physical failed projection must not mint a sibling current run',
+    );
+  });
+});
+
 test('inferRoleFromTranscript fails closed when valid structured Codex roles conflict', () => {
   withPrefs((dir) => {
     const records = codexCollaborationV2FixtureRecords();
@@ -1523,9 +2132,12 @@ test('inferRoleFromTranscript fails closed when valid structured Codex roles con
   });
 });
 
-test('current Codex roleless session_meta does not fall through to a later readable user marker', () => {
+test('current Codex roleless session_meta ignores a MID-LINE (non-anchored) marker in any user record', () => {
   withPrefs((dir) => {
     const childId = '019f69ff-0000-7000-8000-000000000011';
+    // The roleless-meta fallthrough accepts ONLY a line-anchored spawn-prompt
+    // marker. A marker quoted mid-prose in inherited/echoed context must never
+    // grant a role, no matter which user record carries it.
     const file = writeTranscriptRecords(dir, `rollout-roleless-${childId}.jsonl`, [
       {
         type: 'session_meta',
@@ -1542,7 +2154,7 @@ test('current Codex roleless session_meta does not fall through to a later reada
         payload: {
           type: 'message',
           role: 'user',
-          content: [{ type: 'input_text', text: 'Inherited context [t1-role: senior-frontend]' }],
+          content: [{ type: 'input_text', text: 'Inherited context [t1-role: senior-frontend] pasted from another thread.' }],
         },
       },
     ]);
@@ -1909,7 +2521,7 @@ test('fallback claims serialize racing first writers so exactly one owns the pat
   const runDirectory = path.join(dir, '.traffic-one', 'runs', runId);
   const lockDir = path.join(runDirectory, '.claims.lock');
   const source = [
-    "const { tryFallbackClaim } = require('./src/shared/state/run-agent.ts');",
+    "const { tryFallbackClaim } = require('./src/shared/state/run-agent/index.ts');",
     "const [cwd, runId, holder] = process.argv.slice(1);",
     "const ctx = { source: 'child', runId, role: 'senior-frontend', spawnIndex: 1, sessionId: holder, claimId: holder };",
     "process.stdout.write(JSON.stringify(tryFallbackClaim(cwd, ctx, 'apps/web/src/race.ts')));",
@@ -3202,7 +3814,7 @@ test('Cursor spawn observation storage is bounded and reads pre-versioned state'
 test('Cursor spawn observations preserve concurrent subagentStart records', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-spawn-concurrent-'));
   const source = [
-    "const { recordCursorSpawnObservation } = require('./src/shared/state/run-agent.ts');",
+    "const { recordCursorSpawnObservation } = require('./src/shared/state/run-agent/index.ts');",
     "const [cwd, role, toolCallId, startedAtMs] = process.argv.slice(1);",
     "recordCursorSpawnObservation(cwd, 'run-concurrent', { parentSessionId: 'parent-1', toolCallId, role, requestedModel: 'gpt-5.6-terra-medium', tier: 'balanced', expectedModel: 'gpt-5.6-terra', startedAtMs: Number(startedAtMs) });",
   ].join('\n');
@@ -3238,7 +3850,7 @@ test('concurrent Cursor lifecycle processes cannot split one parent followup bat
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-followup-concurrent-'));
   const runId = 'run-followup-concurrent';
   const source = [
-    "const { claimCursorFollowupsBatch } = require('./src/shared/state/run-agent.ts');",
+    "const { claimCursorFollowupsBatch } = require('./src/shared/state/run-agent/index.ts');",
     'const [cwd, runId, encoded] = process.argv.slice(1);',
     "const requests = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));",
     'const claimed = claimCursorFollowupsBatch(cwd, runId, requests, 10000);',
@@ -3616,7 +4228,7 @@ test('recordRunAgent preserves every role across concurrent hook processes', asy
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agent-concurrent-'));
   const roles = ['senior-frontend', 'senior-backend'];
   const source = [
-    "const { recordRunAgent } = require('./src/shared/state/run-agent.ts');",
+    "const { recordRunAgent } = require('./src/shared/state/run-agent/index.ts');",
     "const [cwd, role, agentId] = process.argv.slice(1);",
     "recordRunAgent(cwd, 'run-concurrent', role, { agentId, parentSessionId: 'parent-1' });",
   ].join('\n');
@@ -3647,4 +4259,134 @@ test('recordRunAgent preserves every role across concurrent hook processes', asy
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── Run-identity drift ───────────────────────────────────────────────────────
+// Regression cover for the wedge observed in test-laravel: the team scaffolded
+// the app it was asked to build, detection re-ran, the stack fingerprint moved,
+// and every live claim silently stopped resolving.
+
+const T1_DIR = ['.traffic', '-one'].join('');
+
+test('a claim still resolves after the build changes the detected stack', () => {
+  withPrefs((dir) => {
+    const before: Record<string, unknown> = {
+      mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'laravel', mobile: { framework: 'none' },
+    };
+    before.materializedStack = stackFingerprint(before);
+    const runId = ensureCurrentRunId(dir, before);
+    const claim = claimThreadRole(dir, before, 'agent-backend-1', 'senior-backend', {
+      parentSessionId: 'orchestrator',
+    });
+    assert.ok(claim, 'the child binds while the stack is still custom-backend');
+
+    // The backend implementer scaffolds Laravel; detection now reports a UI
+    // surface, so the state re-stamps to a different identity.
+    const after: Record<string, unknown> = {
+      ...before, stack: 'custom-stack', frontend: 'other', backend: 'laravel', mobile: { framework: 'none' },
+    };
+    after.materializedStack = stackFingerprint(after);
+    after.currentRunId = runId;
+    assert.notEqual(stackFingerprint(after), stackFingerprint(before), 'the live fingerprint really moved');
+
+    const resolved = resolveRunAgentContext(dir, after, {
+      agent_id: 'agent-backend-1', agent_type: 'traffic-one:senior-backend', hook_event_name: 'PreToolUse',
+    });
+    assert.ok(resolved, 'the live child stays bound across the stack change');
+    assert.equal(resolved!.role, 'senior-backend');
+  });
+});
+
+test('a claim carrying a foreign frozen identity still cannot leak in', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runId = ensureCurrentRunId(dir, state);
+    claimThreadRole(dir, state, 'agent-x', 'senior-backend', { parentSessionId: 'orchestrator' });
+    const claimFile = path.join(dir, T1_DIR, 'runs', runId, 'agent-x.json');
+    const raw = JSON.parse(fs.readFileSync(claimFile, 'utf8')) as Record<string, unknown>;
+    raw.stackFingerprint = 'some-other|identity|entirely|none';
+    fs.writeFileSync(claimFile, JSON.stringify(raw), 'utf8');
+
+    // No `agent_type`: the host-declared-role self-heal must not fire, so this
+    // exercises the exact-claim path alone. (With a declared type the host IS
+    // the authority on the role and a legitimate rebind is expected.)
+    const resolved = resolveRunAgentContext(dir, { ...state, currentRunId: runId }, {
+      agent_id: 'agent-x', hook_event_name: 'PreToolUse',
+    }, { claimPending: false });
+    assert.equal(resolved, null, 'a foreign frozen identity is still rejected');
+  });
+});
+
+test('ensureCurrentRunId refuses to mint over an unparseable state file', () => {
+  withPrefs((dir) => {
+    const first = ensureCurrentRunId(dir, materializedState());
+    fs.writeFileSync(path.join(dir, T1_DIR, '.one.json'), '{ this is not json', 'utf8');
+
+    const again = ensureCurrentRunId(dir, materializedState());
+    assert.equal(again, first, 'the live run is adopted, not re-minted');
+    assert.deepEqual(
+      fs.readdirSync(path.join(dir, T1_DIR, 'runs')).filter((name) => /^\d{13}$/.test(name)),
+      [first],
+      'no sibling run is minted from a corrupt state read',
+    );
+  });
+});
+
+test('a degraded state read never stamps a fabricated run identity', () => {
+  withPrefs((dir) => {
+    // No identity-bearing key at all is an unreadable state, not a minimal project.
+    const runId = ensureCurrentRunId(dir, {});
+    assert.notEqual(runId, '', 'an absent state file still mints normally');
+    const ledger = JSON.parse(
+      fs.readFileSync(path.join(dir, T1_DIR, 'runs', runId, 'run.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.notEqual(ledger.stackFingerprint, 'minimal|none|none|none',
+      'the run must not inherit a plausible-looking identity it never had');
+    assert.notEqual(ledger.stackFingerprint, UNKNOWN_STACK_FINGERPRINT,
+      'nor persist the unknown sentinel');
+  });
+});
+
+test('reconcileRunIdentityDrift elects the evidenced run and settles the sibling', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runsDir = path.join(dir, T1_DIR, 'runs');
+    const evidenced = ensureCurrentRunId(dir, state);
+    claimThreadRole(dir, state, 'agent-a', 'senior-backend', { parentSessionId: 'orchestrator' });
+    fs.writeFileSync(path.join(runsDir, evidenced, 'assignments.json'), '{}', 'utf8');
+    fs.writeFileSync(path.join(runsDir, evidenced, 'architecture-v1.json'), '{}', 'utf8');
+
+    // A sibling run minted beside the working team, also holding a live claim.
+    const sibling = String(Number(evidenced) + 1000);
+    const siblingState = { ...state, currentRunId: sibling };
+    ensureRunLedger(dir, sibling, { status: 'active', kind: 'agent-claim' });
+    claimThreadRole(dir, siblingState, 'agent-b', 'senior-frontend', { parentSessionId: 'orchestrator' });
+
+    const drifted: Record<string, unknown> = { ...state, currentRunId: sibling };
+    assert.equal(reconcileRunIdentityDrift(dir, drifted), true, 'the repair reports that it acted');
+    assert.equal(drifted.currentRunId, evidenced, 'currentRunId re-points at the evidenced run');
+    const loser = JSON.parse(
+      fs.readFileSync(path.join(runsDir, sibling, 'run.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.equal(effectiveLegacyRunStatus(loser), 'failed', 'the superseded sibling is settled');
+  });
+});
+
+test('explainUnresolvedRunAgent names the reason a child failed to bind', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runId = ensureCurrentRunId(dir, state);
+    claimThreadRole(dir, state, 'agent-x', 'senior-backend', { parentSessionId: 'orchestrator' });
+    const claimFile = path.join(dir, T1_DIR, 'runs', runId, 'agent-x.json');
+    const raw = JSON.parse(fs.readFileSync(claimFile, 'utf8')) as Record<string, unknown>;
+    raw.stackFingerprint = 'drifted|identity|here|none';
+    fs.writeFileSync(claimFile, JSON.stringify(raw), 'utf8');
+
+    const diagnosis = explainUnresolvedRunAgent(dir, { ...state, currentRunId: runId }, {
+      agent_id: 'agent-x', agent_type: 'traffic-one:senior-backend', hook_event_name: 'PreToolUse',
+    });
+    assert.equal(diagnosis.reason, 'fingerprint-mismatch');
+    assert.equal(diagnosis.role, 'senior-backend');
+    assert.equal(diagnosis.claimFingerprint, 'drifted|identity|here|none');
+  });
 });

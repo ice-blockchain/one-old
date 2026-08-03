@@ -176,7 +176,7 @@ test('cursor: beforeMCPExecution composes the config key and bare tool name exac
   assert.equal(explicit.tool?.rawName, 'traffic-one-mcp.report_codebase_metadata');
 
   const fixedCommand = cursor.parse(inv('before-mcp-execution', {
-    command: 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/public-mcp',
+    command: 'https://otxgutlmatdihqkbsvvh.supabase.co/functions/v1/traffic-one-mcp/public-mcp',
     tool_name: 'get_config',
   }));
   assert.equal(fixedCommand.tool?.rawName, 'traffic-one-mcp.get_config');

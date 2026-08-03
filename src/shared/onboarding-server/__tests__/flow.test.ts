@@ -7,7 +7,10 @@ import * as path from 'path';
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
 import { recordPluginUseChoice } from '../../state/plugin-use';
 import { writeSimpleAuth } from '../../auth';
-import { hostModelSnapshot } from '../../model-tiers';
+import { hostModelSnapshot, modelTierSnapshot, resolveModel } from '../../model-tiers';
+
+// Derived, never hardcoded: which model anchors a tier is editable policy.
+const CLAUDE_HIGHEST = resolveModel('highest', 'claude') as string;
 import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { writeRuntimeModelSnapshot } from '../../__tests__/support/one-mcp-runtime';
@@ -25,7 +28,7 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
-  const prevMcpCache = process.env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const prevXdgStateHome = process.env.XDG_STATE_HOME;
   const prevHostEnv = new Map<string, string | undefined>();
   for (const key of HOST_ENV_KEYS) {
     prevHostEnv.set(key, process.env[key]);
@@ -35,7 +38,7 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   // codeGraphProvider is machine-wide now — isolate one.json so applyAnswer's
   // writeGlobalCodeGraphProvider never touches the real ~/.traffic-one.
   process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  process.env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  process.env.XDG_STATE_HOME = path.join(dir, 'state');
   // This suite exercises post-auth wizard sequencing. The API-key gate itself
   // has dedicated flow/routes tests, so enable canonical auth explicitly here.
   writeSimpleAuth('sk-flow-fixture');
@@ -54,8 +57,8 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
     else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
-    if (prevMcpCache === undefined) delete process.env.TRAFFIC_ONE_MCP_CACHE_PATH;
-    else process.env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
+    if (prevXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = prevXdgStateHome;
     if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
     else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     for (const [key, value] of prevHostEnv) {
@@ -226,6 +229,49 @@ test('existing project: only the local-preference steps are asked, then done', (
   });
 });
 
+// The ask-first flow answers consent and runs `--use --bootstrap-only` in the
+// SAME session, before SessionStart ever stamps detection — so state has no
+// `stack` when done is computed. That must NOT read as "setup complete": it
+// skipped the entire wizard (OpenCode, performance, team, code graph) for every
+// existing codebase on an already-authenticated machine, including any project
+// whose .traffic-one was deleted for a re-setup.
+test('existing codebase with a detectable but unstamped stack still gets the wizard', () => {
+  withProject(null, (cwd) => {
+    // A real Laravel repo: composer manifest + enough source files that
+    // detectMode says existing-codebase, but NO .one.json (never stamped).
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({ require: { 'laravel/framework': '^11.0' } }), 'utf8');
+    fs.mkdirSync(path.join(cwd, 'app'), { recursive: true });
+    for (let i = 0; i < 7; i += 1) {
+      fs.writeFileSync(path.join(cwd, 'app', `Model${i}.php`), '<?php\n', 'utf8');
+    }
+    recordPluginUseChoice(cwd, true, 'command');
+
+    const view = computeOnboarding(cwd);
+    assert.equal(view.mode, 'existing-codebase');
+    assert.equal(view.done, false, 'an unstamped but detectable stack must not read as setup complete');
+    assert.equal(view.step, 'open-code', 'the wizard starts at the first local-preference step');
+  });
+});
+
+test('existing dir where detection finds nothing routes to AGENT classification (tech-detect)', () => {
+  withProject(null, (cwd) => {
+    // >5 source files so detectMode says existing-codebase, but no framework
+    // manifests — detectStackFromCodebase finds no stack. This used to read as
+    // done (the half-onboarded hole): now the session agent must classify.
+    fs.mkdirSync(path.join(cwd, 'scripts'), { recursive: true });
+    for (let i = 0; i < 7; i += 1) {
+      fs.writeFileSync(path.join(cwd, 'scripts', `util${i}.py`), 'print(1)\n', 'utf8');
+    }
+    recordPluginUseChoice(cwd, true, 'command');
+
+    const view = computeOnboarding(cwd);
+    assert.equal(view.mode, 'existing-codebase');
+    assert.equal(view.done, false, 'undetectable is no longer done — the agent classifies via --set-tech');
+    assert.equal(view.step, 'tech-detect');
+    assert.equal(view.meta?.kind, 'waiting', 'the wizard shows the passive waiting page for this step');
+  });
+});
+
 test('existing project: plan/model drift reopens Performance while metadata-only advances do not', () => {
   const committed = {
     mode: 'existing-codebase', stack: 'default', frontend: 'react-vite', backend: 'supabase',
@@ -298,7 +344,7 @@ test('performance and repick update only the active host and preserve Cursor ava
       },
       team: { mode: 'subagents', source: 'prompted', approved: true },
       availableModels: {
-        models: ['claude-opus-4-8-thinking-high', 'composer-2.5-fast'],
+        models: ['claude-opus-5-thinking-high', 'composer-2.5-fast'],
         capturedAt: '2026-07-12T08:00:00Z',
         target: {
           plan: 'pro',
@@ -318,7 +364,7 @@ test('performance and repick update only the active host and preserve Cursor ava
     assert.equal(hostPrefs(prefs, 'codex').performance, undefined);
     assert.equal(hostPrefs(prefs, 'codex').team, undefined);
     assert.deepEqual(hostPrefs(prefs, 'cursor').availableModels, {
-      models: ['claude-opus-4-8-thinking-high', 'composer-2.5-fast'],
+      models: ['claude-opus-5-thinking-high', 'composer-2.5-fast'],
       capturedAt: '2026-07-12T08:00:00Z',
       target: {
         plan: 'pro',
@@ -398,7 +444,7 @@ test('finalize derives the stack from the seeded original prompt (not minimal)',
   });
 });
 
-test('finalize persists 16b React + Go prompt as custom-backend/go immediately', () => {
+test('finalize persists an explicit React + Go prompt as a custom full stack immediately', () => {
   withProject(null, (cwd) => {
     const prompt = 'create a modern learning platform in react with go as backend with courses for web development. use latest tech, make it responsive. no admin area for now.';
     writeState(cwd, { mode: 'new-project', originalPrompt: prompt });
@@ -410,7 +456,7 @@ test('finalize persists 16b React + Go prompt as custom-backend/go immediately',
     assert.equal(computeOnboarding(cwd).step, 'finalize');
     assert.ok(applyAnswer(cwd, 'finalize', null).ok);
     const s = readState(cwd);
-    assert.equal(s.stack, 'custom-backend');
+    assert.equal(s.stack, 'custom-stack');
     assert.equal(s.frontend, 'react-vite');
     assert.equal(s.backend, 'go');
   });
@@ -473,10 +519,11 @@ test('finalize: NO captured prompt + blank form does NOT collapse to minimal (th
   });
 });
 
-test('finalize: an EXPLICIT minimal request is preserved (the no-signal floor does not over-fire)', () => {
+test('finalize: an EXPLICIT brochure request is preserved (the no-signal floor does not over-fire)', () => {
   withProject(null, (cwd) => {
-    // "static landing page" carries promptHasStackSignal===true (wantsMinimal), so the
-    // floor must NOT fire — intentional minimal is honored.
+    // "static landing page" carries promptHasStackSignal===true (wantsStaticSite),
+    // so the floor must NOT fire — the intentional brochure shape is honored. It
+    // is a FRONTEND with no backend, not a stack with no implementer.
     writeState(cwd, { mode: 'new-project', originalPrompt: 'a simple static landing page' });
     applyAnswer(cwd, 'open-code', 'not_now');
     applyAnswer(cwd, 'performance', 'low');
@@ -484,13 +531,59 @@ test('finalize: an EXPLICIT minimal request is preserved (the no-signal floor do
     applyAnswer(cwd, 'mobile', 'web_only');
     applyAnswer(cwd, 'code-graph', 'gitnexus');
     applyAnswer(cwd, 'finalize', null);
-    assert.equal(readState(cwd).stack, 'minimal');
+    const s = readState(cwd);
+    assert.equal(s.stack, 'custom-frontend');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'none');
+  });
+});
+
+test('finalize: ionic + a brochure prompt lands on custom-frontend, not the Turborepo default', () => {
+  withProject(null, (cwd) => {
+    // The `if (stack === 'minimal') stack = 'default'` remap in deriveStack is gone
+    // with the classifier arm that fed it. Ionic still forces a web frontend and a
+    // backend, but it no longer PROMOTES the stack id: `default` carries the
+    // pnpm/Turborepo contract (stateRequiresNewProjectMonorepo), and a brochure
+    // brief never asked for one. This also removes a real inconsistency — the same
+    // request phrased as "a React Vite app with no backend" already derived
+    // custom-frontend on this exact path.
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'a simple static landing page' });
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'ionic_capacitor');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.ok(applyAnswer(cwd, 'finalize', null).ok);
+    const s = readState(cwd);
+    assert.equal(s.stack, 'custom-frontend');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'supabase');
+    assert.equal(asRec(s.mobile).framework, 'ionic-capacitor');
+  });
+});
+
+test('finalize: expo + a brochure prompt is byte-identical to the pre-change outcome', () => {
+  withProject(null, (cwd) => {
+    // The deleted `if (stack === 'minimal') stack = 'custom-frontend'` was a true
+    // no-op: the classifier now returns custom-frontend for this prompt directly.
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'a simple static landing page' });
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'react_native_expo');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.ok(applyAnswer(cwd, 'finalize', null).ok);
+    const s = readState(cwd);
+    assert.equal(s.stack, 'custom-frontend');
+    assert.equal(s.frontend, 'none');
+    assert.equal(s.backend, 'supabase');
   });
 });
 
 test('finalize: a thin originalPrompt is rescued by the typed project-context answers (not minimal)', () => {
   withProject(null, (cwd) => {
-    // The bug case: a later "ok build it" became the seed, which alone derives `minimal`.
+    // The bug case: a later "ok build it" became the seed, which alone derives a
+    // bare frontend shell carrying none of the real project's surfaces.
     writeState(cwd, { mode: 'new-project', originalPrompt: 'ok build it' });
     applyAnswer(cwd, 'open-code', 'not_now');
     applyAnswer(cwd, 'performance', 'low');
@@ -517,7 +610,7 @@ test('buildTeamLineup: high performance maps each role to its tier + claude mode
   const architect = requireRole(by, 'senior-architect');
   const tester = requireRole(by, 'senior-tester');
   const shipper = requireRole(by, 'senior-shipper');
-  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: 'claude-fable-5' });
+  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: CLAUDE_HIGHEST });
   assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'cheapest', model: 'claude-haiku-4-5' });
   assert.deepEqual({ tier: shipper.tier, model: shipper.model }, { tier: 'balanced', model: 'claude-sonnet-5' });
   assert.ok(architect.label === 'Architect' && architect.blurb.length > 0);
@@ -544,7 +637,7 @@ test('buildTeamLineup: a per-role tier override is honored', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'claude', { 'senior-tester': 'highest' }).map((m) => [m.role, m]));
   // tester is normally cheapest/haiku; the override promotes it
   const tester = requireRole(by, 'senior-tester');
-  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: 'claude-fable-5' });
+  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: CLAUDE_HIGHEST });
 });
 
 test('computeOnboarding: the team-confirmation step carries the resolved line-up', () => {
@@ -557,7 +650,7 @@ test('computeOnboarding: the team-confirmation step carries the resolved line-up
     assert.equal(view.meta.recommendedTier, 'highest'); // pinned plan 'max' → highest headline tier
     assert.ok(Array.isArray(view.meta.team) && view.meta.team?.length === 6);
     const architect = view.meta.team?.find((m) => m.role === 'senior-architect');
-    assert.equal(architect?.model, 'claude-fable-5');
+    assert.equal(architect?.model, CLAUDE_HIGHEST);
     // host is resolved (defaults to claude outside a host process) so the UI can label it
     assert.equal(view.meta.host, 'claude');
     // the approve/re-pick options are still present
@@ -584,12 +677,14 @@ test('team step offers the first two models from every tier without cross-tier d
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     const choices = view.meta.modelChoices || [];
-    assert.deepEqual(choices.filter((choice) => choice.tier === 'highest').map((choice) => choice.model), [
-      'claude-fable-5', 'claude-opus-4-8',
-    ]);
-    assert.deepEqual(choices.filter((choice) => choice.tier === 'balanced').map((choice) => choice.model), [
-      'claude-sonnet-5', 'claude-sonnet-4-6',
-    ]);
+    // The picker offers the row's concrete models (the host alias tail is not a choice).
+    for (const tier of ['highest', 'balanced'] as const) {
+      assert.deepEqual(
+        choices.filter((choice) => choice.tier === tier).map((choice) => choice.model),
+        modelTierSnapshot('claude', undefined)[tier].slice(0, 2),
+        `${tier} choices track the configured row`,
+      );
+    }
     assert.deepEqual(choices.filter((choice) => choice.tier === 'cheapest').map((choice) => choice.model), [
       'claude-haiku-4-5', 'claude-sonnet-4-6',
     ]);
@@ -598,18 +693,20 @@ test('team step offers the first two models from every tier without cross-tier d
       2,
       'the same model remains a distinct Balanced and Cheapest choice',
     );
-    assert.equal(choices.find((choice) => choice.model === 'claude-opus-4-8')?.label, 'Opus 4.8');
+    assert.equal(choices.find((choice) => choice.model === 'claude-opus-5')?.label, 'Opus 5');
   });
 });
 
 test('Claude lineup surfaces concrete generation labels; concrete hosts get none', () => {
   const lineup = buildTeamLineup('high', 'claude');
   const architect = lineup.find((m) => m.role === 'senior-architect');
-  assert.equal(architect?.model, 'claude-fable-5');
-  assert.equal(architect?.modelLabel, 'Fable 5');
+  assert.equal(architect?.model, CLAUDE_HIGHEST);
+  // Every Anthropic id in the lineup carries a readable generation label, whichever
+  // model currently anchors the tier.
+  assert.ok((architect?.modelLabel ?? '').length > 0, 'architect model has a generation label');
   const tester = lineup.find((m) => m.role === 'senior-tester');
-  assert.equal(tester?.model, 'claude-haiku-4-5');
-  assert.equal(tester?.modelLabel, 'Haiku 4.5');
+  assert.equal(tester?.model, resolveModel('cheapest', 'claude'));
+  assert.ok((tester?.modelLabel ?? '').length > 0, 'tester model has a generation label');
   // Concrete ids (copilot & co.) are already readable — no label.
   const copilot = buildTeamLineup('high', 'copilot');
   assert.equal(copilot.find((m) => m.role === 'senior-architect')?.modelLabel, undefined);
@@ -645,7 +742,7 @@ test('computeOnboarding explicit env owns the preference target and model metada
       TRAFFIC_ONE_HOST: 'codex',
       TRAFFIC_ONE_USER_PLAN: 'pro',
       TRAFFIC_ONE_STATE_PATH: path.join(cwd, 'explicit-one.json'),
-      TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'explicit-one-mcp.json'),
+      XDG_STATE_HOME: path.join(cwd, 'explicit-state'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'explicit-preferences.json'),
       TRAFFIC_ONE_AUTH: '1',
     } as NodeJS.ProcessEnv;
@@ -843,7 +940,7 @@ test('team approve with per-agent model overrides persists them under team.overr
     assert.deepEqual(asRec(team.overrides), { 'senior-tester': 'highest' });
     // …and that stored override drives the resolved line-up (tester jumps to Fable).
     const lineup = buildTeamLineup('high', 'claude', asRec(team.overrides));
-    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, 'claude-fable-5');
+    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, CLAUDE_HIGHEST);
   });
 });
 
@@ -855,7 +952,7 @@ test('team approve persists exact same-tier model selections for every visible r
     const modelSelections = Object.fromEntries(
       (view.meta.team || []).map((member) => [member.role, member.model]),
     );
-    modelSelections['senior-architect'] = 'claude-opus-4-8';
+    modelSelections['senior-architect'] = 'claude-opus-5';
     modelSelections['senior-tester'] = 'claude-sonnet-4-6';
 
     assert.deepEqual(
@@ -950,7 +1047,7 @@ test('team step reload preserves a valid exact model selection in its original t
     const modelSelections = Object.fromEntries(
       (first.meta.team || []).map((member) => [member.role, member.model]),
     );
-    modelSelections['senior-architect'] = 'claude-opus-4-8';
+    modelSelections['senior-architect'] = 'claude-opus-5';
     mergeProjectHostPrefs(cwd, 'claude', {
       team: { mode: 'subagents', source: 'prompted', modelSelections },
     });
@@ -959,7 +1056,7 @@ test('team step reload preserves a valid exact model selection in its original t
     assert.equal(reloaded.step, 'team-confirmation');
     assert.equal(
       reloaded.meta.team?.find((member) => member.role === 'senior-architect')?.model,
-      'claude-opus-4-8',
+      'claude-opus-5',
     );
     assert.equal(
       reloaded.meta.team?.find((member) => member.role === 'senior-tester')?.model,

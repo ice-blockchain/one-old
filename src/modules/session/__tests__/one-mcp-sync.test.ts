@@ -34,7 +34,7 @@ test('SessionStart MCP sync invokes only the active host runner with a bounded w
   }
 });
 
-test('SessionStart MCP sync requires exact opt-in and honors the offline switch', () => {
+test('SessionStart MCP sync requires exact opt-in and honors the explicit feature seam', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-one-mcp-session-'));
   const runner = path.join(dir, 'one-mcp-sync.cjs');
   const prefs = path.join(dir, 'preferences.json');
@@ -48,10 +48,14 @@ test('SessionStart MCP sync requires exact opt-in and honors the offline switch'
     const missing = syncOneMcpForSession(dir, 'codex', { TRAFFIC_ONE_PROJECT_PREFS_PATH: prefs }, spawn, runner, true);
     assert.equal(missing, null);
     recordPluginUseChoice(dir, true, 'test', { TRAFFIC_ONE_PROJECT_PREFS_PATH: prefs });
-    const disabled = syncOneMcpForSession(dir, 'codex', {
-      TRAFFIC_ONE_PROJECT_PREFS_PATH: prefs,
-      TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '1',
-    }, spawn, runner, true);
+    const disabled = syncOneMcpForSession(
+      dir,
+      'codex',
+      { TRAFFIC_ONE_PROJECT_PREFS_PATH: prefs },
+      spawn,
+      runner,
+      false,
+    );
     assert.equal(disabled, null);
     assert.equal(called, false);
   } finally {
@@ -110,12 +114,11 @@ test('SessionStart MCP sync switch is checked before the session marker is writt
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-one-mcp-session-off-'));
   const env = {
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'preferences.json'),
-    TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '1',
   } as NodeJS.ProcessEnv;
   let calls = 0;
   try {
     recordPluginUseChoice(dir, true, 'test', env);
-    syncOneMcpAtSessionStart(dir, 'kilo', { session_id: 'parent-off' }, env, () => { calls += 1; }, true);
+    syncOneMcpAtSessionStart(dir, 'kilo', { session_id: 'parent-off' }, env, () => { calls += 1; }, false);
     assert.equal(calls, 0);
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false);
   } finally {
@@ -125,13 +128,15 @@ test('SessionStart MCP sync switch is checked before the session marker is writt
 
 test('parent SessionStart warns once per bounded invalid/config-missing diagnostic and names the fallback source', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-one-mcp-session-warning-'));
-  const cachePath = path.join(dir, 'one-mcp.json');
+  const stateHome = path.join(dir, 'state');
+  const cachePath = path.join(stateHome, 'traffic-one', 'one-mcp.json');
   const env = {
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'preferences.json'),
-    TRAFFIC_ONE_MCP_CACHE_PATH: cachePath,
+    XDG_STATE_HOME: stateHome,
   } as NodeJS.ProcessEnv;
   try {
     recordPluginUseChoice(dir, true, 'test', env);
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
     fs.writeFileSync(cachePath, `${JSON.stringify({
       schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
       hosts: {
@@ -190,9 +195,11 @@ test('parent SessionStart warns once per bounded invalid/config-missing diagnost
 
 test('parent SessionStart keeps temporary One MCP transport failures silent', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-one-mcp-session-warning-'));
-  const cachePath = path.join(dir, 'one-mcp.json');
-  const env = { TRAFFIC_ONE_MCP_CACHE_PATH: cachePath } as NodeJS.ProcessEnv;
+  const stateHome = path.join(dir, 'state');
+  const cachePath = path.join(stateHome, 'traffic-one', 'one-mcp.json');
+  const env = { XDG_STATE_HOME: stateHome } as NodeJS.ProcessEnv;
   try {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
     fs.writeFileSync(cachePath, `${JSON.stringify({
       schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
       hosts: {

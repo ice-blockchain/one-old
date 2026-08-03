@@ -74,6 +74,33 @@ test('shim falls back to the NEWEST version in a host plugin cache (numeric sort
   });
 });
 
+// REGRESSION (observed live, cursor-15c): the walk ordered by HOST first and only
+// sorted versions WITHIN a host, so a stale install under an earlier host beat a newer
+// one under a later host. Cursor's MCP server resolved .codex/…/1.0.15 (90s OpenCode
+// ceiling) while the hooks in the SAME session ran .claude/…/1.0.17 (600s) — the fix
+// under test was silently never exercised, and a full Cursor restart could not help.
+test('shim picks the newest version ACROSS hosts, not the first host that has one', () => {
+  withTmpToolchainRoot((tmp, binDir) => {
+    ensureRunnerShims();
+    const home = path.join(tmp, 'home');
+    const install = (host: string, marketplace: string, ver: string, body: string): void => {
+      const root = path.join(home, host, 'plugins', 'cache', marketplace, 'traffic-one', ver, 'scripts');
+      fs.mkdirSync(root, { recursive: true });
+      fs.writeFileSync(path.join(root, 'token-report.cjs'), body, 'utf8');
+    };
+    // .codex is walked FIRST and holds only the OLD version; .claude holds the new one.
+    install('.codex', 'traffic-one-local', '1.0.15', 'console.log("STALE-1.0.15");');
+    install('.claude', 'traffic-one', '1.0.17', 'console.log("CURRENT-1.0.17");');
+    const r = spawnSync(process.execPath, [path.join(binDir, 'token-report.cjs')], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home, TRAFFIC_ONE_PLUGIN_ROOT: '', CODEX_PLUGIN_ROOT: '', CLAUDE_PLUGIN_ROOT: '', CURSOR_PLUGIN_ROOT: '' },
+    });
+    assert.match(r.stdout, /CURRENT-1\.0\.17/,
+      'the newest version must win regardless of which host directory holds it');
+    assert.doesNotMatch(r.stdout, /STALE/);
+  });
+});
+
 test('shim errors clearly when no plugin install can be found', () => {
   withTmpToolchainRoot((tmp, binDir) => {
     ensureRunnerShims();

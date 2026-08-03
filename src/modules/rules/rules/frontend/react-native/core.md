@@ -23,7 +23,7 @@ products use Ionic Framework with Capacitor instead.
 - **State:** Redux Toolkit + RTK Query for server/business state; zustand only for ephemeral UI.
 - **I/O:** axios in services or RTK Query; WebSocket/socket.io-client behind service singletons.
 - **Forms/storage:** react-hook-form + zod; expo-secure-store for secrets.
-- **i18n:** i18next + react-i18next; expo-localization for device locale; resources in `packages/i18n`.
+- **i18n:** i18next + react-i18next; expo-localization for device locale; new-app resources in compiled `src/i18n/locales/<lang>/<namespace>.json` paths.
 - **Animation/gestures:** react-native-reanimated + react-native-gesture-handler.
 
 ### Build, styling, testing
@@ -48,8 +48,8 @@ products use Ionic Framework with Capacitor instead.
 - Expo Router route files may use `export default` (router requires it); keep them thin and compose named feature components.
 - Explicit `ComponentNameProps`; native primitives or approved shared primitives only.
 - API calls via services/RTK Query; never axios or `new WebSocket()` in components.
-- User-facing text, placeholders, labels, loading/error/empty copy, accessibility labels come from i18n keys. Hardcoded only for brand names / user-generated / server / IDs / test fixtures.
+- User-facing text, placeholders, labels, loading/error/empty copy, accessibility labels come from locale-parity i18n keys. Static brands are literal only when declared exactly by the architecture contract.
 - Server state in RTK Query/Redux only — never duplicated in zustand or component state.
 - Cross-package imports use workspace names (`@app/ui-native`, `@app/utils`).
 - Monorepo default: `apps/mobile/app`, `apps/mobile/src/features/*`, `packages/ui-native`.
-- New apps use `packages/i18n`; existing apps with mature i18n may keep it but new UI copy still uses `i18next`/`react-i18next`. Detect and extend existing i18n modules automatically; prefer `<Trans>` for rich copy with links or React elements and reserve `t()` for simple strings. Read device locale via `expo-localization` and feed i18next.
+- New apps use the compiled `src/i18n/locales/<lang>/<namespace>.json` baseline; existing apps with mature i18n keep it. Every static rendered child uses `<Trans>` with literal namespace/key and fallback, while `t()` is reserved for string-valued props/metadata/imperative APIs. Read device locale via `expo-localization` and feed i18next.

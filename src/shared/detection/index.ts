@@ -1,255 +1,68 @@
 // src/shared/detection/index.ts
-// Project mode + stack detection from package.json / workspace files / prompt
-// text. Read-only. Ported 1:1 from scripts/hook-runtime/detection/*.
+// Stack reconciliation and mode detection over the artifact probes.
 
-import * as fs from 'fs';
 import * as path from 'path';
-
 import { readJson } from '../fsjson';
+import { effectiveLegacyRunStatus } from '../run-settlement';
+import { frontendArtifactsPresent } from '../capabilities';
+
+import {
+  detectBackendFromText,
+  detectFrontendFromText,
+  detectGoBackendArtifacts,
+  detectMobileFromText,
+  includesAny,
+} from './artifacts';
 
 type Rec = Record<string, unknown>;
-
-export function loadPackageJson(cwd: string): Rec {
-  return readJson<Rec>(path.join(cwd, 'package.json'), {});
-}
-
-export function dependenciesFromPackage(pkg: unknown): Rec {
-  const p = pkg && typeof pkg === 'object' ? (pkg as Rec) : {};
-  const deps = p.dependencies && typeof p.dependencies === 'object' ? (p.dependencies as Rec) : {};
-  const dev = p.devDependencies && typeof p.devDependencies === 'object' ? (p.devDependencies as Rec) : {};
-  return { ...deps, ...dev };
-}
-
-export function hasWorkspaces(pkg: unknown): boolean {
-  const p = pkg && typeof pkg === 'object' ? (pkg as Rec) : {};
-  return Boolean(p.workspaces) || Object.prototype.hasOwnProperty.call(p, 'pnpm');
-}
-
-export function workspaceYamlPresent(cwd: string): boolean {
-  return fs.existsSync(path.join(cwd, 'pnpm-workspace.yaml')) || fs.existsSync(path.join(cwd, 'pnpm-workspace.yml'));
-}
-
-export const SOURCE_EXTS = new Set([
-  '.tsx', '.ts', '.jsx', '.js', '.vue', '.svelte',
-  '.go', '.rs', '.py', '.java', '.kt', '.kts', '.cs', '.php', '.rb',
-  '.swift', '.dart', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp',
-]);
-
-export function countSourceFiles(cwd: string): number {
-  let count = 0;
-  function walk(currentDir: string): void {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === 'node_modules' || entry.name === '.git') continue;
-        walk(fullPath);
-        continue;
-      }
-      if (entry.isFile() && SOURCE_EXTS.has(path.extname(entry.name))) count += 1;
-    }
-  }
-  walk(cwd);
-  return count;
-}
-
-export function detectMode(cwd: string): string {
-  const deps = dependenciesFromPackage(loadPackageJson(cwd));
-  const fileCount = countSourceFiles(cwd);
-  if (fileCount <= 5) return 'new-project';
-  if (deps['@supabase/supabase-js'] || deps['@supabase/ssr']) return 'existing-with-supabase';
-  return 'existing-codebase';
-}
-
-// ── text classification ──────────────────────────────────────────────────────
-function includesAny(text: string, patterns: readonly RegExp[]): boolean {
-  return patterns.some((pattern) => pattern.test(text));
-}
-
-function detectFrontendFromText(text: string): string | null {
-  if (/\b(next\.?js|nextjs)\b/.test(text)) return 'nextjs';
-  if (/\bvue\b|\bnuxt\b/.test(text)) return 'vue';
-  if (/\bsvelte\b|\bsveltekit\b/.test(text)) return 'svelte';
-  if (/\bangular\b/.test(text)) return 'angular';
-  if (/\bastro\b/.test(text)) return 'astro';
-  if (/\bsolid\b/.test(text)) return 'solid';
-  if (/\bremix\b/.test(text)) return 'remix';
-  if (/\breact\b|\bvite\b/.test(text)) return 'react-vite';
-  return null;
-}
-
-function hasBackendLanguagePhrase(text: string, terms: readonly string[]): boolean {
-  const backendNoun = '(?:backend|api|server|service)';
-  return terms.some((term) => {
-    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\ /g, '\\s+');
-    return [
-      new RegExp(`\\b${escaped}\\s+(?:as\\s+)?${backendNoun}\\b`),
-      new RegExp(`\\b${backendNoun}\\s+(?:in|with|using|as)\\s+${escaped}\\b`),
-      new RegExp(`\\b${backendNoun}\\s+(?:(?:is|was|should\\s+be|to\\s+be)\\s+)?(?:written|built|implemented)\\s+in\\s+${escaped}\\b`),
-    ].some((pattern) => pattern.test(text));
-  });
-}
-
-function detectBackendFromText(text: string): string | null {
-  if (/\bsupabase\b/.test(text)) return 'supabase';
-  if (/\bfirebase\b|\bfirestore\b/.test(text)) return 'firebase';
-  if (/\bmongo(db)?\b/.test(text)) return 'mongo';
-  if (/\bnest(js)?\b/.test(text)) return 'nestjs';
-  if (/\bfastapi\b/.test(text)) return 'fastapi';
-  if (/\bdjango\b/.test(text)) return 'django';
-  if (hasBackendLanguagePhrase(text, ['python']) || /\bpython backend\b/.test(text)) return 'python';
-  if (/\bgolang\b/.test(text) || hasBackendLanguagePhrase(text, ['go'])) return 'go';
-  if (hasBackendLanguagePhrase(text, ['rust'])) return 'rust';
-  if (/\bspring\b|\bspring boot\b/.test(text) || hasBackendLanguagePhrase(text, ['java'])) return 'java';
-  if (/\bktor\b/.test(text) || hasBackendLanguagePhrase(text, ['kotlin'])) return 'kotlin';
-  if (/\blaravel\b/.test(text)) return 'laravel';
-  if (hasBackendLanguagePhrase(text, ['php'])) return 'php';
-  if (/\b\.net\b|\bdotnet\b|\bc#\b/.test(text) || hasBackendLanguagePhrase(text, ['dotnet', '.net', 'c#'])) return 'dotnet';
-  if (/\bexpress\b|\btypescript backend\b/.test(text) || hasBackendLanguagePhrase(text, ['node', 'node.js', 'nodejs', 'typescript'])) return 'node';
-  if (/\bown api\b|\bexisting api\b|\bexternal api\b/.test(text)) return 'external-api';
-  if (/\bno backend\b|\bfrontend[- ]only\b|\bstatic only\b/.test(text)) return 'none';
-  return null;
-}
-
-interface MobileDetection {
-  enabled: boolean;
-  framework: string;
-  source: string;
-  intentDetected: boolean;
-}
-
-function detectMobileFromText(text: string): MobileDetection {
-  const hasMobileIntent = includesAny(text, [
-    /\bmobile app\b/, /\bios\b/, /\bandroid\b/, /\bapp store\b/, /\bplay store\b/,
-    /\bcapacitor\b/, /\bionic\b/, /\breact native\b/, /\bexpo\b/, /\brn\b/,
-  ]);
-  if (!hasMobileIntent) return { enabled: false, framework: 'none', source: 'none', intentDetected: false };
-  if (/\breact native\b|\bexpo\b|\brn\b/.test(text)) {
-    return { enabled: true, framework: 'react-native-expo', source: 'explicit', intentDetected: true };
-  }
-  return { enabled: true, framework: 'ionic-capacitor', source: 'explicit', intentDetected: true };
-}
-
-export interface StackDetection {
-  stack: string | null;
-  backend: string | null;
-  frontend: string | null;
-  realtime: string | null;
-  evidence: string[];
-  mobile?: { enabled: boolean; framework: string; source: string };
-}
-
-export function detectStackFromCodebase(cwd: string): StackDetection {
-  const out: StackDetection = { stack: null, backend: null, frontend: null, realtime: null, evidence: [] };
-
-  const deps = dependenciesFromPackage(loadPackageJson(cwd));
-  if (detectGoBackendArtifacts(cwd)) {
-    out.stack = 'custom-backend';
-    out.backend = 'go';
-    out.frontend = deps.react || deps.vite ? 'react-vite' : 'none';
-    out.evidence.push('Go backend artifacts detected → apply Go backend skills');
-  }
-
-  if (Object.keys(deps).length === 0) return out;
-
-  const isNative = Boolean(deps.expo || deps['react-native']);
-  const isReact = Boolean(deps.react);
-  const frameworkDetections = [
-    { frontend: 'nextjs', matches: Boolean(deps.next), evidence: 'next in deps → apply custom-frontend stack + Next.js provider-first recommendations' },
-    { frontend: 'vue', matches: Boolean(deps.vue || deps.nuxt || deps['@vitejs/plugin-vue']), evidence: 'vue/nuxt in deps → apply custom-frontend stack + Vue-native patterns' },
-    { frontend: 'svelte', matches: Boolean(deps.svelte || deps['@sveltejs/kit']), evidence: 'svelte/sveltekit in deps → apply custom-frontend stack + Svelte-native patterns' },
-    { frontend: 'angular', matches: Boolean(deps['@angular/core'] || deps['@angular/cli']), evidence: 'angular in deps → apply custom-frontend stack + Angular-native patterns' },
-    { frontend: 'astro', matches: Boolean(deps.astro), evidence: 'astro in deps → apply custom-frontend stack + Astro-native patterns' },
-    { frontend: 'solid', matches: Boolean(deps['solid-js'] || deps['@solidjs/start']), evidence: 'solid in deps → apply custom-frontend stack + Solid-native patterns' },
-    { frontend: 'remix', matches: Boolean(deps['@remix-run/react'] || deps['@remix-run/node'] || deps['@remix-run/dev']), evidence: 'remix in deps → apply custom-frontend stack + Remix-native patterns' },
-    { frontend: 'gatsby', matches: Boolean(deps.gatsby), evidence: 'gatsby in deps → apply custom-frontend stack + Gatsby-native patterns' },
-    { frontend: 'qwik', matches: Boolean(deps['@builder.io/qwik'] || deps['@builder.io/qwik-city']), evidence: 'qwik in deps → apply custom-frontend stack + Qwik-native patterns' },
-    { frontend: 'preact', matches: Boolean(deps.preact), evidence: 'preact in deps → apply custom-frontend stack + Preact-native patterns' },
-    { frontend: 'lit', matches: Boolean(deps.lit || deps['lit-html'] || deps['lit-element']), evidence: 'lit in deps → apply custom-frontend stack + Lit-native patterns' },
-    { frontend: 'ember', matches: Boolean(deps['ember-source'] || deps['ember-cli']), evidence: 'ember in deps → apply custom-frontend stack + Ember-native patterns' },
-    { frontend: 'alpine', matches: Boolean(deps.alpinejs), evidence: 'alpinejs in deps → apply custom-frontend stack + Alpine-native patterns' },
-    { frontend: 'stencil', matches: Boolean(deps['@stencil/core']), evidence: 'stencil in deps → apply custom-frontend stack + Stencil-native patterns' },
-    { frontend: 'marko', matches: Boolean(deps.marko), evidence: 'marko in deps → apply custom-frontend stack + Marko-native patterns' },
-  ];
-  const detected = frameworkDetections.find((candidate) => candidate.matches);
-
-  if (detected) {
-    out.stack = 'custom-frontend';
-    out.frontend = detected.frontend;
-    out.evidence.push(detected.evidence);
-  } else if (isNative) {
-    out.stack = 'custom-frontend';
-    out.frontend = 'none';
-    out.mobile = { enabled: true, framework: 'react-native-expo', source: 'explicit' };
-    out.evidence.push('react-native/expo in deps');
-  } else if (isReact) {
-    out.stack = deps['@supabase/supabase-js'] || deps['@supabase/ssr'] ? 'default' : 'custom-backend';
-    out.frontend = 'react-vite';
-    out.evidence.push('react in deps');
-  }
-
-  if (deps['@supabase/supabase-js'] || deps['@supabase/ssr']) {
-    out.backend = 'supabase';
-    out.evidence.push('supabase detected → recommend our fork once');
-  } else if (deps.firebase || deps['firebase-admin']) {
-    out.backend = 'firebase';
-    out.evidence.push('firebase detected');
-  }
-
-  if (!out.backend && out.stack === 'custom-backend' && out.frontend === 'react-vite') {
-    out.backend = 'none';
-  }
-
-  if (deps['socket.io-client'] || deps['socket.io'] || deps.ws) {
-    out.realtime = 'light';
-    out.evidence.push('websocket lib detected');
-  }
-
-  return out;
-}
-
-export function detectGoBackendArtifacts(cwd: string): boolean {
-  const candidates = [
-    cwd,
-    path.join(cwd, 'services', 'api'),
-    path.join(cwd, 'apps', 'api'),
-    path.join(cwd, 'backend'),
-  ];
-  return candidates.some((dir) => fs.existsSync(path.join(dir, 'go.mod')) || fs.existsSync(path.join(dir, 'go.work')));
-}
 
 export function reconcileStackFromArtifacts(cwd: string, state: unknown): boolean {
   const s = state && typeof state === 'object' ? (state as Rec) : null;
   if (!s) return false;
-  if (!detectGoBackendArtifacts(cwd)) return false;
-  const staleSupabase = s.stack === 'default' || s.backend === 'supabase';
-  if (!staleSupabase && s.backend === 'go' && s.stack === 'custom-backend') return false;
-  s.stack = 'custom-backend';
-  if (!s.frontend || s.frontend === 'none') s.frontend = 'react-vite';
-  s.backend = 'go';
+  const hasGo = detectGoBackendArtifacts(cwd);
+  const legacyImplicitFrontend = s.stack === 'custom-backend' && s.frontend === 'react-vite'
+    && !frontendArtifactsPresent(cwd);
+  const runId = typeof s.currentRunId === 'string' ? s.currentRunId.trim() : '';
+  const runLedger = runId
+    ? readJson<Rec>(path.join(cwd, '.traffic-one', 'runs', runId, 'run.json'), {})
+    : {};
+  const effectiveRunStatus = effectiveLegacyRunStatus(runLedger);
+  const activeRun = runId && (effectiveRunStatus === 'planned' || effectiveRunStatus === 'active');
+  if (!hasGo && (!legacyImplicitFrontend || activeRun)) return false;
+
+  if (hasGo) {
+    const staleSupabase = s.stack === 'default' || s.backend === 'supabase';
+    if (!staleSupabase && s.backend === 'go' && s.stack === 'custom-backend' && !legacyImplicitFrontend) return false;
+    s.backend = 'go';
+    s.stack = frontendArtifactsPresent(cwd) ? 'custom-stack' : 'custom-backend';
+  }
+  if (legacyImplicitFrontend && !activeRun) s.frontend = 'none';
+
   const evidence = Array.isArray(s.evidence) ? s.evidence.filter((item): item is string => typeof item === 'string') : [];
-  const note = 'Go backend artifacts detected after scaffold → reconciled state to custom-backend/go';
-  if (!evidence.includes(note)) s.evidence = [...evidence, note];
+  const notes = [...evidence];
+  if (hasGo) {
+    const note = `Go backend artifacts detected after scaffold → reconciled state to ${String(s.stack)}/go`;
+    if (!notes.includes(note)) notes.push(note);
+  }
+  if (legacyImplicitFrontend && !activeRun) {
+    const note = 'Legacy custom-backend React fallback removed because no frontend artifacts exist';
+    if (!notes.includes(note)) notes.push(note);
+  }
+  s.evidence = notes;
   return true;
 }
 
-export interface PromptClassification {
+interface PromptClassification {
   stack: string;
   frontend: string;
   backend: string;
   mobile: { enabled: boolean; framework: string; source: string };
-  shouldAskMobile: boolean;
   evidence: {
     frontend: string | null;
     backend: string | null;
     mobileIntentDetected: boolean;
     backendNeed: boolean;
-    wantsMinimal: boolean;
+    wantsStaticSite: boolean;
   };
 }
 
@@ -258,7 +71,21 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
   const frontend = detectFrontendFromText(text);
   const backend = detectBackendFromText(text);
   const mobile = detectMobileFromText(text);
-  const wantsMinimal = includesAny(text, [
+  // Brochure/marketing vocabulary. EVIDENCE ONLY — it selects nothing. Its whole
+  // job is `promptHasStackSignal`, so a verb-less "a landing page for a law firm"
+  // still reads as a real project description.
+  //
+  // It used to force `minimal` + frontend/backend `none`, which compiles to a
+  // capability profile with NO web-ui surface and therefore NO implementer role —
+  // for a prompt whose entire content is a web page. Observed: "create modern an
+  // agency presentation website. one landing page with projects listing, latest
+  // news, reviews." derived `minimal|none|none`, the architecture compiler then
+  // refused every route the architect declared (no UI surface), the orchestration
+  // directive told the parent not to spawn an implementer at all, and runtime
+  // still seeded module skeletons no role was permitted to edit. A brochure site
+  // is a FRONTEND; it takes the ordinary frontend path below and differs only in
+  // having no backend.
+  const wantsStaticSite = includesAny(text, [
     /\blanding page\b/, /\bpresentation\b/, /\bbrochure\b/, /\bportfolio\b/,
     /\bone[- ]page\b/, /\bstatic\b/, /\bsimple website\b/,
   ]);
@@ -267,39 +94,63 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
     /\bcrud\b/, /\bdatabase\b/, /\bdb\b/, /\bbackend\b/, /\bapi\b/,
     /\buploads?\b/, /\bfiles?\b/, /\brealtime\b/, /\breal[- ]time\b/,
     /\bdashboard\b/, /\badmin\b/, /\bpayments?\b/, /\bmarketplace\b/,
-    /\bsaas\b/, /\bmvp\b/, /\bplatform\b/, /\bapp\b/,
+    /\bsaas\b/, /\bmvp\b/, /\bplatform\b/,
+    // Content vocabulary. Each names a collection the user expects to LIST and
+    // later EDIT — that is persistence. Their absence is why the agency brief
+    // above read as needing no backend at all for three content collections.
+    /\bnews\b/, /\bblogs?\b/, /\breviews?\b/, /\blistings?\b/, /\bcms\b/,
+    /\bcontent\b/,
   ]);
   const explicitCustomFrontend = Boolean(frontend && frontend !== 'react-vite');
   const explicitCustomBackend = Boolean(backend && backend !== 'supabase' && backend !== 'none');
   const noBackend = backend === 'none';
+  // API-only: an explicit custom backend + API-service vocabulary + ZERO
+  // frontend/UI signals proposes `frontend: none`, not the react-vite fallback.
+  // Observed 13c: "create a golang api project…" scaffolded a full React app +
+  // pnpm monorepo nobody asked for, because `frontend || 'react-vite'` had no
+  // API-only concept and the wizard preselected the fallback. Deliberately
+  // scoped to explicit custom backends (go/rust/java/php/…): ambiguous
+  // supabase-tier prompts keep the web default, and the wizard still lets the
+  // user add a frontend. This and the mobile arm below are now the ONLY two
+  // producers of `frontend: 'none'`.
+  const apiOnlyBackend = !frontend && !mobile.enabled && explicitCustomBackend
+    && includesAny(text, [
+      /\bapis?\b/, /\bmicroservices?\b/, /\bgrpc\b/, /\brest(?:ful)?\b/,
+      /\bendpoints?\b/, /\bbackend\b/, /\bserver\b/, /\bworkers?\b/, /\bcli\b/,
+    ])
+    && !includesAny(text, [
+      /\bfront[- ]?end\b/, /\bui\b/, /\bux\b/, /\bwebsites?\b/, /\bweb ?app\b/,
+      /\bsite\b/, /\bpages?\b/, /\bdashboards?\b/, /\binterface\b/,
+      /\bscreens?\b/, /\bresponsive\b/, /\bdesign\b/, /\bcomponents?\b/,
+    ]);
 
-  let resolvedFrontend = frontend || 'react-vite';
-  let resolvedBackend = backend || (backendNeed || mobile.enabled ? 'supabase' : 'none');
+  let resolvedFrontend = frontend
+    || (apiOnlyBackend ? 'none' : (backend === 'laravel' ? 'other' : 'react-vite'));
+  const resolvedBackend = backend || (backendNeed ? 'supabase' : 'none');
   let stack: string;
 
-  if (wantsMinimal && !backendNeed && !frontend && !mobile.enabled) {
-    stack = 'minimal';
-    resolvedFrontend = 'none';
-    resolvedBackend = 'none';
-  } else if (mobile.enabled && !frontend) {
+  if (mobile.enabled && !frontend) {
     stack = explicitCustomBackend ? 'custom-stack' : 'custom-frontend';
     resolvedFrontend = mobile.framework === 'ionic-capacitor' ? 'react-vite' : 'none';
-    resolvedBackend = resolvedBackend === 'none' ? 'supabase' : resolvedBackend;
   } else if (explicitCustomFrontend && explicitCustomBackend) {
     stack = 'custom-stack';
   } else if (explicitCustomFrontend) {
     stack = 'custom-frontend';
-    resolvedBackend = resolvedBackend === 'none' ? 'supabase' : resolvedBackend;
-  } else if (explicitCustomBackend || noBackend) {
-    stack = 'custom-backend';
+  } else if (explicitCustomBackend) {
+    stack = resolvedFrontend === 'none' ? 'custom-backend' : 'custom-stack';
+  } else if (noBackend) {
+    // Reaching here means NEITHER side is explicitly custom, so `frontend` is
+    // null or react-vite and `resolvedFrontend` is always react-vite: the old
+    // `resolvedFrontend === 'none' ? 'minimal' : …` true-branch was dead code.
+    // This arm must stay ahead of `backendNeed`: "a React app with no backend"
+    // matches /\bbackend\b/, and the explicit refusal wins over the keyword.
+    stack = 'custom-frontend';
   } else if (backendNeed) {
     stack = 'default';
-  } else if (frontend === 'react-vite') {
-    stack = resolvedBackend === 'none' ? 'custom-backend' : 'default';
   } else {
-    stack = 'minimal';
-    resolvedFrontend = 'none';
-    resolvedBackend = 'none';
+    // Nothing named on either side. A web app either way; `default` only when a
+    // backend was actually named (react-vite + supabase IS the default stack).
+    stack = resolvedBackend === 'none' ? 'custom-frontend' : 'default';
   }
 
   return {
@@ -307,13 +158,12 @@ export function classifyPromptForStack(prompt: unknown): PromptClassification {
     frontend: resolvedFrontend,
     backend: resolvedBackend,
     mobile: { enabled: mobile.enabled, framework: mobile.framework, source: mobile.source },
-    shouldAskMobile: stack !== 'minimal',
     evidence: {
       frontend: frontend || null,
       backend: backend || null,
       mobileIntentDetected: mobile.intentDetected,
       backendNeed,
-      wantsMinimal,
+      wantsStaticSite,
     },
   };
 }
@@ -391,12 +241,13 @@ export function isRuntimeControlPrompt(prompt: unknown): boolean {
 // True when the prompt carries an explicit STACK signal — i.e. it reads as a real
 // project description even without an imperative coding verb. Derived from
 // classifyPromptForStack so there is ONE keyword source of truth (its backendNeed /
-// frontend / backend / mobile / wantsMinimal evidence) rather than a parallel list
+// frontend / backend / mobile / wantsStaticSite evidence) rather than a parallel list
 // that drifts out of sync with isLikelyCodingPrompt. The coding-intent gate uses
 // this to AVOID dropping a verb-less first prompt like "a marketplace for
 // freelancers": dropping it loses the genuine project description, and a later thin
-// "ok build it" then becomes the seeded originalPrompt and derives `minimal`. A pure
-// greeting/question ("hi there") has no stack signal, so the gate still suppresses it.
+// "ok build it" then becomes the seeded originalPrompt and derives a bare frontend
+// shell carrying none of the real project's surfaces. A pure greeting/question
+// ("hi there") has no stack signal, so the gate still suppresses it.
 export function promptHasStackSignal(prompt: unknown): boolean {
   const text = String(prompt || '').toLowerCase().trim();
   if (!text) return false;
@@ -406,7 +257,7 @@ export function promptHasStackSignal(prompt: unknown): boolean {
     || evidence.frontend
     || evidence.backend
     || evidence.mobileIntentDetected
-    || evidence.wantsMinimal,
+    || evidence.wantsStaticSite,
   );
 }
 
@@ -430,3 +281,17 @@ export function isLikelyEditRequest(prompt: unknown): boolean {
   if (isLikelyCodingPrompt(text)) return true;
   return EDIT_INTENT_PATTERNS.some((pattern) => pattern.test(text));
 }
+export {
+  SOURCE_EXTS,
+  classifyDetectedSurfaces,
+  countSourceFiles,
+  dependenciesFromPackage,
+  detectBackendFromText,
+  detectFrontendFromText,
+  detectGoBackendArtifacts,
+  detectMode,
+  detectStackFromCodebase,
+  hasWorkspaces,
+  loadPackageJson,
+  type StackDetection,
+} from './artifacts';

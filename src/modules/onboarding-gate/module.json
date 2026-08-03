@@ -6,9 +6,12 @@
     { "id": "onboarding-gate", "path": "skill/SKILL.md", "shipped": false }
   ],
   "subscriptions": [
-    { "event": "PreToolUse", "subcommand": "check-onboarding-gate", "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent"] }
+    { "event": "PreToolUse", "subcommand": "check-onboarding-gate", "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent"] },
+    { "event": "Stop", "subcommand": "onboarding-stop" },
+    { "event": "Stop", "subcommand": "cursor-stop" }
   ],
   "gates": [
-    { "id": "onboarding-gate", "event": "PreToolUse", "priority": 10, "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent"] }
+    { "id": "onboarding-gate", "event": "PreToolUse", "priority": 10, "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent"] },
+    { "id": "onboarding-gate.stop", "event": "Stop", "priority": 10 }
   ]
 }

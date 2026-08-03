@@ -6,7 +6,9 @@ import * as path from 'path';
 
 import {
   DEFAULTS,
+  buildFingerprintTag,
   classifyBlockedStatus,
+  runScopedOutDir,
   createAuditUrl,
   detectPackageManager,
   dlxArgs,
@@ -15,6 +17,7 @@ import {
   findReportHtml,
   findReportJson,
   findViteAppDir,
+  lighthouseMissingMessage,
   nextConfigOutputExport,
   normalizeRoute,
   packageHasDependency,
@@ -39,6 +42,23 @@ test('parseArgs reads flags, valued options, and a positional http url', () => {
   assert.equal(parseArgs(['http://127.0.0.1:4173/']).url, 'http://127.0.0.1:4173/');
   assert.equal(parseArgs([]).route, '/');
   assert.equal(parseArgs(['-h']).help, true);
+});
+
+test('parseArgs reads --local-only and defaults it off', () => {
+  assert.equal(parseArgs(['--local-only']).localOnly, true);
+  assert.equal(parseArgs([]).localOnly, false);
+});
+
+test('the missing-binary refusal maps to blocked:lighthouse-missing with a package-manager remedy', () => {
+  // Approval layers that deny registry-download execution (Codex Desktop
+  // guardian) deny the WHOLE runner when the dlx branch is reachable; the
+  // --local-only refusal must classify to a structured status with the exact
+  // devDependency remedy instead (observed 12c: perf shipped unverified).
+  const message = lighthouseMissingMessage('pnpm', DEFAULTS.lighthouseVersion);
+  assert.equal(classifyBlockedStatus(message), 'blocked:lighthouse-missing');
+  assert.match(message, new RegExp(`pnpm add -D lighthouse@${DEFAULTS.lighthouseVersion.replace(/\./g, '\\.')}`));
+  assert.match(lighthouseMissingMessage('npm', '13.2.0'), /npm install -D lighthouse@13\.2\.0/);
+  assert.match(lighthouseMissingMessage('yarn', '13.2.0'), /yarn add -D lighthouse@13\.2\.0/);
 });
 
 test('parseArgs reads the runner budgets and falls back on invalid values', () => {
@@ -77,6 +97,45 @@ test('reportBaseName slugifies the route + appends a timestamp', () => {
   const name = reportBaseName('http://127.0.0.1:4173/blog/post');
   assert.match(name, /^blog-post-\d{4}-\d{2}-\d{2}T/);
   assert.match(reportBaseName('http://127.0.0.1:4173/'), /^home-/);
+});
+
+test('report artefacts are run-scoped and build-stamped', () => {
+  // Observed 10co-e2e: `.traffic-one/reports/lighthouse/` had no run id and no
+  // build fingerprint, so files from different runs were indistinguishable and
+  // a stale 98 was quoted as this run's page speed against a canonical 74.
+  const dir = tmp();
+  const memory = path.join(dir, '.traffic-one');
+  fs.mkdirSync(memory, { recursive: true });
+
+  // No Traffic One state: the plain directory is kept.
+  assert.equal(runScopedOutDir(dir, DEFAULTS.outDir, []), DEFAULTS.outDir);
+
+  fs.writeFileSync(path.join(memory, '.one.json'), JSON.stringify({ currentRunId: '20260731-a1' }));
+  assert.equal(
+    runScopedOutDir(dir, DEFAULTS.outDir, []),
+    path.join(DEFAULTS.outDir, '20260731-a1'),
+  );
+  // An operator who passed --out owns that path verbatim.
+  assert.equal(runScopedOutDir(dir, 'reports/manual', ['--out', 'reports/manual']), 'reports/manual');
+  // A run id that could escape the directory is refused.
+  fs.writeFileSync(path.join(memory, '.one.json'), JSON.stringify({ currentRunId: '../evil' }));
+  assert.equal(runScopedOutDir(dir, DEFAULTS.outDir, []), DEFAULTS.outDir);
+
+  assert.equal(buildFingerprintTag(dir, dir), null, 'no build on disk, no tag');
+  fs.mkdirSync(path.join(dir, 'apps/web/dist/assets'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'apps/web/dist/index.html'),
+    '<html><body><script type="module" src="/assets/app-3f2a1b0c.js"></script></body></html>',
+  );
+  const tag = buildFingerprintTag(dir, path.join(dir, 'apps/web'));
+  assert.equal(tag, 'app-3f2a1b0c');
+  assert.match(reportBaseName('http://127.0.0.1:4173/', tag), /^home-app-3f2a1b0c-\d{4}-/);
+
+  // Next builds identify by BUILD_ID.
+  const nextDir = tmp();
+  fs.mkdirSync(path.join(nextDir, '.next'), { recursive: true });
+  fs.writeFileSync(path.join(nextDir, '.next', 'BUILD_ID'), 'Xf9-Build\n');
+  assert.equal(buildFingerprintTag(nextDir, nextDir), 'Xf9-Build');
 });
 
 test('package-manager arg builders', () => {

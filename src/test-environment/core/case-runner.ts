@@ -21,8 +21,12 @@ import {
 import { materializeFixture } from './fixtures';
 import { preseed } from './preseed';
 import { driveOnboarding } from './onboarding-sim';
+import { runSimulatedRun } from './run-sim';
+import type { RunSimTranscript } from './run-sim/types';
 import { prepareCaseHostIntegration } from './host-integration';
 import { DRIVERS } from '../drivers';
+import { currentHostCapabilityReport } from '../host-capability-report';
+import { seedCodexE2eModelCatalog } from './codex-e2e-models';
 
 function copyIfExists(from: string, to: string): void {
   try {
@@ -66,18 +70,38 @@ export async function runCase(
 
   const env: CaseEnv = buildCaseEnv(config, caseFolder, distRoot, target);
 
-  // --- seed / onboard (in-process, isolated) ---
-  withCaseEnv(env, () => {
+  // --- seed / onboard / simulate (in-process, isolated) ---
+  const seeded = withCaseEnv(env, (): { blocker: string; runSim: RunSimTranscript | null } => {
+    let blocker = '';
+    let runSim: RunSimTranscript | null = null;
+    if (target === 'codex') {
+      try {
+        seedCodexE2eModelCatalog(config.hosts.codex, env);
+      } catch (error) {
+        blocker = `blocked-environment: could not seed the isolated Codex E2E model catalog: ${String(error)}`;
+      }
+    }
     if (testCase.scriptedAnswers && testCase.scriptedAnswers.length > 0) {
       // Flow-sim: start from an incomplete state carrying only the mode, then
       // drive the real wizard to completion.
       writeState(tmpDir, { mode: testCase.preSeed.mode });
       const sim = driveOnboarding(tmpDir, testCase.scriptedAnswers);
       fs.writeFileSync(path.join(caseFolder, 'onboarding-sim.json'), JSON.stringify(sim, null, 2));
-    } else {
-      preseed(tmpDir, testCase.preSeed);
+      return { blocker, runSim };
     }
+    preseed(tmpDir, testCase.preSeed);
+    return { blocker, runSim };
   });
+  const modelCatalogBlocker = seeded.blocker;
+
+  // Run-sim: onboarding is pre-completed above, then the whole post-onboarding
+  // chain runs with scripted role writes against the real gates. Separate from
+  // the sync seeding block because the QA phase awaits the real evidence runner.
+  let runSim: RunSimTranscript | null = null;
+  if (testCase.layer === 'run-sim' && testCase.runSim) {
+    runSim = await withCaseEnvAsync(env, () => runSimulatedRun(tmpDir, testCase, caseFolder));
+    fs.writeFileSync(path.join(caseFolder, 'run-sim.json'), JSON.stringify(runSim, null, 2));
+  }
 
   // The proof file must be created by the selected host runtime, never by a
   // previous attempt or by the in-process seed/materialization phase.
@@ -85,18 +109,40 @@ export async function runCase(
   if (runtimeProofFile) fs.rmSync(runtimeProofFile, { force: true });
 
   // --- optional host run ---
-  let hostResult: HostRunResult = { status: 'NOT_RUN', exitCode: null, durationMs: 0 };
+  // A run-sim case really executed work, so it reports COMPLETED/ERROR rather
+  // than NOT_RUN. This is not a fiction dressed up as a host run: the target
+  // stays 'pure-node', so no hostCapability sidecar is attached below and no
+  // synthetic prevention certification can reach the release report. Leaving it
+  // NOT_RUN would make every hostProducedWork-gated assertion SKIP, which
+  // result-policy turns into a strict-mode failure.
+  let hostResult: HostRunResult = runSim
+    ? {
+      status: runSim.ok ? 'COMPLETED' : 'ERROR',
+      exitCode: runSim.ok ? 0 : 1,
+      durationMs: runSim.durationMs,
+      stdoutPath: path.join(caseFolder, 'run-sim.json'),
+      ...(runSim.failure ? { skippedReason: runSim.failure } : {}),
+    }
+    : { status: 'NOT_RUN', exitCode: null, durationMs: 0 };
   if (target !== 'pure-node' && testCase.layer === 'host-e2e') {
     const driver = DRIVERS[target];
     const cfg = config.hosts[target];
-    if (!driver.isAvailable(cfg, env)) {
+    const environmentBlocker = cfg.e2eBlockedReason || modelCatalogBlocker;
+    if (environmentBlocker) {
+      hostResult = {
+        status: 'BLOCKED_ENVIRONMENT',
+        exitCode: null,
+        durationMs: 0,
+        skippedReason: environmentBlocker,
+      };
+    } else if (!driver.isAvailable(cfg, env)) {
       hostResult = { status: 'SKIPPED', exitCode: null, durationMs: 0, skippedReason: `${cfg.bin} not found on PATH` };
     } else {
       const prepared = prepareCaseHostIntegration(target, distRoot, tmpDir, env);
       if (!prepared.ok) {
         hostResult = { status: 'ERROR', exitCode: null, durationMs: 0, skippedReason: prepared.error };
       } else {
-        const prompt = resolvePrompt(testCase);
+        const prompt = resolveCasePrompt(testCase, target, config);
         hostResult = await driver.run(cfg, {
           cwd: tmpDir,
           prompt,
@@ -123,12 +169,19 @@ export async function runCase(
     testCase,
     target,
     tmpDir,
+    caseFolder,
     env,
     hostResult,
     assertions,
     config,
     assertionSpecsForRun(testCase, target),
   );
+  if (target !== 'pure-node') {
+    hostResult = {
+      ...hostResult,
+      hostCapability: currentHostCapabilityReport(tmpDir, target),
+    };
+  }
 
   // --- capture artifacts (the live project is persisted in place; copy a stable
   // snapshot of .one.json for the report/verdict agent's convenience) ---
@@ -163,6 +216,7 @@ async function runAssertions(
   testCase: Case,
   target: HostId | 'pure-node',
   cwd: string,
+  caseFolder: string,
   env: CaseEnv,
   hostResult: HostRunResult,
   assertions: Map<string, Assertion>,
@@ -182,6 +236,7 @@ async function runAssertions(
     }
     const ctx: AssertionContext = {
       cwd,
+      caseFolder,
       env,
       host: target,
       testCase,
@@ -232,12 +287,19 @@ export async function reassertCase(
     env[RUNTIME_PROOF_TOKEN_ENV] = recordedRuntimeProof.token;
     env[RUNTIME_PROOF_ENTRY_ENV] = recordedRuntimeProof.entry;
   }
+  const effectiveHostResult = target === 'pure-node'
+    ? hostResult
+    : {
+      ...hostResult,
+      hostCapability: currentHostCapabilityReport(projectDir, target),
+    };
   const results = await runAssertions(
     testCase,
     target,
     projectDir,
+    caseFolder,
     env,
-    hostResult,
+    effectiveHostResult,
     assertions,
     config,
     assertionSpecsForRun(testCase, target),
@@ -248,7 +310,7 @@ export async function reassertCase(
     layer: testCase.layer,
     host: target,
     runFolder: caseFolder,
-    hostResult,
+    hostResult: effectiveHostResult,
     assertions: results,
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -273,13 +335,24 @@ export function assertionSpecsForRun(
   return specs;
 }
 
-function resolvePrompt(testCase: Case): string {
-  if (testCase.prompt) return testCase.prompt;
+export function resolveCasePrompt(
+  testCase: Case,
+  target: HostId | 'pure-node',
+  config: RootTestConfig,
+): string {
+  let prompt = '';
+  if (testCase.prompt) prompt = testCase.prompt;
   if (testCase.promptFile) {
     const file = path.resolve(__dirname, '..', 'config', 'cases', testCase.promptFile);
-    if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
+    if (!prompt && fs.existsSync(file)) prompt = fs.readFileSync(file, 'utf8');
   }
-  return 'Proceed with the task described in this project.';
+  if (!prompt) prompt = 'Proceed with the task described in this project.';
+  if (target === 'pure-node') return prompt;
+  const catalog = config.hosts[target].testModelByTier;
+  return prompt
+    .replaceAll('{TEST_MODEL_HIGHEST}', catalog?.highest ?? '')
+    .replaceAll('{TEST_MODEL_BALANCED}', catalog?.balanced ?? '')
+    .replaceAll('{TEST_MODEL_CHEAPEST}', catalog?.cheapest ?? '');
 }
 
 // Async-aware env wrapper: applies env, awaits fn, restores. Safe at the default

@@ -17,7 +17,7 @@ import {
 
 type StateRecord = Record<string, unknown>;
 
-export function normalizedString(value: unknown): string {
+function normalizedString(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase().replace(/[_\s]+/g, '-') : '';
 }
 
@@ -114,7 +114,7 @@ export function teamStateFromString(value: unknown): StateRecord | null {
   return typeof mode === 'string' && TEAM_MODE_IDS.has(mode) ? { mode, source: 'prompted' } : null;
 }
 
-export function codeGraphProviderFromString(value: unknown): string | null {
+function codeGraphProviderFromString(value: unknown): string | null {
   const normalized = normalizedString(value);
   return normalized === 'gitnexus' || normalized === 'graphify' ? normalized : null;
 }
@@ -131,13 +131,13 @@ export function codeGraphProviderFromValue(value: unknown): string | null {
   return null;
 }
 
-export function canonicalMode(value: unknown): string | null {
+function canonicalMode(value: unknown): string | null {
   const normalized = normalizedString(value);
   if (normalized === 'new-project' || normalized === 'existing-codebase') return normalized;
   return typeof value === 'string' ? value : null;
 }
 
-export function canonicalBackendValue(value: unknown): unknown {
+function canonicalBackendValue(value: unknown): unknown {
   const normalized = normalizedString(value);
   if (normalized === 'supabase-ready' || normalized === 'supabase-default' || normalized === 'managed-supabase') {
     return 'supabase';

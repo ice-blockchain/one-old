@@ -1,6 +1,7 @@
 // Shared Cursor no-resume liveness policy.
 //
-// Cursor records `tool_<uuid>` at SubagentStart before a resumable child UUID is
+// Cursor records a tool-call id (`tool_<uuid>` legacy, `fc_<call-id>` current) at
+// SubagentStart before a resumable child UUID is
 // available. A healthy child normally exposes that UUID through the transcript
 // cache within seconds. Until then, a later Task must not duplicate it. We use
 // the same two conservative windows everywhere that needs to reason about an
@@ -16,7 +17,7 @@ import {
   type RunAgentEntry,
 } from '../../shared/state';
 
-export interface CursorLivenessOptions {
+interface CursorLivenessOptions {
   corroborated: boolean;
   /** Immutable SubagentStart time, used when the registry row is absent. */
   startedAtMs?: number;

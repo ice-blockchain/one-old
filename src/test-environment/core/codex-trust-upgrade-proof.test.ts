@@ -35,9 +35,10 @@ function makeFixture(): CodexHookAbiFixture {
     'post_tool_use:1:0',
     'post_tool_use:2:0',
     'subagent_start:0:0',
+    'stop:0:0',
   ];
   return {
-    version: 1,
+    version: 2,
     entries: keys.map((key, index) => ({ key, currentHash: `${(index + 1).toString(16)}`.padStart(64, '0') })),
   };
 }

@@ -12,6 +12,15 @@ metadata:
 
 Modern frontend patterns for React, Next.js, and performant user interfaces.
 
+## Runtime contract first
+
+Activate this skill only for React-family profiles selected by the capability
+registry. Read the active `WorkUnitContractV1` and compiled architecture before
+choosing files. Keep entrypoints/router shells free of page implementations,
+put route targets and features in their compiled modules, and never widen the
+allowlist. Nuxt, Laravel Blade/Inertia, and native profiles use their own
+framework skills instead.
+
 ## When to Activate
 
 - Building React components (composition, props, rendering)

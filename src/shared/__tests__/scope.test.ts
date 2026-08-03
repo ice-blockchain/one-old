@@ -53,6 +53,20 @@ test('matchesScope: include-only', () => {
   assert.equal(matchesScope('anything', { include: [] }), false); // empty include owns nothing
 });
 
+test('matchesScope: a feature-directory literal covers every extension variant, exactly', () => {
+  // Extension freedom relies on this: assignments include a folder-shaped
+  // module's DIRECTORY as a plain literal, and matchesScope treats that as
+  // exact-or-directory-prefix — so index.tsx AND index.ts (and companions)
+  // are writable, while sibling directories sharing the prefix are not.
+  const scope: AssignedScope = { include: ['apps/web/src/features/auth'] };
+  assert.equal(matchesScope('apps/web/src/features/auth', scope), true);
+  assert.equal(matchesScope('apps/web/src/features/auth/index.tsx', scope), true);
+  assert.equal(matchesScope('apps/web/src/features/auth/index.ts', scope), true);
+  assert.equal(matchesScope('apps/web/src/features/auth/use-auth.ts', scope), true);
+  assert.equal(matchesScope('apps/web/src/features/auth-admin/index.tsx', scope), false);
+  assert.equal(matchesScope('apps/web/src/features/authx.ts', scope), false);
+});
+
 test('matchesScope: include + exclude carve-out (two agents split one subtree)', () => {
   const fe: AssignedScope = { include: ['src/'], exclude: ['src/app/api/', 'src/server/'] };
   const be: AssignedScope = { include: ['src/app/api/', 'src/server/'] };

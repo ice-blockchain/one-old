@@ -37,15 +37,17 @@ delivering mobile with Ionic/Capacitor.
 - **Tailwind CSS v4** (CSS-first config) + **shadcn/ui**. Wire it with the
   `@tailwindcss/vite` plugin — no `tailwind.config.*`, no PostCSS/autoprefixer
   setup. (Ionic and React Native stacks stay on `^3.4` — see their core rules.)
-- shadcn primitives live in `packages/ui/src/components/ui/` (monorepo) or
-  `src/components/ui/` (single-app). Add via `npx shadcn@latest add <name>`;
-  never hand-roll a button, dialog, dropdown, input, etc.
+- shadcn primitives live only in `packages/ui/src/components/ui/`. For every UI
+  need, search the current official catalog and add the exact compiled
+  identifier through the CLI; never use a fixed batch or hand-roll a catalog
+  match. The full cross-framework contract is
+  `rules/frontend/component-system.md`.
 - Variants via `class-variance-authority` (cva). Merge classes with
   `cn()` (= `clsx` + `tailwind-merge`).
 - Theme: design tokens as CSS variables (`--background`, `--foreground`,
   `--primary`, …) declared in the shared stylesheet's `@theme` block
-  (`packages/tailwind-config/src/globals.css` in the monorepo, `src/styles/globals.css`
-  single-app); apps import that stylesheet, not a JS preset.
+  (`packages/tailwind-config/src/globals.css`); apps import that stylesheet, not
+  a JS preset.
 - Animation utilities: `tw-animate-css` (the v4-native successor to
   `tailwindcss-animate`). Icons: `lucide-react`.
 - No `.css.ts`, no vanilla-extract, no styled-components, no `@emotion`,
@@ -53,7 +55,11 @@ delivering mobile with Ionic/Capacitor.
   (animation, computed positioning) — never for static styling.
 
 ### Testing
-- jest + @testing-library/react + @testing-library/user-event
+- Vitest + @testing-library/react + @testing-library/user-event, with
+  `environment: 'jsdom'` — the runtime compiles `vitest.config.ts` for this stack,
+  so Vitest is the runner. A `node` environment cannot render a component, and a
+  suite that cannot render falls back to asserting on source text, which proves
+  nothing. See `frontend/react/testing.md` for the full recipe.
 - @playwright/test (E2E)
 - msw + in-memory WS fake
 - Storybook (@storybook/react-vite)
@@ -71,6 +77,11 @@ delivering mobile with Ionic/Capacitor.
   `src/pages/` and Expo Router files under `app/` may default-export — that is
   the `React.lazy` / router contract; do not wrap lazy imports in a
   `.then((m) => ({ default: m.X }))` shim just to keep a named export.
+  A compiled feature entry (`features/<name>/index.tsx`) is a module entry, not
+  a route file: export its section component and its helpers by name. That
+  entry is the feature's barrel — split components/hooks/types into sibling
+  files in the same feature folder as it grows; the folder is the feature's
+  scope and sibling files verify.
 - Props have an explicit `ComponentNameProps` interface.
 - All API calls via `services/` or RTK Query — never axios in components.
 - Server state in RTK Query/Redux only — never duplicated in zustand or component state.

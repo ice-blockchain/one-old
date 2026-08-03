@@ -3,11 +3,15 @@ import assert from 'node:assert/strict';
 
 import {
   applyPatchTargetPaths,
+  commandAppearsToWriteBuildArtifact,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
   isTestInfraConfigPath,
   isTestScopePath,
   roleCanWriteFeatureSource,
+  shellAssetImportDest,
+  shellStrayDeleteTarget,
+  shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
   subagentMayWriteFeatureSource,
 } from '../feature-source';
@@ -84,6 +88,9 @@ test('commandAppearsToWriteFeatureSource needs both a write primitive and a feat
   assert.equal(commandAppearsToWriteFeatureSource('sed -i s/a/b/ packages/ui/src/x.ts'), true);
   assert.equal(commandAppearsToWriteFeatureSource("find /tmp/project/apps/web/src -name '*.js' -delete"), true);
   assert.equal(commandAppearsToWriteFeatureSource('rm -f apps/web/src/stale.js'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('ln -s /tmp/payload apps/web/src/linked'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('/bin/ln -s /tmp/payload apps/web/src/linked'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('ln /tmp/payload src/linked.ts'), true);
   assert.equal(commandAppearsToWriteFeatureSource('mkdir -p packages/ui/src'), false);
   assert.equal(commandAppearsToWriteFeatureSource('cat apps/web/src/x.ts 2>&1'), false);
   // write primitive but no feature path
@@ -92,6 +99,24 @@ test('commandAppearsToWriteFeatureSource needs both a write primitive and a feat
   assert.equal(commandAppearsToWriteFeatureSource('cat apps/web/src/x.ts'), false);
   assert.equal(commandAppearsToWriteFeatureSource(''), false);
   assert.equal(commandAppearsToWriteFeatureSource(undefined), false);
+});
+
+test('quoted text is data: comparison/prose ">" and quoted rm/tee never count as write primitives', () => {
+  // 5cl-claude regression: the frontend's own collapse self-check was denied —
+  // the awk comparison "length > m" read as an output redirect.
+  assert.equal(commandAppearsToWriteFeatureSource(
+    'for f in $(find src -name "*.tsx"); do awk \'{ if (length > m) m = length } END { print m }\' "$f"; done'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('echo "usage: gen > src/out.ts" && ls src/'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('grep -n "tee" src/app.ts'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('echo "rm -rf src/" && ls src/'), false);
+  // stderr silencing is not a write
+  assert.equal(commandAppearsToWriteFeatureSource('pkill -f "next start" 2>/dev/null; wc -L src/app.ts'), false);
+  // real operators outside quotes stay gated, including quoted TARGETS
+  assert.equal(commandAppearsToWriteFeatureSource('echo hi > "src/x file.ts"'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('printf x | tee src/x.ts'), true);
+  // a nested shell body is real code — quotes there keep scanning raw
+  assert.equal(commandAppearsToWriteFeatureSource("bash -c 'echo hi > src/x.ts'"), true);
+  assert.equal(commandAppearsToWriteFeatureSource("sh -lc 'echo x > src/x.ts'"), true);
 });
 
 test('bare interpreter reads are not writes; eval writes still are (B5)', () => {
@@ -130,6 +155,8 @@ test('shellWriteTargetsStateDir carves out run-state heredocs only', () => {
   assert.equal(shellWriteTargetsStateDir(
     'rm apps/web/src/x.ts && cat > .traffic-one/digests/123/r.md <<EOF\nx\nEOF'), false);
   assert.equal(shellWriteTargetsStateDir(
+    'ln -s /tmp/payload apps/web/src/linked && cat > .traffic-one/digests/123/r.md <<EOF\nx\nEOF'), false);
+  assert.equal(shellWriteTargetsStateDir(
     'sed -i s/a/b/ src/x.ts > .traffic-one/runs/123/log.txt'), false);
   // plan.md is intentionally not carved out
   assert.equal(shellWriteTargetsStateDir('cat > .traffic-one/plan.md <<EOF\nplan\nEOF'), false);
@@ -137,6 +164,122 @@ test('shellWriteTargetsStateDir carves out run-state heredocs only', () => {
   assert.equal(shellWriteTargetsStateDir('cat .traffic-one/digests/123/reviewer.md'), false);
   assert.equal(shellWriteTargetsStateDir(''), false);
   assert.equal(shellWriteTargetsStateDir(undefined), false);
+});
+
+test('shellTrafficOneWriteTargets extracts real state targets but ignores heredoc prose', () => {
+  assert.deepEqual(shellTrafficOneWriteTargets(
+    "cat > .traffic-one/runs/R/architecture-v1.json <<'EOF'\n"
+    + 'Mention .traffic-one/runs/R/claims.json only as prose.\nEOF',
+  ), ['.traffic-one/runs/R/architecture-v1.json']);
+  assert.deepEqual(shellTrafficOneWriteTargets(
+    'python3 -c "open(\'.traffic-one/reports/qa/R/report-v2.json\',\'w\').write(\'{}\')"',
+  ), ['.traffic-one/reports/qa/R/report-v2.json']);
+  assert.deepEqual(shellTrafficOneWriteTargets(
+    'cat .traffic-one/runs/R/architecture-v1.json',
+  ), []);
+});
+
+test('sed -i detection anchors on sed option tokens, not any later "-i" text', () => {
+  // the live 8c-codex tester denials: pure read chains where "-i" only appears
+  // inside the filename `known-issues.md`
+  assert.equal(commandAppearsToWriteBuildArtifact(
+    "sed -n '1,240p' package.json && sed -n '1,240p' apps/web/package.json && sed -n '1,220p' vitest.config.ts"
+    + " && sed -n '1,220p' playwright.config.ts && sed -n '1,180p' .traffic-one/.one.json && sed -n '1,180p' .traffic-one/known-issues.md",
+  ), false);
+  assert.equal(commandAppearsToWriteFeatureSource(
+    "sed -n '1,50p' apps/web/src/App.tsx && sed -n '1,20p' .traffic-one/known-issues.md",
+  ), false);
+  // stdout-only sed whose SCRIPT merely contains "-i" stays a read
+  assert.equal(commandAppearsToWriteFeatureSource("sed -e 's/-i/x/' src/a.ts"), false);
+  // real in-place flag spellings stay writes
+  assert.equal(commandAppearsToWriteFeatureSource("sed -i.bak 's/a/b/' src/x.ts"), true);
+  assert.equal(commandAppearsToWriteFeatureSource("sed --in-place 's/a/b/' src/x.ts"), true);
+  assert.equal(commandAppearsToWriteFeatureSource("sed -ni 's/a/b/p' src/x.ts"), true);
+});
+
+test('digests heredoc carve-out ignores write-primitive lookalikes inside the body', () => {
+  // the live 8c-codex reviewer digest: body cites `sed -i`, `rm`, touch targets…
+  const digestHeredoc = [
+    'mkdir -p .traffic-one/digests/123',
+    "cat > .traffic-one/digests/123/reviewer.md <<'EOF'",
+    '# reviewer digest — run 123',
+    '',
+    'verdict: CHANGES_REQUESTED',
+    '1. `apps/web/src/App.tsx` — replace the `sed -i` hack and the `rm -rf` cleanup step.',
+    '2. touch targets under 44px on mobile.',
+    'EOF',
+  ].join('\n');
+  assert.equal(shellWriteTargetsStateDir(digestHeredoc), true);
+  // a redirect inside the body is quoted data, not a second write target
+  assert.equal(shellWriteTargetsStateDir(
+    "cat > .traffic-one/digests/123/tester.md <<'EOF'\nReproduce with: pnpm lint > lint.log\nEOF"), true);
+  // real write primitives OUTSIDE the body still disable the carve-out
+  assert.equal(shellWriteTargetsStateDir(`${digestHeredoc}\nrm -rf apps/web/src`), false);
+});
+
+test('shellAssetImportDest accepts only single outside→inside cp/mv imports', () => {
+  const root = '/proj';
+  const wd = '/proj';
+  // the observed 10c shape: generated raster into an owned public path
+  assert.equal(
+    shellAssetImportDest('cp /Users/u/.codex/generated_images/s1/exec-abc.png apps/web/public/og-default.png', wd, root),
+    'apps/web/public/og-default.png',
+  );
+  assert.equal(shellAssetImportDest('mv -f /outside/a.png public/a.png', wd, root), 'public/a.png');
+  assert.equal(shellAssetImportDest("cp '/outside/with space.png' apps/web/public/a.png", wd, root), 'apps/web/public/a.png');
+  assert.equal(shellAssetImportDest('cp /outside/a.png /proj/apps/web/public/a.png', wd, root), 'apps/web/public/a.png');
+  // subdir workdir resolves the relative dest correctly
+  assert.equal(shellAssetImportDest('cp /outside/a.png public/a.png', '/proj/apps/web', root), 'apps/web/public/a.png');
+  // rejections: in-repo source, relative source, dest outside, dot-dirs, compounds, globs, redirects
+  assert.equal(shellAssetImportDest('cp /proj/public/a.png public/b.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp local.png public/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/a.png /elsewhere/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/a.png .traffic-one/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/a.png public/a.png && rm -rf src', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/*.png public/', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/a.png public/a.png > log.txt', wd, root), null);
+  assert.equal(shellAssetImportDest('cp /outside/../etc/passwd public/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('scp /outside/a.png public/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('cp public/a.png', wd, root), null);
+  assert.equal(shellAssetImportDest('', wd, root), null);
+  assert.equal(shellAssetImportDest(undefined, wd, root), null);
+});
+
+test('shellStrayDeleteTarget accepts only an exact single-file rm inside the project', () => {
+  const root = '/proj';
+  const wd = '/proj';
+  // The observed 6co shape: a stray raster the frontend produced beside its
+  // owned icons, which neither the child nor the parent could remove.
+  assert.equal(
+    shellStrayDeleteTarget('rm apps/web/public/icons/favicon.svg.png', wd, root),
+    'apps/web/public/icons/favicon.svg.png',
+  );
+  assert.equal(shellStrayDeleteTarget('rm -f public/stray.png', wd, root), 'public/stray.png');
+  assert.equal(shellStrayDeleteTarget('rm -- public/stray.png', wd, root), 'public/stray.png');
+  assert.equal(shellStrayDeleteTarget("rm 'public/with space.png'", wd, root), 'public/with space.png');
+  assert.equal(shellStrayDeleteTarget('rm /proj/public/stray.png', wd, root), 'public/stray.png');
+  // subdir workdir resolves the relative operand correctly
+  assert.equal(shellStrayDeleteTarget('rm public/stray.png', '/proj/apps/web', root), 'apps/web/public/stray.png');
+
+  // Rejections: recursion, globs, multiple operands, escapes, dot-dirs,
+  // compounds, redirects, other commands.
+  assert.equal(shellStrayDeleteTarget('rm -rf public/icons', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm -r public/icons', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm -R public/icons', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm --recursive public/icons', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm public/*.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm public/a.png public/b.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm ../outside.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm /elsewhere/a.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm .traffic-one/runs/x.json', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm .git/index', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm public/a.png && rm -rf src', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm public/a.png > log.txt', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm $(cat list.txt)', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('rm', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('unlink public/a.png', wd, root), null);
+  assert.equal(shellStrayDeleteTarget('', wd, root), null);
+  assert.equal(shellStrayDeleteTarget(undefined, wd, root), null);
 });
 
 test('isTestScopePath classifies test files and conventional test dirs', () => {
@@ -152,6 +295,15 @@ test('isTestScopePath classifies test files and conventional test dirs', () => {
   assert.equal(isTestScopePath('src/test-utils/render.tsx'), false);
   assert.equal(isTestScopePath(''), false);
   assert.equal(isTestScopePath(undefined), false);
+  // Go side-by-side tests (13c: tester denied on a backend-owned _test.go)
+  assert.equal(isTestScopePath('services/api/internal/middleware/middleware_test.go'), true);
+  assert.equal(isTestScopePath('cmd/server/main.go'), false);
+  assert.equal(isTestScopePath('internal/contest.go'), false); // no underscore — not a test
+  // pytest side-by-side conventions
+  assert.equal(isTestScopePath('app/models/test_user.py'), true);
+  assert.equal(isTestScopePath('app/models/user_test.py'), true);
+  assert.equal(isTestScopePath('app/models/latest.py'), false);
+  assert.equal(isTestScopePath('app/models/protest.py'), false);
 });
 
 test('isTestInfraConfigPath classifies test-runner configs, not app bundler configs', () => {

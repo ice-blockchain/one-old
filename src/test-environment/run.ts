@@ -18,10 +18,18 @@ import { buildAndInstall, cleanupBuildInstall, type BuildResult } from './core/b
 import {
   runRequiredCodexTrustUpgradeProof,
 } from './core/codex-trust-upgrade-proof';
+import { approveCodexE2EHooks } from './core/codex-e2e-hook-approval';
+import { preflightCodexE2eModels } from './core/codex-e2e-models';
 import { runCase, reassertCase } from './core/case-runner';
 import { releaseResultFailed } from './core/result-policy';
 import { writeReport } from './reporting/aggregate-report';
 import { runVerdict } from './reporting/verdict';
+import {
+  hostRequiresManualCertification,
+  loadManualHostCertifications,
+  selectedManualCertificationHosts,
+  type ManualHostCertificationOutcome,
+} from './manual-host-certification';
 import type { CaseRunResult as CaseRunResultType, HostRunResult } from './core/types';
 
 interface Flags {
@@ -39,6 +47,7 @@ interface Flags {
   strict?: boolean;
   runsDir?: string;
   reassert?: string;
+  manualCertDir?: string;
 }
 
 function parseFlags(argv: string[]): Flags {
@@ -63,6 +72,7 @@ function parseFlags(argv: string[]): Flags {
       case '--strict': f.strict = true; break;
       case '--runs-dir': case '--artifacts': f.runsDir = value; break;
       case '--reassert': f.reassert = value; break;
+      case '--manual-cert-dir': f.manualCertDir = value; break;
       default: break;
     }
   }
@@ -83,6 +93,7 @@ function applyFlags(config: RootTestConfig, f: Flags): RootTestConfig {
   if (f.e2e) config.includeHostE2E = true;
   if (f.strict) config.strict = true;
   if (f.runsDir) config.runsRoot = f.runsDir;
+  if (f.manualCertDir !== undefined) config.manualCertDir = f.manualCertDir;
   return config;
 }
 
@@ -100,6 +111,28 @@ function cleanupReleaseInstall(build: BuildResult): boolean {
   return cleanup.failures.length === 0;
 }
 
+function printManualCertifications(
+  certifications: readonly ManualHostCertificationOutcome[],
+): void {
+  if (certifications.length === 0) return;
+  console.log('manual host certification (no automated release run):');
+  for (const certification of certifications) {
+    const result = certification.result ?? certification.loadStatus;
+    const waiver = certification.waiverStatus === 'COMPLETE' ? ' + WAIVER' : '';
+    const detail = certification.errors.length > 0
+      ? ` — ${certification.errors.join('; ')}`
+      : '';
+    const capability = certification.hostCapability;
+    const point = capability.observedBlockingPoint ?? 'no observed primary blocking point';
+    console.log(
+      `  ${certification.host}: ${result}${waiver}`
+      + ` · E2E/waiver ${certification.certified ? 'certified' : 'not certified'}`
+      + ` · observed ${capability.observedPrevention} (${point})`
+      + ` · prevention ${capability.preventionCertified ? 'certified' : 'not certified'}${detail}`,
+    );
+  }
+}
+
 function selectRuns(config: RootTestConfig): PlannedRun[] {
   const runs: PlannedRun[] = [];
   for (const c of ALL_CASES) {
@@ -107,10 +140,16 @@ function selectRuns(config: RootTestConfig): PlannedRun[] {
     if (config.caseFilter && !config.caseFilter.includes(c.id)) continue;
     if (c.layer === 'host-e2e' && !config.includeHostE2E) continue;
 
-    if (c.layer === 'pure-node') {
+    // run-sim keeps the 'pure-node' TARGET on purpose: aggregate-report skips
+    // exactly that id before indexing HOST_CAPABILITIES, so a new target id
+    // would surface as a phantom host with undefined contract rows.
+    if (c.layer === 'pure-node' || c.layer === 'run-sim') {
       runs.push({ caseId: c.id, targets: ['pure-node'] });
     } else {
-      const hosts = (c.hostFilter ?? config.enabledHosts).filter((h) => config.enabledHosts.includes(h));
+      const hosts = (c.hostFilter ?? config.enabledHosts).filter((h) => (
+        config.enabledHosts.includes(h)
+        && !hostRequiresManualCertification(h)
+      ));
       if (hosts.length) runs.push({ caseId: c.id, targets: hosts });
     }
   }
@@ -124,13 +163,25 @@ async function reassertRun(
   startedAt: string,
 ): Promise<number> {
   const dir = path.resolve(dirArg);
-  let prior: { results?: CaseRunResultType[] };
+  let prior: { results?: CaseRunResultType[]; releaseFingerprint?: unknown };
   try {
-    prior = JSON.parse(fs.readFileSync(path.join(dir, 'results.json'), 'utf8')) as { results?: CaseRunResultType[] };
+    prior = JSON.parse(fs.readFileSync(path.join(dir, 'results.json'), 'utf8')) as {
+      results?: CaseRunResultType[];
+      releaseFingerprint?: unknown;
+    };
   } catch (e) {
     console.error(`--reassert: cannot read ${path.join(dir, 'results.json')}: ${String(e)}`);
     return 2;
   }
+  const releaseFingerprint = typeof prior.releaseFingerprint === 'string'
+    ? prior.releaseFingerprint
+    : '';
+  const manualCertifications = loadManualHostCertifications(
+    config.manualCertDir,
+    config.enabledHosts,
+    releaseFingerprint || undefined,
+    config.strict,
+  );
   const assertions = discoverAssertions();
   console.log(`reassert ${dir}\nassertions: ${[...assertions.keys()].join(', ')}`);
 
@@ -144,9 +195,19 @@ async function reassertRun(
     out.push(rr);
   }
 
-  const summary = writeReport(out, config, startedAt, dir);
+  const summary = writeReport(
+    out,
+    config,
+    startedAt,
+    dir,
+    manualCertifications,
+    releaseFingerprint,
+  );
   console.log(`\nreport: ${summary.reportPath}`);
   console.log(`assertions: PASS ${summary.pass} · FAIL ${summary.fail} · SKIP ${summary.skip} · INCONCLUSIVE ${summary.inconclusive} · UNSUPPORTED ${summary.unsupported}`);
+  if (summary.manualTotal > 0) {
+    console.log(`manual certifications: ${summary.manualCertified}/${summary.manualTotal} certified`);
+  }
   return releaseResultFailed(summary, config.strict) ? 1 : 0;
 }
 
@@ -167,20 +228,43 @@ async function main(): Promise<number> {
   const runDir = path.join(config.runsRoot, runStamp);
   const caseById = new Map(ALL_CASES.map((c) => [c.id, c]));
 
+  if (config.manualCertDir !== undefined && !path.isAbsolute(config.manualCertDir)) {
+    console.error('--manual-cert-dir must be an absolute path.');
+    return 2;
+  }
+
   // --reassert <dir>: re-evaluate a prior run's assertions against its persisted
   // projects. No host calls, no token spend — for iterating on assertions.
   if (flags.reassert) return reassertRun(flags.reassert, config, caseById, startedAt);
 
   const planned = selectRuns(config);
-
   const anyE2E = planned.some((p) => p.targets.some((t) => t !== 'pure-node'));
   const e2eHosts = new Set<HostId>();
   for (const p of planned) for (const t of p.targets) if (t !== 'pure-node') e2eHosts.add(t);
+  const selectedManualHosts = selectedManualCertificationHosts(config.enabledHosts);
+  // run-sim needs a BUILT dist even though it never launches a host:
+  // materializeProjectAssets reads rules from pluginRoot()/rules/** and skills
+  // from pluginRoot()/skills-catalog/*/SKILL.md with no src/ fallback, and
+  // filters both by existsSync — against an unbuilt tree it silently
+  // materializes nothing.
+  const anyRunSim = planned.some((p) => caseById.get(p.caseId)?.layer === 'run-sim');
+  const releasePreparationRequired = anyE2E || anyRunSim || (
+    selectedManualHosts.length > 0
+    && (config.includeHostE2E || config.strict || config.manualCertDir !== undefined)
+  );
+  let releaseFingerprint = '';
+  let manualCertifications = loadManualHostCertifications(
+    config.manualCertDir,
+    config.enabledHosts,
+  );
 
   // Preflight
-  const pf = preflight(config.hosts, config.enabledHosts);
-  console.log(`node ${process.version} (ok=${pf.nodeOk}) · hosts available: ${ALL_HOSTS.map((h) => `${h}=${pf.hostAvailable[h] ? 'yes' : 'no'}`).join(' ')}`);
-  if (!pf.nodeOk && anyE2E) {
+  const pf = preflight(config.hosts, [...e2eHosts]);
+  const automatedAvailability = [...e2eHosts]
+    .map((host) => `${host}=${pf.hostAvailable[host] ? 'yes' : 'no'}`)
+    .join(' ');
+  console.log(`node ${process.version} (ok=${pf.nodeOk}) · automated hosts available: ${automatedAvailability || 'none selected'}`);
+  if (!pf.nodeOk && releasePreparationRequired) {
     console.error('Node >=22 required for host-e2e/build. Run under nvm v22 (`nvm use 22`).');
     return 2;
   }
@@ -205,21 +289,30 @@ async function main(): Promise<number> {
       console.log('\nresolved host commands:');
       for (const h of e2eHosts) console.log(`  ${h}: ${config.hosts[h].bin} ${config.hosts[h].runArgs.join(' ')}${config.hosts[h].verified ? '' : '  (DEFAULTS-TO-VERIFY)'}`);
     }
+    if (manualCertifications.length > 0) {
+      console.log('');
+      printManualCertifications(manualCertifications);
+    }
     console.log(`\n${planned.length} case-run(s) planned.`);
     return 0;
   }
 
-  // Build + install only when host-e2e runs are planned.
+  // Manual-certification hosts never enter automated build/install. A strict or
+  // explicit manual-cert run still refreshes/fingerprints dist so its records
+  // can be bound to stable pre-runtime-proof bytes.
   let distRoot = '';
   let releaseBuild: BuildResult | null = null;
-  if (anyE2E) {
+  if (releasePreparationRequired) {
     const build = buildAndInstall(config, [...e2eHosts]);
     releaseBuild = build;
     distRoot = build.distRoot;
-    console.log(`build: dist=${distRoot} fingerprint=${build.distFingerprint || 'unavailable'} built=${build.built} installed=[${build.installed.join(', ')}] session=[${build.sessionProof.join(', ')}] per-case=[${build.perCaseProof.join(', ')}] exempted=[${build.exempted.join(', ')}]`);
+    releaseFingerprint = build.releaseFingerprint
+      ? `sha256:${build.releaseFingerprint}`
+      : '';
+    console.log(`build: dist=${distRoot} release-fingerprint=${releaseFingerprint || 'unavailable'} runtime-fingerprint=${build.distFingerprint || 'unavailable'} built=${build.built} installed=[${build.installed.join(', ')}] session=[${build.sessionProof.join(', ')}] per-case=[${build.perCaseProof.join(', ')}] exempted=[${build.exempted.join(', ')}]`);
     for (const n of build.notes) console.log(`  note: ${n}`);
     if (config.build.refreshDist && !build.built) {
-      console.error('dist build failed — aborting host-e2e run.');
+      console.error('dist build failed — aborting release run.');
       cleanupReleaseInstall(build);
       return 2;
     }
@@ -227,10 +320,17 @@ async function main(): Promise<number> {
       for (const failure of build.currentDistFailures) {
         console.error(`current-dist proof failed (${failure.host}): ${failure.detail}`);
       }
-      console.error('selected hosts are not proven to use the current dist — aborting host-e2e run.');
+      console.error('current release dist could not be proven — aborting release run.');
       cleanupReleaseInstall(build);
       return 2;
     }
+    manualCertifications = loadManualHostCertifications(
+      config.manualCertDir,
+      config.enabledHosts,
+      releaseFingerprint || undefined,
+      config.strict,
+    );
+    printManualCertifications(manualCertifications);
     if (e2eHosts.has('codex')) {
       console.log('codex trust-upgrade proof: isolated v1 approval -> byte-identical hooks on v2 (no bypass)');
     }
@@ -247,6 +347,42 @@ async function main(): Promise<number> {
         return 2;
       }
       console.log(`  trust-proof: ${proof.afterTrusted}/${proof.expectedHooks} trusted; observed [${proof.observedEvents.join(', ')}]`);
+    }
+    if (e2eHosts.has('codex') && pf.hostAvailable.codex) {
+      const codexProfile = build.codexProfiles.codex;
+      const codexMarketplace = build.marketplaces.codex;
+      if (!codexProfile || !codexMarketplace) {
+        config.hosts.codex.e2eBlockedReason = 'blocked-environment: isolated Codex plugin selection proof is missing';
+      } else {
+        const hookApproval = await approveCodexE2EHooks({
+          codexBin: config.hosts.codex.bin,
+          codexHome: codexProfile.codexHome,
+          marketplace: codexMarketplace,
+          env: config.hosts.codex.e2eEnv,
+        });
+        if (hookApproval.status === 'ready') {
+          console.log(`codex E2E hook preflight: ${hookApproval.detail}`);
+          config.hosts.codex.runArgs = config.hosts.codex.runArgs
+            .filter((arg) => arg !== '--dangerously-bypass-hook-trust');
+        } else {
+          config.hosts.codex.e2eBlockedReason = `blocked-environment: ${hookApproval.detail}`;
+        }
+      }
+      if (!config.hosts.codex.e2eBlockedReason) {
+        const modelPreflight = await preflightCodexE2eModels(config.hosts.codex, {
+          codexHome: codexProfile?.codexHome,
+          env: config.hosts.codex.e2eEnv,
+        });
+        if (modelPreflight.status === 'ready') {
+          console.log(`codex E2E model preflight: ${modelPreflight.detail}`);
+        } else {
+          config.hosts.codex.e2eBlockedReason = `blocked-environment: ${modelPreflight.detail}`;
+        }
+      }
+      if (config.hosts.codex.e2eBlockedReason) {
+        console.warn(`⚠ codex E2E preflight: ${config.hosts.codex.e2eBlockedReason}`);
+        console.warn('  Codex cases will be recorded as BLOCKED_ENVIRONMENT; strict certification remains non-green.');
+      }
     }
   }
 
@@ -270,11 +406,21 @@ async function main(): Promise<number> {
       }
     }
 
-    const summary = writeReport(results, config, startedAt, runDir);
+    const summary = writeReport(
+      results,
+      config,
+      startedAt,
+      runDir,
+      manualCertifications,
+      releaseFingerprint,
+    );
     updateLatestPointer(config.runsRoot, runDir);
     console.log(`\nrun dir: ${runDir}`);
     console.log(`report: ${summary.reportPath}`);
     console.log(`assertions: PASS ${summary.pass} · FAIL ${summary.fail} · SKIP ${summary.skip} · INCONCLUSIVE ${summary.inconclusive} · UNSUPPORTED ${summary.unsupported}`);
+    if (summary.manualTotal > 0) {
+      console.log(`manual certifications: ${summary.manualCertified}/${summary.manualTotal} certified`);
+    }
 
     const verdict = await runVerdict(config, distRoot, runDir);
     if (verdict.ran) console.log(`verdict (${verdict.host}): ${verdict.status}${verdict.verdictPath ? ` → ${verdict.verdictPath}` : ` — ${verdict.note}`}`);

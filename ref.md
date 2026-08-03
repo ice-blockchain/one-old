@@ -27,6 +27,30 @@ Note: the X links above are retained exactly as supplied. X may require login or
 block full post retrieval, so they are treated as inspiration links rather than
 line-verifiable source files.
 
+## Source Layout Convention
+
+Runtime TypeScript under `src/` keeps every module at or under ~500 lines.
+Larger units are split into sibling modules grouped by directory, with the
+original path preserved as the entry (`foo.ts` → `foo/index.ts` barrel, or
+`foo.ts` + `foo-<part>.ts` siblings where compiled `__dirname` depth matters:
+`shared/opencode-roles-*`, `runners/*-host/*`). Prefix families live in
+folders: `shared/one-mcp/`, `shared/opencode-plan/`, `shared/opencode-queue/`,
+`shared/opencode-roles/`, `shared/host/`, `shared/hook/`, `shared/maintenance/`,
+`shared/qa-report{,-v2}/`, `shared/qa-evidence-runtime/`,
+`shared/verification-contract/`, `shared/run-settlement/`,
+`shared/run-bootstrap-policy/`, `shared/architecture-contract/`,
+`shared/capabilities/`, `shared/state/run-agent/`, `shared/state/local-prefs/`,
+`modules/plan-guard/{plan-readiness,plan-write,react-structure}/`.
+`agentModelGate` runs as a prologue in `modules/agent-model/handler.ts` plus
+three extracted phases sharing a `GateContext`
+(`gate-opencode-first`/`gate-reuse`/`gate-enforcement`). The kilo/opencode
+host runners share their JSONC + owner-record machinery via
+`shared/host/wrapper-{jsonc,records}.ts`; per-host disk formats (`targetKilo`
+vs `targetOpenCode`) and the `__dirname`-depth-sensitive `runtimePluginRoot`
+stay in each runner. Documented exceptions above 500:
+`runners/kilo-host/wrapper-source.ts` (a single emitted template literal) and
+dev tooling under `src/test-environment/` + `src/build/compiled-smoke.ts`.
+
 ## Inventory Summary
 
 - Source rules: 79 files under `rules/`.
@@ -41,12 +65,13 @@ line-verifiable source files.
   Performance acknowledgements retain plan + applied fingerprint + the
   acknowledged config version (the version is metadata-only for drift), while
   `~/.traffic-one/one.json` remains limited to auth and code-graph settings.
-  Milestone 1 keeps all public switches disabled. Cache schema v1 is ignored;
-  an enabled v2 sync starts at version zero, while transient transport failures
-  preserve valid cache or bundled fallback and remain SessionStart-silent.
-  Milestone-2 generation requires a fresh bounded evidence bundle covering the
-  seven exact live rows, per-host JSON/SSE/upToDate probes, hosted onboarding,
-  and live Codex Sol/Terra hook observations.
+  Cache schema v1 is ignored; v2 sync starts at version zero, while transient
+  transport failures preserve valid cache or bundled fallback and remain
+  SessionStart-silent. Anonymous structural reporting is enabled and sends one
+  report per opted-in project, deduplicated by `one-uid`; local report-status
+  persistence and machine-global MCP registration remain disabled. Sync and
+  reporting use the fixed compiled public endpoint with no One MCP environment
+  overrides or release-evidence input.
 - Generated OpenCode user-local agents: `~/.config/opencode/agents/traffic-one-<projectHash12>-<role>.md`; legacy generated project profiles are cleaned while user-authored files are preserved.
 - Generated Kilo wrapper support: `scripts/kilo-host.cjs` installs `~/.config/kilo/plugin/traffic-one.js`, and `.kilo/traffic-one.json` records explicit per-project enable/disable overrides.
 - Windsurf project assets: `.devin/rules/*.md` plus generated Devin Local profiles are materialized per onboarded project when Windsurf is the host; skills remain under the canonical `.traffic-one/skills/<skill>/SKILL.md` tree.
@@ -83,7 +108,7 @@ consumer.**
 | Codebase-graph artefact paths + read protocol | `rules/common/codebase-graph.md` | `agent-handoff-digests.md`, `project-memory.md` |
 | RED-GREEN-REFACTOR cycle, coverage tiers, AAA, test maxims | `tdd-workflow` skill | every `*-testing` / `*-tdd` skill |
 | Verification phase pipeline + VERIFICATION REPORT template | `verification-loop` skill | `*-verification` skills |
-| i18n detection, `<Trans>` vs `t()`, hardcoded-string exception | `i18n-text` skill | `create-*` skills, `rules/frontend/i18n.md` |
+| i18n detection, locale parity, React child `<Trans>` vs string-value `t()`, literal-brand exception | `i18n-text` skill | `create-*` skills, `rules/frontend/i18n.md` |
 | Design brief, anti-AI-slop, token mandate, `https://traffic.io/` setup-link contract, UI states | `rules/frontend/ui-quality.md` | `create-*`, `frontend-design`, `design-audit`, `design-system` |
 | Token-storage policy (no localStorage; httpOnly cookies) | `jwt-security` skill | `security-review`, `springboot-security` |
 | Post-deploy observability / replay-privacy / SLO / AI-fix policy | `observability` skill | `security.md`, `deployment-patterns`, frontend security rules |
@@ -143,6 +168,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `rules/frontend/services.md` | Traffic One local service-layer rule, inspired by ECC TypeScript/service patterns: https://github.com/affaan-m/everything-claude-code/tree/main/rules/typescript |
 | `rules/frontend/testing.md` | Traffic One local frontend testing rule, paired with ECC testing skills: https://github.com/affaan-m/everything-claude-code/tree/main/skills |
 | `rules/frontend/typography.md` | Traffic One local typography rule, inspired by bencium design guidance and UI quality rule. |
+| `rules/frontend/component-system.md` | Traffic One canonical UI-system resolution and catalog-first rule: framework-specific shadcn adapters, demand-driven `uiPrimitives`, shared `packages/ui`, CLI-only primitives, and justified custom fallback. |
 | `rules/frontend/ui-quality.md` | Distilled from bencium-marketplace `impact-designer` and `controlled-ux-designer`; also inspired by the supplied X posts. — **canonical owner** of the design brief, anti-AI-slop list, token mandate, `https://traffic.io/` setup-link contract, and UI states; `create-*`/`frontend-design`/`design-audit`/`design-system` defer here. |
 | `rules/frontend/ui-quality-reference.md` | Traffic One local UI-quality reference checklists; companion to `ui-quality.md`. |
 | `rules/frontend/react/components.md` | Traffic One React component rule, inspired by ECC web/typescript rules: https://github.com/affaan-m/everything-claude-code/tree/main/rules/web |
@@ -181,8 +207,25 @@ Catalog conventions normalized by the audit: the activation heading is
 | `rules/frontend/react-native/testing.md` | Traffic One RN testing rule, paired with Jest/RNTL/Maestro guidance. |
 | `rules/modes/existing-codebase.md` | Traffic One local mode rule, inspired by ECC repo-safety guidance. |
 | `rules/modes/new-project.md` | Traffic One local new-project rule (read-order spine), inspired by ECC setup/orchestration patterns. |
-| `rules/modes/new-project-architecture.md` | Traffic One local new-project target-architecture mode rule. |
+| `rules/modes/new-project-architecture.md` | Stack-neutral new-project architecture catalog, exact profile index, and common backend/QA/environment/Ionic overlays. |
+| `rules/modes/new-project-angular.md` | Exact `angular` new-project architecture profile. |
+| `rules/modes/new-project-astro.md` | Exact `astro` new-project architecture profile. |
+| `rules/modes/new-project-backend-only.md` | Exact `backend-only` API/CLI/worker/data new-project architecture profile. |
+| `rules/modes/new-project-flutter-native.md` | Exact `flutter-native` new-project architecture profile. |
+| `rules/modes/new-project-generic-web.md` | Exact conservative `generic-web` new-project architecture profile. |
+| `rules/modes/new-project-kotlin-native.md` | Exact `kotlin-native` Android new-project architecture profile. |
+| `rules/modes/new-project-next-app.md` | Exact `next-app` App Router new-project architecture profile. |
+| `rules/modes/new-project-next-pages.md` | Exact `next-pages` Pages Router new-project architecture profile. |
+| `rules/modes/new-project-nuxt.md` | Exact `nuxt` new-project architecture profile. |
+| `rules/modes/new-project-react-native.md` | Exact `react-native`/Expo new-project architecture profile. |
+| `rules/modes/new-project-server-rendered.md` | Exact `server-rendered` Laravel Blade/Inertia new-project architecture profile. |
 | `rules/modes/new-project-setup.md` | Traffic One local new-project setup checklist (full detail; `new-project.md` is the spine). |
+| `rules/modes/new-project-svelte.md` | Exact plain `svelte` new-project architecture profile. |
+| `rules/modes/new-project-sveltekit.md` | Exact `sveltekit` new-project architecture profile. |
+| `rules/modes/new-project-swift-native.md` | Exact `swift-native`/SwiftUI new-project architecture profile. |
+| `rules/modes/new-project-unsupported-hybrid.md` | Blocking `unsupported-hybrid` profile requiring one runtime/user-owned UI target. |
+| `rules/modes/new-project-vite-react.md` | Exact `vite-react` profile covering managed workspace, flat-root, and custom-root topology. |
+| `rules/modes/new-project-vue.md` | Exact `vue` new-project architecture profile. |
 | `rules/modes/supabase-migration.md` | Traffic One local Supabase migration rule. |
 
 ## Skills
@@ -237,7 +280,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `golang-patterns` | `skills/golang-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/golang-patterns/SKILL.md |
 | `golang-testing` | `skills/golang-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/golang-testing/SKILL.md |
 | `hexagonal-architecture` | `skills/hexagonal-architecture/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/hexagonal-architecture/SKILL.md |
-| `i18n-text` | `skills/i18n-text/SKILL.md` | Traffic One local i18n workflow — **canonical owner** of i18n detection, `<Trans>`/`t()`, hardcoded-string exception; `create-*` skills defer here. |
+| `i18n-text` | `skills/i18n-text/SKILL.md` | Traffic One local i18n workflow — **canonical owner** of new-UI defaults, locale parity, React child `<Trans>`/string-value `t()`, and exact literal-brand exceptions; `create-*` skills defer here. |
 | `ionic-mobile` | `skills/ionic-mobile/SKILL.md` | Traffic One local skill merging Mindrally Ionic concepts into React/Capacitor stack |
 | `java-coding-standards` | `skills/java-coding-standards/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/java-coding-standards/SKILL.md |
 | `jpa-patterns` | `skills/jpa-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/jpa-patterns/SKILL.md |
@@ -320,12 +363,12 @@ Catalog conventions normalized by the audit: the activation heading is
 - `.claude-plugin/marketplace.json` - Claude marketplace registration.
 - `.agents/plugins/marketplace.json` - local plugin marketplace registration.
 - `.mcp.json` - shared Claude/Cursor/Codex MCP descriptor; intentionally omits the public traffic-one-mcp server.
-- `.mcp-copilot.json` - Copilot-only descriptor; registers traffic-one-mcp with an empty tool allowlist.
+- `.mcp-copilot.json` - Copilot-only descriptor; omits the public traffic-one-mcp server while `ONE_MCP_REGISTRATION=false` (an enabled build would use an empty tool allowlist).
 - `.config/opencode/plugins/traffic-one.js` - consented user-level OpenCode wrapper installed by `scripts/opencode-host.cjs`.
-- OpenCode install also adds an inert machine-global `traffic-one-mcp` entry and exact deny permissions when absent; uninstall preserves those potentially user-owned values.
+- OpenCode install skips machine-global `traffic-one-mcp` registration while `ONE_MCP_REGISTRATION=false`; its wrapper still denies managed One MCP tools.
 - `.opencode/traffic-one.json` - optional project-level OpenCode marker for explicit enable/disable overrides; no marker is required for normal auto-run behavior.
 - `~/.config/kilo/plugin/traffic-one.js` - consented user-level Kilo server-plugin wrapper installed by `scripts/kilo-host.cjs`.
-- Kilo install likewise adds an inert machine-global `traffic-one-mcp` entry and exact deny permissions when absent; uninstall removes only the owned wrapper.
+- Kilo install likewise skips machine-global `traffic-one-mcp` registration while the compiled switch is false; uninstall removes only the owned wrapper.
 - `.kilo/traffic-one.json` - optional project-level Kilo marker for explicit enable/disable overrides; no marker is required for normal auto-run behavior.
 - `~/.codeium/windsurf/hooks.json`, `~/.config/devin/config.json`, and `~/.codeium/windsurf/memories/global_rules.md` - consented user-level Windsurf / Devin Desktop integration managed by `scripts/windsurf-host.cjs`; public `traffic-one-mcp` registration is intentionally omitted, so the installer never edits `mcp_config.json`.
 
@@ -349,6 +392,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `scripts/opencode-host.cjs` | OpenCode wrapper installer, project enable/disable marker manager, uninstaller, and doctor. |
 | `scripts/kilo-hook-runtime.cjs` | Kilo host runtime shim; wrapper invocations stamp `--host=kilo`. |
 | `scripts/kilo-host.cjs` | Kilo wrapper installer, project enable/disable marker manager, uninstaller, and doctor. |
+| `scripts/traffic-one-uninstall.cjs` | Full machine-global uninstall: the four user-level host integrations, then `~/.traffic-one`, then the plugin bundle via each host CLI. Consent-gated (`--yes`); armed from chat by the UserPromptSubmit uninstall directive. |
 | `scripts/hook-runtime/config.cjs` | Hook runtime config constants. |
 | `scripts/hook-runtime/detection/detection.cjs` | Project mode/stack detection helpers (one-file-per-function folder). |
 | `scripts/hook-runtime/directives/directives.cjs` | Hook-time instruction/directive rendering (one-file-per-function folder). |

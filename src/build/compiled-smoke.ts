@@ -116,7 +116,6 @@ async function main(): Promise<void> {
       ...process.env,
       TRAFFIC_ONE_AUTH: 'on',
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'http://127.0.0.1:8787/mcp',
       TRAFFIC_ONE_STATE_PATH: path.join(authTmp, 'one.json'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(authTmp, 'prefs.json'),
       TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
@@ -286,10 +285,13 @@ async function main(): Promise<void> {
       const builtWaitCommands = require(path.join(scratch, 'shared', 'onboarding-server', 'wait-command.js')) as {
         onboardingBootstrapCommand(cwd: string, host: string): string;
         onboardingUseBootstrapCommand(cwd: string, host: string, seedPrompt?: string): string;
+        onboardingWaitCommand(cwd: string, host: string): string;
+        onboardingSetTechCommand(cwd: string, host: string, tech: Record<string, string>): string;
       };
       const builtClassifier = require(path.join(scratch, 'shared', 'tool-classify.js')) as {
         isOnboardingBootstrapCommand(toolName: unknown, toolInput: unknown): boolean;
         isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): boolean;
+        isOnboardingSetTechCommand(toolName: unknown, toolInput: unknown): boolean;
       };
       const quotedBootstrap = builtWaitCommands.onboardingBootstrapCommand(quotedProject, 'codex');
       if (!builtClassifier.isOnboardingWaitCommand('exec_command', { command: quotedBootstrap })) {
@@ -321,6 +323,20 @@ async function main(): Promise<void> {
       }
       if (!builtClassifier.isOnboardingBootstrapCommand('exec_command', { command: quotedSeeded })) {
         fail('built classifier did not treat the seeded yes command as a bootstrap invocation');
+      }
+      // The agent tech-classification command (metachar-heavy evidence included)
+      // must survive quoting AND classify in the COMPILED bundle — this is how an
+      // undetectable existing repo gets its identity from the session agent.
+      const quotedSetTech = builtWaitCommands.onboardingSetTechCommand(quotedProject, 'codex', {
+        frontend: 'none',
+        backend: 'node',
+        evidence: "express + mongoose in package.json; it's an API",
+      });
+      if (!builtClassifier.isOnboardingSetTechCommand('exec_command', { command: quotedSetTech })) {
+        fail('built classifier rejected its metacharacter-safe --set-tech command');
+      }
+      if (builtClassifier.isOnboardingBootstrapCommand('exec_command', { command: quotedSetTech })) {
+        fail('built classifier mis-treated --set-tech as a bootstrap invocation');
       }
 
       const quotedEnv: NodeJS.ProcessEnv = {
@@ -359,6 +375,95 @@ async function main(): Promise<void> {
       ];
       if (JSON.stringify(capturedArgv) !== JSON.stringify(expectedArgv)) {
         fail(`shell changed quoted bootstrap argv: expected ${JSON.stringify(expectedArgv)}, got ${JSON.stringify(capturedArgv)}`);
+      }
+
+      // 3b. Claude background-wait deny in the COMPILED bundle: a backgrounded
+      //     waiter buries the printed setup link in a task file, so the built
+      //     gate must deny it EVERY time and prescribe the identical command in
+      //     the foreground. Control: the same call without the flag must never
+      //     be blamed for backgrounding.
+      const bgProject = path.join(onboardingTmp, 'claude-bg-project');
+      fs.mkdirSync(path.join(bgProject, '.traffic-one'), { recursive: true });
+      fs.writeFileSync(
+        path.join(bgProject, '.traffic-one', '.one.json'),
+        JSON.stringify({ version: 1, mode: 'new-project', onboardingComplete: false }),
+        'utf8',
+      );
+      const bgWait = builtWaitCommands.onboardingWaitCommand(bgProject, 'claude');
+      const bgEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        TRAFFIC_ONE_AUTH: 'off',
+        TRAFFIC_ONE_ASK_USE_PLUGIN: 'off',
+        TRAFFIC_ONE_HOST: 'claude',
+        TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
+        TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
+      };
+      for (const key of [
+        'XDG_STATE_HOME',
+        'TRAFFIC_ONE_PROJECT_PREFS_PATH',
+        'TRAFFIC_ONE_STATE_PATH',
+      ]) delete bgEnv[key];
+      const invokeClaudeGate = (toolInput: Record<string, unknown>): Record<string, any> => {
+        const run = runShimAllowingBlock(scratch, 'hook-runtime.cjs', 'check-onboarding-gate', JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: toolInput,
+          cwd: bgProject,
+          session_id: 'compiled-smoke-claude-bg',
+        }), bgEnv);
+        if (run.status !== 0) fail(`Claude wait gate exited ${run.status}: ${run.stderr}`);
+        try {
+          return JSON.parse(run.stdout || '{}') as Record<string, any>;
+        } catch {
+          fail(`Claude wait gate emitted invalid JSON: ${run.stdout}`);
+        }
+      };
+      const bgOut = invokeClaudeGate({ command: bgWait, run_in_background: true });
+      if (bgOut.hookSpecificOutput?.permissionDecision !== 'deny') fail('built Claude gate did not deny a backgrounded waiter');
+      const bgReason = String(bgOut.hookSpecificOutput?.permissionDecisionReason || '');
+      if (!bgReason.includes('run_in_background: false')) fail('built Claude background deny did not prescribe the foreground re-run');
+      if (!bgReason.includes(bgWait)) fail('built Claude background deny did not carry the identical command to re-run');
+      const fgOut = invokeClaudeGate({ command: bgWait });
+      if (String(fgOut.hookSpecificOutput?.permissionDecisionReason || '').includes('requested with run_in_background: true')) {
+        fail('built Claude gate blamed a foreground waiter for backgrounding');
+      }
+
+      // 3c. The Stop backstop in the COMPILED bundle: a turn ending with setup
+      //     pending and a live wizard blocks with the link; stop_hook_active
+      //     passes (one forced continuation per turn, never a livelock).
+      const stopPrefs = path.join(onboardingTmp, 'stop-prefs.json');
+      const stopEnv: NodeJS.ProcessEnv = { ...bgEnv, TRAFFIC_ONE_PROJECT_PREFS_PATH: stopPrefs };
+      const builtRegistry = require(path.join(scratch, 'shared', 'onboarding-server', 'registry.js')) as {
+        writeServerRecord(cwd: string, record: Record<string, unknown>, env: NodeJS.ProcessEnv, host: string): void;
+      };
+      builtRegistry.writeServerRecord(
+        bgProject,
+        { pid: process.pid, port: 55223, token: 'smoke-stop', url: 'http://127.0.0.1:55223/?t=smoke-stop', startedAt: 'x' },
+        stopEnv,
+        'claude',
+      );
+      const invokeStop = (rawExtra: Record<string, unknown>): { status: number | null; stdout: string; stderr: string } =>
+        runShimAllowingBlock(scratch, 'hook-runtime.cjs', 'onboarding-stop', JSON.stringify({
+          hook_event_name: 'Stop',
+          cwd: bgProject,
+          session_id: 'compiled-smoke-claude-stop',
+          ...rawExtra,
+        }), stopEnv);
+      const stopRun = invokeStop({});
+      if (stopRun.status !== 0) fail(`Claude Stop backstop exited ${stopRun.status}: ${stopRun.stderr}`);
+      let stopOut: Record<string, any>;
+      try {
+        stopOut = JSON.parse(stopRun.stdout || '{}') as Record<string, any>;
+      } catch {
+        fail(`Claude Stop backstop emitted invalid JSON: ${stopRun.stdout}`);
+      }
+      if (stopOut.decision !== 'block') fail('built Claude Stop backstop did not block a pending-setup turn end');
+      if (!String(stopOut.reason || '').includes('onboarding/agent#p=55223&t=smoke-stop')) {
+        fail('built Claude Stop block did not carry the live setup link');
+      }
+      const stopActive = invokeStop({ stop_hook_active: true });
+      if (stopActive.status !== 0 || (stopActive.stdout || '').trim() !== '') {
+        fail('stop_hook_active must pass silently — one forced continuation per turn');
       }
     } finally {
       if (previousPluginRoot === undefined) delete process.env.TRAFFIC_ONE_PLUGIN_ROOT;

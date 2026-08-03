@@ -3,23 +3,29 @@ paths:
   - "apps/**/src/store/**"
   - "apps/**/src/features/**/slice.ts"
   - "apps/**/src/features/**/store.ts"
+  - "web/**/src/**"
+  - "frontend/**/src/**"
+  - "client/**/src/**"
+  - "packages/**/src/**"
   - "src/store/**"
   - "src/features/**/slice.ts"
   - "src/features/**/store.ts"
+  - "src/**"
 ---
 
 # Ionic State Management
 
-The state-ownership boundary table and the "server data lives in exactly one
-place" hard rule live in `rules/frontend/react/stores.md` and apply in full.
-Ionic-specific state describes mobile shell and native capability concerns
-without duplicating server data.
+The selected profile's state-ownership rules remain authoritative, including
+the "server data lives in exactly one place" invariant. Ionic-specific state
+describes mobile shell and native capability concerns without duplicating
+server data or importing a React store into Vue/Angular.
 
 ## Mobile shell ownership delta
 
-- Ephemeral mobile shell state may use zustand: active sheet, transient scanner
-  state, dismissed permission explainer, or temporary keyboard layout state.
-- Native capability state is normalized before it enters Redux/zustand.
+- Ephemeral mobile shell state stays in the base framework's selected local
+  store: active sheet, transient scanner state, dismissed permission explainer,
+  or temporary keyboard layout state.
+- Native capability state is normalized before it enters application state.
 
 ## Persistence
 
@@ -30,6 +36,5 @@ without duplicating server data.
 
 ## Selectors
 
-- Use typed `useAppSelector` / `useAppDispatch`.
-- Use `createSelector` for derived mobile shell state that combines route,
-  network, permission, or auth state.
+- Keep typed selectors/computed state in the base framework's store layer for
+  derived shell state combining route, network, permission, or auth state.

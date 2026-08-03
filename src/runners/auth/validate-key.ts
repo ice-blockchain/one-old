@@ -1,6 +1,6 @@
 // src/runners/auth/validate-key.ts
 // Intake-time API-key validation for the onboarding wizard. The submitted key is
-// checked against the AUTH endpoint (`.../traffic-one-mcp/mcp`, endpointFromEnv) —
+// checked against the fixed AUTH endpoint (`.../traffic-one-mcp/mcp`) —
 // NOT the public first-look report endpoint, which accepts anything and can never
 // reject a bad key.
 //
@@ -13,21 +13,26 @@
 // 5xx) is treated as unreachable. The wizard fails CLOSED on both non-ok cases:
 // a key is only stored once the gate confirms it.
 
-import { endpointFromEnv } from '../../shared/auth';
+import { DEFAULT_ENDPOINT } from '../../config/one-mcp';
 import { mcpPost } from './mcp-client';
 
 export type KeyValidation =
   | { ok: true }
   | { ok: false; reason: 'invalid-api-key' | 'auth-endpoint-unreachable'; error?: string };
 
+interface ValidateApiKeyOptions {
+  endpoint?: string;
+  timeoutMs?: number;
+}
+
 export async function validateApiKey(
   apiKey: string,
-  env: NodeJS.ProcessEnv = process.env,
-  timeoutMs = 10000,
+  options: ValidateApiKeyOptions = {},
 ): Promise<KeyValidation> {
   const key = String(apiKey || '').trim();
   if (!key) return { ok: false, reason: 'invalid-api-key' };
-  const endpoint = endpointFromEnv(env);
+  const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+  const timeoutMs = options.timeoutMs ?? 10000;
   let statusCode: number;
   let body: string;
   try {

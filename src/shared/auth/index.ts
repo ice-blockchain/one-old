@@ -5,13 +5,12 @@
 import * as net from 'net';
 
 import { AUTH_ENABLED } from '../../config/auth';
-import { authenticatedEndpoint } from '../../config/one-mcp';
 import { oneSettingsPath } from '../one-settings';
 import { isLocallyAuthenticated } from './simple-auth';
 
 export { readSimpleAuth, isLocallyAuthenticated, writeSimpleAuth, clearAuthentication } from './simple-auth';
 
-export function isLoopbackHostname(hostname: string): boolean {
+function isLoopbackHostname(hostname: string): boolean {
   const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
   const ipVersion = net.isIP(host);
   // 0.0.0.0 is the wildcard address, not loopback. Keep the plaintext-HTTP
@@ -34,10 +33,6 @@ export function authEndpointUrl(endpoint: string): URL {
   if (url.protocol === 'https:') return url;
   if (url.protocol === 'http:' && isLoopbackHostname(url.hostname)) return url;
   throw new Error('Refusing to send Traffic One credentials to a non-HTTPS MCP auth endpoint. Use HTTPS for remote endpoints; HTTP is allowed only for loopback local development.');
-}
-
-export function endpointFromEnv(env: NodeJS.ProcessEnv = process.env): string {
-  return authenticatedEndpoint(env);
 }
 
 // Production auth is enabled by default. The process override remains useful

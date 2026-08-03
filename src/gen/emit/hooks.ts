@@ -12,6 +12,7 @@ import {
   POST_TOOL_USE,
   PRE_TOOL_USE,
   SESSION_START,
+  STOP,
   SUBAGENT_START,
   claudeCommand,
   copilotCommand,
@@ -45,6 +46,10 @@ function claudeHooks(promptStatus: boolean): Rec {
       PreToolUse: PRE_TOOL_USE.map(renderGroup),
       PostToolUse: POST_TOOL_USE.map(renderGroup),
       SubagentStart: [renderGroup(SUBAGENT_START)],
+      // LAST key deliberately: hooks/hooks.json feeds the Codex trust ABI, and
+      // appending keeps every v1 positional identity (and trusted hash) intact.
+      // Do NOT register SubagentStop — subagents must never be sent to setup.
+      Stop: [renderGroup(STOP)],
     },
   };
 }

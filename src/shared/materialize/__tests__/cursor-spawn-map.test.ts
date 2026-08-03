@@ -14,6 +14,11 @@ import { captureCursorModels } from '../cursor-models';
 import { readEffectiveState } from '../../state';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { ensureRunModelPolicy } from '../../run-model-policy';
+import { resolveModel } from '../../model-tiers';
+
+// Derived, never hardcoded: which family anchors a tier is editable policy.
+const CURSOR_HIGHEST_FAMILY = resolveModel('highest', 'cursor', 'pro') as string;
+const CURSOR_HIGHEST_SLUG = `${CURSOR_HIGHEST_FAMILY}-thinking-high`;
 
 function withProj(fn: (dir: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-spawnmap-')));
@@ -55,11 +60,11 @@ test('resolveCursorTierSlug maps family anchor to captured build slug', () => {
   withProj((dir) => {
     assert.equal(captureCursorModels(
       dir,
-      ['claude-fable-5-thinking-high', 'composer-2.5-fast'],
+      [CURSOR_HIGHEST_SLUG, 'composer-2.5-fast'],
       'pro',
       new Date().toISOString(),
     ), true);
-    assert.equal(resolveCursorTierSlug(dir, 'claude-fable-5', 'pro'), 'claude-fable-5-thinking-high');
+    assert.equal(resolveCursorTierSlug(dir, CURSOR_HIGHEST_FAMILY, 'pro'), CURSOR_HIGHEST_SLUG);
   });
 });
 
@@ -79,14 +84,14 @@ test('buildCursorSpawnModelMap resolves exact slugs without persisting them in a
   withProj((dir) => {
     assert.equal(captureCursorModels(
       dir,
-      ['claude-fable-5-thinking-high', 'composer-2.5-fast'],
+      [CURSOR_HIGHEST_SLUG, 'composer-2.5-fast'],
       'pro',
       new Date().toISOString(),
     ), true);
     const state = readEffectiveState(dir) as Record<string, unknown>;
     const map = buildCursorSpawnModelMap(dir, state);
-    assert.equal(map['senior-architect'], 'claude-fable-5-thinking-high');
-    assert.ok(formatCursorSpawnMapBlock(map).includes('senior-architect → claude-fable-5-thinking-high'));
+    assert.equal(map['senior-architect'], CURSOR_HIGHEST_SLUG);
+    assert.ok(formatCursorSpawnMapBlock(map).includes(`senior-architect → subagent_type: "senior-architect", model: ${CURSOR_HIGHEST_SLUG}`));
 
     syncCursorSpawnAgentFiles(dir, state);
     const architect = fs.readFileSync(path.join(dir, '.cursor', 'agents', 'senior-architect.md'), 'utf8');
@@ -98,7 +103,7 @@ test('buildCursorSpawnModelMap emits captured family-anchor ids and omits uncapt
   withProj((dir) => {
     assert.equal(captureCursorModels(
       dir,
-      ['claude-fable-5-thinking-high', 'gpt-5.6-terra', 'gpt-5.4-mini'],
+      [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra', 'gpt-5.4-mini'],
       'pro',
       new Date().toISOString(),
     ), true);
@@ -107,7 +112,7 @@ test('buildCursorSpawnModelMap emits captured family-anchor ids and omits uncapt
     assert.equal(map['senior-tester'], 'gpt-5.4-mini');
     assert.equal(map['senior-shipper'], 'gpt-5.6-terra');
     assert.ok(!Object.values(map).includes('composer-2.5'), 'uncaptured family fallback is omitted');
-    assert.match(formatCursorSpawnMapBlock(map), /EXACT captured Task/);
+    assert.match(formatCursorSpawnMapBlock(map), /exact captured id/);
   });
 });
 
@@ -124,7 +129,7 @@ test('buildCursorSpawnModelMap ignores a later project availableModels mutation 
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     assert.equal(captureCursorModels(
       dir,
-      ['claude-fable-5-thinking-high', 'composer-2.5-fast'],
+      [CURSOR_HIGHEST_SLUG, 'composer-2.5-fast'],
       'pro',
       new Date().toISOString(),
     ), true);
@@ -135,7 +140,7 @@ test('buildCursorSpawnModelMap ignores a later project availableModels mutation 
     const state = readEffectiveState(dir) as Record<string, unknown>;
     assert.ok(ensureRunModelPolicy(dir, 'frozen-map', 'cursor', state));
     const first = buildCursorSpawnModelMap(dir, state);
-    assert.equal(first['senior-architect'], 'claude-fable-5-thinking-high');
+    assert.equal(first['senior-architect'], CURSOR_HIGHEST_SLUG);
 
     assert.equal(captureCursorModels(
       dir,

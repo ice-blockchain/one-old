@@ -1,0 +1,693 @@
+// src/modules/plan-guard/plan-readiness/toolchain.ts
+// Toolchain parity: emit-config, prettier format parity/coverage, typecheck
+// ownership, crawl-origin, test-runner gaps, and self-reported skips.
+
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+  webPackageRoot,
+  type CompiledArchitectureV1,
+} from '../../../shared/architecture-contract';
+import {  type CapabilityProfileV1 } from '../../../shared/capabilities';
+import { obj } from '../../../shared/obj';
+import { matchesPattern,  normalizeRelPath } from '../../../shared/scope';
+
+import {
+  type Rec,
+  exists,
+  readTrimmed,
+} from './context';
+
+function parseJsonc(text: string): unknown | null {
+  let out = '';
+  let inString = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    const next = text[i + 1];
+    if (inLine) {
+      if (ch === '\n') { inLine = false; out += ch; }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === '*' && next === '/') { inBlock = false; i += 1; }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (ch === '\\' && next !== undefined) { out += next; i += 1; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; out += ch; continue; }
+    if (ch === '/' && next === '/') { inLine = true; continue; }
+    if (ch === '/' && next === '*') { inBlock = true; i += 1; continue; }
+    out += ch;
+  }
+  try {
+    return JSON.parse(out.replace(/,\s*([}\]])/g, '$1'));
+  } catch {
+    return null;
+  }
+}
+
+// { parsed: null } distinguishes "present but unparseable" (a violation) from
+// "absent" (null — another gate's concern).
+function jsoncFile(projectRoot: string, relPath: string): { parsed: Rec | null } | null {
+  const raw = readTrimmed(projectRoot, relPath);
+  if (raw === null || raw === '') return null;
+  return { parsed: obj(parseJsonc(raw)) };
+}
+
+const EMIT_BUILD_SCRIPT_RE = /\btsc\s+(?:-b\b|--build\b)/;
+
+export function emitConfigProblems(projectRoot: string, profile: CapabilityProfileV1): string[] {
+  const webRoot = webPackageRoot(profile);
+  const at = (rel: string): string => (webRoot === '.' ? rel : `${webRoot}/${rel}`);
+  const tsconfigRel = at('tsconfig.json');
+  const tsconfig = jsoncFile(projectRoot, tsconfigRel);
+  if (!tsconfig) return [];
+  const problems: string[] = [];
+  if (!tsconfig.parsed) {
+    problems.push(`\`${tsconfigRel}\` could not be parsed as JSON/JSONC`);
+  } else {
+    const compiler = obj(tsconfig.parsed.compilerOptions) || {};
+    if (compiler.composite === true) {
+      problems.push(`\`${tsconfigRel}\` sets \`"composite": true\` (build mode forces declaration emit)`);
+    }
+    if (compiler.noEmit === false) {
+      problems.push(`\`${tsconfigRel}\` sets \`"noEmit": false\``);
+    } else if (compiler.noEmit !== true) {
+      const base = jsoncFile(projectRoot, 'tsconfig.base.json');
+      const baseCompiler = base?.parsed ? obj(base.parsed.compilerOptions) || {} : {};
+      if (baseCompiler.noEmit !== true) {
+        problems.push(`neither \`${tsconfigRel}\` nor \`tsconfig.base.json\` sets \`"noEmit": true\``);
+      }
+    }
+  }
+  const pkg = jsoncFile(projectRoot, at('package.json'));
+  const scripts = pkg?.parsed ? obj(pkg.parsed.scripts) || {} : {};
+  for (const name of ['build', 'typecheck'] as const) {
+    const script = scripts[name];
+    if (typeof script === 'string' && EMIT_BUILD_SCRIPT_RE.test(script)) {
+      problems.push(`\`${at('package.json')}\` "${name}" script runs \`tsc -b\` (build mode EMITS next to sources)`);
+    }
+  }
+  return problems;
+}
+
+// The two ERROR-grade rules the scaffolded eslint config carries. The compiled
+// lint layer is where the retired STRUCT_* heuristics went to become real
+// enforcement — which only works if the rules SURVIVE to the lint run. In 16co
+// an implementer rewrote `eslint.config.js` and `max-lines` silently vanished:
+// exactly the rule whose absence later let a 461-line barrel through and cost
+// the whole news delegation batch. Prose guarded it; prose does not refuse.
+// Warn-grade rules are not checked — deleting a warning is an opinion, deleting
+// an error is a bar.
+const ESLINT_SURVIVAL_RULES = ['max-lines', 'no-restricted-imports'] as const;
+const ESLINT_CONFIG_CANDIDATES = ['eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs'];
+
+export function eslintRuleSurvivalProblems(
+  projectRoot: string,
+  profile: CapabilityProfileV1,
+): string[] {
+  const webRoot = webPackageRoot(profile);
+  const candidates = [
+    ...ESLINT_CONFIG_CANDIDATES,
+    ...(webRoot === '.' ? [] : ESLINT_CONFIG_CANDIDATES.map((name) => `${webRoot}/${name}`)),
+  ];
+  for (const rel of candidates) {
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(projectRoot, rel), 'utf8');
+    } catch {
+      continue;
+    }
+    // Presence is textual on purpose: the config is executable JS and running
+    // it inside a hook is not an option. If the rule NAME is absent the rule is
+    // certainly gone; a name surviving only in a comment lets a determined
+    // evader through, but keeps every honest reshape (extending the config,
+    // reordering, adding plugins) out of this gate's way.
+    const missing = ESLINT_SURVIVAL_RULES
+      .filter((rule) => !new RegExp(`['"\`]?${rule}['"\`]?\\s*:`).test(text));
+    return missing.map((rule) => `\`${rel}\` no longer carries the scaffolded \`${rule}\` rule`);
+  }
+  return []; // no eslint config at all → other gates own that case
+}
+
+// quality-tooling parity: only emit a script/config whose tool is actually
+// declared. Not "prettier is mandatory" — the check fires only when a prettier
+// config or format script EXISTS without the dependency (the v1.0.20 refactor
+// deliberately removed any architect-side formatter requirement).
+const PRETTIER_CONFIG_FILES = [
+  '.prettierrc', '.prettierrc.json', '.prettierrc.json5', '.prettierrc.yaml',
+  '.prettierrc.yml', '.prettierrc.js', '.prettierrc.cjs', '.prettierrc.mjs',
+  '.prettierrc.toml', 'prettier.config.js', 'prettier.config.cjs',
+  'prettier.config.mjs', 'prettier.config.ts',
+];
+
+type FormatParityProblem =
+  | { kind: 'missing-dependency'; reference: string }
+  | { kind: 'missing-toolchain' }
+  | { kind: 'uncovered-outputs'; script: string; command: string; uncovered: string[] };
+
+// A format script proves nothing about files its own arguments exclude.
+// Observed 6co: `"lint": "prettier --check \"apps/web/src/**/*.{ts,tsx}\"
+// \"packages/{i18n,tailwind-config,ui}/**/*.{ts,css,json}\" && pnpm typecheck"`
+// passed while a plain `prettier --check .` failed on 25 owned source files —
+// all four `packages/api-client` modules, every test, and `vitest.config.ts`.
+// Presence of a formatter was verified; coverage never was.
+const FORMATTABLE_OUTPUT_RE = /\.(?:[cm]?[jt]sx?|css|scss|less|json|jsonc|md|mdx|ya?ml|html|vue|svelte|astro|graphql|gql)$/i;
+
+// `edge-function` modules compile to `supabase/functions/<name>/index.ts`, which
+// runs on Deno — a different runtime, with its own resolver and no relationship
+// to the app's tsconfig or package manifests. Holding the app toolchain
+// answerable for those files would demand a compiler that can never typecheck
+// them and a formatter script that must reach outside the app's own tree, so
+// they are excluded from both parity checks below (the Deno toolchain owns
+// them, and the project's `prettier --check .` still formats them incidentally).
+const FOREIGN_RUNTIME_OUTPUT_RE = /^supabase\/functions\//;
+
+// `a/{b,c}/*.{ts,tsx}` → every concrete pattern. Bounded so a pathological
+// script can never blow up the gate.
+function expandBraces(pattern: string, budget = 64): string[] {
+  const open = pattern.indexOf('{');
+  if (open < 0) return [pattern];
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < pattern.length; i += 1) {
+    if (pattern[i] === '{') depth += 1;
+    else if (pattern[i] === '}') {
+      depth -= 1;
+      if (depth === 0) { close = i; break; }
+    }
+  }
+  if (close < 0) return [pattern];
+  const head = pattern.slice(0, open);
+  const tail = pattern.slice(close + 1);
+  const out: string[] = [];
+  for (const choice of pattern.slice(open + 1, close).split(',')) {
+    for (const expanded of expandBraces(`${head}${choice.trim()}${tail}`, budget)) {
+      if (out.length >= budget) return out;
+      out.push(expanded);
+    }
+  }
+  return out;
+}
+
+// The path arguments a `prettier --check`/`--write` invocation actually reads.
+// Null when the script does not run prettier at all (another formatter, or a
+// composite script whose prettier segment is absent).
+function prettierCheckTargets(script: string): { command: string; targets: string[] } | null {
+  for (const segment of script.split(/&&|\|\||;/)) {
+    const command = segment.trim();
+    if (!/(?:^|[\s/])prettier\b/.test(command)) continue;
+    const targets: string[] = [];
+    // Quoted args keep their globs intact; bare args are shell-split.
+    const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+    for (const raw of tokens.slice(1)) {
+      const token = raw.replace(/^["']|["']$/g, '');
+      if (!token || token.startsWith('-')) continue;
+      if (/(?:^|\/)prettier$/.test(token)) continue;
+      targets.push(normalizeRelPath(token));
+    }
+    if (targets.length > 0) return { command, targets };
+  }
+  return null;
+}
+
+function coversPath(targets: readonly string[], relPath: string): boolean {
+  return targets.some((target) => {
+    if (target === '.' || target === './' || target === '**' || target === '**/*') return true;
+    return expandBraces(target).some((pattern) => matchesPattern(relPath, pattern));
+  });
+}
+
+interface FormatToolchainTarget {
+  configPath: string;
+  manifestPath: string;
+  toolingRoot: string;
+}
+
+export function compiledFormatToolchainForRole(
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): FormatToolchainTarget | null {
+  const config = (architecture.scaffoldOutputs || []).find((output) => (
+    output.ownerRole === ownerRole
+    && path.posix.basename(output.path) === '.prettierrc'
+  ));
+  if (!config) return null;
+  const toolingRoot = path.posix.dirname(config.path);
+  return {
+    configPath: config.path,
+    manifestPath: toolingRoot === '.' ? 'package.json' : `${toolingRoot}/package.json`,
+    toolingRoot,
+  };
+}
+
+export function formatParityViolation(
+  projectRoot: string,
+  target: FormatToolchainTarget,
+  ownedOutputs: readonly string[] = [],
+): FormatParityProblem | null {
+  const at = (rel: string): string => (
+    target.toolingRoot === '.' ? rel : `${target.toolingRoot}/${rel}`
+  );
+  const pkg = jsoncFile(projectRoot, target.manifestPath)?.parsed || null;
+  let reference: string | null = null;
+  for (const rel of PRETTIER_CONFIG_FILES) {
+    if (exists(projectRoot, at(rel))) { reference = `\`${at(rel)}\``; break; }
+  }
+  if (!reference && pkg && 'prettier' in pkg) {
+    reference = `the \`${target.manifestPath}\` "prettier" key`;
+  }
+  if (!reference) {
+    const scripts = pkg ? obj(pkg.scripts) || {} : {};
+    const script = ['format', 'format:check'].find((name) => typeof scripts[name] === 'string');
+    if (script) reference = `the \`${target.manifestPath}\` "${script}" script`;
+  }
+  if (!reference) {
+    // NOTHING prettier-shaped exists. On a new-project scaffold that includes
+    // `.prettierrc` in the compiled scope this means the frontend skipped the
+    // formatter toolchain entirely — the collapse-gate remedy ("run the format
+    // script") is then impossible and collapsed one-liner code ships unchecked
+    // (observed 3co: 9+ files with 500+ char lines, no config, no scripts, no
+    // dependency). An alternative formatter (biome) counts as a toolchain.
+    const biome = ['biome.json', 'biome.jsonc'].some((rel) => exists(projectRoot, at(rel)));
+    return biome ? null : { kind: 'missing-toolchain' };
+  }
+  const deps = { ...(pkg ? obj(pkg.dependencies) : null), ...(pkg ? obj(pkg.devDependencies) : null) };
+  if (typeof deps.prettier !== 'string') return { kind: 'missing-dependency', reference };
+
+  // The toolchain is real; now prove it reads what this role wrote. Only the
+  // scripts an implementer is told to run are inspected — a hand-typed
+  // `prettier --check .` is always the passing shape.
+  const scripts = pkg ? obj(pkg.scripts) || {} : {};
+  for (const name of ['format:check', 'format', 'lint']) {
+    const script = typeof scripts[name] === 'string' ? String(scripts[name]) : '';
+    const invocation = script ? prettierCheckTargets(script) : null;
+    if (!invocation) continue;
+    const formattable = ownedOutputs.filter((output) => (
+      FORMATTABLE_OUTPUT_RE.test(output) && !FOREIGN_RUNTIME_OUTPUT_RE.test(normalizeRelPath(output))
+    ));
+    const uncovered = formattable.filter((output) => !coversPath(invocation.targets, output));
+    if (uncovered.length > 0) {
+      return {
+        kind: 'uncovered-outputs',
+        script: name,
+        command: invocation.command,
+        uncovered: uncovered.slice(0, 5),
+      };
+    }
+    // The first prettier-bearing script decides; later ones are aliases of it.
+    break;
+  }
+  return null;
+}
+
+// Typecheck twin of the format-parity pair above. A role that owns compiled
+// TypeScript outputs but has NO reachable compiler cannot verify its own
+// `IMPLEMENTED`: observed 5co-codex, the backend wrote "tsc is not installed"
+// in its accepted digest and the 7 strict-TS errors in its repository surfaced
+// two fix cycles later in the sibling frontend's build (which also fabricated
+// an ambient module shim to compile around the unresolvable package).
+const TS_SOURCE_OUTPUT_RE = /\.(?:ts|tsx|mts|cts)$/;
+
+// Every path the contract compiles, optionally narrowed to one role's share.
+export function compiledOutputPaths(
+  architecture: CompiledArchitectureV1,
+  ownerRole?: string,
+): string[] {
+  return [
+    ...(architecture.scaffoldOutputs || [])
+      .filter((output) => !ownerRole || output.ownerRole === ownerRole)
+      .map((output) => output.path),
+    ...(architecture.modules || [])
+      .filter((module) => !ownerRole || module.ownerRole === ownerRole)
+      .map((module) => module.output),
+  ];
+}
+
+export function roleOwnedTsOutputs(
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): string[] {
+  return compiledOutputPaths(architecture, ownerRole)
+    .filter((output) => (
+      TS_SOURCE_OUTPUT_RE.test(output)
+      && !output.endsWith('.d.ts')
+      && !FOREIGN_RUNTIME_OUTPUT_RE.test(normalizeRelPath(output))
+    ));
+}
+
+// A root `typecheck` that only fans out to workspace members (`turbo run
+// typecheck`, `pnpm -r typecheck`, `nx run-many`) proves nothing about a member
+// that has no such script: the runner finds no target and exits 0.
+const DELEGATING_RUNNER_RE = /(?:^|[\s;&|])(?:turbo|nx|lerna)\s|(?:pnpm|yarn|npm)\s+(?:run\s+)?(?:-r|--recursive|--workspaces|-ws)\b|\s--filter\b/;
+
+type TypecheckCoverage = 'none' | 'delegated' | 'direct';
+
+function manifestTypecheckCoverage(pkg: Rec | null): TypecheckCoverage {
+  if (!pkg) return 'none';
+  const scripts = obj(pkg.scripts) || {};
+  const script = typeof scripts.typecheck === 'string' ? scripts.typecheck.trim() : '';
+  if (script) return DELEGATING_RUNNER_RE.test(script) ? 'delegated' : 'direct';
+  const deps = { ...obj(pkg.dependencies), ...obj(pkg.devDependencies) };
+  return typeof deps.typescript === 'string' ? 'direct' : 'none';
+}
+
+// Null when EVERY workspace member that owns TS outputs is actually governed by
+// a compiler — its own manifest, or a root manifest that compiles directly
+// rather than fanning out. The previous form returned clean as soon as ANY
+// manifest in the candidate set qualified, and `package.json` was always seeded
+// into that set: observed 6co, the root declared `"typecheck": "turbo run
+// typecheck"` while `packages/api-client` had `scripts: {}`, so the gate passed
+// and the backend shipped `IMPLEMENTED` whose own digest said `pnpm exec tsc
+// --version` reported tsc not found.
+export function typecheckParityViolation(
+  projectRoot: string,
+  tsOutputs: readonly string[],
+): { manifests: string[] } | null {
+  const owners = new Set<string>();
+  let rootOwned = false;
+  for (const output of tsOutputs) {
+    const pkg = /^((?:apps|packages|services)\/[^/]+)\//.exec(output)?.[1];
+    if (pkg) owners.add(pkg);
+    else rootOwned = true;
+  }
+  const rootCoverage = manifestTypecheckCoverage(jsoncFile(projectRoot, 'package.json')?.parsed || null);
+  const uncovered = new Set<string>();
+  for (const owner of owners) {
+    const manifest = `${owner}/package.json`;
+    const parsed = jsoncFile(projectRoot, manifest)?.parsed || null;
+    if (manifestTypecheckCoverage(parsed) !== 'none') continue;
+    // A root that runs the compiler itself (`tsc -b`, project references) does
+    // cover its members; a delegating runner does not.
+    if (rootCoverage === 'direct') continue;
+    uncovered.add(parsed ? manifest : 'package.json');
+  }
+  if (rootOwned && rootCoverage === 'none') uncovered.add('package.json');
+  return uncovered.size > 0 ? { manifests: [...uncovered].sort() } : null;
+}
+
+// The gate above is satisfiable WITHOUT COVERAGE. Observed 10co-e2e: it demanded
+// a `typecheck` script in `packages/api-client` and `packages/i18n`, both got
+// one — and the root manifest read `"typecheck": "pnpm --filter @app/web
+// typecheck"`, which invokes neither. Running the project's own typecheck
+// command therefore stopped reproducing a real, reported failure: the compiler
+// was reachable, demanded, present, and never run.
+//
+// A member is REACHED when the root script broadcasts (no narrowing flag at
+// all) or names it. Matching is deliberately generous — package name, directory
+// path, basename, and `*` globs, with pnpm's `...pkg` / `{dir}` / `^` selector
+// decorations stripped — because a false "unreached" would block honest work.
+const FILTER_FLAG_RE = /^(?:--filter|--filter-prod|--scope|--projects|--project|-p)(?:=(.*))?$/;
+
+function narrowingTargets(script: string): string[] {
+  const tokens = script.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+  const targets: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = (tokens[index] || '').replace(/^["']|["']$/g, '');
+    const match = FILTER_FLAG_RE.exec(token);
+    if (!match) continue;
+    const inline = match[1];
+    const value = inline !== undefined && inline !== ''
+      ? inline
+      : (tokens[index + 1] || '').replace(/^["']|["']$/g, '');
+    if (!value || value.startsWith('-')) continue;
+    for (const part of value.split(',')) {
+      const cleaned = part.trim().replace(/^\.{3}|\.{3}$/g, '').replace(/^[{^]|[}]$/g, '').trim();
+      // A NEGATED selector (`--filter=!./docs`) excludes one member and leaves
+      // the run broadcasting to every other one. Counting it as a narrowing
+      // target matched no member at all and reported the whole workspace
+      // unreached — a deny on a script that does cover the demanded packages.
+      if (cleaned && !cleaned.startsWith('!')) targets.push(cleaned);
+    }
+  }
+  return targets;
+}
+
+function targetReaches(target: string, memberDir: string, memberName: string): boolean {
+  const candidates = [memberDir, `./${memberDir}`, path.posix.basename(memberDir), memberName]
+    .filter((candidate) => Boolean(candidate));
+  const normalized = target.replace(/^\.\//, '');
+  return candidates.some((candidate) => {
+    const plain = candidate.replace(/^\.\//, '');
+    if (normalized === plain) return true;
+    if (!normalized.includes('*')) return false;
+    const source = normalized.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+    try {
+      return new RegExp(`^${source}$`).test(plain);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function scriptInvocationGap(
+  projectRoot: string,
+  outputs: readonly string[],
+  scriptName: 'typecheck' | 'lint',
+  memberDemands: (parsed: Rec | null) => boolean,
+): { script: string; unreached: string[] } | null {
+  const owners = new Set<string>();
+  for (const output of outputs) {
+    const pkg = /^((?:apps|packages|services)\/[^/]+)\//.exec(output)?.[1];
+    if (pkg) owners.add(pkg);
+  }
+  if (owners.size === 0) return null;
+  const root = jsoncFile(projectRoot, 'package.json')?.parsed || null;
+  const rootScripts = root ? obj(root.scripts) || {} : {};
+  const script = typeof rootScripts[scriptName] === 'string' ? String(rootScripts[scriptName]).trim() : '';
+  // No root script is a different, louder failure (`npm run <script>` errors
+  // out); a root that runs the tool directly genuinely covers its members.
+  if (!script || !DELEGATING_RUNNER_RE.test(script)) return null;
+  const targets = narrowingTargets(script);
+  // A broadcast (`pnpm -r <script>`, `turbo run <script>`) reaches every member.
+  if (targets.length === 0) return null;
+  const unreached: string[] = [];
+  for (const owner of [...owners].sort()) {
+    const manifest = `${owner}/package.json`;
+    const parsed = jsoncFile(projectRoot, manifest)?.parsed || null;
+    // A member with no tool of its own is the other gate's finding.
+    if (!memberDemands(parsed)) continue;
+    const name = parsed && typeof parsed.name === 'string' ? parsed.name : '';
+    if (!targets.some((target) => targetReaches(target, owner, name))) unreached.push(manifest);
+  }
+  return unreached.length > 0 ? { script, unreached } : null;
+}
+
+export function typecheckInvocationGap(
+  projectRoot: string,
+  tsOutputs: readonly string[],
+): { script: string; unreached: string[] } | null {
+  return scriptInvocationGap(projectRoot, tsOutputs, 'typecheck', (parsed) => (
+    manifestTypecheckCoverage(parsed) !== 'none'
+  ));
+}
+
+// ── Lint layer parity (quality verdict through the compiled toolchain) ──────
+// The scaffolded `eslint.config.js` carries real AST rules (see
+// `architecture-contract/scaffold-content.ts`), so for UI-owning roles a
+// runnable, reaching `lint` script IS the quality verdict the retired lexical
+// scanners used to fake. Same triad as prettier/tsc: config compiled →
+// dependency declared → script exists → invocation actually reaches the
+// members that demanded it.
+const LINTABLE_OUTPUT_RE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i;
+
+export function lintableOutputPaths(architecture: CompiledArchitectureV1): string[] {
+  return compiledOutputPaths(architecture).filter((output) => (
+    LINTABLE_OUTPUT_RE.test(output) && !FOREIGN_RUNTIME_OUTPUT_RE.test(normalizeRelPath(output))
+  ));
+}
+
+export function compiledLintToolchainForRole(
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): FormatToolchainTarget | null {
+  const config = (architecture.scaffoldOutputs || []).find((output) => (
+    output.ownerRole === ownerRole
+    && path.posix.basename(output.path) === 'eslint.config.js'
+  ));
+  if (!config) return null;
+  const toolingRoot = path.posix.dirname(config.path);
+  return {
+    configPath: config.path,
+    manifestPath: toolingRoot === '.' ? 'package.json' : `${toolingRoot}/package.json`,
+    toolingRoot,
+  };
+}
+
+export function lintParityViolation(
+  projectRoot: string,
+  target: FormatToolchainTarget,
+): { missing: string[] } | null {
+  const pkg = jsoncFile(projectRoot, target.manifestPath)?.parsed || null;
+  const deps = { ...(pkg ? obj(pkg.dependencies) : null), ...(pkg ? obj(pkg.devDependencies) : null) };
+  const scripts = pkg ? obj(pkg.scripts) || {} : {};
+  const missing: string[] = [];
+  if (typeof deps.eslint !== 'string') missing.push('`eslint` dependency');
+  if (typeof scripts.lint !== 'string') missing.push('`lint` script');
+  return missing.length > 0 ? { missing } : null;
+}
+
+export function lintInvocationGap(
+  projectRoot: string,
+  lintableOutputs: readonly string[],
+): { script: string; unreached: string[] } | null {
+  return scriptInvocationGap(projectRoot, lintableOutputs, 'lint', (parsed) => {
+    const scripts = parsed ? obj(parsed.scripts) || {} : {};
+    return typeof scripts.lint === 'string';
+  });
+}
+
+// rules/common/seo.md already says "never invent a deploy URL", and 6co invented
+// one anyway: every `<loc>` in the shipped `apps/web/public/sitemap.xml` reads
+// `https://workshop.example/…`. The reviewer caught it; the frontend completion
+// gate did not. A crawl asset is the one place a fabricated origin is
+// unambiguous — reserved/placeholder hosts and loopback can never be a
+// production site, and a relative `<loc>` is invalid per the sitemap spec. A
+// real-looking-but-unverified domain is NOT decidable here and stays a reviewer
+// concern; this gate only rejects what is provably wrong.
+const CRAWL_ORIGIN_FILE_RE = /(?:^|\/)public\/(?:sitemap\.xml|robots\.txt)$/;
+const RESERVED_ORIGIN_HOST_RE = /(?:^|\.)(?:example|test|invalid|local|localhost)$/i;
+const PLACEHOLDER_ORIGIN_RE = /(?:your[-_.]?(?:domain|site|app)|changeme|change-me|placeholder|example\.(?:com|org|net)|mysite|my-site)/i;
+const LOOPBACK_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)$/i;
+
+function fabricatedOrigin(value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/.test(parsed.protocol)) return null;
+  const host = parsed.hostname;
+  return LOOPBACK_HOST_RE.test(host)
+    || RESERVED_ORIGIN_HOST_RE.test(host)
+    || PLACEHOLDER_ORIGIN_RE.test(host)
+    ? parsed.origin
+    : null;
+}
+
+export function crawlOriginProblem(
+  projectRoot: string,
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+): { file: string; detail: string } | null {
+  const assets = (architecture.scaffoldOutputs || [])
+    .filter((output) => output.ownerRole === ownerRole && CRAWL_ORIGIN_FILE_RE.test(output.path))
+    .map((output) => output.path);
+  for (const asset of assets) {
+    const raw = readTrimmed(projectRoot, asset);
+    if (!raw) continue;
+    if (asset.endsWith('sitemap.xml')) {
+      const locations = [...raw.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((match) => match[1]!);
+      for (const location of locations) {
+        const origin = fabricatedOrigin(location);
+        if (origin) return { file: asset, detail: `\`${origin}\` is not a real production origin` };
+        if (!/^https?:\/\//i.test(location)) {
+          return { file: asset, detail: `\`${location}\` is relative, and sitemap \`<loc>\` must be an absolute URL` };
+        }
+      }
+      continue;
+    }
+    for (const line of raw.split(/\r?\n/)) {
+      const declared = /^\s*sitemap\s*:\s*(\S+)/i.exec(line)?.[1];
+      if (!declared) continue;
+      const origin = fabricatedOrigin(declared);
+      if (origin) return { file: asset, detail: `\`${origin}\` is not a real production origin` };
+      if (!/^https?:\/\//i.test(declared)) {
+        return { file: asset, detail: `\`${declared}\` is relative, and the \`Sitemap:\` directive must be an absolute URL` };
+      }
+    }
+  }
+  return null;
+}
+
+// Third parity twin: the tester OWNS `vitest.config.ts`/`playwright.config.ts`
+// but never the manifest that would carry their dependencies and scripts, so a
+// run can hand it configs for runners that are not installed. Observed 6co: the
+// first tester had no Vitest, Playwright, Lighthouse, or `test`/`test:e2e`
+// script at all and had to negotiate with the manifest owner mid-run; the
+// `playwright.config.ts` it finally wrote is `defineConfig({ testDir:
+// './tests/e2e' })` — no `baseURL`, no `webServer` — so `test:e2e` still cannot
+// run. Ownership must stay single, so accountability lands on whoever owns the
+// governing manifest: it must ship the runner before claiming `IMPLEMENTED`.
+const TEST_RUNNER_REQUIREMENTS: Array<{
+  config: RegExp;
+  dependency: string;
+  script: string;
+  label: string;
+}> = [
+  { config: /(?:^|\/)vitest\.config\.[cm]?[jt]s$/, dependency: 'vitest', script: 'test', label: 'Vitest' },
+  { config: /(?:^|\/)playwright\.config\.[cm]?[jt]s$/, dependency: '@playwright/test', script: 'test:e2e', label: 'Playwright' },
+];
+
+export function testToolchainGaps(
+  projectRoot: string,
+  architecture: CompiledArchitectureV1,
+  ownerRole: string,
+  performanceAudited = false,
+): { manifest: string; missing: string[] } | null {
+  const infra = (architecture.scaffoldOutputs || []).filter((output) => output.kind === 'test-infra');
+  if (infra.length === 0) return null;
+  // One governing manifest per config; only the role that owns it is answerable.
+  const manifestFor = (outputPath: string): string => {
+    const pkg = /^((?:apps|packages|services)\/[^/]+)\//.exec(outputPath)?.[1];
+    return pkg ? `${pkg}/package.json` : 'package.json';
+  };
+  const manifestPath = manifestFor(infra[0]!.path);
+  const manifestOwner = (architecture.scaffoldOutputs || [])
+    .find((output) => output.path === manifestPath)?.ownerRole;
+  if (manifestOwner !== ownerRole) return null;
+  const pkg = jsoncFile(projectRoot, manifestPath)?.parsed || null;
+  const deps = { ...(pkg ? obj(pkg.dependencies) : null), ...(pkg ? obj(pkg.devDependencies) : null) };
+  const scripts = pkg ? obj(pkg.scripts) || {} : {};
+  const missing: string[] = [];
+  for (const requirement of TEST_RUNNER_REQUIREMENTS) {
+    if (!infra.some((output) => requirement.config.test(output.path))) continue;
+    if (typeof deps[requirement.dependency] !== 'string') {
+      missing.push(`\`${requirement.dependency}\` dependency (${requirement.label})`);
+    }
+    if (typeof scripts[requirement.script] !== 'string') {
+      missing.push(`\`${requirement.script}\` script (${requirement.label})`);
+    }
+  }
+  // A contract that AUDITS page speed — required or advisory — runs
+  // project-local Lighthouse (the canonical runner refuses a global binary).
+  // Nothing compiled the dependency in 8co, so the tester — who does NOT own the
+  // manifest — was blocked and had to route a review finding at the implementer.
+  // The manifest owner ships it up front instead.
+  if (performanceAudited && typeof deps.lighthouse !== 'string') {
+    missing.push('`lighthouse` dependency (page-speed QA)');
+  }
+  return missing.length > 0 ? { manifest: manifestPath, missing } : null;
+}
+
+// The toolchain gates above prove a compiler/formatter is REACHABLE. They cannot
+// prove it was RUN — and an implementer that says so in its own digest has
+// already published the evidence: observed 6co, `backend.md` read "TypeScript
+// execution was skipped because dependencies are not installed … `pnpm exec tsc
+// --version` reported `tsc` not found" directly above `verdict: IMPLEMENTED`.
+// Take the digest at its word rather than letting the omission surface two fix
+// cycles later in a sibling role's build.
+const REQUIRED_COMMAND_RE = /\b(?:tsc|typecheck|type-check|typescript|prettier|format:check|eslint|lint|build)\b/i;
+const SKIPPED_COMMAND_RE = /\b(?:skipped|not run|never run|did not run|didn'?t run|could ?n[o']t (?:be )?run|cannot (?:be )?run|can'?t (?:be )?run|unable to run|not installed|not available|unavailable|not found|missing)\b/i;
+// "no checks were skipped", "0 files skipped", "nothing was omitted" are reports
+// of absence, not confessions.
+const NEGATED_SKIP_RE = /\b(?:no|none|nothing|zero|0|not)\b(?:[^.;\n]{0,40}?)\b(?:skipped|omitted|missing|unavailable)\b/i;
+
+export function skippedVerificationLine(content: string): string | null {
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    if (!REQUIRED_COMMAND_RE.test(line)) continue;
+    if (!SKIPPED_COMMAND_RE.test(line)) continue;
+    if (NEGATED_SKIP_RE.test(line)) continue;
+    return line.length > 240 ? `${line.slice(0, 240)}…` : line;
+  }
+  return null;
+}

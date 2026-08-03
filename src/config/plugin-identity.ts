@@ -32,17 +32,17 @@ export function pluginNodeEngine(root: string = pluginRoot()): string {
 
 // ── Per-host manifest descriptions (verbatim; one place to edit) ─────────────
 
-export const CLAUDE_PLUGIN_DESCRIPTION = 'Senior-engineer team workflow for TypeScript apps (React web, Ionic/Capacitor, explicit React Native): browser onboarding wizard, persistent .traffic-one project memory, codebase-graph token economy with handoff digests, OpenCode free-tier delegation, design/QA/Lighthouse gates, pre-deploy security scanner. Hooks enforce auth, plan, and deploy gates; skills auto-trigger on semantic match.';
+export const CLAUDE_PLUGIN_DESCRIPTION = 'Capability-driven senior-engineer workflow for web, native, API, CLI, worker, and data projects: runtime-compiled architecture/work-unit/verification contracts, structural enforcement, persistent .traffic-one project memory, scoped handoff digests, risk-proportional QA, and pre-deploy security gates. Hooks enforce policy before tools run; roles and skills are materialized only for the detected stack.';
 
-export const CLAUDE_MARKETPLACE_DESCRIPTION = 'React + Ionic/Capacitor + explicit React Native TypeScript plugin gated by wizard-validated API-key authentication, with a senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) and auto-orchestration, a browser-based onboarding wizard (local HTTP server, no chat popups), plus a token-economy layer (per-phase handoff digests + required codebase-graph provider choice at onboarding — GitNexus or graphify — with auto-install + auto-run) that cuts redundant codebase reads across the team by an estimated 50–70%. Modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile QA runner, app launch checklist guidance, post-deploy observability guidance, AI fix suggestions with approval gates, WebSocket patterns, accessibility, Gitflow. Auth gate + plan gate + deploy gate enforced via hooks where supported. Compatible with Claude Code, Codex CLI, and Cursor.';
+export const CLAUDE_MARKETPLACE_DESCRIPTION = 'Capability-driven senior-engineer plugin for React/Vite, Next.js, Nuxt, Laravel, Go, Python, native, API-only, CLI, worker, data, and custom stacks. The runtime derives surfaces and framework conventions, compiles immutable architecture/work-unit/verification contracts, enforces role and output scope before tools run, blocks structurally invalid UI modules, and materializes only applicable rules and skills. Functional UI QA uses local Playwright or native adapters according to mechanically derived risk; screenshots and Lighthouse are conditional. Includes persistent project memory, handoff digests, codebase graph integration, security/deploy gates, and cross-host adapters for Claude, Codex, Cursor, OpenCode, Kilo, Copilot, and Windsurf.';
 
-export const CODEX_DESCRIPTION = 'Senior-engineer team workflow for TypeScript apps (React web, Ionic/Capacitor, explicit React Native): browser onboarding wizard, persistent .traffic-one project memory, codebase-graph token economy with handoff digests, OpenCode free-tier delegation, design/QA/Lighthouse gates, pre-deploy security scanner. Hooks enforce auth, plan, and deploy gates; rules and the senior role team load from the project-materialized AGENTS.md.';
+export const CODEX_DESCRIPTION = 'Capability-driven senior-engineer workflow for web, native, API, CLI, worker, and data projects. Runtime hooks compile and enforce architecture, role, output, model, and risk-proportional QA contracts; project-materialized AGENTS.md exposes only stack-applicable roles, rules, and skills.';
 
-export const CODEX_LONG_DESCRIPTION = 'Traffic One adds a wizard-validated API-key authentication gate, a browser-based onboarding wizard (local HTTP server), opinionated React, Ionic/Capacitor mobile packaging, explicit React Native, TypeScript, Turborepo, persistent .traffic-one project memory, modern clean UI design gates, visual QA, testing, app launch checklist guidance, post-deploy observability guidance, AI fix suggestions with approval gates, pre-deployment security scanning, and Gitflow rules with project-specific Codex skills and hooks.';
+const CODEX_LONG_DESCRIPTION = 'Traffic One derives project capabilities for web, native, API, CLI, worker, and data surfaces; compiles immutable architecture, work-unit, model-policy, and verification contracts; and enforces them through host hooks before tools run. It supports React/Vite, Next.js, Nuxt, Laravel, Go, Python, native platforms, API-only services, and custom stacks without assigning frontend roles or browser QA to non-UI projects. UI verification is risk-proportional: local Playwright for behavioral browser work, screenshots only for visual work, native simulator/emulator adapters for native UI, and Lighthouse only when performance risk or an explicit requirement demands it. Persistent .traffic-one memory, scoped handoff digests, security/deploy gates, and stack-filtered rules and skills remain available across supported hosts.';
 
-export const CURSOR_DESCRIPTION = 'Senior-engineer team workflow for TypeScript apps (React web, Ionic/Capacitor, explicit React Native): browser onboarding wizard, persistent .traffic-one project memory, codebase-graph token economy with handoff digests, OpenCode free-tier delegation, design/QA/Lighthouse gates, pre-deploy security scanner. Senior role rules auto-attach via globs; skills auto-trigger on semantic match.';
+export const CURSOR_DESCRIPTION = 'Capability-driven senior-engineer workflow for web, native, API, CLI, worker, and data projects. Generic pre-tool hooks enforce runtime-compiled architecture, role, model, output, and QA contracts; only stack-applicable rules and skills are materialized.';
 
-export const COPILOT_DESCRIPTION = 'Senior-engineer team workflow for TypeScript apps (React web, Ionic/Capacitor, explicit React Native): browser onboarding wizard, persistent .traffic-one project memory, codebase-graph token economy with handoff digests, OpenCode free-tier delegation, design/QA/Lighthouse gates, pre-deploy security scanner. Hooks enforce auth, plan, and deploy gates; rules load via AGENTS.md; skills auto-trigger on semantic match. Compatible with GitHub Copilot CLI and VS Code.';
+export const COPILOT_DESCRIPTION = 'Capability-driven senior-engineer workflow for web, native, API, CLI, worker, and data projects. Host PreToolUse hooks enforce runtime-compiled architecture, role, model, output, and QA contracts; AGENTS.md receives only stack-applicable rules and skills.';
 
 // ── Codex/Cursor manifest interface metadata ─────────────────────────────────
 // Verbatim; key + array-element order is preserved so the generated manifests
@@ -58,8 +58,8 @@ export const CODEX_INTERFACE = {
   category: 'Developer Tools',
   capabilities: ['Interactive', 'Read', 'Write'],
   defaultPrompt: [
-    'Build a production-ready TypeScript app with Traffic One',
-    'Run responsive visual QA for this route',
+    'Build a production-ready application with Traffic One',
+    'Run risk-proportional UI QA for this change',
     'Run the Traffic One Security Check',
   ],
   brandColor: '#2563EB',
@@ -67,11 +67,12 @@ export const CODEX_INTERFACE = {
 };
 
 export const CURSOR_KEYWORDS = [
-  'react', 'ionic', 'capacitor', 'react-native', 'typescript', 'turborepo',
-  'rtk-query', 'launch-checklist', 'observability', 'design-quality', 'cursor-rules',
+  'react', 'nextjs', 'nuxt', 'laravel', 'go', 'python', 'ionic', 'capacitor',
+  'react-native', 'swift', 'kotlin', 'api', 'cli', 'observability',
+  'design-quality', 'cursor-rules',
 ];
 
 export const CURSOR_TAGS = [
-  'react', 'ionic', 'capacitor', 'react-native', 'typescript',
-  'design-quality', 'launch-checklist', 'observability', 'testing', 'security',
+  'web', 'native', 'backend', 'api', 'react', 'nextjs', 'nuxt', 'laravel',
+  'go', 'python', 'testing', 'security', 'observability',
 ];

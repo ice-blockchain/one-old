@@ -66,7 +66,15 @@ test('install requires explicit consent and writes an owned global wrapper', () 
     assert.ok(body.includes('--host=opencode'));
     assert.ok(body.includes('id: "traffic-one"'));
     assert.ok(body.includes('server: TrafficOne'));
-    assert.ok(!body.includes('tui.'));
+    // v2 wrapper surfaces: session.idle turn-end delivery via a FEATURE-DETECTED
+    // host toast (never client.session.prompt — that injects a model turn), and
+    // the composed [Traffic One] banner (systemMessage) in chat.message.
+    assert.ok(body.includes('"event"'), 'the event hook must be subscribed');
+    assert.ok(body.includes('session.idle'));
+    assert.ok(body.includes("typeof tui.showToast === 'function'"), 'toast delivery must be feature-detected');
+    assert.ok(!body.includes('client.session.prompt'), 'never inject a model turn from the wrapper');
+    assert.ok(body.includes("'\\n\\n[Traffic One]\\n' + banner"), 'the systemMessage banner must survive composition (not shadowed by context)');
+    assert.ok(body.includes('"wrapperApi":2'), 'the owner stamp carries the wrapper API generation');
     assert.ok(!body.includes('session.start'));
     assert.ok(!body.includes('opencode_delegate'));
     assert.match(installed.stdout, /Restart OpenCode/);
@@ -82,8 +90,7 @@ test('install requires explicit consent and writes an owned global wrapper', () 
 
 test('central registration switch keeps the OpenCode wrapper but omits public MCP config', () => {
   withHome((env) => {
-    env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION = '1';
-    const installed = installWrapper(env, ['install', '--yes']);
+    const installed = installWrapper(env, ['install', '--yes'], false);
     assert.equal(installed.code, 0);
     const config = JSON.parse(fs.readFileSync(opencodeGlobalConfigPath(env), 'utf8')) as {
       plugin?: string[];
@@ -93,7 +100,7 @@ test('central registration switch keeps the OpenCode wrapper but omits public MC
     assert.equal(config.plugin?.length, 1);
     assert.equal(config.mcp, undefined);
     assert.equal(config.permission, undefined);
-    assert.equal(doctorWrapper(env).code, 0);
+    assert.equal(doctorWrapper(env, ['doctor'], false).code, 0);
   });
 });
 
@@ -274,7 +281,10 @@ test('wrapper source uses host-stamped runtime hooks and throws only on before-t
   assert.match(source, /out\.args/);
   assert.match(source, /ctx = \{\}/);
   assert.match(source, /server: TrafficOne/);
-  assert.ok(!source.includes('tui.'));
+  // v2: the only tui usage is the feature-detected session-idle toast; a
+  // session-prompt injection from the wrapper remains forbidden (model-turn loop).
+  assert.ok(source.includes("typeof tui.showToast === 'function'"));
+  assert.ok(!source.includes('client.session.prompt'));
   assert.ok(source.includes('opencode.jsonc'));
   assert.match(source, /trafficOneHookEnv/);
   assert.match(source, /resolveTrafficOneEnv/);
@@ -309,4 +319,21 @@ test('wrapper denies managed MCP tools before project lookup or runtime spawn', 
     else process.env.HOME = previousHome;
     fs.rmSync(base, { recursive: true, force: true });
   }
+});
+
+test('doctor reports stale-wrapper for a generation-1 owner stamp', () => {
+  withHome((env) => {
+    assert.equal(installWrapper(env, ['install', '--yes'], true).code, 0);
+    const file = opencodeGlobalPluginPath(env);
+    // Rewrite the owner stamp WITHOUT wrapperApi — the pre-v2 install shape.
+    const body = fs.readFileSync(file, 'utf8');
+    const downgraded = body.replace(/"wrapperApi":\d+,/, '');
+    assert.notEqual(downgraded, body, 'the fresh stamp must have carried wrapperApi');
+    fs.writeFileSync(file, downgraded, 'utf8');
+    const doctor = doctorWrapper(env, ['doctor'], true);
+    assert.equal(doctor.code, 1, 'a stale wrapper is a doctor failure until reinstalled');
+    assert.match(doctor.stdout, /wrapperApi: 1/);
+    assert.match(doctor.stdout, /stale-wrapper/);
+    assert.match(doctor.stdout, /install --yes/);
+  });
 });

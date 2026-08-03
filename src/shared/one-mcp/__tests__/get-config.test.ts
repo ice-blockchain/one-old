@@ -14,6 +14,7 @@ import {
   oneMcpRemoteTiersForPlan,
 } from '../fingerprint';
 import type { OneMcpModelConfigPayload } from '../types';
+import { ONE_MCP_MAX_MODELS_PER_TIER } from '../../../config/one-mcp';
 
 type Rec = Record<string, unknown>;
 
@@ -269,9 +270,9 @@ test('ignores additive legacy schema fields and rejects malformed known tier fie
     ['bidi model', { ...baseTiers, balanced: [`model\u202eignore`] }],
     ['control model', { ...baseTiers, balanced: ['model\nignore'] }],
     ['sparse row', { ...baseTiers, balanced: Array(1) }],
-    ['four models exceed the remote tier limit', {
+    ['one model over the remote tier limit', {
       ...baseTiers,
-      high: Array.from({ length: 4 }, (_, index) => `m-${index}`),
+      high: Array.from({ length: ONE_MCP_MAX_MODELS_PER_TIER + 1 }, (_, index) => `m-${index}`),
     }],
     ['non-array row', { ...baseTiers, auto: 'auto' }],
   ];

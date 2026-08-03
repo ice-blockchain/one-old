@@ -1,7 +1,7 @@
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
+  DEFAULT_PUBLIC_ENDPOINT,
 } from '../../../config/one-mcp';
 import type { HostModelKey } from '../../../config/model-tiers';
 import type { HostModelSnapshot } from '../../model-tiers';
@@ -9,7 +9,7 @@ import {
   oneMcpPayloadFingerprint,
   type OneMcpModelConfigPayload,
 } from '../../one-mcp';
-import { writeOneMcpConfigCacheEntry } from '../../one-mcp-cache';
+import { writeOneMcpConfigCacheEntry } from '../../one-mcp/cache';
 
 /** Seed the authoritative runtime sidecar from a resolved test snapshot. */
 export function writeRuntimeModelSnapshot(
@@ -28,7 +28,7 @@ export function writeRuntimeModelSnapshot(
   };
   const updatedAt = `2026-07-${String(10 + Math.min(version, 9)).padStart(2, '0')}T00:00:00.000Z`;
   writeOneMcpConfigCacheEntry(host, {
-    endpoint: publicEndpoint(env),
+    endpoint: DEFAULT_PUBLIC_ENDPOINT,
     configName: ONE_MCP_CONFIG_NAME_BY_HOST[host],
     decoderVersion: ONE_MCP_DECODER_VERSION,
     version,

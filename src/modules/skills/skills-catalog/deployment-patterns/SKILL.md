@@ -1,6 +1,6 @@
 ---
 name: deployment-patterns
-description: Deployment workflows, static-host SPA/Supabase deployment artifacts, CI/CD pipeline patterns, Docker containerization, health checks, rollback strategies, and production readiness checklists for web and Capacitor applications.
+description: Deployment workflows, CI/CD, packaging, health checks, rollback, and production-readiness patterns for web, native, API, CLI, worker, and data workloads; apply stack-specific sections only when their capability surface exists.
 metadata:
   source: everything-claude-code
   source_path: skills/deployment-patterns/SKILL.md
@@ -10,11 +10,18 @@ metadata:
 
 # Deployment Patterns
 
-Production deployment workflows and CI/CD best practices. For Traffic One
-React SPA + Supabase projects, the default output is the smallest set of
-production artifacts that can ship reliably: one static-host manifest, one
-CI/CD workflow, environment documentation, Supabase migrations, and a concrete
-rollback path. Docker is only for self-hosted, BYOC, or server-runtime targets.
+Production deployment workflows and CI/CD best practices for every capability
+profile. Start from the runtime-owned surfaces and use only their matching
+section: package and release a CLI, schedule a worker/data job, deploy an API,
+ship a native build, or publish a web build. Never introduce browser, mobile,
+container, database, or Supabase artifacts for a profile that lacks that
+surface.
+
+For Traffic One React SPA + Supabase projects specifically, the default output
+is the smallest set of production artifacts that can ship reliably: one static
+build, one CI/CD workflow, environment documentation, Supabase migrations, and
+a concrete rollback path. Docker is only for self-hosted, BYOC, or
+server-runtime targets.
 
 ## When to Activate
 
@@ -28,6 +35,10 @@ rollback path. Docker is only for self-hosted, BYOC, or server-runtime targets.
 - Preparing Capacitor/Ionic app-store build and submission artifacts
 
 ## Traffic One Deployment Artifact Default
+
+Apply this section only when the profile contains `web-ui` with React/Vite and
+Supabase. Other profiles use their native stack build/package/test/deploy
+commands and must not inherit these files.
 
 Generate deployment artifacts in this order:
 

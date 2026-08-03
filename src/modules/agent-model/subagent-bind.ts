@@ -8,7 +8,7 @@ import { asString } from '../../adapters/coerce';
 import { obj } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
 import {
@@ -19,6 +19,7 @@ import {
   readCodexSessionMetaIdentity,
   observeCodexChildModel,
   readEffectiveState,
+  normalizeHostCallId,
   recordCursorSpawnObservation,
   recordRunAgent,
   transcriptThreadId,
@@ -30,6 +31,7 @@ import { modelChoiceReplyPending } from './model-choice';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import { settleCorrelatedCursorRetryOnStart } from './cursor-failures';
 import { canonicalHost } from '../../shared/model-tiers';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 
 function evidenceTier(evidence: RoleEvidence): number {
   if (evidence.source.startsWith('codex-session-meta-') || evidence.source.startsWith('host-')) return 1;
@@ -65,6 +67,10 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // and use it for every state read/write below; otherwise a start event can
   // split the run across nested `.traffic-one` trees.
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  // SubagentStart is lifecycle-only and has no target path. The plugin source
+  // and installed plugin trees are not Traffic One projects, so do not record a
+  // parent session or require a model policy there.
+  if (isNonProjectRoot(cwd)) return noop();
   if (pluginUseDeclined(cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
@@ -123,7 +129,10 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // by hookSessionIdentity.declaredRole). Cursor may also send a generic
   // subagent_type and put the real role marker in the task body. Codex identity
   // comes from exact task_name when the hook carries it or line-zero child
-  // session_meta; encrypted task content is never treated as role evidence.
+  // session_meta; when the spawn omitted task_name (schema-variant spawn tools),
+  // the plaintext spawn prompt in the child rollout carries the `[t1-role: …]`
+  // marker and the transcript inference below recovers it (or the first
+  // PreToolUse does, once the record has landed).
   const inputResolution = inferTrafficOneSpawnRoleEvidence(raw);
   // Cursor SubagentStart normally points at the parent's transcript. Never let
   // historical user records there grant the new child a role; the task body or
@@ -135,10 +144,19 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   const codexMeta = ctx.host === 'codex' && transcriptPath
     ? readCodexSessionMetaIdentity(transcriptPath)
     : null;
+  // Codex reports the ROOT conversation as session_id for EVERY child while
+  // line-zero `parent_thread_id` names the IMMEDIATE parent — for a depth-2
+  // spawn (a senior child spawning a same-role replacement sibling) the two are
+  // different TRUE statements, not an identity mismatch (observed 9c-codex: the
+  // frontend-spawned backend replacement failed role binding here). A parent
+  // contradiction exists only when the hook EXPLICITLY names a parent that is
+  // neither the line-zero immediate parent nor the root session.
   const codexIdentityMismatch = Boolean(codexMeta && (
     (codexMeta.threadId && transcriptThread && codexMeta.threadId.toLowerCase() !== transcriptThread.toLowerCase())
     || (codexMeta.threadId && identity.agentId && codexMeta.threadId.toLowerCase() !== identity.agentId.toLowerCase())
-    || (codexMeta.parentThreadId && identity.sessionId && codexMeta.parentThreadId !== identity.sessionId)
+    || (codexMeta.parentThreadId && identity.parentSessionId
+      && codexMeta.parentThreadId !== identity.parentSessionId
+      && identity.parentSessionId !== identity.sessionId)
   ));
   const transcriptResolution = mayUseTranscript
     ? inferRoleEvidenceFromTranscript(transcriptPath)
@@ -152,10 +170,15 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   const codexActualModel = ctx.host === 'codex'
     ? asString(raw.model ?? payload.model).trim()
     : '';
+  // Observation parent: line-zero's immediate parent when readable; otherwise
+  // NOTHING. Recording the SubagentStart-time guess (the hook's root session)
+  // made the first PreToolUse — which reads the line-zero parent — a terminal
+  // `parent-session-conflict` for every depth-2 replacement (observed 9c-codex).
+  const codexObservedParent = codexMeta?.parentThreadId || null;
   let codexObservation = ctx.host === 'codex' && runId && codexChildId
     ? observeCodexChildModel(cwd, runId, {
       childId: codexChildId,
-      parentSessionId: parentSession,
+      parentSessionId: codexObservedParent,
       actualModel: codexActualModel || null,
       role: role || null,
       source: 'SubagentStart',
@@ -188,12 +211,13 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       'Traffic One could not bind this child thread to a senior role, so no per-run role claim was created. '
       + 'Do not write files from this child until the parent/orchestrator repairs the spawn. '
       + 'Parent/orchestrator: stop or replace this child and retry the same role. On Codex use the exact canonical '
-      + '`task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, '
+      + '`task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, '
       + '`senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and '
-      + '`fork_turns: "none"`. Current Codex encrypts the spawn message in the child rollout, '
-      + 'so task name and line-zero `session_meta`—not prompt prose—carry identity. On hosts with readable task '
-      + 'records, retain the unclaimable documentation placeholder `[t1-role: senior-<role>]` and substitute the '
-      + 'actual role in the task message; marker position is not an identity requirement. Do not self-assert a role in assistant prose.',
+      + '`fork_turns: "none"`. If the exposed spawn tool has NO task_name field, the FIRST line of the spawn '
+      + 'message must carry the literal role marker `[t1-role: senior-<role>]` (with the actual role substituted) — '
+      + 'the child rollout records the spawn prompt readably and the write gate recovers the role from it. '
+      + 'This binding may also complete on the child\'s first tool call once the spawn prompt lands in its '
+      + 'rollout. Do not self-assert a role in assistant prose.',
     );
   }
 
@@ -220,7 +244,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     }
     codexObservation = observeCodexChildModel(cwd, runId, {
       childId: codexChildId,
-      parentSessionId: parentSession,
+      parentSessionId: codexObservedParent,
       actualModel: codexActualModel || null,
       role,
       source: 'SubagentStart',
@@ -249,7 +273,15 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // and the orchestrator CONTINUES it (Task resume continuation) instead of re-spawning.
   // Cursor-only (gated on the subagent_id field; Claude/Codex record via the PostToolUse
   // recorder, which sees their agent_id in the tool result).
-  const cursorSubagentId = asString(raw.subagent_id);
+  // Normalize at the SOURCE. Cursor 3.12.30 leaks an HTTP chunk-length line into this
+  // id ("16\\nfc_…"), and this ONE value is written to TWO stores below
+  // (cursor-spawns.json via recordCursorSpawnObservation, agents.json via
+  // recordRunAgent). Normalizing only on the read side made those stores DIVERGE — the
+  // spawn ledger held the clean id while the agent registry held the raw one — which
+  // breaks every cross-store comparison (live-agent match, replace-if-matches retirement,
+  // PostToolUse result correlation, lifecycle followup targeting). One normalization here
+  // keeps both stores byte-identical, whichever spelling the host sent.
+  const cursorSubagentId = normalizeHostCallId(raw.subagent_id);
   if (ctx.host === 'cursor' && cursorSubagentId && boundRunId) {
     const rolePolicy = runPolicy?.host === 'cursor' ? runPolicy.roles[role] : null;
     const tier = rolePolicy?.tier || null;
@@ -308,7 +340,12 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       agentType: asString(raw.subagent_type) || null,
       parentSessionId: parentSession,
       roleSource: evidence?.source || null,
-      transcriptPath: transcriptPath || null,
+      // Cursor's SubagentStart transcript is the PARENT rollout (see the
+      // `mayUseTranscript` note above), so recording it as the CHILD agent's
+      // transcript is wrong data — and it re-clobbered the real child path on
+      // every continuation. Let the child-owned path recorded by `claimThreadRole`
+      // stand instead.
+      transcriptPath: transcriptIsChildOwned ? (transcriptPath || null) : null,
     });
   }
 

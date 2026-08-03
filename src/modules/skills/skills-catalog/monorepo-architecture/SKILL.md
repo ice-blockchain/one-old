@@ -1,6 +1,6 @@
 ---
 name: monorepo-architecture
-description: Design and maintain Turborepo + pnpm monorepos for Traffic One React/Vite. Package taxonomy, dependency direction, `turbo.json`, TS project references. Use when adding an app/package, splitting into `packages/*`, or auditing boundaries.
+description: Design and maintain Turborepo + pnpm monorepos for compatible Traffic One web frameworks. Package taxonomy, shared UI adapters, dependency direction, `turbo.json`, TS project references. Use when adding an app/package, splitting into `packages/*`, or auditing boundaries.
 ---
 
 # Monorepo Architecture
@@ -22,10 +22,10 @@ Skip this skill for single-app repos with no `packages/*` and no `pnpm-workspace
 ```text
 .
 ├─ apps/
-│  ├─ web/                  # React + Vite SPA (one per delivery target)
+│  ├─ web/                  # selected React/Vue/Svelte/Next/Nuxt/Astro app
 │  └─ mobile/               # Ionic/Capacitor or RN/Expo shell (when applicable)
 ├─ packages/
-│  ├─ ui/                   # shadcn primitives + shared components
+│  ├─ ui/                   # active shadcn-adapter output + shared compositions
 │  ├─ tailwind-config/      # Tailwind v4 globals (HSL tokens, @theme)
 │  ├─ eslint-config/        # shared ESLint flat config
 │  ├─ tsconfig/             # base + app/library tsconfig.json files
@@ -40,6 +40,13 @@ Skip this skill for single-app repos with no `packages/*` and no `pnpm-workspace
 ```
 
 Add a package only when 2+ apps (or 2+ packages) need the same code. One-off helpers stay in the app that uses them — `YAGNI` beats premature extraction.
+
+`packages/ui` is the exception for compatible new web projects: it is the
+canonical reusable UI boundary even with one initial app. Its
+`src/components/ui/` contains only active-adapter CLI output;
+domain-agnostic compositions live in `src/components/`, and consumers import
+the public `@app/ui` API. Add exactly the compiled product requirements after a
+live official-catalog lookup; never install a fixed component batch.
 
 ## Dependency Direction
 
@@ -238,6 +245,6 @@ Remote cache (Turborepo Remote Cache or self-hosted) is opt-in: set `TURBO_TOKEN
 - [ ] No circular package dependencies (`madge --circular`).
 - [ ] No deep relative imports across workspaces (`grep -rE "from ['\"]\.\.\/\.\.\/packages\/"`).
 - [ ] Shared `eslint-config`, `tsconfig`, and `tailwind-config` packages exist and are consumed by every app.
-- [ ] Every package exposes a `test` script wired into `turbo run test` (an explicit no-op is allowed, absence is not).
+- [ ] Every package that ships runtime source exposes a real `test` script wired into `turbo run test`; a config-only package (eslint config, tsconfig, tailwind tokens) omits `test` entirely — `turbo run test` skips a missing task. Never a `"test": "echo \"no tests\" && exit 0"` no-op: it inflates a green root run.
 - [ ] No script names a tool whose config/deps are missing (script/config parity — see `quality-tooling`).
 - [ ] CI uses `--frozen-lockfile` and caches `.turbo/`.

@@ -68,10 +68,6 @@ export function buildCaseEnv(
     env.XDG_DATA_HOME = path.join(caseFolder, 'xdg-data');
   }
 
-  if (config.auth === 'on') {
-    env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp'; // dead port
-  }
-
   if (host !== 'pure-node') {
     // Honoured by the host runner subprocesses for model-tier host selection.
     env.TRAFFIC_ONE_HOST = host;

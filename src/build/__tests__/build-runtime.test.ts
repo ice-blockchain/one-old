@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'child_process';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -13,7 +14,7 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
     'hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'opencode-hook-runtime.cjs', 'kilo-hook-runtime.cjs', 'windsurf-hook-runtime.cjs', 'devin-hook-runtime.cjs',
     'opencode-host.cjs', 'kilo-host.cjs', 'windsurf-host.cjs', 'one-mcp-sync.cjs', 'doctor.cjs',
     'security-check-runner.cjs', 'token-report.cjs', 'one-mcp-report.cjs', 'one-mcp-host.cjs', 'traffic-one-cleanup.cjs',
-    'gitnexus-runner.cjs', 'graphify-runner.cjs',
+    'qa-evidence-runner.cjs', 'gitnexus-runner.cjs', 'graphify-runner.cjs',
   ]) {
     assert.ok(name in SHIMS, `missing shim for ${name}`);
   }
@@ -27,6 +28,7 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
   assert.equal(SHIMS['devin-hook-runtime.cjs'], './hooks/devin-entry.js');
   assert.equal(SHIMS['windsurf-host.cjs'], './runners/windsurf-host/index.js');
   assert.equal(SHIMS['one-mcp-sync.cjs'], './runners/one-mcp-sync/index.js');
+  assert.equal(SHIMS['qa-evidence-runner.cjs'], './runners/qa-evidence/index.js');
 });
 
 test('writeShims emits a require+main forwarder for each legacy path', () => {
@@ -59,6 +61,13 @@ test('buildRuntime replaces the output tree so deleted source artifacts cannot l
     assert.equal(fs.existsSync(stale), false);
     assert.equal(fs.existsSync(path.join(outDir, 'hooks', 'claude-entry.js')), true);
     assert.equal(fs.existsSync(path.join(outDir, 'hook-runtime.cjs')), true);
+    const qaHelp = spawnSync(
+      process.execPath,
+      [path.join(outDir, 'qa-evidence-runner.cjs'), 'help'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(qaHelp.status, 0, qaHelp.stderr);
+    assert.match(qaHelp.stdout, /traffic-one QA evidence runner/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -6,6 +6,13 @@ import * as path from 'path';
 
 import { WINDSURF_AGENT_MARKER, WINDSURF_AGENTS_REL, writeWindsurfAgentFiles } from '../windsurf-agents';
 
+const FULL_STATE = {
+  stack: 'default',
+  frontend: 'react-vite',
+  backend: 'supabase',
+  mobile: { framework: 'none' },
+};
+
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-agents-'));
 }
@@ -13,7 +20,7 @@ function tmp(): string {
 test('writeWindsurfAgentFiles writes model-agnostic contracts without local preferences', () => {
   const cwd = tmp();
   try {
-    const written = writeWindsurfAgentFiles(cwd, {});
+    const written = writeWindsurfAgentFiles(cwd, FULL_STATE);
     assert.ok(written >= 6);
     const architect = fs.readFileSync(path.join(cwd, WINDSURF_AGENTS_REL, 'senior-architect', 'AGENT.md'), 'utf8');
     assert.ok(architect.includes(WINDSURF_AGENT_MARKER));
@@ -30,8 +37,8 @@ test('writeWindsurfAgentFiles output is independent of local performance', () =>
   const low = tmp();
   const high = tmp();
   try {
-    writeWindsurfAgentFiles(low, { team: { mode: 'main-agent' }, performance: { level: 'low' } });
-    writeWindsurfAgentFiles(high, { team: { mode: 'subagents' }, performance: { level: 'high' } });
+    writeWindsurfAgentFiles(low, { ...FULL_STATE, team: { mode: 'main-agent' }, performance: { level: 'low' } });
+    writeWindsurfAgentFiles(high, { ...FULL_STATE, team: { mode: 'subagents' }, performance: { level: 'high' } });
     assert.equal(
       fs.readFileSync(path.join(low, WINDSURF_AGENTS_REL, 'senior-tester', 'AGENT.md'), 'utf8'),
       fs.readFileSync(path.join(high, WINDSURF_AGENTS_REL, 'senior-tester', 'AGENT.md'), 'utf8'),
@@ -49,7 +56,7 @@ test('writeWindsurfAgentFiles preserves user-authored Devin Local profiles', () 
     fs.mkdirSync(dir, { recursive: true });
     const target = path.join(dir, 'AGENT.md');
     fs.writeFileSync(target, '---\nname: custom\n---\nuser profile\n', 'utf8');
-    writeWindsurfAgentFiles(cwd, {});
+    writeWindsurfAgentFiles(cwd, FULL_STATE);
     assert.equal(fs.readFileSync(target, 'utf8'), '---\nname: custom\n---\nuser profile\n');
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
@@ -59,9 +66,9 @@ test('writeWindsurfAgentFiles preserves user-authored Devin Local profiles', () 
 test('writeWindsurfAgentFiles keeps generated contracts when switching to main-agent mode', () => {
   const cwd = tmp();
   try {
-    writeWindsurfAgentFiles(cwd, { team: { mode: 'subagents' }, performance: { level: 'balanced' } });
+    writeWindsurfAgentFiles(cwd, { ...FULL_STATE, team: { mode: 'subagents' }, performance: { level: 'balanced' } });
     assert.equal(fs.existsSync(path.join(cwd, WINDSURF_AGENTS_REL, 'senior-frontend', 'AGENT.md')), true);
-    writeWindsurfAgentFiles(cwd, { team: { mode: 'main-agent' }, performance: { level: 'low' } });
+    writeWindsurfAgentFiles(cwd, { ...FULL_STATE, team: { mode: 'main-agent' }, performance: { level: 'low' } });
     assert.equal(fs.existsSync(path.join(cwd, WINDSURF_AGENTS_REL, 'senior-frontend', 'AGENT.md')), true);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });

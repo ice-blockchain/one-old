@@ -1,8 +1,8 @@
 import { asString } from '../../adapters/coerce';
 import { deny, noop } from '../../core/result';
 import type { Ctx, Handler, HookResult } from '../../core/types';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
-import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
+import { isNonProjectRoot } from '../../shared/authoring-root';
+import { projectRelativeHookPath } from '../../shared/hook/paths';
 import { formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
@@ -20,6 +20,7 @@ import {
 } from '../../shared/tool-classify';
 import { rolesAwaitingModelChoice } from '../agent-model/cursor-failures';
 import { modelChoiceReplyPending } from '../agent-model/model-choice';
+import { resolveToolScope } from '../../shared/tool-scope';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -32,9 +33,10 @@ export function modelChoiceGate(ctx: Ctx): HookResult {
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
 
-  if (isPluginAuthoringRoot(ctx.cwd)) return noop();
-  const root = resolveProjectRoot(ctx.cwd, filePath, { ceiling: ctx.input.workspaceRoot });
-  if (isPluginAuthoringRoot(root)) return noop();
+  const scope = resolveToolScope(ctx);
+  if (scope.standsDown) return noop();
+  const root = scope.projectRoot;
+  if (isNonProjectRoot(root)) return noop();
   if (pluginUseDeclined(root)) return noop();
 
   const state = readEffectiveState(root);

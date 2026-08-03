@@ -79,7 +79,6 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-promptsub-'));
   const env = process.env;
   const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
-  const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   const prevToolchainRoot = env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
@@ -91,7 +90,6 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const prevCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
@@ -128,7 +126,6 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   }
   try { fn(dir); } finally {
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
-    if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     if (prevToolchainRoot === undefined) delete env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else env.TRAFFIC_ONE_TOOLCHAIN_ROOT = prevToolchainRoot;
@@ -222,6 +219,42 @@ test('declined project: silent on normal prompts; an explicit Traffic One mentio
   });
 });
 
+// The chat message is the last moment our code runs at all — no host fires a
+// plugin uninstall hook — so the check sits ahead of every gate below it.
+test('an uninstall request is answered from anywhere, including outside a project', () => {
+  for (const cwd of [process.cwd(), os.tmpdir()]) {
+    const r = runUserPromptSubmit(ctx(cwd, 'uninstall traffic one'));
+    assert.equal(r.kind, 'context', `expected the directive from ${cwd}`);
+    if (r.kind === 'context') {
+      assert.match(r.context, /ONE explicit confirmation/);
+      assert.ok(r.context.includes('traffic-one-uninstall.cjs'), 'carries the cleanup command');
+      assert.equal(r.systemMessage, 'traffic-one [uninstall requested]');
+    }
+  }
+});
+
+test('an uninstall request on a DECLINED project uninstalls — it does not offer to re-enable', () => {
+  withAuthedProject(null, (cwd) => {
+    recordPluginUseChoice(cwd, false, 'command');
+    const r = runUserPromptSubmit(ctx(cwd, 'please uninstall the traffic one plugin'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.match(r.context, /UNINSTALL Traffic One/);
+      assert.ok(!r.context.includes('--reconsider'), 'the reconsider branch must not claim this prompt');
+    }
+  });
+});
+
+test('talk ABOUT uninstalling is not an uninstall request', () => {
+  withAuthedProject(null, (cwd) => {
+    for (const prompt of ['how do I uninstall traffic one?', "don't uninstall traffic one"]) {
+      const r = runUserPromptSubmit(ctx(cwd, prompt));
+      const text = r.kind === 'context' ? r.context : '';
+      assert.ok(!text.includes('traffic-one-uninstall.cjs'), `must not arm the cleanup: ${prompt}`);
+    }
+  });
+});
+
 test('authed + no state + a coding prompt → bootstraps new-project setup (mid-session auth)', () => {
   withAuthedProject(null, (cwd) => {
     const r = runUserPromptSubmit(ctx(cwd, 'build a todo app with auth'));
@@ -304,7 +337,8 @@ test('coding-intent gate: a verb-less project description is captured (not dropp
   // Regression: "a marketplace where freelancers and clients find each other" has no
   // coding verb, so the narrow isLikelyCodingPrompt dropped it — the first project
   // description was captured nowhere and a later "ok build it" became originalPrompt,
-  // deriving `minimal`. promptHasStackSignal now admits it so the FIRST prompt wins.
+  // deriving a bare frontend shell with none of the real project's surfaces.
+  // promptHasStackSignal now admits it so the FIRST prompt wins.
   withAuthedProject(null, (cwd) => {
     const first = runUserPromptSubmit(ctx(cwd, 'a marketplace where freelancers and clients find each other'));
     assert.equal(first.kind, 'context', 'a real project description activates instead of being dropped');
@@ -323,12 +357,10 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
   const child = path.join(root, 'one-nextjs');
   const env = process.env;
   const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
-  const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   try {
     env.TRAFFIC_ONE_STATE_PATH = path.join(root, 'one.json');
-    env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
     env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(root, 'prefs.json');
     env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
     fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
@@ -363,7 +395,6 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
     assert.equal(rootStateAfter.stack, 'minimal');
   } finally {
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
-    if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     fs.rmSync(root, { recursive: true, force: true });
@@ -540,6 +571,19 @@ test('authed + complete, materialized project, local prefs resolved → plain ac
   });
 });
 
+test('an explicit UI library choice is persisted and never copied from a subagent prompt', () => {
+  withAuthedProject(completeSharedState(), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    runUserPromptSubmit(ctx(cwd, 'Use MUI for this frontend instead of shadcn'));
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).uiLibrary, 'mui');
+
+    runUserPromptSubmit(ctxSub(cwd, 'Use Chakra UI for my assigned component'));
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).uiLibrary, 'mui');
+  });
+});
+
 test('records a pending Cursor model-choice reply before normal prompt handling', () => {
   withAuthedProject(completeSharedState({ currentRunId: 'run-choice' }), (cwd) => {
     writeLocalPrefs();
@@ -587,6 +631,21 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
       // Prescriptive: force delegation + name the concrete cheapest model (host=claude → pinned Haiku id).
       assert.ok(r.context.includes('Do NOT make the edit yourself'), 'directive forbids inline work in subagents mode');
       assert.ok(r.context.includes('model "claude-haiku-4-5"'), 'names the concrete cheapest model');
+    }
+  });
+});
+
+test('Codex trivial maintenance publishes the complete quick_fix spawn contract', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctxHost(cwd, 'change the button copy to Continue', 'codex'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('task_name: "quick_fix"'), 'structured quick-fix identity is explicit');
+      assert.ok(r.context.includes('fork_turns: "none"'), 'fresh spawn never inherits full history');
+      assert.ok(r.context.includes('model: "gpt-5.6-terra"'), 'spawn uses the exact runtime policy model');
+      assert.ok(r.context.includes('never retry with a generic task name'), 'unavailable models do not authorize a generic fallback');
     }
   });
 });

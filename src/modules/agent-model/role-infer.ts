@@ -168,9 +168,6 @@ export function inferTrafficOneSpawnRoleEvidence(toolInput: Record<string, unkno
   return resolve(mentioned);
 }
 
-export function normalizeSubagentRole(subagentType: unknown): string | null {
-  return normalizeRoleIdentity(subagentType);
-}
 
 // Backward-compatible string API used by the existing gates and recorders.
 export function inferTrafficOneSpawnRole(toolInput: Record<string, unknown>): string | null {

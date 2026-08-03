@@ -17,7 +17,7 @@ import {
   type Stats,
 } from './lib';
 
-export interface CodexSession {
+interface CodexSession {
   id: string;
   jsonl: string;
   cwd: string | null;
@@ -27,7 +27,7 @@ export interface CodexSession {
   modelProvider: string | null;
   model: string;
 }
-export interface CodexParse { session: CodexSession; stats: Stats; trafficOne: TrafficOneEstimate }
+interface CodexParse { session: CodexSession; stats: Stats; trafficOne: TrafficOneEstimate }
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;

@@ -13,6 +13,10 @@ import type { Ctx, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { readEffectiveState } from '../../../shared/state';
+import { resolveModel } from '../../../shared/model-tiers';
+
+// Derived, never hardcoded: which family anchors a tier is editable policy.
+const CURSOR_HIGHEST_SLUG = `${resolveModel('highest', 'cursor', 'pro')}-thinking-high`;
 
 function withProj(opts: { models: string[] | null; overrides?: Record<string, string> }, fn: (cwd: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-mgate-')));
@@ -20,10 +24,10 @@ function withProj(opts: { models: string[] | null; overrides?: Record<string, st
   const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const pl = env.TRAFFIC_ONE_USER_PLAN;
   const ps = env.TRAFFIC_ONE_STATE_PATH;
-  const pm = env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const px = env.XDG_STATE_HOME;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(dir, 'state');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   const prefs = hostScopedPerformancePrefs(
@@ -41,7 +45,7 @@ function withProj(opts: { models: string[] | null; overrides?: Record<string, st
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
     if (ps === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = ps;
-    if (pm === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = pm;
+    if (px === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = px;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -141,7 +145,7 @@ test('modelGateShell always allows the internal capture command to refresh stale
 
 test('modelGateShell: a PICKED model not offered → askUser (permission:ask) naming the model + fallback', () => {
   // architect overridden to balanced (GPT-5.6 Terra), which the captured list LACKS.
-  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: [CURSOR_HIGHEST_SLUG, 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
@@ -156,7 +160,7 @@ test('modelGateShell: a PICKED model not offered → askUser (permission:ask) na
 });
 
 test('modelGate runner fails closed until explicit chat consent (use-fallback)', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: [CURSOR_HIGHEST_SLUG, 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-model-gate';
@@ -177,7 +181,7 @@ test('modelGate runner fails closed until explicit chat consent (use-fallback)',
 });
 
 test('modelGate after-shell surfaces exit-2 STOP as a Cursor user-visible message', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: [CURSOR_HIGHEST_SLUG, 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-after-shell';
@@ -210,7 +214,7 @@ test('modelGate runner fails closed when Cursor model capture is missing', () =>
 });
 
 test('modelGateShell: recognizes the real Cursor before-shell-execution shape', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: [CURSOR_HIGHEST_SLUG, 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.equal((r as { askUser?: boolean }).askUser, true);
@@ -218,17 +222,23 @@ test('modelGateShell: recognizes the real Cursor before-shell-execution shape', 
 });
 
 test('modelGateShell: every picked model offered → noop (the command runs, no prompt)', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.6-terra-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     assert.equal(modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor'))).kind, 'noop');
   });
 });
 
 test('modelGate runner prints the local spawn map while project agent contracts stay model-agnostic', () => {
-  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.6-terra-medium', 'composer-2.5-fast'], overrides: {} }, (cwd) => {
+  withProj({ models: [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra-medium', 'composer-2.5-fast'], overrides: {} }, (cwd) => {
     const approved = captureStdout(() => runModelGate([cwd, '--host=cursor']));
     assert.equal(approved.code, 0);
     assert.match(approved.out, /spawn map/i);
-    assert.match(approved.out, /senior-architect → claude-fable-5-thinking-high/);
+    // new-project: the `.cursor/agents/**` contracts were written by this same
+    // build, so the map recommends Cursor's built-in worker (a role-named type
+    // is not in the session's captured type set → "Couldn't start" on 1cu/3cu).
+    assert.ok(approved.out.includes(`senior-architect → subagent_type: "generalPurpose", model: ${CURSOR_HIGHEST_SLUG}`));
+    // The rejected-enum recovery must travel with the map, not only in the gate.
+    assert.match(approved.out, /Couldn't start/);
+    assert.match(approved.out, /\[t1-role: senior-<role>\]/);
     const architect = fs.readFileSync(path.join(cwd, '.cursor', 'agents', 'senior-architect.md'), 'utf8');
     assert.doesNotMatch(architect, /^model:/m);
     assert.match(architect, /senior-architect/);

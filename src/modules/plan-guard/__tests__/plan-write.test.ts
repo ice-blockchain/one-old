@@ -3,15 +3,24 @@ import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import { performance } from 'node:perf_hooks';
 
 import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
 import { writeModelChoice } from '../../agent-model/model-choice';
-import { claimThreadRole, ensureRunAgentClaim } from '../../../shared/state/run-agent';
+import { claimThreadRole, ensureRunAgentClaim, transitionRunStatus } from '../../../shared/state/run-agent';
 import { observeCodexChildModel, readEffectiveState } from '../../../shared/state';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { makeKiloAdapter } from '../../../adapters/kilo';
+import { makeOpenCodeAdapter } from '../../../adapters/opencode';
+import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+} from '../../../shared/architecture-contract';
+import { compileVerificationContract } from '../../../shared/verification-contract';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
@@ -81,6 +90,82 @@ test('clean write in a materialized main-agent project → noop', () => {
   });
 });
 
+// Regression (3co, 1.0.28): the architect ran the plugin's own contract
+// validator via `node -e` (read-only) and was denied 3× with "architecture
+// input must be valid JSON" while the on-disk file was valid. Unverifiable
+// shell references must judge the DISK artifact, not an empty pseudo-payload.
+test('node -e referencing a VALID on-disk architecture-input is not denied as invalid JSON', () => {
+  withMaterialized({ currentRunId: 'R', activeAgentRole: 'senior-architect' }, (cwd) => {
+    const inputPath = path.join(cwd, '.traffic-one', 'runs', 'R', 'architecture-input-v1.json');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    }), 'utf8');
+    const command = 'node -e "const fs=require(\'node:fs\'); const x=JSON.parse(fs.readFileSync(\'.traffic-one/runs/R/architecture-input-v1.json\',\'utf8\')); process.stdout.write(JSON.stringify(x.schemaVersion))"';
+    const result = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+    assert.equal(result.kind, 'noop', JSON.stringify(result));
+
+    // The extraction path is alive: the same command against an INVALID disk
+    // file still denies — now blaming the unverifiable command, not the file.
+    fs.writeFileSync(inputPath, '{ not json', 'utf8');
+    const denied = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.match(denied.reason, /cannot be reconstructed|not valid ArchitectureInputV1/);
+    }
+  });
+});
+
+test('plugin authoring cwd does not exempt an absolute project file from the plan/structure gate', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (project) => {
+    const target = path.join(project, 'apps', 'web', 'src', 'main.tsx');
+    // Collapsed source with NO reachable formatter (pre-install) stays in the
+    // write-time blocking set; convention findings (entrypoint components)
+    // accumulate instead of denying since the batched-feedback change.
+    const result = planWriteGate(writeCtx(process.cwd(), 'Write', 'file-write', {
+      file_path: target,
+      content: 'export function App(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /STRUCT_COLLAPSED_LINE/);
+    assert.equal(fs.existsSync(path.join(process.cwd(), '.traffic-one')), false);
+  });
+});
+
+// A gate is a pure function of on-disk state, so an unchanged retry draws the
+// same refusal forever with nothing counting. Measured in 17cl: 25 denies, 15 of
+// them repeats of four (file, reason) pairs, one refused seven times across 25
+// minutes before a replan resolved a one-line fix the deny text had already
+// named. The escalation is appended in `deny(...)` AFTER the violations are
+// assembled — which is why it can never appear in the deny journal, and why this
+// has to be asserted on the returned reason.
+test('an identical refusal escalates on the third attempt, and not before', () => {
+  withMaterialized({ currentRunId: 'R', team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const write = (): ReturnType<typeof planWriteGate> => planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/main.tsx',
+      content: 'export function App(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
+    }));
+    for (const attempt of [1, 2]) {
+      const early = write();
+      assert.equal(early.kind, 'deny');
+      if (early.kind === 'deny') {
+        assert.doesNotMatch(early.reason, /STOP RETRYING/, `attempt ${attempt} must read exactly as before`);
+      }
+    }
+    const escalated = write();
+    assert.equal(escalated.kind, 'deny');
+    if (escalated.kind === 'deny') {
+      assert.match(escalated.reason, /STOP RETRYING/);
+      assert.match(escalated.reason, /BLOCKED/, 'the escalation must name the honest exit');
+    }
+  });
+});
+
 test('OpenCode write (camelCase filePath) of a root Vite file is gated — was blind on opencode', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     // OpenCode's write tool sends `filePath` (camelCase); the snake_case-only read
@@ -93,6 +178,47 @@ test('OpenCode write (camelCase filePath) of a root Vite file is gated — was b
     }, {}, 'opencode'));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(/root Vite app files are not allowed|monorepo/i.test(r.reason));
+  });
+});
+
+test('OpenCode and Kilo documented output.args edits are reconstructed before structural analysis', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const relativeFile = 'apps/web/src/components/Greeting.tsx';
+    const absoluteFile = path.join(cwd, relativeFile);
+    fs.mkdirSync(path.dirname(absoluteFile), { recursive: true });
+    fs.writeFileSync(
+      absoluteFile,
+      'export function Greeting({ name }: { name: string }) { return <p>{name}</p>; }\n',
+      'utf8',
+    );
+
+    for (const [host, adapter] of [
+      ['opencode', makeOpenCodeAdapter()],
+      ['kilo', makeKiloAdapter()],
+    ] as const) {
+      const input = adapter.parse({
+        stdin: JSON.stringify({
+          event: 'tool.execute.before',
+          cwd,
+          tool: 'edit',
+          output: {
+            args: {
+              file_path: relativeFile,
+              old_string: 'Greeting',
+              new_string: 'WelcomeGreeting',
+            },
+          },
+        }),
+        argv: ['node', `${host}-hook-runtime`, 'before-tool-use', `--host=${host}`],
+      });
+      const result = planWriteGate({
+        input,
+        host,
+        cwd,
+        now: () => 'x',
+      } as unknown as Ctx);
+      assert.equal(result.kind, 'noop', `${host}: ${result.kind === 'deny' ? result.reason : ''}`);
+    }
   });
 });
 
@@ -115,7 +241,7 @@ test('Kilo write of root tsconfig.base.json is allowed as monorepo baseline', ()
   });
 });
 
-test('Kilo rootless macOS absolute assignments path is normalized to the project manifest', () => {
+test('Kilo rootless macOS absolute assignments path is normalized and runtime-owned', () => {
   withMaterialized({}, (cwd) => {
     const target = path.join(cwd, '.traffic-one', 'runs', 'run-1', 'assignments.json').slice(1);
     const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
@@ -129,7 +255,8 @@ test('Kilo rootless macOS absolute assignments path is normalized to the project
         ],
       }),
     }, { session_id: 'kilo-architect' }, 'kilo'));
-    assert.equal(r.kind, 'noop');
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.match(r.reason, /Runtime contract gate/);
   });
 });
 
@@ -147,6 +274,48 @@ test('subagents project: a feature write outside any role session is denied (run
       assert.match(r.reason, /`senior_frontend`/);
       assert.doesNotMatch(r.reason, /state your role explicitly/i);
     }
+  });
+});
+
+test('compiled Next root blocks an unplanned app/ write before the tool executes', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    frontend: 'nextjs',
+    backend: 'none',
+    materializedStack: 'default|nextjs|none|none',
+    currentRunId: 'run-compiled-root',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    fs.mkdirSync(path.join(cwd, 'app'), { recursive: true });
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const input = {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    };
+    const inputPath = architectureInputPath(cwd, 'run-compiled-root');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify(input), 'utf8');
+    const compiled = compileArchitectureForRun(cwd, 'run-compiled-root', state);
+    assert.ok(compiled.sourceRoots.some((root) => root === 'app'));
+
+    const result = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'app/rogue/page.tsx',
+      content: 'export default function Rogue() { return <main>Rogue</main>; }',
+    }, { session_id: 'orchestrator' }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /runtime assignment|runtime contract|team\.mode|allowlist/i);
+    }
+
+    const shell = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'touch app/rogue/other-page.tsx',
+    }, { session_id: 'orchestrator' }));
+    assert.equal(shell.kind, 'deny');
+    if (shell.kind === 'deny') assert.match(shell.reason, /shell command|runtime contract/i);
   });
 });
 
@@ -497,7 +666,43 @@ test('subagents project: denied readiness write does not leave a fallback path c
   });
 });
 
-test('subagents project: claimed senior-architect can write Tailwind globals baseline before PLAN_READY', () => {
+test('subagents project: architect may record ADRs under .traffic-one/decisions/', () => {
+  // 1cu-cursor: the gate accepted only `decisions/<runId>-architecture.md`,
+  // a name no prose mentions, so the documented ADR files were denied.
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'architect-child', 'senior-architect', { parentSessionId: 'orchestrator' }));
+
+    for (const filePath of [
+      '.traffic-one/decisions/README.md',
+      '.traffic-one/decisions/0001-seed-only-course-content.md',
+      '.traffic-one/decisions/run-1-architecture.md',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+        filePath,
+        content: '# Decision\n\nSeed-only catalog for v1.\n',
+      }, { session_id: 'architect-child' }, 'kilo'));
+      assert.notEqual(r.kind, 'deny', `${filePath}: ${r.kind === 'deny' ? r.reason : ''}`);
+    }
+
+    // still scoped to that directory: no traversal, no nesting, no non-markdown
+    for (const filePath of [
+      '.traffic-one/decisions/nested/adr.md',
+      '.traffic-one/decisions/adr.json',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+        filePath,
+        content: 'x\n',
+      }, { session_id: 'architect-child' }, 'kilo'));
+      assert.equal(r.kind, 'deny', filePath);
+    }
+  });
+});
+
+test('subagents project: architect cannot write Tailwind implementation before PLAN_READY', () => {
   withMaterialized({
     currentRunId: 'run-1',
     team: { mode: 'subagents', source: 'prompted', approved: true },
@@ -509,7 +714,8 @@ test('subagents project: claimed senior-architect can write Tailwind globals bas
       filePath: 'packages/tailwind-config/src/globals.css',
       content: '@import "tailwindcss";\n:root { color-scheme: light; }\n',
     }, { session_id: 'architect-child' }, 'kilo'));
-    assert.equal(r.kind, 'noop');
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.match(r.reason, /Architect scope gate/);
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-1', 'claims')), false);
   });
 });
@@ -563,7 +769,7 @@ test('Cursor pending model choice blocks direct scaffold writes until the user r
   }
 });
 
-test('subagents project: claimed senior-frontend can write flat root Next UI source', () => {
+test('subagents project: existing-codebase writes fail closed before current-run contracts', () => {
   withMaterialized({
     mode: 'existing-codebase',
     frontend: 'nextjs',
@@ -581,17 +787,17 @@ test('subagents project: claimed senior-frontend can write flat root Next UI sou
       file_path: 'src/app/(public)/news/page.tsx',
       content: 'export default function NewsPage() { return null; }',
     }, { session_id: 'orchestrator', transcript_path: transcript }));
-    assert.equal(route.kind, 'noop');
+    assert.equal(route.kind, 'deny');
 
     const feature = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'src/features/news/news-page.tsx',
       content: 'export function NewsPage() { return null; }',
     }, { session_id: 'orchestrator', transcript_path: transcript }));
-    assert.equal(feature.kind, 'noop');
+    assert.equal(feature.kind, 'deny');
   });
 });
 
-test('subagents project: assignment manifest routes writes by scope end-to-end', () => {
+test('subagents project: an agent-authored legacy assignment cannot authorize a v2 run', () => {
   withMaterialized({
     mode: 'existing-codebase',
     frontend: 'nextjs',
@@ -617,26 +823,123 @@ test('subagents project: assignment manifest routes writes by scope end-to-end',
     const mine = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'src/app/(public)/news/page.tsx', content: 'export default function P() { return null; }',
     }, { session_id: 'orchestrator', transcript_path: transcript }));
-    assert.equal(mine.kind, 'noop');
+    assert.equal(mine.kind, 'deny');
 
     const theirs = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'src/app/api/news/route.ts', content: 'export function GET() {}',
     }, { session_id: 'orchestrator', transcript_path: transcript }));
     assert.equal(theirs.kind, 'deny');
-    if (theirs.kind === 'deny') assert.ok(theirs.reason.includes('assigned scope'));
   });
 });
 
-test('subagents project: run-state heredocs pass; feature-source heredocs still deny (B1/B5)', () => {
+test('subagents project: cp asset-import cannot borrow an agent-authored legacy scope', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    frontend: 'nextjs',
+    backend: 'none',
+    materializedStack: 'default|nextjs|none|none',
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const threadId = '019e7390-ca45-7e03-84d3-284bda1ba905';
+    const transcript = path.join(cwd, `rollout-2026-05-29T14-48-49-${threadId}.jsonl`);
+    assert.ok(claimThreadRole(cwd, state, threadId, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+
+    const manifest = path.join(cwd, '.traffic-one', 'runs', 'run-1', 'assignments.json');
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({
+      version: 1, runId: 'run-1', assignments: [
+        { role: 'senior-frontend', agentKey: 'senior-frontend', scope: { include: ['src/app/', 'public/'], exclude: ['src/app/api/'] } },
+        { role: 'senior-backend', agentKey: 'senior-backend', scope: { include: ['src/app/api/'] } },
+      ],
+    }), 'utf8');
+    const raw = { session_id: 'orchestrator', transcript_path: transcript };
+
+    // the observed 10c shape: a generated raster imported into an owned path
+    const mine = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: '/usr/bin/env true', // placeholder replaced below
+    }, raw));
+    assert.equal(mine.kind, 'noop'); // sanity: plain reads stay unaffected
+
+    const allowed = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: `cp /Users/u/.codex/generated_images/session-1/exec-abc.png ${cwd}/public/og-default.png`,
+    }, raw));
+    assert.equal(allowed.kind, 'deny');
+
+    const relative = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cp /Users/u/.codex/generated_images/session-1/exec-abc.png public/og-default.png',
+    }, raw));
+    assert.equal(relative.kind, 'deny');
+
+    const theirs = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cp /Users/u/.codex/generated_images/session-1/exec-abc.png src/app/api/og.png',
+    }, raw));
+    assert.equal(theirs.kind, 'deny');
+
+    // an in-repo cp is NOT an import — the blanket shell-write deny stays
+    const inRepo = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cp src/app/a.png src/app/b.png',
+    }, raw));
+    assert.equal(inRepo.kind, 'deny');
+    if (inRepo.kind === 'deny') assert.ok(inRepo.reason.includes('cannot verify role ownership'));
+
+    // compound commands are never imports
+    const compound = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cp /outside/a.png public/a.png && rm -rf src',
+    }, raw));
+    assert.equal(compound.kind, 'deny');
+  });
+});
+
+// Four identical `role: null` deny rows could not distinguish a child that
+// spawned before its claim was staked from a run whose ledger is closed so no
+// claim can EVER exist — a transient race and a permanent deadlock logged the
+// same. Record the reason, and say so in the deny itself when the run is shut.
+test('an unattributable deny records WHY the role never resolved, and names a closed ledger', () => {
+  withMaterialized({
+    currentRunId: 'run-shut',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    assert.ok(transitionRunStatus(cwd, 'run-shut', { status: 'active' }));
+    assert.ok(transitionRunStatus(cwd, 'run-shut', { status: 'failed', outcome: 'agent-failed' }));
+
+    const digest = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/digests/run-shut/architect.md',
+      content: '# architect\nPLAN_READY\n',
+    }, { session_id: 'parent-session', agent_id: 'architect-child', agent_type: 'traffic-one:senior-architect' }));
+    assert.equal(digest.kind, 'deny');
+    if (digest.kind === 'deny') {
+      assert.match(digest.reason, /Run artifact gate/);
+      assert.match(digest.reason, /settled, so NO child can bind a role in it/, 'the deny names the real blocker');
+    }
+
+    const log = path.join(cwd, '.traffic-one', 'runs', 'run-shut', 'debug', 'plan-guard-deny.jsonl');
+    const rows = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const last = rows[rows.length - 1];
+    assert.equal(last.role, null);
+    assert.ok(last.unresolved, 'the deny row carries a named unresolved reason');
+    assert.equal(typeof last.unresolved.reason, 'string');
+    // Observed live: all 13 deny rows of one run carried the ORCHESTRATOR's
+    // sessionId with isSubagent:true and no agent id, so per-agent violation
+    // history across a fix cycle could not be reconstructed.
+    assert.equal(last.sessionId, 'parent-session');
+    assert.equal(last.agentId, 'architect-child', 'the denied AGENT is identifiable, not just its parent session');
+  });
+});
+
+test('subagents project: child artifacts need WorkUnit evidence; fix-cycle notes still pass', () => {
   withMaterialized({
     currentRunId: 'run-1',
     team: { mode: 'subagents', source: 'prompted', approved: true },
   }, (cwd) => {
-    // reviewer digest heredoc whose BODY cites feature-source paths → allowed
+    // A reviewer digest is a child-owned run artifact. Without the exact active
+    // reviewer WorkUnitContract, a heredoc cannot self-authorize it.
     const digest = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
       command: "mkdir -p .traffic-one/digests/run-1 && cat > .traffic-one/digests/run-1/reviewer.md <<'EOF'\n## Touched\n- apps/web/src/features/catalog.tsx\nEOF",
     }, { session_id: 'reviewer-session' }));
-    assert.equal(digest.kind, 'noop');
+    assert.equal(digest.kind, 'deny');
+    if (digest.kind === 'deny') assert.match(digest.reason, /Run artifact gate/);
     // orchestrator fix-cycle note → allowed
     const fixCycle = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
       command: "cat > .traffic-one/fix-cycles/run-1/senior-frontend-fix-1.md <<'EOF'\nfix src/app.ts dead code\nEOF",
@@ -656,6 +959,30 @@ test('subagents project: run-state heredocs pass; feature-source heredocs still 
   });
 });
 
+test('runtime-owned sidecars are blocked through apply_patch and shell redirects', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    const patch = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-write', {
+      patch: [
+        '*** Begin Patch',
+        '*** Add File: .traffic-one/runs/run-1/architecture-v1.json',
+        '+{}',
+        '*** End Patch',
+      ].join('\n'),
+    }));
+    assert.equal(patch.kind, 'deny');
+    if (patch.kind === 'deny') assert.match(patch.reason, /Runtime sidecar gate/);
+
+    const shell = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "cat > .traffic-one/runs/run-1/verification-v2.json <<'EOF'\n{}\nEOF",
+    }));
+    assert.equal(shell.kind, 'deny');
+    if (shell.kind === 'deny') assert.match(shell.reason, /Runtime sidecar gate/);
+  });
+});
+
 test('static layout violation is denied even in a clean main-agent project', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
@@ -663,6 +990,273 @@ test('static layout violation is denied even in a clean main-agent project', () 
     }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(r.reason.includes('plan gate violation'));
+  });
+});
+
+test('existing codebase: architectural static checks stand down, asset integrity stays', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    // The observed bug shape: an existing vanilla-extract repo denied its own
+    // `.css.ts` styling with "vanilla-extract is no longer in the active stack".
+    const vanilla = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/features/reviews/Section.css.ts',
+      content: "import { style } from '@vanilla-extract/css';\nexport const root = style({});",
+    }));
+    assert.equal(vanilla.kind, 'noop');
+    // Placement/export conventions are the repo's own too.
+    const layout = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'packages/ui/src/components/Btn.tsx',
+      content: 'export default function Btn() { return null; }',
+    }));
+    assert.equal(layout.kind, 'noop');
+    // File integrity is not an architecture opinion: SVG text written into a
+    // bitmap path is a broken asset in every project and still denies.
+    const asset = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/public/icon.png',
+      content: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    }));
+    assert.equal(asset.kind, 'deny');
+    if (asset.kind === 'deny') assert.match(asset.reason, /Asset gate/);
+  });
+  // existing-with-supabase gets the identical stand-down.
+  withMaterialized({
+    mode: 'existing-with-supabase',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/Legacy.tsx',
+      content: 'const x: any = 1;\nexport default function Legacy() { return <div style={{ color: "red" }} />; }\n',
+    }));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+// Verified-repro regression: the hot structural gate judges the reconstructed
+// whole file, so a legacy wide line used to deny every unrelated Edit to that
+// file forever on an existing codebase. Collapse now blocks there only when
+// the collapse is in the bytes the write authors.
+test('existing codebase: an Edit near a pre-existing wide line is not collapse-denied', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    const rel = 'apps/web/src/pages/News.tsx';
+    const wide = '      <tr><td>{u.id}</td><td>{u.name}</td><td>{u.email}</td><td>{u.team}</td><td>{u.role}</td></tr>';
+    const target = path.join(cwd, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, [
+      "import { useState } from 'react';",
+      'export function News() {',
+      '  const [n] = useState(1);',
+      wide,
+      '  return null;',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    const edit = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: rel,
+      old_string: 'useState(1)',
+      new_string: 'useState(2)',
+    }));
+    assert.equal(edit.kind, 'noop');
+    // A write that itself AUTHORS collapse still denies — even on existing mode.
+    const authored = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/pages/Packed.tsx',
+      content: 'export function Packed(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
+    }));
+    assert.equal(authored.kind, 'deny');
+    if (authored.kind === 'deny') assert.match(authored.reason, /STRUCT_COLLAPSED_LINE/);
+  });
+});
+
+// Mode is set at onboarding: a confirmed new-project state must not flip
+// itself to an existing-* mode mid-run — that single write would disarm the
+// whole architecture-gate family the stand-down keys on.
+test('a confirmed new-project state cannot rewrite itself to an existing mode', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const flip = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...onDisk, mode: 'existing-codebase' }),
+    }));
+    assert.equal(flip.kind, 'deny');
+    if (flip.kind === 'deny') assert.match(flip.reason, /State mode gate/);
+    // Rewrites that keep the mode stay allowed.
+    const keep = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...onDisk, stack: 'default' }),
+    }));
+    assert.equal(keep.kind, 'noop');
+  });
+  // CREATING the state file (no `.one.json` on disk) with an existing mode is
+  // what the state-gate prose instructs on first detection of an existing
+  // repo — that path stays allowed; only the onboarded new-project→existing
+  // TRANSITION is gated. (An "unconfirmed" on-disk new-project state is not a
+  // reliable third case: the gate's own materialization preflight converges
+  // it to onboarded before the guard reads it.)
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    fs.rmSync(path.join(cwd, '.traffic-one', '.one.json'));
+    const create = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({
+        mode: 'existing-codebase', stack: 'minimal', backend: 'other', frontend: 'none',
+        confirmed: true, onboardingComplete: true,
+      }),
+    }));
+    assert.equal(create.kind, 'noop');
+  });
+});
+
+test('Edit hot structural gate reconstructs the full file and banks monolithization findings in the quality ledger', () => {
+  withMaterialized({ currentRunId: 'R', team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, [
+      "import { createRoot } from 'react-dom/client';",
+      "import { App } from './App';",
+      '',
+      'function HomePage() {',
+      '  return null;',
+      '}',
+      '',
+      "createRoot(document.getElementById('root')!).render(<App />);",
+      '',
+    ].join('\n'));
+
+    // The reconstructed post-Edit file declares a UI component in the
+    // entrypoint. Since the batched-feedback change this convention finding no
+    // longer interrupts the write — it accumulates into the run-scoped quality
+    // ledger for one consolidated delivery at the completion digest.
+    const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: 'apps/web/src/main.tsx',
+      old_string: '  return null;',
+      new_string: '  return <main>Inline route page</main>;',
+    }));
+    assert.equal(result.kind, 'noop', JSON.stringify(result));
+    const ledger = fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'R', 'quality-findings.jsonl'),
+      'utf8',
+    );
+    assert.match(ledger, /STRUCT_ENTRYPOINT_COMPONENT/);
+    assert.match(ledger, /apps\/web\/src\/main\.tsx/);
+  });
+});
+
+test('Edit hot structural gate fails closed when old_string is ambiguous', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, [
+      'const first = () => null;',
+      'const second = () => null;',
+      "console.log('bootstrap');",
+      '',
+    ].join('\n'));
+    const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: 'apps/web/src/main.tsx',
+      old_string: 'null',
+      new_string: '<main />',
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /STRUCT_SCAN_INCOMPLETE/);
+      assert.match(result.reason, /ambiguous \(2 matches\)/);
+    }
+  });
+});
+
+test('Edit hot structural gate fails closed when reconstruction evidence is incomplete', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "console.log('bootstrap');\n");
+    const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: 'apps/web/src/main.tsx',
+      new_string: '<main />',
+    }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') assert.match(result.reason, /STRUCT_SCAN_INCOMPLETE/);
+  });
+});
+
+test('Edit hot structural gate allows a uniquely reconstructed non-structural change', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const target = path.join(cwd, 'apps', 'web', 'src', 'main.tsx');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, [
+      "import { createRoot } from 'react-dom/client';",
+      "import { App } from './App';",
+      'const strict = true;',
+      "createRoot(document.getElementById('root')!).render(<App />);",
+      '',
+    ].join('\n'));
+    const result = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: 'apps/web/src/main.tsx',
+      old_string: 'const strict = true;',
+      new_string: 'const strict = false;',
+    }));
+    assert.equal(result.kind, 'noop');
+  });
+});
+
+test('complete Write pre-tool path remains below the 150 ms p95 budget with runtime contracts', () => {
+  withMaterialized({
+    currentRunId: 'run-hot-path',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const inputPath = architectureInputPath(cwd, 'run-hot-path');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    }), 'utf8');
+    const architecture = compileArchitectureForRun(cwd, 'run-hot-path', state);
+    const verification = compileVerificationContract(cwd, 'run-hot-path', state, architecture, {
+      changedPaths: [],
+    });
+    const assignments = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const frontend = assignments.assignments.find((assignment) => assignment.role === 'senior-frontend');
+    const home = architecture.modules.find((module) => module.id === 'home');
+    assert.ok(frontend);
+    assert.ok(home);
+    assert.ok(frontend.scope.include.includes(home.output));
+
+    const childId = 'frontend-hot-path-child';
+    assert.ok(claimThreadRole(cwd, state, childId, 'senior-frontend', {
+      parentSessionId: 'orchestrator',
+    }));
+    const ctx = writeCtx(cwd, 'Write', 'file-write', {
+      file_path: home.output,
+      content: [
+        "import { Card } from '../components/Card';",
+        'export function Home() {',
+        '  return <main><Card /></main>;',
+        '}',
+        '',
+      ].join('\n'),
+    }, { session_id: childId });
+
+    for (let warmup = 0; warmup < 20; warmup += 1) {
+      const result = planWriteGate(ctx);
+      assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
+    }
+    const durations: number[] = [];
+    for (let sample = 0; sample < 250; sample += 1) {
+      const started = performance.now();
+      const result = planWriteGate(ctx);
+      durations.push(performance.now() - started);
+      assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
+    }
+    durations.sort((a, b) => a - b);
+    const p95 = durations[Math.floor(durations.length * 0.95)]!;
+    assert.ok(p95 < 150, `complete Write pre-tool p95 ${p95.toFixed(2)} ms exceeds 150 ms`);
   });
 });
 
@@ -694,5 +1288,102 @@ test('pluginUse decline bypasses the plan gate', () => {
       file_path: 'apps/web/src/x.ts', content: 'export const x = 1;',
     }));
     assert.equal(r.kind, 'noop');
+  });
+});
+
+test('registry probes are denied in new-project mode; installs and other modes stay clean', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    // 5cl-claude regression: `npm view typescript versions` led the frontend to
+    // raise the stack-pinned typescript two majors from registry data.
+    for (const command of [
+      'npm view typescript dist-tags',
+      'pnpm view next version',
+      'npm show react version',
+      'yarn info react',
+      'npm outdated',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+      assert.equal(r.kind, 'deny', `expected deny for: ${command}`);
+      if (r.kind === 'deny') assert.ok(/Registry probe gate/.test(r.reason));
+    }
+    for (const command of [
+      'pnpm add react',
+      'npm install',
+      'pnpm install --frozen-lockfile',
+      'npm run view-report',
+      'git log --format="%s" npm-view-notes.md',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+      assert.equal(r.kind, 'noop', `expected noop for: ${command}`);
+    }
+  });
+});
+
+// ── Live OpenCode file reservations ──────────────────────────────────────────
+// While a delegated unit is verifiably RUNNING, its allowedFiles are
+// write-denied for every paid writer; a terminal or stale unit never denies,
+// and state-dir writes (digests) stay free even under a repo-wide reservation.
+
+test('a paid write into a RUNNING unit reservation is denied; terminal/stale units release it', async () => {
+  const { buildOpenCodeQueue, writeOpenCodeQueue, recordOpenCodeUnitStatus } = await import('../../../shared/opencode-queue');
+  withMaterialized({ currentRunId: 'run-res' }, (cwd) => {
+    const queue = buildOpenCodeQueue(cwd, 'run-res', [
+      { role: 'frontend', files: 'src/features/news/**', task: 't' },
+    ]);
+    writeOpenCodeQueue(cwd, queue);
+    recordOpenCodeUnitStatus(cwd, 'run-res', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'running', action: 'running', touched: [],
+      allowedFiles: queue.units[0]!.allowedFiles,
+    });
+
+    // Glob reservation covers the subtree → deny names the unit and the target.
+    const denied = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: path.join(cwd, 'src/features/news/list.tsx'),
+      content: 'export const a = 1;\n',
+    }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.match(denied.reason, /OpenCode reservation/);
+      assert.ok(denied.reason.includes(queue.units[0]!.id));
+      assert.match(denied.reason, /Open questions/);
+    }
+
+    // Outside the reservation → no reservation deny (other gates may still speak,
+    // but never this one).
+    const outside = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: path.join(cwd, 'src/lib/util.ts'),
+      content: 'export const b = 2;\n',
+    }));
+    if (outside.kind === 'deny') assert.doesNotMatch(outside.reason, /OpenCode reservation/);
+
+    // State-dir write stays free even while the unit runs (digests are not
+    // feature targets).
+    const digest = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cat > .traffic-one/digests/run-res/frontend.md <<\'EOF\'\nverdict: IMPLEMENTED\nEOF',
+    }));
+    if (digest.kind === 'deny') assert.doesNotMatch(digest.reason, /OpenCode reservation/);
+
+    // Terminal unit releases the reservation.
+    recordOpenCodeUnitStatus(cwd, 'run-res', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'delegated', action: 'delegated', touched: [],
+      allowedFiles: queue.units[0]!.allowedFiles,
+    });
+    const released = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: path.join(cwd, 'src/features/news/list.tsx'),
+      content: 'export const a = 1;\n',
+    }));
+    if (released.kind === 'deny') assert.doesNotMatch(released.reason, /OpenCode reservation/);
+
+    // Stale running (dead executor) never denies either.
+    recordOpenCodeUnitStatus(cwd, 'run-res', {
+      id: queue.units[0]!.id, role: 'frontend', status: 'running', action: 'running', touched: [],
+      allowedFiles: queue.units[0]!.allowedFiles,
+      updatedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+    const stale = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: path.join(cwd, 'src/features/news/list.tsx'),
+      content: 'export const a = 1;\n',
+    }));
+    if (stale.kind === 'deny') assert.doesNotMatch(stale.reason, /OpenCode reservation/);
   });
 });

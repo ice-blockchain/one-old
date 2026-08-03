@@ -1,0 +1,569 @@
+// src/shared/qa-report-v2-schema.ts
+// QaReportV2 schema: versions, every V2 interface, bounds, and the strict
+// field parsers. Runtime validation lives in the siblings; the public surface
+// is re-exported by qa-report-v2.ts.
+
+import * as path from 'path';
+import { sha256 } from '../text';
+import {
+  type VerificationContractV2,
+} from '../verification-contract';
+
+const QA_REPORT_V2_SCHEMA_VERSION = 2 as const;
+export const QA_BUILD_IDENTITY_PROBE_PATH = '/.traffic-one/qa-build-identity.json';
+export const QA_ACCEPTANCE_ATTESTATION_SCHEMA_VERSION = 1 as const;
+
+type QaV2Status = 'passed' | 'failed' | 'blocked-environment';
+
+interface QaV2Check {
+  id: string;
+  status: 'passed' | 'failed' | 'not-applicable';
+  summary?: string;
+}
+
+export interface QaBuildIdentityV2 {
+  runId: string;
+  sourceHash: string;
+  outputRoot: string;
+  buildHash: string;
+  pid: number;
+  port: number;
+  startedAt: string;
+  url: string;
+  fingerprint: string;
+  servedFingerprint: string;
+}
+
+export interface QaServedBuildIdentityV1 {
+  schemaVersion: 1;
+  runId: string;
+  sourceHash: string;
+  buildHash: string;
+  pid: number;
+  port: number;
+  startedAt: string;
+  url: string;
+  fingerprint: string;
+}
+
+export interface QaViewportV2 {
+  width: number;
+  status: 'passed' | 'failed';
+  domAssertionsPassed: boolean;
+  actionsPassed: boolean;
+  routingPassed: boolean;
+  hydrationPassed: boolean;
+  consoleErrors: string[];
+  networkErrors: string[];
+  // Playwright step/navigation failures (timeouts, unreachable locators).
+  // Optional and absent on pre-1.0.37 reports; absent means []. Kept separate
+  // from consoleErrors so a click timeout is not misread as a page error.
+  actionErrors?: string[];
+  artifactAt: string;
+  screenshotPath?: string;
+}
+
+interface QaRouteV2 {
+  route: string;
+  viewports: QaViewportV2[];
+}
+
+interface NativeQaEvidenceV2 {
+  evidencePath: string;
+}
+
+/**
+ * A NON-BROWSER gate verdict, recorded in the report itself.
+ *
+ * `requiredChecks` is a flat list of browser check ids, so a gate that is not a
+ * browser check — the page-speed budget above all — had no slot in this schema
+ * at all: the run's own artifact could say `"status":"passed"` with nine passing
+ * checks while the performance contract it declared was failing on the evidence
+ * beside it (observed 10co-e2e: performance 74 / LCP 4527ms against
+ * `performanceMin: 90` / `lcpMaxMs: 2500`). `gates[]` is that slot, and
+ * `persistGateRejection` is what makes the verdict durable.
+ */
+export interface QaGateV2 {
+  id: string;
+  status: 'passed' | 'failed';
+  code: QaV2FailureCode;
+  summary: string;
+}
+
+// Either a real evidence sidecar, or an explicit skip record: when the
+// browser scenario fails, Lighthouse is not attempted — the report must SAY
+// so instead of silently omitting the section (observed 8co: a
+// performance-required run ended with no performance evidence and no trace of
+// why). A skip record never satisfies `performance.required`.
+interface LighthouseEvidenceV2 {
+  evidencePath?: string;
+  status?: 'skipped-scenario-failed';
+  reason?: string;
+}
+
+export interface QaReportV2 {
+  schemaVersion: typeof QA_REPORT_V2_SCHEMA_VERSION;
+  runId: string;
+  verificationContractHash: string;
+  generatedAt: string;
+  producer: 'senior-tester' | 'parent-runner';
+  status: QaV2Status;
+  sourceHash: string;
+  checks: QaV2Check[];
+  routes: QaRouteV2[];
+  /** Non-browser gate verdicts. Optional: pre-1.0.40 reports carry none. */
+  gates?: QaGateV2[];
+  machineEvidencePath?: string;
+  build?: QaBuildIdentityV2;
+  native?: NativeQaEvidenceV2;
+  lighthouse?: LighthouseEvidenceV2;
+  blockerSummary?: string;
+}
+
+export interface QaAcceptanceAttestationV1 {
+  schemaVersion: typeof QA_ACCEPTANCE_ATTESTATION_SCHEMA_VERSION;
+  runId: string;
+  verificationContractHash: string;
+  sourceHash: string;
+  reportHash: string;
+  evidenceHash: string;
+  buildFingerprint: string;
+  acceptedAt: string;
+  attestationHash: string;
+}
+
+// Declared as a runtime list so a persisted gate row can be re-parsed strictly;
+// the exported union is derived from it and is unchanged.
+export const QA_V2_FAILURE_CODES = [
+  'contract-missing',
+  'report-missing',
+  'invalid-json',
+  'invalid-schema',
+  'contract-mismatch',
+  'source-mismatch',
+  'scan-incomplete',
+  'required-check-failed',
+  'blocked-environment',
+  'build-identity-invalid',
+  'machine-evidence-invalid',
+  'route-matrix-incomplete',
+  'functional-failure',
+  'screenshot-invalid',
+  'native-evidence-invalid',
+  'lighthouse-threshold-failed',
+] as const;
+
+export type QaV2FailureCode = typeof QA_V2_FAILURE_CODES[number];
+
+export type QaDimensionStatus = 'passed' | 'failed' | 'advisory-warning' | 'not-required' | 'unknown';
+
+/**
+ * The QA verdict, split by what actually failed. Derived — never producer-
+ * written — so the tester and the final gate cannot report contradictory
+ * statuses for the same run.
+ */
+export interface QaDimensionsV1 {
+  functionalQaStatus: QaDimensionStatus;
+  accessibilityStatus: QaDimensionStatus;
+  responsiveStatus: QaDimensionStatus;
+  lighthouseStatus: QaDimensionStatus;
+  overallStatus: 'passed' | 'failed';
+}
+
+interface QaV2ValidationAccepted {
+  ok: true;
+  report: QaReportV2;
+  contract: VerificationContractV2;
+  reportPath: string;
+  advisories: string[];
+  dimensions: QaDimensionsV1;
+  /**
+   * Set when the verdict is vouched for by the durable acceptance attestation
+   * (`acceptanceRestoresReport`): the hash-pinned `generatedAt` of the ACCEPTED
+   * report, in epoch ms. Tester-attestation freshness must anchor on this
+   * instead of the sidecar file mtime, because the runtime itself may have
+   * rewritten report-v2.json after acceptance (a persisted gate rejection
+   * against a drifted build tree — observed 14cl), and that rewrite must not
+   * retroactively un-attest a tester verdict written after the real report.
+   */
+  acceptedGeneratedAtMs?: number;
+}
+
+export interface QaV2ValidationRejected {
+  ok: false;
+  code: QaV2FailureCode;
+  message: string;
+  reportPath: string;
+  report?: QaReportV2;
+  contract?: VerificationContractV2;
+  dimensions: QaDimensionsV1;
+}
+
+export type QaV2ValidationResult = QaV2ValidationAccepted | QaV2ValidationRejected;
+
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const SAFE_TEXT_RE = /^[^\u0000-\u001f\u007f]{1,500}$/;
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
+export const BUILD_START_TOLERANCE_MS = 1_000;
+
+/**
+ * Concrete schema violations behind a failed parse, so an invalid-schema
+ * rejection can NAME the offending fields. "QA sidecar does not match
+ * QaReportV2." named nothing — observed live (13cl): the tester hand-edited
+ * the JSON blindly and re-submitted the same invalid sidecar 6+ times in 90
+ * seconds. Diagnosis is the fix's entry point, so the collector records which
+ * required fields are missing, which have the wrong type, and which unknown
+ * keys appeared.
+ */
+export interface QaV2SchemaIssues {
+  /** Stored violations, capped at MAX_STORED_SCHEMA_ISSUES; `total` keeps counting. */
+  issues: string[];
+  total: number;
+}
+
+export function newSchemaIssues(): QaV2SchemaIssues {
+  return { issues: [], total: 0 };
+}
+
+const MAX_STORED_SCHEMA_ISSUES = 12;
+export const QA_V2_SCHEMA_ISSUE_DISPLAY_CAP = 6;
+
+type RecordIssue = (issue: string) => null;
+
+function issueRecorder(collector?: QaV2SchemaIssues): { record: RecordIssue; failed: () => boolean } {
+  let count = 0;
+  const record: RecordIssue = (issue) => {
+    count += 1;
+    if (collector) {
+      collector.total += 1;
+      if (collector.issues.length < MAX_STORED_SCHEMA_ISSUES) collector.issues.push(issue);
+    }
+    return null;
+  };
+  return { record, failed: () => count > 0 };
+}
+
+/** Renders collected violations for a deny message, capped for readability. */
+export function formatSchemaIssues(collector: QaV2SchemaIssues): string {
+  if (collector.issues.length === 0) return 'the sidecar is not a JSON object';
+  const shown = collector.issues.slice(0, QA_V2_SCHEMA_ISSUE_DISPLAY_CAP);
+  const extra = collector.total - shown.length;
+  return shown.join('; ') + (extra > 0 ? `; +${extra} more` : '');
+}
+
+/** "missing (required)" when the field is absent, the type requirement otherwise. */
+function expectedIssue(value: unknown, field: string, requirement: string): string {
+  return value === undefined ? `${field}: missing (required)` : `${field}: ${requirement}`;
+}
+
+// Key names come from an UNTRUSTED file and are echoed into deny prose: strip
+// control characters and bound both each name and how many are listed.
+function describeUnknownKeys(keys: string[]): string {
+  const shown = keys.slice(0, QA_V2_SCHEMA_ISSUE_DISPLAY_CAP)
+    .map((key) => Array.from(key.slice(0, 40), (ch) => {
+      const code = ch.charCodeAt(0);
+      return code < 0x20 || code === 0x7f ? '?' : ch;
+    }).join(''));
+  const extra = keys.length - shown.length;
+  return shown.join(', ') + (extra > 0 ? ` (+${extra} more)` : '');
+}
+
+export function qaReportV2Path(projectRoot: string, runId: string): string {
+  return path.join(projectRoot, '.traffic-one', 'reports', 'qa', runId, 'report-v2.json');
+}
+
+export function qaAcceptanceAttestationPath(projectRoot: string, runId: string): string {
+  return path.join(projectRoot, '.traffic-one', 'runs', runId, 'qa-acceptance-v1.json');
+}
+
+export function expectedBuildFingerprint(runId: string, sourceHash: string, buildHash: string): string {
+  return sha256(`${runId}\0${sourceHash}\0${buildHash}`);
+}
+
+export function isoMs(value: unknown): number | null {
+  if (typeof value !== 'string' || !ISO_RE.test(value)) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function safeString(value: unknown, max = 500): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= max
+    && SAFE_TEXT_RE.test(value);
+}
+
+export function safeRelativePath(value: unknown, max = 4_096): value is string {
+  return safeString(value, max)
+    && !path.isAbsolute(value)
+    && !value.includes('\\')
+    && !value.startsWith('/')
+    && !/^[A-Za-z]:/.test(value)
+    && !/[*?[\]{};]/.test(value)
+    && !value.split('/').some((segment) => !segment || segment === '.' || segment === '..');
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string' && item.length <= 2_000)) return null;
+  return [...value] as string[];
+}
+
+function parseCheck(value: unknown, at: string, record: RecordIssue): QaV2Check | null {
+  if (!isRecord(value)) return record(`${at}: must be an object`);
+  if (!safeString(value.id, 160)) return record(expectedIssue(value.id, `${at}.id`, 'must be a non-empty string without control characters (max 160 chars)'));
+  if (!['passed', 'failed', 'not-applicable'].includes(String(value.status))) {
+    return record(expectedIssue(value.status, `${at}.status`, 'must be "passed", "failed", or "not-applicable"'));
+  }
+  if (value.summary !== undefined && !safeString(value.summary)) {
+    return record(`${at}.summary: must be a non-empty string without control characters (max 500 chars)`);
+  }
+  return {
+    id: value.id,
+    status: value.status as QaV2Check['status'],
+    ...(typeof value.summary === 'string' ? { summary: value.summary } : {}),
+  };
+}
+
+function parseGate(value: unknown, at: string, record: RecordIssue): QaGateV2 | null {
+  if (!isRecord(value)) return record(`${at}: must be an object`);
+  const unknown = Object.keys(value).filter((key) => !['id', 'status', 'code', 'summary'].includes(key));
+  if (unknown.length > 0) return record(`${at}: unknown key${unknown.length === 1 ? '' : 's'} ${describeUnknownKeys(unknown)}`);
+  if (!safeString(value.id, 160)) return record(expectedIssue(value.id, `${at}.id`, 'must be a non-empty string without control characters (max 160 chars)'));
+  if (!['passed', 'failed'].includes(String(value.status))) {
+    return record(expectedIssue(value.status, `${at}.status`, 'must be "passed" or "failed"'));
+  }
+  if (!(QA_V2_FAILURE_CODES as readonly string[]).includes(String(value.code))) {
+    return record(expectedIssue(value.code, `${at}.code`, 'must be a known QA failure code'));
+  }
+  if (!safeString(value.summary)) return record(expectedIssue(value.summary, `${at}.summary`, 'must be a non-empty string without control characters (max 500 chars)'));
+  return {
+    id: value.id,
+    status: value.status as QaGateV2['status'],
+    code: value.code as QaV2FailureCode,
+    summary: value.summary,
+  };
+}
+
+function parseViewport(value: unknown, at: string, record: RecordIssue): QaViewportV2 | null {
+  if (!isRecord(value)) return record(`${at}: must be an object`);
+  if (!Number.isInteger(value.width) || Number(value.width) < 240 || Number(value.width) > 4_000) {
+    return record(expectedIssue(value.width, `${at}.width`, 'must be an integer between 240 and 4000'));
+  }
+  if (!['passed', 'failed'].includes(String(value.status))) {
+    return record(expectedIssue(value.status, `${at}.status`, 'must be "passed" or "failed"'));
+  }
+  if (typeof value.domAssertionsPassed !== 'boolean') return record(expectedIssue(value.domAssertionsPassed, `${at}.domAssertionsPassed`, 'must be a boolean'));
+  if (typeof value.actionsPassed !== 'boolean') return record(expectedIssue(value.actionsPassed, `${at}.actionsPassed`, 'must be a boolean'));
+  if (typeof value.routingPassed !== 'boolean') return record(expectedIssue(value.routingPassed, `${at}.routingPassed`, 'must be a boolean'));
+  if (typeof value.hydrationPassed !== 'boolean') return record(expectedIssue(value.hydrationPassed, `${at}.hydrationPassed`, 'must be a boolean'));
+  if (isoMs(value.artifactAt) === null) {
+    return record(expectedIssue(value.artifactAt, `${at}.artifactAt`, 'must be an ISO-8601 UTC instant (e.g. 2026-01-01T12:00:00.000Z)'));
+  }
+  const consoleErrors = stringArray(value.consoleErrors);
+  if (!consoleErrors) return record(expectedIssue(value.consoleErrors, `${at}.consoleErrors`, 'must be an array of strings'));
+  const networkErrors = stringArray(value.networkErrors);
+  if (!networkErrors) return record(expectedIssue(value.networkErrors, `${at}.networkErrors`, 'must be an array of strings'));
+  const actionErrors = value.actionErrors === undefined ? undefined : stringArray(value.actionErrors);
+  if (value.actionErrors !== undefined && !actionErrors) {
+    return record(`${at}.actionErrors: must be an array of strings`);
+  }
+  if (value.screenshotPath !== undefined && !safeRelativePath(value.screenshotPath)) {
+    return record(`${at}.screenshotPath: must be a project-relative path (no absolute paths, "..", "\\", or glob characters)`);
+  }
+  return {
+    width: Number(value.width),
+    status: value.status as QaViewportV2['status'],
+    domAssertionsPassed: value.domAssertionsPassed,
+    actionsPassed: value.actionsPassed,
+    routingPassed: value.routingPassed,
+    hydrationPassed: value.hydrationPassed,
+    consoleErrors,
+    networkErrors,
+    ...(actionErrors ? { actionErrors } : {}),
+    artifactAt: value.artifactAt as string,
+    ...(typeof value.screenshotPath === 'string' ? { screenshotPath: value.screenshotPath } : {}),
+  };
+}
+
+function parseRoute(value: unknown, at: string, record: RecordIssue): QaRouteV2 | null {
+  // Evidence is keyed by the CONTRACT route, so `*` (the router-idiomatic
+  // catch-all) is a legal identity here even though it is never a URL — the
+  // runner probes it through a concrete `startPath`.
+  if (!isRecord(value)) return record(`${at}: must be an object`);
+  if (!safeString(value.route, 2_048) || !(value.route === '*' || value.route.startsWith('/'))) {
+    return record(expectedIssue(value.route, `${at}.route`, 'must be "*" or a path starting with "/"'));
+  }
+  if (!Array.isArray(value.viewports)) {
+    return record(expectedIssue(value.viewports, `${at}.viewports`, 'must be an array of viewport objects'));
+  }
+  const viewports = value.viewports.map((viewport, index) => parseViewport(viewport, `${at}.viewports[${index}]`, record));
+  if (viewports.some((viewport) => !viewport)) return null;
+  return { route: value.route, viewports: viewports as QaViewportV2[] };
+}
+
+const HEX_64 = 'must be a 64-char lowercase sha256 hex string';
+
+function parseBuild(value: unknown, at: string, record: RecordIssue): QaBuildIdentityV2 | null {
+  if (!isRecord(value)) return record(`${at}: must be an object`);
+  if (!safeString(value.runId, 128)) return record(expectedIssue(value.runId, `${at}.runId`, 'must be a non-empty string (max 128 chars)'));
+  if (!SHA256_HEX_RE.test(String(value.sourceHash))) return record(expectedIssue(value.sourceHash, `${at}.sourceHash`, HEX_64));
+  if (!safeRelativePath(value.outputRoot)) return record(expectedIssue(value.outputRoot, `${at}.outputRoot`, 'must be a project-relative path'));
+  if (!SHA256_HEX_RE.test(String(value.buildHash))) return record(expectedIssue(value.buildHash, `${at}.buildHash`, HEX_64));
+  if (!Number.isSafeInteger(value.pid) || Number(value.pid) <= 0) {
+    return record(expectedIssue(value.pid, `${at}.pid`, 'must be a positive integer'));
+  }
+  if (!Number.isSafeInteger(value.port) || Number(value.port) < 1 || Number(value.port) > 65_535) {
+    return record(expectedIssue(value.port, `${at}.port`, 'must be an integer between 1 and 65535'));
+  }
+  if (isoMs(value.startedAt) === null) {
+    return record(expectedIssue(value.startedAt, `${at}.startedAt`, 'must be an ISO-8601 UTC instant (e.g. 2026-01-01T12:00:00.000Z)'));
+  }
+  if (!safeString(value.url, 2_048)) return record(expectedIssue(value.url, `${at}.url`, 'must be a non-empty string (max 2048 chars)'));
+  if (!SHA256_HEX_RE.test(String(value.fingerprint))) return record(expectedIssue(value.fingerprint, `${at}.fingerprint`, HEX_64));
+  if (!SHA256_HEX_RE.test(String(value.servedFingerprint))) return record(expectedIssue(value.servedFingerprint, `${at}.servedFingerprint`, HEX_64));
+  return value as unknown as QaBuildIdentityV2;
+}
+
+export function parseServedBuild(value: unknown): QaServedBuildIdentityV1 | null {
+  if (!isRecord(value)
+    || value.schemaVersion !== 1
+    || !safeString(value.runId, 128)
+    || !/^[a-f0-9]{64}$/.test(String(value.sourceHash))
+    || !safeString(value.buildHash, 256)
+    || !Number.isSafeInteger(value.pid)
+    || Number(value.pid) <= 0
+    || !Number.isSafeInteger(value.port)
+    || Number(value.port) < 1
+    || Number(value.port) > 65_535
+    || isoMs(value.startedAt) === null
+    || !safeString(value.url, 2_048)
+    || !/^[a-f0-9]{64}$/.test(String(value.fingerprint))) return null;
+  return value as unknown as QaServedBuildIdentityV1;
+}
+
+function parseNative(value: unknown, at: string, record: RecordIssue): NativeQaEvidenceV2 | null {
+  if (!isRecord(value)) return record(`${at}: must be an object`);
+  const unknown = Object.keys(value).filter((key) => key !== 'evidencePath');
+  if (unknown.length > 0) return record(`${at}: unknown key${unknown.length === 1 ? '' : 's'} ${describeUnknownKeys(unknown)}`);
+  if (!safeRelativePath(value.evidencePath)) {
+    return record(expectedIssue(value.evidencePath, `${at}.evidencePath`, 'must be a project-relative path'));
+  }
+  return { evidencePath: value.evidencePath };
+}
+
+function parseLighthouse(value: unknown, at: string, record: RecordIssue): LighthouseEvidenceV2 | null {
+  if (!isRecord(value)) return record(`${at}: must be an object`);
+  const unknown = Object.keys(value).filter((key) => !['evidencePath', 'status', 'reason'].includes(key));
+  if (unknown.length > 0) return record(`${at}: unknown key${unknown.length === 1 ? '' : 's'} ${describeUnknownKeys(unknown)}`);
+  const hasPath = value.evidencePath !== undefined;
+  const hasStatus = value.status !== undefined;
+  if (!hasPath && !hasStatus) return record(`${at}: must set evidencePath or status`);
+  if (hasPath && !safeRelativePath(value.evidencePath)) {
+    return record(`${at}.evidencePath: must be a project-relative path`);
+  }
+  if (hasStatus && value.status !== 'skipped-scenario-failed') {
+    return record(`${at}.status: must be "skipped-scenario-failed"`);
+  }
+  if (value.reason !== undefined && (!hasStatus || !safeString(value.reason))) {
+    return record(`${at}.reason: allowed only alongside status and must be a non-empty string (max 500 chars)`);
+  }
+  return {
+    ...(hasPath ? { evidencePath: value.evidencePath as string } : {}),
+    ...(hasStatus ? { status: 'skipped-scenario-failed' as const } : {}),
+    ...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
+  };
+}
+
+const REPORT_KEYS: readonly string[] = [
+  'schemaVersion',
+  'runId',
+  'verificationContractHash',
+  'generatedAt',
+  'producer',
+  'status',
+  'sourceHash',
+  'checks',
+  'routes',
+  'gates',
+  'machineEvidencePath',
+  'build',
+  'native',
+  'lighthouse',
+  'blockerSummary',
+];
+
+// Every violation is recorded and checking CONTINUES, so one rejection names
+// every offending top-level field at once instead of one per retry. Unknown
+// top-level keys are violations too: the runtime publisher emits only the
+// typed field set, so an unknown key is a hand-authored report's typo — the
+// exact thing the message must name (a misspelled optional key used to be
+// silently dropped and resurface later as a different failure code).
+export function parseReport(value: unknown, collector?: QaV2SchemaIssues): QaReportV2 | null {
+  const { record, failed } = issueRecorder(collector);
+  if (!isRecord(value)) return record('report: must be a JSON object');
+  const unknownKeys = Object.keys(value).filter((key) => !REPORT_KEYS.includes(key));
+  if (unknownKeys.length > 0) {
+    record(`unknown top-level key${unknownKeys.length === 1 ? '' : 's'}: ${describeUnknownKeys(unknownKeys)}`);
+  }
+  if (value.schemaVersion !== QA_REPORT_V2_SCHEMA_VERSION) {
+    record(expectedIssue(value.schemaVersion, 'schemaVersion', 'must be the number 2'));
+  }
+  if (!safeString(value.runId, 128)) record(expectedIssue(value.runId, 'runId', 'must be a non-empty string (max 128 chars)'));
+  if (!SHA256_HEX_RE.test(String(value.verificationContractHash))) {
+    record(expectedIssue(value.verificationContractHash, 'verificationContractHash', HEX_64));
+  }
+  if (isoMs(value.generatedAt) === null) {
+    record(expectedIssue(value.generatedAt, 'generatedAt', 'must be an ISO-8601 UTC instant (e.g. 2026-01-01T12:00:00.000Z)'));
+  }
+  if (!['senior-tester', 'parent-runner'].includes(String(value.producer))) {
+    record(expectedIssue(value.producer, 'producer', 'must be "senior-tester" or "parent-runner"'));
+  }
+  if (!['passed', 'failed', 'blocked-environment'].includes(String(value.status))) {
+    record(expectedIssue(value.status, 'status', 'must be "passed", "failed", or "blocked-environment"'));
+  }
+  if (!SHA256_HEX_RE.test(String(value.sourceHash))) record(expectedIssue(value.sourceHash, 'sourceHash', HEX_64));
+  if (value.machineEvidencePath !== undefined && !safeRelativePath(value.machineEvidencePath)) {
+    record('machineEvidencePath: must be a project-relative path (no absolute paths, "..", "\\", or glob characters)');
+  }
+  if (value.blockerSummary !== undefined && !safeString(value.blockerSummary)) {
+    record('blockerSummary: must be a non-empty string without control characters (max 500 chars)');
+  }
+  const checks = Array.isArray(value.checks)
+    ? value.checks.map((check, index) => parseCheck(check, `checks[${index}]`, record))
+    : record(expectedIssue(value.checks, 'checks', 'must be an array of check objects'));
+  const routes = Array.isArray(value.routes)
+    ? value.routes.map((route, index) => parseRoute(route, `routes[${index}]`, record))
+    : record(expectedIssue(value.routes, 'routes', 'must be an array of route objects'));
+  const gates = value.gates === undefined
+    ? undefined
+    : Array.isArray(value.gates)
+      ? value.gates.map((gate, index) => parseGate(gate, `gates[${index}]`, record))
+      : record(expectedIssue(value.gates, 'gates', 'must be an array of gate objects'));
+  const build = value.build === undefined ? undefined : parseBuild(value.build, 'build', record);
+  const native = value.native === undefined ? undefined : parseNative(value.native, 'native', record);
+  const lighthouse = value.lighthouse === undefined ? undefined : parseLighthouse(value.lighthouse, 'lighthouse', record);
+  if (failed() || !checks || !routes) return null;
+  return {
+    schemaVersion: 2,
+    runId: value.runId as string,
+    verificationContractHash: value.verificationContractHash as string,
+    generatedAt: value.generatedAt as string,
+    producer: value.producer as QaReportV2['producer'],
+    status: value.status as QaV2Status,
+    sourceHash: value.sourceHash as string,
+    checks: checks as QaV2Check[],
+    routes: routes as QaRouteV2[],
+    ...(gates ? { gates: gates as QaGateV2[] } : {}),
+    ...(typeof value.machineEvidencePath === 'string'
+      ? { machineEvidencePath: value.machineEvidencePath }
+      : {}),
+    ...(build ? { build } : {}),
+    ...(native ? { native } : {}),
+    ...(lighthouse ? { lighthouse } : {}),
+    ...(typeof value.blockerSummary === 'string' ? { blockerSummary: value.blockerSummary } : {}),
+  };
+}

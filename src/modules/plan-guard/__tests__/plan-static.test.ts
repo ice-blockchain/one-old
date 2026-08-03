@@ -30,7 +30,66 @@ test('service/store files are rejected under src/pages and expo app/', () => {
 
 test('components directly under src/ are rejected (web vs native target)', () => {
   assert.deepEqual(check('src/Button.tsx', ''), ['component-placement']);
-  assert.deepEqual(check('apps/web/src/Card.ts', ''), ['component-placement']);
+  assert.deepEqual(check('apps/web/src/Card.tsx', ''), ['component-placement']);
+  // a `.ts` module needs a real component signal — JSX cannot live in `.ts`
+  assert.deepEqual(check('apps/web/src/Card.ts', 'export const Card = () => React.createElement("div");'), ['component-placement']);
+});
+
+test('a PascalCase .ts module directly in src/ is a service, not a misplaced component', () => {
+  // Both compiled backend shapes land here: supabase → packages/api-client/src,
+  // generic TS backend → services/api/src (1cu-cursor: the run died on the first).
+  assert.deepEqual(check('services/api/src/AuthAPIService.ts', 'export class AuthAPIService {}'), []);
+  assert.deepEqual(check('apps/api/src/CoursesAPIService.ts', 'export const listCourses = async () => [];'), []);
+  assert.deepEqual(check('src/HttpClient.ts', 'export const client = {};'), []);
+});
+
+test('the canonical root component src/App.tsx is exempt from component placement', () => {
+  // every Vite template ships index.html → src/main.tsx → src/App.tsx
+  // (observed 8c-codex: the gate forced a non-standard components/App.tsx move)
+  assert.deepEqual(check('apps/web/src/App.tsx', 'export function App() { return null; }'), []);
+  assert.deepEqual(check('src/App.tsx', 'export function App() { return null; }'), []);
+  assert.deepEqual(check('src/App.ts', ''), []);
+  // only the root component — siblings stay gated
+  assert.deepEqual(check('apps/web/src/AppShell.tsx', ''), ['component-placement']);
+  // deeper App.tsx files never matched this rule and still do not
+  assert.deepEqual(check('apps/web/src/components/App.tsx', 'export const App = () => null;'), []);
+});
+
+test('workspace packages are exempt from the app component-placement rule', () => {
+  // The deny message points at `packages/ui/*`; an unanchored pattern denied
+  // exactly that destination.
+  assert.deepEqual(check('packages/ui/src/Button.tsx', 'export const Button = () => null;'), []);
+  assert.deepEqual(check('packages/ui-native/src/Card.tsx', 'export const Card = () => null;'), []);
+  // 1cu-cursor: runtime compiled these into senior-backend's assignment scope
+  // and this rule denied every write, ending the run with no backend at all.
+  assert.deepEqual(check('packages/api-client/src/AuthAPIService.ts', 'export class AuthAPIService {}'), []);
+  assert.deepEqual(check('packages/utils/src/HttpClient.ts', ''), []);
+  // nested workspaces resolve the same way
+  assert.deepEqual(check('apps/web/packages/ui/src/Button.tsx', ''), []);
+});
+
+test('compiled runtime output paths never trip a static placement rule', () => {
+  // Regression guard for the whole class: every path shape the architecture
+  // compiler emits as an owned assignment output must be writable by the role
+  // that owns it. A gate that denies a compiled output deadlocks the run — the
+  // owning agent cannot write it and the parent is forbidden from doing so.
+  const compiledOutputs = [
+    'apps/web/src/App.tsx',
+    'apps/web/src/main.tsx',
+    'apps/web/src/pages/HomePage.tsx',
+    'apps/web/src/pages/CourseDetailPage.tsx',
+    'apps/web/src/components/CourseCardComponent.tsx',
+    'apps/web/src/features/courses-catalog-feature/index.tsx',
+    'packages/ui/src/index.ts',
+    'packages/i18n/src/index.ts',
+    'packages/api-client/src/AuthAPIService.ts',
+    'packages/api-client/src/CoursesAPIService.ts',
+    'packages/api-client/src/EnrollmentAPIService.ts',
+    'packages/api-client/src/ProgressAPIService.ts',
+  ];
+  for (const output of compiledOutputs) {
+    assert.deepEqual(check(output, 'export const value = 1;'), [], output);
+  }
 });
 
 test('cross-feature imports are flagged', () => {
@@ -47,6 +106,36 @@ test('deep relative package imports are flagged', () => {
 test('default export in a reusable component is flagged', () => {
   assert.deepEqual(check('packages/ui/src/components/Btn.tsx', 'export default function Btn() {}'), ['default-export']);
   assert.deepEqual(check('apps/web/src/features/x/Card.tsx', 'export default function Card() {}'), ['default-export']);
+});
+
+test('the compiled feature entry is NOT a default-export exception — named exports are mandated', () => {
+  // `feature` stopped compiling to a JSX-illegal `features/<name>/index.ts`,
+  // so the entry is now `.tsx` and this rule reaches it for the first time.
+  // The resolution is the CONVENTION, not a third exemption: nothing lazy-loads
+  // a feature entry by the default-export contract (routes compile to the pages
+  // root), every other `.tsx` under features/ already required a named export,
+  // and the remedy is a rename inside the same file — never a relocation.
+  assert.deepEqual(
+    check('apps/web/src/features/contact-section/index.tsx', 'export default function ContactSection() {}'),
+    ['default-export'],
+  );
+  // The Inertia features root (`resources/js/Features`) is outside this rule's
+  // `src/(components|features)/` anchor and was never reached — recorded so a
+  // future widening of the anchor is a deliberate decision, not a surprise.
+  assert.deepEqual(
+    check('apps/web/resources/js/Features/auth/index.tsx', 'export default function Auth() {}'),
+    [],
+  );
+  // the named form the mode rules print is clean
+  assert.deepEqual(
+    check('apps/web/src/features/contact-section/index.tsx', 'export function ContactSection() { return null; }'),
+    [],
+  );
+  // and the pre-existing `.ts` entry shape stays clean for profiles that keep it
+  assert.deepEqual(
+    check('apps/web/src/features/contact-section/index.ts', 'export default function ContactSection() {}'),
+    [],
+  );
 });
 
 test('default export in web page/route files is the exception (8c: React.lazy contract)', () => {

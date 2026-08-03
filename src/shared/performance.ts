@@ -16,7 +16,7 @@ import { currentModelForTier, currentModelsForTier } from './current-model-tiers
 // threaded so the spawn gate and the wizard line-up agree.
 export interface PlanCtx { readonly host: string; readonly plan: string; }
 
-export interface RoleModelSelection {
+interface RoleModelSelection {
   readonly tier: TierId;
   readonly preferredModel: string;
   readonly acceptableModels: readonly string[];

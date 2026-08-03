@@ -8,6 +8,7 @@ import * as path from 'path';
 
 import { isSafeOneMcpModelId, ONE_MCP_MAX_AVAILABLE_MODELS } from '../config/one-mcp';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
+import { BACKEND_IDS, FRONTEND_IDS, MOBILE_FRAMEWORK_IDS } from '../config/state';
 import type { ToolClass, ToolInput } from '../core/types';
 import {
   parseApplyPatch,
@@ -141,7 +142,7 @@ export function patchTextFromToolInput(...sources: readonly unknown[]): string {
   return canonicalPatchTextFromToolInput(...sources);
 }
 
-export function patchTouchedFiles(patchText: string): string[] {
+function patchTouchedFiles(patchText: string): string[] {
   const parsed = parseApplyPatch(patchText);
   return parsed.ok ? patchOperationPaths(parsed.operations) : [];
 }
@@ -152,20 +153,56 @@ export function isStateFileOnlyPatch(toolName: unknown, toolInput: unknown): boo
   return files.length > 0 && files.every((f) => isStateFilePath(f));
 }
 
-// Mutating-command vocabulary for shell tool calls. Anchored to a line start or a
-// shell separator (;, &, |) so it reads as a command, not a substring. Biased
-// toward flagging: a denied read-only command during the brief onboarding-
-// incomplete window is harmless, a MISSED write is the bypass this guards against.
-// Covers file ops, dependency/package installs, build-installs, and working-tree-
-// mutating git subcommands.
-const MUTATING_SHELL_COMMAND = /(^|[\s;&|])(mkdir|rmdir|touch|rm|mv|cp|ln|dd|tee|truncate|chmod|chown|chgrp|xargs|npm\s+(install|i|add|create)|pnpm\s+(install|add|create)|yarn\s+(install|add|create)|bun\s+(install|add|create)|npx|pip3?\s+install|cargo\s+(install|add)|go\s+install|gem\s+install|composer\s+(require|install)|make\s+install|git\s+(init|add|commit|rm|mv|checkout|restore|reset|clean|stash|apply|push|merge|rebase)|(sed|perl)\s+-i)\b/;
-const MUTATING_FIND_COMMAND = /(^|[\s;&|])find\b[^\n;&|]*(?:\s-(?:delete|exec|execdir)\b)/;
+// Mutating-command vocabulary for shell tool calls. Anchored to a line start, a
+// shell separator (;, &, |), or a nesting opener (backtick, `(`) so it reads as a
+// command, not a substring. Biased toward flagging: a denied read-only command
+// during the brief onboarding-incomplete window is harmless, a MISSED write is
+// the bypass this guards against. Covers file ops, dependency/package installs,
+// build-installs, and working-tree-mutating git subcommands.
+//
+// The nesting openers are load-bearing, not decoration. While every caller ran
+// the blanket `/`|\$\(/` short-circuit below, a writer nested in `$(…)` or
+// backticks was caught before these regexes were ever consulted, so their
+// anchors were never exercised on that shape. `ignoreCommandSubstitution` turns
+// that short-circuit off — and without `(` and a backtick here, `echo "$(rm -f
+// x)"` classified as NON-mutating, which is the one direction this file must
+// never fail in. `(` also closes a pre-existing miss no caller ever covered:
+// the plain subshell `(rm -rf x)`, which carries no substitution at all.
+const MUTATING_SHELL_COMMAND = /(^|[\s;&|`(])(mkdir|rmdir|touch|rm|mv|cp|ln|dd|tee|truncate|chmod|chown|chgrp|xargs|npm\s+(install|i|add|create)|pnpm\s+(install|add|create)|yarn\s+(install|add|create)|bun\s+(install|add|create)|npx|pip3?\s+install|cargo\s+(install|add)|go\s+install|gem\s+install|composer\s+(require|install)|make\s+install|git\s+(init|add|commit|rm|mv|checkout|restore|reset|clean|stash|apply|push|merge|rebase)|(sed|perl)\s+-i)\b/;
+const MUTATING_FIND_COMMAND = /(^|[\s;&|`(])find\b[^\n;&|]*(?:\s-(?:delete|exec|execdir)\b)/;
 // Inline interpreter eval can write files with no visible redirection — e.g.
 // `python -c "open('x','w')"`, `node -e "fs.writeFileSync(...)"`. Anchored to the
 // eval flag so running a script file (`python build.py`) is not flagged here.
-const INTERPRETER_EVAL = /(^|[\s;&|])(python3?|node|nodejs|perl|ruby|php)\s+(-c|-e|-r|--eval|--exec)\b/;
+const INTERPRETER_EVAL = /(^|[\s;&|`(])(python3?|node|nodejs|perl|ruby|php)\s+(-c|-e|-r|--eval|--exec)\b/;
 
-export function isMutatingPreToolUse(toolName: unknown, toolInput: unknown): boolean {
+export interface MutationClassifyOptions {
+  /**
+   * Ignore the command-substitution heuristic.
+   *
+   * `$(…)`/backticks mean "a mutation could be HIDDEN in here", which is the
+   * right fail-closed answer for a write gate. It is the wrong answer for
+   * choosing the active PROJECT ROOT: substitution says nothing about WHICH
+   * path is written, so a read-only command that merely names a foreign path
+   * and happens to contain a subshell was adopting that project. Observed
+   * live: an inspection session repeatedly had unrelated projects adopted off
+   * `RUN=$(ls …)`-shaped reads, and once `/dev` itself off a `/dev/null`
+   * operand — each time answered with a full onboarding demand for a project
+   * nobody was touching.
+   *
+   * Safe to narrow HERE only: root selection is not enforcement. Real evidence
+   * toward a specific path (`sed -i /abs`, a redirect into it, a write operand,
+   * an external workdir, interpreter eval) still re-anchors through the checks
+   * below, and `standsDown` still sees every target, so an actual write into a
+   * foreign project keeps its full enforcement path.
+   */
+  ignoreCommandSubstitution?: boolean;
+}
+
+export function isMutatingPreToolUse(
+  toolName: unknown,
+  toolInput: unknown,
+  options: MutationClassifyOptions = {},
+): boolean {
   const ti = toolInput && typeof toolInput === 'object' ? (toolInput as Rec) : null;
   const name = String(toolName || (ti && (ti.tool_name || ti.toolName)) || '');
   if (isWriteLikeToolName(name)) return true;
@@ -177,7 +214,7 @@ export function isMutatingPreToolUse(toolName: unknown, toolInput: unknown): boo
   // read-only orientation commands (`ls -la … 2>/dev/null`) and are not writes.
   if (/(?:^|[\s;&|\w])(?:>{1,2}|&>)\s*(?!&?\d(?:\b|$))(?!\/dev\/null(?:\b|$))/.test(command)) return true;
   // Command substitution can hide a mutating command from the top-level regex.
-  if (/`|\$\(/.test(command)) return true;
+  if (!options.ignoreCommandSubstitution && /`|\$\(/.test(command)) return true;
   return MUTATING_SHELL_COMMAND.test(command) || MUTATING_FIND_COMMAND.test(command) || INTERPRETER_EVAL.test(command);
 }
 
@@ -255,6 +292,9 @@ interface OnboardingRunnerInvocation {
   // or `--use --bootstrap-only` for the yes path's exit-fast first half).
   decline: boolean;
   reconsider: boolean;
+  // The agent's manual tech classification for an undetectable existing repo
+  // (`--set-tech` + surface flags). Exit-fast like bootstrap/decline.
+  setTech: boolean;
 }
 
 function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): OnboardingRunnerInvocation | null {
@@ -275,10 +315,11 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
   let bootstrap = args[0] === '--bootstrap-only';
   const decline = args[0] === '--decline';
   const reconsider = args[0] === '--reconsider';
+  const setTech = args[0] === '--set-tech';
   // `--use` records the yes-choice then behaves exactly like the plain waiter,
   // so it keeps the wait-only flags available (unlike the exit-fast modes).
   const use = args[0] === '--use';
-  if (bootstrap || decline || reconsider || use) args.shift();
+  if (bootstrap || decline || reconsider || setTech || use) args.shift();
   // `--use --bootstrap-only` is the ask-first yes path's fast first half —
   // record the choice, print the setup link, exit. Grammar-wise it is a
   // bootstrap invocation (exit-fast, so the wait-only flags stay rejected).
@@ -317,13 +358,43 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       seen.add('sync-session');
       continue;
     }
+    // The agent-classification surface flags: valid only on `--set-tech`, once
+    // each, membership-checked against the SAME canonical id vocabularies the
+    // state writer enforces — an id outside the sets never reaches the runner.
+    if (arg.startsWith('--frontend=')) {
+      if (!setTech || seen.has('frontend') || !FRONTEND_IDS.has(arg.slice('--frontend='.length))) return null;
+      seen.add('frontend');
+      continue;
+    }
+    if (arg.startsWith('--backend=')) {
+      if (!setTech || seen.has('backend') || !BACKEND_IDS.has(arg.slice('--backend='.length))) return null;
+      seen.add('backend');
+      continue;
+    }
+    if (arg.startsWith('--mobile=')) {
+      if (!setTech || seen.has('mobile') || !MOBILE_FRAMEWORK_IDS.has(arg.slice('--mobile='.length))) return null;
+      seen.add('mobile');
+      continue;
+    }
+    if (arg.startsWith('--realtime=')) {
+      if (!setTech || seen.has('realtime') || !/^--realtime=(?:none|light)$/.test(arg)) return null;
+      seen.add('realtime');
+      continue;
+    }
+    // Short free-text proof; an inert quoted word by construction (like
+    // --seed-prompt), bounded so a command cannot smuggle a document.
+    if (arg.startsWith('--evidence=')) {
+      if (!setTech || seen.has('evidence') || arg.length > '--evidence='.length + 400) return null;
+      seen.add('evidence');
+      continue;
+    }
     if (arg === '--quiet-url') {
-      if (bootstrap || decline || reconsider || seen.has(arg)) return null;
+      if (bootstrap || decline || reconsider || setTech || seen.has(arg)) return null;
       seen.add(arg);
       continue;
     }
     if (arg === '--timeout-ms' || arg === '--interval-ms') {
-      if (bootstrap || decline || reconsider || seen.has(arg)) return null;
+      if (bootstrap || decline || reconsider || setTech || seen.has(arg)) return null;
       const value = args.shift() || '';
       if (!/^[1-9]\d*$/.test(value)) return null;
       seen.add(arg);
@@ -331,6 +402,9 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
     }
     return null;
   }
+  // A classification must state BOTH primary surfaces consciously (explicit
+  // `none` allowed); mobile/realtime/evidence are optional refinements.
+  if (setTech && (!seen.has('frontend') || !seen.has('backend'))) return null;
   if (envAssignments.size > 0) {
     if (host !== 'opencode') return null;
     const expected = resolveTrafficOneEnv(cwd, 'opencode');
@@ -339,7 +413,7 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       if (value !== expectedValue) return null;
     }
   }
-  return { bootstrap, decline, reconsider };
+  return { bootstrap, decline, reconsider, setTech };
 }
 
 // The blocking "wait for setup" command is allow-listed only when it invokes
@@ -351,6 +425,12 @@ export function isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): 
 
 export function isOnboardingBootstrapCommand(toolName: unknown, toolInput: unknown): boolean {
   return onboardingRunnerInvocation(toolName, toolInput)?.bootstrap === true;
+}
+
+// The agent's manual tech classification command for an undetectable existing
+// repo (`--set-tech --frontend=… --backend=…`). Same exact-argv allow-listing.
+export function isOnboardingSetTechCommand(toolName: unknown, toolInput: unknown): boolean {
+  return onboardingRunnerInvocation(toolName, toolInput)?.setTech === true;
 }
 
 // A launcher/runtime failure explicitly prescribes the bundled read-only
@@ -417,6 +497,19 @@ export function isModelCaptureCommand(
   expectedProjectRoot: string,
 ): boolean {
   return modelGateInvocation(toolName, toolInput, expectedProjectRoot)?.kind === 'capture';
+}
+
+// A shell command that pops a URL in the user's browser. Traffic One never opens
+// the setup link itself — the agent posts it and the user clicks it — but `open`,
+// `xdg-open` and `start` are not in MUTATING_SHELL_COMMAND, so without this they
+// classify as read-only orientation and sail through the onboarding gate. That is
+// exactly how a run auto-opened the wizard and then told the user the link had
+// "already been shared" when no link was ever posted (observed 5cu).
+const BROWSER_OPEN_COMMAND = /(^|[\s;&|])(open|xdg-open|cmd(\.exe)?\s+\/c\s+start|start)\s+(-[^\s]+\s+)*['"]?https?:\/\//i;
+
+export function isBrowserOpenCommand(toolName: unknown, toolInput: unknown): boolean {
+  if (!isShellToolName(String(toolName || ''))) return false;
+  return BROWSER_OPEN_COMMAND.test(commandFromToolInput(toolInput));
 }
 
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {

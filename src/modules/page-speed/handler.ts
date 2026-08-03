@@ -8,11 +8,13 @@ import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { authSatisfied } from '../../shared/auth';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { firstEmitThisSession } from '../../shared/once';
+import { sweepTrafficOneRetention } from '../../shared/retention';
 import { hookSessionIdentity, isWebState, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { logToolUse } from '../../shared/token-logger';
+import { readVerificationContract } from '../../shared/verification-contract';
 
 const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
 const LIGHTHOUSE_COMMAND_RE = /\blighthouse-runner\.(?:cjs|mjs)\b/;
@@ -111,6 +113,18 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
   logToolUse(cwd, ctx.input.raw && typeof ctx.input.raw === 'object' ? (ctx.input.raw as Record<string, unknown>) : null);
   const command = ctx.input.tool?.command ?? '';
   if (LIGHTHOUSE_COMMAND_RE.test(command)) {
+    // The runner just wrote another ~1.3 MB report pair into
+    // `.traffic-one/reports/lighthouse/`. Retention already caps those at
+    // `lighthouseKeepPerRoute`, but its only trigger was SessionStart, so a long
+    // build session never swept: observed 10co, six pairs for the single `home`
+    // route and a 14.7 MB reports dir inside one run. This is the natural
+    // boundary — the files exist, and we are already parsing this command.
+    // Best-effort: retention must never turn a page-speed hook into a failure.
+    try {
+      sweepTrafficOneRetention(cwd, { dryRun: false });
+    } catch {
+      // ignore — a busy or partially-written report dir is swept next time
+    }
     const blocked = lighthouseBlockedStatus(ctx.input.raw);
     if (blocked) {
       const label = blocked.status === 'blocked:sandbox'
@@ -118,26 +132,39 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
         : blocked.status === 'blocked:timeout'
           ? 'the Lighthouse runner timed out'
           : 'usage limit blocked Lighthouse';
+      // Codex's workspace-write sandbox denies binding the 127.0.0.1 preview
+      // port (`listen EPERM`, observed 8c-codex). Escalation is routine there —
+      // prescribe the exact retry instead of leaving page speed unverified.
+      const codexEscalation = ctx.host === 'codex' && blocked.status === 'blocked:sandbox'
+        ? ' On Codex, rerun the SAME runner command via exec_command with `sandbox_permissions: "require_escalated"` and the persistent prefix `["node", "~/.traffic-one/bin/lighthouse-runner.cjs"]` — the runner must bind a 127.0.0.1 preview port, which the workspace sandbox forbids.'
+        : '';
       return context(
-        `[traffic-one] Lighthouse mobile gate reported ${blocked.status}: ${blocked.error || label}. Treat page speed as unverified, list concrete page-speed risks, and use a staging/already-running URL if available.`,
+        `[traffic-one] Lighthouse mobile gate reported ${blocked.status}: ${blocked.error || label}. Treat page speed as unverified, list concrete page-speed risks, and use a staging/already-running URL if available.${codexEscalation}`,
         { systemMessage: `traffic-one page-speed ${blocked.status}` },
       );
     }
   }
   if (!BUILD_COMMAND_RE.test(command)) return noop();
-  if (!isWebState(readEffectiveState(cwd))) return noop();
+  const state = readEffectiveState(cwd);
+  if (!isWebState(state)) return noop();
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  const contract = runId ? readVerificationContract(cwd, runId) : null;
+  // Lighthouse is a separate, risk-derived performance contract. A normal web
+  // build must not manufacture a Lighthouse obligation when the runtime did
+  // not compile one for this run.
+  if (!contract?.performance.required) return noop();
   // Iterative implement-verify loops run `npm run build` many times; the full
   // advisory injects once per session, later builds get a one-line reminder.
   if (!firstEmitThisSession(cwd, 'pagespeed-advisory', hookSessionIdentity(ctx.input.raw).sessionId)) {
     return context(
-      '[traffic-one] Lighthouse mobile gate still pending — run: node ~/.traffic-one/bin/lighthouse-runner.cjs --route / (the runner ships with the PLUGIN, not the repo).',
+      '[traffic-one] The run performance contract still requires Lighthouse evidence — run: node ~/.traffic-one/bin/lighthouse-runner.cjs --route / (the runner ships with the PLUGIN, not the repo).',
       { systemMessage: 'traffic-one page-speed gate pending after build' },
     );
   }
   return context(
     [
       '[traffic-one] A production build just ran for a web stack.',
-      'Before final delivery for generated/changed React or Ionic routes, run the Lighthouse mobile gate:',
+      'This run has a runtime-compiled performance requirement. Before final delivery, run the Lighthouse mobile gate:',
       '',
       '  node ~/.traffic-one/bin/lighthouse-runner.cjs --route /',
       '  node ~/.traffic-one/bin/lighthouse-runner.cjs --url https://staging.example.com --skip-preview',
@@ -145,6 +172,10 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
       'Audit `/` plus the 1-2 heaviest public routes (catalog/listing pages — rerun with `--route <path>`); the home route alone hides heavy-route regressions. A metric flagged `withinTolerance` passed the gate — do NOT iterate on it. A confirmation re-run with no code changes in between may add `--skip-build`. If the local sandbox blocks preview binding, use an already-running or staging URL with `--url ... --skip-preview`. The summary also carries Accessibility/Best-Practices/SEO scores from the same audit — surface a11y warnings to the team.',
       '',
       'If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. If the environment blocks Lighthouse, report the structured status (`blocked:sandbox`, `blocked:usage-limit`, or `blocked:timeout`) with concrete risks; never imply page speed was verified.',
+      ...(ctx.host === 'codex' ? [
+        '',
+        'Codex: the workspace sandbox denies binding the preview port (`blocked:sandbox`, listen EPERM). Run the runner via exec_command with `sandbox_permissions: "require_escalated"` and the persistent prefix `["node", "~/.traffic-one/bin/lighthouse-runner.cjs"]`, or audit an already-running/staging URL with `--url ... --skip-preview`.',
+      ] : []),
     ].join('\n'),
     { systemMessage: 'traffic-one page-speed gate pending after build' },
   );

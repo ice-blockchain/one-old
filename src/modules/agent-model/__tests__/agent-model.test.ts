@@ -14,23 +14,33 @@ import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
-import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
+import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted, markVerifyGateDenied } from '../../../shared/opencode-roles';
+import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext, runLedgerAdmitsClaims, transitionRunStatus } from '../../../shared/state';
 import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import {
+  CURSOR_HIGHEST_ALT as FIXTURE_CURSOR_HIGHEST_ALT,
+  CURSOR_HIGHEST_FAMILY,
+  CURSOR_HIGHEST_SLUG as FIXTURE_CURSOR_HIGHEST_SLUG,
+  DEFAULT_CURSOR_MODELS,
+  freezeRunPolicy as freezeRunPolicyFixture,
+  withMaterialized as withMaterializedFixture,
+} from './agent-model-fixtures';
 import { openCodeGlobalAgentName } from '../../../shared/materialize/opencode-assets';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../../shared/run-model-policy';
+import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
 import { codexChildModelGate } from '../codex-child-model';
 import { captureCursorModels, freshCursorModels } from '../../../shared/materialize/cursor-models';
 import { currentHostModelTarget } from '../../../shared/current-model-tiers';
-import { writeOneMcpConfigCacheEntry } from '../../../shared/one-mcp-cache';
+import { modelTierSnapshot, resolveModel } from '../../../shared/model-tiers';
+import { writeOneMcpConfigCacheEntry } from '../../../shared/one-mcp/cache';
 import { oneMcpPayloadFingerprint } from '../../../shared/one-mcp';
 import type { OneMcpModelConfigPayload } from '../../../shared/one-mcp/types';
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
+  DEFAULT_PUBLIC_ENDPOINT,
 } from '../../../config/one-mcp';
 
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, agentName, and prose', () => {
@@ -126,6 +136,22 @@ test('inferTrafficOneSpawnRole resolves fix-cycle prompts without the "Traffic O
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'Ping senior-backend about the schema.' }), null);
 });
 
+test('inferTrafficOneSpawnRole binds a distinct-named reattach-dodging replacement (senior_frontend_fix_1) to its role', () => {
+  // 15c-codex: after a hook-model-conflict retirement, a plain same-name
+  // `senior_frontend` respawn kept reattaching the dead runtime, so root tried
+  // `senior_frontend_fix_1` — which must still bind to senior-frontend (only a
+  // numeric suffix used to be stripped, so it resolved to null and deadlocked
+  // the fix cycle).
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior_frontend_fix_1' }), 'senior-frontend');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior_backend_fix_2' }), 'senior-backend');
+  assert.equal(inferTrafficOneSpawnRole({ subagent_type: 'senior-reviewer-retry' }), 'senior-reviewer');
+  // Canonical and numeric-suffixed forms still resolve; a non-role name stays null.
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior_tester' }), 'senior-tester');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior-shipper-2' }), 'senior-shipper');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'quick_fix_1' }), 'quick-fix');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'totally_unrelated_worker' }), null);
+});
+
 test('inferTrafficOneSpawnRole inspects both source envelopes and accepts outer threadSpawn camelCase', () => {
   const nestedPayload = inferTrafficOneSpawnRoleEvidence({
     source: { event: 'subagent-start' },
@@ -165,7 +191,7 @@ test('inferTrafficOneSpawnRole inspects both source envelopes and accepts outer 
 
 test('verifier roles cannot resume or bind an implementer agent id', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     const memoryDir = '.traffic' + '-one';
     const runId = JSON.parse(fs.readFileSync(path.join(cwd, memoryDir, '.one.json'), 'utf8')).currentRunId as string;
     recordRunAgent(cwd, runId, 'senior-frontend', {
@@ -204,7 +230,7 @@ test('verifier roles cannot resume or bind an implementer agent id', () => {
     });
     const sameReviewer = agentModelGate(spawnCtx(cwd, {
       subagent_type: 'senior-reviewer',
-      model: 'claude-fable-5-thinking-high',
+      model: CURSOR_HIGHEST_SLUG,
       resume: 'reviewer-agent-1',
     }, 'cursor'));
     assert.equal(sameReviewer.kind, 'noop', 'same-role reviewer continuation remains allowed');
@@ -243,67 +269,15 @@ test('inferTrafficOneSpawnRole anchors on the declared role despite sibling ment
 // reasoning suffixes). Written to .traffic-one/cursor-models.json so the capture precondition
 // is satisfied and tests exercise model validation. Pass cursorModels: null to opt OUT (to
 // exercise the capture precondition itself).
-const DEFAULT_CURSOR_MODELS = [
-  'claude-fable-5-thinking-high', 'gpt-5.6-sol-medium',
-  'gpt-5.6-terra-medium', 'claude-sonnet-5-thinking-high',
-  'composer-2.5-fast', 'gpt-5.4-mini', 'gpt-5.6-luna',
-];
+// Derived from the live catalog, never hardcoded: which family anchors a tier is
+// editable policy, so a re-order must not break these behavioural gate tests.
+// Fixtures shared with the sibling gate suites (exploration cap, verify gate)
+// live in ./agent-model-fixtures; re-bound locally to keep call sites short.
+const CURSOR_HIGHEST_SLUG = FIXTURE_CURSOR_HIGHEST_SLUG;
+const CURSOR_HIGHEST_ALT = FIXTURE_CURSOR_HIGHEST_ALT;
 
 function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[] | null; architectComplete?: boolean; level?: 'high' | 'balanced' | 'low' }, fn: (cwd: string) => void): void {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agentmodel-'));
-  const env = process.env;
-  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-  const prevState = env.TRAFFIC_ONE_STATE_PATH;
-  const prevMcpCache = env.TRAFFIC_ONE_MCP_CACHE_PATH;
-  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
-  // Pin a paid plan so the plan-aware gate resolves deterministic tiers regardless
-  // of the test machine's real ~/.claude.json|~/.codex auth (a non-free plan inherits
-  // DEFAULT_AGENT_TIERS → the high=highest behavior these assertions encode).
-  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
-  env.TRAFFIC_ONE_USER_PLAN = 'pro';
-  const t1 = path.join(dir, '.traffic-one');
-  fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
-  fs.mkdirSync(path.join(t1, 'skills', 'project-memory'), { recursive: true });
-  fs.writeFileSync(path.join(t1, 'rules', 'common', 'auth-gate.md'), 'rule', 'utf8');
-  fs.writeFileSync(path.join(t1, 'skills', 'project-memory', 'SKILL.md'), 'skill', 'utf8');
-  fs.writeFileSync(path.join(t1, 'manifest.json'), JSON.stringify({
-    generatedBy: 'traffic-one', stack: 'default', rules: ['rules/common/auth-gate.md'], skills: ['project-memory'],
-  }), 'utf8');
-  fs.writeFileSync(path.join(dir, 'AGENTS.md'), `ctx\n${GENERATED_MARKER}\n`, 'utf8');
-  fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'see agents', 'utf8');
-  fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify({
-    mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
-    onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
-  }), 'utf8');
-  const cursorModels = opts.cursorModels === undefined ? DEFAULT_CURSOR_MODELS : opts.cursorModels;
-  const prefs = hostScopedPerformancePrefs(
-    { level: opts.level ?? 'high', source: 'prompted' },
-    { mode: 'subagents', source: 'prompted', ...(opts.teamApproved ? { approved: true } : {}) },
-    'pro',
-  );
-  if (cursorModels) {
-    withCursorAvailableModels(prefs, cursorModels, 'pro');
-  }
-  fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
-  if (opts.architectComplete !== false && opts.teamApproved) {
-    const runId = 'run-test';
-    const onePath = path.join(t1, '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = runId;
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
-    writeArchitectPhaseComplete(dir, runId, one);
-  }
-  try {
-    fn(dir);
-  } finally {
-    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
-    if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
-    if (prevMcpCache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = prevMcpCache;
-    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  withMaterializedFixture(opts, fn);
 }
 
 test('the spawn gate stands down inside the plugin authoring repo', () => {
@@ -326,6 +300,76 @@ test('the spawn gate stands down inside the plugin authoring repo', () => {
   }
 });
 
+test('the child model gate stands down before policy reads inside the plugin authoring repo', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoring-child-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    fs.mkdirSync(path.join(dir, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'gen', 'index.ts'), 'export {};\n', 'utf8');
+    resetAuthoringRootCache();
+    const input: HookInput = {
+      event: 'PreToolUse',
+      host: 'codex',
+      cwd: dir,
+      raw: {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Read',
+        session_id: 'root-thread',
+        agent_id: 'child-thread',
+        agent_type: 'senior-frontend',
+      },
+      tool: {
+        class: 'file-read',
+        rawName: 'Read',
+        filePath: path.join(dir, 'src', 'gen', 'index.ts'),
+      },
+    };
+    const ctx = { input, host: 'codex', cwd: dir, now: () => 'x' } as unknown as Ctx;
+    assert.equal(codexChildModelGate(ctx).kind, 'noop');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false);
+  } finally {
+    resetAuthoringRootCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('authoring cwd does not exempt an absolute target in a real project', () => {
+  withMaterialized({ teamApproved: true }, (projectRoot) => {
+    const authoringRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoring-external-target-'));
+    try {
+      fs.writeFileSync(path.join(authoringRoot, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+      fs.mkdirSync(path.join(authoringRoot, 'src', 'gen'), { recursive: true });
+      fs.writeFileSync(path.join(authoringRoot, 'src', 'gen', 'index.ts'), 'export {};\n', 'utf8');
+      resetAuthoringRootCache();
+      const input: HookInput = {
+        event: 'PreToolUse',
+        host: 'claude',
+        cwd: authoringRoot,
+        raw: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Read',
+          session_id: 'parent-session',
+          agent_id: 'child-session',
+          agent_type: 'senior-frontend',
+          tool_input: { file_path: path.join(projectRoot, 'README.md') },
+        },
+        tool: {
+          class: 'file-read',
+          rawName: 'Read',
+          filePath: path.join(projectRoot, 'README.md'),
+        },
+      };
+      const ctx = { input, host: 'claude', cwd: authoringRoot, now: () => 'x' } as unknown as Ctx;
+      const result = codexChildModelGate(ctx);
+      assert.equal(result.kind, 'deny');
+      if (result.kind === 'deny') assert.match(result.reason, /model-policy\.json is missing/i);
+    } finally {
+      resetAuthoringRootCache();
+      fs.rmSync(authoringRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' = 'claude', workspaceRoot?: string): Ctx {
   const input: HookInput = {
     event: 'PreToolUse', host, cwd, workspaceRoot, raw: { tool_name: 'Task', tool_input: toolInput },
@@ -333,6 +377,9 @@ function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude
   };
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
+
+const QUICK_FIX_SCOPE_MARKER =
+  '[t1-bounded-scope: {"outputs":["src/bounded-fix.ts"],"allowlist":["src/bounded-fix.ts"],"exclude":[]}]';
 
 // Queue one bounded OpenCode unit for `role` in plan.md — the OpenCode role gate
 // only forces delegation-first for roles the architect actually QUEUED work for.
@@ -369,7 +416,7 @@ test('a subagent cannot create a missing immutable run model policy', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const parentCtx = spawnCtx(cwd, {
       subagent_type: 'senior-frontend',
-      model: 'claude-fable-5-thinking-high',
+      model: CURSOR_HIGHEST_SLUG,
     });
     const ctx = {
       ...parentCtx,
@@ -390,7 +437,7 @@ test('a subagent cannot create a missing immutable run model policy', () => {
   });
 });
 
-test('every recognized host child is blocked before its first tool when the parent policy is missing', () => {
+test('every recognized host child needs both the parent policy and a parent-bound trafficOneRole before its first tool', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const childCtx = {
       input: {
@@ -410,7 +457,67 @@ test('every recognized host child is blocked before its first tool when the pare
     assert.equal(readRunModelPolicy(cwd, 'run-test'), null, 'child gate must not create the policy');
 
     freezeRunPolicy(cwd, 'claude');
-    assert.equal(codexChildModelGate(childCtx).kind, 'noop');
+    const unbound = codexChildModelGate(childCtx);
+    assert.equal(unbound.kind, 'deny');
+    if (unbound.kind === 'deny') assert.match(unbound.reason, /no parent-resolved trafficOneRole/i);
+  });
+});
+
+test('an unbound child that the reuse registry names as the live role agent is adopted, not deadlocked', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // Live deadlock: the reuse gate refused a replacement spawn because
+    // agents.json names this child as the live `senior-architect`, while this
+    // gate demanded exactly that respawn because the child carried no claim
+    // (it was spawned before its bootstrap envelope existed). Nine consecutive
+    // identical denials across Read and Bash — a bare `pwd` included — and the
+    // follow-up feature could never start.
+    const childCtx = (agentId: string): Ctx => ({
+      input: {
+        event: 'PreToolUse', host: 'claude', cwd,
+        raw: {
+          hook_event_name: 'PreToolUse', tool_name: 'Read', session_id: 'parent-session',
+          // recognized as a child (distinct thread under the parent session)
+          // but carrying NO role — exactly the shape that deadlocked live.
+          agent_id: agentId, agent_type: 'default',
+          source: { subagent: { thread_spawn: { parent_thread_id: 'parent-session' } } },
+        },
+        tool: { class: 'file-read', rawName: 'Read', filePath: path.join(cwd, 'README.md') },
+      },
+      host: 'claude', cwd, now: () => 'x',
+    } as unknown as Ctx);
+
+    freezeRunPolicy(cwd, 'claude');
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' });
+    const runId = String(state.currentRunId);
+    const policy = readRunModelPolicy(cwd, runId);
+    assert.ok(policy);
+    assert.ok(ensureRunBootstrap(cwd, runId, 'senior-architect', state, {
+      modelPolicyId: policy.policyId,
+      host: 'claude',
+    }));
+
+    // no registry row → still fail-closed
+    const stillDenied = codexChildModelGate(childCtx('a4418a7fd15384451'));
+    assert.equal(stillDenied.kind, 'deny');
+    if (stillDenied.kind === 'deny') assert.match(stillDenied.reason, /no parent-resolved trafficOneRole/i);
+
+    // parent-issued registry row naming this exact child → adopted
+    recordRunAgent(cwd, runId, 'senior-architect', {
+      agentId: 'a4418a7fd15384451',
+      parentSessionId: 'parent-session',
+    });
+    assert.equal(codexChildModelGate(childCtx('a4418a7fd15384451')).kind, 'noop');
+    // and the adoption is durable: the claim now resolves for later calls
+    assert.equal(
+      resolveRunAgentContext(cwd, readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' }), {
+        hook_event_name: 'PreToolUse', session_id: 'parent-session', agent_id: 'a4418a7fd15384451',
+      }, { claimPending: false, host: 'claude' })?.role,
+      'senior-architect',
+    );
+    // a DIFFERENT child id is never adopted off someone else's registry row
+    const foreign = codexChildModelGate(childCtx('some-other-child'));
+    assert.equal(foreign.kind, 'deny');
+    if (foreign.kind === 'deny') assert.match(foreign.reason, /no parent-resolved trafficOneRole/i);
   });
 });
 
@@ -820,7 +927,7 @@ test('literal <run-id> template placeholder never trips the spawn gate; Claude r
       const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
       assert.ok(runId.length > 0, 'run pre-minted before any spawn (as in the incident)');
       const first = agentModelGate(spawnCtx(cwd, {
-        subagent_type: 'senior-architect', model: 'claude-fable-5-thinking-high',
+        subagent_type: 'senior-architect', model: CURSOR_HIGHEST_SLUG,
         prompt: `[t1-role: senior-architect]\nRun ID: ${runId}\n\nAlso write assignments.json to .traffic-one/runs/<run-id>/assignments.json LAST.\n\nOn finish, write handoff digest to:\n  .traffic-one/digests/<run-id>/architect.md`,
       }, 'cursor'));
       assert.notEqual(first.kind, 'deny', 'first Cursor architect spawn must not be denied on the template placeholder');
@@ -836,8 +943,8 @@ test('literal <run-id> template placeholder never trips the spawn gate; Claude r
 
 test('Cursor: model-param requires an exact captured Task-tool slug before staking a claim', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    // high senior-frontend → highest tier → cursor "claude-fable-5-thinking-high" (the exact
-    // Task-tool slug). The bare Anthropic alias Cursor rejects → deny (the original tester bug).
+    // high senior-frontend → highest tier → the exact captured Cursor Task-tool slug.
+    // The bare Anthropic alias Cursor rejects → deny (the original tester bug).
     // A no/wrong-model spawn is an ORCHESTRATOR-actionable deny — the plain per-role model-tier
     // deny ("pass model=X") — NOT the user-facing budget/disabled CHOICE (that is reserved for a
     // genuine Composer-floor degradation; see degradedToFloorDeny). So the alias here denies with
@@ -861,20 +968,20 @@ test('Cursor: model-param requires an exact captured Task-tool slug before staki
 
     // A family alias or invented sub-variant satisfies the tier but is NOT an exact Cursor Task id.
     // Deny before Cursor sees the Task call, otherwise it creates a visible "Couldn't start" card.
-    const bareFamily = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5' }, 'cursor'));
+    const bareFamily = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_FAMILY }, 'cursor'));
     assert.equal(bareFamily.kind, 'deny');
     if (bareFamily.kind === 'deny') {
       assert.ok(bareFamily.reason.includes('Cursor model gate'));
-      assert.ok(bareFamily.reason.includes('claude-fable-5-thinking-high'));
+      assert.ok(bareFamily.reason.includes(CURSOR_HIGHEST_SLUG));
     }
-    const invented = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high-fast' }, 'cursor'));
+    const invented = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: `${CURSOR_HIGHEST_SLUG}-fast` }, 'cursor'));
     assert.equal(invented.kind, 'deny');
     if (invented.kind === 'deny') assert.ok(invented.reason.includes('Cursor model gate'));
 
     // The exact highest Task-tool slug passes.
     // The FIRST passing Cursor spawn of the run also carries the one-time model-availability
     // advisory (kind 'context'); it is still an ALLOW (not a deny) and stakes the claim.
-    assert.notEqual(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor')).kind, 'deny');
+    assert.notEqual(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor')).kind, 'deny');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
     assert.ok(runId.length > 0, 'currentRunId minted on Cursor spawn');
@@ -885,10 +992,9 @@ test('Cursor: model-param requires an exact captured Task-tool slug before staki
 
 test('Cursor: the configured same-tier FALLBACK model satisfies the gate when the build lacks the preferred slug', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    // highest preferred = claude-fable-5-thinking-high; if a build doesn't offer it, the
-    // configured same-tier fallback (gpt-5.6-sol-medium)
+    // If a build doesn't offer the preferred highest slug, the configured same-tier fallback
     // satisfies the tier via the accept-set and stakes a claim, instead of deadlocking.
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'gpt-5.6-sol-medium' }, 'cursor'));
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_ALT }, 'cursor'));
     // Allowed (first passing spawn of the run may carry the one-time model-availability advisory).
     assert.notEqual(ok.kind, 'deny', 'the configured same-tier fallback satisfies the gate');
     const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
@@ -901,7 +1007,7 @@ test('Cursor: spawn gate resolves subpackage cwd to the workspace root before wr
   withMaterialized({ teamApproved: true }, (cwd) => {
     const pkg = path.join(cwd, 'packages', 'ui');
     fs.mkdirSync(pkg, { recursive: true });
-    const r = agentModelGate(spawnCtx(pkg, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor', cwd));
+    const r = agentModelGate(spawnCtx(pkg, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor', cwd));
     assert.notEqual(r.kind, 'deny', 'valid spawn from a package cwd is allowed');
 
     const rootState = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
@@ -964,7 +1070,7 @@ test('Cursor: a STALE captured list (plan upgrade/downgrade) re-fires the captur
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     withCursorAvailableModels(prefs, ['composer-2.5-fast'], 'business');
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const r = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const r = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.equal(r.kind, 'deny', 'plan changed → stale capture → re-prompt to re-enumerate');
     if (r.kind === 'deny') assert.ok(/cursor-models\.json|enumerate|model list/i.test(r.reason), 'asks to re-capture the model list');
   });
@@ -977,8 +1083,8 @@ test('Cursor: the model deny names the recommended + a usable same-tier fallback
     const d = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }, 'cursor'));
     assert.equal(d.kind, 'deny');
     if (d.kind === 'deny') {
-      assert.ok(d.reason.includes('claude-fable-5-thinking-high'), 'names the recommended build slug');
-      assert.ok(d.reason.includes('gpt-5.6-sol-medium'), 'names a usable same-tier fallback build slug');
+      assert.ok(d.reason.includes(CURSOR_HIGHEST_SLUG), 'names the recommended build slug');
+      assert.ok(d.reason.includes(CURSOR_HIGHEST_ALT), 'names a usable same-tier fallback build slug');
     }
     // After "use-fallback", the plain per-role deny LISTS the same-tier fallback families
     // resolved to the real build slugs the runner offers, so the orchestrator can switch.
@@ -987,7 +1093,7 @@ test('Cursor: the model deny names the recommended + a usable same-tier fallback
     const d2 = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }, 'cursor'));
     assert.equal(d2.kind, 'deny');
     if (d2.kind === 'deny') {
-      assert.ok(d2.reason.includes('claude-fable-5-thinking-high') && d2.reason.includes('composer-2.5-fast'),
+      assert.ok(d2.reason.includes(CURSOR_HIGHEST_SLUG) && d2.reason.includes('composer-2.5-fast'),
         'lists the same-tier fallback build slugs');
     }
   });
@@ -996,7 +1102,7 @@ test('Cursor: the model deny names the recommended + a usable same-tier fallback
 test('Cursor capture precondition: the immutable run stays blocked until the picker is captured', () => {
   withMaterialized({ teamApproved: true, cursorModels: null }, (cwd) => {
     // No captured model list yet → the gate asks the orchestrator to enumerate + persist it.
-    const first = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const first = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.equal(first.kind, 'deny');
     if (first.kind === 'deny') {
       assert.ok(/model-capture|list the model ids/i.test(first.reason), 'asks to capture the model list');
@@ -1005,13 +1111,13 @@ test('Cursor capture precondition: the immutable run stays blocked until the pic
     }
     // Retrying without satisfying the prerequisite cannot mint a policy with an
     // empty model list or silently advance on guessed slugs.
-    const second = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const second = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.equal(second.kind, 'deny');
 
     // A non-empty but partial picker capture is still unsafe for an immutable
     // run: Balanced roles and quick-fix would have no exact runnable slug.
-    assert.equal(captureCursorModels(cwd, ['claude-fable-5-thinking-high'], 'pro'), true);
-    const partial = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    assert.equal(captureCursorModels(cwd, [CURSOR_HIGHEST_SLUG], 'pro'), true);
+    const partial = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.equal(partial.kind, 'deny');
     if (partial.kind === 'deny') {
       assert.match(partial.reason, /missing captured tiers(?: for this run)?:\s*balanced, cheapest/i);
@@ -1020,7 +1126,7 @@ test('Cursor capture precondition: the immutable run stays blocked until the pic
     assert.equal(readRunModelPolicy(cwd, runId), null, 'partial capture cannot publish model-policy.json');
 
     assert.equal(captureCursorModels(cwd, DEFAULT_CURSOR_MODELS, 'pro'), true);
-    const third = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const third = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.notEqual(third.kind, 'deny', 'capture lets the parent create the policy and proceed');
     const policy = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'runs', runId, 'model-policy.json'), 'utf8'));
     assert.deepEqual(policy.cursorAvailableModels, DEFAULT_CURSOR_MODELS);
@@ -1050,7 +1156,7 @@ test('Cursor spawn and child bind stay on the frozen run after sidecar, plan, an
       },
     };
     writeOneMcpConfigCacheEntry('cursor', {
-      endpoint: publicEndpoint(process.env),
+      endpoint: DEFAULT_PUBLIC_ENDPOINT,
       configName: ONE_MCP_CONFIG_NAME_BY_HOST.cursor,
       decoderVersion: ONE_MCP_DECODER_VERSION,
       version: 9,
@@ -1119,7 +1225,7 @@ test('Cursor: the PASSED model is authoritative — a matching .cursor/agents fr
     // subagent inherit the PARENT model, so the gate must REQUIRE the passed model.
     const agentsDir = path.join(cwd, '.cursor', 'agents');
     fs.mkdirSync(agentsDir, { recursive: true });
-    fs.writeFileSync(path.join(agentsDir, 'senior-frontend.md'), `---\nname: senior-frontend\nmodel: claude-fable-5-thinking-high\n---\nbody\n`, 'utf8');
+    fs.writeFileSync(path.join(agentsDir, 'senior-frontend.md'), `---\nname: senior-frontend\nmodel: ${CURSOR_HIGHEST_SLUG}\n---\nbody\n`, 'utf8');
 
     // NO model param → DENY, even though the frontmatter pins the right model.
     const noModel = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor'));
@@ -1131,7 +1237,7 @@ test('Cursor: the PASSED model is authoritative — a matching .cursor/agents fr
     assert.equal(wrong.kind, 'deny', 'wrong-tier passed model denies despite a matching frontmatter');
 
     // The CORRECT passed model → allowed (first pass may carry the one-time advisory).
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.notEqual(ok.kind, 'deny', 'the passed model is what satisfies the gate');
   });
 });
@@ -1139,8 +1245,8 @@ test('Cursor: the PASSED model is authoritative — a matching .cursor/agents fr
 test('Cursor degraded-to-floor choice: names the RECOMMENDED tier model verbatim (not the available floor), prompts once, then a recorded choice proceeds', () => {
   // Fable IS offered (so the eligibility gate does not fire) but the API budget is exhausted, so
   // the orchestrator passes composer-2.5-fast (the floor). The choice deny must name the model the
-  // user should restore (`claude-fable-5`, the tier family) — NOT the floor it collapsed to.
-  withMaterialized({ teamApproved: true, cursorModels: ['claude-fable-5-thinking-high', 'gpt-5.6-sol-medium', 'composer-2.5-fast'] }, (cwd) => {
+  // user should restore (the configured highest tier family) — NOT the floor it collapsed to.
+  withMaterialized({ teamApproved: true, cursorModels: [CURSOR_HIGHEST_SLUG, CURSOR_HIGHEST_ALT, 'composer-2.5-fast'] }, (cwd) => {
     // 1) A highest role degraded to the Composer floor → the enable/fallback CHOICE deny.
     const first = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'composer-2.5-fast' }, 'cursor'));
     assert.equal(first.kind, 'deny');
@@ -1152,7 +1258,7 @@ test('Cursor degraded-to-floor choice: names the RECOMMENDED tier model verbatim
       // composer (the available floor). Before the fix, cursorRealSlug(expected) resolved THROUGH
       // the captured list, which excludes the disabled model, so it wrongly named composer-2.5-fast
       // as the "recommended" model to enable.
-      assert.ok(first.reason.includes('claude-fable-5'), 'recommended model is the disabled tier family, not the available floor');
+      assert.ok(first.reason.includes(CURSOR_HIGHEST_FAMILY), 'recommended model is the disabled tier family, not the available floor');
       assert.ok(first.reason.includes('composer-2.5-fast'), 'names the Composer floor as the proceed-now fallback');
     }
     const runId = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string;
@@ -1173,12 +1279,12 @@ test('Cursor degraded-to-floor choice: names the RECOMMENDED tier model verbatim
     assert.equal(blockedFloor.kind, 'deny', 'recorded enable-retry must not proceed on the Composer floor');
     if (blockedFloor.kind === 'deny') {
       assert.ok(/enable\/retry|do NOT proceed on a fallback/i.test(blockedFloor.reason));
-      assert.ok(blockedFloor.reason.includes('claude-fable-5'), 'names the recommended model to enable');
+      assert.ok(blockedFloor.reason.includes(CURSOR_HIGHEST_FAMILY), 'names the recommended model to enable');
     }
 
     // 5) "enable-retry" + the orchestrator now passing a recommended-family slug → proceeds normally
     //    (not on the floor, so the degradation deny never fires).
-    const er = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const er = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.notEqual(er.kind, 'deny', `enable-retry on the recommended model proceeds${er.kind === 'deny' ? `: ${er.reason}` : ''}`);
   });
 });
@@ -1191,7 +1297,7 @@ test('Cursor eligibility: the PICKED model is not offered (disabled) → ask ONC
   // choice ONCE, naming the recommended model to enable (Terra) + the fallback it would use.
   withMaterialized({
     teamApproved: true,
-    cursorModels: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'],
+    cursorModels: [CURSOR_HIGHEST_SLUG, 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'],
   }, (cwd) => {
     // Override the architect to balanced so its preferred model is GPT-5.6 Terra (absent).
     const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'));
@@ -1228,7 +1334,7 @@ test('Cursor eligibility: the PICKED model is not offered (disabled) → ask ONC
     }
 
     // A role whose PREFERRED model IS offered (frontend → Fable, present) is NOT prompted.
-    const fe = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const fe = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.notEqual(fe.kind, 'deny', 'a role whose picked model is offered spawns clean');
   });
 });
@@ -1242,24 +1348,24 @@ test('Cursor eligibility: fallback choice names an offered alternate, not the fi
     assert.equal(first.kind, 'deny');
     if (first.kind === 'deny') {
       assert.ok(first.reason.includes('composer-2.5-fast'), 'names the actually offered Composer fallback');
-      assert.ok(!first.reason.includes('gpt-5.6-sol'), 'does not offer an absent first alternate');
+      assert.ok(!first.reason.includes(CURSOR_HIGHEST_ALT), 'does not offer an absent first alternate');
     }
   });
 });
 
 test('Cursor proactive advisory: first passing spawn names the models + enable path, once per run', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    const first = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const first = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.equal(first.kind, 'context', 'first passing Cursor spawn carries the advisory');
     if (first.kind === 'context') {
-      assert.ok(first.context.includes('claude-fable-5-thinking-high'), 'advisory lists the team models');
+      assert.ok(first.context.includes(CURSOR_HIGHEST_SLUG), 'advisory lists the team models');
       assert.ok(/budget/i.test(first.context), 'advisory names the budget-exhaustion cause + remedy');
       // USER-VISIBLE: rides systemMessage (→ user_message on Cursor), not just additional_context.
       assert.ok(first.systemMessage !== undefined, 'advisory has a user-visible systemMessage');
       assert.ok(/budget|Composer/i.test(String(first.systemMessage)), 'the visible banner explains the Composer/budget situation');
     }
     // A second passing spawn (different role) → advisory already shown → clean noop.
-    const second = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const second = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.equal(second.kind, 'noop', 'advisory is shown at most once per run');
   });
 });
@@ -1270,7 +1376,11 @@ test('Cursor quick-fix is pinned to the exact captured cheapest Cursor model', (
     // the exact Task-tool slug passes. A fabricated same-family sub-variant is denied before
     // Cursor sees it, because Task requires an id from the captured model list.
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }, 'cursor')).kind, 'deny');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast' }, 'cursor')).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'composer-2.5-fast',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }, 'cursor')).kind, 'noop');
     const invented = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast-high' }, 'cursor'));
     assert.equal(invented.kind, 'deny');
     if (invented.kind === 'deny') assert.ok(invented.reason.includes('Cursor model gate'));
@@ -1284,8 +1394,159 @@ test('quick-fix maintenance worker is pinned to the cheapest model even at high 
     const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'opus' }));
     assert.equal(wrong.kind, 'deny');
     if (wrong.kind === 'deny') assert.ok(wrong.reason.includes('Performance gate'));
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
     assert.equal(ok.kind, 'noop');
+  });
+});
+
+test('quick-fix spawn mints only the exact machine-readable bounded scope', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const broad = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: '[t1-bounded-scope: {"outputs":["src/**"]}]',
+    }));
+    assert.equal(broad.kind, 'deny');
+
+    const exact = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
+    assert.equal(exact.kind, 'noop');
+    const state = readEffectiveState(cwd) as { currentRunId?: string };
+    const envelope = readActiveRunBootstrap(cwd, String(state.currentRunId), 'quick-fix');
+    assert.deepEqual(envelope?.workUnit.outputs, [
+      `.traffic-one/digests/${String(state.currentRunId)}/quick-fix.md`,
+      'src/bounded-fix.ts',
+    ]);
+    assert.deepEqual(envelope?.workUnit.allowlist, [
+      `.traffic-one/digests/${String(state.currentRunId)}/quick-fix.md`,
+      'src/bounded-fix.ts',
+    ]);
+  });
+});
+
+test('a backgrounded role spawn is denied — foreground only', () => {
+  // ep-new-feature e2e: the parent spawned the architect with
+  // run_in_background:true, ended its turn "while it completes", and the
+  // headless session exited — child killed, claim dangling, nothing delivered,
+  // host exit 0. The gate must refuse the detach outright.
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const backgrounded = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'opus',
+      run_in_background: true,
+    }));
+    assert.equal(backgrounded.kind, 'deny');
+    if (backgrounded.kind === 'deny') {
+      assert.ok(backgrounded.reason.includes('FOREGROUND'));
+      assert.ok(backgrounded.reason.includes('run_in_background'));
+    }
+    // The same spawn without the flag passes.
+    const foreground = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'opus',
+    }));
+    assert.equal(foreground.kind, 'noop', foreground.kind === 'deny' ? foreground.reason : undefined);
+  });
+});
+
+test('claude model deny leads with the Task-schema alias, never a concrete slug the schema rejects', () => {
+  // Claude's Task tool only accepts sonnet|opus|haiku|fable for `model`; a deny
+  // that leads with "claude-sonnet-5" walks the parent into an
+  // InputValidationError (observed: ep-new-feature run 1785662486571).
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    const bare = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-architect' }));
+    assert.equal(bare.kind, 'deny');
+    if (bare.kind === 'deny') {
+      const named = /model:\s*"([^"]+)"/.exec(bare.reason)?.[1]
+        || /`model:\s*"?([A-Za-z0-9._-]+)/.exec(bare.reason)?.[1];
+      assert.ok(named, `deny must name a model to pass, got: ${bare.reason.slice(0, 200)}`);
+      assert.ok(['sonnet', 'opus', 'haiku', 'fable'].includes(String(named)),
+        `deny must lead with a Task-schema alias, got "${String(named)}" in: ${bare.reason.slice(0, 300)}`);
+    }
+  });
+});
+
+test('scope-less quick-fix spawn in a run with no compiled assignments names the bounded-scope remedy', () => {
+  // The ep-text-edit e2e failure: a headless session (no UserPromptSubmit → no
+  // triage directive) spawned quick-fix with NO bounded scope in a run that has
+  // no compiled assignments. The envelope is unfulfillable by construction, and
+  // the old generic "repair and retry" deny looped the parent six times before
+  // it silently gave up. The deny must name the actual fix.
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.mode = 'existing-codebase';
+    one.lifecycle = { phase: 'maintenance', source: 'test' };
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    const bare = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    assert.equal(bare.kind, 'deny');
+    if (bare.kind === 'deny') {
+      assert.ok(bare.reason.includes('t1-bounded-scope'), `deny must name the marker, got: ${bare.reason}`);
+      assert.ok(bare.reason.includes('allowedFiles'));
+      assert.ok(!bare.reason.includes('Repair the parent materialization/policy'), 'must not fall through to the unfollowable generic remedy');
+    }
+
+    // The remedy works: the SAME spawn with the marker publishes the bounded
+    // envelope and passes.
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+    const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+    const envelope = readActiveRunBootstrap(cwd, runId, 'quick-fix');
+    assert.equal(envelope?.workUnit.unitId, 'quick-fix:bootstrap');
+    assert.deepEqual(envelope?.workUnit.outputs, [
+      `.traffic-one/digests/${runId}/quick-fix.md`,
+      'src/bounded-fix.ts',
+    ]);
+  });
+});
+
+test('paid maintenance frontend spawn reuses the exact active bounded WorkUnit', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.mode = 'existing-codebase';
+    one.lifecycle = { phase: 'maintenance', source: 'test' };
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    freezeRunPolicy(cwd, 'claude');
+    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' });
+    const policy = readRunModelPolicy(cwd, 'run-test');
+    assert.ok(policy);
+    const bounded = ensureRunBootstrap(cwd, 'run-test', 'senior-frontend', state, {
+      host: 'claude',
+      hostAgentType: 'senior-frontend',
+      evidenceSource: 'opencode-maintenance-preflight',
+      modelPolicyId: policy.policyId,
+      boundedOutputs: ['src/bounded-page.tsx'],
+      boundedAllowlist: ['src/bounded-page.tsx'],
+    });
+    assert.ok(bounded);
+    assert.equal(bounded.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+
+    const allowed = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+      prompt: 'Implement only the parent-published maintenance WorkUnit.',
+    }));
+    assert.equal(allowed.kind, 'noop', allowed.kind === 'deny' ? allowed.reason : undefined);
+    const after = readActiveRunBootstrap(cwd, 'run-test', 'senior-frontend');
+    assert.equal(after?.workUnit.contractHash, bounded.workUnit.contractHash);
+    assert.equal(after?.trafficOneRole, bounded.trafficOneRole);
+    assert.deepEqual(after?.workUnit.outputs, [
+      '.traffic-one/digests/run-test/frontend.md',
+      'src/bounded-page.tsx',
+    ]);
   });
 });
 
@@ -1306,7 +1567,11 @@ test('quick-fix pin is enforced on existing codebases too, and stakes a run clai
     const none = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix' }));
     assert.equal(none.kind, 'deny');
 
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
     assert.equal(ok.kind, 'noop');
     // The allowed spawn staked a pending run claim so the run-team write gate
     // can resolve the worker's role on its first write.
@@ -1329,7 +1594,11 @@ test('team.overrides cannot lift the quick-fix pin', () => {
     // Even with an explicit override to the highest tier, the pin holds.
     const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'opus' }));
     assert.equal(wrong.kind, 'deny');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' })).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    })).kind, 'noop');
   });
 });
 
@@ -1349,7 +1618,11 @@ test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls 
     if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
 
     markOpenCodeRoleAttempted(cwd, 'run-Q', 'quick-fix');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' })).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    })).kind, 'noop');
   });
 });
 
@@ -1367,7 +1640,7 @@ test('architect phase gate: blocks implementers when plan exists but baseline is
   });
 });
 
-test('architect phase gate stands down in MAINTENANCE once a prior assignments manifest exists (8c)', () => {
+test('architect phase gate rejects legacy sibling assignments in a maintenance v2 run', () => {
   withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
     const t1 = path.join(cwd, '.traffic-one');
     fs.writeFileSync(path.join(t1, 'plan.md'), '# partial plan', 'utf8');
@@ -1384,8 +1657,7 @@ test('architect phase gate stands down in MAINTENANCE once a prior assignments m
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') assert.ok(denied.reason.includes('Architect phase gate'));
 
-    // The BUILD run's manifest exists → resilient scope fallback → implementer
-    // spawns first-try (task-triage small tier: no architect for a small feature).
+    // A sibling BUILD manifest is not authority for this fresh run.
     fs.mkdirSync(path.join(t1, 'runs', 'run-build'), { recursive: true });
     fs.writeFileSync(path.join(t1, 'runs', 'run-build', 'assignments.json'), JSON.stringify({
       version: 1,
@@ -1393,8 +1665,9 @@ test('architect phase gate stands down in MAINTENANCE once a prior assignments m
       createdBy: 'senior-architect',
       assignments: [{ role: 'senior-frontend', scope: { include: ['apps/web/**'], exclude: [] } }],
     }), 'utf8');
-    const allowed = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
-    assert.equal(allowed.kind, 'noop', allowed.kind === 'deny' ? allowed.reason : undefined);
+    const stillDenied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(stillDenied.kind, 'deny');
+    if (stillDenied.kind === 'deny') assert.match(stillDenied.reason, /Architect phase gate/);
   });
 });
 
@@ -1484,6 +1757,9 @@ test('opencode role gate: a configured non-implementer role is denied until Open
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-X');
     queueDelegateRole(cwd, 'senior-tester');
+    // Burn the verify-gate budget (queued-but-unstarted batch would fire it
+    // first) — this test pins the PER-ROLE gate's own contract.
+    markVerifyGateDenied(cwd, 'run-X', 'senior-tester');
 
     // senior-tester is in the default delegateRoles → deny until OpenCode tried
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
@@ -1543,9 +1819,15 @@ test('opencode role gate: mints currentRunId when absent (existing-codebase) so 
     const minted = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
     assert.ok(minted.length > 0, 'currentRunId should be minted + persisted');
 
-    // Recording the attempt under the minted run id lets the fallback spawn through.
+    // Recording the attempt clears only the OpenCode-first gate. The new run
+    // still lacks its own architecture contracts, so paid spawn remains denied.
     markOpenCodeRoleAttempted(cwd, minted, 'senior-frontend');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+    const missingContracts = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+    }));
+    assert.equal(missingContracts.kind, 'deny');
+    if (missingContracts.kind === 'deny') assert.match(missingContracts.reason, /Architect phase gate/);
   });
 });
 
@@ -1562,6 +1844,7 @@ test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-reviewer-reject');
     queueDelegateRole(cwd, 'senior-tester');
+    markVerifyGateDenied(cwd, 'run-reviewer-reject', 'senior-tester'); // pin the per-role gate alone
 
     // First spawn → denied (with the delegate instructions), deny recorded.
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
@@ -1580,6 +1863,7 @@ test('opencode role gate: deny block is clean (no leftover template placeholders
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-clean');
     queueDelegateRole(cwd, 'senior-tester');
+    markVerifyGateDenied(cwd, 'run-clean', 'senior-tester'); // pin the per-role gate alone
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
@@ -1600,6 +1884,7 @@ test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', (
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-codex');
     queueDelegateRole(cwd, 'senior-tester');
+    markVerifyGateDenied(cwd, 'run-codex', 'senior-tester'); // pin the per-role gate alone
 
     // A configured role on Codex is delegated to OpenCode first, exactly like Claude/Cursor.
     const denied = agentModelGate(codexSpawnCtx(cwd, {
@@ -1730,7 +2015,7 @@ test('codex: quick-fix requires the exact cheapest model without an early parent
     assert.equal(missing.kind, 'deny');
     const result = agentModelGate(codexSpawnCtx(cwd, {
       task_name: 'quick_fix',
-      message: 'You are acting as Traffic One quick-fix. Apply one bounded maintenance fix.',
+      message: `You are acting as Traffic One quick-fix. Apply one bounded maintenance fix.\n${QUICK_FIX_SCOPE_MARKER}`,
       fork_turns: 'none',
       model: 'gpt-5.6-terra',
     }));
@@ -1800,8 +2085,8 @@ test('codex unresolved SubagentStart reports canonical recovery and creates no c
         assert.match(result.context, /stop or replace this child and retry the same role/i);
         assert.match(result.context, /`senior_architect`/);
         assert.match(result.context, /`senior_frontend`/);
-        assert.match(result.context, /encrypts the spawn message/i);
-        assert.match(result.context, /marker position is not an identity requirement/i);
+        assert.match(result.context, /FIRST line of the spawn message must carry the literal role marker/i);
+        assert.match(result.context, /first tool call once the spawn prompt lands in its rollout/i);
         assert.match(result.context, /Do not self-assert a role in assistant prose/i);
       }
       assert.equal(
@@ -1901,6 +2186,272 @@ test('codex child PreToolUse completes a pending-role observation after line-zer
     assert.equal(claim.parentSessionId, parentThread);
     assert.equal(claim.roleSource, 'codex-session-meta-agent-path');
     assert.equal(claim.transcriptPath, transcript);
+  });
+});
+
+test('codex followup drift on a CHILD-VERIFIED thread is an accepted continuation that keeps the same agent', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childA = '019f8fa1-1111-7000-8000-00000000000a';
+    const transcriptA = path.join(cwd, `rollout-drift-${childA}.jsonl`);
+    fs.writeFileSync(transcriptA, `${JSON.stringify(codexSessionMeta(childA, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+
+    // the child's OWN blocking turn verifies its model and claims the role
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childA);
+
+    // A later followup turn runs on the PARENT's model because the host continues
+    // that same runtime. Retiring the thread here made every fix cycle spawn a
+    // FRESH agent that reloads the whole context (observed 12c/15c/17c/18c:
+    // senior_<role>_fix_1/_fix_2 proliferation), so this is now accepted.
+    const drift = codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-sol'));
+    assert.equal(drift.kind, 'noop', 'the continuation proceeds');
+    const observed = readCodexModelObservation(cwd, 'run-test', [childA]);
+    assert.equal(observed?.status, 'verified', 'the thread stays verified');
+    assert.equal(observed?.actualModel, 'gpt-5.6-terra', 'the child-verified model stays the policy anchor');
+    assert.equal(observed?.reason, 'continuation-on-gpt-5.6-sol', 'the accepted drift stays auditable');
+
+    // the same agent keeps the role slot — no replacement, no history churn
+    const registryRaw = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'run-test', 'agents.json'), 'utf8',
+    )) as { agents: Record<string, { agentId?: string; replaced?: boolean }>; history?: unknown[] };
+    assert.equal(registryRaw.agents['senior-tester']?.agentId, childA);
+    assert.equal(registryRaw.agents['senior-tester']?.replaced, false, 'the reuse row is NOT marked replaced');
+    assert.equal((registryRaw.history || []).length, 0, 'a continuation creates no replacement history');
+
+    // The continuation turn must still RESOLVE its role context, or its writes are
+    // denied while the slot stays occupied — a fresh deadlock. The hook model on
+    // that turn is the drifted one, which no longer equals the anchor.
+    const continuationCtx = resolveRunAgentContext(cwd, readEffectiveState(cwd), {
+      hook_event_name: 'PreToolUse', agent_id: childA, session_id: parentThread,
+      transcript_path: transcriptA, model: 'gpt-5.6-sol',
+    }, { claimPending: false, host: 'codex' });
+    assert.equal(continuationCtx?.role, 'senior-tester', 'the drifted continuation turn still owns its role');
+
+    // further turns — on the parent model or back on its own — keep working
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-sol')).kind, 'noop');
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childA);
+    });
+  });
+});
+
+test('codex child running on a policy-forbidden model is STILL denied on its first blocking turn (SubagentStart anchor is not proof)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childA = '019f8fa1-5555-7000-8000-00000000000e';
+    const transcriptA = path.join(cwd, `rollout-requested-${childA}.jsonl`);
+    fs.writeFileSync(transcriptA, `${JSON.stringify(codexSessionMeta(childA, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+
+    // SubagentStart fires in the SPAWNER's context and reports the model the
+    // parent REQUESTED — it can reach `verified` before the child ever runs.
+    subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: childA, session_id: parentThread,
+      transcript_path: transcriptA, model: 'gpt-5.6-terra',
+    }));
+    const anchored = readCodexModelObservation(cwd, 'run-test', [childA]);
+    assert.equal(anchored?.status, 'verified', 'the requested model verifies at SubagentStart');
+    assert.deepEqual([...(anchored?.modelSources || [])], ['SubagentStart']);
+
+    // The child then ACTUALLY runs on a model its role forbids. Accepting that as
+    // a "continuation" off the requested anchor would make the child's own first
+    // blocking check vacuous, so it must still be terminal.
+    const forbidden = codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-sol'));
+    assert.equal(forbidden.kind, 'deny', 'the first blocking turn is not vacuous');
+    if (forbidden.kind === 'deny') assert.match(forbidden.reason, /hook-model-conflict/);
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childA])?.status, 'conflict');
+    });
+  });
+});
+
+test('a conflict on a VERIFIED codex incumbent still retires it and releases the role slot for one replacement', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childA = '019f8fa1-6666-7000-8000-00000000000f';
+    const childB = '019f8fa1-7777-7000-8000-000000000010';
+    const transcriptA = path.join(cwd, `rollout-incumbent-${childA}.jsonl`);
+    const transcriptB = path.join(cwd, `rollout-incumbent-${childB}.jsonl`);
+    fs.writeFileSync(transcriptA, `${JSON.stringify(codexSessionMeta(childA, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+    fs.writeFileSync(transcriptB, `${JSON.stringify(codexSessionMeta(childB, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+
+    // childA verifies on its own turn and owns the reuse slot
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childA);
+
+    // A non-model conflict (here: the same thread observed under another role)
+    // is still terminal for a verified incumbent — accepting model continuations
+    // must not disable the OTHER conflict reasons or the slot release.
+    assert.equal(observeCodexChildModel(cwd, 'run-test', {
+      childId: childA,
+      parentSessionId: parentThread,
+      actualModel: 'gpt-5.6-terra',
+      role: 'senior-frontend',
+      source: 'PreToolUse',
+    })?.status, 'conflict');
+
+    const denied = codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra'));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.match(denied.reason, /released for ONE replacement/);
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.replaced, true, 'the incumbent slot is released');
+
+    // a FRESH policy-compliant child takes the released slot
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childB, parentThread, transcriptB, 'gpt-5.6-terra')).kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childB);
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.replaced, false);
+    });
+  });
+});
+
+test('codex model drift BEFORE verification is still terminal and frees the role for one replacement', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childA = '019f8fa1-3333-7000-8000-00000000000c';
+    const childB = '019f8fa1-4444-7000-8000-00000000000d';
+    const transcriptA = path.join(cwd, `rollout-unverified-${childA}.jsonl`);
+    const transcriptB = path.join(cwd, `rollout-unverified-${childB}.jsonl`);
+    fs.writeFileSync(transcriptA, `${JSON.stringify(codexSessionMeta(childA, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+    fs.writeFileSync(transcriptB, `${JSON.stringify(codexSessionMeta(childB, parentThread, '/root/senior_tester'))}\n`, 'utf8');
+
+    // a model observed before any role is resolvable: pending-role, NOT verified
+    assert.equal(observeCodexChildModel(cwd, 'run-test', {
+      childId: childA,
+      parentSessionId: parentThread,
+      actualModel: 'gpt-5.6-sol',
+      role: null,
+      source: 'SubagentStart',
+    })?.status, 'pending-role');
+
+    const drift = codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra'));
+    assert.equal(drift.kind, 'deny');
+    if (drift.kind === 'deny') {
+      assert.match(drift.reason, /hook-model-conflict/);
+      assert.match(drift.reason, /retired/i);
+      assert.match(drift.reason, /senior_tester_fix_<n>/);
+      assert.match(drift.reason, /nested from another senior/i);
+    }
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childA])?.status, 'conflict');
+    // This child never verified, so it never held the reuse slot — there is no
+    // incumbent to release, and the role stays claimable by a compliant child.
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester'], undefined);
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childA, parentThread, transcriptA, 'gpt-5.6-terra')).kind, 'deny',
+      'the retired thread stays blocked on every later call');
+
+    // a FRESH policy-compliant child claims the released slot
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, childB, parentThread, transcriptB, 'gpt-5.6-terra')).kind, 'noop');
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childB])?.status, 'verified');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-tester']?.agentId, childB);
+    });
+  });
+});
+
+test('codex depth-2 replacement spawn (child-of-child) passes the parent-pair check', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    // Codex reports the ROOT conversation as session_id for EVERY child while
+    // line-zero parent_thread_id names the IMMEDIATE parent (here: another
+    // senior child). Before the fix this exact shape was denied as a
+    // child/parent pair mismatch (observed 8c-codex: every architect-spawned
+    // reviewer replacement was stranded before its first read).
+    const rootSession = '019f8f7c-501d-76f1-892f-5cedbd39f57d';
+    const architect = '019f8f7f-eef6-7f40-a47d-ae4c90c8e3fa';
+    const child = '019f8fa1-3333-7000-8000-00000000000c';
+    const transcript = path.join(cwd, `rollout-depth2-${child}.jsonl`);
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(child, architect, '/root/senior_architect/senior_tester'))}\n`,
+      'utf8',
+    );
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, child, rootSession, transcript, 'gpt-5.6-terra')).kind, 'noop');
+    const observation = readCodexModelObservation(cwd, 'run-test', [child]);
+    assert.equal(observation?.status, 'verified');
+    assert.equal(observation?.parentSessionId, architect, 'the immediate parent from line-zero wins');
+    // the second call re-compares the stored immediate parent against the
+    // hook's root session — still the same true pair, still open
+    assert.equal(codexChildModelGate(codexChildPreToolCtx(cwd, child, rootSession, transcript, 'gpt-5.6-terra')).kind, 'noop');
+    // an explicitly contradictory parent claim (neither line-zero parent nor
+    // the root session) is still a mismatch
+    const liar = codexChildModelGate(codexChildPreToolCtx(
+      cwd, child, rootSession, transcript, 'gpt-5.6-terra',
+      { parent_session_id: '019f8fa1-4444-7000-8000-00000000000d' },
+    ));
+    assert.equal(liar.kind, 'deny');
+  });
+});
+
+test('codex depth-2 replacement survives the SubagentStart→PreToolUse parent upgrade', () => {
+  // The exact 9c-codex failure: SubagentStart fires before the child rollout
+  // flushes line-zero (parent unknown at that moment), then the first
+  // PreToolUse reads line-zero's IMMEDIATE parent (another senior child, not
+  // the root session). That upgrade used to persist as a terminal
+  // `parent-session-conflict`, killing every depth-2 replacement on arrival.
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      freezeRunPolicy(cwd, 'codex');
+      const root = '019f8f7c-501d-76f1-892f-5cedbd39f57d';
+      const frontend = '019f9003-27d2-7f11-a0e3-50866abbb205';
+      const child = '019f9012-d290-73d0-a235-02b3bd84e52e';
+      const transcript = path.join(cwd, `rollout-parent-upgrade-${child}.jsonl`);
+      fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
+      const start = subagentStartBind(subagentStartCtx(cwd, {
+        hook_event_name: 'SubagentStart', agent_id: child, session_id: root,
+        transcript_path: transcript, task_name: 'senior_tester', model: 'gpt-5.6-terra',
+      }));
+      assert.ok(start.kind === 'noop' || start.kind === 'context', 'SubagentStart is never a deny here');
+      // line-zero now appears: this child was spawned BY the frontend (depth 2)
+      fs.writeFileSync(
+        transcript,
+        `${JSON.stringify(codexSessionMeta(child, frontend, '/root/senior_frontend/senior_tester'))}\n`,
+        'utf8',
+      );
+      const gate = codexChildModelGate(codexChildPreToolCtx(cwd, child, root, transcript, 'gpt-5.6-terra'));
+      assert.equal(gate.kind, 'noop', 'parent upgrade (spawn-time unknown → line-zero immediate parent) must not conflict');
+      const observation = readCodexModelObservation(cwd, 'run-test', [child]);
+      assert.equal(observation?.status, 'verified');
+      assert.equal(observation?.parentSessionId, frontend, 'the line-zero immediate parent wins');
+    });
+  });
+});
+
+test('codex observation parent upgrades across evidence grades but conflicts within a grade', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    const root = '019f8f7c-501d-76f1-892f-5cedbd39f57d';
+    const frontend = '019f9003-27d2-7f11-a0e3-50866abbb205';
+    // legacy/other-caller shape: SubagentStart recorded the ROOT session as parent
+    const upgraded = (() => {
+      observeCodexChildModel(cwd, 'run-test', {
+        childId: 'child-upgrade', parentSessionId: root, actualModel: 'gpt-5.6-terra',
+        role: 'senior-tester', source: 'SubagentStart',
+      });
+      return observeCodexChildModel(cwd, 'run-test', {
+        childId: 'child-upgrade', parentSessionId: frontend, actualModel: 'gpt-5.6-terra',
+        role: 'senior-tester', source: 'PreToolUse',
+      });
+    })();
+    assert.equal(upgraded?.status, 'verified');
+    assert.equal(upgraded?.parentSessionId, frontend);
+    // a later, weaker SubagentStart parent notion is ignored, not a conflict
+    const lateStart = observeCodexChildModel(cwd, 'run-test', {
+      childId: 'child-upgrade', parentSessionId: root, actualModel: 'gpt-5.6-terra',
+      role: 'senior-tester', source: 'SubagentStart',
+    });
+    assert.equal(lateStart?.status, 'verified');
+    assert.equal(lateStart?.parentSessionId, frontend);
+    // same-grade disagreement (line-zero itself changed) stays terminal
+    const conflicted = observeCodexChildModel(cwd, 'run-test', {
+      childId: 'child-upgrade', parentSessionId: root, actualModel: 'gpt-5.6-terra',
+      role: 'senior-tester', source: 'PreToolUse',
+    });
+    assert.equal(conflicted?.status, 'conflict');
+    assert.equal(conflicted?.reason, 'parent-session-conflict');
   });
 });
 
@@ -2152,15 +2703,7 @@ function setCurrentRunId(cwd: string, runId: string): void {
   writeArchitectPhaseComplete(cwd, runId, state);
 }
 
-function freezeRunPolicy(cwd: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' | 'windsurf', runId?: string): void {
-  const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: host });
-  const activeRunId = runId || (typeof state.currentRunId === 'string' ? state.currentRunId : '');
-  assert.ok(activeRunId, 'test fixture must have a current run id before freezing policy');
-  assert.ok(
-    ensureRunModelPolicy(cwd, activeRunId, host, state, { ...process.env, TRAFFIC_ONE_HOST: host }),
-    `test fixture could not freeze ${host} run policy`,
-  );
-}
+const freezeRunPolicy = freezeRunPolicyFixture;
 
 function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'windsurf' | 'opencode' | 'kilo' = 'claude'): Ctx {
   const rawName = host === 'windsurf' ? 'devin.run_subagent' : 'Task';
@@ -2288,7 +2831,7 @@ test('mid-run API-limit stop anchors fallback on the role original tier, not the
         'senior-frontend',
         'gpt-5.6-terra-medium',
         'highest',
-        'claude-fable-5',
+        CURSOR_HIGHEST_FAMILY,
         'tool_11111111-1111-4111-8111-111111111111',
       );
       recordRunAgent(cwd, 'run-api-limit', 'senior-frontend', {
@@ -2316,9 +2859,9 @@ test('mid-run API-limit stop anchors fallback on the role original tier, not the
       assert.equal(registry['senior-frontend']?.replaced, true, 'dead agent retired');
       const durable = listCursorSpawnObservations(cwd, 'run-api-limit')[0];
       assert.equal(durable?.outcome, 'api-limit', 'PostTool result persists the correlated outcome');
-      assert.equal(durable?.prescribedModel, 'claude-fable-5-thinking-high', 'durable result stores the exact original-tier retry slug');
+      assert.equal(durable?.prescribedModel, CURSOR_HIGHEST_SLUG, 'durable result stores the exact original-tier retry slug');
       assert.match(durable?.directive || '', /Retry the same role now/i);
-      assert.ok(durable?.directive?.includes('claude-fable-5-thinking-high'), 'prescribes the first captured slug in the role original highest tier');
+      assert.ok(durable?.directive?.includes(CURSOR_HIGHEST_SLUG), 'prescribes the first captured slug in the role original highest tier');
       assert.ok(!durable?.directive?.includes('claude-sonnet-5'), 'does not drift into Terra\'s owning balanced row');
       assert.match(durable?.directive || '', /gpt-5\.6-terra-medium/i, 'names the exhausted model');
 
@@ -2328,11 +2871,11 @@ test('mid-run API-limit stop anchors fallback on the role original tier, not the
         prompt: '[t1-role: senior-frontend]\nContinue after the failed child.',
       }, 'parent-1', 'cursor'));
       assert.equal(wrongRetry.kind, 'deny', 'no-marker correlated gate blocks the exhausted model');
-      if (wrongRetry.kind === 'deny') assert.ok(wrongRetry.reason.includes('claude-fable-5-thinking-high'));
+      if (wrongRetry.kind === 'deny') assert.ok(wrongRetry.reason.includes(CURSOR_HIGHEST_SLUG));
 
       const exactRetry = agentModelGate(spawnCtxWithSession(cwd, {
         subagent_type: 'senior-frontend',
-        model: 'claude-fable-5-thinking-high',
+        model: CURSOR_HIGHEST_SLUG,
         prompt: '[t1-role: senior-frontend]\nContinue after the failed child.',
       }, 'parent-1', 'cursor'));
       assert.notEqual(exactRetry.kind, 'deny', 'the exact prescribed slug is accepted without a replacement marker');
@@ -2356,7 +2899,7 @@ test('mid-run API-limit stop requires the existing choice before a highest role 
       'senior-frontend',
       'gpt-5.6-terra-medium',
       'highest',
-      'claude-fable-5',
+      CURSOR_HIGHEST_FAMILY,
       'tool_22222222-2222-4222-8222-222222222222',
     );
     const stopped = () => recordSpawnedAgent(postSpawnCtx(
@@ -2386,7 +2929,7 @@ test('mid-run API-limit stop requires the existing choice before a highest role 
     assert.equal(enable.kind, 'noop');
     durable = listCursorSpawnObservations(cwd, 'run-recorder-floor')[0]!;
     assert.match(durable.directive || '', /do not rotate to a fallback/i);
-    assert.ok(durable.directive?.includes('claude-fable-5'), 'enable/retry points back to the original tier recommendation');
+    assert.ok(durable.directive?.includes(CURSOR_HIGHEST_FAMILY), 'enable/retry points back to the original tier recommendation');
   });
 });
 
@@ -2846,7 +3389,7 @@ test('delayed Cursor PostTool result persists against its old observation but CA
       'senior-backend',
       'gpt-5.6-terra-medium',
       'highest',
-      'claude-fable-5',
+      CURSOR_HIGHEST_FAMILY,
       'tool_66666666-6666-4666-8666-666666666666',
     );
     observeCursorSpawn(
@@ -2881,7 +3424,7 @@ test('delayed Cursor PostTool result persists against its old observation but CA
     let observations = listCursorSpawnObservations(cwd, 'run-cursor-delayed-post');
     const old = observations.find((item) => item.toolCallId === 'tool_66666666-6666-4666-8666-666666666666');
     assert.equal(old?.outcome, 'api-limit');
-    assert.ok(old?.directive?.includes('claude-fable-5-thinking-high'), 'old immutable highest-tier anchor wins over current balanced state');
+    assert.ok(old?.directive?.includes(CURSOR_HIGHEST_SLUG), 'old immutable highest-tier anchor wins over current balanced state');
     assert.equal(old?.followupEmitted, false, 'PostTool persistence cannot claim parent delivery ownership');
     assert.equal(observations.find((item) => item.toolCallId === 'tool_77777777-7777-4777-8777-777777777777')?.outcome, null);
     assert.ok(old?.childTranscriptId);
@@ -3415,7 +3958,7 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
           hook_event_name: 'subagent-start',
           subagent_id: 'tool_f90f3399-a93f-4d3e-9d95-fc7dc37f8bb',
           subagent_type: 'senior-architect',
-          subagent_model: 'claude-fable-5-thinking-high',
+          subagent_model: CURSOR_HIGHEST_SLUG,
           session_id: 'orchestrator-parent',
           conversation_id: 'conv-child-1',
           transcript_path: '/tmp/orchestrator-parent.jsonl',
@@ -3437,7 +3980,7 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
       false,
       'Cursor subagent-start must not claim tool_<id>; the child conversation claims itself on first write',
     );
-    const dup = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-architect', model: 'claude-fable-5-thinking-high', prompt: 'continue architecture' }, 'orchestrator-parent', 'cursor'));
+    const dup = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-architect', model: CURSOR_HIGHEST_SLUG, prompt: 'continue architecture' }, 'orchestrator-parent', 'cursor'));
     assert.equal(dup.kind, 'deny');
     if (dup.kind === 'deny') {
       assert.ok(/has not exposed a valid Task `resume` UUID/i.test(dup.reason), dup.reason);
@@ -3459,7 +4002,7 @@ test('Cursor: nested SubagentStart anchors every run write at the workspace root
           hook_event_name: 'subagent-start',
           subagent_id: 'tool_c11d22e3-4444-4555-8666-777788889999',
           subagent_type: 'senior-architect',
-          subagent_model: 'claude-fable-5-thinking-high',
+          subagent_model: CURSOR_HIGHEST_SLUG,
           session_id: 'orchestrator-parent',
           started_at: Date.now(),
         },
@@ -3493,7 +4036,7 @@ test('Cursor child fails closed when its parent policy is missing or corrupt and
       hook_event_name: 'subagent-start',
       subagent_id: 'tool_cursor_policy_child',
       subagent_type: 'senior-architect',
-      subagent_model: 'claude-fable-5-thinking-high',
+      subagent_model: CURSOR_HIGHEST_SLUG,
       session_id: 'orchestrator-parent',
     }, 'cursor'));
 
@@ -3518,7 +4061,7 @@ test('Cursor child fails closed when its parent policy is missing or corrupt and
 test('Cursor: SubagentStart stops senior team when model choice is still pending, even with generic subagent_type', () => {
   withMaterialized({
     teamApproved: true,
-    cursorModels: ['claude-fable-5-thinking-high', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'],
+    cursorModels: [CURSOR_HIGHEST_SLUG, 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'],
   }, (cwd) => {
     setCurrentRunId(cwd, 'run-cursor-pending-model-choice');
     const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'));
@@ -3612,6 +4155,152 @@ test('reuse: replace marker without a failure reason is denied while a healthy a
         assert.ok(duplicate.reason.includes('frontend11aa22bb33'), 'still points at the live agent');
       }
       assert.equal(readRunAgentRegistry(cwd, 'run-reuse-marker-guard')['senior-frontend']?.replaced, false);
+    });
+  });
+});
+
+// The registry records an agent at SPAWN time, so it can name a "live" agent
+// that never bound a role and — once the run's ledger closed — never can. The
+// orchestrator has no failure vocabulary for that, so the marker was refused
+// forever and the build had no exit. Requires BOTH: no bound claim AND a ledger
+// that cannot admit one.
+test('reuse: a live agent that never bound a claim in a closed run may be replaced', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-unbindable');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-architect', model: 'opus', prompt: 'plan the feature' },
+        'agentId: architect11aa22bb33',
+        'parent-1',
+      ));
+      // The run settles terminally before the child ever bound its role.
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-unbindable', { status: 'active' }));
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-unbindable', { status: 'failed', outcome: 'agent-failed' }));
+      assert.equal(runLedgerAdmitsClaims(cwd, 'run-reuse-unbindable'), false);
+
+      const replacement = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-architect', model: 'opus', prompt: 'respawn the architect [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(replacement.kind, 'noop', 'an agent that can never bind must not block its own replacement');
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-unbindable')['senior-architect']?.replaced, true);
+    });
+  });
+});
+
+test('reuse: a claimless agent in a HEALTHY run is still protected (it may just be starting up)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-startup');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'opus', prompt: 'build UI' },
+        'agentId: frontend44cc55dd66',
+        'parent-1',
+      ));
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-startup', { status: 'active' }));
+      assert.equal(runLedgerAdmitsClaims(cwd, 'run-reuse-startup'), true);
+
+      const duplicate = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(duplicate.kind, 'deny');
+      if (duplicate.kind === 'deny') {
+        assert.ok(duplicate.reason.includes('frontend44cc55dd66'), 'denied BY THE REUSE GATE, not another gate');
+      }
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-startup')['senior-frontend']?.replaced, false);
+    });
+  });
+});
+
+test('reuse: a BOUND agent in a closed run is still protected (only unbindable ones are replaceable)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-bound');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'build the API' },
+        'agentId: backend77ee88ff99',
+        'parent-1',
+      ));
+      // Bind the role while the run is still open, THEN close it.
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-bound', { status: 'active' }));
+      assert.ok(claimThreadRole(cwd, readEffectiveState(cwd), 'backend77ee88ff99', 'senior-backend', {
+        parentSessionId: 'parent-1',
+      }));
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-bound', { status: 'failed', outcome: 'agent-failed' }));
+
+      const duplicate = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(duplicate.kind, 'deny', 'a child that DID bind still owns the role slot');
+      if (duplicate.kind === 'deny') {
+        assert.ok(duplicate.reason.includes('backend77ee88ff99'), 'denied BY THE REUSE GATE, not another gate');
+      }
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-bound')['senior-backend']?.replaced, false);
+    });
+  });
+});
+
+test('runLedgerAdmitsClaims mirrors what a worker claim actually attempts', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // No ledger at all reads as `planned` — claims are admitted.
+    assert.equal(runLedgerAdmitsClaims(cwd, 'ledger-absent'), true);
+    assert.equal(runLedgerAdmitsClaims(cwd, ''), false);
+
+    assert.ok(transitionRunStatus(cwd, 'ledger-active', { status: 'active' }));
+    assert.equal(runLedgerAdmitsClaims(cwd, 'ledger-active'), true);
+
+    assert.ok(transitionRunStatus(cwd, 'ledger-blocked', { status: 'active' }));
+    assert.ok(transitionRunStatus(cwd, 'ledger-blocked', { status: 'blocked', outcome: 'review-cycle-cap' }));
+    assert.equal(runLedgerAdmitsClaims(cwd, 'ledger-blocked'), false);
+
+    assert.ok(transitionRunStatus(cwd, 'ledger-failed', { status: 'active' }));
+    assert.ok(transitionRunStatus(cwd, 'ledger-failed', { status: 'failed', outcome: 'agent-failed' }));
+    assert.equal(runLedgerAdmitsClaims(cwd, 'ledger-failed'), false);
+  });
+});
+
+test('an unclaimable Codex child is told WHY: a closed ledger is not a retryable atomic failure', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      freezeRunPolicy(cwd, 'codex');
+      const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+      const child = '019f8fa1-4444-7000-8000-00000000004a';
+      const transcript = path.join(cwd, `rollout-unclaimable-${child}.jsonl`);
+      fs.writeFileSync(
+        transcript,
+        `${JSON.stringify(codexSessionMeta(child, parentThread, '/root/senior_tester'))}\n`,
+        'utf8',
+      );
+
+      // Close the run the way a review-cycle cap does, then let a fresh child in.
+      assert.ok(transitionRunStatus(cwd, 'run-test', { status: 'active' }));
+      assert.ok(transitionRunStatus(cwd, 'run-test', { status: 'blocked', outcome: 'review-cycle-cap' }));
+
+      const denied = codexChildModelGate(
+        codexChildPreToolCtx(cwd, child, parentThread, transcript, 'gpt-5.6-terra'),
+      );
+      assert.equal(denied.kind, 'deny');
+      if (denied.kind === 'deny') {
+        // Observed 10co: the generic "could not be persisted atomically / replace
+        // the child" wording sent the parent into an unbounded replacement loop,
+        // because every new thread hit the same closed ledger.
+        assert.ok(denied.reason.includes('run ledger'), 'the deny must name the ledger as the cause');
+        assert.ok(denied.reason.includes('review-cycle-cap'), 'the deny must name the blocking outcome');
+        assert.ok(denied.reason.includes('settlement-v2.json'), 'the deny must name the artefact to check');
+        assert.ok(!denied.reason.includes('Retry this tool once'), 'a closed run is not retryable');
+        assert.ok(
+          !denied.reason.includes('model verification passed but'),
+          'a closed run must not be reported as an atomicity failure',
+        );
+      }
     });
   });
 });
@@ -3741,7 +4430,7 @@ test('subagentContinuationAvailable is true on Codex without the Claude flag, an
 test('Cursor reuse deny names the Task resume recipe and accepts continuation fields', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // First Cursor spawn passes the gate + mints currentRunId + stakes a claim.
-    agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     const runId = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string;
     // Simulate the PostToolUse recorder writing the live-agent registry.
     const rd = path.join(cwd, '.traffic-one', 'runs', runId);
@@ -3750,7 +4439,7 @@ test('Cursor reuse deny names the Task resume recipe and accepts continuation fi
       version: 1, agents: { 'senior-frontend': { agentId: 'cursor-agent-xyz', recordedAt: new Date().toISOString(), tasks: 1, replaced: false } },
     }));
     // Duplicate Cursor spawn → reuse deny with the Task+resume recipe (NOT SendMessage).
-    const d = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    const d = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG }, 'cursor'));
     assert.equal(d.kind, 'deny');
     if (d.kind === 'deny') {
       assert.ok(d.reason.includes('cursor-agent-xyz'), 'names the live agent id');
@@ -3759,9 +4448,9 @@ test('Cursor reuse deny names the Task resume recipe and accepts continuation fi
     }
     // The RESUME itself (Task carrying resume) must pass the gate — never block the
     // continuation it just asked for. This makes the deny satisfiable → no soft-loop.
-    const resume = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high', resume: 'cursor-agent-xyz' }, 'cursor'));
+    const resume = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG, resume: 'cursor-agent-xyz' }, 'cursor'));
     assert.equal(resume.kind, 'noop', 'a Cursor Task call carrying resume passes the reuse gate');
-    const legacyAgentId = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high', agentId: 'cursor-agent-xyz' }, 'cursor'));
+    const legacyAgentId = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: CURSOR_HIGHEST_SLUG, agentId: 'cursor-agent-xyz' }, 'cursor'));
     assert.equal(legacyAgentId.kind, 'noop', 'legacy agentId continuation remains accepted');
   });
 });

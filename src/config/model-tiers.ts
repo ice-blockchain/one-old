@@ -60,11 +60,11 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
     // row's tail keeps Claude Code's native `model: "opus"/"sonnet"/"haiku"`
     // spawns accepted by the gate (aliases track point releases host-side).
     // Fable 5 is Claude Code's strongest option when the server reports it for
-    // the organization (it is unavailable under ZDR). Opus 4.8 therefore stays
-    // the first concrete fallback, followed by Claude Code's native family
+    // the organization (it is unavailable under ZDR). Opus 5 replaces Opus 4.8
+    // as the first concrete fallback, followed by Claude Code's native family
     // alias; the gate also recognizes host-scoped `fable`/`best` selectors.
     tiers: {
-      highest: ['claude-fable-5', 'claude-opus-4-8', 'opus'],
+      highest: ['claude-opus-5', 'claude-fable-5', 'opus'],
       balanced: ['claude-sonnet-5', 'claude-sonnet-4-6', 'sonnet'],
       cheapest: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'haiku'],
     },
@@ -81,8 +81,14 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
     },
   },
   cursor: {
+    // Family anchors, not exact picker ids — the run captures the exact ids
+    // offered to subagents and the gate matches them by family prefix. Rows
+    // are capped at four: `grok-4.5` (xAI's frontier family on Cursor's paid
+    // picker) takes the Highest fallback slot from `gpt-5.6-sol` in the 2026
+    // refresh — Sol stays the Codex/Copilot Highest anchor — and the Composer
+    // floor stays last (the degradation detector keys on that exact family).
     tiers: {
-      highest: ['claude-fable-5', 'gpt-5.6-sol', CURSOR_MODEL_FLOOR],
+      highest: ['claude-opus-5', 'gpt-5.6-sol', 'grok-4.5', CURSOR_MODEL_FLOOR],
       balanced: ['gpt-5.6-terra', 'claude-sonnet-5', CURSOR_MODEL_FLOOR],
       cheapest: [CURSOR_MODEL_FLOOR, 'gpt-5.4-mini', 'gpt-5.6-luna'],
     },
@@ -99,7 +105,7 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
     // the same sequence so every concrete model id remains editable here.
     // The three bounded rows collectively retain the complete live zero-auth
     // catalog. OPENCODE_FREE_MODELS derives the cross-role fallback chain from
-    // their union, while each individual role tier stays capped at three.
+    // their union, while each individual role tier stays within the row cap.
     tiers: {
       highest: ['opencode/deepseek-v4-flash-free', 'opencode/nemotron-3-ultra-free', 'opencode/hy3-free'],
       balanced: ['opencode/north-mini-code-free', 'opencode/big-pickle', 'opencode/deepseek-v4-flash-free'],

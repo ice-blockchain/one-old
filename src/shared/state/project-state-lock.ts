@@ -15,7 +15,7 @@ import {
   ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS,
   ONE_UID_FIELD,
   isValidOneMcpReportId,
-} from '../../config/one-mcp';
+} from '../../config/reporting';
 import { STATE_FILE } from '../../config/paths';
 
 interface ProjectStateLock {
@@ -50,6 +50,34 @@ export function preserveOneMcpReportId(current: unknown, replacement: unknown): 
   const rawCurrentId = record(current)?.[ONE_UID_FIELD];
   const currentId = typeof rawCurrentId === 'string' ? rawCurrentId.trim() : rawCurrentId;
   if (isValidOneMcpReportId(currentId)) next[ONE_UID_FIELD] = currentId;
+  return next;
+}
+
+// Normalize a currentRunId value (epoch-ms string, or a legacy number) to a
+// non-empty trimmed string, or '' when absent/blank.
+function runIdValue(raw: unknown): string {
+  if (typeof raw === 'string') return raw.trim();
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(Math.trunc(raw));
+  return '';
+}
+
+// currentRunId is the build/maintenance run pointer. UNLIKE the immutable
+// one-mcp report id, it legitimately CHANGES when a new run is minted (build
+// onboarding, or a maintenance-triage rotation) — so we must NOT freeze it.
+// We preserve it ONLY when the incoming replacement carries no id: a stale
+// whole-state snapshot (read before the id was minted, then written back under
+// the lock by a concurrent .one.json writer) must never BLANK a live
+// currentRunId. Blanking it makes the next run claim mint a SECOND run —
+// observed 11c: the run-id-announce hook broadcast run A while the claim minted
+// run B, so the announced id and the enforced id diverged. A replacement that
+// DOES carry an id (including a freshly-minted rotation id) is returned
+// untouched, so legitimate run rotation still flips the pointer. Applied only
+// after the writer holds the shared lock and re-read the on-disk `current`.
+export function preserveCurrentRunId(current: unknown, replacement: unknown): Rec {
+  const next = record(replacement) ? { ...(replacement as Rec) } : {};
+  if (runIdValue(next.currentRunId)) return next; // replacement carries an id (possibly a legit new one)
+  const currentId = runIdValue(record(current)?.currentRunId);
+  if (currentId) next.currentRunId = currentId; // never let a stale snapshot blank a live id
   return next;
 }
 
@@ -117,8 +145,53 @@ function reapAbandonedEmptyLock(lockPath: string, now: number): boolean {
   }
 }
 
-export function projectStateLockPath(cwd: string): string {
+function projectStateLockPath(cwd: string): string {
   return `${path.join(path.resolve(cwd), STATE_FILE)}.report-id.lock`;
+}
+
+/**
+ * Reap `<lock>.<token>.pending` staging dirs left by hook processes that died.
+ *
+ * The mkdir-then-rename handshake stages every acquisition in a sibling
+ * `.pending` dir, and the only thing that removes one is the `finally` in
+ * `withProjectStateLock` — which does not run when the host kills the process.
+ * `reapAbandonedEmptyLock` cannot help: it reaps the lock path itself, and a
+ * `.pending` dir is never empty (it holds its owner file). Measured on one 16co
+ * run: 22 orphans, each with a live-looking owner. Harmless to acquisition, but
+ * it litters the user's project and it is what made `.traffic-one` look like it
+ * was growing directories at random.
+ *
+ * Deliberately conservative: same liveness test the observed-lock reaper uses,
+ * plus the same staleness floor, and every failure is swallowed. A `.pending`
+ * dir whose owner process is alive is somebody's in-flight acquisition.
+ */
+function reapAbandonedPendingDirs(lockPath: string, now: number): void {
+  const dir = path.dirname(lockPath);
+  const prefix = `${path.basename(lockPath)}.`;
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.pending')) continue;
+    const pendingPath = path.join(dir, name);
+    try {
+      if (now - fs.statSync(pendingPath).mtimeMs <= ONE_MCP_REPORT_ID_LOCK_STALE_MS) continue;
+    } catch {
+      continue;
+    }
+    const owner = observedLockOwner(pendingPath);
+    // No readable owner => nothing proves it is in flight; a live pid does.
+    if (owner && processAlive(owner.pid)) continue;
+    try {
+      if (owner) fs.unlinkSync(owner.ownerPath);
+      fs.rmdirSync(pendingPath);
+    } catch {
+      // best-effort: a racing owner may be removing it right now
+    }
+  }
 }
 
 function acquireProjectStateLock(cwd: string): ProjectStateLock {
@@ -128,6 +201,9 @@ function acquireProjectStateLock(cwd: string): ProjectStateLock {
   const ownerName = `owner-${token}.json`;
   const pendingPath = `${lockPath}.${token}.pending`;
   const deadline = Date.now() + ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS;
+  // Opportunistic, before staging our own: the dead ones are only ever visible
+  // to a later acquirer, since the process that would have cleaned them is gone.
+  reapAbandonedPendingDirs(lockPath, Date.now());
 
   fs.mkdirSync(pendingPath, { mode: 0o700 });
   try {
@@ -150,8 +226,15 @@ function acquireProjectStateLock(cwd: string): ProjectStateLock {
         return { dirPath: lockPath, ownerPath: path.join(lockPath, ownerName), token };
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
+        // EPERM counts as contended even when lockPath is ALREADY GONE: macOS
+        // surfaces transient EPERM on a rename that raced the owner's release,
+        // and by the time we look the lock dir has vanished. Reaching this loop
+        // proves the parent dir is writable (mkdirSync above succeeded), so a
+        // persistent EPERM ends at this loop's own deadline instead of leaking
+        // out of a hook as a fail-closed deny (observed 3cl: parallel Bash
+        // probes → "plan-guard.write gate failed (EPERM)").
         const contended = code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'ENOTDIR'
-          || (code === 'EPERM' && fs.existsSync(lockPath));
+          || code === 'EPERM';
         if (!contended) throw error;
         const now = Date.now();
         const owner = observedLockOwner(lockPath);

@@ -10,14 +10,12 @@ import {
 } from '../codex-hook-evidence';
 
 test('Codex hook evidence markers round-trip every supported event', () => {
-  const events: CodexHookEvent[] = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart'];
+  const events: CodexHookEvent[] = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'Stop'];
   for (const event of events) {
     assert.equal(isCodexHookEvent(event), true);
     assert.equal(codexHookEvidenceEvent(codexHookEvidenceMarker(event)), event);
   }
-  assert.equal(isCodexHookEvent('Stop'), false);
   assert.equal(isCodexHookEvent('SubagentStop'), false);
-  assert.equal(codexHookEvidenceEvent('<!-- traffic-one-hook-context:v1 event=Stop -->'), null);
   assert.equal(codexHookEvidenceEvent('<!-- traffic-one-hook-context:v2 event=SessionStart -->'), null);
 });
 

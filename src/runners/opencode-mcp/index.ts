@@ -15,7 +15,6 @@ export {
   delegateResumable,
   delegateStatus,
   parseRunnerResult,
-  resolveRunnerPath,
   runDelegate,
   runDelegateFromPlan,
 } from './delegate';

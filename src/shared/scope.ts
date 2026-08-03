@@ -8,7 +8,7 @@
 // Pure: no fs, no other module imports, so the gate and the architect's
 // disjointness check can both reuse it and it is trivially unit-testable.
 
-export type PathPattern = string;
+type PathPattern = string;
 
 export interface AssignedScope {
   include: PathPattern[];

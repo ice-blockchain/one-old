@@ -37,18 +37,25 @@ When Active State says `team.mode: "main-agent"` / `Team: main-agent (low)`, do
 not call `run_subagent`, `Task`, `spawn_agent`, `task`, or another host subagent
 primitive. Host-native role profiles are intentionally materialized only for
 `team.mode: "subagents"`; their absence is not a subagent failure to retry.
-You are the senior architect in this thread: write `.traffic-one/plan.md` and
-the required `.traffic-one/` project memory **before** root configuration,
-workspace-scaffold, or feature-source writes. Then carry out architect →
-frontend → backend → review → test manually in that order and state once that
-the Traffic One team is being simulated in the main thread. Every spawn,
+You are the senior architect in this thread: write only `.traffic-one/plan.md`,
+the required `.traffic-one/` project memory, semantic
+`architecture-input-v1.json`, and the architect digest. Runtime must compile
+architecture, verification, assignments, and work-unit bootstraps before you
+switch to an eligible implementation role and create root configuration,
+workspace scaffold, or feature source. Then carry out architect → the
+implementation roles listed by the runtime capability profile → review → test
+manually in dependency order and state once that the Traffic One team is being
+simulated in the main thread. Every spawn,
 parallel-worker, and continuation instruction below applies **only** when
 `team.mode: "subagents"`.
 
 Do not satisfy a subagents run with generic explorer/helper agents — a
-Balanced/High run means the named senior-role workflow below: `senior-architect`
-→ (`senior-frontend` ∥ `senior-backend`) → (`senior-reviewer` ∥ `senior-tester`),
-plus `senior-shipper` only on explicit deploy intent. If the gate was missed and
+Balanced/High run means the runtime-compiled senior-role workflow:
+`senior-architect` → eligible implementation role(s) from the capability profile
+→ (`senior-reviewer` ∥ `senior-tester`), plus `senior-shipper` only on explicit
+deploy intent. Parallelize eligible independent implementers; a backend-only
+profile never gains a frontend worker, and a UI-only profile never gains a
+backend worker. If the gate was missed and
 work already started, pause at the next safe point, resolve it, then continue.
 
 ## Runtime compatibility
@@ -58,18 +65,19 @@ work already started, pause at the next safe point, resolve it, then continue.
   - High → architect/frontend/backend/reviewer = `highest` tier, tester = `cheapest` tier, shipper = `balanced` tier.
   - Tier → model: resolve each tier (`highest`|`balanced`|`cheapest`) to your host's concrete model via the plugin's tier→model table; the Team Confirmation line-up renders the resolved per-host models.
 - **Spawn**: auto-spawn each role with your host's subagent tool when this skill triggers, passing the `model` parameter resolved to that role's tier whenever the host exposes one (a model name in prompt text has no effect). Where the host uses model aliases, the alias auto-tracks the newest model of that family.
-- **Spawn tool per host (subagents mode only) — supported hosts expose one, never claim otherwise:** Claude = the `Task`/`Agent` tool; Codex = `spawn_agent` with the exact underscore-form task name, exact runtime model, and `fork_turns: "none"`; **Cursor = the `Task` tool**; Copilot = background `task`; Windsurf/Devin Local = `run_subagent` profile `subagent_general` plus the materialized role contract under `.devin/agents/<role>/AGENT.md`; OpenCode = `task`; Kilo = OpenCode-compatible `task` when exposed by the host. Cursor IS a first-class subagent host: Traffic One materializes model-agnostic `.cursor/agents/senior-<role>.md` role contracts and emits the exact per-role model map dynamically from local preferences. Pass the model from the model-gate spawn map. Do NOT assert "Cursor doesn't expose subagents" or simulate merely because you are on Cursor.
+- **Spawn tool per host (subagents mode only) — supported hosts expose one, never claim otherwise:** Claude = the `Task`/`Agent` tool; Codex = `spawn_agent` with the exact underscore-form task name, exact runtime model, and `fork_turns: "none"`; **Cursor = the `Task` tool**; Copilot = background `task`; Windsurf/Devin Local = `run_subagent` profile `subagent_general` plus the materialized role contract under `.devin/agents/<role>/AGENT.md`; OpenCode = `task`; Kilo = OpenCode-compatible `task` when exposed by the host. Cursor IS a first-class subagent host: Traffic One materializes model-agnostic `.cursor/agents/senior-<role>.md` role contracts and emits the exact per-role `subagent_type` + model map dynamically from local preferences. Pass BOTH from the model-gate spawn map — `subagent_type: "senior-<role>"` plus the exact model — and if Cursor rejects that type, use `generalPurpose` + the `[t1-role:]` marker (see the rejected-type bullet below). Do NOT assert "Cursor doesn't expose subagents" or simulate merely because you are on Cursor.
 - **Windsurf / Devin Local spawn = `run_subagent` profile `subagent_general` — NEVER a freshly materialized role name and NEVER `opencode_delegate`.** Custom profiles created during onboarding are not registered until a new Devin session (live failure: `Unknown subagent profile 'senior-architect'; Available: subagent_general, subagent_explore`). Spawn every role with `profile: "subagent_general"`; put `[t1-role: senior-<role>]` as the FIRST task line and immediately tell the child to read `.devin/agents/<role>/AGENT.md`. Pass NO `model` param. Use `read_subagent` to collect a background result. If a role-name spawn failed, retry once with this built-in-profile protocol; never build the role inline.
 - **OpenCode spawn — use the project-scoped global `traffic-one-<projectHash12>-senior-<role>` agent; never use `general` for Traffic One senior roles.** Do NOT pass `model` unless this exact OpenCode build documents a supported task model field: Traffic One pins the local role model in `~/.config/opencode/agents/traffic-one-<projectHash12>-senior-<role>.md`. Select the exact generated name shown by SessionStart/the spawn gate, omit `model`, and put `[t1-role: senior-<role>]` first. Built-in `general` inherits the parent model and is not a safe fallback. If the generated name is not listed, ensure materialization ran, then tell the user to restart OpenCode so its global agent registry reloads. Do not build inline; the spawn gate names the exact expected agent and recovery.
 - **Kilo spawn — OpenCode-compatible hook path, built-in Task worker plus role contract.** Use Kilo's writable `task` subagent type `general`, always include `[t1-role: senior-<role>]` as the FIRST line, and immediately tell the child to read `.kilo/agents/senior-<role>.md` before acting. That file carries the full Traffic One role contract; it is not a Kilo Task type name in this host build. Omit `model` so Kilo inherits the model selected for the active session or agent. Do not use `explore`, and do not switch to main-agent simulation: `general` with the marker-and-contract protocol is the supported Kilo subagent path.
 - Subagents do not inherit the parent's skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
 - **In subagents mode, a first spawn that is DENIED or "Couldn't start" → RE-SPAWN it once, do NOT build the role inline.** The very first spawn (usually the architect) commonly hits a one-time *readiness* deny: the gate converges materialization on the first gated call and denies-for-retry (deny prose: "rerun the same agent spawn now; materialization is current"). Cursor renders this as a terse "New subagent — Couldn't start". It is NOT a real failure — re-issue the SAME spawn and it succeeds. Treating it as terminal and implementing the role yourself silently breaks subagents mode (the parent must not write feature source). Only after a re-spawn ALSO fails is the spawn tool genuinely broken.
+- **A REJECTED `subagent_type` is a different failure — re-issuing the same value can never work.** When the spawn tool refuses the value itself (invalid enum, unknown subagent type/profile, "Available: …"), the role name is simply absent from the accepted-type set this session captured — Traffic One materializes `.cursor/agents/senior-<role>.md` (and the Kilo/Windsurf/Copilot equivalents) during onboarding, which can be AFTER the host built that set. This is NOT "the spawn tool genuinely errors" and NOT a licence to simulate the role. Retry that one spawn with the host's built-in generic worker — Cursor `generalPurpose`, Claude `general-purpose`, Windsurf profile `subagent_general`, Kilo `general` — keeping `[t1-role: senior-<role>]` as the FIRST prompt line and immediately telling the child to read its materialized role contract (`.cursor/agents/senior-<role>.md`, `.kilo/agents/senior-<role>.md`, `.devin/agents/<role>/AGENT.md`). Keep the exact per-role `model` from the spawn map. The role marker — not the type — is what binds the child to its role, its work unit, and its frozen model, so a marked generic child is a full team member. Traffic One prints the authoritative `role → subagent_type` map before the first spawn (model-gate on Cursor; the setup-completion spawn map on Claude, with `traffic-one:senior-<role>` types plus the exact per-role `model`); use it instead of guessing from the role name, and pass its `model` on the very first spawn — a model-less spawn is denied by the Performance gate and the host renders that deny as "failed to run agent". On OpenCode there is no fallback: built-in `general` inherits the parent model, so ensure materialization ran and have the user restart OpenCode.
 - **Spawn dies instantly with a `git … origin/HEAD` error (remote-less repo).** Some hosts inject startup git context into subagents that assumes an `origin` remote; a fresh Traffic One scaffold has none, so the subagent (observed: the reviewer) aborts before producing a transcript. Recovery recipe: create a temporary local ref — `git update-ref refs/remotes/origin/HEAD "$(git rev-parse HEAD)"` — re-issue the SAME spawn (it now resolves), and delete the ref during settlement cleanup with `git update-ref -d refs/remotes/origin/HEAD` so the user's repo stays pristine. Never add a real remote and never treat the dead spawn's claim as active (a superseding spawn releases it).
-- If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). Simulate the same roles manually (same dependency order, mirrored `00-agent-senior-*` role contexts) ONLY when Low is chosen (`team.mode: "main-agent"`) or the spawn tool genuinely errors at runtime AFTER a re-spawn (per the bullet above) — all supported hosts expose a callable subagent tool, so never simulate merely because the project-scoped global OpenCode agent is temporarily missing (restart OpenCode so `~/.config/opencode/agents/` reloads) or because Kilo custom agent files are not Task types (use `general` and the materialized role contract).
-- Role → write-scope mapping (use a writer-capable agent for implementers, scoped to its owned area; a read-only agent for the reviewer). For implementers the AUTHORITATIVE scope is the role's entry in the per-run assignments manifest `.traffic-one/runs/<runId>/assignments.json` (authored by the architect in Phase 1, enforced by the run-team gate). The lines below are the human summary:
-  - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, docs, the per-run `assignments.json` manifest, and required workspace scaffold files. It may create empty package `src/index.ts` barrels as scaffold only; filling them is implementer-owned.
-  - `senior-frontend` — owned write scope = its `assignments.json` entry (UI / routing / i18n / SEO for this project's actual layout).
-  - `senior-backend` — owned write scope = its `assignments.json` entry (API / persistence / auth / migrations for this project's actual layout).
+- If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). Simulate the same roles manually (same dependency order, mirrored `00-agent-senior-*` role contexts) ONLY when Low is chosen (`team.mode: "main-agent"`) or the spawn tool genuinely errors at runtime AFTER a re-spawn (per the bullet above) — all supported hosts expose a callable subagent tool, so never simulate merely because a `subagent_type` was rejected (use the built-in generic worker plus the role marker, per the bullet above), because the project-scoped global OpenCode agent is temporarily missing (restart OpenCode so `~/.config/opencode/agents/` reloads), or because Kilo custom agent files are not Task types (use `general` and the materialized role contract).
+- Role → write-scope mapping (use a writer-capable agent for implementers, scoped to its compiled work unit; a read-only agent for the reviewer). Runtime atomically generates `.traffic-one/runs/<runId>/assignments.json` from `CompiledArchitectureV1` and `VerificationContractV2`, then publishes each eligible role's `WorkUnitContractV1` and bootstrap. No agent or parent creates, edits, widens, or replaces those artifacts. The lines below are the human summary:
+  - `senior-architect` — writes only `.traffic-one/plan.md`, `.traffic-one/` project memory/ADRs, semantic `architecture-input-v1.json`, and its digest. It never creates packages, workspace/config files, Tailwind assets, barrels, assignments, tests, or feature source.
+  - `senior-frontend` — owns only the UI/native outputs and allowlist in its runtime-compiled work unit.
+  - `senior-backend` — owns only the API/data/CLI/worker outputs and allowlist in its runtime-compiled work unit.
   - `senior-reviewer` — read-only.
   - `senior-tester` — owned write scope test files and test infrastructure only.
   - `senior-shipper` — deploy/release only after the shipper gate is satisfied.
@@ -77,17 +85,22 @@ work already started, pause at the next safe point, resolve it, then continue.
     are install side-effects and ALWAYS in scope for whichever role runs the
     install — say so in every implementer spawn prompt. A role must never
     delete/revert a lockfile to satisfy its scope.
-- The assignments manifest is stack-agnostic: the architect derives each scope from the project's REAL directories (Next `src/app`, Laravel `app/Http`+`routes`, Django `*/views.py`, Flutter `lib/`, …), not from hardcoded guesses. The format allows N implementer streams with arbitrary role labels (e.g. a future `senior-mobile`); this version spawns only `senior-frontend` and `senior-backend`.
+- The runtime-owned assignments manifest is stack-agnostic: it derives scopes
+  from the immutable capability registry, compiled semantic modules, and the
+  run baseline (Next `src/app`, Laravel `app/Http` + `routes`, Python/Go roots,
+  Flutter `lib/`, or custom roots). Spawn only implementation roles present in
+  the compiled work units; `senior-frontend` and `senior-backend` are
+  independently optional.
 - Include the relevant `agents/senior-*.md` role text or a concise equivalent in every subagent prompt; Kilo's `.kilo/agents/senior-*.md` role-contract files carry the full role definition and must be read by its `general` task child.
 - If subagents are unavailable or blocked, or the user picks Low: continue manually in the same dependency order and state that the Traffic One team is being simulated by the main agent.
 
 ## OpenCode delegation (token-saver — driven by the architect's plan queue)
 
-When the current host is NOT OpenCode or Kilo and `openCode.enabled` is true in the effective Traffic One state (the managed toolchain stamp `toolchain.opencode.installedVersion` is written by the session-start auto-install; the runner resolves its own managed binary and no-ops gracefully when it is truly absent — never probe PATH for an `opencode` CLI), bounded/low-risk units are delegated to OpenCode INSTEAD of paid subagents — **deterministically, from the plan**, NOT by per-unit improvisation. In a subagents run, work is split by LAYER (one frontend + one backend subagent), so there is no per-unit spawn to redirect; delegation therefore happens in a dedicated batch BEFORE the implementers spawn. The OpenCode and Kilo hosts never self-delegate: they omit the plan queue and run implementer work directly on the current host.
+When the current host is NOT OpenCode or Kilo and `openCode.enabled` is true in the effective Traffic One state (the managed toolchain stamp `toolchain.opencode.installedVersion` is written by the session-start auto-install; the runner resolves its own managed binary and no-ops gracefully when it is truly absent — never probe PATH for an `opencode` CLI), bounded/low-risk units are delegated to OpenCode INSTEAD of paid subagents — **deterministically, from the plan**, NOT by per-unit improvisation. In a subagents run, work is split by the implementation roles eligible in the capability profile, so there is no per-unit spawn to redirect; delegation therefore happens in a dedicated batch BEFORE the eligible implementers spawn. The OpenCode and Kilo hosts never self-delegate: they omit the plan queue and run implementer work directly on the current host.
 
 How it works:
 
-1. **The architect classifies + queues (Phase 1, non-OpenCode/Kilo hosts only).** `senior-architect` emits an OpenCode delegation queue in `.traffic-one/plan.md` — a machine-readable block listing ONLY bounded units. This runs in a new-project build AND in a complex existing-codebase/maintenance build the architect was spawned for (e.g. a large revamp). The batch delegates ONLY a queue the architect wrote for THIS run (tied to `runs/<runId>/assignments.json`), so a stale block from a previous build is never re-run; small maintenance fixes that never invoke the architect keep using per-unit `opencode_delegate`, not this batch. When the current host is OpenCode or Kilo, the architect must omit this section and the `opencode-delegate` markers entirely.
+1. **The architect classifies + queues (Phase 1, non-OpenCode/Kilo hosts only).** `senior-architect` emits an OpenCode delegation queue in `.traffic-one/plan.md` — a machine-readable block listing ONLY bounded units. This runs in a new-project build AND in a complex existing-codebase/maintenance build the architect was spawned for (e.g. a large revamp). Before `PLAN_READY`, runtime checks the queue's OWN consistency (stable ids, `depends:` edges, parseable `files:`) — and, whenever compiled assignments already exist for the run (every maintenance/re-architecture pass, and any replan after the first compile), ALSO the file-vs-assignment cross-check, which then BLOCKS `PLAN_READY` with the exact out-of-scope paths named (observed 16co: unit `news-i18n` was denied and corrected in one pass). Only on the very first architect pass of a build, where no compiled allowlist exists yet, does that cross-check wait for Step-0 delegation, where each unit is validated against runtime-owned `runs/<runId>/assignments.json` and rejected pre-model (`rejected_policy`, paid fallback) if out of scope. Small maintenance fixes that never invoke the architect keep using per-unit `opencode_delegate`, not this batch. When the current host is OpenCode or Kilo, the architect must omit this section and the `opencode-delegate` markers entirely.
 
    ```text
    <!-- opencode-delegate:start -->
@@ -100,7 +113,11 @@ How it works:
    rejected before apply if it touches any path outside those file/area patterns,
    outside the role assignment, or inside generated/cache/internal output
    (`dist`, `.turbo`, `.next`, `*.tsbuildinfo`, `.traffic-one`, etc.). List every
-   legitimate source path the unit may touch. If a unit mentions tests,
+   legitimate source path the unit may touch. Derive the paths from the modules
+   the plan declares (runtime compiles ownership from those modules): a unit
+   whose files land outside its role's compiled assignment is rejected — at
+   `PLAN_READY` itself when compiled assignments already exist for the run, or
+   at Step 0 pre-model otherwise — and its task falls to the paid implementer. If a unit mentions tests,
    testability, Vitest, Playwright, specs, or config/dependency changes, include
    the exact test/spec/config/package files it may touch; otherwise remove that
    acceptance and leave verification/config work to the paid implementer/reviewer.
@@ -112,7 +129,15 @@ How it works:
 
    Queue rows should include stable `id` values. If two units touch overlapping
    files/areas, the later unit must declare `depends: <earlier-id>`; otherwise
-   the plan gate rejects the queue before `PLAN_READY`. `depends_on:` or
+   the plan gate rejects the queue before `PLAN_READY`. The same edge is
+   REQUIRED when a later unit CONSUMES another unit's exports even with zero
+   file overlap — the canonical example above is exactly that shape
+   (`news-card` renders what `fixtures-news` defines, so it declares
+   `depends: fixtures-news`). The runner skips dependents of a failed producer
+   pre-model (`skipped-dependency-failed`, zero cost); without the edge the
+   dependent runs anyway and burns its whole budget building against exports
+   that were rolled back with the producer's diff — measured 16co: 565s for
+   nothing. `depends_on:` or
    `depends:` text inside the `task:` field is invalid; dependencies must be
    pipe-delimited fields so the runner can order them.
 
@@ -134,7 +159,7 @@ How it works:
    `.agentignore`/agent-log/schema.sql + decisions ADRs — the architect writes
    these DIRECTLY before `PLAN_READY`) — those stay on the named senior subagents.
 
-2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI from paid hosts, not from OpenCode or Kilo themselves. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free, assignment-scoped, source-only diffs applied to the tree; install/lockfile side effects stripped; a digest written per unit). It returns `{ total, delegated, units: [{ id, role, task, action, status, attempts, touched, error }] }`. Status is immutable-attempt aware: summary status precedence is `delegated > no_changes > failed`, and each retry appends to `attempts[]` instead of overwriting history. A zero-unit batch is explicit (`total: 0` plus a skipped/no-units status) and still satisfies the "attempted" marker without pretending work ran. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args after the returned `pollAfterMs` (or a short delay if absent) until you get the terminal `{ total, delegated, units }` — do NOT use any shell fallback while `running:true`. Do not spawn backend, frontend, or any other implementer while the batch is merely running.
+2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI from paid hosts, not from OpenCode or Kilo themselves. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free, assignment-scoped, source-only diffs applied to the tree; install/lockfile side effects stripped; a digest written per unit). It returns `{ total, delegated, units: [{ id, role, task, action, status, attempts, touched, error }] }`. Status is immutable-attempt aware: summary status precedence is `delegated > no_changes > failed`, and each retry appends to `attempts[]` instead of overwriting history. A zero-unit batch is explicit (`total: 0` plus a skipped/no-units status) and still satisfies the "attempted" marker without pretending work ran. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, the batch worker keeps ITSELF alive — your calls are not its keep-alive. Do useful work, then collect the terminal `{ total, delegated, units }` in ONE bounded long wait: `opencode_status` with `{ runId, waitMs: 90000 }` (re-calling `opencode_delegate_from_plan` with the same args also waits a bounded window). Do NOT use any shell fallback while `running:true`; abandoning the batch is ONLY `opencode_status` with `{ runId, cancel: true }`, never silence. Do not spawn backend, frontend, or any other implementer while the batch is merely running.
 
    Fallback (MCP unavailable ONLY — never while `running:true`): on Codex this usually means the auto-registered MCP server has not been loaded yet, so tell the user a one-time Codex restart enables it. Otherwise run the same engine via the shell runner (it writes the same terminal batch markers as the MCP tool — `batch.json` + `COMPLETE` under `.traffic-one/runs/<runId>/opencode-plan-batch/`). A bare JSON stdout line alone does not clear the spawn gate. For a stuck run with terminal unit rows but no `batch.json`, use `--finalize-only` instead of re-delegating:
 
@@ -160,7 +185,7 @@ How it works:
 
 (A single ad-hoc unit can be delegated with the `opencode_delegate` tool — `{ role, task, runId, projectRoot, allowedFiles }` — or the runner's `--role <r> --task-file <path> --allowed-files <patterns>` mode.) OpenCode picks its own free model by default; only non-sensitive bounded units are queued. Pin a specific model per project via `openCode.model` if needed.
 
-**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-tester`, `senior-frontend`, `quick-fix` — `senior-shipper` is deliberately excluded: deploys/credentials never ride the free tier) MUST run on OpenCode when `openCode.enabled` on paid hosts. The OpenCode and Kilo hosts never self-delegate. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run. **The Step-0 plan batch is the preferred way to satisfy it** — completing `opencode_delegate_from_plan` marks every queued role as attempted. For a role with no queued units, call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, allowedFiles, task }` where `allowedFiles` is the exact repo-relative files/areas the unit may touch and `task` is ONE bounded unit per the rule above — NEVER the entire role implementation. While a delegation runs, your re-polls are its keep-alive — stopping polls for ~15+ minutes cancels the worker (your re-polls keep the child alive while the runner is alive); falling back to a paid worker is always safe after abandon. (No `model` — OpenCode picks its own free model). If it returns `running:true`, call again with the same args after `pollAfterMs` until terminal. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` OpenCode declined or could not run, so spawn the paid subagent as the internal fallback. **If the host's safety reviewer rejects the call and offers a user-approval path** (e.g. Codex: "proceed only if the user explicitly approves"), ask the user once — naming the risk that it sends the task + relevant code to OpenCode's hosted model — and on explicit approval re-call with the same args (the reviewer sanctions this; treat the approval as covering the rest of this run); on decline, use the paid fallback. The gate denies each role at most once per run to prevent deadlocks, so if the tool is unavailable or its call could not complete, the fallback spawn still goes through. (Requires `currentRunId` set — Traffic One pre-mints it before Phase 0; you only read it.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
+**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-tester`, `senior-frontend`, `quick-fix` — `senior-shipper` is deliberately excluded: deploys/credentials never ride the free tier) MUST run on OpenCode when `openCode.enabled` on paid hosts. The OpenCode and Kilo hosts never self-delegate. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run. **The Step-0 plan batch is the preferred way to satisfy it** — completing `opencode_delegate_from_plan` marks every queued role as attempted. For a role with no queued units, call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, allowedFiles, task }` where `allowedFiles` is the exact repo-relative files/areas the unit may touch and `task` is ONE bounded unit per the rule above — NEVER the entire role implementation. When the unit adds a module, namespace, catalog, or route, `allowedFiles` must also include the file that REGISTERS it (the barrel `index.ts`, the i18n registry, the route table) — otherwise the model registers it anyway and the whole diff is discarded (measured: an i18n unit lost 491s for one `i18n.ts` line). If you would rather keep the registration on the paid side, say so in the `task`. While a delegation runs, the worker keeps ITSELF alive — your calls are not its keep-alive. On `running:true`, do useful work, then collect the result in ONE bounded long wait: `opencode_status` with `{ runId, role, waitMs: 90000 }` (re-calling `opencode_delegate` with the same args also waits). To move on to the paid fallback, cancel EXPLICITLY with `opencode_status {runId, role, cancel:true}` (kills the worker before any FURTHER diff applies; refused with `applying:true` only while a clean diff is landing — collect that result instead; after any cancel, check the role digest and `git status` in case an earlier unit already landed); never abandon by silence, because an unwatched run keeps working and its clean diff still lands. (No `model` — OpenCode picks its own free model). On `ok:true` the work is applied (no paid spawn needed); on `ok:false` OpenCode declined or could not run, so spawn the paid subagent as the internal fallback. **If the host's safety reviewer rejects the call and offers a user-approval path** (e.g. Codex: "proceed only if the user explicitly approves"), ask the user once — naming the risk that it sends the task + relevant code to OpenCode's hosted model — and on explicit approval re-call with the same args (the reviewer sanctions this; treat the approval as covering the rest of this run); on decline, use the paid fallback. The gate denies each role at most once per run to prevent deadlocks, so if the tool is unavailable or its call could not complete, the fallback spawn still goes through. (Requires `currentRunId` set — Traffic One pre-mints it before Phase 0; you only read it.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
 
 ## When you fire
 
@@ -211,7 +236,8 @@ greenfield build. Scope every phase to that one feature:
   pass, or the blocker is reported with the exact unverified risk.
 - Frontend completion criteria always include the automatic baselines when
   applicable, regardless of whether the user mentioned them: existing/new i18n
-  integration with same-change catalog entries and `<Trans>` for rich copy,
+  integration with same-change entries in every locale and `<Trans>` for every
+  static React child (`t()` only for string-valued APIs),
   SEO metadata/tests for every created or changed public route, and
   `https://traffic.io/` setup CTA href regression for touched missing-config
   surfaces.
@@ -221,8 +247,11 @@ greenfield build. Scope every phase to that one feature:
 ### Phase 0 — Detect + run-id
 
 Read `.traffic-one/.one.json`, `.traffic-one/product.md`, `.traffic-one/stack.md`,
-`.traffic-one/rules/*.md`, `.traffic-one/known-issues.md`, and
-`.traffic-one/plan.md` when they exist.
+`.traffic-one/known-issues.md`, and `.traffic-one/plan.md` when they exist. Do
+NOT bulk-read `.traffic-one/rules/*.md` — consult the Active Rule Index in the
+project AGENTS.md for what exists, and open an individual rule file only when
+adjudicating a specific gate, dispute, or decision that names it (role agents
+receive their rule set through their own bootstrap).
 
 - If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan. **Do NOT spawn ANY subagent (architect included) until onboarding is COMPLETE** (`.one.json` has `stack` + `onboardingComplete: true` and materialization has run). Onboarding runs in THIS main thread — you drive the setup wizard here; a subagent cannot (it can't show the wizard, and would get trapped on the "wait for setup" command). Spawning before onboarding is a protocol violation: finish setup in the main thread, THEN spawn the team.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.
@@ -361,34 +390,51 @@ requirement for solo builds.
 
 **Each role gets ONE agent for the whole run; every later task for that role goes to the SAME agent.** A fresh same-role spawn re-loads the entire rules+skills context (~20k tokens before any work) and re-explores the codebase — a measured build spent 7 senior-frontend spawns (≈46M tokens) where 1 agent should have served. Context must load once per role (5 roles ⇒ ~5 context loads), not once per task.
 
-Mechanics on hosts with agent continuation: Claude uses `SendMessage` when `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` enables the tool; Codex uses `followup_task` for the next turn on the same agent (or `send_message` for an in-flight update); Cursor re-invokes the `Task` tool with `resume: "<agentId>"` (if a Cursor build exposes `agentId`, use the same id there); Copilot calls `task` with the recorded background `agent_id` (`name` alone creates a fresh task). OpenCode currently has no true Task resume field exposed to Traffic One: wait for the existing named role task while it runs; after it has completed, a follow-up/fix uses an explicit replacement spawn of the same named `senior-*` agent with `[t1-replace-agent]`, `[t1-role: senior-<role>]` first, and only the new findings inline. Kilo likewise waits for the live role and permits a new built-in `general` task only as an explicit `[t1-replace-agent]` replacement after completion, with `[t1-role: senior-<role>]` first and an immediate read of `.kilo/agents/senior-<role>.md`; never use `explore`.
+Mechanics on hosts with agent continuation: Claude uses `SendMessage` when `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` enables the tool; Codex CONTINUES the SAME role agent with `followup_task` for the next turn (`send_message` only updates an agent that is still mid-flight — it cannot hand a completed agent new work). A follow-up turn runs on the parent's model, and the model gate ACCEPTS that on an already-verified thread (only a not-yet-verified child is retired), so continuation is the normal, supported path — use it for every fix cycle, re-review, and re-test. Do NOT spawn a fresh agent for a follow-up: a new child reloads the entire rules+skills+plan context and re-explores the codebase (the ~20-46M-token waste this protocol exists to prevent). Spawn a replacement ONLY when the continuation genuinely fails (the agent is gone/errors, or its replies show context exhaustion): issue it BY THE ROOT orchestrator with the same canonical `task_name`, `[t1-replace-agent]` + `[t1-role: senior-<role>]` first in the message, `fork_turns: "none"`, and the exact model AND `reasoning_effort` from the run's `model-policy.json`. Only if that same-`task_name` replacement is itself immediately retired as `hook-model-conflict` (the host reattached a runtime that never verified) use a DISTINCT task_name that still names the role — `senior_<role>_fix_<n>` — keeping `[t1-role: senior-<role>]` first; that is a last resort, not the default. Never chase a reattach by nesting the replacement under another senior child; Cursor re-invokes the `Task` tool with `resume: "<agentId>"` (if a Cursor build exposes `agentId`, use the same id there); Copilot calls `task` with the recorded background `agent_id` (`name` alone creates a fresh task). OpenCode currently has no true Task resume field exposed to Traffic One: wait for the existing named role task while it runs; after it has completed, a follow-up/fix uses an explicit replacement spawn of the same named `senior-*` agent with `[t1-replace-agent]`, `[t1-role: senior-<role>]` first, and only the new findings inline. Kilo likewise waits for the live role and permits a new built-in `general` task only as an explicit `[t1-replace-agent]` replacement after completion, with `[t1-role: senior-<role>]` first and an immediate read of `.kilo/agents/senior-<role>.md`; never use `explore`.
 
 1. **First task for a role** → normal spawn (model param per tier). The spawn tool result footer prints the agent id (`agentId: <id> (use SendMessage …)`). The PostToolUse hook records the resumable agent in `.traffic-one/runs/<runId>/agents.json` where the host emits one; on Cursor, `subagentStart` separately records the immutable role/model/original-tier observation used by transcript reconciliation.
-2. **Every later task for that role** — the next planned part (e.g. frontend: foundation → learner journey → admin area), a fix cycle, a re-review, a re-test — goes to the SAME agent via the host-specific continuation primitive above. The PreToolUse gate DENIES a duplicate same-role spawn and names the recorded id, so following this protocol is also the only path the gate allows.
+2. **Every later task for that role** — the next planned part (e.g. frontend: foundation → learner journey → admin area), a fix cycle, a re-review, a re-test — goes to the SAME agent via the host-specific continuation primitive above (on Codex that primitive is `followup_task` on the recorded agent; a replacement spawn is the exception, not the routine). The PreToolUse gate DENIES a duplicate same-role spawn and names the recorded id, so following this protocol is also the only path the gate allows.
 3. **The continuation message carries ONLY what is new**: task spec, exact file paths, acceptance criteria, reviewer/tester findings verbatim. The agent keeps everything it already read (rules, skills, plan, digests, source) — never re-paste those. Treat the reply exactly like a spawn's final report: same digest + terminal-token contract.
-4. **Parallel roles stay parallel**: frontend ∥ backend follow-ups are two continuation calls in ONE message, exactly like parallel spawns.
+4. **Parallel roles stay parallel**: follow up every eligible independent work
+   unit concurrently, exactly like its initial spawn set. Do not manufacture a
+   frontend/backend pair when only one role exists.
 5. **Big roles split into sequential parts on purpose**: each continuation turn gets a fresh tool/turn budget, so "foundation, then admin" runs as message 1, then message 2 to the SAME agent — splitting no longer costs a context reload per part.
-6. **Replacement (rare)**: when a continuation call errors ("agent not found") or the agent's replies show context exhaustion, re-spawn the role with the literal marker `[t1-replace-agent]` in the spawn prompt — the gate allows that one replacement and re-records the new id. On Cursor, a transcript-correlated startup/mid-run failure follows the three-flow recovery above instead: reconciliation persists the result and tier anchor before retiring the false-live agent, and the prescribed retry is accepted even when it arrives without `[t1-replace-agent]`. React in the same turn rather than waiting for sibling roles, and pass only the exact prescribed fallback slug so a generic replacement cannot bypass model gates.
+6. **Replacement (rare)**: when a continuation call errors ("agent not found") or the agent's replies show context exhaustion, re-spawn the role with the literal marker `[t1-replace-agent]` in the spawn prompt — the gate allows that one replacement and re-records the new id. On Cursor, a transcript-correlated startup/mid-run failure follows the three-flow recovery above instead: reconciliation persists the result and tier anchor before retiring the false-live agent, and the prescribed retry is accepted even when it arrives without `[t1-replace-agent]`. React in the same turn rather than waiting for sibling roles, and pass only the exact prescribed fallback slug so a generic replacement cannot bypass model gates. Replacements are ALWAYS spawned by the root orchestrator at depth 1 — never nested from another senior child: hosts attribute a nested child's edits to the SPAWNING child, so the nested worker can never own the replaced role's disjoint files (its writes are denied; observed live as a blocked backend-under-frontend replacement). A senior child that needs another role's work hands the need back to the root instead of spawning it.
 7. **Keep role threads open after MVP/maintenance** unless the user explicitly archives them, the agent is dead/replaced, or host active-agent caps require cleanup. A finished first MVP is often the start of the next feature, and the live role context is valuable.
 8. **No continuation available** (flag unset, non-teams host): the gate stays inert; fall back to the legacy re-spawn protocol below. On OpenCode the gate is not inert: it records the child session id and denies bare duplicate spawns, so use the explicit replacement marker for completed-task follow-ups.
+9. **Never interrupt a role turn that is still working.** A long verification turn (browser QA across routes and viewports, coverage, a production build) legitimately runs for many minutes. Silence toward YOU is not evidence of a stall: a mid-flight agent cannot answer a nudge, because a mid-flight message lands in its context and is only read when it next composes a reply — so "I prompted it twice and it did not respond" says nothing about whether it is stuck. Before aborting a role turn (`interrupt_agent` or any host equivalent), require POSITIVE evidence of inactivity: no new tool call, patch, or output from that agent for several consecutive minutes. If it is still emitting tool calls, it is working — wait. Aborting a working verifier destroys the verdict it was composing; when you do abort one, you MUST re-run that role's full verification, and its pre-abort QA report and digest STOP counting as current evidence (they describe a tree that has since changed). Prefer waiting over re-running: the interrupt costs the whole pass.
 
 If the prescribed retry/replacement paths are exhausted and orchestration or a
 role agent has failed unrecoverably, persist `failed/agent-failed` before the
 final blocked-style summary:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status failed --outcome agent-failed
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status failed --outcome agent-failed
 ```
 
 Do not use `agent-failed` for reviewer/tester cycle caps or environment/browser,
 sandbox, usage-limit, or timeout blockers; those have the distinct blocked
 outcomes below.
 
+Never DIAGNOSE from `run.json`'s top-level `status`/`outcome` either: they are
+a compatibility projection for older runtimes, and a V2 run that is still
+verifying deliberately projects as `status: "failed"` / `outcome:
+"agent-failed"` so a rolled-back runtime cannot resume it.
+`canonicalStatus` (and `runtimeV2RollbackGuard.canonicalStatus`) is the truth;
+`"validating"` means verification is still settling — no agent died, and the
+`blocked -> active` resume does not apply. When `run-status.cjs` rejects a
+transition, its stderr names the exact failed check — act on that named check,
+not on the projected pair.
+
 ### Fix-cycle follow-up (CHANGES_REQUESTED loop)
 
 When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
 
-**Continuation-first** (the protocol in "Agent reuse" above governs — do not restate its host mechanics here): with a live role agent, a fix cycle is ONE continuation message carrying the reviewer findings verbatim (`file:line` + concrete change per item) plus "apply ONLY these fixes, update your digest, end with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>`)" — plus one caution unique to fix cycles: "re-read any files OTHER roles changed since your last turn" (the live agent's memory of shared files may be stale). Still write the fix-cycle context file (step 1 below) for the audit trail. Steps 2–3 (spawnIndex bump + re-spawn) apply ONLY when no live agent can be continued; on OpenCode, that re-spawn must use the same named role agent plus `[t1-replace-agent]`, and the prompt must include the exact findings inline so the role is not blocked if a fix-cycle context file is missing.
+**Continuation-first** (the protocol in "Agent reuse" above governs — do not restate its host mechanics here): with a live role agent, a fix cycle is ONE continuation message carrying the reviewer findings verbatim (`file:line` + concrete change per item) plus the completion contract below — plus one caution unique to fix cycles: "re-read any files OTHER roles changed since your last turn" (the live agent's memory of shared files may be stale). Still write the fix-cycle context file (step 1 below) for the audit trail. Steps 2–3 (spawnIndex bump + re-spawn) apply ONLY when no live agent can be continued; on OpenCode, that re-spawn must use the same named role agent plus `[t1-replace-agent]`, and the prompt must include the exact findings inline so the role is not blocked if a fix-cycle context file is missing.
+
+**ONE continuation = the WHOLE cycle.** The continuation message must state, verbatim: "Apply ALL of the findings above in this one turn — do not stop after a slice. Then rerun your verification commands (install/format/typecheck/build/tests), RE-EMIT your digest (verdict stays `IMPLEMENTED`, fresh `finished_at`), and only then end your reply with `FIXES_APPLIED`, or `FIXES_FAILING <numbered list>` listing ONLY findings that are genuinely impossible to complete (with the reason each). Partial progress is not `FIXES_FAILING` — keep working." `FIXES_APPLIED`/`FIXES_FAILING` are REPLY tokens, never digest verdicts; the digest verdict remains `IMPLEMENTED`/`BLOCKED`. (Measured 8co: without this contract one review round became 32 dispatches — 19 micro-slice `FIXES_FAILING` replies against a digest that never changed.)
+
+**Root semantics for `FIXES_FAILING`:** on the FIRST `FIXES_FAILING`, read its numbered list; if the items are completable, send ONE consolidated clarifying continuation (never a re-send of the same message). On a SECOND consecutive `FIXES_FAILING` with no digest change, stop the cycle: record `node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome review-cycle-cap` and surface the unresolved findings to the user. Nothing in the runtime counts these dispatches for you — re-sending the same message at an implementer whose digest has not changed is always your own error, and dispatching the re-review before the implementer digest is re-emitted wastes a whole review round on pre-fix state (measured 8co: 32 dispatches, 19 micro-slice replies, one unchanged digest).
 
 **Never send a fix cycle to a fresh generic worker** (`generalPurpose`/`general-purpose`, bare `general`, or `subagent_general` without the role marker): a generic child cannot bind the senior role, its writes are blocked, and on Cursor it dies as "New subagent — Couldn't start" (observed live: two generic "Fix CHANGES_REQUESTED items owned by senior-…" spawns dead before the orchestrator fell back to resume). The spawn gate now resolves that ownership phrasing to the role and denies the generic spawn with the live agent's continuation recipe — follow the recipe; do not retry the generic spawn.
 
@@ -398,7 +444,9 @@ When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-
    .traffic-one/fix-cycles/<currentRunId>/<role>-fix-<n>.md
    ```
 
-   where `<n>` is the fix-cycle number (1 for the first fix, 2 for the second, etc.).
+   where `<n>` is the fix-cycle number (1 for the first fix, 2 for the second, etc.) and `<role>` is the FULL role id WITH its `senior-` prefix — `senior-frontend-fix-1.md`, never the digest-style short name (`frontend-fix-1.md`). Digests use the short `<role-name>`; fix-cycle files never do (a 12co session wrote the short name and the continuation header silently missed the file — the runtime now probes the short spelling as a legacy fallback, but the prefixed name is the contract).
+
+   Runtime batches write-time quality findings instead of interrupting each write: when `.traffic-one/fix-cycles/<currentRunId>/<role>-quality-findings.md` exists (regenerated at the role's completion digest), include it in the same cycle — the continuation/spawn message must tell the role to apply ALL findings from BOTH files in the one turn. Do not copy its items by hand; point at the file.
 
 2. **Bump `spawnIndex[role]`** in `.traffic-one/.one.json` before the re-spawn:
 
@@ -413,15 +461,15 @@ When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-
 
 3. **Spawn the subagent with a tight task description**:
 
-   > "You are continuing as `<role>` in run `<currentRunId>`, fix cycle #N. Read your prior digest at `.traffic-one/digests/<runId>/<role-name>.md` to recall your previous work, then apply ONLY the exact fixes listed in `.traffic-one/fix-cycles/<runId>/<role>-fix-<n>.md`. Do not re-read source files except those the fix-cycle context names. Re-emit your digest when done. End with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>` on partial failure)."
+   > "You are continuing as `<role>` in run `<currentRunId>`, fix cycle #N. Read your prior digest at `.traffic-one/digests/<runId>/<role-name>.md` to recall your previous work, then apply ALL of the exact fixes listed in `.traffic-one/fix-cycles/<runId>/<role>-fix-<n>.md` in this one turn — do not stop after a slice. Do not re-read source files except those the fix-cycle context names. Rerun your verification commands, RE-EMIT your digest (verdict stays `IMPLEMENTED`, fresh `finished_at`), and only then end with `FIXES_APPLIED` — or `FIXES_FAILING <numbered list>` listing ONLY findings that are genuinely impossible, with the reason each. Partial progress is not `FIXES_FAILING`."
 
-4. **After the fix-cycle reply returns**, loop back to `senior-reviewer` — continuation-first there too: the host-specific continuation call to the live reviewer agent with "re-review ONLY the fixes for findings <list>" (fresh re-spawn with `spawnIndex[senior-reviewer]++` only when no live reviewer agent exists).
+4. **After the fix-cycle reply returns**, verify the digest was RE-EMITTED yourself (fresh `finished_at`) before dispatching anything — an unchanged digest means the fixes did not land, and the re-review would read pre-fix state — then loop back to `senior-reviewer` — continuation-first there too: the host-specific continuation call to the live reviewer agent with "re-review ONLY the fixes for findings <list>" (fresh re-spawn with `spawnIndex[senior-reviewer]++` only when no live reviewer agent exists).
 
-The 2-cycle reviewer cap (architect / orchestrator level) still applies — if the second fix cycle also gets `CHANGES_REQUESTED`, stop and surface the unresolved findings to the user.
+The 2-cycle reviewer cap (Phase 3a) still applies — if the second fix cycle also gets `CHANGES_REQUESTED`, stop, record `review-cycle-cap`, and surface the unresolved findings to the user.
 
 ### Phase 1 — Architect (subagents mode, sequential, blocking)
 
-This phase applies only when `team.mode: "subagents"`. In Low/main-agent mode, write the plan and project memory yourself before touching config, scaffold, or source; do not spawn a role. Otherwise, spawn `senior-architect` via your host's subagent tool. On Claude/Cursor, set the `model` param to the runtime lineup value (`balanced` for Balanced, `highest` for High). On Codex, use `spawn_agent` with `task_name: "senior_architect"`, `model` set to the exact runtime lineup value, and `fork_turns: "none"`; retain the matching role marker in the message for cross-host compatibility. The task name/session metadata supplies Codex identity, while live hooks supply the actual model evidence. On OpenCode, select the generated `traffic-one-<projectHash12>-senior-architect` global agent named by SessionStart/the gate and omit `model`. On Kilo, select built-in `general`, begin the prompt with `[t1-role: senior-<role>]` after substituting the architect role, then direct it to read `.kilo/agents/senior-architect.md`; omit `model`. On Windsurf, select `subagent_general`, begin with `[t1-role: senior-<role>]` after substituting the architect role, and direct it to read `.devin/agents/senior-architect/AGENT.md`; on Copilot omit `model` unless documented. Give the architect owned scope `.traffic-one/plan.md`, ADR/docs, and the per-run `assignments.json`; block on its return.
+This phase applies only when `team.mode: "subagents"`. In Low/main-agent mode, write only the plan, project memory/ADRs, semantic `ArchitectureInputV1`, and architect digest before touching config, scaffold, or source; do not spawn a role. Otherwise, spawn `senior-architect` via your host's subagent tool. On Claude/Cursor, set the `model` param to the runtime lineup value (`balanced` for Balanced, `highest` for High). On Codex, use `spawn_agent` with `task_name: "senior_architect"`, `model` set to the exact runtime lineup value, and `fork_turns: "none"`; retain the matching role marker in the message for cross-host compatibility. The task name/session metadata supplies Codex identity, while live hooks supply the actual model evidence. On OpenCode, select the generated `traffic-one-<projectHash12>-senior-architect` global agent named by SessionStart/the gate and omit `model`. On Kilo, select built-in `general`, begin the prompt with `[t1-role: senior-<role>]` after substituting the architect role, then direct it to read `.kilo/agents/senior-architect.md`; omit `model`. On Windsurf, select `subagent_general`, begin with `[t1-role: senior-<role>]` after substituting the architect role, and direct it to read `.devin/agents/senior-architect/AGENT.md`; on Copilot omit `model` unless documented. Give the architect only its semantic planning/memory/input/digest scope; block on its return.
 
 Spawn the architect COLD with the `model` param. On Codex, cold means `fork_turns: "none"`.
 Two measured reasons: (1) Codex rejects a full-history fork combined with
@@ -433,15 +481,15 @@ cumulative tokens of a cold spawn that reads its ~10 role files once.
 Implementers/reviewer/tester also spawn COLD: they need only the plan + their
 scoped rules.
 
-Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one/.one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory, write `.traffic-one/runs/<run-id>/assignments.json` (the machine-readable Module map: one disjoint owned-path scope per implementer role), and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`. The `assignments.json` partition is what lets Phase 2 run conflict-free on any stack.
+Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read the immutable capability/baseline plus project memory/graph, produce `.traffic-one/plan.md`, record strict verification intent only for redesign/performance-risk/important-visual or explicit Lighthouse requirements, create/update `.traffic-one/` memory, write semantic `.traffic-one/runs/<run-id>/architecture-input-v1.json`, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`. The `PLAN_READY` write lets runtime compile/hash architecture and verification, generate assignments, and atomically publish each eligible work-unit bootstrap; the architect never writes those outputs.
 
 Architect must end its reply with the literal token `PLAN_READY`. If it doesn't, surface to the user and do not proceed to Phase 2.
 
 ### Phase 2 — Implement (subagents mode, parallel)
 
-This phase's delegation and parallel spawn mechanics apply only when `team.mode: "subagents"`. In Low/main-agent mode, implement the frontend and backend responsibilities yourself after the plan exists; do not issue a host subagent call.
+This phase's delegation and parallel spawn mechanics apply only when `team.mode: "subagents"`. In Low/main-agent mode, implement only the responsibilities listed by the runtime capability profile after the plan exists; do not issue a host subagent call.
 
-**Step 0 — OpenCode delegation batch (when `openCode.enabled` on a paid host).** HARD STOP: before spawning any frontend/backend implementer, inspect `.traffic-one/plan.md`. If it contains an `opencode-delegate` queue, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to OpenCode and returns `{ total, delegated, units }`; if it returns `running:true`, call again with the same args until terminal — do NOT use any shell fallback while `running:true`. This is the token-saver the user enabled, and it runs from paid hosts only, never from OpenCode or Kilo. Do not emit any implementer `Task` calls in the same assistant message as this Step-0 call. Do not spawn backend first while frontend is gated; that serializes the run and defeats the batch. Fallback (MCP unavailable ONLY — never while `running:true`): on Codex, a one-time restart loads the auto-registered server; otherwise run the shell runner (writes terminal `batch.json` + `COMPLETE`; JSON stdout alone is insufficient). Use `--finalize-only` to unblock a stuck run without re-delegating.
+**Step 0 — OpenCode delegation batch (when `openCode.enabled` on a paid host).** HARD STOP: before spawning any capability-eligible implementer, inspect `.traffic-one/plan.md`. If it contains an `opencode-delegate` queue, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to OpenCode and returns `{ total, delegated, units }`; if it returns `running:true`, the worker keeps itself alive — do useful work, then collect the terminal result in ONE bounded long wait via `opencode_status {runId, waitMs: 90000}` (re-calling with the same args also waits); abandoning is ONLY `opencode_status {runId, cancel:true}`, and do NOT use any shell fallback while `running:true`. Report rejected units honestly: a unit rejected for out-of-scope files (`rejected_policy`) does NOT mean "the implementers own those files" — its FILES are outside the compiled write surface for everyone this run; only its CONTENT falls to the owning implementer, folded into files that implementer actually owns. Relay the rejection reason to the implementer's spawn prompt so the intent is not silently dropped. This is the token-saver the user enabled, and it runs from paid hosts only, never from OpenCode or Kilo. Do not emit any implementer `Task` calls in the same assistant message as this Step-0 call. Do not start one eligible role while another queued role is still gated; that serializes the run and defeats the batch. **Parallel mode** (`openCode.parallelImplementers: true` in local preferences, default OFF): implementer spawns are allowed while the batch runs. Write-time enforcement covers the files of units CURRENTLY EXECUTING — the denied set shrinks as each unit ends; `reservedFiles` in the delegation result is the full batch union, i.e. an upper bound to brief around, not the exact denied set. Brief implementers to start on files outside that union and fold reserved paths in last. A delegate-configured role (tester/frontend by default) still takes its single OpenCode-first deny before its paid spawn goes through, and reviewer/tester still wait for the terminal batch in both modes. Fallback (MCP unavailable ONLY — never while `running:true`): on Codex, a one-time restart loads the auto-registered server; otherwise run the shell runner (writes terminal `batch.json` + `COMPLETE`; JSON stdout alone is insufficient). Use `--finalize-only` to unblock a stuck run without re-delegating.
 
 ```bash
 node ~/.traffic-one/bin/opencode-runner.cjs --run-id "$RUN_ID" --from-plan
@@ -449,13 +497,13 @@ node ~/.traffic-one/bin/opencode-runner.cjs --run-id "$RUN_ID" --from-plan
 
 If that shell runner cannot run (e.g. `.git` is read-only or worktree metadata cannot be written), continue with the senior subagents for those units.
 
-Then run `senior-frontend` and `senior-backend` **concurrently** — they share the architect's plan/digest for contracts, so neither waits on the other. **Host concurrency mechanic:** on hosts where one assistant message carries multiple tool calls (Claude `Task`), issue both spawns in a single message. On Codex (`spawn_agent`/`wait_agent`), issue both `spawn_agent` calls consecutively with task names `senior_frontend` and `senior_backend`, the exact runtime-resolved `model` for each role, and `fork_turns: "none"`; do not wait until both calls return ids. Retain matching role markers in their messages for cross-host compatibility, but Codex identity comes from task name/session metadata and its model evidence comes from live hooks. Both use the implementation tier: `balanced` for Balanced, `highest` for High. On Claude/Cursor, pass the runtime-resolved `model`; on OpenCode, use the matching project-scoped global `traffic-one-<projectHash12>-senior-*` agent; on Kilo, use built-in `general` with each role marker and contract path; on Windsurf, use `subagent_general` with marker/contract; on Copilot omit `model` unless documented. Resolve each implementer's owned paths from `.traffic-one/runs/<runId>/assignments.json` and embed that exact list in its spawn prompt. If absent, fall back to legacy role scopes and say so; the run-team gate still prevents collisions.
+Then run exactly the implementation roles present in the runtime-published work units and `.traffic-one/runs/<runId>/assignments.json`. If both `senior-frontend` and `senior-backend` are eligible and independent, run them **concurrently**; if only one is eligible, spawn only that role. Never invent a sibling role for backend-only, UI-only, native, CLI, worker, or data profiles. **Host concurrency mechanic:** on hosts where one assistant message carries multiple tool calls (Claude `Task`), issue all eligible independent spawns in a single message. On Codex (`spawn_agent`/`wait_agent`), issue the eligible `spawn_agent` calls consecutively with the exact underscore-form task name, exact runtime-resolved `model`, and `fork_turns: "none"`; do not wait between independent spawns — then collect them with ONE bare `wait_agent` at `timeout_ms: 900000`, not repeated short waits. Retain matching role markers in their messages for cross-host compatibility, but Codex identity comes from task name/session metadata and its model evidence comes from live hooks. Eligible implementers use the implementation tier: `balanced` for Balanced, `highest` for High. On Claude/Cursor, pass the runtime-resolved `model`; on OpenCode, use the matching project-scoped global `traffic-one-<projectHash12>-senior-*` agent; on Kilo, use built-in `general` with each role marker and contract path; on Windsurf, use `subagent_general` with marker/contract; on Copilot omit `model` unless documented. The bootstrap envelope already contains the exact role, rules/skills hashes, outputs, and allowlist; do not reconstruct or widen them in prompt prose. A missing/ineligible role gets neither an assignment nor a spawn.
 
-Synthetic prompts — use the **Phase 2 — Frontend** and **Phase 2 — Backend** templates from `resources/prompt-templates.md`. Substitute each role's resolved owned-path list into the template's `<FRONTEND_OWNED_PATHS>` / `<BACKEND_OWNED_PATHS>` placeholder. Each template instructs the implementer to read the architect digest first, then the relevant plan section, then graph nodes, raw files only as last resort. Each writes its own digest (`.traffic-one/digests/<run-id>/{frontend,backend}.md`) before reporting.
+Synthetic prompts — use only the Phase 2 template matching each eligible role from `resources/prompt-templates.md`; do not instantiate the other template for an ineligible surface. Point the child to its active runtime bootstrap rather than pasting or regenerating an owned-path list. Each template instructs the implementer to verify the bootstrap/work-unit hashes, read the architect digest first, then the relevant plan section, then graph nodes, and raw files only as a last resort. Each eligible role creates any assigned scaffold/config outputs and writes its own digest before reporting.
 
 Implementers handle ONLY the senior units, plus any queued unit OpenCode did not deliver (Step 0 `units[].action !== "delegated"` → fall back). Pass each implementer the files OpenCode already produced (the batch's `touched`) so it builds on them, not over them. Architecture/contract/security/data work always uses the named subagents — never OpenCode.
 
-Wait for both to return before Phase 3.
+Wait for every spawned eligible implementer to return before Phase 3. Never wait for or require a digest from a role absent from the capability profile and assignments manifest. The verification ordering is also ENFORCED: a `senior-reviewer`/`senior-tester` spawn while the Step-0 OpenCode batch is still pending is denied once with the wait/cancel recipe (`opencode_status {runId, waitMs: 90000}` until terminal, or `{runId, cancel:true}`); the retry after a terminal batch always goes through.
 
 ### Phase 3 — Verify (subagents mode, parallel)
 
@@ -472,7 +520,7 @@ Run it WITH `--force` (the runner's mtime freshness check cannot tell a recent i
 the new code — observed live: "fresh" answered for 2 indexed files vs ~60 on disk):
 
 ```bash
-PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CURSOR_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
+PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CURSOR_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs/index.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus) node ~/.traffic-one/bin/gitnexus-runner.cjs --force ;;
   graphify) node ~/.traffic-one/bin/graphify-runner.cjs --force ;;
@@ -487,7 +535,7 @@ threads can't fire the post-build rescan hook — e.g. Cursor or Low/main-agent 
 invocation (Phase 5, the post-build hook, or the next session) still rebuilds, because
 the index is now empty or stale vs the new source.
 
-Run `senior-reviewer` and `senior-tester` **concurrently**, using the same host concurrency mechanic as Phase 2 (on Codex: issue both `spawn_agent` calls with task names `senior_reviewer` and `senior_tester`, each role's exact runtime-resolved `model`, and `fork_turns: "none"` before any `wait_agent`, then `wait_agent` on each; retain matching message markers for cross-host compatibility). On Claude/Cursor/Codex, pass the runtime-resolved model: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. On other hosts the same tiers remain recommendations rather than spawn fields. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
+Run `senior-reviewer` and `senior-tester` **concurrently**, using the same host concurrency mechanic as Phase 2 (on Codex: issue both `spawn_agent` calls with task names `senior_reviewer` and `senior_tester`, each role's exact runtime-resolved `model`, and `fork_turns: "none"` before any `wait_agent`, then collect them with ONE bare `wait_agent` (no `targets`) at `timeout_ms: 900000`; retain matching message markers for cross-host compatibility). A bare `wait_agent` returns as soon as ANY agent sends a message or finishes, so a long ceiling never delays you — it only deletes the empty wake-ups. Re-issue the SAME single long call after each wake. Never re-wait in 30–60s slices and do not interleave `list_agents` between them: a timeout is not evidence of a stall, so `list_agents` belongs only after a full long wait expired with nothing returned. Measured 15co: 88 `wait_agent` calls at 60s, 72 of them bare timeouts, ≈9M input tokens — about half the orchestrator's entire context spend, buying no information. On Claude/Cursor/Codex, pass the runtime-resolved model: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. On other hosts the same tiers remain recommendations rather than spawn fields. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
 
 Before E2E/visual QA, require fresh build metadata. The tester must prove the
 running preview is backed by a build newer than the last changed source file
@@ -495,27 +543,36 @@ running preview is backed by a build newer than the last changed source file
 preview start after a successful build). A stale build blocks QA; it is not a
 green pass.
 
-Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester** templates from `resources/prompt-templates.md`. Both templates instruct the verifier to read the implementer digests first (`.traffic-one/digests/<run-id>/{frontend,backend}.md`), then scoped `git diff` *only for files those digests flagged*, then graph neighbors, full file Reads only as last resort. Reviewer writes `reviewer.md` digest via Bash heredoc (no Write tool) on every review and re-review pass; tester writes `tester.md` directly on every test and re-test pass.
+Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester** templates from `resources/prompt-templates.md`. Derive `<IMPLEMENTER_DIGEST_PATHS>` from the implementation roles actually present in the immutable work units/assignments; both templates instruct the verifier to read exactly those digests, never an absent sibling's digest, then scoped `git diff` *only for files those digests flagged*, then graph neighbors, full file Reads only as last resort. Reviewer writes `reviewer.md` digest via Bash heredoc (no Write tool) on every review and re-review pass; tester writes `tester.md` directly on every test and re-test pass.
 
 If reviewer returns `CHANGES_REQUESTED` → Phase 3a (loop, max 2 cycles).
 If tester returns `TESTS_FAILING` → Phase 3b (loop, max 2 cycles).
 If both tokens are green, validate the evidence before proceeding: the reviewer
-digest must be `APPROVED`, the tester digest must be `TESTS_GREEN`, and a run
-with a frontend implementer digest must have a valid
-`.traffic-one/reports/qa/<runId>/report.json` whose `QaReportV1.status` is
-`passed`. A backend-only exemption is legal only when this run has no frontend
-implementer digest. Textual green tokens, screenshots by themselves, arbitrary
-JSON, and Lighthouse reports do not satisfy functional QA.
+digest must be `APPROVED`, the tester digest must be `TESTS_GREEN`, and
+`.traffic-one/reports/qa/<runId>/report-v2.json` must be a fresh, parser-valid
+`QaReportV2` whose contract/source hashes match
+`.traffic-one/runs/<runId>/verification-v2.json`. The report must satisfy the
+mechanically derived `uiImpact`: non-UI work still proves its stack checks,
+behavioral UI may pass without screenshots, visual UI supplies only the
+contract widths, and native UI uses its native adapter. Textual green tokens,
+screenshots by themselves, arbitrary JSON, and Lighthouse reports do not
+satisfy functional QA.
 
 ### Phase 3a — Reviewer fix loop (capped at 2 cycles)
 
-Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way and require an updated `reviewer.md` digest. Repeat until `APPROVED` or the 2-cycle cap.
+Send each finding to the role that OWNS the flagged path in
+`.traffic-one/runs/<runId>/assignments.json` — not always an implementer.
+`senior-tester` owns test files, test-runner configs and fixtures, so a finding
+about a test is ITS finding; appending it to a frontend or backend list sends it
+to a role whose allowlist refuses the write. Split a compound finding along
+ownership and send each half to its owner rather than giving one role a tail it
+cannot act on. Continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way and require an updated `reviewer.md` digest. Repeat until `APPROVED` or the 2-cycle cap.
 
 After 2 unsuccessful cycles, record the cap before escalating to the user with
 both diffs and the latest review:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome review-cycle-cap
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome review-cycle-cap
 ```
 
 ### Phase 3b — Tester fix loop (capped at 2 cycles)
@@ -527,76 +584,59 @@ to the live `senior-tester` and require an updated `tester.md` digest and QA
 report. Repeat until the evidence-valid `TESTS_GREEN` combination above or the
 2-cycle cap.
 
-`blocked:browser-unavailable`, `blocked:sandbox`, `blocked:usage-limit`, and
-`blocked:timeout` are `TESTS_FAILING`, never green. They do not consume a fix
-cycle because no implementation changed. Only the Codex
-`blocked:browser-unavailable` case may use the parent-browser bridge in Phase
-3c, and only when every non-browser check passed. Skip the implementation fix
-loop and go directly to that bridge. Sandbox, usage-limit, and timeout blockers
-remain user-visible blocked outcomes; do not send them to an implementer as if
-code caused them. For any environment blocker that will remain unresolved at
-the end of this turn, persist it before showing the blocked summary:
+An `advisory-warning` dimension is NOT a failure. The QA verdict is reported per
+dimension — `functionalQaStatus`, `accessibilityStatus`, `responsiveStatus`,
+`lighthouseStatus`, `overallStatus` — and only a `failed` dimension is a reason
+to act. Never send an advisory page-speed warning to an implementer, never spawn
+a fix or replacement agent for one, and never count it against the 2-cycle cap:
+no gate is failing, so there is nothing a fix cycle can settle. Report the
+warning to the user alongside the green result. A page-speed budget blocks only
+when the plan declared one (`explicitLighthouse`, `performanceRisk`, or a
+redesign); a synthetic threshold missed by ~100-200ms with an otherwise passing
+audit is a warning, not a run-ender (measured 10co: a run died on FCP 1.65s
+against a 1.5s default while scoring Performance 99).
+
+When a dimension IS `failed`, re-run only that dimension — the affected routes
+and the viewports where the problem appeared — not the whole matrix. Reserve one
+full QA sweep for the final verification.
+
+`blocked-environment` is `TESTS_FAILING`, never green, and does not consume a
+fix cycle because no implementation changed. A missing browser blocks only a
+`behavioral` or `visual` web contract; it cannot block `none` or `nonvisual`.
+A missing native adapter blocks only `native-ui`. Do not send environment
+failures to an implementer as if code caused them. The interactive browser
+plugin is optional diagnosis and never a required bridge: canonical web
+evidence comes from local Playwright against the run-owned build. For any
+environment blocker that remains unresolved at the end of this turn, persist
+it before showing the blocked summary:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome environment-blocked
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome environment-blocked
 ```
 
 After 2 unsuccessful implementation/test fix cycles, record the cap and then
 escalate to the user:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status blocked --outcome test-cycle-cap
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --outcome test-cycle-cap
 ```
 
-### Phase 3c — Parent integration pass (visual builds)
+### Phase 3c — Parent integration pass
 
-After reviewer `APPROVED` and tests are mechanically green, run the root
-verification commands yourself (install/lint/typecheck/test/build). Re-use a
-fresh, parser-valid `QaReportV1` from this run by reading it. Lighthouse remains
-performance evidence only and never answers the functional QA gate.
+After reviewer `APPROVED` and tests are mechanically green, run the relevant
+root verification commands yourself (install/lint/typecheck/test/build). Read
+the fresh `QaReportV2`; do not replace it with parent-authored evidence.
+`senior-tester` owns the mechanical sweep and reruns it after fixes in the same
+agent. The parent may inspect the few visual screenshots for subjective
+quality, but the interactive browser is never part of the mandatory path.
 
-For any build with a UI, verify the running app before declaring completion.
-The tester normally owns the complete route matrix at widths 390, 768, and
-1440, including console errors, document and element overflow, primary-action
-reachability, and required screenshots. Per host:
-- **Claude Code**: `preview_start` (in-app preview) or the claude-in-chrome
-  browser MCP; `preview_stop` when done.
-- **Codex**: the in-app-browser recipe in the `browser-qa` skill
-  (`.traffic-one/skills/browser-qa/SKILL.md`) — do NOT tool-search for or read
-  the bundled `control-in-app-browser` skill (~8k tokens; the recipe is
-  complete).
-- **Cursor**: the built-in Simple Browser, or the browser automation MCP.
-**The mechanical half of this pass belongs to `senior-tester`, not to you.**
-It runs on the cheapest tier, is a delegateRole (the scripted sweep can ride
-OpenCode for free), and as a live agent re-runs the sweep after fix cycles via
-one continuation message. If its Phase-3 pass ran before final fixes, continue
-that same tester with “re-run the visual sweep” instead of doing the sweep
-yourself. Reserve your parent context for reading the report and inspecting the
-few screenshots that need subjective assessment.
-
-**Codex parent-browser bridge (only for `blocked:browser-unavailable`):**
-
-1. Confirm every non-browser check passed, the tester returned `TESTS_FAILING`,
-   and its sole blocker is a structurally valid `QaReportV1` whose parsed
-   `status` is `blocked:browser-unavailable` and whose `blocker.code` is
-   `browser-unavailable`. The report remains nonpassing evidence even when the
-   unavailable browser made required screenshots impossible. Do not bridge any
-   other blocked status or a run that also has test failures.
-2. In the parent Codex task, use the in-app browser to run the same required
-   route×390/768/1440 matrix. Write the canonical
-   `.traffic-one/reports/qa/<runId>/report.json` with producer
-   `parent-browser`, plus the required mobile and desktop screenshots inside
-   that same run QA directory.
-3. Continue the **same** `senior-tester` agent. Ask it to validate the canonical
-   report, screenshot paths, run id, freshness, and full matrix, then update
-   `tester.md` and re-emit its verdict. Do not spawn a new tester.
-
-The bridge is verification work, not an implementation fix, so it consumes no
-reviewer/tester fix cycle. If the parent matrix finds a real UI failure, route
-that finding through the normal continuation-based fix loop. If the parent
-cannot complete the bridge, keep the run blocked and record
-`environment-blocked` with the Phase 3b command. Leave the dev server running
-for the user when appropriate.
+The tester starts a build from the current source, binds a free strict port,
+records PID/port/start/URL and expected-versus-served fingerprints, and rejects
+stale servers or older artifacts. For `behavioral`, it asserts DOM, actions,
+routing, hydration, console, and network without mandatory screenshots. For
+`visual`, it also captures every width in `requiredScreenshotWidths` (normally
+390 and 1440; 768 only for tablet risk). Lighthouse is separate performance
+evidence and runs only when the performance contract or user requires it.
 
 ### Phase 4 — Ship (only on explicit intent)
 
@@ -621,7 +661,7 @@ Before the maintenance stamp, settle the terminal run idempotently. If the
 shipper actually completed the deploy and wrote its successful digest, use:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome shipped
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status completed --outcome shipped
 ```
 
 Never issue `completed/shipped` from deploy intent or a textual claim alone.
@@ -629,7 +669,7 @@ For an unshipped run, independently validate the strict reviewer + tester + QA
 or backend-only combination, then use:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status completed --outcome verified
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status completed --outcome verified
 ```
 
 Do not use `completed/verified` merely because the digest text contains green
@@ -644,7 +684,9 @@ the token-savings benefit.
 
 ```bash
 RUN_DIR=".traffic-one/digests/${RUN_ID}"
-expected=("architect.md" "frontend.md" "backend.md")
+expected=("architect.md")
+# Append frontend.md and/or backend.md only for roles present in this run's
+# immutable work units/assignments. Never expect an ineligible role's digest.
 [ "$REVIEWED" = "true" ] && expected+=("reviewer.md")
 [ "$TESTED"   = "true" ] && expected+=("tester.md")
 [ "$SHIPPED"  = "true" ] && expected+=("shipper.md")
@@ -668,12 +710,17 @@ shipper can't read the predecessor digest and falls back to re-reading the
 diff.
 
 **Delegated digests:** a digest produced by an OpenCode delegation carries
-`verdict: DELEGATED_OK` with a `normalize_to:` hint — the runner applied a diff
-but verified nothing, so it never claims the canonical token. After YOUR root
+`verdict: DELEGATED_OK` — the runner applied a diff but verified nothing, so it
+never claims the canonical token. A WHOLE-ROLE delegation writes that role's own
+digest (`<role>.md`) and adds a `normalize_to:` hint: after YOUR root
 verification passes (typecheck/test/build green), normalize the verdict line to
 the hinted token yourself with a one-line edit to the digest file (digests are
 run bookkeeping under `.traffic-one/`, not feature source — the write gate
-allows it). Do NOT spawn an agent just to rewrite a verdict line.
+allows it). Do NOT spawn an agent just to rewrite a verdict line. A Step-0
+plan-unit digest (`opencode-<role>.md`) carries NO hint and is never normalized:
+it is this run's accumulated ledger of the delegated units for that role (all of
+them, with per-unit models and touched files), and the role's own `<role>.md`
+holds the verdict.
 
 **Then stamp the maintenance phase.** A strictly terminal orchestrator run means
 the project's main build is done — flip `lifecycle.phase` to `maintenance` so the
@@ -695,7 +742,7 @@ the user typing `pnpm build`.
 Dispatch on `codeGraphProvider` from the effective Traffic One state, which merges shared `.traffic-one/.one.json` with the current user's local preferences:
 
 ```bash
-PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CURSOR_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
+PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CURSOR_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs/index.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus)
     node ~/.traffic-one/bin/gitnexus-runner.cjs
@@ -764,7 +811,7 @@ the authorized resume before continuing. Run this only after the user has
 explicitly authorized the extra cycle:
 
 ```bash
-node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','run-status.cjs'))" --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
+node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status active --reason user-authorized-extra-cycle
 ```
 
 ## Handoff back to user
@@ -805,7 +852,7 @@ Unresolved reviewer/tester findings:
 - <numbered current findings, cycle-cap reason, or “none beyond the QA blocker”>
 
 QA status:
-- <exact QaReportV1 status, affected routes/widths, safe blocker summary, and report path>
+- <exact QaReportV2 status/uiImpact, affected routes/widths or native adapter, safe blocker summary, and report path>
 
 User decision required:
 - <one exact action or choice needed to continue this same run>
@@ -815,13 +862,13 @@ User decision required:
 
 - The architect runs first on any new project (`mode === "new-project"`) or whenever `.traffic-one/plan.md` is missing.
 - On every host, do not silently skip the Traffic One team for matching end-to-end tasks when `team.mode="subagents"` is approved. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. Where the host requires explicit user intent before spawning, always ask for subagent confirmation first for matching multi-layer builds and stop until the user answers; never write plans/files/code or simulate before asking. If confirmation is declined, the user chose Low/main-agent mode, or subagents are unavailable, simulate the same phases manually and state why.
-- Frontend ∥ backend in parallel — single message, two subagent calls.
+- Run all capability-eligible, independent implementers in parallel; when only one implementation role is eligible, issue only that spawn.
 - Reviewer ∥ tester in parallel — single message, two subagent calls.
 - ONE agent per role per run: after a role's first spawn, its later tasks are host-specific continuations of that agent (the spawn gate denies duplicates). Never spawn `senior-frontend` twice for parts/fixes — same agent, next message.
 - Shipper only on explicit deploy intent in the user's most recent message.
 - Cycle cap = 2 for both reviewer and tester loops; after that, escalate.
-- `TESTS_GREEN` is valid only with passing tests plus strict QA passed or a
-  genuinely backend-only current run. Every structured QA blocker is
+- `TESTS_GREEN` is valid only with passing tests plus a valid QaReportV2 for
+  the mechanically derived contract. Every structured QA blocker is
   `TESTS_FAILING`.
 - A blocked/nonterminal run preserves its current run id and role agents. It
   never enters Phase 5, maintenance, shipping, or a greenfield flow.
@@ -836,6 +883,6 @@ User decision required:
 - Single-service or single-endpoint additions: route to `create-service`.
 - Read-only audits: route to `design-audit`, `security-review`, `repo-scan`.
 - Refactor-only requests: route to `refactor`.
-- The user already has a plan and just wants implementation: spawn `senior-frontend` + `senior-backend` directly, skip architect.
+- The user already has a plan and just wants implementation: spawn only the capability-eligible role(s) that own the requested outputs, then skip architect.
 
 <!-- GENERATED BY traffic-one: project-local active rules -->

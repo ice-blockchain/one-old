@@ -19,8 +19,7 @@ function withProject(
 ): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cgpost-'));
   const env = process.env;
-  const saved = { state: env.TRAFFIC_ONE_STATE_PATH, endpoint: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, auth: env.TRAFFIC_ONE_AUTH };
-  env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+  const saved = { state: env.TRAFFIC_ONE_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, auth: env.TRAFFIC_ONE_AUTH };
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_AUTH = '1';
@@ -48,7 +47,6 @@ function withProject(
   } finally {
     __resetCodeGraphBootstraps();
     if (saved.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = saved.state;
-    if (saved.endpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = saved.endpoint;
     if (saved.prefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = saved.prefs;
     if (saved.auth === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = saved.auth;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -132,13 +130,13 @@ test('post-build code-graph hint is silent when the artefact is fresh', () => {
 test('post-build code-graph hint runs graphify bootstrap + emits the success banner', () => {
   withProject({ provider: 'graphify' }, (cwd) => {
     let called = 0;
-    __setCodeGraphBootstraps({ graphify: () => { called += 1; return { ok: true, action: 'installed-pipx', durationMs: 1200 }; } });
+    __setCodeGraphBootstraps({ graphify: () => { called += 1; return { ok: true, action: 'installed-venv', durationMs: 1200 }; } });
     const r = postBuildCodeGraphHint(ctxFor(cwd, 'pnpm build'));
     assert.equal(called, 1);
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.ok(r.context.includes('[graphify] Codebase graph built'));
-      assert.ok(r.context.includes('installed `graphifyy` via pipx'));
+      assert.ok(r.context.includes('installed `graphifyy` in a Traffic One managed venv'));
     }
   });
 });
@@ -153,7 +151,7 @@ test('post-build code-graph bootstrap resolves a nested monorepo build to the wo
     __setCodeGraphBootstraps({
       graphify: (root) => {
         bootstrapCwd = root;
-        return { ok: true, action: 'installed-pipx', durationMs: 10 };
+        return { ok: true, action: 'installed-venv', durationMs: 10 };
       },
     });
 

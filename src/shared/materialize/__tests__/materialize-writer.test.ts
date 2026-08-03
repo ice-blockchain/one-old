@@ -5,8 +5,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { HOST_IDS, HOST_PLAN_IDS } from '../../../config/model-tiers';
+import { capabilityProfileForRun, ensureArchitectureRunSnapshot } from '../../architecture-contract';
+import {
+  eligibleRolesForProfile,
+  runtimeCapabilityStateFromProfile,
+} from '../../capabilities';
 import { activeSkillsFor } from '../../skill-filters';
 import { modelTierSnapshot } from '../../model-tiers';
+import { roleScopedRules } from '../../stacks';
 import { GENERATED_MARKER } from '../generated';
 import { cleanupPrevious } from '../cleanup';
 import { hasMaterializedProjectAssets } from '../has-assets';
@@ -27,6 +33,16 @@ function withPluginAndProject(fn: (project: string, plugin: string) => void): vo
     const destination = path.join(plugin, 'skills-catalog', name, 'SKILL.md');
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination);
+  }
+  // Real role agent docs, because the Codex materializer's whole job is to carry
+  // the FULL body to a host that cannot receive it any other way. A stub body
+  // would let a truncating regression pass.
+  fs.mkdirSync(path.join(plugin, 'agents'), { recursive: true });
+  for (const role of ['senior-frontend', 'senior-backend']) {
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', '..', '..', 'modules', role, 'agent.md'),
+      path.join(plugin, 'agents', `${role}.md`),
+    );
   }
   const project = path.join(base, 'proj');
   const home = path.join(base, 'home');
@@ -86,6 +102,18 @@ test('materializeProjectAssets writes rules + skills + manifest + AGENTS.md/CLAU
     assert.equal(fs.existsSync(path.join(project, 'AGENTS.md')), true);
     assert.equal(fs.existsSync(path.join(project, 'CLAUDE.md')), true);
     assert.equal(hasMaterializedProjectAssets(project, state), true);
+    // Codex is a `plugin-injected-fallback` host: the child gets a ~2.5k kernel
+    // excerpt in its SessionStart header and nothing else, so without a file on
+    // disk its role contract simply does not reach it. Kilo, Copilot and
+    // Windsurf all inline the full `roleAgentBody`; this asserts Codex has the
+    // same. The length bar is what makes it a regression test — an empty or
+    // kernel-sized file would satisfy mere existence.
+    const contract = path.join(project, '.traffic-one', 'agents', 'senior-frontend.md');
+    assert.equal(fs.existsSync(contract), true, 'the codex role contract must be materialized');
+    assert.ok(
+      fs.readFileSync(contract, 'utf8').length > 4000,
+      'the contract must be the full role doc, not the kernel excerpt',
+    );
     // re-run keeps the materialization valid
     materializeProjectAssets(project, state);
     assert.equal(hasMaterializedProjectAssets(project, state), true);
@@ -200,7 +228,7 @@ test('materialized project artifacts contain no bundled model ids or plugin-main
       stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
       onboardingComplete: true, mode: 'new-project',
     };
-    assert.equal(activeSkillsFor(state).has('model-tier-sync'), true, 'model-tier-sync remains active in the plugin catalog');
+    assert.equal(activeSkillsFor(state).has('model-tier-sync'), false, 'model-tier-sync is unavailable to end-user projects');
 
     materializeProjectAssets(project, state);
 
@@ -224,6 +252,581 @@ test('materialized project artifacts contain no bundled model ids or plugin-main
       // project guidance ("auto", "never auto-pick", etc.) fail this test.
       if (model === 'auto') continue;
       assert.doesNotMatch(text, modelTokenPattern(model), `project artifact leaked bundled model id ${model}`);
+    }
+  });
+});
+
+test('materialization respects host-only and unavailable skill scopes across every host and UI/API profiles', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+
+    const profiles = [
+      {
+        name: 'web',
+        state: {
+          stack: 'default',
+          frontend: 'react-vite',
+          backend: 'supabase',
+          mobile: { framework: 'none' },
+          onboardingComplete: true,
+          mode: 'new-project',
+        },
+      },
+      {
+        name: 'api',
+        state: {
+          stack: 'custom-backend',
+          frontend: 'none',
+          backend: 'go',
+          mobile: { framework: 'none' },
+          onboardingComplete: true,
+          mode: 'existing-codebase',
+        },
+      },
+    ] as const;
+
+    for (const host of HOST_IDS) {
+      process.env.TRAFFIC_ONE_HOST = host;
+      for (const profile of profiles) {
+        const target = path.join(project, `${host}-${profile.name}`);
+        fs.mkdirSync(target, { recursive: true });
+        if (profile.name === 'api') {
+          fs.writeFileSync(path.join(target, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+        }
+        materializeProjectAssets(target, profile.state);
+        const manifest = JSON.parse(
+          fs.readFileSync(path.join(target, '.traffic-one', 'manifest.json'), 'utf8'),
+        );
+        assert.equal(
+          manifest.skills.includes('security-scan'),
+          host === 'claude',
+          `${host}/${profile.name}: Claude-only scanner scope`,
+        );
+        assert.equal(
+          fs.existsSync(path.join(target, '.traffic-one', 'skills', 'security-scan', 'SKILL.md')),
+          host === 'claude',
+          `${host}/${profile.name}: Claude-only scanner artifact`,
+        );
+        assert.equal(
+          manifest.skills.includes('model-tier-sync'),
+          false,
+          `${host}/${profile.name}: maintainer-only skill`,
+        );
+        assert.equal(
+          fs.existsSync(path.join(target, '.traffic-one', 'skills', 'model-tier-sync')),
+          false,
+          `${host}/${profile.name}: maintainer-only artifact`,
+        );
+      }
+    }
+  });
+});
+
+test('runtime capability materialization keeps Laravel API-only free of UI rules and skills', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+    fs.writeFileSync(path.join(project, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+    fs.mkdirSync(path.join(project, 'resources/views'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'resources/views/welcome.blade.php'), '<h1>Laravel</h1>\n');
+    const state = {
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'other',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+      mode: 'existing-codebase',
+    };
+
+    materializeProjectAssets(project, state);
+    const apiManifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.equal(apiManifest.frontend, 'none');
+    assert.equal(apiManifest.backend, 'laravel');
+    assert.ok(apiManifest.rules.every((rule: string) => !rule.startsWith('rules/frontend/')));
+    for (const uiSkill of ['browser-qa', 'design-system', 'i18n-text', 'create-page']) {
+      assert.ok(!apiManifest.skills.includes(uiSkill), uiSkill);
+    }
+    assert.ok(apiManifest.skills.includes('laravel-patterns'));
+
+    fs.writeFileSync(path.join(project, 'resources/views/dashboard.blade.php'), '<h1>Dashboard</h1>\n');
+    materializeProjectAssets(project, state);
+    const uiManifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.equal(uiManifest.frontend, 'laravel-ui');
+    assert.ok(uiManifest.rules.includes('rules/frontend/ui-quality.md'));
+    assert.ok(uiManifest.skills.includes('browser-qa'));
+  });
+});
+
+test('runtime capability materialization discovers workspace Next without React/Vite leakage', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+    fs.mkdirSync(path.join(project, 'apps/web/app'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'apps/web/package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0', react: '19.0.0' },
+    }));
+    const state = {
+      stack: 'custom-frontend',
+      frontend: 'none',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+      mode: 'existing-codebase',
+    };
+
+    materializeProjectAssets(project, state);
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.equal(manifest.frontend, 'nextjs');
+    assert.ok(manifest.skills.includes('nextjs-turbopack'));
+    assert.ok(manifest.skills.includes('browser-qa'));
+    assert.ok(!manifest.skills.includes('vite-patterns'));
+    assert.ok(!manifest.rules.includes('rules/frontend/react/core.md'));
+  });
+});
+
+test('materialized backend-only, frontend, and native profiles exclude unrelated Postgres rules and skills', () => {
+  const fixtures = [
+    {
+      name: 'Go API',
+      state: {
+        stack: 'custom-backend', frontend: 'none', backend: 'go',
+        mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+      },
+      expectedSkill: 'golang-patterns',
+      expectedRule: 'rules/backend/golang.md',
+    },
+    {
+      name: 'Python CLI',
+      state: {
+        stack: 'custom-backend', frontend: 'none', backend: 'other',
+        mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'sync.py'), 'print("ok")\n');
+      },
+      expectedSkill: 'python-patterns',
+      expectedRule: 'rules/backend/python.md',
+    },
+    {
+      name: 'Next frontend-only',
+      state: {
+        stack: 'custom-frontend', frontend: 'nextjs', backend: 'none',
+        mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({
+          dependencies: { next: '16.0.0', react: '19.0.0' },
+        }));
+        fs.mkdirSync(path.join(project, 'app'), { recursive: true });
+      },
+      expectedSkill: 'nextjs-turbopack',
+      expectedRule: 'rules/frontend/ui-quality.md',
+    },
+    {
+      name: 'Swift native',
+      state: {
+        stack: 'custom-stack', frontend: 'none', backend: 'none',
+        mobile: { framework: 'swift-native' }, onboardingComplete: true, mode: 'existing-codebase',
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'Package.swift'), '// swift-tools-version: 6.2\n');
+      },
+      expectedSkill: 'swiftui-patterns',
+      expectedRule: null,
+    },
+  ] as const;
+
+  for (const fixture of fixtures) {
+    withPluginAndProject((project, plugin) => {
+      fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+      fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+      fixture.prepare(project);
+      materializeProjectAssets(project, fixture.state);
+      const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+      assert.ok(manifest.skills.includes(fixture.expectedSkill), `${fixture.name}: language/profile skill`);
+      if (fixture.expectedRule) assert.ok(manifest.rules.includes(fixture.expectedRule), `${fixture.name}: stack rule`);
+      assert.ok(!manifest.rules.includes('rules/backend/postgres.md'), `${fixture.name}: no Postgres rule`);
+      for (const postgresSkill of ['postgres-patterns', 'postgres-review', 'database-migrations']) {
+        assert.ok(!manifest.skills.includes(postgresSkill), `${fixture.name}: no ${postgresSkill}`);
+      }
+    });
+  }
+});
+
+test('materialized data evidence opts a Go backend into Postgres guidance', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+    fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    fs.mkdirSync(path.join(project, 'migrations'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'migrations', '001.sql'), 'create table items(id bigint primary key);\n');
+    materializeProjectAssets(project, {
+      stack: 'custom-backend', frontend: 'none', backend: 'go',
+      mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+    });
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.ok(manifest.rules.includes('rules/backend/postgres.md'));
+    assert.ok(manifest.skills.includes('postgres-patterns'));
+    assert.ok(manifest.skills.includes('database-migrations'));
+  });
+});
+
+test('new-project mode routes the default Vite playbook only to the compiled default vite-react profile', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    };
+    materializeProjectAssets(project, state);
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    for (const relPath of [
+      'rules/modes/new-project.md',
+      'rules/modes/new-project-vite-react.md',
+      'rules/modes/new-project-architecture.md',
+      'rules/modes/new-project-setup.md',
+    ]) {
+      assert.ok(manifest.rules.includes(relPath), `default vite-react materializes ${relPath}`);
+    }
+    const agents = fs.readFileSync(path.join(project, 'AGENTS.md'), 'utf8');
+    const gatewayAt = agents.indexOf('.traffic-one/rules/modes/new-project-vite-react.md');
+    const referenceHeadingAt = agents.indexOf('### Reference On Demand');
+    const setupAt = agents.indexOf('.traffic-one/rules/modes/new-project-setup.md');
+    assert.ok(gatewayAt > 0 && gatewayAt < referenceHeadingAt, 'profile gateway is mandatory');
+    assert.ok(setupAt > referenceHeadingAt, 'full setup remains read-on-demand');
+
+    materializeProjectAssets(project, { ...state, stack: 'react-realtime-monorepo' });
+    const legacyManifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.ok(legacyManifest.rules.includes('rules/modes/new-project-vite-react.md'),
+      'legacy default-stack alias preserves the same compiled vite-react playbook');
+  });
+});
+
+test('backend-only, native, Next, and Nuxt new projects never materialize the default Vite playbook', () => {
+  const fixtures = [
+    {
+      name: 'Go API',
+      profileRule: 'rules/modes/new-project-backend-only.md',
+      state: {
+        mode: 'new-project', stack: 'custom-backend', frontend: 'none', backend: 'go',
+        mobile: { framework: 'none' }, onboardingComplete: true,
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+      },
+    },
+    {
+      name: 'Swift native',
+      profileRule: 'rules/modes/new-project-swift-native.md',
+      state: {
+        mode: 'new-project', stack: 'custom-stack', frontend: 'none', backend: 'none',
+        mobile: { framework: 'swift-native' }, onboardingComplete: true,
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'Package.swift'), '// swift-tools-version: 6.0\n');
+      },
+    },
+    {
+      name: 'Next.js',
+      profileRule: 'rules/modes/new-project-next-app.md',
+      state: {
+        mode: 'new-project', stack: 'custom-frontend', frontend: 'nextjs', backend: 'none',
+        mobile: { framework: 'none' }, onboardingComplete: true,
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ dependencies: { next: '16.0.0' } }));
+        fs.mkdirSync(path.join(project, 'app'), { recursive: true });
+      },
+    },
+    {
+      name: 'Nuxt',
+      profileRule: 'rules/modes/new-project-nuxt.md',
+      state: {
+        mode: 'new-project', stack: 'custom-frontend', frontend: 'nuxt', backend: 'none',
+        mobile: { framework: 'none' }, onboardingComplete: true,
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ dependencies: { nuxt: '4.0.0' } }));
+        fs.writeFileSync(path.join(project, 'nuxt.config.ts'), 'export default defineNuxtConfig({})\n');
+      },
+    },
+  ] as const;
+
+  for (const fixture of fixtures) {
+    withPluginAndProject((project, plugin) => {
+      fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+      fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+      fixture.prepare(project);
+
+      materializeProjectAssets(project, fixture.state);
+      const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+      assert.ok(manifest.rules.includes('rules/modes/new-project.md'), `${fixture.name}: universal spine`);
+      assert.ok(manifest.rules.includes(fixture.profileRule), `${fixture.name}: selected profile rule`);
+      assert.ok(manifest.rules.includes('rules/modes/new-project-architecture.md'),
+        `${fixture.name}: universal architecture reference`);
+      for (const relPath of [
+        'rules/modes/new-project-vite-react.md',
+        'rules/modes/new-project-setup.md',
+      ]) {
+        assert.ok(!manifest.rules.includes(relPath), `${fixture.name}: excludes ${relPath}`);
+        assert.equal(fs.existsSync(path.join(project, '.traffic-one', relPath)), false);
+      }
+      assert.ok(fs.existsSync(path.join(project, '.traffic-one', fixture.profileRule)));
+      assert.ok(fs.existsSync(path.join(
+        project,
+        '.traffic-one',
+        'rules/modes/new-project-architecture.md',
+      )));
+
+      const spine = fs.readFileSync(
+        path.join(project, '.traffic-one', 'rules', 'modes', 'new-project.md'),
+        'utf8',
+      );
+      assert.doesNotMatch(spine, /\b(?:React|Vite|Turborepo|Supabase|Playwright)\b|apps\/web/i,
+        `${fixture.name}: universal active rule has no default-web mandate`);
+      const agents = fs.readFileSync(path.join(project, 'AGENTS.md'), 'utf8');
+      const profileAt = agents.indexOf(`.traffic-one/${fixture.profileRule}`);
+      const referenceHeadingAt = agents.indexOf('### Reference On Demand');
+      const architectureAt = agents.indexOf('.traffic-one/rules/modes/new-project-architecture.md');
+      assert.ok(profileAt > 0 && profileAt < referenceHeadingAt,
+        `${fixture.name}: profile rule is mandatory`);
+      assert.ok(architectureAt > referenceHeadingAt,
+        `${fixture.name}: architecture index is read on demand`);
+    });
+  }
+});
+
+test('unresolved web/native new projects materialize only the fail-closed hybrid profile rule', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+
+    materializeProjectAssets(project, {
+      mode: 'new-project',
+      stack: 'custom-stack',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'react-native-expo' },
+      onboardingComplete: true,
+    });
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project.md'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project-unsupported-hybrid.md'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project-architecture.md'));
+    assert.ok(!manifest.rules.includes('rules/modes/new-project-vite-react.md'));
+    assert.ok(!manifest.rules.includes('rules/modes/new-project-react-native.md'));
+    assert.ok(!manifest.rules.includes('rules/modes/new-project-setup.md'));
+  });
+});
+
+test('Ionic materialization composes with Vite, Vue, and Angular profile rules', () => {
+  for (const fixture of [
+    { frontend: 'react-vite', profileId: 'vite-react', reactRules: true },
+    { frontend: 'vue', profileId: 'vue', reactRules: false },
+    { frontend: 'angular', profileId: 'angular', reactRules: false },
+  ] as const) {
+    withPluginAndProject((project, plugin) => {
+      fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+      fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+
+      materializeProjectAssets(project, {
+        mode: 'new-project',
+        stack: 'custom-frontend',
+        frontend: fixture.frontend,
+        backend: 'external-api',
+        mobile: { framework: 'ionic-capacitor' },
+        onboardingComplete: true,
+      });
+
+      const manifest = JSON.parse(fs.readFileSync(
+        path.join(project, '.traffic-one', 'manifest.json'),
+        'utf8',
+      ));
+      assert.ok(manifest.rules.includes(
+        `rules/modes/new-project-${fixture.profileId}.md`,
+      ));
+      assert.ok(manifest.rules.includes('rules/modes/new-project-architecture.md'));
+      assert.ok(manifest.rules.includes('rules/frontend/ionic/core.md'));
+      assert.ok(manifest.rules.includes('rules/frontend/ionic/capacitor.md'));
+      assert.equal(
+        manifest.rules.includes('rules/frontend/react/core.md'),
+        fixture.reactRules,
+        `${fixture.frontend} keeps its own base framework`,
+      );
+    });
+  }
+});
+
+test('new-project profile transitions remove stale profile/setup rules but retain the architecture index', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+
+    materializeProjectAssets(project, {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    });
+    fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    materializeProjectAssets(project, {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+    });
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project-backend-only.md'));
+    assert.ok(manifest.rules.includes('rules/modes/new-project-architecture.md'));
+    for (const stale of [
+      'rules/modes/new-project-vite-react.md',
+      'rules/modes/new-project-setup.md',
+    ]) {
+      assert.ok(!manifest.rules.includes(stale), `manifest removes ${stale}`);
+      assert.equal(fs.existsSync(path.join(project, '.traffic-one', stale)), false, `disk removes ${stale}`);
+    }
+  });
+});
+
+const GAP_RULES = [
+  'rules/common/git.md',
+  'rules/common/onboarding.md',
+  'rules/common/stack-recommendations.md',
+] as const;
+
+test('envelope-referenced rules outside the manifest stay materialized in maintenance phase', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+    // Maintenance phase: the manifest index drops the setup-era pair and never
+    // lists the shipper's git.md, but hash-only envelopes still reference all
+    // three — the bodies must survive on disk.
+    const state = {
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+    };
+    materializeProjectAssets(project, state);
+    for (const rel of GAP_RULES) {
+      assert.ok(fs.existsSync(path.join(project, '.traffic-one', rel)), `${rel} materialized`);
+    }
+    // A second run must not sweep them (cleanup idempotence).
+    materializeProjectAssets(project, state);
+    for (const rel of GAP_RULES) {
+      assert.ok(fs.existsSync(path.join(project, '.traffic-one', rel)), `${rel} survives re-run`);
+    }
+  });
+});
+
+test('every envelope-eligible role rule id resolves under .traffic-one after materialization', () => {
+  const states = [
+    {
+      name: 'web',
+      state: {
+        stack: 'default', frontend: 'react-vite', backend: 'supabase',
+        mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      },
+      prepare(): void { /* default web project */ },
+    },
+    {
+      name: 'api',
+      state: {
+        stack: 'custom-backend', frontend: 'none', backend: 'go',
+        mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      },
+      prepare(project: string): void {
+        fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+      },
+    },
+  ] as const;
+  for (const fixture of states) {
+    withPluginAndProject((project, plugin) => {
+      fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+      fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+      fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+      fixture.prepare(project);
+      materializeProjectAssets(project, fixture.state);
+      const profile = capabilityProfileForRun(project, fixture.state);
+      const frozen = runtimeCapabilityStateFromProfile(profile, {});
+      for (const role of [...eligibleRolesForProfile(profile), 'quick-fix']) {
+        for (const rel of roleScopedRules(role, frozen) || []) {
+          assert.ok(
+            fs.existsSync(path.join(project, '.traffic-one', rel)),
+            `${fixture.name}/${role}: ${rel} readable in project`,
+          );
+        }
+      }
+    });
+  }
+});
+
+test('a frozen run snapshot profile keeps its envelope rules materialized when live state diverges', () => {
+  withPluginAndProject((project, plugin) => {
+    fs.rmSync(path.join(plugin, 'rules'), { recursive: true, force: true });
+    fs.rmSync(path.join(plugin, 'skills-catalog'), { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'rules', 'rules'), path.join(plugin, 'rules'), 'dir');
+    fs.symlinkSync(path.resolve(__dirname, '..', '..', '..', 'modules', 'skills', 'skills-catalog'), path.join(plugin, 'skills-catalog'), 'dir');
+    // Freeze a web-ui snapshot for the in-flight run, then materialize with a
+    // live backend-only state carrying that currentRunId: the frozen profile's
+    // frontend rules must still be on disk for the run's live children.
+    const webState = {
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { framework: 'none' }, onboardingComplete: true, mode: 'new-project',
+    };
+    ensureArchitectureRunSnapshot(project, 'RUN1', webState);
+    const liveApiState = {
+      stack: 'custom-backend', frontend: 'none', backend: 'go',
+      mobile: { framework: 'none' }, onboardingComplete: true, mode: 'existing-codebase',
+      currentRunId: 'RUN1',
+    };
+    fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    materializeProjectAssets(project, liveApiState);
+    for (const rel of ['rules/frontend/ui-quality.md', 'rules/frontend/typography.md']) {
+      assert.ok(
+        fs.existsSync(path.join(project, '.traffic-one', rel)),
+        `${rel} kept for the frozen run profile`,
+      );
     }
   });
 });

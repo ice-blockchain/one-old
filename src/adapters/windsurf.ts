@@ -27,6 +27,7 @@ const SUB_TO_EVENT: Readonly<Record<string, { event: CanonicalEvent; tool?: Tool
 // Manual runtime actions are not Cascade hook events. They need a canonical
 // PreToolUse context with no tool so their dedicated handler can run.
 const MANUAL_ACTIONS = new Set(['materialize-project']);
+const ENFORCEMENT_ACTIONS = new Set(['pre_write_code', 'pre_run_command', 'pre_mcp_tool_use']);
 
 function actionName(data: Record<string, unknown>, argv: readonly string[]): string {
   const explicit = firstString(data.agent_action_name, data.action, data.event);
@@ -148,6 +149,7 @@ export function makeWindsurfAdapter(): HostAdapter {
       return {
         event: mapping.event,
         host: 'windsurf',
+        ...(ENFORCEMENT_ACTIONS.has(action) ? { hostHookPoint: action } : {}),
         cwd,
         ...(workspaceRoot && path.isAbsolute(workspaceRoot) ? { workspaceRoot } : {}),
         raw: normalizedRaw,
@@ -175,4 +177,3 @@ export function makeWindsurfAdapter(): HostAdapter {
   };
 }
 
-export const windsurfAdapter = makeWindsurfAdapter();

@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 
-import { ensureInitialCommit } from '../git-init';
+import { ensureInitialCommit, ensureOriginHeadRef, removeOriginHeadRef } from '../git-init';
 
 function tmp(): string {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-gitinit-')));
@@ -93,5 +93,67 @@ test('ensureInitialCommit: never auto-commits the plugin authoring root', () => 
     assert.equal(ensureInitialCommit(dir), false, 'the plugin repo is never auto-committed');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A host preamble that shells out to `git diff … origin/HEAD…` exits non-zero on
+// a remote-less scaffold and the host kills the spawn before the agent produces
+// a transcript (18cl: the reviewer died twice, the run finished through a
+// generic-worker fallback). Deterministic on every greenfield run.
+test('ensureOriginHeadRef: a remote-less repo gets the ref, and settlement takes it back', () => {
+  const dir = tmp();
+  try {
+    git(dir, ['init', '-q']);
+    fs.writeFileSync(path.join(dir, 'x.ts'), 'export {};\n', 'utf8');
+    assert.equal(ensureInitialCommit(dir), true);
+
+    // Reproduces the exact 18cl failure before the fix — note the message is
+    // `ambiguous argument`, NOT "not a git repository": the agent misread it,
+    // decided the documented recovery recipe did not apply, and worked around it.
+    assert.throws(() => git(dir, ['diff', '--name-only', 'origin/HEAD...']), /ambiguous argument/);
+
+    assert.equal(ensureOriginHeadRef(dir), true);
+    assert.equal(
+      git(dir, ['rev-parse', 'refs/remotes/origin/HEAD']).trim(),
+      git(dir, ['rev-parse', 'HEAD']).trim(),
+      'the ref points at the run-start commit',
+    );
+    // The command that killed the spawn now succeeds.
+    assert.equal(git(dir, ['diff', '--name-only', 'origin/HEAD...']).trim(), '');
+    // Idempotent: a second run neither rewrites nor reports a write.
+    assert.equal(ensureOriginHeadRef(dir), false, 'an existing ref is never overwritten');
+
+    assert.equal(removeOriginHeadRef(dir), true);
+    assert.throws(() => git(dir, ['rev-parse', '--verify', 'refs/remotes/origin/HEAD']));
+    assert.equal(removeOriginHeadRef(dir), false, 'removing what is not there is a no-op');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ensureOriginHeadRef: a repo with a REAL origin is never touched, in either direction', () => {
+  const dir = tmp();
+  const remote = tmp();
+  try {
+    git(remote, ['init', '-q', '--bare']);
+    git(dir, ['init', '-q']);
+    fs.writeFileSync(path.join(dir, 'x.ts'), 'export {};\n', 'utf8');
+    assert.equal(ensureInitialCommit(dir), true);
+    git(dir, ['remote', 'add', 'origin', remote]);
+
+    // Writing is refused: once a remote exists the ref is git's to manage, and a
+    // ref we invented would silently shadow the real upstream.
+    assert.equal(ensureOriginHeadRef(dir), false, 'a real origin is never given a fabricated ref');
+    assert.throws(() => git(dir, ['rev-parse', '--verify', 'refs/remotes/origin/HEAD']));
+
+    // And deleting is refused too — the dangerous direction. A run that adopts a
+    // repo which HAS an upstream must not remove that repo's own ref at
+    // settlement, so ownership is re-proven at cleanup rather than remembered.
+    git(dir, ['update-ref', 'refs/remotes/origin/HEAD', git(dir, ['rev-parse', 'HEAD']).trim()]);
+    assert.equal(removeOriginHeadRef(dir), false, 'a real repo never loses its own ref to our cleanup');
+    assert.ok(git(dir, ['rev-parse', '--verify', 'refs/remotes/origin/HEAD']).trim().length >= 7);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(remote, { recursive: true, force: true });
   }
 });

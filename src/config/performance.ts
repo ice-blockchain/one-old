@@ -6,7 +6,7 @@
 
 import type { HostModelKey, TierId, UserPlan } from './model-tiers';
 
-export interface PerformanceLevelConfig {
+interface PerformanceLevelConfig {
   readonly teamMode: 'main-agent' | 'subagents';
   readonly useRoadmapChecklist: boolean;
   readonly agents: Readonly<Record<string, { tier: TierId }>>;
@@ -65,7 +65,7 @@ export const AGENT_ROLES = [
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
 // Levels that run a subagent team (low is solo main-agent, no per-role tiers).
-export type TeamLevel = 'balanced' | 'high';
+type TeamLevel = 'balanced' | 'high';
 
 // Plan → recommended performance level (what the wizard pre-selects). Model and
 // performance selection depend only on the active host plan; OpenCode remains an
@@ -157,7 +157,7 @@ export const DEFAULT_AGENT_TIERS: Readonly<Record<TeamLevel, Record<AgentRole, T
 // Free plans run the team a step cheaper than the (max-shaped) default. Shared
 // across hosts; replace a host's entry with an inline object to diverge one host.
 // internal: consumed by PLAN_AGENT_TIERS below.
-export const FREE_BALANCED: Readonly<Partial<Record<AgentRole, TierId>>> = {
+const FREE_BALANCED: Readonly<Partial<Record<AgentRole, TierId>>> = {
   'senior-architect': 'cheapest',
   'senior-frontend': 'cheapest',
   'senior-backend': 'cheapest',
@@ -165,7 +165,7 @@ export const FREE_BALANCED: Readonly<Partial<Record<AgentRole, TierId>>> = {
   'senior-shipper': 'cheapest',
 };
 // internal: consumed by PLAN_AGENT_TIERS below.
-export const FREE_HIGH: Readonly<Partial<Record<AgentRole, TierId>>> = {
+const FREE_HIGH: Readonly<Partial<Record<AgentRole, TierId>>> = {
   'senior-architect': 'balanced',
   'senior-frontend': 'balanced',
   'senior-backend': 'balanced',

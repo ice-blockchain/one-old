@@ -20,7 +20,7 @@ const RUN_ID_PATH_RE = /\.traffic-one\/(?:runs|digests)\/([^/\s"'`\\]+)/g;
 // guard deliberately does NOT: a write to a literal `runs/<run-id>/…` path
 // would strand state under a placeholder-named dir — exactly the split this
 // module exists to prevent — so it must keep denying there.
-export const RUN_ID_PLACEHOLDERS = ['<run-id>', '<runId>', '<currentRunId>'] as const;
+const RUN_ID_PLACEHOLDERS = ['<run-id>', '<runId>', '<currentRunId>'] as const;
 
 export function hasRunIdPlaceholder(text: unknown): boolean {
   const haystack = String(text ?? '');

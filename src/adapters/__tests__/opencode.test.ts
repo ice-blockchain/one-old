@@ -47,6 +47,23 @@ test('opencode: parses documented tool hook payload shape', () => {
   assert.equal(patched.tool?.rawName, 'apply_patch');
   assert.equal(patched.tool?.class, 'file-edit');
   assert.equal(patched.tool?.patchText, '*** Begin Patch');
+
+  const editArgs = {
+    file_path: 'src/App.tsx',
+    old_string: 'const title = "old";',
+    new_string: 'const title = "new";',
+    replace_all: false,
+  };
+  const edited = opencode.parse(inv('before-tool-use', {
+    event: 'tool.execute.before',
+    cwd: '/repo',
+    tool: 'edit',
+    output: { args: editArgs },
+  }));
+  assert.equal(edited.tool?.class, 'file-edit');
+  assert.equal(edited.tool?.filePath, 'src/App.tsx');
+  assert.deepEqual((edited.raw as Record<string, unknown>).tool_input, editArgs);
+  assert.deepEqual((edited.raw as Record<string, unknown>).toolInput, editArgs);
 });
 
 test('opencode: canonicalizes camel/snake/diff apply_patch variants', () => {
@@ -94,4 +111,13 @@ test('opencode: context and noop use wrapper JSON protocol', async () => {
   ];
   assert.deepEqual(JSON.parse(await dispatch(opencode, handlers, inv('session-start', { cwd: '/x' }))), { kind: 'context', context: 'hello' });
   assert.deepEqual(JSON.parse(await dispatch(opencode, [{ id: 'n', event: 'SessionStart', priority: 0, run: () => noop() }], inv('session-start', {}))), { kind: 'noop' });
+});
+
+test('opencode: the session-idle subcommand maps to the Stop event (never the session catch-all)', () => {
+  const adapter = makeOpenCodeAdapter();
+  const parsed = adapter.parse({
+    stdin: JSON.stringify({ event: 'session.idle', cwd: '/tmp/p', session_id: 's' }),
+    argv: ['session-idle', '--host=opencode'],
+  });
+  assert.equal(parsed.event, 'Stop');
 });

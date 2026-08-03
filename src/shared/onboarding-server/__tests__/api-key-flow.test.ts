@@ -95,7 +95,7 @@ test('onboarded project + invalidated auth → api-key ONLY (re-auth), then done
     applyAnswer(dir, 'code-graph', 'graphify');
     assert.equal(computeOnboarding(dir).done, true);
 
-    // A rejected report deletes auth → the ONLY pending step is api-key.
+    // Simulate invalidating auth → the ONLY pending step is api-key.
     clearAuthentication();
     const v = computeOnboarding(dir);
     assert.equal(v.step, 'api-key');

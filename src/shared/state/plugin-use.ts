@@ -15,7 +15,7 @@ import { mergeProjectPrefs, readProjectPrefs } from './local-prefs';
 import { STATE_DIR, STATE_FILE } from '../../config/paths';
 import { readJson } from '../fsjson';
 
-export interface PluginUseChoice {
+interface PluginUseChoice {
   enabled: boolean;
   source: string;
   decidedAt: string;

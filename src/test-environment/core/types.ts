@@ -3,6 +3,9 @@
 // MAINTAINER tool: it is never compiled into dist (see tsconfig.build.json
 // exclude) and never shipped. It is run via `tsx src/test-environment/run.ts`.
 
+import type { ArchitectureInputV1 } from '../../shared/architecture-contract';
+import type { HostModelObservation } from '../../shared/host/capabilities';
+
 export type HostId = 'claude' | 'codex' | 'cursor' | 'opencode' | 'copilot' | 'windsurf' | 'kilo';
 export type VerdictHost = HostId | 'none';
 
@@ -11,11 +14,16 @@ export type Category =
   | 'project-lifecycle'
   | 'existing-project'
   | 'feature-auth'
-  | 'feature-onboarding';
+  | 'feature-onboarding'
+  | 'run-sim'
+  | 'lint-corpus';
 
 // pure-node  → fully deterministic, no host CLI, reuses src/ functions directly.
 // host-e2e   → drives a real host CLI headlessly against a seeded temp project.
-export type RunLayer = 'host-e2e' | 'pure-node';
+// run-sim    → pure-node too, but drives a FULL post-onboarding run: scripted role
+//              writes go through the real plan-write gate and the real runtime
+//              reacts, so the composition of the chain is exercised without an LLM.
+export type RunLayer = 'host-e2e' | 'pure-node' | 'run-sim';
 
 // How a host-e2e run proves that it is exercising the freshly built dist.
 // `host-install` runs installArgs against a content-addressed marketplace before
@@ -31,19 +39,24 @@ export type CurrentDistProof = 'host-install' | 'session-plugin-dir' | 'case-wra
 // that the plugin loaded before this exemption can apply.
 export type HeadlessSubagentSupport = 'supported' | 'unsupported' | 'unknown';
 
-export type ProjectMode = 'new-project' | 'existing-codebase';
+export type ProjectMode = 'new-project' | 'existing-codebase' | 'existing-with-supabase';
 
 export type FixtureKind =
   | 'empty'
+  | 'empty-git'
   | 'react-vite'
   | 'existing-react-vite'
-  | 'existing-node-api';
+  | 'existing-node-api'
+  | 'existing-go-api';
 
 // The onboarding selection a case declares. preseed.ts turns this into an
 // AUTHENTIC .one.json + preferences.json by calling the real source writers,
 // so "onboarding is pre-completed" without ever popping the wizard.
 export interface PreSeed {
   mode: ProjectMode;
+  // Optional deterministic run identity for live enforcement probes. Ordinary
+  // business cases leave this unset and let the runtime mint the run.
+  currentRunId?: string;
   stack?: string; // e.g. 'default' | 'custom-frontend' | 'minimal'
   frontend?: string; // 'react-vite' | 'none' | 'vue' | ...
   backend?: string; // 'supabase' | 'node' | 'none' | ...
@@ -61,6 +74,112 @@ export interface ScriptedAnswer {
   value: unknown;
 }
 
+// What a `layer: 'run-sim'` case declares. The case supplies SEMANTICS (the
+// brief, the semantic architecture input, per-module content overrides); the
+// compiled contract supplies every PATH. Nothing here may name a compiled
+// output — those are born inside the PLAN_READY transaction, so hardcoding one
+// would make every compiler change an N-case edit.
+export interface RunSimSpec {
+  // The user-facing brief this shape simulates. Also seeds projectContext.
+  brief: string;
+  // Semantic routes/modules only — runtime owns roots, roles, outputs, hashes.
+  architecture: ArchitectureInputV1;
+  // Optional overrides for the architect's project-memory bodies. Anything not
+  // named here gets a generated body that satisfies missingProjectMemoryBaseline.
+  memory?: Record<string, string>;
+  // Optional `.traffic-one/plan.md` body (generated when absent).
+  plan?: string;
+  // How QA evidence is produced. Cross-checked against the PUBLISHED
+  // contract.browserRequired so a shape can never silently take the cheap path.
+  qa: QaExpectation;
+  // Run a review round-trip (CHANGES_REQUESTED → re-implement → APPROVED) and
+  // record the claim state either side of it. Off by default: one shape proves
+  // the mechanism, and running it everywhere would only add wall-clock.
+  fixCycle?: boolean;
+  // Run the adversarial rows after settlement: writes that MUST be denied, each
+  // pinned to the gate that has to refuse it.
+  negativeGates?: boolean;
+  // Rows beyond the compiled outputs, written by the named role through the
+  // same gate path as its own outputs during phase 2, and REQUIRED to be
+  // allowed. An existing-codebase case uses this to land writes the
+  // prescribed-stack static checks deny on a new project — the repo's own
+  // conventions must survive the run, not merely be tolerated after it. The
+  // role must own a work unit in the run (or be senior-tester).
+  extraWrites?: Array<{ role: string; path: string; content: string }>;
+  // A follow-up run in the SAME project — the user's maintenance message. This
+  // is the only leg that diffs against a populated baseline, so it is where
+  // uiImpact comes from changed code rather than from the greenfield floor.
+  phase2?: {
+    brief: string;
+    architecture: ArchitectureInputV1;
+    qa: QaExpectation;
+  };
+  // Post-build maintenance triage legs, run LAST in the SAME project. Each
+  // 'prompt' leg is one user message routed through the REAL prompt-boundary
+  // machinery (unresolvedRunDirective || maintenanceTriageDirective) — the
+  // composition prompt-submit.ts performs — so routing, run rotation, the
+  // classifier hint, and the bounded quick-fix write path are all exercised on
+  // the production functions rather than replicas. 'open-run'/'resolve-run'
+  // bracket an orchestrated maintenance run so a leg can probe the
+  // unresolved-run preservation guard while the run is genuinely nonterminal.
+  maintenance?: MaintenanceTriageLeg[];
+}
+
+export type MaintenanceTriageLeg =
+  | {
+      kind: 'prompt';
+      // The user's follow-up message, verbatim.
+      prompt: string;
+      // Which router must win:
+      //   'triage'     — the maintenance triage directive fires (and, in
+      //                  subagents mode, the run id rotates),
+      //   'unresolved' — the continue-run directive preserves the current run,
+      //   'none'       — no directive at all (chat / runtime control / a live
+      //                  fresh worker claim suppressing triage).
+      expectRouting: 'triage' | 'unresolved' | 'none';
+      // Pin the deterministic classifier hint at composition level.
+      expectTier?: 'trivial' | 'small' | 'complex';
+      // Simulate the routed quick-fix worker: parent publishes the bounded
+      // WorkUnit for exactly these files, the worker binds its claim and writes
+      // them through the real gate, then lands its IMPLEMENTED digest. The
+      // driver also probes that an out-of-scope write and an unattributed
+      // parent write are DENIED by the maintenance fail-closed branches.
+      quickFix?: {
+        files: Array<{ path: string; content: string }>;
+        outOfScope?: { path: string; content: string };
+      };
+      // Simulate the small tier's directly-owning role: parent publishes a
+      // `<role>:bounded-maintenance` WorkUnit and the bound role writes inside
+      // it. The write MUST be allowed — this is the seam that makes the small
+      // tier (and the paid OpenCode-fallback worker) viable at all.
+      boundedRole?: {
+        role: 'senior-frontend' | 'senior-backend';
+        files: Array<{ path: string; content: string }>;
+      };
+    }
+  | {
+      // Start an orchestrated maintenance run (rotate → plan → implement) and
+      // leave it NONTERMINAL: implementers deliver, then the reviewer records
+      // CHANGES_REQUESTED — verification has started but cannot settle. That is
+      // the exact regime the unresolved-run directive exists for.
+      kind: 'open-run';
+      brief: string;
+      architecture: ArchitectureInputV1;
+    }
+  | {
+      // Finish the open run: QA evidence, APPROVED + TESTS_GREEN, settle.
+      kind: 'resolve-run';
+      qa: QaExpectation;
+    };
+
+export interface QaExpectation {
+  mode: 'stack' | 'browser';
+  // Pins each required check's status. `stackReportStatus` returns `passed`
+  // whenever nothing FAILED, so an all-`not-applicable` report would otherwise
+  // read as a pass.
+  expectChecks?: Record<string, 'passed' | 'not-applicable'>;
+}
+
 export interface AssertionSpec {
   id: string;
   params?: Record<string, unknown>;
@@ -75,6 +194,8 @@ export interface Case {
   preSeed: PreSeed;
   // pure-node onboarding-flow simulation: scripted answers fed to applyAnswer().
   scriptedAnswers?: ScriptedAnswer[];
+  // Required when layer === 'run-sim': the shape this simulated run builds.
+  runSim?: RunSimSpec;
   prompt?: string; // host-e2e: inline build/edit prompt
   promptFile?: string; // host-e2e: alt, path relative to the case file's dir
   phase2Prompt?: string; // host-e2e lifecycle: a follow-up edit in the same project
@@ -102,6 +223,16 @@ export interface HostCommandConfig {
   // plugin's model-tiers table may be stale for this host (e.g. 'auto' for
   // Cursor) so e2e tests plugin BEHAVIOR, not a specific model slug.
   testModel?: string;
+  // Test-only, complete tier catalog written to the case-local One MCP sidecar.
+  // This never changes the production registry. A live host preflight must
+  // prove every slug before the case may invoke the CLI.
+  testModelByTier?: Readonly<Record<'highest' | 'balanced' | 'cheapest', string>>;
+  // Populated only by a live harness preflight. Cases report this as an
+  // environment block and do not invoke the host; strict mode remains non-green.
+  e2eBlockedReason?: string;
+  // Per-run host environment owned by the harness. Codex uses this only for
+  // its disposable CODEX_HOME; it is never read from release/plugin config.
+  e2eEnv?: NodeJS.ProcessEnv;
   // Some desktop-only hosts have deterministic adapter/onboarding coverage but
   // no supported unattended CLI entrypoint. Keep them in the seven-host matrix
   // while making an explicit E2E request skip cleanly instead of inventing flags.
@@ -123,9 +254,12 @@ export interface RootTestConfig {
   // ~/traffic-one-test-runs. All runs are kept; clear them manually.
   runsRoot: string;
   isolateStateHome: boolean;
-  strict: boolean; // SKIP/INCONCLUSIVE count as failure; declared UNSUPPORTED capability does not
+  strict: boolean; // SKIP/INCONCLUSIVE/UNSUPPORTED all block a certification claim
   dryRun: boolean;
   caseFilter?: string[]; // explicit case ids
+  // External evidence for hosts classified as contract+manual-e2e. The CLI
+  // accepts only an absolute directory and reads <host>-manual-e2e.json.
+  manualCertDir?: string;
   hosts: Record<HostId, HostCommandConfig>;
   envOverrides: Record<string, string>;
 }
@@ -141,7 +275,47 @@ export interface AssertionResult {
   actual?: unknown;
 }
 
-export type HostRunStatus = 'COMPLETED' | 'TIMEOUT' | 'ERROR' | 'SKIPPED' | 'NOT_RUN';
+export type HostRunStatus =
+  | 'COMPLETED'
+  | 'TIMEOUT'
+  | 'ERROR'
+  | 'BLOCKED_ENVIRONMENT'
+  | 'SKIPPED'
+  | 'NOT_RUN';
+
+export type HostCapabilityEvidenceStatus =
+  | 'OBSERVED'
+  | 'NO_RUN'
+  | 'NOT_RUN'
+  | 'MISSING'
+  | 'INVALID';
+
+/**
+ * Reporting projection of the per-run HostCapabilityV1 sidecar. Contract
+ * fields are expectations from the static registry; only the observed fields
+ * are evidence about the host version that actually ran.
+ */
+export interface HostCapabilityReport {
+  evidenceStatus: HostCapabilityEvidenceStatus;
+  runId: string | null;
+  contractExpectedPrevention: 'pre-tool' | 'completion-only';
+  contractPrimaryBlockingPoint: string;
+  contractRequiredBlockingPoints: string[];
+  modelObservation: HostModelObservation;
+  authoritativeModelObserved: boolean;
+  observedPrevention: 'pre-tool' | 'completion-only' | 'unknown';
+  observedBlockingPoint: string | null;
+  observedEnforcementPoints: string[];
+  observedDeniedEnforcementPoints: string[];
+  primaryBlockingPointObserved: boolean;
+  primaryBlockingPointDenied: boolean;
+  requiredBlockingPointsObserved: boolean;
+  capabilityHash: string | null;
+  evidenceHash: string | null;
+  hostVersion: string | null;
+  preventionCertified: boolean;
+  detail: string;
+}
 
 export interface HostRunResult {
   status: HostRunStatus;
@@ -151,6 +325,7 @@ export interface HostRunResult {
   stderrPath?: string;
   command?: string;
   skippedReason?: string;
+  hostCapability?: HostCapabilityReport;
 }
 
 export interface CaseRunResult {
@@ -184,6 +359,11 @@ export interface HostDriver {
 
 export interface AssertionContext {
   cwd: string; // temp project root
+  // The per-case folder that OWNS `cwd` (<runDir>/projects/<caseId>__<target>).
+  // Holds isolated state, logs, and the run-sim transcript. Passing it explicitly
+  // — rather than resolving `cwd/..` — is what makes `--reassert` work for
+  // transcript-reading assertions.
+  caseFolder: string;
   env: Record<string, string>; // per-case env (PREFS_PATH, XDG_STATE_HOME, ...)
   host: HostId | 'pure-node';
   testCase: Case;

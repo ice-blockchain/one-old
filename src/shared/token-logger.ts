@@ -46,7 +46,7 @@ export function readSizeFromValue(value: unknown): number {
 export interface Phase { runId: string | null; role: string | null; }
 
 // Best-effort phase lookup from .traffic-one/.one.json in cwd.
-export function readPhase(cwd: string, payload: Rec | null = null): Phase {
+function readPhase(cwd: string, payload: Rec | null = null): Phase {
   if (!fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd))) {
     return { runId: null, role: null };
   }
@@ -99,27 +99,3 @@ export function logToolUse(cwd: string, payloadInput: unknown): void {
 }
 
 // Log a hook-injected context block (our own injected bytes).
-export function logHookContext(cwd: string, hookEvent: string, additionalContext: unknown): void {
-  if (!isEnabled()) return;
-  const bytes = readSizeFromValue(additionalContext);
-  if (bytes === 0) return;
-  const phase = readPhase(cwd, { hook_event_name: hookEvent });
-  const entry = {
-    ts: new Date().toISOString(),
-    runId: phase.runId,
-    role: phase.role,
-    hookEvent: hookEvent || null,
-    toolName: null,
-    inputBytes: 0,
-    outputBytes: bytes,
-    estTokens: estimateTokens(bytes),
-    action: 'hook-context-injection',
-  };
-  const dst = path.join(cwd, LOG_REL_PATH);
-  try {
-    fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.appendFileSync(dst, `${JSON.stringify(entry)}\n`, 'utf8');
-  } catch {
-    // best-effort
-  }
-}

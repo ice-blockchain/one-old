@@ -20,7 +20,7 @@ export const DEFAULT_OPENCODE_DELEGATE_ROLES: readonly string[] = [
 // `opencode_delegate` ad hoc. Each unit must name 1–2 files and concrete
 // acceptance criteria. Prose in the architect/orchestrator docs mirrors this
 // list — when they disagree, THIS file wins.
-export interface OpenCodeUnitKind {
+interface OpenCodeUnitKind {
   readonly id: string;
   readonly summary: string;
   readonly examples: readonly string[];
@@ -29,8 +29,8 @@ export interface OpenCodeUnitKind {
 export const OPENCODE_DELEGATE_UNIT_KINDS: readonly OpenCodeUnitKind[] = [
   { id: 'fixtures-seed-data', summary: 'Pure demo/seed/fixture data, no logic, no imports outside the file', examples: ['typed course/catalog fixture objects', 'SQL seed rows (no schema/RLS changes)'] },
   { id: 'pure-helpers', summary: 'Dependency-free pure functions with stated signatures', examples: ['formatting/slug/date helpers', 'small parsing utilities'] },
-  { id: 'i18n-catalogs', summary: 'Source-language catalog objects for named namespaces', examples: ['locales/en/common.ts', 'locales/en/nav.ts'] },
-  { id: 'i18n-translations-draft', summary: 'DRAFT translations of existing source catalogs to additional locales (reviewer verifies wording)', examples: ['locales/ro/common.ts from en/common.ts'] },
+  { id: 'i18n-catalogs', summary: 'Locale-parity JSON catalogs for named namespaces', examples: ['i18n/locales/en/common.json', 'i18n/locales/ro/nav.json'] },
+  { id: 'i18n-translations-draft', summary: 'DRAFT translations of existing source catalogs to additional locales (reviewer verifies wording)', examples: ['i18n/locales/ro/common.json from i18n/locales/en/common.json'] },
   { id: 'test-scaffolding', summary: 'Test skeletons and simple specs against stated contracts', examples: ['happy-path unit specs', 'SEO metadata route tests'] },
   { id: 'qa-report-sweep', summary: 'Scripted verification producing a report file, no source edits', examples: ['route/console/overflow sweep into .traffic-one/reports/qa/<runId>/', 'curl-level endpoint checks'] },
   { id: 'reviewer-input-sweeps', summary: 'Mechanical audit reports CONSUMED by the paid reviewer (never replaces its judgment)', examples: ['npm audit summary', 'unused-deps/dead-code inventory', 'TODO/FIXME/console.log inventory', 'i18n key-completeness diff', 'SEO meta presence per route'] },

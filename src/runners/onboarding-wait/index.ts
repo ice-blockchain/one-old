@@ -1,562 +1,69 @@
 // src/runners/onboarding-wait/index.ts
-// A BLOCKING wait the agent runs right after opening the setup wizard, so the build
-// resumes automatically when setup finishes — with no extra message from the user.
-// It polls the SAME completeness predicate the gate uses (computeOnboarding(cwd).done),
-// sleeping between checks (the only child process is the degraded-path /bin/sleep
-// fallback). On completion it ALSO emits the maintenance-triage routing for the
-// user's seeded original request: the agent continues that request inside the
-// SAME turn, so no UserPromptSubmit hook ever fires for it — without this, the
-// quick-fix/role/orchestrator + OpenCode-first rubric is never injected and the
-// agent implements inline (which may write a fresh runId + once-marker).
-// Compiles to dist/scripts/onboarding-wait.cjs via the build SHIM.
-//
-//   node onboarding-wait.cjs <cwd> [--timeout-ms <n>] [--interval-ms <n>]
-//
-// stdout TRAFFIC_ONE_SETUP_COMPLETE, exit 0 → setup finished; continue the build now.
-// stdout TRAFFIC_ONE_SETUP_READY,    exit 0 → bootstrap-only started the wizard; open URL, then run normal waiter.
-// stdout TRAFFIC_ONE_SETUP_BOOTSTRAP_REQUIRED, exit 2 → retry bootstrap with approved user-local state access.
-// stdout TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, exit 2 → setup finished, but OpenCode
-//   must be restarted before development continues.
-// stdout TRAFFIC_ONE_SETUP_PENDING,  exit 2 → still pending after the timeout; re-run.
+// Onboarding-wait CLI entry: main(argv) drives the flag dispatch, server
+// self-heal, wait, and terminal banner emission. The stdout token protocol
+// documented in the sibling headers is the contract with the agent.
 
-import { execFileSync } from 'child_process';
-
-import { maintenanceTriageDirective } from '../../modules/session/triage-directive';
-import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
-import { buildPreSpawnOpenCodeDirective } from '../../shared/opencode-plan-directive';
-import { AGENT_ROLES } from '../../config/performance';
-import { detectMode } from '../../shared/detection';
+import type { HostId } from '../../core/types';
 import { detectHost } from '../../shared/host';
-import { detectHostPlan } from '../../shared/host-plan';
 import { materializeProjectIfNeeded, writeOpenCodeHostAssets } from '../../shared/materialize';
-import { buildCursorSpawnModelMap } from '../../shared/materialize/cursor-spawn-map';
-import { freshCursorModels } from '../../shared/materialize/cursor-models';
-import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-command';
-import { canonicalHost } from '../../shared/model-tiers';
-import { currentAcceptableModels } from '../../shared/current-model-tiers';
-import { obj } from '../../shared/obj';
-import { pluginUseDeclined, recordPluginUseChoice } from '../../shared/state/plugin-use';
-import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
-import { onboardingSyncSessionId, onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import {
+  applyAgentTechClassification,
+  stampExistingCodebaseDetection,
+  type DetectionStampResult,
+} from '../../shared/onboarding/detection-stamp';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { askUsePluginFirst } from '../../shared/onboarding-server/flow-view';
+import {
+  TECH_CLASSIFY_REQUIRED_TOKEN,
+  TECH_INVALID_TOKEN,
+  TECH_RECORDED_TOKEN,
+  techClassifyHints,
+  techClassifyIdLists,
+  techClassifyRequiredReason,
+} from '../../shared/onboarding-server/tech-classify-setup';
+import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
+import { onboardingSetTechCommandTemplate, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import {
   isOnboardingPermissionError,
   onboardingBootstrapReason,
   onboardingStartFailureReason,
 } from '../../shared/onboarding-server/bootstrap';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
-import { agentOnboardingUrls } from '../../config/dashboard';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
-import { commitWizardLinksShown, wizardLinksShownWithin } from '../../shared/onboarding-server/wizard-links';
+import { awaitDashboardHealth } from '../../shared/onboarding-server/dashboard-health';
 import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
-import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
-import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
-import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
+import {   readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
+
 import {
-  syncOneMcpForSession,
-  syncOneMcpOnce,
-  type SessionOneMcpSync,
-} from '../../modules/session/one-mcp-sync';
-
-// 8 min keeps a single run safely under the host's ~10-min shell cap, so the agent
-// gets a clean PENDING signal (rather than a hard kill) when the user is slow.
-const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;
-const DEFAULT_INTERVAL_MS = 2000;
-// How recently another surface must have shown the wizard URL for the runner's
-// banner to be considered a duplicate in the same turn/session.
-const WIZARD_URL_TTL_MS = 15 * 60 * 1000;
-
-export type WaitOutcome = 'complete' | 'pending';
-
-function positiveIntFlag(args: readonly string[], flag: string): number | null {
-  const i = args.indexOf(flag);
-  if (i < 0) return null;
-  const n = Number.parseInt(args[i + 1] || '', 10);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-// Block the thread for `ms` without busy-spinning the CPU (no event-loop work runs
-// between polls). Falls back to /bin/sleep when SharedArrayBuffer is disabled —
-// re-polling immediately here would spin a core for the whole (up to 8-minute) wait.
-function sleepSync(ms: number): void {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms));
-  } catch {
-    try {
-      execFileSync('/bin/sleep', [String(Math.max(0, ms) / 1000)], { stdio: 'ignore' });
-    } catch {
-      // No sleep available either — re-poll immediately rather than throw.
-    }
-  }
-}
-
-function onboardingDone(cwd: string): boolean {
-  try {
-    return computeOnboarding(cwd).done;
-  } catch {
-    return false;
-  }
-}
-
-export interface WaitOptions {
-  timeoutMs?: number;
-  intervalMs?: number;
-  // Seams for tests (avoid real clock + state IO).
-  isComplete?: (cwd: string) => boolean;
-  now?: () => number;
-  sleep?: (ms: number) => void;
-}
-
-export function waitForOnboarding(cwd: string, options: WaitOptions = {}): WaitOutcome {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
-  const isComplete = options.isComplete ?? onboardingDone;
-  const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? sleepSync;
-  const deadline = now() + timeoutMs;
-  for (;;) {
-    if (isComplete(cwd)) return 'complete';
-    if (now() >= deadline) return 'pending';
-    sleep(intervalMs);
-  }
-}
-
-// The post-setup routing for the request the agent is about to continue. The
-// prompt was seeded into state.originalPrompt by the setup-required branch of
-// UserPromptSubmit; non-maintenance projects (fresh new-project builds) and
-// non-edit prompts return '' — the orchestrator flow owns those.
-export function postSetupTriage(cwd: string): string {
-  try {
-    const state = JSON.parse(JSON.stringify(readEffectiveState(cwd))) as Record<string, unknown>;
-    const prompt = typeof state.originalPrompt === 'string' ? state.originalPrompt.trim() : '';
-    if (!prompt) return '';
-    normalizeState(state, (state.mode as string) || detectMode(cwd));
-    return maintenanceTriageDirective(cwd, state, prompt, {}, detectHost());
-  } catch {
-    return '';
-  }
-}
-
-export function preSpawnOpenCodeDirective(cwd: string, host: string = detectHost()): string {
-  return buildPreSpawnOpenCodeDirective(cwd, host);
-}
-
-export function openCodeRestartWarning(): string {
-  return [
-    'TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED',
-    '',
-    'Traffic One onboarding is complete, but OpenCode must be restarted before development continues.',
-    'Restart OpenCode to load the onboarding settings and new agent definitions.',
-    'After restart, return to this project and type "continue" or "resume" to continue development.',
-  ].join('\n');
-}
-
-// Host-agnostic PRE-SPAWN run-id directive, emitted at SETUP_COMPLETE on the main thread (the
-// same stdout channel that reliably reaches the Cursor user/agent). Models STILL fabricate a
-// `date`/ISO run-id in spawn prompts despite the PreToolUse announce (observed: composer-2.5
-// typing `2026-06-23T10-30-00Z` instead of the gate-minted epoch-ms `currentRunId`). Mint/persist
-// here so the orchestrator reads the exact value BEFORE building the first spawn prompt. The
-// spawn gate's run-id deny + self-healing echo remains the backstop. Returns '' for non-new-project.
-export function preSpawnOrchestrationDirective(cwd: string, host: string = detectHost()): string {
-  return buildOrchestrationDirective(cwd, host);
-}
-
-export function preSpawnRunIdDirective(cwd: string, host: string = detectHost()): string {
-  try {
-    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: host }) as Record<string, unknown>;
-    const team = obj(state?.team);
-    if (!state || team?.mode !== 'subagents') return '';
-    const runId = ensureCurrentRunId(cwd, state);
-    if (!runId) return '';
-    const existingPolicy = readRunModelPolicy(cwd, runId);
-    if (existingPolicy && existingPolicy.host !== canonicalHost(host)) {
-      return [
-        'TRAFFIC_ONE_MODEL_POLICY_BLOCKED',
-        `Run ${runId} is frozen for ${existingPolicy.host}, not ${canonicalHost(host)}.`,
-        'Start a new parent run for the active host; do not rebase model-policy.json.',
-      ].join('\n');
-    }
-    if (canonicalHost(host) === 'cursor') {
-      const plan = detectHostPlan('cursor');
-      if (!existingPolicy && freshCursorModels(cwd, plan).length === 0) {
-        return [
-          'TRAFFIC_ONE_CURSOR_MODELS_REQUIRED',
-          `Traffic One has not frozen run ${runId}: Cursor's current Task model picker must be captured first.`,
-          'Enumerate the exact model ids offered to subagents verbatim (an id may or may not include a reasoning suffix), then run:',
-          modelCaptureCommand(cwd, 'cursor'),
-          'This writes only the project\'s local user preferences. Retry setup completion afterward; the same run id will then receive its immutable model-policy.json.',
-        ].join('\n');
-      }
-    }
-    const policy = existingPolicy || ensureRunModelPolicy(
-      cwd, runId, host, state, { ...process.env, TRAFFIC_ONE_HOST: host },
-    );
-    if (!policy) {
-      return [
-        'TRAFFIC_ONE_MODEL_POLICY_BLOCKED',
-        'Traffic One could not freeze the acknowledged Performance/model catalog for this run.',
-        'Do not spawn a child. Reopen Performance, confirm the active choice, then retry setup completion.',
-      ].join('\n');
-    }
-    if (state.mode !== 'new-project') {
-      return [
-        '[traffic-one] Immutable run model policy is ready before delegation:',
-        `- run: \`${runId}\``,
-        `- policy: \`.traffic-one/runs/${runId}/model-policy.json\` (\`${policy.policyId}\`)`,
-        '- Every spawn, replacement, and retry must use the role model recorded in that file.',
-      ].join('\n');
-    }
-    return [
-      '[traffic-one] Build run-id — use EXACTLY this value in every spawn prompt (never `date`, ISO, or UTC):',
-      `- currentRunId in .traffic-one/.one.json: \`${runId}\``,
-      `- Immutable model policy: \`.traffic-one/runs/${runId}/model-policy.json\` (\`${policy.policyId}\`)`,
-      `- Assignments: \`.traffic-one/runs/${runId}/assignments.json\``,
-      `- Digests: \`.traffic-one/digests/${runId}/<role>.md\``,
-      `- Spawn prompt line: \`Run ID: ${runId}\``,
-      'Wrong run-id in a spawn prompt is denied; copy the paths above verbatim.',
-    ].join('\n');
-  } catch {
-    return '';
-  }
-}
-
-// Windsurf/Devin-only PRE-SPAWN architect directive, emitted at SETUP_COMPLETE. Devin Local's
-// SWE-tier agent otherwise jumps straight to an off-stack scaffolder (create-next-app) instead of
-// spawning the architect. Other hosts get this flow from AGENTS.md read-routing; Windsurf gets no
-// post-setup nudge, so front-load it here. The scaffolder gate is the hard backstop; this is the
-// proactive "do this next" push so the build follows the flow smoothly. Returns '' off Windsurf,
-// for non-new-project, or on any read error.
-export function preSpawnArchitectDirective(cwd: string, host: string = detectHost()): string {
-  if (canonicalHost(host) !== 'windsurf') return '';
-  try {
-    const state = readEffectiveState(cwd) as Record<string, unknown>;
-    if (!state || state.mode !== 'new-project') return '';
-    const stack = typeof state.stack === 'string' ? state.stack : 'default';
-    const frontend = typeof state.frontend === 'string' ? state.frontend : 'react-vite';
-    return [
-      '[traffic-one] Windsurf build flow — do this FIRST, before writing or scaffolding anything:',
-      `1. This project's stack is \`${stack}\` (frontend \`${frontend}\`). Build ONLY on that stack — do NOT run`,
-      '   `create-next-app` / `create-react-app`; the React/Vite app lives under `apps/web` (Vite), per the plan.',
-      '2. Spawn the architect FIRST with `run_subagent` profile `subagent_general` (custom profiles materialized',
-      '   during onboarding are not registered until a new Devin session). The task MUST start with',
-      '   `[t1-role: senior-<role>]` (substitute the spawned role; architect here), then tell the child to read `.devin/agents/senior-architect/AGENT.md`.',
-      '   It writes',
-      '   `.traffic-one/plan.md` (PLAN_READY) + the `apps/web` monorepo scaffold. Development is BLOCKED until',
-      '   `.traffic-one/plan.md` exists (the scaffolder + plan gates deny premature/off-stack commands).',
-      '3. After PLAN_READY, spawn every role via `subagent_general`, with its `[t1-role: senior-…]` marker first',
-      '   and an instruction to read the matching `.devin/agents/<role>/AGENT.md` contract,',
-      '   then `senior-reviewer` + `senior-tester`. Build ON the plan the architect produced.',
-    ].join('\n');
-  } catch {
-    return '';
-  }
-}
-
-// Cursor-only PRE-SPAWN model directive, emitted at SETUP_COMPLETE on the main thread (the same
-// stdout channel that reliably reaches the Cursor user/agent). It front-loads everything the spawn
-// gate would otherwise deny-and-retry: (1) capture the build's model list, (2) check the chosen
-// tier models are actually offered (else ASK the user — disabled/limit), (3) the exact per-role
-// model map to pass. Resolving this BEFORE the first spawn turns the observed spawn→deny→retry
-// dance (capture deny + model-param deny) into a single clean spawn. The PreToolUse gates remain
-// the backstop. Returns '' for non-Cursor hosts, non-new-project, non-subagents levels, or on any
-// read error — so Claude/Codex and main-agent builds print nothing.
-export function preSpawnModelDirective(cwd: string, host: string = detectHost()): string {
-  if (host !== 'cursor') return '';
-  try {
-    const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: host }) as Record<string, unknown>;
-    if (!state || state.mode !== 'new-project') return '';
-    const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
-    const policy = runId ? readRunModelPolicy(cwd, runId) : null;
-    if (runId && (!policy || policy.host !== 'cursor')) {
-      return [
-        'TRAFFIC_ONE_MODEL_POLICY_BLOCKED',
-        `Traffic One cannot publish a Cursor spawn map because model-policy.json is missing or corrupt for run ${runId}.`,
-        'Start a repaired parent run; do not rebuild the map from the current plan or availableModels.',
-      ].join('\n');
-    }
-    const performance = obj(state.performance);
-    const level = policy?.performanceLevel
-      || (performance && typeof performance.level === 'string' ? performance.level : '');
-    if (!level || teamModeForLevel(level) !== 'subagents') return '';
-    const team = obj(state.team);
-    const overrides = policy
-      ? (policy.teamOverrides as Record<string, unknown>)
-      : team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
-    const modelSelections = policy
-      ? null
-      : team && obj(team.modelSelections) ? (team.modelSelections as Record<string, unknown>) : null;
-    const planCtx = { host, plan: policy?.plan || detectHostPlan(host) };
-
-    const plan = policy?.plan || detectHostPlan(host);
-    const captured = policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, plan);
-    const spawnMap = captured.length ? buildCursorSpawnModelMap(cwd, state) : {};
-
-    const rows: string[] = [];
-    const tierFallback = new Map<string, string>(); // tier family → next-eligible fallback family
-    for (const role of AGENT_ROLES) {
-      const rolePolicy = policy?.roles[role];
-      const fam = rolePolicy?.preferredModel
-        || modelForRoleHost(level, role, host, overrides, planCtx, process.env, modelSelections);
-      if (!fam) continue;
-      const hasExactCaptured = captured.length > 0
-        && Object.prototype.hasOwnProperty.call(spawnMap, role);
-      const spawnValue = hasExactCaptured
-        ? spawnMap[role]
-        : `(after step 2 — exact captured picker id for tier \`${fam}\`; never guess an uncaptured id)`;
-      rows.push(`   - ${role} → ${spawnValue}`);
-      const acceptable = rolePolicy?.acceptableModels || currentAcceptableModels(fam, host, planCtx.plan);
-      if (!tierFallback.has(fam)) tierFallback.set(fam, acceptable.slice(1)[0] || fam);
-    }
-    if (!rows.length) return '';
-    const eligibility = Array.from(tierFallback.entries())
-      .map(([fam, fb]) => `\`${fam}\`${fb && fb !== fam ? ` (fallback if unavailable: \`${fb}\`)` : ''}`)
-      .join(', ');
-
-    const gateCmd = modelGateCommand(cwd, host);
-    const captureCmd = modelCaptureCommand(cwd, host);
-    if (policy) {
-      return [
-        `[traffic-one] Cursor — immutable model policy is ready for run \`${runId}\` (\`${policy.policyId}\`).`,
-        `- Frozen picker snapshot: ${captured.map((model) => `\`${model}\``).join(', ')}.`,
-        '- Do NOT capture models again for this run. A plan, One MCP catalog, or Cursor picker change applies only to a new parent run; this policy is never rebased.',
-        `- Run \`${gateCmd}\` once. It validates availability against the frozen snapshot and prints the authoritative exact spawn map.`,
-        '- Spawn each role with the exact captured Task `model` below (never an uncaptured family guess):',
-        ...rows,
-        '- If the frozen snapshot requires an enable/fallback decision, `fallback` may continue this run on its frozen exact alternate. `enable` requires a new parent run after enabling and capturing the updated picker.',
-      ].join('\n');
-    }
-    return [
-      '[traffic-one] Cursor — resolve the subagent models BEFORE spawning the team (do this ONCE, in order; it avoids the spawn being denied and re-tried):',
-      '1. Enumerate the exact model ids your `Task` tool offers for subagents, then run the internal capture command below with those ids in place of the placeholders. It writes only local per-user/project preferences; never create `.traffic-one/cursor-models.json`:',
-      `   ${captureCmd}`,
-      `2. Run this command (it checks whether your picked tier models — ${eligibility} — are actually offered):`,
-      `   ${gateCmd}`,
-      '   If a picked model is NOT offered, STOP — show the user the unavailable-model table in chat and wait for them to reply **fallback** or **enable** before spawning. The model-gate command and spawn gate both fail closed until that reply is recorded. Re-run after they enable a model.',
-      '3. Spawn using the **spawn map** printed by step 2. Project `.cursor/agents` files are model-agnostic; pass each EXACT slug from the map in the Task `model` parameter (preview; step 2 is authoritative):',
-      ...rows,
-      '   Use only ids present verbatim in the captured picker list. An exact id may equal its family anchor (for example `gpt-5.4-mini`); never invent a suffix or pass an uncaptured family guess.',
-      '   Spawn the team only after steps 1–2. Passing the correct `model` per role on the FIRST spawn is what avoids the model-tier deny + retry.',
-    ].join('\n');
-  } catch {
-    return '';
-  }
-}
-
-// Print the live wizard URL to this command's OWN stdout before blocking. This is
-// the one channel that reliably reaches the Cursor user: the agent watches (and the
-// user sees) this command's terminal output, whereas Cursor does NOT render
-// systemMessage→user_message on user-prompt-submit and the agent often won't repost
-// the URL from the agent-facing additional_context. Host-agnostic (Claude/Codex open
-// the wizard programmatically, but the printed URL is a harmless, useful fallback
-// there too). Best-effort: no record / placeholder URL ⇒ print nothing.
-export function announceWizardUrl(
-  cwd: string,
-  write: (s: string) => void = (s) => process.stdout.write(s),
-  host: string = detectHost(),
-  sessionId?: string,
-): void {
-  try {
-    const rec = readServerRecord(cwd, process.env, host);
-    if (!rec || !rec.url || rec.url.includes(':0/')) return;
-    const urls = agentOnboardingUrls(process.env, rec.port, rec.token);
-    const link = urls.dashboardUrl || urls.localWizardUrl;
-    // Another surface (session-start banner / prompt-submit recipe / gate deny)
-    // already showed this exact link moments ago — repeating the full banner
-    // renders the URL twice in the same turn (observed on Cursor). Keep a
-    // compact wait line so the terminal output still explains the block.
-    if (wizardLinksShownWithin(cwd, rec.token, WIZARD_URL_TTL_MS, sessionId)) {
-      write('\nWaiting for Traffic One setup to complete (hosted and local links shown above; this command keeps the turn open)…\n');
-      return;
-    }
-    const localFallback = urls.localWizardUrl
-      ? `  If the hosted page is unavailable or returns 404, open the local wizard directly: ${urls.localWizardUrl}\n`
-      : '';
-    const banner = (
-      '\n════════════════════════════════════════════════════════════════\n'
-      + '  TRAFFIC ONE SETUP — open this link in your browser to finish setup:\n\n'
-      + `  ${link}\n\n`
-      + localFallback
-      + '  Enter your API key and complete the setup steps.\n'
-      + `  Setup link: ${link}\n`
-      + '  Waiting for setup to complete (this command keeps the turn open)…\n'
-      + '════════════════════════════════════════════════════════════════\n'
-    );
-    write(banner);
-    commitWizardLinksShown(cwd, rec.token, banner, urls.dashboardUrl, urls.localWizardUrl, sessionId);
-  } catch {
-    // best-effort — the wait still works without the banner
-  }
-}
-
-// Bootstrap-only is itself a user-visible URL surface. Stamp the same
-// conversation marker as prompt/session/gate output before exiting so the
-// follow-up waiter prints only its compact "links shown above" line.
-export function bootstrapReadyOutput(
-  cwd: string,
-  token: string,
-  dashboardUrl: string,
-  localWizardUrl: string,
-  sessionId?: string,
-): string {
-  const localFallback = localWizardUrl
-    ? `If the hosted page is unavailable or returns 404, open the local wizard directly: ${localWizardUrl}\n`
-    : '';
-  // The trailing line is model-facing: the links are shown to the user exactly
-  // once (observed 9c: the orchestrator re-typed the full Setup/local links in
-  // a later message from its own context, so the user saw the URL block twice).
-  const output = `TRAFFIC_ONE_SETUP_READY\nSetup link: ${dashboardUrl || localWizardUrl}\n${localFallback}`
-    + 'Show these links to the user ONCE. In later messages refer to the links already shown above — do not print the URLs again.\n';
-  commitWizardLinksShown(cwd, token, output, dashboardUrl, localWizardUrl, sessionId);
-  return output;
-}
-
-// Cursor's Browser editor is not a script-opened browser window, so page JavaScript
-// cannot close its tab. Cursor exposes that operation to the current agent via
-// browser_tabs — but only when the Browser feature is active, and only when setup
-// actually ran in the in-app Browser (the dashboard flow opens an EXTERNAL browser
-// that browser_tabs cannot see). Emit a tolerant sequence at SETUP_COMPLETE so
-// cleanup is automatic when possible and silently skipped when it is not (A5:
-// the hard 5-step directive sent agents hunting for a tool that did not exist).
-export function cursorSetupCloseDirective(wizardUrl: string, host: string = detectHost()): string {
-  if (host !== 'cursor') return '';
-  const primary = wizardUrl && !wizardUrl.includes(':0/')
-    ? `the tab whose URL is exactly \`${wizardUrl}\``
-    : 'the tab titled "Traffic One — Setup" on 127.0.0.1';
-  return [
-    '[traffic-one] Cursor — if the setup tab is open in Cursor\'s in-app Browser, close it before the next build command:',
-    `1. If a \`browser_tabs\` tool is available in this session, call it with \`{"action":"list"}\`, find ${primary} (fall back to the tab titled "Traffic One — Setup" on 127.0.0.1), close it with \`{"action":"close","index":<matching index>}\`, and re-list once to verify.`,
-    '2. If no `browser_tabs` tool exists, or no matching tab is listed (setup ran in the external browser), skip this cleanup silently — do not hunt for other tools and do not ask the user to close anything.',
-    '3. Continue the original request immediately.',
-  ].join('\n');
-}
-
-// Bounded grace: `computeOnboarding().done` flips on the LAST /answer, which is
-// seconds BEFORE the wizard tab finishes (`/verify-toolchain` → `/complete` →
-// done view). `/complete` shuts the server down and clears its record, so a
-// short poll on the record lets the tab settle on its final URL/title before
-// the agent is told to close it — the exact-URL `browser_tabs` match then
-// succeeds. Capped so a tab that never posts /complete (closed early, network
-// error) cannot stall the released build.
-const COMPLETION_ACK_GRACE_MS = 4000;
-const COMPLETION_ACK_POLL_MS = 250;
-
-export function awaitWizardCompletionAck(cwd: string, host: string, graceMs: number = COMPLETION_ACK_GRACE_MS): void {
-  const deadline = Date.now() + graceMs;
-  while (Date.now() < deadline) {
-    try {
-      if (!readServerRecord(cwd, process.env, host)) return; // /complete landed — server gone
-    } catch {
-      return;
-    }
-    sleepSync(COMPLETION_ACK_POLL_MS);
-  }
-}
-
-// The --decline output: records the durable opt-out and, when a wizard tab is
-// already open (a live server record exists — the flag-off flow where the link
-// was shown before the user said no), also tells the Cursor agent to close it.
-// The URL is read BEFORE recording so the exact-URL tab match still works.
-export function declineOutput(cwd: string, host: string): string {
-  let openWizardUrl = '';
-  try {
-    const rec = readServerRecord(cwd, process.env, host);
-    if (rec?.url && !rec.url.includes(':0/')) openWizardUrl = rec.url;
-  } catch {
-    // best-effort — the decline itself never depends on the record
-  }
-  recordPluginUseChoice(cwd, false, 'command');
-  let out = 'TRAFFIC_ONE_DISABLED\n'
-    + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions. "
-    + 'It stays silent here until the user explicitly asks for Traffic One again.\n';
-  if (openWizardUrl) {
-    const close = cursorSetupCloseDirective(openWizardUrl, host);
-    if (close) out += `\n${close}\n`;
-  }
-  return out;
-}
-
-// The `--use` yes path: record the durable per-project opt-in, then seed the
-// request that triggered the ask-first question (`--seed-prompt=…`). In that
-// flow NOTHING was written before this recorded yes — this is the FIRST write
-// that may create the project's .traffic-one folder, exactly at decision time.
-// The seed feeds the wizard's stack derivation and the post-setup triage.
-export function applyUseChoice(
-  cwd: string,
-  argv: readonly string[],
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  recordPluginUseChoice(cwd, true, 'command', env);
-  const seedArg = argv.find((a) => a.startsWith('--seed-prompt='));
-  if (seedArg) seedOriginalPrompt(cwd, seedArg.slice('--seed-prompt='.length));
-}
-
-function syncSessionFromArgv(argv: readonly string[]): string {
-  const flag = argv.find((arg) => arg.startsWith('--sync-session='));
-  return onboardingSyncSessionId(flag?.slice('--sync-session='.length));
-}
-
-export function syncOneMcpBeforeOnboarding(
-  cwd: string,
-  host: unknown,
-  argv: readonly string[],
-  sync: SessionOneMcpSync = syncOneMcpForSession,
-  env: NodeJS.ProcessEnv = process.env,
-  featureEnabled?: boolean,
-): boolean {
-  return syncOneMcpOnce(cwd, host, syncSessionFromArgv(argv), env, sync, featureEnabled);
-}
-
-// Reconsideration follows an explicit user request to enable Traffic One, so it
-// is exact opt-in—not a return to an undecided state. Persist that consent before
-// any public sync; the normal setup flow starts only after this helper returns.
-export function applyReconsiderChoice(
-  cwd: string,
-  host: unknown,
-  sync: SessionOneMcpSync = syncOneMcpForSession,
-  syncSession?: string,
-  env: NodeJS.ProcessEnv = process.env,
-  featureEnabled?: boolean,
-): void {
-  recordPluginUseChoice(cwd, true, 'reconsider', env);
-  syncOneMcpOnce(cwd, host, onboardingSyncSessionId(syncSession), env, sync, featureEnabled);
-}
-
-interface BeginOnboardingOptions {
-  sync?: SessionOneMcpSync;
-  env?: NodeJS.ProcessEnv;
-  featureEnabled?: boolean;
-  isDone?: (cwd: string) => boolean;
-}
-
-// The single entry to every path that is about to read wizard state or
-// start/reuse its server. Consent mutations happen first; public config sync
-// happens next; only then may computeOnboarding run. A normal waiter and
-// --bootstrap-only therefore cannot render stale bundled tiers merely because
-// SessionStart was skipped or ran in another process.
-export function beginOnboardingAttempt(
-  cwd: string,
-  host: unknown,
-  argv: readonly string[],
-  options: BeginOnboardingOptions = {},
-): boolean {
-  const sync = options.sync || syncOneMcpForSession;
-  const env = options.env || process.env;
-  const syncSession = syncSessionFromArgv(argv);
-  const reconsider = argv.includes('--reconsider');
-
-  if (reconsider) {
-    applyReconsiderChoice(cwd, host, sync, syncSession, env, options.featureEnabled);
-  }
-  if (argv.includes('--use')) {
-    applyUseChoice(cwd, argv, env);
-  }
-  // Reconsider already synchronized immediately after persisting consent. All
-  // other parent paths converge here, including normal wait and bootstrap-only.
-  if (!reconsider) syncOneMcpBeforeOnboarding(cwd, host, argv, sync, env, options.featureEnabled);
-
-  return (options.isDone || onboardingDone)(cwd);
-}
+  positiveIntFlag,
+  postSetupTriage,
+  waitForOnboarding,
+} from './wait-loop';
+import {
+  openCodeRestartWarning,
+  preSpawnArchitectDirective,
+  preSpawnOpenCodeDirective,
+  preSpawnOrchestrationDirective,
+  preSpawnRunIdBlocksSetup,
+  preSpawnRunIdDirective,
+} from './pre-spawn-directives';
+import {
+  preSpawnModelDirective,
+} from './pre-spawn-model';
+import {
+  announceWizardUrl,
+  awaitWizardCompletionAck,
+  bootstrapReadyOutput,
+  declineOutput,
+  rearmSetupLinkNudge,
+} from './wizard-output';
+import {
+  beginOnboardingAttempt,
+  consentPhaseFailureOutput,
+  syncSessionFromArgv,
+} from './consent';
 
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
@@ -570,12 +77,39 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     process.exit(0);
   }
   const reconsider = argv.includes('--reconsider');
-  const alreadyDone = beginOnboardingAttempt(cwd, host, argv);
+  let alreadyDone = false;
+  try {
+    alreadyDone = beginOnboardingAttempt(cwd, host, argv);
+  } catch (error) {
+    process.stdout.write(consentPhaseFailureOutput(cwd, host, argv, error));
+    process.exit(2);
+  }
+  // Stamp an existing codebase's detected identity as soon as consent is on record.
+  // SessionStart cannot: it writes nothing while the use-plugin question is pending,
+  // so a project onboarded in ONE sitting used to keep a bare seed `.one.json` — which
+  // makes materializeProjectIfNeeded bail forever, so the wizard completes and the
+  // build is still blocked on "materialization not complete". Deliberately NOT gated
+  // on `!alreadyDone`: that is what repairs a project already stuck in the seed state.
+  // An undetectable repo is left untouched; its partial evidence feeds the
+  // agent-classification hints below.
+  const stampResult = stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
+  if (argv.includes('--set-tech')) {
+    runSetTech(cwd, host, argv);
+  }
   if (reconsider) {
     process.stdout.write(
       'TRAFFIC_ONE_RECONSIDER\n'
       + 'Traffic One is enabled for this project again. Starting setup now.\n',
     );
+  }
+  // Setup pending on the AGENT, not the user: the deterministic tables derived no
+  // stack, so classification must land before any wizard/link ceremony. Emitted
+  // for every non-set-tech invocation so bootstrap and waiter alike hand control
+  // back to the agent instead of printing a premature link or SETUP_COMPLETE.
+  // Never pre-consent: while ask-first is pending the question owns the turn.
+  if (!alreadyDone && !pluginUseDeclined(cwd) && !usePluginQuestionPending(cwd)
+    && computeOnboarding(cwd).step === 'tech-detect') {
+    emitTechClassifyRequired(cwd, host, argv, stampResult);
   }
   // "Yes, use Traffic One here" — record the answer, then continue straight into
   // the normal wait behavior below (start wizard, print the link, block). With
@@ -593,6 +127,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   let ensuredLocalUrl = '';
   let ensuredDashboardUrl = '';
   let ensuredToken = '';
+  let launchedServer = false;
   try {
     if (!alreadyDone) {
       const server = ensureOnboardingServer(cwd, { host });
@@ -600,6 +135,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
         ensuredLocalUrl = server.localWizardUrl;
         ensuredDashboardUrl = server.dashboardUrl;
         ensuredToken = server.token;
+        launchedServer = server.started;
       }
     }
   } catch (error) {
@@ -624,28 +160,33 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     // permission classifier may not recognize; pre-allow it while we are still
     // inside this user-approved shell boundary.
     ensureOnboardingWaitPermission(cwd, host);
+    // This prints the FIRST link the user ever sees, so it is the one surface worth
+    // briefly waiting on the dashboard verdict for — otherwise the probe is always
+    // still in flight here and the first message needlessly carries two URLs.
+    // Bounded, and only when THIS invocation started the server: a reused server has
+    // already written its verdict, and where no server process exists (NO_SPAWN)
+    // nothing will ever write one, so waiting would just burn the timeout.
+    if (launchedServer) awaitDashboardHealth(cwd, process.env, host);
     // `Setup link:` must carry the traffic.io dashboard deep link — the same URL
     // every other setup surface shows (observed on OpenCode: printing the raw
     // loopback URL here made the agent repost 127.0.0.1 instead of traffic.io).
-    // The loopback wizard stays named as the fallback for a 404ing dashboard (A4).
     process.stdout.write(bootstrapReadyOutput(
       cwd,
       ensuredToken,
       ensuredDashboardUrl,
       ensuredLocalUrl,
-      syncSessionFromArgv(argv),
+      host,
     ));
     process.exit(0);
   }
-  // Windsurf opens the wizard before the prompt and runs this waiter inside the
-  // first mutating hook. Suppress the terminal-style URL banner there: it is not
-  // clickable in Devin's tool card and the browser is already open.
+  // A live server record means the wizard is up, so a launch error here is stale
+  // and must not be reported as a hard failure.
   let wizardUrl = '';
   try {
     const record = readServerRecord(cwd, process.env, host);
     if (record?.url && !record.url.includes(':0/')) wizardUrl = record.url;
   } catch {
-    // best-effort — the close directive can still match the setup title + host
+    // best-effort — a missing record just means we fall through to the error path
   }
   if (launchError && !wizardUrl && !alreadyDone) {
     const reason = isOnboardingPermissionError(launchError)
@@ -668,21 +209,18 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     intervalMs: positiveIntFlag(argv, '--interval-ms') ?? undefined,
   });
   if (outcome === 'complete') {
-    // Let the wizard tab finish its /complete handshake (bounded) so the close
-    // directive below targets a settled tab and the user sees the done view.
+    // Let the wizard finish its /complete handshake (bounded) so its shutdown lands
+    // before materialization below, and the user sees the done view.
     if (host === 'cursor' && !alreadyDone) awaitWizardCompletionAck(cwd, host);
     // The user declined Traffic One through the pre-onboarding plugin-use choice:
     // unblock the build with NO materialization, triage, or orchestration
-    // directives — the project
-    // keeps no .traffic-one folder and the hooks stand down from here on. The
-    // Cursor tab-close directive still applies (the wizard tab is open).
+    // directives — the project keeps no .traffic-one folder and the hooks stand
+    // down from here on.
     if (pluginUseDeclined(cwd)) {
       process.stdout.write(
         'TRAFFIC_ONE_DISABLED\n'
         + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions.\n",
       );
-      const declinedClose = cursorSetupCloseDirective(wizardUrl, host);
-      if (declinedClose) process.stdout.write(`\n${declinedClose}\n`);
       process.exit(0);
     }
     // Converge project materialization NOW, before the agent resumes and spawns its
@@ -694,6 +232,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     // Materializing here makes the bundle ready at SETUP_COMPLETE, so the first spawn
     // is clean. Idempotent + best-effort (the gate still self-heals if this is skipped).
     try {
+      // Idempotent re-assert: the process that reaches completion may not be the one
+      // that stamped at consent time (the `--use --bootstrap-only` process exits
+      // early), and both materialize and postSetupTriage below need `stack`/`mode`.
+      stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
       materializeProjectIfNeeded(cwd, { trigger: 'onboarding-wait setup-complete (pre-spawn materialize)' });
       if (host === 'opencode') writeOpenCodeHostAssets(cwd, readEffectiveState(cwd), []);
     } catch {
@@ -704,20 +246,22 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       process.exit(2);
     }
     process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
-    const closeDirective = cursorSetupCloseDirective(wizardUrl, host);
-    if (closeDirective) {
-      process.stdout.write(`\n${closeDirective}\n`);
-    }
     const triage = postSetupTriage(cwd);
-    if (triage) {
+    if (triage && preSpawnRunIdBlocksSetup(triage)) {
+      // Triage refused to route: the run is blocked. Print the verdict BARE —
+      // wrapping it in "route the original request per this triage" is the same
+      // contradiction (route this / do not spawn) that this emitter and
+      // UserPromptSubmit were both producing. The run-id directive below repeats
+      // the verdict from its own surface and exits non-zero.
+      process.stdout.write(`\n${triage}\n`);
+    } else if (triage) {
       process.stdout.write(`\n[traffic-one] Route the original request per this triage BEFORE implementing:\n${triage}\n`);
     }
     // Front-load the gate-minted run-id so the orchestrator never fabricates an ISO id in spawn prompts.
     const runIdDirective = preSpawnRunIdDirective(cwd, host);
     if (runIdDirective) {
       process.stdout.write(`\n${runIdDirective}\n`);
-      if (runIdDirective.startsWith('TRAFFIC_ONE_MODEL_POLICY_BLOCKED')
-        || runIdDirective.startsWith('TRAFFIC_ONE_CURSOR_MODELS_REQUIRED')) process.exit(2);
+      if (preSpawnRunIdBlocksSetup(runIdDirective)) process.exit(2);
     }
     const orchestrationDirective = preSpawnOrchestrationDirective(cwd, host);
     if (orchestrationDirective) {
@@ -730,7 +274,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       process.stdout.write(`\n${architectDirective}\n`);
     }
     // Cursor: front-load model capture + eligibility + the per-role model map so the team spawns
-    // ONCE (no capture/model-tier deny + retry). Backed by the PreToolUse gates if not followed.
+    // ONCE (no capture/model-tier deny + retry). Claude: front-load the per-role
+    // subagent_type+model spawn map from the frozen policy for the same reason
+    // (observed 1cl/2cl: the first model-less spawn was denied and retried).
+    // Backed by the PreToolUse gates if not followed.
     const modelDirective = preSpawnModelDirective(cwd);
     if (modelDirective) {
       process.stdout.write(`\n${modelDirective}\n`);
@@ -741,7 +288,119 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     }
     process.exit(0);
   }
+  if (outcome === 'tech-classify') {
+    // The user finished their part (e.g. api-key) and setup now waits on the
+    // AGENT's classification — hand control back with the recipe instead of
+    // burning the rest of the timeout.
+    emitTechClassifyRequired(cwd, host, argv, stampResult);
+  }
+  rearmSetupLinkNudge(cwd, host);
   process.stdout.write('TRAFFIC_ONE_SETUP_PENDING\n');
+  process.exit(2);
+}
+
+// The agent's `--set-tech` submission: validate + stamp through the shared
+// writer (deterministic-first — a stack committed meanwhile wins), materialize,
+// then continue straight into the normal bootstrap so ONE command takes the
+// agent from "classified" to "here is the Setup link".
+function runSetTech(cwd: string, host: HostId, argv: readonly string[]): never {
+  const flag = (name: string): string | undefined => {
+    const prefix = `--${name}=`;
+    const arg = argv.find((a) => a.startsWith(prefix));
+    return arg ? arg.slice(prefix.length) : undefined;
+  };
+  const result = applyAgentTechClassification(cwd, {
+    frontend: flag('frontend') || '',
+    backend: flag('backend') || '',
+    mobile: flag('mobile'),
+    realtime: flag('realtime'),
+    evidence: flag('evidence'),
+  }, { requireRecordedConsent: askUsePluginFirst(process.env) });
+
+  if (!result.ok) {
+    if (result.reason === 'declined') {
+      process.stdout.write(declineOutput(cwd, host));
+      process.exit(0);
+    }
+    if (result.reason === 'consent-missing') {
+      process.stdout.write(`${TECH_INVALID_TOKEN}\n\nThe use-plugin choice is not recorded yet — ask the user first:\n\n${usePluginQuestion(cwd, host, undefined, syncSessionFromArgv(argv))}\n`);
+      process.exit(2);
+    }
+    const ids = techClassifyIdLists();
+    const detail = result.reason === 'invalid-submission'
+      ? (result.issues || []).map((issue) => `- ${issue}`).join('\n')
+      : `- classification rejected: ${result.reason}${result.reason === 'belongs-to-enclosing-project' || result.reason === 'workspace-sub-package'
+        ? ' — run it against the project ROOT directory instead of this subdirectory'
+        : ''}`;
+    process.stdout.write([
+      TECH_INVALID_TOKEN,
+      '',
+      detail,
+      '',
+      `Re-run with valid ids — frontend: ${ids.frontend} · backend: ${ids.backend} · mobile: ${ids.mobile} · realtime: none|light. Template:`,
+      onboardingSetTechCommandTemplate(cwd, host, syncSessionFromArgv(argv)),
+      '',
+    ].join('\n'));
+    process.exit(2);
+  }
+
+  // Assets ready before the wizard completes (the stamp set onboardingComplete,
+  // so convergence runs; idempotent + best-effort like the completion path).
+  try {
+    materializeProjectIfNeeded(cwd, { trigger: 'onboarding-wait set-tech (post-classification materialize)' });
+  } catch {
+    // best-effort; the PreToolUse gate's materialize-then-retry remains the backstop
+  }
+  const note = result.alreadyClassified
+    ? ' (a committed stack already existed — your submission was not needed and did not overwrite it)'
+    : '';
+  process.stdout.write(`${TECH_RECORDED_TOKEN}\nstack=${result.stack}${note}\n`);
+  bootstrapAndEmitReady(cwd, host);
+}
+
+// Ensure the wizard server and print the SETUP_READY link (or the terminal
+// bootstrap failure) — the tail of the `--bootstrap-only` contract, reused by
+// the set-tech success path.
+function bootstrapAndEmitReady(cwd: string, host: HostId): never {
+  let launchError: unknown;
+  let localUrl = '';
+  let dashboardUrl = '';
+  let token = '';
+  let launched = false;
+  try {
+    const server = ensureOnboardingServer(cwd, { host });
+    if (server.localWizardUrl && !server.localWizardUrl.includes(':0/')) {
+      localUrl = server.localWizardUrl;
+      dashboardUrl = server.dashboardUrl;
+      token = server.token;
+      launched = server.started;
+    }
+  } catch (error) {
+    launchError = error;
+  }
+  if (launchError || !localUrl) {
+    const failure = launchError || Object.assign(new Error('wizard did not publish a live URL'), { code: 'START_FAILED' });
+    process.stdout.write(`TRAFFIC_ONE_SETUP_BOOTSTRAP_FAILED\n\n${onboardingStartFailureReason(failure, host)}\n`);
+    process.exit(2);
+  }
+  ensureOnboardingWaitPermission(cwd, host);
+  if (launched) awaitDashboardHealth(cwd, process.env, host);
+  process.stdout.write(bootstrapReadyOutput(cwd, token, dashboardUrl, localUrl, host));
+  process.exit(0);
+}
+
+// Setup is pending on the agent's classification: print the token + the full
+// recipe (command template + partial-detection hints) and exit 2 so the agent
+// acts and re-runs — mirrors the SETUP_PENDING re-run contract.
+function emitTechClassifyRequired(
+  cwd: string,
+  host: HostId,
+  argv: readonly string[],
+  stampResult: DetectionStampResult,
+): never {
+  const template = onboardingSetTechCommandTemplate(cwd, host, syncSessionFromArgv(argv));
+  const hints = techClassifyHints(stampResult.detected ?? null);
+  process.stdout.write(`${TECH_CLASSIFY_REQUIRED_TOKEN}\n\n${techClassifyRequiredReason(template, hints)}\n`);
   process.exit(2);
 }
 
@@ -750,7 +409,38 @@ if (require.main === module) {
     main();
   } catch {
     // Never hang or crash loudly — report pending so the agent re-runs.
+    try {
+      const argv = process.argv.slice(2);
+      const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
+      rearmSetupLinkNudge(cwd, detectHost(process.env, argv));
+    } catch {
+      // best effort — the pending exit below is the contract
+    }
     process.stdout.write('TRAFFIC_ONE_SETUP_PENDING\n');
     process.exit(2);
   }
 }
+
+export { postSetupTriage, waitForOnboarding, type WaitOptions, type WaitOutcome } from './wait-loop';
+export {
+  openCodeRestartWarning,
+  preSpawnArchitectDirective,
+  preSpawnOpenCodeDirective,
+  preSpawnOrchestrationDirective,
+  preSpawnRunIdBlocksSetup,
+  preSpawnRunIdDirective,
+} from './pre-spawn-directives';
+export { preSpawnModelDirective } from './pre-spawn-model';
+export {
+  announceWizardUrl,
+  applyUseChoice,
+  awaitWizardCompletionAck,
+  bootstrapReadyOutput,
+  declineOutput,
+  rearmSetupLinkNudge,
+} from './wizard-output';
+export {
+  applyReconsiderChoice,
+  beginOnboardingAttempt,
+  consentPhaseFailureOutput,
+} from './consent';

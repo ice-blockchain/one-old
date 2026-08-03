@@ -4,7 +4,8 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { sweepTrafficOneRetention } from '../retention';
+import { pruneTrafficOneBackups, sweepAfterTerminalSettlement, sweepTrafficOneRetention } from '../retention';
+import { reportBaseName } from '../../runners/lighthouse/lib';
 
 function withProject(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-retention-'));
@@ -19,6 +20,36 @@ function withProject(fn: (dir: string) => void): void {
 function mkdir(dir: string, rel: string): void {
   fs.mkdirSync(path.join(dir, rel), { recursive: true });
 }
+
+test('default policy is 3 runs / 1 backup / 3-day TTL / 1 Lighthouse pair per route (12co audit)', () => {
+  withProject((dir) => {
+    // No retention.json → the defaults apply.
+    const result = sweepTrafficOneRetention(dir, { dryRun: true });
+    assert.deepEqual(result.policy, {
+      keepRuns: 3,
+      backupKeep: 1,
+      orphanTtlDays: 3,
+      lighthouseKeepPerRoute: 1,
+    });
+  });
+});
+
+test('sweepAfterTerminalSettlement sweeps for real but never touches the current run', () => {
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ currentRunId: '1004' }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'retention.json'), JSON.stringify({ keepRuns: 1, backupKeep: 1, orphanTtlDays: 3650 }), 'utf8');
+    for (const id of ['1001', '1002', '1003', '1004']) {
+      mkdir(dir, path.join('.traffic-one', 'digests', id));
+    }
+    sweepAfterTerminalSettlement(dir);
+    // keepRuns:1 → current (1004) + the newest non-current window survive; the rest are removed for real.
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1004')), true, 'current run is protected');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1001')), false, 'superseded run is reclaimed');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1002')), false, 'superseded run is reclaimed');
+  });
+  // Never throws, even on a directory that is not a project at all.
+  sweepAfterTerminalSettlement(path.join(os.tmpdir(), 't1-retention-does-not-exist'));
+});
 
 test('sweepTrafficOneRetention dry-run preserves current run and durable memory', () => {
   withProject((dir) => {
@@ -48,6 +79,30 @@ test('sweepTrafficOneRetention dry-run preserves current run and durable memory'
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1001')), false);
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', '1004')), true);
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'product.md')), true);
+  });
+});
+
+test('sweepTrafficOneRetention TTL-sweeps per-run debug logs inside retained runs', () => {
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ currentRunId: '2001' }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'retention.json'), JSON.stringify({ keepRuns: 5, backupKeep: 3, orphanTtlDays: 7 }), 'utf8');
+    const debugDir = path.join(dir, '.traffic-one', 'runs', '2001', 'debug');
+    fs.mkdirSync(debugDir, { recursive: true });
+    const stale = path.join(debugDir, 'claim-capture.jsonl');
+    const fresh = path.join(debugDir, 'plan-guard-deny.jsonl');
+    const sibling = path.join(dir, '.traffic-one', 'runs', '2001', 'run.json');
+    fs.writeFileSync(stale, '{"old":true}\n', 'utf8');
+    fs.writeFileSync(fresh, '{"new":true}\n', 'utf8');
+    fs.writeFileSync(sibling, '{}', 'utf8');
+    const old = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(stale, old / 1000, old / 1000);
+    fs.utimesSync(sibling, old / 1000, old / 1000);
+
+    const applied = sweepTrafficOneRetention(dir, { dryRun: false });
+    assert.ok(applied.removed >= 1);
+    assert.equal(fs.existsSync(stale), false, 'stale run debug log swept despite retained run');
+    assert.equal(fs.existsSync(fresh), true, 'fresh run debug log kept');
+    assert.equal(fs.existsSync(sibling), true, 'non-debug run artifacts untouched by the TTL rule');
   });
 });
 
@@ -92,5 +147,146 @@ test('sweepTrafficOneRetention never deletes an independent nested onboarded pro
     assert.equal(fs.existsSync(path.join(nested, '.one.json')), true, 'independent nested .one.json preserved');
     assert.equal(fs.existsSync(path.join(nested, 'runs', '9001')), true, 'its runs preserved');
     assert.equal(fs.existsSync(path.join(nested, 'product.md')), true, 'its durable memory preserved');
+  });
+});
+
+// Membership heal + its data-loss fence. Stray state inside a real repo (observed:
+// mercury/strategies got a full new-project state inside a Go repo) must become a
+// cleanup candidate, while every genuine repo root must be structurally unsweepable.
+test('sweepTrafficOneRetention heals stray state inside a repo but never touches a repo root', () => {
+  const container = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-retention-member-')));
+  const memoryDir = '.traffic' + '-one';
+  try {
+    // Two independently-onboarded sibling repos under a marker-less container.
+    const repos = ['mercury', 'agora'].map((name) => {
+      const repo = path.join(container, name);
+      fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'go.mod'), `module ${name}\n`, 'utf8');
+      fs.mkdirSync(path.join(repo, memoryDir), { recursive: true });
+      fs.writeFileSync(path.join(repo, memoryDir, '.one.json'),
+        JSON.stringify({ mode: 'existing-codebase', stack: 'custom-backend' }), 'utf8');
+      return repo;
+    });
+    // A stray root inside one of them: owns no marker, belongs to `mercury`.
+    const stray = path.join(repos[0]!, 'strategies', memoryDir);
+    fs.mkdirSync(path.join(stray, 'runs', '9001'), { recursive: true });
+    fs.writeFileSync(path.join(stray, '.one.json'), JSON.stringify({ mode: 'new-project' }), 'utf8');
+
+    const dry = sweepTrafficOneRetention(container, { dryRun: true });
+    assert.ok(dry.actions.some((a) => a.path === stray), 'stray state inside a repo IS a candidate');
+    for (const repo of repos) {
+      const own = path.join(repo, memoryDir);
+      assert.ok(!dry.actions.some((a) => a.path === own),
+        `${path.basename(repo)} owns .git — it must never be a candidate`);
+    }
+
+    sweepTrafficOneRetention(container, { dryRun: false });
+    assert.equal(fs.existsSync(stray), false, 'the stray root is healed away');
+    for (const repo of repos) {
+      assert.equal(fs.existsSync(path.join(repo, memoryDir, '.one.json')), true,
+        `${path.basename(repo)} state preserved`);
+    }
+  } finally {
+    fs.rmSync(container, { recursive: true, force: true });
+  }
+});
+
+// A gitnexus bootstrap can run many times in one session and each run snapshots the
+// same unchanged files; the SessionStart sweep is far too late to cap that.
+test('pruneTrafficOneBackups enforces the cap at write time', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    fs.writeFileSync(path.join(dir, t1, 'retention.json'), JSON.stringify({ keepRuns: 2, backupKeep: 2, orphanTtlDays: 0 }), 'utf8');
+    const stamps = ['2026-07-26T12-00-00Z', '2026-07-26T12-01-00Z', '2026-07-26T12-02-00Z', '2026-07-26T12-03-00Z'];
+    for (const name of stamps) mkdir(dir, path.join(t1, 'backups', name));
+
+    const removed = pruneTrafficOneBackups(dir, stamps[3]);
+    const left = fs.readdirSync(path.join(dir, t1, 'backups')).sort();
+    assert.equal(removed, 2);
+    assert.deepEqual(left, [stamps[2], stamps[3]], 'the newest `backupKeep` snapshots survive');
+  });
+});
+
+test('pruneTrafficOneBackups never drops the snapshot the caller may restore from', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    fs.writeFileSync(path.join(dir, t1, 'retention.json'), JSON.stringify({ keepRuns: 2, backupKeep: 0, orphanTtlDays: 0 }), 'utf8');
+    for (const name of ['001', '002']) mkdir(dir, path.join(t1, 'backups', name));
+
+    // backupKeep: 0 must still leave the restore path usable.
+    pruneTrafficOneBackups(dir, '001');
+    const left = fs.readdirSync(path.join(dir, t1, 'backups')).sort();
+    assert.ok(left.includes('001'), 'the live snapshot is never a prune candidate');
+    assert.ok(left.length >= 1);
+  });
+});
+
+// The per-route Lighthouse rule had NO coverage at all, which is how it shipped
+// correct but effectively dead: its only trigger was SessionStart, so a long
+// build session accumulated six report pairs for one route (~14.7 MB reports
+// dir, observed 10co) and nothing ever noticed.
+function lighthouseReport(dir: string, t1: string, route: string, stamp: string): void {
+  const base = path.join(dir, t1, 'reports', 'lighthouse');
+  fs.mkdirSync(base, { recursive: true });
+  for (const ext of ['report.json', 'report.html']) {
+    fs.writeFileSync(path.join(base, `${route}-${stamp}.${ext}`), 'x', 'utf8');
+  }
+}
+
+test('lighthouse reports are capped per ROUTE, keeping the newest pairs', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    fs.writeFileSync(
+      path.join(dir, t1, 'retention.json'),
+      JSON.stringify({ lighthouseKeepPerRoute: 2, orphanTtlDays: 3650 }),
+      'utf8',
+    );
+    // Synthetic names must match what the runner actually writes; the shape is
+    // pinned against reportBaseName so a rename there breaks this test.
+    const shape = reportBaseName('http://127.0.0.1:4173/');
+    assert.match(shape, /^home-\d{4}-\d{2}-\d{2}T[\d-]+Z$/, 'reportBaseName shape changed');
+
+    const homeStamps = [
+      '2026-07-30T12-15-01-470Z', '2026-07-30T12-16-24-888Z', '2026-07-30T12-56-15-024Z',
+      '2026-07-30T13-06-29-955Z', '2026-07-30T13-28-07-823Z', '2026-07-30T13-34-52-417Z',
+    ];
+    for (const stamp of homeStamps) lighthouseReport(dir, t1, 'home', stamp);
+    lighthouseReport(dir, t1, 'courses', '2026-07-30T12-20-00-000Z');
+    lighthouseReport(dir, t1, 'courses', '2026-07-30T12-40-00-000Z');
+    assert.equal(fs.readdirSync(path.join(dir, t1, 'reports', 'lighthouse')).length, 16);
+
+    sweepTrafficOneRetention(dir, { dryRun: false });
+
+    const left = fs.readdirSync(path.join(dir, t1, 'reports', 'lighthouse')).sort();
+    // Two pairs per route, and the survivors are the NEWEST — a run that keeps
+    // measuring must not lose the report it just produced.
+    assert.equal(left.filter((name) => name.startsWith('home-')).length, 4);
+    assert.equal(left.filter((name) => name.startsWith('courses-')).length, 4);
+    for (const stamp of homeStamps.slice(-2)) {
+      assert.ok(left.includes(`home-${stamp}.report.json`), `newest home ${stamp} must survive`);
+      assert.ok(left.includes(`home-${stamp}.report.html`), `newest home ${stamp} must survive`);
+    }
+    for (const stamp of homeStamps.slice(0, 4)) {
+      assert.ok(!left.includes(`home-${stamp}.report.json`), `superseded home ${stamp} must go`);
+    }
+  });
+});
+
+test('a dry-run sweep never deletes a lighthouse report', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    fs.writeFileSync(
+      path.join(dir, t1, 'retention.json'),
+      JSON.stringify({ lighthouseKeepPerRoute: 1, orphanTtlDays: 3650 }),
+      'utf8',
+    );
+    for (const stamp of ['2026-07-30T12-15-01-470Z', '2026-07-30T12-16-24-888Z']) {
+      lighthouseReport(dir, t1, 'home', stamp);
+    }
+    const before = fs.readdirSync(path.join(dir, t1, 'reports', 'lighthouse')).sort();
+    const result = sweepTrafficOneRetention(dir);
+    assert.equal(result.removed, 0);
+    assert.ok(result.actions.length > 0, 'the superseded pair is still reported as a candidate');
+    assert.deepEqual(fs.readdirSync(path.join(dir, t1, 'reports', 'lighthouse')).sort(), before);
   });
 });

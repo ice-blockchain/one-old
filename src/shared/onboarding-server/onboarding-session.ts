@@ -19,7 +19,7 @@ import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
 
-export const ONBOARDING_MAIN_SESSIONS_REL = path.join('.traffic-one', '.onboarding-main-sessions.json');
+const ONBOARDING_MAIN_SESSIONS_REL = path.join('.traffic-one', '.onboarding-main-sessions.json');
 
 // Recorded main sessions older than this are ignored. This store exists ONLY to recognize a
 // subagent spawned during the brief PRE-onboarding window (the orchestrator→subagent gap is

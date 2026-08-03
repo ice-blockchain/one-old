@@ -37,10 +37,11 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   assert.deepEqual(idsFor('check-onboarding-gate'), ['onboarding-gate', 'session.auth', 'session.authoring-guard', 'session.workspace-boundary']);
   assert.deepEqual(idsFor('check-agent-model'), ['agent-model.spawn', 'session.auth', 'session.workspace-boundary']);
   assert.deepEqual(idsFor('check-plan-write'), ['plan-guard.write', 'session.auth', 'session.authoring-guard', 'session.workspace-boundary']);
-  // check-library-allowlist runs the scaffold gate (22, windsurf-only) + deploy gate
-  // (25) + install allowlist (30) after auth (0) — the scaffold/deploy gates run
-  // before the install allowlist, matching the legacy "deploy gate runs first" ordering.
-  assert.deepEqual(idsFor('check-library-allowlist'), ['plan-guard.deploy', 'plan-guard.library', 'plan-guard.scaffold', 'session.auth', 'session.workspace-boundary']);
+  // check-library-allowlist runs the scaffold gate (22, windsurf-only) + supabase
+  // local-stack gate (24, all hosts) + deploy gate (25) + install allowlist (30)
+  // after auth (0) — the scaffold/supabase/deploy gates run before the install
+  // allowlist, matching the legacy "deploy gate runs first" ordering.
+  assert.deepEqual(idsFor('check-library-allowlist'), ['plan-guard.deploy', 'plan-guard.library', 'plan-guard.scaffold', 'plan-guard.supabase-local', 'session.auth', 'session.workspace-boundary']);
   assert.deepEqual(idsFor('check-one-mcp-tool'), ['one-mcp-tool-gate.agent-call']);
   assert.deepEqual(idsFor('check-codex-child-model'), ['agent-model.codex-child-observed-model']);
   // Hints + post-build handlers route to exactly one handler (no cross-fire —
@@ -52,7 +53,12 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   // Codex SubagentStart binds the pending role claim to the new subagent thread id.
   assert.deepEqual(idsFor('subagent-start'), ['agent-model.subagent-start']);
   assert.deepEqual(idsFor('cursor-subagent-stop'), ['agent-model.cursor-subagent-stop']);
-  assert.deepEqual(idsFor('cursor-stop'), ['agent-model.cursor-stop']);
+  // cursor-stop routes BOTH the onboarding backstop (priority 10, first followup
+  // wins) and the agent-model failure reconcile (40).
+  assert.deepEqual(idsFor('cursor-stop'), ['agent-model.cursor-stop', 'onboarding-gate.stop']);
+  // The Claude/Codex turn-end backstop: re-delivers the setup link when a turn
+  // would end with onboarding pending and a live wizard engaged.
+  assert.deepEqual(idsFor('onboarding-stop'), ['onboarding-gate.stop']);
 });
 
 test('an unknown subcommand routes to no handlers', () => {
@@ -63,8 +69,7 @@ test('an unknown subcommand routes to no handlers', () => {
 async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-claude-entry-'));
   const env = process.env;
-  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, state: env.TRAFFIC_ONE_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
-  env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+  const saved = { state: env.TRAFFIC_ONE_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // unit tests must never spawn a real wizard server
@@ -79,7 +84,7 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
     await fn(dir);
   } finally {
     for (const [k, v] of Object.entries({
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_STATE_PATH: saved.state,
+      TRAFFIC_ONE_STATE_PATH: saved.state,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn, TRAFFIC_ONE_AUTH: saved.authFlag,
     })) { if (v === undefined) delete env[k]; else env[k] = v; }

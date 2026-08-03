@@ -20,11 +20,11 @@ Do not search for a wizard tool, claim the preview is already open, or end the t
 
 {{HOST_PERMISSION_STEP}}
 
-The bootstrap prints `TRAFFIC_ONE_SETUP_READY` and a live `Setup link:`, then exits. Show that URL to the user as a standalone clickable link (or open it in the host's in-app web view). Immediately afterward run this normal waiter and keep the turn active:
+The bootstrap prints `TRAFFIC_ONE_SETUP_READY` and a live `Setup link:`, then exits. Post that URL to the user as a standalone clickable link in a chat message — do not open it yourself with a browser tool. Immediately afterward run this normal waiter and keep the turn active:
 
 {{WAIT_CMD}}
 
-When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, close the setup view and immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. Building, installs, and subagent work remain blocked until completion.
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. If it prints `TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED`, follow its printed classification instructions (inspect the repo, run the printed `--set-tech` command), then re-run. Building, installs, and subagent work remain blocked until completion.
 <!-- T1BLOCK:END server-bootstrap-required -->
 
 <!-- T1BLOCK:BEGIN server-bootstrap-required-compact -->
@@ -45,17 +45,16 @@ then finish a few setup steps. Your job is to SURFACE THE LINK to the user and t
 wait. Do NOT try to answer the setup questions yourself, and do NOT create or edit
 .claude/launch.json.
 
-Present this clickable setup link to the user as your FIRST visible action, before any
-wait command — put it on its own line, not buried in a terminal block. Show it as
-plain clickable text only; do NOT open it with a browser/navigate tool — the user
-clicks it themselves:
+Post this clickable setup link to the user as your FIRST visible action, before any
+wait command — put it in a CHAT MESSAGE on its own line, not buried in a terminal
+block. Tool output and collapsed command blocks do NOT count as showing it: several
+hosts hide them, so if the link is not in a message you wrote, the user has not seen
+it. Show it as plain clickable text only; do NOT open it with a browser/navigate tool
+or an `open`/`xdg-open`/`start` command — the user clicks it themselves:
 
     Open Traffic One setup: {{URL}}
 
-If the hosted page is unavailable or returns 404, show and open this direct local
-fallback instead; the redirecting loopback root is not a fallback:
-
-    Open local Traffic One setup: {{LOCAL_URL}}
+{{LOCAL_FALLBACK}}
 
 All setup logic and saves stay on this machine; the dashboard is just the UI.
 
@@ -86,21 +85,101 @@ files are added to it) and Traffic One stays silent here until they ask for it a
 <!-- T1BLOCK:END server-deny-reason -->
 
 <!-- T1BLOCK:BEGIN cursor-wait-link-first -->
+This notice is NOT visible to the user: Cursor renders a blocked command inside a collapsed "ran N commands" block, so the setup link has still never appeared in the conversation.
+
+Check your own last VISIBLE chat message. Tool output and collapsed command blocks do not count — if the link is not in a message you wrote, the user has not seen it.
+
+Post this to the user in your NEXT CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself with a browser tool or an `open`/`xdg-open`/`start` command; the user clicks it:
+
 Open Traffic One setup: {{URL}}
 
-Direct local fallback: {{LOCAL_URL}}
+{{LOCAL_FALLBACK}}
 
-The setup link was not shown in chat before the wait command, so Traffic One stopped this first wait attempt to surface the clickable URL. Now re-run the wait command and keep the turn open:
+Only after that message is written, re-run the wait command in the FOREGROUND of the same turn and keep the turn open:
 
 {{WAIT_CMD}}
 
 When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.
 <!-- T1BLOCK:END cursor-wait-link-first -->
 
+<!-- T1BLOCK:BEGIN claude-wait-link-first -->
+This notice is NOT visible to the user: Claude Code renders hook output and blocked commands inside a collapsed tool block, so the setup link has still never appeared in the conversation.
+
+Check your own last VISIBLE chat message. Tool output, hook banners, and collapsed command blocks do not count — if the link is not in a message you wrote, the user has not seen it.
+
+Post this to the user in your NEXT CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself with a browser tool or an `open`/`xdg-open`/`start` command; the user clicks it:
+
+Open Traffic One setup: {{URL}}
+
+{{LOCAL_FALLBACK}}
+
+Only after that message is written, re-run the wait command in the FOREGROUND of the same turn (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open:
+
+{{WAIT_CMD}}
+
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.
+<!-- T1BLOCK:END claude-wait-link-first -->
+
+<!-- T1BLOCK:BEGIN claude-wait-background-denied -->
+This onboarding command was requested with run_in_background: true. A backgrounded run writes its output — including the setup link it prints — into a background task file the user never opens, and the turn ends with the user waiting on a link they were never shown.
+
+{{URL_LINE}}
+
+Post the setup link to the user in a CHAT MESSAGE — plain clickable text on its own line, not inside a code block — then re-run this SAME command in the FOREGROUND of this turn (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. Follow its printed instructions when it finishes.
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END claude-wait-background-denied -->
+
+<!-- T1BLOCK:BEGIN stop-setup-required -->
+You are ending your turn while Traffic One setup is still required, and the setup link has not been confirmed delivered — if the link is not in a message you wrote, the user has no way to continue setup.
+
+Post this setup link to the user NOW, in a chat message, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself; the user clicks it:
+
+Open Traffic One setup: {{URL}}
+
+{{LOCAL_FALLBACK}}
+
+Then run this wait command in the FOREGROUND (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. When it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request:
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END stop-setup-required -->
+
+<!-- T1BLOCK:BEGIN stop-setup-link-posted -->
+You are ending your turn while Traffic One setup is still pending. The setup link is already posted in the conversation — do NOT post it again; a repeated link reads as noise.
+
+Run this wait command NOW in the FOREGROUND (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. It returns immediately if setup is already complete; when it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request:
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END stop-setup-link-posted -->
+
+<!-- T1BLOCK:BEGIN stop-setup-links-shown -->
+You are ending your turn while Traffic One setup is still in progress — the user has the setup wizard open in their browser right now (the setup server saw it load). Do NOT repost the link: a repeated link reads as "start over".
+
+Run this wait command NOW in the FOREGROUND (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. It returns immediately if setup is already complete; when it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request:
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END stop-setup-links-shown -->
+
+<!-- T1BLOCK:BEGIN codex-wait-link-first -->
+The setup link has not been posted to the user in this conversation yet, and this deny reason is the only channel that reaches you — so the user still has no link to click.
+
+Post this to the user in your NEXT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself; the user clicks it and completes setup in their browser:
+
+Open Traffic One setup: {{URL}}
+
+{{LOCAL_FALLBACK}}
+
+Only after that message is written, re-run the wait command in the foreground of the same turn and keep the turn open:
+
+{{WAIT_CMD}}
+
+When it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request.
+<!-- T1BLOCK:END codex-wait-link-first -->
+
 <!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
 Traffic One setup is still pending — building stays blocked until setup finishes.
-Open Traffic One setup in the browser: {{URL}}
-If the hosted page is unavailable or returns 404, open the local wizard directly: {{LOCAL_URL}}
+Post this setup link to the user in a chat message — the user opens it, not you: {{URL}}
+{{LOCAL_FALLBACK}}
 Keep your turn open by running the wait command again (long timeout, ~9 minutes):
 
 {{WAIT_CMD}}
@@ -111,11 +190,19 @@ Don't use Traffic One: if the user says they don't want it for this project, run
 {{DECLINE_CMD}}
 <!-- T1BLOCK:END server-deny-reason-repeat -->
 
+<!-- T1BLOCK:BEGIN browser-open-denied -->
+Traffic One does not open the setup link for the user — they open it themselves.
+
+Post the setup link in a CHAT MESSAGE instead, on its own line, as plain clickable text (not inside a code block), then run the wait command and keep your turn open.
+
+An agent that opens the link tends to then believe it has "already shared" it and never posts it, which leaves the user with no link at all. Look at your own last visible chat message: if the link is not there, the user has not seen it.
+<!-- T1BLOCK:END browser-open-denied -->
+
 <!-- T1BLOCK:BEGIN server-deny-reason-links-shown -->
-Traffic One setup is required before building — and the clickable setup links were
-ALREADY surfaced in this conversation moments ago. Do NOT print the links again: the
-user may have just finished setup or be mid-setup in the browser, and a repeated link
-reads as "start over". Only repeat a link if the user says they cannot find it.
+Traffic One setup is required before building — and the user HAS the setup wizard
+open in their browser right now (the setup server saw it load). Do NOT print the link
+again: they are mid-setup, and a repeated link reads as "start over". Only repeat it
+if the user says they cannot find it.
 
 CONTINUE AUTOMATICALLY — run this wait command NOW, in the FOREGROUND of this turn
 (never as a background task, and do not open any URL with a browser tool), with a long
@@ -136,11 +223,10 @@ Don't use Traffic One: if the user says they don't want it for this project, run
 <!-- T1BLOCK:BEGIN windsurf-server-deny-reason -->
 Traffic One setup is required before building.
 
-Before running any tool, show the user this standalone clickable setup link:
+Before running any tool, show the user this standalone clickable setup link — do not open it yourself:
 [Open Traffic One setup]({{URL}})
 
-If the hosted page is unavailable or returns 404, use the direct local wizard:
-[Open local Traffic One setup]({{LOCAL_URL}})
+{{LOCAL_FALLBACK}}
 
 Keep the current turn active by running this wait command (timeout ~9 minutes):
 {{WAIT_CMD}}
@@ -151,10 +237,10 @@ When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original r
 <!-- T1BLOCK:BEGIN windsurf-server-deny-reason-repeat -->
 Traffic One setup is still pending.
 
-Before running any tool, show the user this standalone clickable setup link:
+Before running any tool, show the user this standalone clickable setup link — do not open it yourself:
 [Open Traffic One setup]({{URL}})
 
-Direct local fallback: [Open local Traffic One setup]({{LOCAL_URL}})
+{{LOCAL_FALLBACK}}
 
 Keep the current turn active by running this wait command:
 {{WAIT_CMD}}
@@ -193,15 +279,18 @@ Your FIRST action: spawn `senior-architect` via the host `{{TASK_TOOL}}` tool:
 - include `Run ID: {{RUN_ID}}` and the user's original request
 - omit `model` on {{HOST}} unless the host documents a subagent model parameter
 
-This stack uses a Turborepo monorepo (`apps/web/`, `packages/*`) — do NOT create root `src/`, root `tsconfig*.json`, or a flat Vite app at the project root.
+Runtime capability contract: {{PROFILE_SUMMARY}}.
+Do not replace these detected surfaces, roots, framework conventions, skill buckets, or QA adapters with an unrelated default.
 
-After architect emits `PLAN_READY`, spawn `senior-frontend` and `senior-backend` in parallel using the same {{HOST}} spawn rule, each role marker, and its matching role-contract instruction. Read `.traffic-one/rules/common/senior-engineer-team.md` before the first spawn.
+{{IMPLEMENTER_DIRECTIVE}}
+{{QA_DIRECTIVE}}
+Read `.traffic-one/rules/common/senior-engineer-team.md` before the first eligible implementer spawn.
 <!-- T1BLOCK:END kilo-opencode-spawn-first -->
 
 <!-- T1BLOCK:BEGIN kilo-opencode-architect-incomplete -->
 [traffic-one] {{HOST}} build — `.traffic-one/plan.md` exists but the architect phase is INCOMPLETE. You are the PARENT/orchestrator.
 
-DO NOT spawn `senior-frontend` or `senior-backend` yet. DO NOT patch `assignments.json` or `digests/{{RUN_ID}}/architect.md` yourself unless the user explicitly opts out of subagents.
+DO NOT spawn any implementation role from the runtime capability contract yet. DO NOT patch `assignments.json` or `digests/{{RUN_ID}}/architect.md` yourself unless the user explicitly opts out of subagents.
 
 Missing architect deliverables: {{MISSING}}
 
@@ -210,7 +299,14 @@ Respawn `senior-architect` via `{{TASK_TOOL}}` with:
 - prompt line 1: `[t1-role: senior-<role>]` (substitute the spawned role; architect here)
 - {{ROLE_CONTRACT_INSTRUCTION}}
 - `Run ID: {{RUN_ID}}`
-- instruct the architect to finish the missing files, write `.traffic-one/runs/{{RUN_ID}}/assignments.json`, then `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`
+- instruct the architect to finish project memory and semantic
+  `.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json`, then write
+  `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`; runtime
+  compiles architecture/verification, assignments, and work-unit bootstraps
+
+Runtime capability contract: {{PROFILE_SUMMARY}}.
+{{IMPLEMENTER_DIRECTIVE}}
+{{QA_DIRECTIVE}}
 
 Implementer spawns are blocked until the digest carries `PLAN_READY` on disk.
 <!-- T1BLOCK:END kilo-opencode-architect-incomplete -->
@@ -229,7 +325,7 @@ The latest user prompt explicitly requested switching away from subagents to Low
 
 <!-- T1BLOCK:BEGIN maintenance-triage-subagents -->
 [MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. Pick the tier, then ROUTE it — in this (subagents) mode do NOT implement trivial or small work yourself in this thread; handing it to a cheaper worker is the whole point of post-build triage. You judge the TIER (the keyword hint is a prior, not a verdict); the routing for the chosen tier is required, not optional. State your routing in one sentence and proceed — do not ask the user which tier, worker, or model to use.
-- trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: spawn a `quick-fix` subagent with model "{{CHEAPEST_MODEL}}" on hosts whose spawn tool supports `model`; omit `model` on OpenCode/Kilo/Copilot/Windsurf unless the exact host tool documents support. Do NOT make the edit yourself.{{QUICK_FIX_OPENCODE_CLAUSE}} Give it the exact file(s), the precise change, and one verification step; the worker makes the change and verifies it (screenshot if visual).
+- trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: spawn a `quick-fix` subagent with model "{{CHEAPEST_MODEL}}" on hosts whose spawn tool supports `model`; omit `model` on OpenCode/Kilo/Copilot/Windsurf unless the exact host tool documents support. On Codex use one fresh `spawn_agent` call with `task_name: "quick_fix"`, `fork_turns: "none"`, and `model: "{{CHEAPEST_MODEL}}"`; never retry with a generic task name, inherited/full history, or a different available model. Do NOT make the edit yourself.{{QUICK_FIX_OPENCODE_CLAUSE}} Give it the exact file(s), the precise change, and one verification step; the worker makes the change and verifies it (screenshot if visual). Include ONE line in the spawn prompt of the form `[t1-bounded-scope: {"outputs":["src/exact/File.tsx"]}]` naming every exact repo-relative file the fix may create or modify (no globs or directories) — the runtime publishes the bounded WorkUnitContract from that line, and a spawn without it is denied.
 - small — one component, one page/route, one small endpoint, or a scoped bug fix: spawn the owning implementation role(s) directly at their normal tier. Use `senior-frontend` for UI/routes and `senior-backend` for server/data; when the bounded request genuinely touches both, spawn those two roles in parallel. On Kilo, each direct role uses built-in `general` with its first-line role marker and matching `.kilo/agents/senior-<role>.md` contract, with no `model`.{{SMALL_OPENCODE_CLAUSE}} Do NOT spawn `senior-architect` or create a feature plan unless the work turns cross-cutting.
 - complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW, before any edit, as a SINGLE-FEATURE run — the architect plans just this feature, decides frontend/backend/both and the per-role model tiers, then implement → review → test.
 Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.
@@ -242,3 +338,21 @@ Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user expli
 - complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW and run its phases INLINE via the roadmap checklist — plan the feature, decide the surface, implement, then self-review and test. Do not spawn subagents.
 Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.
 <!-- T1BLOCK:END maintenance-triage-main-agent -->
+
+<!-- T1BLOCK:BEGIN tech-classify-required -->
+traffic-one — this existing codebase could not be identified deterministically: none of the known stack markers matched, so YOU must classify it before setup can continue.
+
+1. Inspect the repo yourself — package manifests, lockfiles, entrypoints, framework configs. A few READS are enough; do not modify anything.
+2. Submit the tech by running this command with the surfaces you identified appended:
+{{SET_TECH_TEMPLATE}}
+   Append: `--frontend=<id>` and `--backend=<id>` (both REQUIRED — use `none` when that surface does not exist), plus optional `--mobile=<id>`, `--realtime=light` (when a websocket/realtime layer exists), and `--evidence='<short proof>'` (e.g. --evidence='express + mongoose in package.json').
+   frontend ids: none, react-vite, nextjs, nuxt, vue, svelte, angular, astro, solid, remix, other
+   backend ids: none, supabase, external-api, node, nestjs, python, django, fastapi, go, rust, java, kotlin, php, laravel, dotnet, firebase, mongo, other
+   mobile ids: ionic-capacitor, react-native-expo, swift-native, kotlin-android, flutter, none
+   Use `other`/`none` when nothing fits — NEVER invent an id; the command is denied unless every id is from these lists.
+
+Partial signals already detected:
+{{HINTS}}
+
+On success it prints TRAFFIC_ONE_TECH_RECORDED and then the setup wizard's `Setup link:` — post that link to the user in chat and run the printed waiter command, exactly as in the normal setup flow. Run the command EXACTLY as printed plus your surface flags — no pipes, redirection, or `&&`; the gate allow-lists the precise argv.
+<!-- T1BLOCK:END tech-classify-required -->

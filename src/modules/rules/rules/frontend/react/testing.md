@@ -6,10 +6,59 @@ paths:
   - "apps/**/src/test/**"
 ---
 
-# React Testing — RTL + jest specifics
+# React Testing — RTL runner specifics
 
 Framework-agnostic test layering, MSW patterns, Playwright config live in
-`frontend/testing.md`. This file covers React Testing Library + jest.
+`frontend/testing.md`. This file covers React Testing Library and the runner
+config it needs.
+
+## The runner is Vitest on Vite-based stacks
+
+Runtime compiles `vitest.config.ts` for Vite/React, so Vitest is the runner. The
+Jest section below applies only to Expo/React Native, whose runner is jest-expo.
+
+**A component suite needs a DOM.** `environment: 'node'` cannot render, and a
+suite that cannot render degrades into asserting on source text — which passes
+whenever a string is present and proves nothing about behaviour. Observed 9co: 11
+of 16 test files did `readFileSync` + `toContain` on component sources, and the
+RLS/idempotency "tests" grepped a `.sql` migration.
+
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    include: ['tests/**/*.test.{ts,tsx}'],
+    css: true,
+  },
+});
+```
+
+```ts
+// src/test/setup.ts
+import '@testing-library/jest-dom/vitest';
+```
+
+Dependencies to declare alongside it: `vitest`, `jsdom`,
+`@testing-library/react`, `@testing-library/user-event`,
+`@testing-library/jest-dom`, `@vitejs/plugin-react`. A config naming a tool the
+manifest does not install is not a test setup.
+
+## Never substitute source text for behaviour
+
+- Do not read a production file and assert on its contents as a stand-in for a
+  test. That is a grep, and it passes for a file whose whole body is a comment.
+- If a runtime is genuinely unavailable (no DOM, no database, no simulator), write
+  the test and `it.skip` it with the reason in the title. A skipped test is
+  visible in the report; a green grep is indistinguishable from real coverage.
+- The same applies to SQL and infrastructure: `toContain('revoke …')` on a
+  migration cannot prove the final effective permissions, because SQL is
+  cumulative and a later statement can grant them back.
 
 ## React Testing Library
 
@@ -47,9 +96,9 @@ export function renderWithProviders(
 - Wrap with the same provider chain via the `wrapper` option.
 - Drive state changes with `act(() => ...)` and assert via `result.current`.
 
-## Jest config (baseline)
+## Jest config (React Native / Expo only)
 
-- Preset: `ts-jest` or `@swc/jest` for speed.
+- Preset: `jest-expo`; `ts-jest` or `@swc/jest` for a non-Expo jest project.
 - `testEnvironment: "jsdom"`.
 - `setupFilesAfterEach`: import `@testing-library/jest-dom` for matchers (`toBeInTheDocument`, `toHaveAccessibleName`).
 

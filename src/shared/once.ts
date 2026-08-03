@@ -71,12 +71,15 @@ export function emittedWithin(cwd: string, label: string, ttlMs: number): boolea
   }
 }
 
-// Test helper: forget all once-markers for a project.
-export function resetOnceMarkers(cwd: string): void {
+// Forget one cross-surface TTL marker so its surface can re-emit before the TTL
+// lapses. Used by the onboarding waiter's pending exit: a wait that timed out
+// without setup completing re-arms the setup-link nudge, so the NEXT gated tool
+// call re-delivers the link instead of running silent inside the 5-minute TTL.
+export function clearEmitMarker(cwd: string, label: string): void {
   try {
-    fs.rmSync(onceDir(cwd), { recursive: true, force: true });
+    fs.unlinkSync(path.join(onceDir(cwd), `${safeKey(label)}-shared`));
   } catch {
-    // best effort
+    // best effort — a missing marker is already the desired state
   }
 }
 

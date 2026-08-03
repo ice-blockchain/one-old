@@ -6,6 +6,13 @@ import assert from 'node:assert/strict';
 
 import { COPILOT_AGENT_MARKER, COPILOT_AGENTS_REL, isGeneratedCopilotAgent, writeCopilotAgentFiles } from '../copilot-agents';
 
+const FULL_STATE = {
+  stack: 'default',
+  frontend: 'react-vite',
+  backend: 'supabase',
+  mobile: { framework: 'none' },
+};
+
 test('writeCopilotAgentFiles skips user-authored agents without the generated marker', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-copilot-agents-'));
   const agentsDir = path.join(cwd, '.github', 'agents');
@@ -13,7 +20,7 @@ test('writeCopilotAgentFiles skips user-authored agents without the generated ma
   const userFile = path.join(agentsDir, 'senior-architect.agent.md');
   fs.writeFileSync(userFile, '---\nname: senior-architect\n---\n\nUser-owned agent\n', 'utf8');
   try {
-    writeCopilotAgentFiles(cwd, {});
+    writeCopilotAgentFiles(cwd, FULL_STATE);
     assert.equal(fs.readFileSync(userFile, 'utf8').includes('User-owned agent'), true);
     assert.equal(isGeneratedCopilotAgent(userFile), false);
     const reviewer = path.join(agentsDir, 'senior-reviewer.agent.md');
@@ -32,8 +39,8 @@ test('writeCopilotAgentFiles output is independent of local performance', () => 
   const low = fs.mkdtempSync(path.join(os.tmpdir(), 't1-copilot-low-'));
   const high = fs.mkdtempSync(path.join(os.tmpdir(), 't1-copilot-high-'));
   try {
-    writeCopilotAgentFiles(low, { team: { mode: 'main-agent' }, performance: { level: 'low' } });
-    writeCopilotAgentFiles(high, { team: { mode: 'subagents' }, performance: { level: 'high' } });
+    writeCopilotAgentFiles(low, { ...FULL_STATE, team: { mode: 'main-agent' }, performance: { level: 'low' } });
+    writeCopilotAgentFiles(high, { ...FULL_STATE, team: { mode: 'subagents' }, performance: { level: 'high' } });
     assert.equal(
       fs.readFileSync(path.join(low, COPILOT_AGENTS_REL, 'senior-architect.agent.md'), 'utf8'),
       fs.readFileSync(path.join(high, COPILOT_AGENTS_REL, 'senior-architect.agent.md'), 'utf8'),

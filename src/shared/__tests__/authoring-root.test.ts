@@ -197,6 +197,53 @@ test('machine-config space is never a project root: $HOME, /, and the machine st
   });
 });
 
+test('host STATE dirs under $HOME are machine-config space, not projects', () => {
+  // Live regression: naming one of these paths in a read-only tool call made the
+  // gate adopt it as an un-onboarded project — Claude Code could not write its own
+  // plan file (~/.claude/plans) and a worker reading a Codex rollout
+  // (~/.codex/sessions) was handed the setup question as tool output.
+  withTmp((dir) => {
+    const home = path.join(dir, 'home');
+    fs.mkdirSync(home, { recursive: true });
+    const savedHome = process.env.HOME;
+    const savedXdgConfig = process.env.XDG_CONFIG_HOME;
+    process.env.HOME = home;
+    delete process.env.XDG_CONFIG_HOME;
+    try {
+      for (const rel of [
+        '.claude',
+        path.join('.claude', 'plans'),
+        path.join('.claude', 'plugins', 'cache', 'traffic-one'),
+        path.join('.codex', 'sessions', '2026', '07', '26'),
+        path.join('.cursor', 'extensions'),
+        '.opencode',
+        '.kilo',
+        '.windsurf',
+        path.join('.config', 'opencode', 'agents'),
+        path.join('.local', 'share'),
+        path.join('Library', 'Application Support'),
+      ]) {
+        const target = path.join(home, rel);
+        assert.equal(isMachineConfigRoot(target), true, `${rel} is machine-config space`);
+        assert.equal(isNonProjectRoot(target), true, `${rel} never onboards`);
+      }
+      // A real project keeps its eligibility — including one whose NAME merely
+      // resembles a state dir but does not sit directly under $HOME.
+      const project = path.join(home, 'Projects', '.claude-clone');
+      fs.mkdirSync(project, { recursive: true });
+      assert.equal(isMachineConfigRoot(project), false);
+      assert.equal(isNonProjectRoot(project), false);
+      // XDG override is honoured as its own state root.
+      process.env.XDG_CONFIG_HOME = path.join(dir, 'xdg-config');
+      assert.equal(isMachineConfigRoot(path.join(dir, 'xdg-config', 'anything')), true);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+      if (savedXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdgConfig;
+    }
+  });
+});
+
 test('isNonProjectRoot covers the authoring repo exactly like isPluginAuthoringRoot', () => {
   withTmp((dir) => {
     makeSourceRepo(dir);

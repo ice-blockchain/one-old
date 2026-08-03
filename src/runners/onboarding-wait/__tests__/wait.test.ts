@@ -3,13 +3,18 @@ import assert from 'node:assert/strict';
 
 import {
   beginOnboardingAttempt,
-  cursorSetupCloseDirective,
+  consentPhaseFailureOutput,
   openCodeRestartWarning,
   preSpawnArchitectDirective,
   preSpawnModelDirective,
   waitForOnboarding,
 } from '../index';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { resolveModel } from '../../../shared/model-tiers';
+
+// Derived, never hardcoded: which family anchors a tier is editable policy.
+const CURSOR_HIGHEST_FAMILY = resolveModel('highest', 'cursor', 'pro') as string;
+const CURSOR_HIGHEST_SLUG = `${CURSOR_HIGHEST_FAMILY}-thinking-high`;
 
 // Deterministic seams: a fake clock that advances `step` ms per read, and a no-op
 // sleep — so the polling loop is exercised without a real timer or state IO.
@@ -47,6 +52,35 @@ test('waitForOnboarding: returns "complete" when setup finishes mid-wait (after 
   assert.equal(polls, 3);
 });
 
+test('consent-phase EPERM maps to a clean escalation recipe that keeps the recorded yes', () => {
+  // the live 8c-codex crash: `--use --bootstrap-only` ran inside the workspace
+  // sandbox and mkdir(~/.traffic-one/projects/…) threw a raw EPERM stack
+  const eperm = Object.assign(
+    new Error("EPERM: operation not permitted, mkdir '/Users/u/.traffic-one/projects/abc'"),
+    { code: 'EPERM' },
+  );
+  const argv = [
+    '--use', '--bootstrap-only', '/proj',
+    '--host=codex',
+    '--seed-prompt=create a modern learning platform with courses',
+    '--sync-session=sess-1',
+  ] as const;
+  const out = consentPhaseFailureOutput('/proj', 'codex', argv, eperm);
+  assert.match(out, /^TRAFFIC_ONE_SETUP_PERMISSION_REQUIRED\n/);
+  assert.match(out, /require_escalated/);
+  assert.doesNotMatch(out, /at Object\.mkdirSync/); // no raw stack traces
+  // the prescribed retry is the ORIGINAL yes command — consent and seed intact
+  assert.match(out, /--use/);
+  assert.match(out, /--bootstrap-only/);
+  assert.match(out, /--seed-prompt=/);
+  assert.match(out, /--sync-session=sess-1/);
+
+  // non-permission failures stay terminal diagnostics, not retry loops
+  const broken = consentPhaseFailureOutput('/proj', 'codex', argv, new Error('unexpected token in prefs.json'));
+  assert.match(broken, /^TRAFFIC_ONE_SETUP_START_FAILED\n/);
+  assert.match(broken, /plugin\/runtime failure/);
+});
+
 test('openCodeRestartWarning tells the user to restart before continuing development', () => {
   const warning = openCodeRestartWarning();
   assert.match(warning, /TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED/);
@@ -55,20 +89,15 @@ test('openCodeRestartWarning tells the user to restart before continuing develop
   assert.doesNotMatch(warning, /Ctrl\+C/i);
 });
 
-test('Cursor setup completion closes the exact wizard tab through browser_tabs', () => {
-  const url = 'http://127.0.0.1:55174/?t=tok';
-  const directive = cursorSetupCloseDirective(url, 'cursor');
-  assert.ok(directive.includes('`browser_tabs`'));
-  assert.ok(directive.includes('{"action":"list"}'));
-  assert.ok(directive.includes('{"action":"close","index":<matching index>}'));
-  assert.ok(directive.includes(url), 'the exact tokenized wizard URL is used for index-safe matching');
-  assert.match(directive, /Traffic One — Setup/, 'title fallback when the exact URL does not match');
-  assert.match(directive, /VERIFY/i, 're-list to confirm the tab actually closed');
-  assert.match(directive, /Do not ask the user to close/i);
-  assert.equal(cursorSetupCloseDirective(url, 'claude'), '', 'other hosts keep their native close path');
+test('no close directive exists — the setup tab belongs to the user', async () => {
+  // Traffic One neither opens nor closes the browser. The agent-driven browser_tabs
+  // close was part of the same "agent drives the browser" model that left users with
+  // no link at all (2cu: navigate, claim "links were shared above", close the tab).
+  const mod = await import('../index');
+  assert.equal('cursorSetupCloseDirective' in mod, false);
 });
 
-test('declineOutput records the opt-out and closes an already-open cursor wizard tab', async () => {
+test('declineOutput records the opt-out and never touches the user\'s browser', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -81,13 +110,14 @@ test('declineOutput records the opt-out and closes an already-open cursor wizard
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
-    // Flag-off flow: the wizard link was already shown → its tab gets closed.
+    // Even with a wizard tab open, declining says nothing about the browser: a tab
+    // the user opened is theirs to close.
     const url = 'http://127.0.0.1:55177/?t=tok';
     writeServerRecord(dir, { pid: process.pid, port: 55177, token: 'tok', url, startedAt: 'x' }, process.env, 'cursor');
     const out = declineOutput(dir, 'cursor');
     assert.match(out, /^TRAFFIC_ONE_DISABLED/, 'terminal disable marker');
-    assert.ok(out.includes('`browser_tabs`'), 'closes the open wizard tab');
-    assert.ok(out.includes(url), 'matches the tab by its exact URL');
+    assert.ok(!out.includes('browser_tabs'), 'no tab-closing directive');
+    assert.ok(!out.includes(url), 'no wizard URL is echoed back');
     assert.equal(pluginUseDeclined(dir), true, 'choice recorded durably');
 
     // Ask-first flow: no wizard was ever opened → no tab-close noise. Own prefs
@@ -150,6 +180,29 @@ test('applyUseChoice records the yes and seeds originalPrompt at decision time (
   }
 });
 
+test('ask-first seeding persists an explicit UI library choice with the original request', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { applyUseChoice } = await import('../index');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-ui-library-')));
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    const seed = 'Build a dashboard with Tailwind and MUI components';
+    applyUseChoice(dir, ['--use', '--bootstrap-only', dir, `--seed-prompt=${seed}`]);
+    const state = JSON.parse(
+      fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.equal(state.originalPrompt, seed);
+    assert.equal(state.uiLibrary, 'mui');
+  } finally {
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('applyReconsiderChoice persists exact opt-in before synchronizing', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
@@ -167,7 +220,7 @@ test('applyReconsiderChoice persists exact opt-in before synchronizing', async (
     applyReconsiderChoice(dir, 'codex', (syncCwd, syncHost) => {
       choiceObservedBySync = readPluginUseChoice(syncCwd);
       hostObservedBySync = syncHost;
-    }, undefined, { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' }, true);
+    }, undefined, process.env, true);
 
     assert.deepEqual(choiceObservedBySync && {
       enabled: (choiceObservedBySync as { enabled: boolean }).enabled,
@@ -197,7 +250,7 @@ test('beginOnboardingAttempt syncs before the first wizard-state read on normal 
     recordPluginUseChoice(dir, true, 'test');
     beginOnboardingAttempt(dir, 'cursor', [dir], {
       sync,
-      env: { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' },
+      env: process.env,
       featureEnabled: true,
       isDone: () => { events.push('compute'); return false; },
     });
@@ -206,7 +259,7 @@ test('beginOnboardingAttempt syncs before the first wizard-state read on normal 
     events.length = 0;
     beginOnboardingAttempt(dir, 'cursor', ['--bootstrap-only', dir], {
       sync,
-      env: { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' },
+      env: process.env,
       featureEnabled: true,
       isDone: () => { events.push('compute'); return false; },
     });
@@ -239,7 +292,7 @@ test('beginOnboardingAttempt persists --use before sync and shares the SessionSt
     const session = 'parent-session-1';
     beginOnboardingAttempt(dir, 'cursor', ['--use', '--bootstrap-only', dir, `--sync-session=${session}`], {
       sync,
-      env: { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' },
+      env: process.env,
       featureEnabled: true,
       isDone: () => false,
     });
@@ -247,11 +300,10 @@ test('beginOnboardingAttempt persists --use before sync and shares the SessionSt
 
     // The SessionStart path and both waiter commands use the same project +
     // host + session marker, so later surfaces do not issue another request.
-    const enabledEnv = { ...process.env, TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '' };
-    syncOneMcpAtSessionStart(dir, 'cursor', { session_id: session }, enabledEnv, sync);
+    syncOneMcpAtSessionStart(dir, 'cursor', { session_id: session }, process.env, sync, true);
     beginOnboardingAttempt(dir, 'cursor', [dir, `--sync-session=${session}`], {
       sync,
-      env: enabledEnv,
+      env: process.env,
       featureEnabled: true,
       isDone: () => false,
     });
@@ -318,6 +370,50 @@ test('Windsurf first-run architect directive uses the always-registered general 
     assert.doesNotMatch(directive, /\[t1-role: senior-(?:architect|frontend|backend|reviewer|tester|shipper)\]/);
     assert.match(directive, /\.devin\/agents\/senior-architect\/AGENT\.md/);
     assert.doesNotMatch(directive, /profile `senior-architect`/);
+    assert.match(directive, /profile `next-app`/);
+    assert.match(directive, /framework `nextjs`/);
+    assert.match(directive, /apps\/web\/app/);
+    assert.doesNotMatch(directive, /React\/Vite app lives|default React stack/);
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Windsurf first-run directive derives backend-only roles and QA from capabilities', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-prespawn-go-')));
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      ...hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
+    }));
+    fs.writeFileSync(path.join(dir, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'go',
+      mobile: { framework: 'none' },
+      confirmed: true,
+      onboardingComplete: true,
+    }));
+    const directive = preSpawnArchitectDirective(dir, 'windsurf');
+    assert.match(directive, /profile `backend-only`/);
+    assert.match(directive, /framework `go`/);
+    assert.match(directive, /spawn only `senior-backend`/);
+    assert.doesNotMatch(directive, /spawn (?:only )?`senior-frontend`/);
+    assert.match(directive, /stack-native build\/test\/lint/);
+    assert.doesNotMatch(directive, /React\/Vite app lives|Turborepo|apps\/web/);
   } finally {
     if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
@@ -482,7 +578,11 @@ test('preSpawnRunIdDirective: Cursor captures exact picker models before publish
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
-  const { preSpawnModelDirective, preSpawnRunIdDirective } = await import('../index');
+  const {
+    preSpawnModelDirective,
+    preSpawnRunIdBlocksSetup,
+    preSpawnRunIdDirective,
+  } = await import('../index');
   const { captureCursorModels } = await import('../../../shared/materialize/cursor-models');
 
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-cursor-policy-')));
@@ -504,6 +604,8 @@ test('preSpawnRunIdDirective: Cursor captures exact picker models before publish
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
       confirmed: true, onboardingComplete: true,
     }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Traffic One project context\n', 'utf8');
+    fs.symlinkSync('AGENTS.md', path.join(dir, 'CLAUDE.md'));
 
     const required = preSpawnRunIdDirective(dir, 'cursor');
     assert.match(required, /^TRAFFIC_ONE_CURSOR_MODELS_REQUIRED/);
@@ -512,7 +614,7 @@ test('preSpawnRunIdDirective: Cursor captures exact picker models before publish
     const policyPath = path.join(dir, '.traffic-one', 'runs', runId, 'model-policy.json');
     assert.equal(fs.existsSync(policyPath), false, 'no incomplete create-once policy is published');
 
-    const pickerModels = ['claude-fable-5-thinking-high', 'gpt-5.6-terra-medium', 'composer-2.5-fast'];
+    const pickerModels = [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra-medium', 'composer-2.5-fast'];
     assert.equal(captureCursorModels(dir, pickerModels, 'pro'), true);
     const ready = preSpawnRunIdDirective(dir, 'cursor');
     assert.match(ready, /Build run-id/);
@@ -522,6 +624,30 @@ test('preSpawnRunIdDirective: Cursor captures exact picker models before publish
     assert.match(frozenMap, /immutable model policy is ready/i);
     assert.doesNotMatch(frozenMap, /Enumerate the exact model ids|--capture-models/);
     assert.match(frozenMap, /Do NOT capture models again for this run/);
+
+    const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+    const baselinePath = path.join(runDir, 'baseline-v1.json');
+    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8')) as {
+      baseline?: { files?: Array<{ path?: string }> };
+    };
+    assert.ok(
+      baseline.baseline?.files?.some((entry) => entry.path === 'CLAUDE.md'),
+      'the materialized root alias is represented in the immutable baseline',
+    );
+
+    // A saved model policy is not sufficient if its runtime-owned capability
+    // snapshot cannot be validated. The completion runner must re-run bootstrap
+    // preflight and report the real failure instead of telling the user to redo
+    // the already-saved Performance step.
+    fs.rmSync(path.join(runDir, 'capability-v1.json'));
+    fs.rmSync(baselinePath);
+    fs.writeFileSync(baselinePath, '{}\n', 'utf8');
+    const blocked = preSpawnRunIdDirective(dir, 'cursor');
+    assert.match(blocked, /^TRAFFIC_ONE_BOOTSTRAP_BLOCKED/);
+    assert.equal(preSpawnRunIdBlocksSetup(blocked), true);
+    assert.match(blocked, /valid immutable model policy and saved Performance choice/);
+    assert.match(blocked, /do not redo onboarding/i);
+    assert.doesNotMatch(blocked, /Reopen Performance/i);
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
@@ -598,7 +724,7 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
     const d = preSpawnModelDirective(dir, 'cursor');
     assert.ok(d.includes('cursor-models.json'), 'step 1 front-loads the model capture');
     assert.ok(d.includes('senior-architect') && d.includes('senior-frontend'), 'per-role map present');
-    assert.ok(d.includes('claude-fable-5'), 'tier family appears as eligibility reference');
+    assert.ok(d.includes(CURSOR_HIGHEST_FAMILY), 'tier family appears as eligibility reference');
     assert.ok(d.includes('never guess an uncaptured id') || d.includes('after step 2'), 'does not advertise an uncaptured guess as a spawn param');
     assert.ok(d.includes('spawn map'), 'step 3 points at model-gate spawn map output');
     // Step 2 mandates running the model-gate command, which is what pops the USER prompt
@@ -606,8 +732,10 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
     assert.ok(d.includes('model-gate.cjs'), 'step 2 runs the model-gate command (the user-prompt trigger)');
     assert.ok(/prompt|fallback|enable|STOP/i.test(d), 'explains the user must reply before spawning');
 
-    // Non-Cursor hosts print nothing (model-capture is Cursor-specific).
-    assert.equal(preSpawnModelDirective(dir, 'claude'), '', 'claude → no directive');
+    // Codex prints nothing (its spawn contract rides the orchestrator prose);
+    // Claude prints nothing HERE only because no policy is frozen yet for a
+    // claude run — see the dedicated Claude spawn-map test below.
+    assert.equal(preSpawnModelDirective(dir, 'claude'), '', 'claude without frozen policy → no directive');
     assert.equal(preSpawnModelDirective(dir, 'codex'), '', 'codex → no directive');
 
     // A main-agent level (no subagents) → silent.
@@ -619,6 +747,84 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
       ),
     ), 'utf8');
     assert.equal(preSpawnModelDirective(dir, 'cursor'), '', 'low/main-agent level → no directive');
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('preSpawnModelDirective: Claude new-project subagents → per-role spawn map from the frozen policy', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { preSpawnModelDirective, preSpawnRunIdDirective } = await import('../index');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-claude-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'max';
+  try {
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'highest' } },
+        'max',
+      ),
+    ), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Traffic One project context\n', 'utf8');
+    fs.symlinkSync('AGENTS.md', path.join(dir, 'CLAUDE.md'));
+
+    // Before the policy is frozen there is nothing authoritative to print.
+    assert.equal(preSpawnModelDirective(dir, 'claude'), '', 'no frozen policy → no directive');
+
+    // Freeze the policy exactly like real setup completion does (no capture
+    // step on Claude — the policy mints straight away).
+    const runIdDirective = preSpawnRunIdDirective(dir, 'claude');
+    assert.match(runIdDirective, /Build run-id/);
+    const runId = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string;
+    const policy = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'model-policy.json'), 'utf8',
+    )) as { roles: Record<string, { preferredModel: string }> };
+
+    // 2cl regression: the first spawn went out without a `model` param because
+    // nothing the root read carried the concrete per-role map. The directive
+    // must front-load plugin-namespaced subagent_type + the model value the
+    // Agent tool actually ACCEPTS. 6cl regression: printing the full policy id
+    // (`model: "claude-opus-4-8"`) made the first spawn fail the host's own
+    // InputValidationError (the tool's `model` enum is sonnet|opus|haiku|fable)
+    // — so the row must carry the ALIAS, with the policy id alongside.
+    const d = preSpawnModelDirective(dir, 'claude');
+    assert.ok(d.includes(`run \`${runId}\``), 'names the frozen run');
+    assert.ok(d.includes('subagent_type: "traffic-one:senior-architect"'), 'plugin-namespaced agent type');
+    const architectModel = policy.roles['senior-architect']!.preferredModel;
+    const expectedAlias = ['fable', 'opus', 'haiku', 'sonnet'].find((alias) => architectModel.toLowerCase().includes(alias));
+    assert.ok(expectedAlias, `policy model ${architectModel} maps to a known Agent-tool alias`);
+    assert.ok(
+      d.includes(`model: "${expectedAlias}" (policy model: ${architectModel})`),
+      'architect row passes the Agent-tool alias and names the frozen policy id',
+    );
+    assert.ok(!/model: "claude-/.test(d), 'no row tells the orchestrator to pass a full model id');
+    assert.match(d, /sonnet\|opus\|haiku\|fable/, 'states the Agent tool enum explicitly');
+    assert.ok(d.includes('senior-frontend') && d.includes('senior-tester'), 'map covers the team roles');
+    assert.match(d, /failed to run agent/, 'explains how the host renders a model-less spawn deny');
+    // The frozen policy — not live prefs — is the authority: the map keeps
+    // printing for this run even if preferences change afterwards.
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(
+        { level: 'low', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'max',
+      ),
+    ), 'utf8');
+    assert.match(preSpawnModelDirective(dir, 'claude'), /spawn map/i, 'frozen policy outlives pref edits');
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
@@ -646,7 +852,7 @@ test('preSpawnModelDirective: with capture, lists exact picker ids including fam
     );
     withCursorAvailableModels(
       prefs,
-      ['claude-fable-5-thinking-high', 'gpt-5.6-terra', 'gpt-5.4-mini'],
+      [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra', 'gpt-5.4-mini'],
       'pro',
     );
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
@@ -657,10 +863,18 @@ test('preSpawnModelDirective: with capture, lists exact picker ids including fam
     }), 'utf8');
 
     const d = preSpawnModelDirective(dir, 'cursor');
-    assert.ok(d.includes('senior-architect → claude-fable-5-thinking-high'), 'exact slug in preview');
-    assert.ok(d.includes('senior-shipper → gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
-    assert.ok(d.includes('senior-tester → gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
-    assert.ok(!d.includes('senior-tester → (after step 2'), 'captured family-anchor id is not replaced by a placeholder');
+    // This directive is emitted in the session that just materialized
+    // `.cursor/agents/**`, so it recommends Cursor's built-in worker: the
+    // role-named type is not in the type list this session captured and the
+    // spawn comes back "Couldn't start" (1cu, 3cu). The role binds via the
+    // `[t1-role: …]` prompt marker either way.
+    assert.ok(d.includes(`senior-architect → subagent_type: "generalPurpose", model: ${CURSOR_HIGHEST_SLUG}`), 'exact slug in preview');
+    assert.ok(d.includes('senior-shipper → subagent_type: "generalPurpose", model: gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
+    assert.ok(d.includes('senior-tester → subagent_type: "generalPurpose", model: gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
+    assert.ok(!d.includes('model: (after step 2'), 'captured family-anchor id is not replaced by a placeholder');
+    assert.ok(d.includes('Couldn\'t start'), 'the map explains why the built-in type is the recommended one');
+    assert.ok(d.includes('[t1-role: senior-<role>]'), 'the role marker stays mandatory');
+    assert.ok(d.includes('Never build the role inline.'));
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
@@ -704,12 +918,12 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
     assert.equal(out.split(dashLink).length - 1, 2, 'banner repeats the URL near the waiting line for compact terminals');
     assert.match(out, /TRAFFIC ONE SETUP/i, 'banner is recognizable to the user');
 
-    // Another surface already showed the link (the first banner stamped the shared
-    // marker) → the runner prints a compact wait line, never the URL twice.
+    // THIS runner just printed its own banner → it does not print the same block
+    // twice back-to-back. Scoped to the banner alone: it gates no other surface.
     writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' }, process.env, 'cursor');
     out = '';
     announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
-    assert.ok(!out.includes('http://127.0.0.1:55174'), 'duplicate banner suppressed after the first emission');
+    assert.ok(!out.includes('http://127.0.0.1:55174'), 'the runner does not reprint its own banner immediately');
     assert.match(out, /Waiting for Traffic One setup/i, 'compact wait line still explains the block');
 
     // Placeholder (:0/) → never surfaced.
@@ -723,12 +937,13 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
   }
 });
 
-test('bootstrap-only output stamps the same session marker consumed by the waiter', async () => {
+test('bootstrap output does NOT silence the waiter — its stdout is not proof the user saw the link', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
   const { announceWizardUrl, bootstrapReadyOutput } = await import('../index');
   const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+  const { noteBrowserArrival } = await import('../../../shared/onboarding-server/browser-arrival');
 
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-bootstrap-marker-')));
   const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -739,10 +954,13 @@ test('bootstrap-only output stamps the same session marker consumed by the waite
     const token = 'bootstrap-token';
     const dashboard = `https://dash.example.test/onboarding/agent#p=55188&t=${token}`;
     const local = `http://127.0.0.1:55188/local?t=${token}`;
-    const ready = bootstrapReadyOutput(dir, token, dashboard, local, 'bootstrap:session');
+    const ready = bootstrapReadyOutput(dir, token, dashboard, local, 'cursor');
     assert.match(ready, /TRAFFIC_ONE_SETUP_READY/);
     assert.ok(ready.includes(dashboard));
-    assert.ok(ready.includes(local));
+    assert.match(ready, /does not count as showing it/i,
+      'the bootstrap must tell the agent its own stdout is not delivery');
+    assert.doesNotMatch(ready, /do not print the URLs again/i,
+      'the old show-once instruction is what agents echoed back as "link already shared above"');
 
     writeServerRecord(dir, {
       pid: process.pid,
@@ -751,10 +969,17 @@ test('bootstrap-only output stamps the same session marker consumed by the waite
       url: `http://127.0.0.1:55188/?t=${token}`,
       startedAt: 'x',
     }, process.env, 'cursor');
+    // Cursor collapses the bootstrap's stdout, so the waiter must STILL show the link.
     let waiter = '';
     announceWizardUrl(dir, (chunk) => { waiter += chunk; }, 'cursor', 'bootstrap_session');
-    assert.doesNotMatch(waiter, /onboarding\/agent|127\.0\.0\.1:55188\/local/);
-    assert.match(waiter, /links shown above/i);
+    assert.match(waiter, /onboarding\/agent/, 'the waiter re-offers the link the user may never have seen');
+
+    // Once the wizard is actually open in a browser, it goes quiet.
+    noteBrowserArrival(dir, token, process.env, 'cursor');
+    let quiet = '';
+    announceWizardUrl(dir, (chunk) => { quiet += chunk; }, 'cursor', 'bootstrap_session');
+    assert.doesNotMatch(quiet, /onboarding\/agent/);
+    assert.match(quiet, /open in your browser/i);
   } finally {
     if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
@@ -764,7 +989,7 @@ test('bootstrap-only output stamps the same session marker consumed by the waite
   }
 });
 
-test('announceWizardUrl ignores a legacy hosted-only marker and emits the direct /local fallback', async () => {
+test('announceWizardUrl ignores a legacy marker and emits the direct /local fallback when no probe verdict exists', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -795,6 +1020,66 @@ test('announceWizardUrl ignores a legacy hosted-only marker and emits the direct
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
     if (previousDashboard === undefined) delete process.env.TRAFFIC_ONE_DASHBOARD_URL;
     else process.env.TRAFFIC_ONE_DASHBOARD_URL = previousDashboard;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── rearmSetupLinkNudge: a PENDING waiter exit must re-arm the gate's setup-link
+// nudge, or every wait retry inside the 5-minute TTL runs with no user-visible
+// surface at all (observed live on Claude: the link never reached the user). ──
+
+test('rearmSetupLinkNudge clears the nudge marker for the live server token', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { rearmSetupLinkNudge } = await import('../index');
+  const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+  const { emittedWithin, stampEmitMarker } = await import('../../../shared/once');
+  const { SETUP_LINK_NUDGE_TTL_MS, setupLinkNudgeLabel } = await import('../../../shared/onboarding-server/wizard-links');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-rearm-')));
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    writeServerRecord(dir, {
+      pid: process.pid,
+      port: 55191,
+      token: 'rearm-token',
+      url: 'http://127.0.0.1:55191/?t=rearm-token',
+      startedAt: 'x',
+    }, process.env, 'claude');
+    stampEmitMarker(dir, setupLinkNudgeLabel('rearm-token'));
+    assert.equal(emittedWithin(dir, setupLinkNudgeLabel('rearm-token'), SETUP_LINK_NUDGE_TTL_MS), true);
+
+    rearmSetupLinkNudge(dir, 'claude');
+    assert.equal(emittedWithin(dir, setupLinkNudgeLabel('rearm-token'), SETUP_LINK_NUDGE_TTL_MS), false,
+      'a pending exit re-arms the nudge for the next gated tool call');
+  } finally {
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rearmSetupLinkNudge without a server record clears the placeholder label and never throws', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { rearmSetupLinkNudge } = await import('../index');
+  const { emittedWithin, stampEmitMarker } = await import('../../../shared/once');
+  const { SETUP_LINK_NUDGE_TTL_MS, setupLinkNudgeLabel } = await import('../../../shared/onboarding-server/wizard-links');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-rearm-norec-')));
+  const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    stampEmitMarker(dir, setupLinkNudgeLabel(''));
+    rearmSetupLinkNudge(dir, 'claude');
+    assert.equal(emittedWithin(dir, setupLinkNudgeLabel(''), SETUP_LINK_NUDGE_TTL_MS), false,
+      'the record-less placeholder marker is cleared too');
+  } finally {
+    if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -63,12 +63,11 @@ change direction. Capture:
 **3. Implement.** Make the smallest scoped UI changes that satisfy the brief;
 preserve product logic and data flow.
 
-**4. Verify.** Capture screenshots at representative breakpoints or Storybook
-states, then check hierarchy, spacing, text fit, overflow, focus, contrast,
-loading/empty/error states, and reduced motion. On Codex, drive the in-app
-browser with the recipe in the `browser-qa` skill
-(`.traffic-one/skills/browser-qa/SKILL.md`) — never tool-search for or read the
-bundled `control-in-app-browser` skill.
+**4. Verify.** Follow `VerificationContractV2`. Behavioral changes use local
+headless Playwright without mandatory screenshots. Visual changes add only the
+contract's required widths (normally 390 and 1440; 768 only for tablet risk).
+Native UI uses its simulator/emulator adapter. The interactive browser is
+optional diagnosis, never canonical evidence.
 
 **5. Refine.** Fix the top remaining visual regressions before delivery.
 
@@ -141,12 +140,16 @@ For each visible element, before commit:
 
 ## Don't
 
-- Don't propose vanilla-extract, styled-components, or `@emotion`. The active stacks use **Tailwind + shadcn/ui** (web + Ionic) or **NativeWind + React Native Reusables** (Expo).
-- Don't hardcode colours, spacing, sizes — use Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables (`--background`, `--foreground`, `--primary`, …) defined in `globals.css`.
+- Don't replace the resolved component or styling system with a second one.
+  Apply `rules/frontend/component-system.md`: compatible React, Vue, Svelte,
+  Astro-renderer, and Inertia profiles use their selected shadcn adapter;
+  unsupported web and native profiles keep their framework-native conventions.
+- Don't scatter hardcoded colours, spacing, sizes, radii, or motion values.
+  Reuse the active token/theme system or add a named token.
 - Don't add motion that delays user actions.
 - Don't ship without states: default, hover, focus, active, disabled, loading, error, empty.
 - Don't validate accessibility as a "constraint that limits creativity" — it's a baseline that enables it.
 - Don't ship generic centered heroes, decorative card grids, or dashboards that
   do not answer the user's real workflow question.
-- Don't accept a design pass without visual QA artifacts or a clear note about
-  why screenshots could not be captured.
+- Don't accept a visual-impact pass without the screenshots listed by its
+  verification contract. Behavioral-only work does not need screenshots.

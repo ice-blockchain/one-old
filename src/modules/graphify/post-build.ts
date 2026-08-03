@@ -16,7 +16,7 @@ import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, codeGraphIndexIsStale } from '../../shared/codegraph';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../runners/gitnexus';
 import { bootstrap as graphifyBootstrapImpl, graphifyGraphIsEmpty } from '../../runners/graphify';
 import { authSatisfied } from '../../shared/auth';
@@ -144,9 +144,7 @@ function buildHintMessage(provider: 'gitnexus' | 'graphify', result: CodeGraphRe
       ? 'used existing `graphify` install'
       : (result.action === 'used-managed'
         ? 'used Traffic One managed `graphify` install'
-        : (result.action === 'installed-pipx'
-          ? 'installed `graphifyy` via pipx'
-          : 'installed `graphifyy` in a Traffic One managed venv'));
+        : 'installed `graphifyy` in a Traffic One managed venv');
     return `[graphify] Codebase graph built (${seconds}s, ${actionLabel}). `
       + 'Report at `.traffic-one/graphify-out/GRAPH_REPORT.md` (under .traffic-one, already gitignored). '
       + 'Subagents and skills will consult it before grep/glob for module/structure questions.';

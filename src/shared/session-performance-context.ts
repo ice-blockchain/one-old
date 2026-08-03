@@ -4,7 +4,7 @@
 
 import { AGENT_ROLES, PERFORMANCE_CONFIG } from '../config/performance';
 import { currentHostModelTarget, currentModelForTier } from './current-model-tiers';
-import { detectHostPlan } from './host-plan';
+import { detectHostPlan } from './host/plan';
 import { canonicalHost } from './model-tiers';
 import { obj } from './obj';
 import { effectiveTierForRole, teamModeForLevel } from './performance';

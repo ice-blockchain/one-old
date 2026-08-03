@@ -18,6 +18,7 @@ import {
   windsurfCommand,
 } from '../sources/hooks';
 import { HOST_MODELS } from '../../config/model-tiers';
+import { DEFAULT_PUBLIC_ENDPOINT } from '../../config/one-mcp';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const MAX_CURSOR_TIER_LENGTH = Math.max(
@@ -134,7 +135,7 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
       assert.doesNotMatch(worker.args.join(' '), /\[\s+-f\s+|\bexec\s+node\b/, `${label} MCP worker must use the Node bootstrap`);
     }
     assert.equal(sharedMcp.mcpServers['traffic-one-mcp'], undefined, 'Claude/Cursor/Codex must not expose the public server');
-    assert.equal(copilotMcp.mcpServers['traffic-one-mcp'], undefined, 'milestone A keeps public registration build-disabled');
+    assert.equal(copilotMcp.mcpServers['traffic-one-mcp'], undefined, 'the compiled switch keeps public registration disabled');
     const frontendAgent = fs.readFileSync(path.join(dir, 'agents', 'senior-frontend.agent.md'), 'utf8');
     assert.match(frontendAgent, /^tools: \["view", "search", "bash", "edit"\]$/m);
     assert.doesNotMatch(frontendAgent, /^tools: Read,/m);
@@ -168,6 +169,29 @@ test('generated agent-facing documentation contains no Traffic One authoring pat
   // intentionally legal. These patterns name Traffic One's authoring topology
   // and therefore cannot resolve inside an installed plugin.
   const authoringPath = /(?:\bsrc\/(?:modules\/|gen\/|build\/|hooks\/(?:claude|copilot|cursor|devin|kilo|opencode|windsurf)-entry\.ts\b|config\/model-tiers\.ts\b|shared\/(?:performance-config|stack-layout)\.ts\b|(?:shared|runners)\/onboarding-server(?:\/|\b))|\bdist\/scripts\/)/;
+  // A shipped doc that names `scripts/<path>.js` is naming a compiled runtime
+  // module. Resolve against src/, never dist/, because `npm test` runs BEFORE
+  // `npm run build`. Observed live: the orchestrator skill required
+  // `scripts/shared/state/local-prefs.js` long after that module became the
+  // directory `local-prefs/`; both call sites sit in `try{}catch{}`, so the
+  // code-graph provider silently came back empty every run. The flat `.cjs` shims
+  // at the output root are a separate surface (build-runtime SHIMS), not matched.
+  //
+  // Existence in src/ is necessary but NOT sufficient, and assuming it was left
+  // this guard blind in the one direction it exists to cover. `tsconfig.build.json`
+  // excludes whole trees from the emit — measured: 849 source files, 501 emitted —
+  // so `scripts/gen/index.js` has a src counterpart, passes an existence check,
+  // and is MODULE_NOT_FOUND in an installed plugin. That is the same defect class
+  // as the stale `local-prefs.js` path, reached from the other side.
+  const BUILD_EXCLUDED = /^(?:gen|build|test-environment|runners\/lighthouse)\//;
+  const unresolvableScriptPaths = (content: string): string[] => (
+    [...new Set(content.match(/\bscripts\/[A-Za-z0-9_./-]+\.js\b/g) || [])]
+      .filter((ref) => {
+        const rel = ref.slice('scripts/'.length, -'.js'.length);
+        if (BUILD_EXCLUDED.test(rel) || /(?:^|\/)__tests__\//.test(rel) || /\.test$/.test(rel)) return true;
+        return !fs.existsSync(path.join(REPO_ROOT, 'src', `${rel}.ts`));
+      })
+  );
   try {
     const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const docs = write.written.filter((relPath) => (
@@ -190,6 +214,11 @@ test('generated agent-facing documentation contains no Traffic One authoring pat
         /\$\{[A-Z][A-Z0-9_]*:-/,
         `${relPath} embeds POSIX-only plugin-root parameter expansion`,
       );
+      assert.deepEqual(
+        unresolvableScriptPaths(content),
+        [],
+        `${relPath} names compiled runtime modules that do not exist`,
+      );
     }
 
     const gateSkills = fs.readdirSync(path.join(REPO_ROOT, 'src', 'modules'), { withFileTypes: true })
@@ -205,7 +234,32 @@ test('generated agent-facing documentation contains no Traffic One authoring pat
         /\$\{[A-Z][A-Z0-9_]*:-/,
         `${label} embeds POSIX-only plugin-root parameter expansion`,
       );
+      assert.deepEqual(
+        unresolvableScriptPaths(content),
+        [],
+        `${label} names compiled runtime modules that do not exist`,
+      );
     }
+
+    // Negative row: a path-existence assertion that cannot fail is decoration.
+    assert.deepEqual(
+      unresolvableScriptPaths("require('scripts/shared/state/does-not-exist.js')"),
+      ['scripts/shared/state/does-not-exist.js'],
+      'the compiled-module path check must reject a module with no source',
+    );
+    assert.deepEqual(
+      unresolvableScriptPaths("require('scripts/shared/state/local-prefs/index.js')"),
+      [],
+      'the compiled-module path check must accept a directory-index module that exists',
+    );
+    // The other direction, which existence alone could not see: these DO have a
+    // src counterpart and are still absent from an installed plugin, because
+    // tsconfig.build.json excludes their trees from the emit.
+    assert.deepEqual(
+      unresolvableScriptPaths("require('scripts/gen/index.js') require('scripts/test-environment/run.js')"),
+      ['scripts/gen/index.js', 'scripts/test-environment/run.js'],
+      'a module excluded from the build must be rejected even though its source exists',
+    );
 
     const planGuard = fs.readFileSync(
       path.join(REPO_ROOT, 'src', 'modules', 'plan-guard', 'skill', 'SKILL.md'),
@@ -275,6 +329,9 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
     runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const tester = fs.readFileSync(path.join(dir, 'agents', 'senior-tester.md'), 'utf8');
     const shipper = fs.readFileSync(path.join(dir, 'agents', 'senior-shipper.md'), 'utf8');
+    const architect = fs.readFileSync(path.join(dir, 'agents', 'senior-architect.md'), 'utf8');
+    const backend = fs.readFileSync(path.join(dir, 'agents', 'senior-backend.md'), 'utf8');
+    const reviewer = fs.readFileSync(path.join(dir, 'agents', 'senior-reviewer.md'), 'utf8');
     const orchestrator = fs.readFileSync(
       path.join(dir, 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'),
       'utf8',
@@ -288,22 +345,85 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       'utf8',
     );
 
+    // Prose fixes need a SEMANTIC pin, not the byte snapshot: `golden:update` is
+    // the supported way to refresh that snapshot, so a version bump rewrites it
+    // and a silently deleted paragraph rides along unnoticed. Each of the three
+    // below cost a measured failure.
+    //
+    // D10 — a tester read a non-zero runner exit as "no artifact" and hand-wrote
+    // a report through eight denies, while the schema-valid one sat on disk.
+    assert.match(tester, /publishes the\s+complete[\s\S]{0,80}BEFORE it validates/i);
+    assert.match(tester, /Do NOT hand-write a report/i);
+    // D21 — findings routed by wording rather than ownership sent the tester
+    // source it may not touch, and the implementer test files it does not own.
+    assert.match(orchestrator, /role that OWNS the flagged path/i);
+    assert.match(orchestrator, /`senior-tester` owns test files/i);
+    // M5 (16co) — the depends: edge is required for CONSUMPTION, not just file
+    // overlap: unit 3 burned 565s building against exports a failed producer
+    // never delivered, because nothing asked for the edge. The runner's
+    // pre-model skip only helps when the edge exists.
+    assert.match(orchestrator, /REQUIRED when a later unit CONSUMES/);
+    assert.match(orchestrator, /skipped-dependency-failed/);
+    // M9 (16co) — "never blocks PLAN_READY" was false on every run with
+    // compiled assignments; the architect deny in 16co proved it live.
+    assert.doesNotMatch(orchestrator, /but it never blocks `PLAN_READY`/);
+    assert.match(testerPrompt, /consumes an earlier unit's exports/);
+    // M2 (16co) — the old guidance mandated the barrel monolith and forbade
+    // the sibling split the 400-line cap requires; the coin flip it produced
+    // cost the whole news batch.
+    assert.match(testerPrompt, /sibling files/);
+    assert.doesNotMatch(testerPrompt, /fold helper\/demo content into the owning feature entry/);
+
+    // D26 — 88 `wait_agent` calls at 60s in 15co, 72 of them bare timeouts,
+    // ≈9M input tokens for no information. The long ceiling is only safe because
+    // a bare wait returns on the FIRST message, so both halves are pinned; and
+    // the anti-serialization rule (spawn everything BEFORE waiting) must not be
+    // traded away to get it.
+    assert.match(orchestrator, /ONE bare `wait_agent`[\s\S]{0,120}900000/);
+    assert.match(orchestrator, /before any `wait_agent`/);
+    assert.match(orchestrator, /Never re-wait in 30–60s slices/);
+
+    assert.match(testerPrompt, /<IMPLEMENTER_DIGEST_PATHS>/);
+    assert.doesNotMatch(testerPrompt, /Both implementer digests above/);
+    assert.match(orchestrator, /Never wait for or require a digest from a role absent/i);
+    assert.doesNotMatch(orchestrator, /Wait for both to return before Phase 3/);
+    assert.match(architect, /Runtime compiles architecture, verification, assignments/i);
+    assert.match(architect, /Write only:/i);
+    assert.doesNotMatch(architect, /Required workspace scaffold|Assignments manifest \(REQUIRED\)/i);
+    assert.match(testerPrompt, /runtime compiles and hashes those\s+contracts/i);
+    assert.doesNotMatch(testerPrompt, /Also write the assignments manifest|architect may create empty scaffold/i);
+    assert.doesNotMatch(backend, /spawned in parallel with `senior-frontend`/i);
+    assert.match(backend, /backend-only\/CLI\/worker profiles have no\s+frontend sibling/i);
+    assert.match(reviewer, /never a\s+missing frontend\/backend sibling/i);
+
     for (const [name, content] of [
       ['senior tester', tester],
       ['tester spawn template', testerPrompt],
     ] as const) {
-      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report\.json/i, `${name} names the canonical report`);
-      assert.match(content, /schemaVersion(?::|`)\s*1/i, `${name} requires QaReportV1`);
-      assert.match(content, /390[^\n]*768[^\n]*1440|390[\s\S]{0,300}768[\s\S]{0,300}1440/, `${name} requires the full viewport matrix`);
-      assert.match(content, /blocked:browser-unavailable/, `${name} distinguishes browser unavailability`);
-      assert.match(content, /blocked:sandbox/, `${name} preserves sandbox blockers`);
-      assert.match(content, /blocked:usage-limit/, `${name} preserves usage blockers`);
-      assert.match(content, /blocked:timeout/, `${name} preserves timeout blockers`);
-      assert.match(content, /Every blocked (?:outcome|status)[\s\S]{0,60}`TESTS_FAILING`/i, `${name} cannot return green when blocked`);
-      assert.match(content, /no\s+frontend implementer digest/i, `${name} limits the backend-only exemption`);
+      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report-v2\.json/i, `${name} names the canonical report`);
+      assert.match(content, /schemaVersion(?::|`)\s*2/i, `${name} requires QaReportV2`);
+      for (const impact of ['none', 'nonvisual', 'behavioral', 'visual', 'native-ui']) {
+        assert.match(content, new RegExp(`\\b${impact}\\b`), `${name} covers ${impact}`);
+      }
+      assert.match(content, /behavioral[\s\S]{0,300}(?:(?:does not require|without)\s+screenshots?|screenshots?\s+(?:are\s+)?optional)/i,
+        `${name} does not force behavioral screenshots`);
+      assert.match(content, /390[\s\S]{0,120}1440[\s\S]{0,140}768[\s\S]{0,120}(?:only|tablet)/i,
+        `${name} makes the tablet width conditional`);
+      assert.match(content, /blocked-environment[\s\S]{0,160}`TESTS_FAILING`/i,
+        `${name} cannot return green when the environment is blocked`);
+      assert.match(content, /interactive browser plugin[\s\S]{0,80}optional/i,
+        `${name} keeps the interactive browser optional`);
+      assert.match(content, /local (?:headless )?Playwright/i,
+        `${name} uses local Playwright for browser behavior`);
     }
-    assert.match(tester, /record that evidence in `tester\.md`[\s\S]{0,120}closed `QaReportV1` schema/i,
-      'fresh-build proof stays in the digest rather than adding invalid QA fields');
+    // Freshness on disk proves only that a build exists — not that the base URL
+    // served it. The one field that answers "which app answered?" is mandatory,
+    // and so is owning the port (a leftover preview on 4173 passed 21/21 checks
+    // against another project's app in a measured run).
+    assert.match(tester, /expected\s+fingerprint[\s\S]{0,120}(?:served fingerprint|fingerprint observed over HTTP)/i,
+      'the tester must record the build identity it observed over HTTP');
+    assert.match(tester, /strict port|free port/i,
+      'the tester must own the port it sweeps rather than assume a well-known one');
     assert.match(digestContract, /verdict:[^\n]*SHIPPED[^\n]*FAILED/i,
       'canonical digest contract permits a failed shipper verdict');
     assert.match(digestContract, /exact `currentRunId`[\s\S]{0,180}never synthesize or\s+reformat/i,
@@ -313,15 +433,16 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       ['senior shipper', shipper],
       ['shipper spawn template', testerPrompt],
     ] as const) {
-      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report\.json/i, `${name} names the canonical QA report`);
-      assert.match(content, /QaReportV1/i, `${name} requires the strict QA contract`);
-      assert.match(content, /no frontend implementer digest/i, `${name} limits the backend-only exemption`);
+      assert.match(content, /\.traffic-one\/reports\/qa\/<run-?id>\/report-v2\.json/i, `${name} names the canonical QA report`);
+      assert.match(content, /QaReportV2/i, `${name} requires the strict QA contract`);
+      assert.match(content, /matching\s+(?:run\/)?contract\/source\s+hashes/i,
+        `${name} checks runtime-owned identity`);
       assert.match(content, /do not (?:stamp|deploy)|STOP/i, `${name} blocks shipping without QA`);
     }
 
-    assert.match(orchestrator, /Codex parent-browser bridge/);
-    assert.match(orchestrator, /same[^\n]*`senior-tester` agent/i);
-    assert.match(orchestrator, /consumes no\s+reviewer\/tester fix cycle/i);
+    assert.match(orchestrator, /interactive browser[\s\S]{0,100}never part of the mandatory path/i);
+    assert.match(orchestrator, /`senior-tester` owns the mechanical sweep/i);
+    assert.match(orchestrator, /local Playwright/i);
     assert.match(orchestrator, /Unresolved-run directive/);
     assert.match(orchestrator, /preserve currentRunId/i);
     assert.match(orchestrator, /verification blocked/);
@@ -334,7 +455,11 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
     ]) assert.match(orchestrator, new RegExp(`${heading}:`, 'i'));
     assert.match(orchestrator, /blocked\/nonterminal run[\s\S]{0,200}never enters Phase 5/i);
 
-    const installedRunStatus = "'scripts','run-status.cjs'";
+    // 19c-F2: the run-status helper is reached through the version-stable shim,
+    // never an env-var chain — an agent's exec sandbox on Codex has no
+    // *_PLUGIN_ROOT set, so the old `node -e` launcher resolved to the PROJECT
+    // dir and died with MODULE_NOT_FOUND.
+    const installedRunStatus = 'node ~/.traffic-one/bin/run-status.cjs';
     const transitions = [
       '--status blocked --outcome review-cycle-cap',
       '--status blocked --outcome test-cycle-cap',
@@ -348,7 +473,9 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       ['orchestrator', orchestrator],
       ['prompt templates', testerPrompt],
     ] as const) {
-      assert.ok(content.includes(installedRunStatus), `${name} resolves the installed run-status helper through Node`);
+      assert.ok(content.includes(installedRunStatus), `${name} reaches run-status through the version-stable shim`);
+      assert.ok(!/run-status\.cjs'\)\)"/.test(content),
+        `${name} must not resolve run-status through a *_PLUGIN_ROOT env chain`);
       assert.ok(content.includes('--run-id "<run-id>"'), `${name} uses a shell-neutral run-id placeholder`);
       for (const transition of transitions) {
         assert.ok(content.includes(transition), `${name} documents ${transition}`);
@@ -356,6 +483,104 @@ test('generated tester and orchestrator contracts fail closed on incomplete or b
       assert.match(content, /completed (?:transitions|commands) are evidence-gated/i,
         `${name} keeps completed transitions behind evidence`);
     }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 19c-F3: the architect was told a `"test": "echo \"no tests\" && exit 0"` no-op
+// was REQUIRED ("absence is not allowed") while the tester was told to flag it —
+// a green run was blocked only by scaffolding the plugin itself demanded, and
+// the frontend unblocked it with ceremony tests. Every doc must now agree that a
+// config-only package omits `test` entirely.
+// 19c-F1: root aborted a tester that was mid-digest 11s after a successful tool
+// call, destroying a verdict, because nothing defined what "stalled" means.
+// The kernel is the ONLY role-contract delivery on hosts without native
+// agent-doc injection since the context-pack pager was removed; the runtime
+// extracts it from the EMITTED doc via pluginRoot(), so the markers must
+// survive generation for every senior role. Fail here, not silently at spawn.
+test('every emitted senior agent doc keeps its T1KERNEL markers', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-kernel-markers-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    for (const role of [
+      'senior-architect', 'senior-frontend', 'senior-backend',
+      'senior-reviewer', 'senior-tester', 'senior-shipper',
+    ]) {
+      const doc = fs.readFileSync(path.join(dir, 'agents', `${role}.md`), 'utf8');
+      const match = /<!-- T1KERNEL:BEGIN -->\r?\n?([\s\S]*?)<!-- T1KERNEL:END -->/.exec(doc);
+      assert.ok(match, `${role}.md carries T1KERNEL markers`);
+      const kernel = match![1]!.trim();
+      assert.ok(kernel.length > 0 && kernel.length <= 2_500,
+        `${role} kernel is ${kernel.length} chars (cap 2500 so the child header stays under its 16k budget)`);
+      // Anti-drift pin. On a fallback host (Codex) the kernel is ALL the role
+      // text that arrives inline, so a gate-backed invariant dropped from it is
+      // an invariant the role never learns — it only meets it as a deny. Whoever
+      // trims a kernel for budget must compress this, not delete it.
+      if (role === 'senior-frontend' || role === 'senior-backend') {
+        assert.match(kernel, /collapsed code/,
+          `${role} kernel must carry the collapse invariant: the write gate denies it unconditionally`);
+      }
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated role contracts agree on no-op test scripts and forbid interrupting a working agent', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-role-contract-coherence-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const docs = {
+      architect: fs.readFileSync(path.join(dir, 'agents', 'senior-architect.md'), 'utf8'),
+      tester: fs.readFileSync(path.join(dir, 'agents', 'senior-tester.md'), 'utf8'),
+      qualityTooling: fs.readFileSync(path.join(dir, 'rules', 'common', 'quality-tooling.md'), 'utf8'),
+      newProject: fs.readFileSync(path.join(dir, 'rules', 'modes', 'new-project-setup.md'), 'utf8'),
+      // Profile-specific implementation guidance remains an authority for the
+      // scaffold's package.json content, so it is scanned independently from
+      // the runtime-owned architect contract.
+      monorepo: fs.readFileSync(
+        path.join(dir, 'skills-catalog', 'monorepo-architecture', 'SKILL.md'),
+        'utf8',
+      ),
+    };
+
+    // No doc may PRESCRIBE the no-op; every mention must be a prohibition.
+    for (const [name, content] of Object.entries(docs)) {
+      for (const line of content.split('\n')) {
+        if (!/no tests/i.test(line)) continue;
+        assert.ok(
+          /\bnever\b|\bno hollow\b|\bno-op\b|false signal|inflates|meaningless/i.test(line),
+          `${name} mentions a no-tests script outside a prohibition: ${line.trim()}`,
+        );
+      }
+      assert.ok(!/no-op is\s+allowed|allowed, absence is not/i.test(content),
+        `${name} still permits a no-op test script`);
+    }
+    // The architect does not author packages or test scripts at all; runtime
+    // assigns those scaffold outputs to an eligible implementer.
+    assert.match(docs.architect, /Runtime compiles architecture, verification, assignments/i);
+    assert.match(docs.architect, /Never create or edit:/i);
+    assert.doesNotMatch(docs.architect, /Required workspace scaffold/i);
+    assert.doesNotMatch(docs.architect, /Assignments manifest \(REQUIRED\)/i);
+    assert.match(docs.qualityTooling, /config-only packages (?:may )?omit (?:the `?test`? script|it)/i);
+    assert.match(docs.monorepo, /omits? `?test`? entirely/i);
+    // The tester must not demand a ceremony test for a package with no source.
+    assert.match(docs.tester, /not a finding/i);
+    // The tester must never be told it may edit package.json: the run-team
+    // ownership gate denies that write, so any such instruction is unfollowable.
+    assert.doesNotMatch(docs.tester, /both are inside your scope/i);
+    assert.match(docs.tester, /never edit `?package\.json`? yourself/i);
+
+    const orchestrator = fs.readFileSync(
+      path.join(dir, 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'),
+      'utf8',
+    );
+    assert.match(orchestrator, /never interrupt a role turn that is still working/i);
+    assert.match(orchestrator, /positive evidence of inactivity/i);
+    assert.match(orchestrator, /silence toward you is not evidence/i);
+    // An aborted verifier's stale evidence must not be reusable.
+    assert.match(orchestrator, /stop counting as current evidence/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -584,22 +809,17 @@ test('emitMcp omits the Copilot public server when the build-time registration s
   }
 });
 
-test('emitMcp refuses direct Supabase activation and accepts the reviewed custom release endpoint', () => {
+test('emitMcp registers the fixed public endpoint when the compiled switch is on', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-mcp-enabled-'));
   try {
     const write = new GenRun({ check: false, root: dir, sourceRoot: REPO_ROOT });
-    assert.throws(() => emitMcp(write, true), /public release blocked for registration/);
-    assert.throws(
-      () => emitMcp(write, true, 'https://mcp.traffic-one.example/public-mcp'),
-      /seven live rows/,
-    );
-    emitMcp(write, true, 'https://mcp.traffic-one.example/public-mcp', true);
+    emitMcp(write, true);
     const copilot = JSON.parse(fs.readFileSync(path.join(dir, '.mcp-copilot.json'), 'utf8')) as {
       mcpServers: Record<string, { type?: string; tools?: unknown[] }>;
     };
     assert.deepEqual(copilot.mcpServers['traffic-one-mcp'], {
       type: 'http',
-      url: 'https://mcp.traffic-one.example/public-mcp',
+      url: DEFAULT_PUBLIC_ENDPOINT,
       tools: [],
     });
   } finally {
@@ -684,6 +904,40 @@ test('static emitter recovers when sourceRoot points at dist', () => {
     const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'gen', 'static', 'plugin-instructions.md'), 'utf8');
     assert.equal(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), source);
     assert.equal(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8'), source);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A bare `go build` over a package pattern writes a binary named after the
+// package directory whenever the pattern matches exactly one `main` package
+// (cmd/go/internal/work/build.go). On a Traffic One compiled layout that name IS
+// the directory, so the command exits 1 with `build output "internal" already
+// exists and is a directory` while nothing is wrong with the code.
+//
+// Asserted over EVERY generated doc, not the one line that was wrong. The QA
+// runner hit this in 15cl; the fix went into the runner and into the layout
+// prose; and 18cl's reviewer then re-derived the same failure from a project ADR
+// that had copied the bare form out of `golang-patterns` — a doc nobody had
+// re-read. Shipped commands propagate into user projects, so this is the class.
+test('no generated doc prints a `go build` that can collide with its own package dir', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-go-build-'));
+  try {
+    const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const offenders: string[] = [];
+    for (const relPath of write.written.filter((p) => /\.(?:md|mdc)$/i.test(p))) {
+      const body = fs.readFileSync(path.join(dir, relPath), 'utf8');
+      for (const line of body.split('\n')) {
+        // Only package-pattern builds collide; `go build` of a named .go file or
+        // an explicit `-o` target is fine, and so is prose that merely mentions
+        // the broken form while explaining it.
+        if (!/(?:^|[\s`])go build\s/.test(line)) continue;
+        if (/-o\b/.test(line)) continue;
+        if (!/(?:\.\/[^\s`]*|\.\.\.)/.test(line)) continue;
+        offenders.push(`${relPath}: ${line.trim()}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `sinkless \`go build\` in generated docs:\n${offenders.join('\n')}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

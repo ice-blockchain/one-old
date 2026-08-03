@@ -29,7 +29,7 @@ re-grepping the repo.
 ```markdown
 # <role> digest — run <run-id>
 
-verdict: <YOUR OWN role's token ONLY — architect: PLAN_READY · frontend/backend: IMPLEMENTED or BLOCKED <one-line reason> · reviewer: APPROVED or CHANGES_REQUESTED · tester: TESTS_GREEN or TESTS_FAILING · shipper: SHIPPED or FAILED. Never borrow another role's token: an implementer digest must not say PLAN_READY, APPROVED, or CHANGES_REQUESTED (observed live: a backend digest claiming PLAN_READY and a frontend digest claiming CHANGES_REQUESTED).>
+verdict: <YOUR OWN role's token ONLY — architect: PLAN_READY · frontend/backend: IMPLEMENTED or BLOCKED <one-line reason> · reviewer: APPROVED or CHANGES_REQUESTED · tester: TESTS_GREEN or TESTS_FAILING · shipper: SHIPPED or FAILED. Never borrow another role's token: an implementer digest must not say PLAN_READY, APPROVED, or CHANGES_REQUESTED (observed live: a backend digest claiming PLAN_READY and a frontend digest claiming CHANGES_REQUESTED). `FIXES_APPLIED`/`FIXES_FAILING` are fix-cycle REPLY terminators, never digest verdicts — a fix-cycle digest re-emit still says IMPLEMENTED.>
 finished_at: <ISO-8601 UTC — run `date -u +%Y-%m-%dT%H:%M:%SZ` for the real value; never guess, hand-compute an elapsed time, or write a midnight/future placeholder. Traffic One host-stamps this line with the real write-time and OVERWRITES any value that is malformed, in the future, dated before the run began, or minutes older than the actual write (stale/backdated) — a fabricated timestamp is silently corrected, not trusted.>
 
 ## Touched
@@ -168,6 +168,11 @@ as the audit needs.
 
 - Write your digest **before** emitting the terminal status token (PLAN_READY,
   APPROVED, etc.) — the orchestrator reads the digest after the spawn returns.
+- **Verification claims are facts, not summaries.** Every "passes" / "green" /
+  "all clear" statement must name the command you actually ran and reflect its
+  real exit status. Never write a green claim for a gate you did not run or that
+  failed — the next role re-runs the same command, and the contradiction costs a
+  full fix cycle.
 - **Repo-relative paths.** Absolute paths cost ~60 chars per line for nothing.
 - **No parenthetical annotations on Touched.** Use "Public contracts (delta only)"
   for facts that matter.

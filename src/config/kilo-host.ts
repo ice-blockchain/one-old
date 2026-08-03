@@ -20,9 +20,15 @@ export const KILO_HOOK_SHELL_ENV = 'shell.env';
 export const KILO_HOOK_PERMISSION_ASK = 'permission.ask';
 export const KILO_HOOK_EVENT = 'event';
 
-export const KILO_HOST_PROJECT_DIR = '.kilo';
-export const KILO_HOST_AGENTS_DIR = 'agents';
-export const KILO_HOST_PROJECT_MARKER_FILE = 'traffic-one.json';
+// Wrapper API generation stamped into the installed wrapper's owner record.
+// v2 (1.0.44): systemMessage banner composition in chat.message + session.idle
+// turn-end delivery through the already-subscribed `event` hook. Absent stamp =
+// generation 1 — the doctor reports stale-wrapper until `install --yes` re-runs.
+export const KILO_HOST_WRAPPER_API = 2;
+
+const KILO_HOST_PROJECT_DIR = '.kilo';
+const KILO_HOST_AGENTS_DIR = 'agents';
+const KILO_HOST_PROJECT_MARKER_FILE = 'traffic-one.json';
 export const KILO_HOST_AGENTS_REL = `${KILO_HOST_PROJECT_DIR}/${KILO_HOST_AGENTS_DIR}`;
 export const KILO_HOST_PROJECT_MARKER_REL = `${KILO_HOST_PROJECT_DIR}/${KILO_HOST_PROJECT_MARKER_FILE}`;
 

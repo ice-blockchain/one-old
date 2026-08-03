@@ -10,16 +10,28 @@ import { isNonProjectRoot } from '../authoring-root';
 import { toPosix, writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
 import { pluginRoot } from '../paths';
-import { BOOTSTRAP_SKILLS } from '../../config/skill-filters';
-import { activeSkillsFor } from '../skill-filters';
-import { stackSpecForState, templatePath } from '../stacks';
+import { BOOTSTRAP_SKILLS, PROJECT_UNAVAILABLE_SKILLS } from '../../config/skill-filters';
+import { activeSkillsForProject } from '../skill-filters';
+import { capabilityProfileForRun, capabilityStateForRun } from '../architecture-contract';
+import {
+  capabilityProfileForProject,
+  eligibleRolesForProfile,
+  runtimeCapabilityStateFromProfile,
+} from '../capabilities';
+import { roleScopedRuleUnion, stackSpecForState, templatePath } from '../stacks';
 import { nowIsoNoMs } from '../text';
 import { detectHost } from '../host';
-import { cleanupPrevious, loadPreviousManifest, modeRulesForState } from './cleanup';
+import {
+  cleanupPrevious,
+  loadPreviousManifest,
+  modeReferenceRulesForState,
+  modeRulesForState,
+} from './cleanup';
 import { writeCursorAgentFiles } from './cursor-agents';
 import { writeCopilotAgentFiles } from './copilot-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
+import { writeCodexAgentFiles } from './codex-agents';
 import { writeKiloAgentFiles } from './kilo-agents';
 import { cleanupLegacyOpenCodeProjectAssets, refreshOpenCodeGlobalAgentFiles } from './opencode-assets';
 import { preserveManualRootContext, renderAgentsWithLocalContext, writeRootAgents, writeRootClaude } from './render-agents';
@@ -28,10 +40,9 @@ import { writeWindsurfHostAssets } from './windsurf-assets';
 
 type Rec = Record<string, unknown>;
 
-// Maintainer-only catalog tooling stays in the plugin's active skill registry,
-// but must never be copied into a user's shared project artifacts.
-const PROJECT_MATERIALIZATION_EXCLUDED_SKILLS = new Set(['model-tier-sync']);
-
+// Maintainer-only catalog tooling is classified centrally and must never be
+// copied into a user's shared project artifacts, even if a future bucket is
+// configured incorrectly.
 export interface MaterializeResult {
   rules: number;
   skills: number;
@@ -71,16 +82,39 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   }
 
   const root = pluginRoot();
+  const capabilityProfile = capabilityProfileForRun(cwd, state);
+  const capabilityState = capabilityStateForRun(cwd, state);
   const leanMode = isLeanMaterialization(cwd, state);
-  const spec = stackSpecForState(state);
-  const mandatoryRules = unique([...spec.mandatory, ...modeRulesForState(root, state)])
+  const spec = stackSpecForState(capabilityState);
+  const mandatoryRules = unique([
+    ...spec.mandatory,
+    ...modeRulesForState(root, capabilityState, capabilityProfile.profileId),
+  ])
     .filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
-  const referenceRules = unique(spec.optional)
+  const referenceRules = unique([
+    ...spec.optional,
+    ...modeReferenceRulesForState(root, capabilityState, capabilityProfile.profileId),
+  ])
     .filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
-  const rules = unique([...mandatoryRules, ...referenceRules]);
-  const skills = [...activeSkillsFor(state)]
+  // Envelope-referenced rules: hash-only bootstrap envelopes carry no bodies,
+  // so every rule id a role envelope can reference must stay readable under
+  // .traffic-one/rules/**. capabilityProfile is already the active run's frozen
+  // snapshot profile when a run is in flight (capabilityProfileForRun); union
+  // in the live project profile so the NEXT run's envelopes are covered too.
+  // Both resolve with frozen state={}, mirroring resolvedRoleMaterials
+  // (run-bootstrap-policy.ts). Bodies for superseded non-current runs may
+  // lapse after a profile change — gate validation is unaffected (it reads the
+  // plugin), only the local copy.
+  const envelopeProfiles = [capabilityProfile, capabilityProfileForProject(cwd, state)];
+  const envelopeRules = unique(envelopeProfiles.flatMap((profile) => roleScopedRuleUnion(
+    [...eligibleRolesForProfile(profile), 'quick-fix'],
+    runtimeCapabilityStateFromProfile(profile, {}),
+  ))).filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
+  const rules = unique([...mandatoryRules, ...referenceRules, ...envelopeRules]);
+  const host = detectHost();
+  const skills = [...activeSkillsForProject(cwd, state, host)]
     .filter((name) => !BOOTSTRAP_SKILLS.has(name)) // bootstrap skills live in the host skills/ dir, not per-project
-    .filter((name) => !PROJECT_MATERIALIZATION_EXCLUDED_SKILLS.has(name))
+    .filter((name) => !PROJECT_UNAVAILABLE_SKILLS.has(name))
     .filter((name) => fs.existsSync(path.join(root, 'skills-catalog', name, 'SKILL.md')))
     .sort();
 
@@ -107,39 +141,43 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   // live on disk but are deliberately NOT manifest-tracked (cleanup never sweeps
   // them). List them in the Active Skills index so agents discover them.
   const indexSkills = [...skills, ...extraSkillDirs(skillsRoot, new Set(skills))].sort();
-  const localAgents = renderAgentsWithLocalContext(cwd, state, rules, indexSkills, { mandatoryRules, referenceRules });
+  const localAgents = renderAgentsWithLocalContext(cwd, capabilityState, rules, indexSkills, {
+    mandatoryRules,
+    referenceRules: unique([...referenceRules, ...envelopeRules]),
+  });
   if (writeRootAgents(cwd, localAgents)) written += 1;
   if (writeRootClaude(cwd)) written += 1;
 
   // Host-native project role files are model-agnostic contracts. The active
   // user's plan, performance choice, and model lineup are injected at runtime
   // from local preferences rather than persisted in the shared project.
-  if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, state);
-  if (detectHost() === 'copilot') written += writeCopilotAgentFiles(cwd, state);
-  if (detectHost() === 'kilo') written += writeKiloAgentFiles(cwd, state);
+  if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, capabilityState);
+  if (detectHost() === 'copilot') written += writeCopilotAgentFiles(cwd, capabilityState);
+  if (detectHost() === 'kilo') written += writeKiloAgentFiles(cwd, capabilityState);
+  if (detectHost() === 'codex') written += writeCodexAgentFiles(cwd, capabilityState);
   // Legacy project-local OpenCode assets are shared, so every host removes only
   // Traffic One-generated copies. Model-pinned replacements are user-local and
   // are written exclusively by the active OpenCode host.
   removed += cleanupLegacyOpenCodeProjectAssets(cwd);
-  if (detectHost() === 'opencode') written += refreshOpenCodeGlobalAgentFiles(cwd, state);
+  if (detectHost() === 'opencode') written += refreshOpenCodeGlobalAgentFiles(cwd, capabilityState);
   let windsurfAssets: ReturnType<typeof writeWindsurfHostAssets> | null = null;
   let windsurfAgents = 0;
   if (detectHost() === 'windsurf') {
     windsurfAssets = writeWindsurfHostAssets(cwd, rules);
-    windsurfAgents = writeWindsurfAgentFiles(cwd, state);
+    windsurfAgents = writeWindsurfAgentFiles(cwd, capabilityState);
     written += windsurfAssets.written;
     written += windsurfAgents;
     removed += windsurfAssets.removed;
   }
 
-  const mobile = state.mobile as Rec | undefined;
+  const mobile = capabilityState.mobile as Rec | undefined;
   const manifestJson = (generatedAt: string): string => `${JSON.stringify({
     generatedBy: 'traffic-one',
     generatedAt,
     contextProfile: leanMode ? 'lean' : 'full',
-    stack: (state.stack as string) || 'minimal',
-    frontend: (state.frontend as string) || 'none',
-    backend: (state.backend as string) || 'none',
+    stack: (capabilityState.stack as string) || 'minimal',
+    frontend: (capabilityState.frontend as string) || 'none',
+    backend: (capabilityState.backend as string) || 'none',
     mobile: (mobile && (mobile.framework as string)) || 'none',
     rules: rules.map(toPosix),
     skills,

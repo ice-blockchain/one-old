@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { shouldOpenBrowser, startOnboardingServer, type RunningServer } from '../server';
+import { startOnboardingServer, type RunningServer } from '../server';
 
 interface Res { status: number; body: string; headers: http.IncomingHttpHeaders }
 
@@ -161,21 +161,14 @@ test('server: standalone:false does not write a registry record', async () => {
   });
 });
 
-test('external browser auto-open is OFF by default (in-app preview preferred); opt in via env', () => {
-  assert.equal(shouldOpenBrowser({}), false);
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: '1' }), true);
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: 'true' }), true);
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: 'on' }), true);
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: '0' }), false);
-});
-
-test('no host auto-pops the EXTERNAL browser — Cursor uses the in-app Simple Browser link, not an OS-browser pop', () => {
-  // Cursor opens the wizard in-app via the agent-surfaced clickable link (Cursor has
-  // no API to auto-open it, and an external pop is off-target + double-open-prone), so
-  // host alone NEVER triggers the OS browser. Only the explicit opt-in does.
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_HOST: 'cursor' }), false);
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_HOST: 'claude' }), false);
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_HOST: 'cursor', TRAFFIC_ONE_OPEN_BROWSER: '1' }), true);
+test('the wizard server has no browser-opening code path at all', () => {
+  // Traffic One never opens the setup link: the agent posts it and the user clicks
+  // it. The old TRAFFIC_ONE_OPEN_BROWSER opt-in is gone (it also popped the
+  // LOOPING loopback root rather than the dashboard deep link), so there is no flag
+  // that can reintroduce an auto-open.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.ts'), 'utf8');
+  assert.ok(!source.includes('TRAFFIC_ONE_OPEN_BROWSER'), 'no auto-open opt-in may survive');
+  assert.ok(!/\bxdg-open\b/.test(source) && !/spawn\(/.test(source), 'no opener is spawned');
 });
 
 test('server: rejects a non-loopback Host header (anti DNS-rebind)', async () => {
@@ -198,6 +191,62 @@ test('server: idle timeout closes the server', async () => {
       refused = true;
     }
     assert.ok(refused, 'expected the idle-closed server to refuse new connections');
+  } finally {
+    await server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// End-to-end proof of the delivery signal: a REAL browser request through the real
+// route stack is what silences the setup surfaces, not any surface merely printing
+// the URL. Exercised over HTTP rather than by calling the helper directly, so the
+// route-order (token gate → arrival record → dispatch) is covered too.
+test('server: only a real wizard-UI request records the browser arrival', async () => {
+  const { wizardOpenedByUser } = await import('../../../shared/onboarding-server/browser-arrival');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbsrv-arrival-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'prefs.json') };
+  const server = await startOnboardingServer({ cwd: dir, env, token: 'secret', standalone: false, idleMs: 60_000 });
+  const open = (): boolean => wizardOpenedByUser(dir, 'secret', env, server.trafficHost);
+  try {
+    assert.equal(open(), false, 'nothing observed yet');
+
+    // Our own liveness probe must never look like a user.
+    await request(server.port, '/healthz');
+    assert.equal(open(), false, '/healthz is the plugin polling itself');
+
+    // The redirect shell is hit by link unfurlers and preview panes, not only users.
+    await request(server.port, '/');
+    assert.equal(open(), false, '/ is not proof a human saw a wizard');
+
+    await request(server.port, '/favicon.ico');
+    assert.equal(open(), false, 'browser chrome is not a user');
+
+    await request(server.port, '/state', {}, 'OPTIONS');
+    assert.equal(open(), false, 'a CORS preflight fires before anything is rendered');
+
+    // An UNAUTHENTICATED /state is rejected at the token gate and must not count.
+    assert.equal((await request(server.port, '/state')).status, 403);
+    assert.equal(open(), false, 'a token-rejected caller is not the user\'s wizard');
+
+    // The loopback wizard actually loading IS the signal.
+    assert.equal((await request(server.port, '/local')).status, 200);
+    assert.equal(open(), true, 'the wizard UI loaded in a browser');
+  } finally {
+    await server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The hosted dashboard's first cross-origin call also proves it can reach loopback,
+// which is the failure the local fallback exists for.
+test('server: the hosted wizard authenticating against /state counts as arrival', async () => {
+  const { wizardOpenedByUser } = await import('../../../shared/onboarding-server/browser-arrival');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbsrv-arrival2-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'prefs.json') };
+  const server = await startOnboardingServer({ cwd: dir, env, token: 'secret', standalone: false, idleMs: 60_000 });
+  try {
+    assert.equal((await request(server.port, '/state?t=secret')).status, 200);
+    assert.equal(wizardOpenedByUser(dir, 'secret', env, server.trafficHost), true);
   } finally {
     await server.close();
     fs.rmSync(dir, { recursive: true, force: true });

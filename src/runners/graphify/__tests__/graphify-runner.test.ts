@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { bootstrap, ensureGraphifyTool, graphifyGraphIsEmpty } from '../index';
+import { bootstrap, ensureGraphifyTool, graphifyGraphIsEmpty, which } from '../index';
 import { toolInstallSpec, toolRuntime } from '../../toolchain';
 import { runtimeMissingMessage } from '../../../shared/runtime-resolve';
 
@@ -50,7 +50,7 @@ function withProject(fn: (cwd: string, prefs: string) => void): void {
 
 test('graphify installs the LATEST graphifyy (unpinned, no ==<recommended>)', () => {
   // The runner now targets latest via the shared toolchain contract. graphify is
-  // flagged installLatest with pipxPackage `graphifyy`, so the spec is the bare
+  // flagged installLatest with pipPackage `graphifyy`, so the spec is the bare
   // package name — never a `graphifyy==<recommended>` pin.
   const spec = toolInstallSpec('graphify');
   assert.equal(spec, 'graphifyy');
@@ -71,9 +71,6 @@ test('a missing >=3.10 python yields the beginner-friendly runtime message', () 
   const msg = runtimeMissingMessage('graphify', 'python', minMajor, minMinor);
   assert.match(msg, /graphify needs Python >=3\.10/);
   assert.match(msg, /none was found on this machine/);
-  // Caller appends the prior pipx error verbatim under "pipx attempt:".
-  const composed = msg + ` pipx attempt: \`pipx\` is not on PATH`;
-  assert.match(composed, /pipx attempt: `pipx` is not on PATH/);
 });
 
 test('graphify bootstrap honours the graphifyAutoRun:false opt-out', () => {
@@ -336,14 +333,14 @@ test('an unversioned PATH graphify is not assumed current', () => {
   });
 });
 
-test('graphify ensure falls back to a managed venv without pip --user', () => {
-  withProject((cwd, prefs) => {
-    // Stub a python3.12 (a name the resolver probes for a >=3.10 interpreter
-    // before the generic python3) that answers the version probe with a
-    // satisfying version and fakes `-m venv`. The venv python it drops answers
-    // the best-effort `pip install --upgrade pip` (no-op exit 0) and, on the
-    // graphifyy install, drops a graphify bin. pipx is absent on PATH, so the
-    // installer must take the managed-venv path — never `pip install --user`.
+// Stubs a python3.12 (a name the resolver probes for a >=3.10 interpreter before
+// the generic python3) that answers the version probe with a satisfying version
+// and fakes `-m venv`. The venv python it drops answers the best-effort
+// `pip install --upgrade pip` (no-op exit 0) and, on the graphifyy install,
+// drops a graphify bin. Returns the stub bin dir and the argv log both
+// interpreters append to.
+function stubPython(cwd: string): { bin: string; log: string } {
+  {
     const bin = path.join(cwd, 'bin');
     const log = path.join(cwd, 'python-args.log');
     fs.mkdirSync(bin, { recursive: true });
@@ -380,10 +377,25 @@ exit 1
     // generic python3; provide both so `which('python3.12')` resolves the stub.
     fs.writeFileSync(path.join(bin, 'python3.12'), pyStub, { mode: 0o755 });
     fs.writeFileSync(path.join(bin, 'python3'), pyStub, { mode: 0o755 });
+    return { bin, log };
+  }
+}
 
-    const savedPath = process.env.PATH;
-    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
-    try {
+// Runs `fn` with PATH pinned to the given dirs, always restoring the real one.
+function withPath<T>(dirs: string[], fn: () => T): T {
+  const saved = process.env.PATH;
+  process.env.PATH = [...dirs, '/bin', '/usr/bin'].join(path.delimiter);
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.PATH; else process.env.PATH = saved;
+  }
+}
+
+test('graphify installs into the Traffic One-managed venv, never pip --user', () => {
+  withProject((cwd, prefs) => {
+    const { bin, log } = stubPython(cwd);
+    withPath([bin], () => {
       const r = ensureGraphifyTool(cwd);
       assert.equal(r.ok, true);
       assert.equal(r.action, 'installed-venv');
@@ -395,8 +407,56 @@ exit 1
       assert.match(logged, /-m pip install --upgrade pip --quiet/);
       const saved = JSON.parse(fs.readFileSync(prefs, 'utf8'));
       assert.equal(saved.toolchain?.graphify?.installedVersion, '0.9.13');
-    } finally {
-      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
-    }
+    });
+  });
+});
+
+// The regression guard for the venv-only install policy. graphify used to run
+// `pipx install graphifyy` FIRST, which lands in the user's pipx home — outside
+// ~/.traffic-one, so `traffic-one uninstall` could not reach it and a graphifyy
+// the user had pinned themselves got clobbered. A pipx on PATH must now be
+// completely inert: this stub records any invocation AND drops a PATH graphify,
+// so reintroducing the pipx branch fails on the marker and on binPath alike.
+test('a pipx on PATH is never invoked — the install stays in the managed root', () => {
+  withProject((cwd) => {
+    const { bin } = stubPython(cwd);
+    const marker = path.join(cwd, 'pipx-was-called');
+    const pipxBin = path.join(cwd, 'pipx-bin');
+    fs.mkdirSync(pipxBin, { recursive: true });
+    fs.writeFileSync(
+      path.join(pipxBin, 'pipx'),
+      `#!/bin/sh\necho "$@" > "${marker}"\ncat > "${path.join(pipxBin, 'graphify')}" <<'G'\n#!/bin/sh\nif [ "$1" = "--version" ]; then echo "graphify 0.9.13"; exit 0; fi\nexit 0\nG\nchmod +x "${path.join(pipxBin, 'graphify')}"\nexit 0\n`,
+      { mode: 0o755 },
+    );
+
+    withPath([bin, pipxBin], () => {
+      // Without this the case could pass vacuously on a PATH that never had the
+      // stub — the assertion below is only meaningful if pipx IS resolvable.
+      assert.equal(which('pipx'), path.join(pipxBin, 'pipx'), 'the pipx stub must be resolvable');
+      const r = ensureGraphifyTool(cwd);
+      assert.equal(r.ok, true);
+      assert.equal(fs.existsSync(marker), false, 'pipx must never be spawned');
+      assert.equal(r.action, 'installed-venv');
+      assert.ok(
+        r.binPath?.startsWith(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT as string),
+        `binPath must be under the managed toolchain root, got ${r.binPath}`,
+      );
+    });
+  });
+});
+
+// The action must describe what actually happened: `previousError` used to
+// stand in for "first install", which without the pipx attempt would have made
+// every install report as an upgrade.
+test('a second install over an existing managed venv reports upgraded-venv', () => {
+  withProject((cwd) => {
+    const { bin } = stubPython(cwd);
+    withPath([bin], () => {
+      assert.equal(ensureGraphifyTool(cwd).action, 'installed-venv');
+      // The stub's graphify answers no --version, so the reuse candidates stay
+      // unusable and the runner re-enters the install path — this time over a
+      // venv binary that already exists.
+      assert.equal(ensureGraphifyTool(cwd).action, 'upgraded-venv');
+    });
   });
 });

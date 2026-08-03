@@ -5,9 +5,8 @@
 import { OPENCODE_MCP_SERVER_KEY, openCodeMcpServerEntry } from '../../config/opencode-mcp';
 import {
   DEFAULT_PUBLIC_ENDPOINT,
-  ONE_MCP_REGISTRATION_ACTIVE,
+  ONE_MCP_REGISTRATION,
   ONE_MCP_SERVER_NAME,
-  assertOneMcpPublicReleaseReady,
 } from '../../config/one-mcp';
 import { pluginVersion } from '../../config/plugin-identity';
 import type { GenRun } from '../lib/run';
@@ -38,15 +37,8 @@ export function emitManifests(run: GenRun): void {
 
 export function emitMcp(
   run: GenRun,
-  publicRegistrationActive = ONE_MCP_REGISTRATION_ACTIVE,
-  publicEndpoint = DEFAULT_PUBLIC_ENDPOINT,
-  liveManifestVerified = false,
+  publicRegistration = ONE_MCP_REGISTRATION,
 ): void {
-  assertOneMcpPublicReleaseReady({
-    sync: false,
-    registration: publicRegistrationActive,
-    reporting: false,
-  }, publicEndpoint, liveManifestVerified);
   const bundledWorker = openCodeMcpServerEntry(PLUGIN_ROOT_ENV_KEYS);
   // Shared by Claude, Cursor, and Codex. The public server is deliberately
   // absent because those plugin formats cannot hide its AI-facing tools while
@@ -65,10 +57,10 @@ export function emitMcp(
   run.json('.mcp-copilot.json', {
     mcpServers: {
       [OPENCODE_MCP_SERVER_KEY]: bundledWorker,
-      ...(publicRegistrationActive ? {
+      ...(publicRegistration ? {
         [ONE_MCP_SERVER_NAME]: {
           type: 'http',
-          url: publicEndpoint,
+          url: DEFAULT_PUBLIC_ENDPOINT,
           tools: [],
         },
       } : {}),

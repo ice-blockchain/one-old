@@ -19,6 +19,13 @@ import {
   runModelPolicyPath,
 } from '../../../shared/run-model-policy';
 import {
+  architectureInputPath,
+  compileArchitectureForRun,
+  publishRuntimeAssignments,
+  type ArchitectureInputV1,
+} from '../../../shared/architecture-contract';
+import { compileVerificationContract } from '../../../shared/verification-contract';
+import {
   hostScopedPerformancePrefs,
   withCursorAvailableModels,
 } from '../../../test-support/host-prefs';
@@ -26,7 +33,6 @@ import {
   correlatedCursorFailureGate,
   cursorFailureReconcileHook,
   reconcileCursorSubagentFailures,
-  settleCorrelatedCursorRetryOnStart,
 } from '../cursor-failures';
 import {
   EXHAUSTED_MODEL_TTL_MS,
@@ -80,6 +86,34 @@ function freezeCursorPolicy(cwd: string, resetFixturePolicy = false): void {
   assert.ok(ensureRunModelPolicy(cwd, RUN_ID, 'cursor', state, env));
 }
 
+function publishCursorFixtureRunContracts(cwd: string): void {
+  const state = readEffectiveState(cwd, {
+    ...process.env,
+    TRAFFIC_ONE_HOST: 'cursor',
+    TRAFFIC_ONE_USER_PLAN: 'pro',
+  });
+  const input: ArchitectureInputV1 = {
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [
+      { id: 'app-shell', name: 'App', kind: 'app-shell' },
+      { id: 'home', name: 'Home', kind: 'page' },
+      { id: 'api-service', name: 'Api Service', kind: 'service' },
+    ],
+  };
+  const inputFile = architectureInputPath(cwd, RUN_ID);
+  fs.mkdirSync(path.dirname(inputFile), { recursive: true });
+  fs.writeFileSync(inputFile, JSON.stringify(input));
+  const architecture = compileArchitectureForRun(cwd, RUN_ID, state);
+  const verification = compileVerificationContract(cwd, RUN_ID, state, architecture, {
+    changedPaths: [],
+  });
+  publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+  const digest = path.join(cwd, '.traffic-one', 'digests', RUN_ID, 'architect.md');
+  fs.mkdirSync(path.dirname(digest), { recursive: true });
+  fs.writeFileSync(digest, `# Architect\n\nverdict: PLAN_READY\n`);
+}
+
 function withCursorFixture<T>(fn: (fixture: CursorFixture) => T): T {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-failure-'));
   const cwd = path.join(base, 'project');
@@ -98,6 +132,8 @@ function withCursorFixture<T>(fn: (fixture: CursorFixture) => T): T {
   fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), `${JSON.stringify({
     mode: 'existing-codebase',
     stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
     onboardingComplete: true,
     currentRunId: RUN_ID,
   })}\n`, 'utf8');
@@ -340,6 +376,7 @@ test('Cursor incident: five Task preflights yield three starts and correlate onl
     preflights.push(taskPreflight(fixture.cwd, 'senior-architect', 'attempt_architect'));
     assert.notEqual(preflights.at(-1)?.kind, 'deny');
     startSubagent(fixture.cwd, 'senior-architect', 'tool_architect');
+    publishCursorFixtureRunContracts(fixture.cwd);
 
     // Create the roleless child before the later starts, but leave it
     // non-terminal while their Task preflights run. Rewriting the same inode to
@@ -354,11 +391,19 @@ test('Cursor incident: five Task preflights yield three starts and correlate onl
     const laterStartedAt = architectBirth + 1_501;
 
     preflights.push(taskPreflight(fixture.cwd, 'senior-frontend', 'attempt_frontend'));
-    assert.notEqual(preflights.at(-1)?.kind, 'deny');
+    assert.notEqual(
+      preflights.at(-1)?.kind,
+      'deny',
+      `frontend preflight unexpectedly denied: ${JSON.stringify(preflights.at(-1))}`,
+    );
     startSubagent(fixture.cwd, 'senior-frontend', 'tool_frontend', REQUESTED_MODEL, laterStartedAt);
 
     preflights.push(taskPreflight(fixture.cwd, 'senior-backend', 'attempt_backend'));
-    assert.notEqual(preflights.at(-1)?.kind, 'deny');
+    assert.notEqual(
+      preflights.at(-1)?.kind,
+      'deny',
+      `backend preflight unexpectedly denied: ${JSON.stringify(preflights.at(-1))}`,
+    );
     startSubagent(fixture.cwd, 'senior-backend', 'tool_backend', REQUESTED_MODEL, laterStartedAt + 1);
 
     // These are the two reuse-gate denials from the incident. Because Cursor
@@ -642,6 +687,28 @@ test('Cursor stop emits one followup for a correlated failure and suppresses it 
     const observation = listCursorSpawnObservations(fixture.cwd, RUN_ID)[0]!;
     assert.equal(observation.outcome, 'api-limit');
     assert.equal(observation.followupEmitted, false, 'the parent transcript abort suppresses continuation');
+  });
+
+  // 2cu-cursor: the user aborted the ONBOARDING turn minutes before the
+  // architect was spawned. That record stayed the newest `turn_ended` for the
+  // rest of the session (the parent never closed another turn), so every
+  // child's completion followup was suppressed and the orchestrator respawned
+  // its architect instead of continuing it.
+  withCursorFixture((fixture) => {
+    startSubagent(fixture.cwd, 'senior-backend', 'tool_stop_stale_parent_abort');
+    writeTerminalError(fixture, 'child-stale-parent-abort');
+    writeJsonl(path.join(fixture.parentDir, `${PARENT_ID}.jsonl`), [
+      { type: 'turn_ended', status: 'error', error: 'User aborted request' },
+      { role: 'user', message: { content: [{ type: 'text', text: 'give me the local link' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'Spawning the architect.' }] } },
+    ]);
+    const stopped = cursorFailureReconcileHook(ctxFor(fixture.cwd, 'Stop', {
+      session_id: PARENT_ID,
+    }));
+    assert.notEqual(stopped.kind, 'noop', 'a superseded abort must not suppress the continuation');
+    const observation = listCursorSpawnObservations(fixture.cwd, RUN_ID)[0]!;
+    assert.notEqual(observation.followupSuppressionReason, 'parent-transcript-user-abort');
+    assert.equal(observation.followupEmitted, true);
   });
 });
 

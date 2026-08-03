@@ -7,7 +7,7 @@ import * as path from 'path';
 
 type Rec = Record<string, unknown>;
 
-export type PatchOperationKind = 'add' | 'update' | 'delete' | 'move';
+type PatchOperationKind = 'add' | 'update' | 'delete' | 'move';
 
 export interface PatchFileOperation {
   kind: PatchOperationKind;
@@ -21,7 +21,7 @@ export type ApplyPatchParseResult =
   | { ok: true; operations: PatchFileOperation[] }
   | { ok: false; error: string };
 
-export interface ApplyPatchParseOptions {
+interface ApplyPatchParseOptions {
   // When omitted, parsing is structural only. When supplied, Add/Update/Delete/
   // Move are validated against the current filesystem and resultContent is
   // reconstructed for every operation that leaves a file behind.

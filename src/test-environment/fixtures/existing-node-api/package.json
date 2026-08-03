@@ -1,0 +1,15 @@
+{
+  "name": "existing-node-api-fixture",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A real Express + Mongoose API that never met Traffic One — no framework dep the deterministic artifact tables recognize.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "mongoose": "^8.4.0",
+    "ws": "^8.17.0"
+  }
+}

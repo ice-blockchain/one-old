@@ -8,34 +8,33 @@ import * as path from 'path';
 import { buildMcpPayload } from './buildMcpPayload';
 import { collectMetadata } from './collectMetadata';
 import { pluginUseEnabled } from '../../shared/state/plugin-use';
-import { SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
 import {
+  ONE_MCP_REPORT,
   ONE_MCP_REPORT_TIMEOUT_MS,
-  oneMcpReportingEnabled,
-  publicEndpoint,
-} from '../../config/one-mcp';
+  SAVE_MCP_REPORT,
+  STATUS_FILE,
+} from '../../config/reporting';
+import { DEFAULT_PUBLIC_ENDPOINT } from '../../config/one-mcp';
 import { mcpRequest, nowIso, readJson, stateForReport, writeJson } from './lib';
 import { readReportIdState } from './readReportIdState';
 
 type Rec = Record<string, unknown>;
 export interface RunOptions {
   endpoint?: string;
-  env?: NodeJS.ProcessEnv;
   state?: unknown;
   requireQueued?: boolean;
   transport?: (endpoint: string, payload: unknown) => Promise<unknown>;
-  /** Internal test seam; production callers must omit this build-gate override. */
+  /** Internal test seam; production callers use the compiled ONE_MCP_REPORT. */
   featureEnabled?: boolean;
 }
 
 export async function runReport(cwd: string, options: RunOptions = {}): Promise<{ ok: boolean; reportId?: string; skipped?: string; error?: unknown }> {
-  const env = options.env ?? process.env;
-  if (!oneMcpReportingEnabled(env, options.featureEnabled)) {
+  if (!(options.featureEnabled ?? ONE_MCP_REPORT)) {
     return { ok: false, skipped: 'reporting-inactive' };
   }
   const root = path.resolve(cwd);
-  if (!pluginUseEnabled(root, env)) return { ok: false, skipped: 'plugin-use-not-enabled' };
-  const endpoint = options.endpoint || publicEndpoint(env);
+  if (!pluginUseEnabled(root)) return { ok: false, skipped: 'plugin-use-not-enabled' };
+  const endpoint = options.endpoint ?? DEFAULT_PUBLIC_ENDPOINT;
   const idState = readReportIdState(root);
   if (!idState) return { ok: false, skipped: 'missing-report-id' };
   if (idState.invalid) return { ok: false, skipped: 'invalid-report-id' };
@@ -60,7 +59,7 @@ export async function runReport(cwd: string, options: RunOptions = {}): Promise<
 
   try {
     const transport = options.transport
-      || ((target: string, body: unknown) => mcpRequest(target, body, ONE_MCP_REPORT_TIMEOUT_MS, env));
+      || ((target: string, body: unknown) => mcpRequest(target, body, ONE_MCP_REPORT_TIMEOUT_MS));
     await transport(endpoint, payload);
     if (SAVE_MCP_REPORT) writeJson(statusPath, { status: 'ok', reportId: idState.id, endpoint, queuedAt, reportedAt: nowIso(), attempts, trigger, mcpPayload });
     return { ok: true, reportId: idState.id };

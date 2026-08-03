@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { maybeTraceHook } from '../hook-trace';
+import { maybeTraceHook } from '../hook/trace';
 import type { HookInput } from '../../core/types';
 
 function tmpProject(): string {

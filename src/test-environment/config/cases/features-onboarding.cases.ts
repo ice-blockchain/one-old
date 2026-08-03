@@ -157,4 +157,43 @@ export const FEATURE_ONBOARDING_CASES: Case[] = [
     ],
     notes: 'Drives the REAL wizard state machine (computeOnboarding/applyAnswer) to completion.',
   },
+  {
+    id: 'onb-flow-sim-existing-undetectable',
+    category: 'feature-onboarding',
+    layer: 'pure-node',
+    // A real Express + Mongoose API the deterministic artifact tables cannot
+    // see (the trading-bot-api shape): >5 source files → existing-codebase, no
+    // recognizable framework dep → undetectable → the 'tech-detect' step must
+    // fire and the AGENT's submission (via applyAgentTechClassification, the
+    // same writer `--set-tech` uses) must stamp the identity before the short
+    // wizard continues.
+    fixture: 'existing-node-api',
+    preSeed: {
+      // Only the mode + local preferences: stack/frontend/backend are the
+      // CLASSIFICATION's output, deliberately not preseeded.
+      mode: 'existing-codebase',
+      performance: 'balanced', team: { mode: 'subagents', approved: true },
+      openCode: false, codeGraphProvider: 'gitnexus',
+    },
+    scriptedAnswers: [
+      {
+        step: 'tech-detect',
+        value: {
+          frontend: 'none',
+          backend: 'node',
+          realtime: 'light',
+          evidence: 'express + mongoose + ws in package.json',
+        },
+      },
+      { step: 'open-code', value: false },
+      { step: 'performance', value: 'balanced' },
+      { step: 'team-confirmation', value: { action: 'approve' } },
+      { step: 'code-graph', value: 'gitnexus' },
+    ],
+    assertions: [
+      { id: 'onboarding-complete' },
+      { id: 'onboarding-sim-tech-classified' },
+    ],
+    notes: 'The agent-classification fallback: undetectable existing repo → tech-detect step → agent submission stamps custom-backend/node with autoDetected:false → short wizard completes.',
+  },
 ];

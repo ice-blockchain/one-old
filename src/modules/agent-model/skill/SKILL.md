@@ -34,7 +34,7 @@ Traffic One spawn identity gate: this spawn carries conflicting valid Traffic On
 <!-- T1BLOCK:END spawn-role-conflict -->
 
 <!-- T1BLOCK:BEGIN performance-model-param -->
-Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in prompt text or a model-agnostic project agent contract has no effect. On Cursor, use the exact role→model value printed by model-gate; without the parameter the subagent inherits the parent model.{{ALTERNATES}} The runtime lineup comes from the active host snapshot in local Traffic One settings.
+ACTION: re-issue this spawn with `model: "{{EXPECTED}}"`. Nothing crashed — the host renders a declined spawn as an agent failure, but this is the Traffic One Performance gate (level={{LEVEL}}, host={{HOST}}) holding `{{ROLE}}` to the run's frozen model. {{PASSED_NOTE}}The model is set ONLY by this parameter — a model name in prompt text or a model-agnostic project agent contract has no effect. On Cursor, use the exact role→model value printed by model-gate; without the parameter the subagent inherits the parent model.{{ALTERNATES}} The runtime lineup comes from the active host snapshot in local Traffic One settings.
 For Codex, also use the canonical underscore-form `task_name` and `fork_turns: "none"`; the child hook verifies the actual model exactly against the immutable run policy.
 <!-- T1BLOCK:END performance-model-param -->
 
@@ -58,8 +58,26 @@ Traffic One materialized `{{AGENT_PATH}}` as the full role contract. This Kilo T
 Re-issue the same `task` spawn with `subagent_type: "general"`. Keep `[t1-role: {{ROLE}}]` as the FIRST line, immediately tell the child to read `{{AGENT_PATH}}` before acting, and omit `model` so it inherits the user's active Kilo model. Do NOT use `explore`, and do NOT fall back to main-agent mode: `general` is the supported Kilo subagent path for this role.
 <!-- T1BLOCK:END kilo-general-agent-required -->
 
+<!-- T1BLOCK:BEGIN cursor-agent-type-required -->
+Cursor agent gate: `{{ROLE}}` was spawned with subagent_type `{{AGENT_TYPE}}`, which is neither the role's own Cursor agent nor the supported built-in fallback.
+
+Re-issue the same `Task` spawn with `subagent_type: "{{EXPECTED_AGENT}}"` — Traffic One materialized that role contract at `{{AGENT_PATH}}`.
+
+If Cursor REJECTS that value (invalid enum / unknown subagent type), the agent files were written after this session captured its type list. That is NOT a broken spawn tool and NOT a reason to build the role inline: retry once with `subagent_type: "{{FALLBACK_AGENT}}"`, keep `[t1-role: {{ROLE}}]` as the FIRST line of the prompt, and immediately tell the child to read `{{AGENT_PATH}}` before acting. The role marker is what binds the child to its role and its frozen per-role model.
+
+Keep the exact per-role `model` from the spawn map either way. Never send a Traffic One role to a generic worker WITHOUT the role marker, and never simulate the role in the parent thread.
+<!-- T1BLOCK:END cursor-agent-type-required -->
+
+<!-- T1BLOCK:BEGIN verify-batch-running -->
+traffic-one — verification gate: `{{ROLE}}` must not start while the Step-0 OpenCode implementation batch for run `{{RUN_ID}}` is still pending — a review/test pass over pre-batch state wastes the whole round. Collect the terminal batch result in ONE bounded call: `opencode_status` with `{ runId: "{{RUN_ID}}", waitMs: 90000 }` (repeat while it returns running), or abandon the batch explicitly with `opencode_status {runId, cancel:true}` before falling back. Then re-issue this exact spawn — this gate denies at most once per run and role, so the retry always goes through.
+<!-- T1BLOCK:END verify-batch-running -->
+
+<!-- T1BLOCK:BEGIN agent-activity-exploration-cap -->
+traffic-one — exploration cap: `{{ROLE}}` has made {{COUNT}} tool calls in run `{{RUN_ID}}` and this search/read call is refused ONCE as a consolidation checkpoint (editing, shell verification, and digest writes are never blocked, and every later call — including search/read — goes through). Write down what you already know, then act on it: batch the remaining related reads, group coherent edits, run ONE combined verification command per surface, do not re-read rules or files already loaded, and finish the assignment before exploring further. Cap: {{CAP}} calls per child (config `agentActivity.explorationCap`, env `T1_EXPLORATION_CAP`; 0 disables).
+<!-- T1BLOCK:END agent-activity-exploration-cap -->
+
 <!-- T1BLOCK:BEGIN absolute-traffic-one-path -->
-Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycle paths outside this project root (`{{PROJECT_ROOT}}`): {{BAD_PATHS}}. Re-issue the same spawn using project-relative paths such as `.traffic-one/digests/<runId>/frontend.md` and `.traffic-one/fix-cycles/<runId>/<role>-fix-1.md`; do not paste absolute paths from another folder or a corrupted root.
+Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycle paths outside this project root (`{{PROJECT_ROOT}}`): {{BAD_PATHS}}. Re-issue the same spawn using project-relative paths such as `.traffic-one/digests/<runId>/frontend.md` and `.traffic-one/fix-cycles/<runId>/senior-frontend-fix-1.md` (digest files use the short role name; fix-cycle files keep the full `senior-` prefix); do not paste absolute paths from another folder or a corrupted root.
 <!-- T1BLOCK:END absolute-traffic-one-path -->
 
 <!-- T1BLOCK:BEGIN cursor-models-capture -->
@@ -139,21 +157,21 @@ Architect phase gate: `{{ROLE}}` cannot start yet — spawn `senior-architect` f
 
 Missing on disk: {{MISSING}}
 
-The architect must finish the project-memory baseline, `.traffic-one/runs/{{RUN_ID}}/assignments.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` containing `PLAN_READY`. Only then retry `{{ROLE}}` with the same task. Do not spawn other implementers or patch the coordination artifacts yourself.
+The architect must finish the project-memory baseline, semantic `.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` containing `PLAN_READY`. Runtime then compiles architecture/verification, generates assignments, and publishes work-unit bootstraps. Only after that succeeds may you retry `{{ROLE}}` with the same task. Do not spawn other implementers or patch runtime-owned coordination artifacts yourself.
 <!-- T1BLOCK:END architect-phase-incomplete -->
 
 <!-- T1BLOCK:BEGIN opencode-plan-batch-required -->
 OpenCode plan-batch gate: do NOT spawn `{{ROLE}}` yet. The architect queued Step-0 OpenCode work in `.traffic-one/plan.md`, and the `opencode_delegate_from_plan` batch has not finished for queued role(s): {{QUEUED_ROLES}}.
 
-Do NOT retry Task/spawn_agent for `senior-frontend` or `senior-backend` in this turn — run OpenCode Step 0 first instead.
+Do NOT retry Task/spawn_agent for any queued or capability-eligible implementer in this turn — run OpenCode Step 0 first instead.
 
-Run the batch FIRST, before any frontend/backend implementer starts:
+Run the batch FIRST, before any capability-eligible implementer starts:
 1. Call the `opencode_delegate_from_plan` tool (MCP server `opencode-worker`) with:
    - `runId`: `{{RUN_ID}}`
    - `projectRoot`: `{{PROJECT_ROOT}}`
    Do NOT pass `model` unless the project explicitly pinned one; OpenCode selects its own free model by default.
-2. If it returns `running:true`, call `opencode_delegate_from_plan` AGAIN with the SAME arguments. Repeat until the terminal `{ total, delegated, units }` result appears — do NOT use any shell fallback while `running:true`.
-3. Only after the terminal result, spawn `senior-frontend` and `senior-backend` in parallel in the NEXT assistant message. Pass each implementer the batch `units` summary, including `touched` files and any unit whose `action !== "delegated"` so the paid role finishes only what OpenCode skipped/failed/no-changed.
+2. If it returns `running:true`, the batch worker keeps ITSELF alive in the background — your calls are not its keep-alive. Do useful work now (read digests, prepare the next phase), then collect the terminal `{ total, delegated, units }` in ONE bounded long wait: `opencode_status` with `{ runId, waitMs: 90000 }` (re-calling `opencode_delegate_from_plan` with the SAME arguments also waits). Do NOT use any shell fallback while `running:true`; to abandon the batch, call `opencode_status` with `{ runId, cancel: true }` — never just go silent.
+3. Only after the terminal result, spawn exactly the implementation roles present in the compiled capability profile and assignments manifest in the NEXT assistant message. Run multiple eligible roles in parallel; never invent a missing frontend/backend sibling. Pass each implementer the batch `units` summary, including `touched` files and any unit whose `action !== "delegated"` so the paid role finishes only what OpenCode skipped/failed/no-changed.
 4. Fail-open: if the batch returns a terminal failure (`ok:false`, `action: "abandoned"`, or every unit failed/skipped/no-changes) OR the MCP tool is unavailable, proceed with paid implementer spawns — do NOT block the build on OpenCode.
 Fallback (MCP unavailable ONLY — never while `running:true`): `node ~/.traffic-one/bin/opencode-runner.cjs --run-id "{{RUN_ID}}" --from-plan` from `{{PROJECT_ROOT}}`.
 
@@ -169,7 +187,7 @@ OpenCode role gate: `{{ROLE}}` is configured to run on OpenCode (it is in `openC
    - `allowedFiles`: the exact comma-separated repo-relative files/areas this bounded unit may touch. Any diff outside this allowlist is rejected before apply.
    - `task`: ONE bounded unit for this role — 1–2 named files with concrete acceptance criteria. NEVER the entire role implementation: free models deliver a bounded unit in ~2 minutes but produce nothing useful from a whole-role dump (measured live: zero output after minutes of serialized waiting). If the architect's plan queued units for this role, run the Step-0 `opencode_delegate_from_plan` batch instead — completing it marks every queued role as attempted and satisfies this gate.
    Do NOT pass `model` — OpenCode selects its own free model automatically (no account/API key needed).
-2. **If the result has `running:true`** → the run is proceeding in the background; call `opencode_delegate` AGAIN with the SAME arguments to keep waiting. Repeat until you get a terminal `ok`. (This is how a multi-minute run survives the host's ~120s tool-call timeout — do NOT treat `running:true` as a failure and do NOT fall back yet.) Your polls are the keep-alive: a run you stop polling for ~6 minutes is cancelled automatically (the worker is killed BEFORE any diff applies), so if you decide to move on to the paid fallback, simply stop polling — no stale diff can land later.
+2. **If the result has `running:true`** → the run is proceeding in the background and the worker keeps ITSELF alive; your calls are NOT its keep-alive. Do NOT treat `running:true` as a failure and do NOT fall back yet. Instead of re-polling in a tight loop, do useful work (transcribe digests, prepare fix-cycle context, update the ledger), then collect the terminal result in ONE bounded long wait: `opencode_status` with `{ runId, role, waitMs: 90000 }` — it blocks safely under the host's ~120s tool-call ceiling and returns the moment the run finishes (re-calling `opencode_delegate` with the SAME arguments also waits a bounded window). **To move on to the paid fallback, cancel EXPLICITLY**: `opencode_status` with `{ runId, role, cancel: true }` kills the worker before any FURTHER diff applies (a cancel refused with `applying:true` means a clean diff is landing right now — call status once more without cancel and take that result; after any cancel, check the role digest and `git status` before the paid fallback in case an earlier unit already landed). Never abandon by silence: an unwatched run keeps working and its clean diff still lands. **A real unit legitimately takes MINUTES** (measured: ~8 minutes for a 6-file feature unit on a free model), so `running:true` after one long wait is normal progress, not a hang.
 3. On `ok:true` (delegated) → the change is applied to the tree and a digest is written; proceed to review (`senior-reviewer` verifies the diff). Do NOT spawn the paid `{{ROLE}}`.
 4. On `ok:false` (skipped/failed/no-changes) → OpenCode declined or could not run. Re-spawn `{{ROLE}}` exactly as usual; this gate denies each role at most once per run, so the fallback spawn goes through.
 5. **If the host's safety reviewer rejects the `opencode_delegate` call** (e.g. Codex: "rejected due to unacceptable risk" because it would send code to an external service) AND the rejection says you may proceed if the user explicitly approves → do NOT silently fall back. Ask the user, in one line, for explicit approval, naming the risk: e.g. *"Codex flagged OpenCode delegation because it sends this bounded task and the relevant code to OpenCode's hosted model. Approve sending it to OpenCode for this run? (Otherwise I'll use the paid worker.)"* If the user explicitly approves, call `opencode_delegate` again with the SAME arguments — the reviewer names this as the sanctioned path, so it is NOT a workaround/circumvention; treat that approval as covering the rest of this run's delegations. If the user declines or does not answer, re-spawn `{{ROLE}}` as the paid fallback.
@@ -190,5 +208,5 @@ Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` Cursor subagent, 
 <!-- T1BLOCK:END agent-reuse-await-cursor-id -->
 
 <!-- T1BLOCK:BEGIN agent-reuse-await-codex-meta -->
-Agent-reuse gate: run {{RUN_ID}} has a fresh Codex `{{ROLE}}` registry row for child `{{AGENT_ID}}`, but Traffic One cannot verify that child's role from line-zero `session_meta` ({{REASON}}). Do not route `followup_task`/`send_message` to this unverified id and do not start a duplicate. Retry after the child rollout is flushed. If the child is genuinely unusable, use `{{MARKER}}` with the concrete failure reason to retire it and spawn a replacement using the exact task-name contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`). Current Codex child rollouts encrypt spawn-message content, so prompt prose cannot substitute for `task_name` plus line-zero `session_meta` identity.
+Agent-reuse gate: run {{RUN_ID}} has a fresh Codex `{{ROLE}}` registry row for child `{{AGENT_ID}}`, but Traffic One cannot verify that child's role from line-zero `session_meta` ({{REASON}}). Do not route `followup_task`/`send_message` to this unverified id and do not start a duplicate. Retry after the child rollout is flushed. If the child is genuinely unusable, use `{{MARKER}}` with the concrete failure reason to retire it and spawn a replacement using the exact task-name contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`). Current Codex child rollouts encrypt spawn-message content, so prompt prose cannot substitute for `task_name` plus line-zero `session_meta` identity.
 <!-- T1BLOCK:END agent-reuse-await-codex-meta -->

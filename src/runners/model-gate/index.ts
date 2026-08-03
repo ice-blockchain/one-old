@@ -11,7 +11,7 @@ import { cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../sha
 import { captureCursorModels, hasFreshCursorModels } from '../../shared/materialize/cursor-models';
 import { buildCursorSpawnModelMap, formatCursorSpawnMapBlock, syncCursorSpawnAgentFiles } from '../../shared/materialize/cursor-spawn-map';
 import { AGENT_ROLES } from '../../config/performance';
-import { detectHostPlan } from '../../shared/host-plan';
+import { detectHostPlan } from '../../shared/host/plan';
 import { obj } from '../../shared/obj';
 import { ensureCurrentRunId, readEffectiveState } from '../../shared/state';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
@@ -38,7 +38,11 @@ function writeSpawnReady(cwd: string, state: Record<string, unknown>, headline: 
   if (AGENT_ROLES.some((role) => !map[role])) return false;
   syncCursorSpawnAgentFiles(cwd, state);
   process.stdout.write(`${headline}\n`);
-  const block = formatCursorSpawnMapBlock(map);
+  // This map is the authoritative one the orchestrator spawns from, and for a
+  // new project the `.cursor/agents/**` contracts were written by the same
+  // build — so the role-named type is not in the session's captured type set
+  // and recommending it guarantees a "Couldn't start" on the first spawn.
+  const block = formatCursorSpawnMapBlock(map, state.mode === 'new-project');
   if (block) process.stdout.write(`${block}\n`);
   return true;
 }

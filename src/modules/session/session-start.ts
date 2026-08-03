@@ -1,40 +1,30 @@
 // src/modules/session/session-start.ts
-// SessionStart handler: auth gate (fail-closed) → multi-project skill sweep +
-// digest retention + session materialization → subagent fast path (fix-cycle /
-// role-scoped index) → mode routing (onboarded bundle / existing-codebase
-// auto-detect / new-project onboarding directive). Ported 1:1 from
-// runSessionStart (session-start.cjs). The one-mcp first-look report fires from
-// the PostToolUse post-stack-setup handler (first tool use / architect
-// PLAN_READY), so SessionStart materialization intentionally does not report.
+// SessionStart: one-mcp sync, the authed path, and runSessionStart.
 
 import { obj, type Rec } from '../../shared/obj';
 import * as fs from 'fs';
 import * as path from 'path';
-
 import { context, mergeResults, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isNonProjectRoot } from '../../shared/authoring-root';
-import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
 import { autoDetectedAnnouncement } from '../../shared/directives';
-import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
 import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
-import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
+import { packBundle } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
-import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
-import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
+import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective } from '../../shared/skill-filters';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
-import { onboardingDeclineCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
-import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
-import { windsurfSetupReason } from '../../shared/onboarding-server/windsurf-setup';
-import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-links';
-import { promptTextFromSubmit } from '../../shared/prompt-input';
+import {  onboardingSetTechCommandTemplate, onboardingSyncSessionId } from '../../shared/onboarding-server/wait-command';
+import {
+  techClassifyHints,
+  techClassifyRequiredCompactReason,
+  techClassifyRequiredReason,
+} from '../../shared/onboarding-server/tech-classify-setup';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
+import {  STACKS, stackSpecForState } from '../../shared/stacks';
 import {
   ensureCurrentRunId,
   hasRunAgentState,
@@ -47,8 +37,11 @@ import {
   normalizeState,
   pruneExpiredPendingClaims,
   readEffectiveState,
+  reconcileRunIdentityDrift,
+  recordRunStackDrift,
   resolveRunAgentContext,
-  type RunAgentContext,
+  runIdentityFrozen,
+  runReachedTerminalVerdict,
   scrubProjectStateLocalPrefs,
   stackFingerprint,
   statePath,
@@ -56,8 +49,8 @@ import {
   writeState,
 } from '../../shared/state';
 import { initializeToolchainState } from '../../shared/state/toolchain';
+import { applyExistingCodebaseDetection } from '../../shared/onboarding/detection-stamp';
 import { nowIsoNoMs } from '../../shared/text';
-import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { sweepTrafficOneRetention } from '../../shared/retention';
@@ -67,166 +60,32 @@ import {
   syncOneMcpOnce,
   type SessionOneMcpSync,
 } from './one-mcp-sync';
-import { ensureCodexOneMcpServerRegistered } from '../../shared/codex-mcp';
-import { oneMcpRegistrationEnabled } from '../../config/one-mcp';
 import { sessionPerformanceContext } from '../../shared/session-performance-context';
-import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
-import { detectHostPlan } from '../../shared/host-plan';
+import { ensureRunModelPolicy, readRunModelPolicy, runModelPolicyPath } from '../../shared/run-model-policy';
 import { canonicalHost } from '../../shared/model-tiers';
+import { detectHostPlan } from '../../shared/host/plan';
+import { finalizePaidMaintenanceFallback } from '../../shared/maintenance/fallback';
+import { reconcileRunSettlement } from '../../shared/run-settlement';
+import { legacyCustomBackendMigration } from '../../shared/architecture-contract';
+import { capabilityStateForRun } from '../../shared/architecture-contract';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
+
+import {
+  STACK_IDS,
+  sessionProjectRoot,
+  setupPendingBanner,
+  setupPendingDirective,
+  subagentRoleContext,
+  runSubagentSessionStart,
+} from './session-start-setup';
+import { isNonProjectRoot } from '../../shared/authoring-root';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
+import { ensureCodexOneMcpServerRegistered } from '../../shared/codex-mcp';
+import { ONE_MCP_REGISTRATION } from '../../config/one-mcp';
 import { removeStrayProjectArtifactsFromGlobalDir } from '../../shared/state/traffic-one-paths';
-
-const skillBlock = makeSkillBlock(pluginRoot);
-const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
-  skillBlock('onboarding-gate', name, vars, fallback);
-
-// Surface the dashboard setup link without bypassing ask-first or the approved
-// bootstrap path when a host sandbox cannot write canonical user-local state.
-function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
-  // Ask-first: the user has not said yes — never launch the wizard server (or
-  // leak its URL) just to decorate the banner. The plain banner is enough.
-  if (usePluginQuestionPending(cwd)) return banner;
-  const prepared = prepareOnboardingServer(cwd, ctx.host);
-  return prepared.kind === 'ready'
-    ? formatWizardBanner(ctx.host, prepared.server.dashboardUrl, prepared.server.localWizardUrl, banner)
-    : banner;
-}
-
-// The prompt that triggered this hook run, when the event carries one (the
-// UserPromptSubmit path re-runs the authed SessionStart body with its Ctx).
-// SessionStart events have no prompt — the ask-first question is then emitted
-// without a seed and the wizard's no-signal floor covers stack derivation.
-function ctxPromptText(ctx: Ctx): string {
-  return ctx.input.prompt || promptTextFromSubmit(ctx.input.raw) || '';
-}
-
-// The agent-facing setup directive. Every host receives either a live wizard URL
-// plus waiter, or an exact approved bootstrap command when its hook sandbox cannot
-// write the canonical user-local runtime. OpenCode/Kilo/Windsurf keep compact,
-// host-safe prose; Claude/Codex/Cursor/Copilot receive the full walkthrough.
-function setupPendingDirective(ctx: Ctx, cwd: string): string {
-  // Ask-first: relay the host-chat question — no wizard server, no URL, and no
-  // state writes anywhere until the user says whether this project uses Traffic
-  // One at all. The triggering prompt rides the yes command as the seed.
-  const syncSession = onboardingSyncSessionId(hookSessionIdentity(ctx.input.raw).sessionId);
-  if (usePluginQuestionPending(cwd)) return usePluginQuestion(cwd, ctx.host, ctxPromptText(ctx), syncSession);
-  const prepared = prepareOnboardingServer(cwd, ctx.host, { syncSession });
-  if (prepared.kind !== 'ready') return prepared.reason;
-  const { server, waitCommand } = prepared;
-  if (!server.dashboardUrl) return block('setup-pending');
-  let directive: string;
-  // OpenCode/Kilo: keep this factual and compact so their prompt-injection
-  // filters do not reject a multi-host walkthrough. The live URL and executable
-  // waiter are still present on the first prompt.
-  if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-    directive = [
-      'Traffic One project setup is required before building.',
-      `Setup link: ${server.dashboardUrl}`,
-      `Direct local fallback: ${server.localWizardUrl}`,
-      `Wait command: ${waitCommand}`,
-      'Show the setup link, then immediately run the wait command and keep this turn active until setup completes.',
-      `If the user does not want Traffic One for this project, run instead: ${onboardingDeclineCommand(cwd, ctx.host)}`,
-    ].join('\n\n');
-  } else if (ctx.host === 'windsurf') {
-    const vars = { URL: server.dashboardUrl, LOCAL_URL: server.localWizardUrl, WAIT_CMD: waitCommand };
-    directive = block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, server.localWizardUrl, waitCommand));
-  } else {
-    directive = block('server-deny-reason', {
-      URL: server.dashboardUrl,
-      LOCAL_URL: server.localWizardUrl,
-      WAIT_CMD: waitCommand,
-      DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host),
-    });
-  }
-  commitWizardLinksShown(cwd, server.token, directive, server.dashboardUrl, server.localWizardUrl, syncSession);
-  return directive;
-}
-const STACK_IDS = new Set(Object.keys(STACKS));
-
-function sessionProjectRoot(ctx: Ctx): string {
-  return resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
-}
-
-// Build the role-scoped (or fix-cycle) rule context for a subagent whose run claim
-// resolved and whose project is already materialized. Shared by the subagent
-// SessionStart path and the legacy run-agent fast path.
-function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext, root: string): HookResult {
-  const cwd = sessionProjectRoot(ctx);
-  const role = typeof agentContext.role === 'string' ? agentContext.role : '';
-  const runId = String(agentContext.runId ?? '');
-  const spawnIndex = agentContext.spawnIndex || 0;
-
-  if (role && spawnIndex > 1) {
-    // Fix-cycle: same role re-spawned in the same run → tiny pointer header.
-    const { body } = packFixCycleHeader(cwd, role, runId, spawnIndex);
-    return context(body);
-  }
-
-  const ruleSet = role ? roleScopedRules(role, state) : null;
-  const rules = ruleSet || stackSpecForState(state).mandatory;
-  copyActiveSkills(state);
-  // Role-scoped skills (from the role's agent-doc frontmatter) when the role is
-  // known — a senior-frontend spawn lists only frontend skills, not the whole
-  // stack catalog plus a 30-name wrong-stack dump.
-  const skillDirective = role
-    ? roleSkillsDirective(state, role, listAllSkills())
-    : pruneSkillsDirective(state, listAllSkills());
-  const { body } = packRuleIndex(root, rules);
-  const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
-  const roleLabel = role || 'subagent';
-  const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
-    + '[subagent] Full rules already loaded by parent session and materialized to '
-    + '.traffic-one/rules/. This index lists role-scoped rules; Read them on demand.\n';
-  return context(`${header}${skillDirective}${graphPreview}\n${body}`);
-}
-
-// A subagent NEVER runs the full session-start hook. The auth gate and onboarding
-// belong to the parent/main agent; a subagent only needs its role-scoped rules
-// materialized. This path conditionally materializes and returns the role context —
-// so a subagent can never re-trigger auth or onboarding mid-build.
-export function runSubagentSessionStart(ctx: Ctx): HookResult {
-  const cwd = sessionProjectRoot(ctx);
-  const root = pluginRoot();
-  const raw = ctx.input.raw;
-  const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
-  const team = obj(state.team);
-  if (team?.mode === 'subagents') {
-    const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
-    const policy = runId ? readRunModelPolicy(cwd, runId) : null;
-    if (!runId || !policy || policy.host !== canonicalHost(ctx.host)) {
-      return context(
-        `TRAFFIC_ONE_MODEL_POLICY_BLOCKED_CHILD\nImmutable model-policy.json is missing, corrupt, or belongs to another host for run ${runId || '(missing)'}. `
-        + 'Do not use tools or reconstruct it from current preferences/One MCP. Stop this child; the parent must repair the run and respawn it.',
-      );
-    }
-  }
-
-  cleanActiveSkills();
-  try {
-    ensureSessionMaterialization(cwd, state);
-  } catch {
-    // best-effort; the parent already materialized the bundle
-  }
-
-  const agentContext = resolveRunAgentContext(cwd, state, raw, { claimPending: true, host: ctx.host })
-    || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
-  if (agentContext && hasMaterializedProjectAssets(cwd, state)) {
-    return subagentRoleContext(ctx, state, agentContext, root);
-  }
-
-  // Role/claim not resolved yet — still never onboard. Hand over whatever rules are
-  // materialized; if none yet, stay silent and let the parent's materialization land.
-  if (hasMaterializedProjectAssets(cwd, state)) {
-    copyActiveSkills(state);
-    const { body } = packRuleIndex(root, stackSpecForState(state).mandatory);
-    return context('═══ traffic-one — subagent ═══\n'
-      + '[subagent] Rules already materialized to .traffic-one/rules/; read role-scoped rules on demand.\n'
-      + body);
-  }
-  return noop();
-}
 
 function runSessionStartInner(ctx: Ctx): HookResult {
   // Self-heal machines the pre-guard bug touched: project artifacts materialized
@@ -241,7 +100,7 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   // server is appended disabled with both tools disabled. Do this independently
   // of per-project pluginUse so installs are deterministic; never rewrite an
   // existing same-name table owned by the user.
-  if (ctx.host === 'codex' && oneMcpRegistrationEnabled(process.env)) {
+  if (ctx.host === 'codex' && ONE_MCP_REGISTRATION) {
     ensureCodexOneMcpServerRegistered({ ...process.env, TRAFFIC_ONE_HOST: 'codex' });
   }
   // The user chose not to use Traffic One for this project — stay silent.
@@ -291,6 +150,7 @@ function runSessionStartInner(ctx: Ctx): HookResult {
 // than once per chat. Consent and the runtime switch are checked BEFORE writing
 // the per-session marker; payloads without a stable session id deliberately run
 // every time because duplicates are safe and guessing an identity is not.
+
 export function syncOneMcpAtSessionStart(
   cwd: string,
   host: unknown,
@@ -314,6 +174,33 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const raw = ctx.input.raw;
 
   const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
+  const legacyMigration = legacyCustomBackendMigration(cwd, state);
+  if (legacyMigration.changed) {
+    Object.assign(state, legacyMigration.state);
+    writeState(cwd, state);
+  }
+  const settlementRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  // Reconcile only unresolved work. A completed legacy ledger predates the V2
+  // evidence sidecars; reopening it as `validating` during a read-only session
+  // start would resume/upgrade historical work instead of preserving backward
+  // compatibility. New prompt-boundary work receives a fresh strict run.
+  if (settlementRunId) {
+    const fallback = finalizePaidMaintenanceFallback(cwd, settlementRunId);
+    if (fallback.status !== 'completed'
+      && !runReachedTerminalVerdict(cwd, settlementRunId)) {
+      reconcileRunSettlement(cwd, settlementRunId);
+    }
+  }
+
+  // Un-wedge a project whose run identity already drifted away from its claims
+  // (a ledger with no frozen fingerprint, or a sibling run minted beside a live
+  // team). Idempotent and silent when there is nothing to repair, so a project
+  // broken by an earlier runtime heals on its next session with no user action.
+  try {
+    reconcileRunIdentityDrift(cwd, state);
+  } catch {
+    // Never fail SessionStart on a best-effort repair.
+  }
 
   // Multi-project safety: reset to the 3-skill baseline before copying THIS
   // project's set. Digest retention sweep. Best-effort session materialization.
@@ -378,12 +265,13 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
       });
     }
 
-    const spec = stackSpecForState(state);
+    const capabilityState = capabilityStateForRun(cwd, state);
+    const spec = stackSpecForState(capabilityState);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
 
-    const copied = copyActiveSkills(state);
-    const skillDirective = pruneSkillsDirective(state, listAllSkills());
+    const copied = copyActiveSkills(capabilityState, ctx.host);
+    const skillDirective = pruneSkillsDirective(capabilityState, listAllSkills(), ctx.host);
     stampMaterialization(cwd, state);
     // The materialized project AGENTS.md/CLAUDE.md (just re-stamped) carries the
     // same Active Rule Index and is auto-loaded by every host — re-listing the
@@ -413,13 +301,41 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
         { ...process.env, TRAFFIC_ONE_HOST: ctx.host },
       );
       if (!policy) {
+        // A null policy has three distinct causes and only one of them is
+        // repaired by Performance. Telling every session to "Reopen Performance"
+        // sends the user to a wizard that CANNOT touch a create-once policy that
+        // is already frozen — observed 16co, where a failing parent bootstrap
+        // preflight wedged every session behind an unactionable message. Same
+        // discrimination, token vocabulary, and ordering as the onboarding gate
+        // (modules/onboarding-gate/handler.ts) and the setup-completion runner
+        // (runners/onboarding-wait/pre-spawn-directives.ts).
+        const frozenPolicy = readRunModelPolicy(cwd, runId);
+        // Capture is the only action that can still make an UNPUBLISHED Cursor
+        // policy buildable; once the path exists (valid or corrupt) create-once
+        // forbids rebasing it, so capture would be busy-work.
         if (ctx.host === 'cursor'
+          && !fs.existsSync(runModelPolicyPath(cwd, runId))
           && freshCursorModels(cwd, detectHostPlan('cursor')).length === 0) {
           return context(
             `TRAFFIC_ONE_CURSOR_MODELS_REQUIRED\nBefore run ${runId} can be frozen, enumerate the exact model ids in Cursor's Task picker and run:\n`
             + `${modelCaptureCommand(cwd, 'cursor')}\n`
             + 'Then retry the parent action. Traffic One will create model-policy.json only after those exact runnable slugs are available.',
             { systemMessage: 'traffic-one: capture Cursor subagent models before starting the immutable run' },
+          );
+        }
+        if (frozenPolicy && frozenPolicy.host !== canonicalHost(ctx.host)) {
+          return context(
+            `TRAFFIC_ONE_MODEL_POLICY_BLOCKED\nRun ${runId} is frozen for ${frozenPolicy.host}, not ${canonicalHost(ctx.host)}. `
+            + 'Start a new parent run for the active host; do not rebase or replace model-policy.json.',
+            { systemMessage: 'traffic-one: this run is frozen for another host — start a new parent run' },
+          );
+        }
+        if (frozenPolicy) {
+          return context(
+            `TRAFFIC_ONE_BOOTSTRAP_BLOCKED\nRun ${runId} already has a valid immutable model policy and saved Performance choice, but Traffic One `
+            + 'could not publish or validate its capability baseline and parent bootstrap. Do not spawn a child and do not redo onboarding; '
+            + 'Performance cannot repair this. Update or repair Traffic One, then retry this parent session with the same run.',
+            { systemMessage: 'traffic-one: subagent spawning paused until the run capability baseline and parent bootstrap can be published' },
           );
         }
         return context(
@@ -455,42 +371,42 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
         systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
       });
     }
-    const detected = detectStackFromCodebase(cwd);
+    // The stamp itself lives in shared/onboarding/detection-stamp so the
+    // onboarding-wait runner can apply the SAME write at consent time (SessionStart
+    // cannot: it writes nothing while the use-plugin question is pending). Mutates
+    // `state` in place; persistence stays with the single writeState below, after
+    // stampMaterialization has added its fields.
+    const detected = applyExistingCodebaseDetection(cwd, state, mode);
+    // Undetectable: the deterministic tables derived no stack, and the historical
+    // `stack: 'minimal'` floor is gone — the SESSION AGENT classifies instead.
+    // ZERO writes here (the repo stays byte-identical until the agent's
+    // `--set-tech` submission lands through the shared writer).
     if (!detected.stack) {
-      detected.stack = 'minimal';
-      detected.backend = detected.backend || 'other';
-      detected.realtime = detected.realtime || 'none';
-      detected.evidence.push('existing codebase detected → apply minimal stack baseline');
+      const template = onboardingSetTechCommandTemplate(cwd, ctx.host, onboardingSyncSessionId(hookSessionIdentity(ctx.input.raw).sessionId));
+      const hints = techClassifyHints(detected);
+      const reason = ctx.host === 'opencode' || ctx.host === 'kilo'
+        ? techClassifyRequiredCompactReason(template, hints)
+        : makeSkillBlock(pluginRoot)('onboarding-gate', 'tech-classify-required', {
+          SET_TECH_TEMPLATE: template,
+          HINTS: hints,
+        }, techClassifyRequiredReason(template, hints));
+      return context(reason, {
+        systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
+      });
     }
-    Object.assign(state, {
-      mode,
-      stack: detected.stack,
-      backend: detected.backend || 'other',
-      frontend: detected.frontend || 'none',
-      ...(detected.mobile ? { mobile: detected.mobile } : {}),
-      realtime: detected.realtime || 'none',
-      confirmed: true,
-      onboardingComplete: true,
-      confirmedAt: nowIsoNoMs(),
-      autoDetected: true,
-      evidence: detected.evidence,
-      // An existing codebase is already built → maintenance phase from first
-      // detection, so post-build triage applies to the user's first prompt.
-      lifecycle: maintenanceLifecycle('existing-detected'),
-    });
-    normalizeState(state, mode);
 
-    const spec = stackSpecForState(state);
+    const capabilityState = capabilityStateForRun(cwd, state);
+    const spec = stackSpecForState(capabilityState);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
     const { body } = packBundle(root, modeMandatory, spec.optional);
 
-    const copied = copyActiveSkills(state);
+    const copied = copyActiveSkills(capabilityState, ctx.host);
     const allSkills = listAllSkills();
     stampMaterialization(cwd, state);
     ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the graph for a freshly auto-detected existing project
     writeState(cwd, state);
-    const skillDirective = pruneSkillsDirective(state, allSkills);
+    const skillDirective = pruneSkillsDirective(capabilityState, allSkills, ctx.host);
 
     const banner = autoDetectedAnnouncement(detected as never);
     let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;

@@ -6,7 +6,7 @@ import * as path from 'path';
 import { defaultConfig } from '../config/test-config';
 import { buildCaseEnv, withCaseEnv } from './env';
 
-test('case auth is pinned off despite ambient auth and on uses the isolated dead endpoint', () => {
+test('case auth is pinned independently of ambient auth without MCP endpoint overrides', () => {
   const ambientAuth = process.env.TRAFFIC_ONE_AUTH;
   process.env.TRAFFIC_ONE_AUTH = 'on';
 
@@ -15,7 +15,6 @@ test('case auth is pinned off despite ambient auth and on uses the isolated dead
     const offEnv = buildCaseEnv(offConfig, path.join(os.tmpdir(), 't1-env-off'), '', 'pure-node');
 
     assert.equal(offEnv.TRAFFIC_ONE_AUTH, 'off');
-    assert.equal(Object.hasOwn(offEnv, 'TRAFFIC_ONE_MCP_KEY_ENDPOINT'), false);
     withCaseEnv(offEnv, () => {
       assert.equal(process.env.TRAFFIC_ONE_AUTH, 'off');
     });
@@ -26,9 +25,14 @@ test('case auth is pinned off despite ambient auth and on uses the isolated dead
     const onEnv = buildCaseEnv(onConfig, path.join(os.tmpdir(), 't1-env-on'), '', 'pure-node');
 
     assert.equal(onEnv.TRAFFIC_ONE_AUTH, 'on');
-    assert.equal(onEnv.TRAFFIC_ONE_MCP_KEY_ENDPOINT, 'http://127.0.0.1:8787/mcp');
   } finally {
     if (ambientAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
     else process.env.TRAFFIC_ONE_AUTH = ambientAuth;
   }
+});
+
+test('Codex E2E isolates its model sidecar through the standard state home', () => {
+  const caseFolder = path.join(os.tmpdir(), 't1-env-codex-models');
+  const env = buildCaseEnv(defaultConfig(), caseFolder, '', 'codex');
+  assert.equal(env.XDG_STATE_HOME, path.join(caseFolder, 'xdg-state'));
 });

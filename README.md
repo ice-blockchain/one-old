@@ -23,14 +23,10 @@ API key. The wizard validates the key through an authenticated MCP `tools/list`
 request; rejected or unreachable validation writes no auth state. Users are not
 asked to pass keys to shell commands or host chat prompts.
 
-Optional endpoint override for local testing:
-
-```sh
-export TRAFFIC_ONE_MCP_KEY_ENDPOINT=http://127.0.0.1:8787/mcp
-```
-
-Remote auth endpoints must use HTTPS. The validator refuses to send API keys to
-plain HTTP except for loopback local development
+Production validation always uses the authenticated MCP endpoint compiled as
+`DEFAULT_ENDPOINT`. Tests inject loopback endpoints directly into the validator;
+there is no One MCP endpoint environment override. The validator refuses to
+send API keys to plain HTTP except for explicit loopback test endpoints
 (`localhost`, `127.0.0.1`, or `::1`).
 
 After validation, the sole auth record is stored in the top-level `auth` section
@@ -254,11 +250,17 @@ git config core.hooksPath .githooks
 
 ### Public One MCP model configuration
 
-`ONE_MCP_SYNC_ACTIVE` is enabled. Parent SessionStart in an explicitly opted-in
+`ONE_MCP_SYNC` is enabled. Parent SessionStart in an explicitly opted-in
 project calls the anonymous
 `traffic-one-mcp` `get_config` tool through the validated hook runtime. The
-model never receives or calls that tool. Registration and structural reporting
-remain separately build-disabled.
+model never receives or calls that tool. `ONE_MCP_REPORT` is also enabled:
+an opted-in project sends one anonymous structural first-look report to the
+same public endpoint, deduplicated by its `one-uid`. `SAVE_MCP_REPORT` is also
+enabled, so the report is tracked in a local `.traffic-one/one-mcp-report.json`
+status file: SessionStart queues it, the detached worker sends only what was
+queued, and the settled `ok`/`failed` state plus attempt count drive the retry
+windows. Machine-global MCP registration remains disabled by
+`ONE_MCP_REGISTRATION`.
 Host-specific operator rows use the
 `traffic_one_<host>_plugin_ai_model_configuration` names centralized in
 `src/config/one-mcp.ts` and publish a versionless payload contract. Every
@@ -292,33 +294,13 @@ Cursor alone
 also stores a short-lived `availableModels` capture for the exact model slugs its
 Task tool exposes; that capability lease is separate from the MCP tier catalog.
 Public transport is anonymous and independent from the API key used by
-onboarding's authenticated `/mcp` mount. Override the production public URL with
-`TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT`; remote URLs require HTTPS and loopback HTTP
-is accepted only by local contract tests. The former reporter variable
-`TRAFFIC_ONE_ONE_MCP_ENDPOINT` remains a temporary lower-priority alias.
-
-`ONE_MCP_SYNC_ACTIVE`, `ONE_MCP_REGISTRATION_ACTIVE`, and `REPORTING_ACTIVE` in
-`src/config/one-mcp.ts` are independent build-time switches. Read-only,
-hook-owned sync is enabled; registration and reporting remain false. A switch
-prevents new activity; it does not delete a user-owned machine-global entry.
-
-Release gate: read-only sync currently uses the configurable direct Supabase
-recovery endpoint. The seven public rows are distinct, host-correct,
-versionless, and version 2 or newer. Before enabling machine-global MCP
-registration or structural reporting, operators must move the compiled public
-endpoint to the custom domain protected by the documented path-scoped WAF/rate
-limit. A build that enables registration or reporting must also set
-`TRAFFIC_ONE_MCP_LIVE_RELEASE_SNAPSHOT` to a fresh schema-v2 release-evidence
-bundle. Generation fails unless it names the compiled endpoint, is at most 15
-minutes old, proves every live row is publicly served and version 2 or newer,
-and matches the `HOST_MODELS`-derived operator manifest exactly. The bounded
-bundle must also record successful full-response JSON and SSE probes plus an
-`upToDate` probe for every config name, a hosted `/onboarding/agent` smoke, and
-live Codex hook observations of exact `gpt-5.6-sol` and `gpt-5.6-terra` models.
-The evidence schema accepts only structural outcomes, versions, fingerprints,
-timestamps, and fixed model/event identifiers—no tokens, session IDs, payload
-errors, or other remote text. This proof is a release input only; it is never
-shipped as runtime state.
+onboarding's authenticated `/mcp` mount. Sync and reporting both use the fixed
+compiled `DEFAULT_PUBLIC_ENDPOINT`; there are no One MCP endpoint, feature,
+cache, or release-snapshot environment variables. The four independent
+build-time switches are `ONE_MCP_SYNC`, `ONE_MCP_REGISTRATION`,
+`ONE_MCP_REPORT`, and `SAVE_MCP_REPORT`. Changing one requires publishing a new
+plugin build; disabling registration does not delete a user-owned
+machine-global entry.
 
 ### Hooks enforce at write time
 Hooks run through dependency-free Node.js scripts before files are written or packages installed — violations are blocked
@@ -548,6 +530,46 @@ For OpenCode, Kilo, and Windsurf, run the same
 `scripts/opencode-host.cjs install --yes`, `scripts/kilo-host.cjs install --yes`,
 or `scripts/windsurf-host.cjs install --yes` command from the installed plugin
 root after publication.
+
+## Uninstall
+
+Telling the agent to uninstall Traffic One ("uninstall traffic one", "remove the
+traffic-one plugin") is enough: the UserPromptSubmit hook recognises the request,
+the agent asks once for confirmation, and then runs the whole cleanup. That chat
+message is the only moment a full cleanup is reachable — no host runs a plugin
+uninstall lifecycle hook, so once the bundle is removed nothing of Traffic One's
+ever executes again.
+
+The same cleanup can be run directly:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/traffic-one-uninstall.cjs --dry-run
+node /absolute/path/to/traffic-one/dist/scripts/traffic-one-uninstall.cjs --yes
+```
+
+It removes, in this order:
+
+1. the user-level host integrations — the Kilo and OpenCode wrappers, the
+   Windsurf/Cascade hooks and global rule (all three channels), and the Codex
+   machine-global MCP block;
+2. `~/.traffic-one` — the saved API key, per-project preferences, runner shims,
+   and the managed toolchains (over 1 GB; reinstalled on a future setup);
+3. the plugin bundle, via `claude plugin uninstall` / `codex plugin remove`, for
+   every marketplace that has it.
+
+The order is load-bearing. The Kilo wrapper is fail-closed and its bundle path is
+baked in at install time, so a wrapper left behind after the bundle is gone denies
+every tool call in every Traffic One project — and the script that would repair it
+has just been deleted. Pass `--keep-plugin` to clean everything but leave the
+bundle installed. Nothing is written without `--yes`.
+
+Cursor has no plugin-management CLI, so a Cursor install must be removed from its
+plugin UI; the command reports it when it finds one. Restart the host afterwards:
+it loaded this session's hook wiring at startup and does not reload it, so hooks
+keep resolving to the removed bundle until it restarts.
+
+Onboarded projects are deliberately untouched — their `.traffic-one/` folders and
+generated instructions are project content, not plugin state.
 
 ---
 

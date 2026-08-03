@@ -3,18 +3,23 @@ paths:
   - "apps/**/src/services/**"
   - "apps/**/src/features/**/api.ts"
   - "apps/**/src/features/**/services/**"
+  - "web/**/src/**"
+  - "frontend/**/src/**"
+  - "client/**/src/**"
+  - "packages/**/src/**"
   - "packages/api-client/**"
   - "src/services/**"
   - "src/features/**/api.ts"
   - "src/features/**/services/**"
+  - "src/**"
 ---
 
 # Ionic Service Layer
 
-The shared service-layer contract (RTK Query for cached server data, axios for
-uploads/downloads/non-cacheable commands, zod validation, typed `AppError`
-mapping with sanitized production errors) lives in `rules/frontend/services.md`
-and applies in full. Ionic adds a native-plugin boundary through Capacitor.
+The selected profile's service-layer contract remains authoritative for server
+data, transport, schema validation, and sanitized error mapping. Ionic adds a
+native-plugin boundary through Capacitor; it does not replace Vue/Angular
+services with React-specific state or request libraries.
 
 ## Capacitor services
 

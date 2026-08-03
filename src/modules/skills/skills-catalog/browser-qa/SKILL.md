@@ -1,226 +1,174 @@
 ---
 name: browser-qa
 description: >
-  Drive a real browser to verify a built/deployed UI: Lighthouse and page-speed
-  scoring, Core Web Vitals, visual regression across breakpoints, and UI
-  interaction/flow checks. Trigger on "browser QA", "visual QA", "Lighthouse",
-  "page speed", "Core Web Vitals", "performance score", or "responsive testing".
-  Owns measured performance/visual QA, not content SEO or standalone WCAG audits.
-metadata:
-  source: everything-claude-code
-  source_path: skills/browser-qa/SKILL.md
-  source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
-  adapted_for: traffic-one
+  Verify a web UI against Traffic One VerificationContractV2 with local
+  Playwright, risk-proportional screenshots, build identity, runtime assertions,
+  and conditional Lighthouse. Trigger on browser QA, visual QA, responsive
+  testing, UI flows, Lighthouse, page speed, or Core Web Vitals.
 ---
 
-# Browser QA — Automated Visual Testing & Interaction
+# Browser QA
 
-## When to Activate
+Use the runtime contract, not a fixed screenshot checklist.
 
-- After deploying a feature to staging/preview
-- When you need to verify UI behavior across pages
-- Before shipping — confirm layouts, forms, interactions actually work
-- When reviewing PRs that touch frontend code
-- Accessibility audits and responsive testing
-- After visual design work — confirm the implementation matches the design brief
-- Lighthouse, page speed, Core Web Vitals, or best-score performance verification
+## Required input
 
-## How It Works
+1. Read `.traffic-one/.one.json` and its exact `currentRunId`.
+2. Read `.traffic-one/runs/<runId>/verification-v2.json`.
+3. Refuse to guess missing routes, widths, UI impact, or performance thresholds.
+4. Use the production build from the same source state. Never validate a
+   leftover dev/preview server.
 
-Uses the browser automation MCP (claude-in-chrome, Playwright, or Puppeteer) to interact with live pages like a real user.
+`uiImpact` is runtime-derived. You may raise it when you discover more risk;
+never lower it:
 
-### Codex Desktop in-app browser — complete recipe (do NOT read the bundled browser skill)
+- `none`: run the contract's stack build/test/lint checks. Do not launch a browser.
+- `nonvisual`: run unit/component checks and axe when a DOM fixture exists. Do
+  not require browser E2E.
+- `behavioral`: run local headless Playwright on every changed route. Assert
+  DOM, actions, routing, hydration, console errors, and network errors.
+  Screenshots are optional and should normally be captured only on failure.
+- `visual`: run the behavioral matrix and capture fresh screenshots at every
+  width listed in `requiredScreenshotWidths`—normally 390 and 1440; 768 appears
+  only when runtime detected tablet/breakpoint risk.
+- `native-ui`: stop. Use the contract's simulator/emulator adapter; a browser is
+  invalid evidence.
 
-On Codex Desktop, drive the in-app browser via the node_repl `js` tool with
-exactly this setup — it is the whole recipe; tool-searching for or reading the
-bundled `control-in-app-browser` SKILL.md wastes ~8k tokens:
+## Browser choice
 
-    const fs = await import("fs");
-    const base = `${nodeRepl.homeDir}/.codex/plugins/cache/openai-bundled/browser`;
-    const ver = fs.readdirSync(base).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop();
-    const { setupBrowserRuntime } = await import(`${base}/${ver}/scripts/browser-client.mjs`);
-    await setupBrowserRuntime({ globals: globalThis });
-    globalThis.browser = await agent.browsers.get("iab");
-    await (await browser.capabilities.get("visibility")).set(true);
-    globalThis.qaTab = await browser.tabs.new();
-    await qaTab.goto("http://127.0.0.1:5173/");
-    nodeRepl.write("qa tab open");
+Use the project's local Playwright setup or local `@playwright/test` dependency
+in a separate browser process. The interactive browser plugin/in-app browser is
+optional for diagnosis and manual exploration; it is never required evidence
+and never replaces the canonical report. Do not use editor-embedded screenshot
+APIs from a role subagent.
 
-Then per check (each its own `js` call): `await qaTab.goto(url)` to navigate
-(`networkidle` is NOT supported by this browser API — use
-`await qaTab.playwright.waitForLoadState({ state: "domcontentloaded" })`, then a
-short fixed wait before reading the DOM so SPA hydration finishes); resize for
-responsive passes via
-`await (await browser.capabilities.get("viewport")).set({ width: 390, height: 844 })`
-(mobile) and back to `{ width: 1280, height: 800 }` (desktop); read the DOM with
-`await qaTab.playwright.evaluate(...)` (e.g. `document.documentElement.scrollWidth >
-window.innerWidth` to detect horizontal overflow). Close with `await qaTab.close()`
-when QA is done. If node_repl or the in-app browser is unavailable, fall back to
-the browser automation MCP listed above.
+If the required browser binary is unavailable, keep `none` and `nonvisual`
+eligible to pass. Mark `behavioral` or `visual` as `blocked-environment`; do not
+call it a code failure and do not emit `TESTS_GREEN`.
 
-> **Screenshots — NEVER call the IAB `qaTab.screenshot()` from a role subagent
-> thread.** The Codex in-app browser runs INSIDE the editor process; rasterizing
-> its surface from a spawned subagent — where `browser.capabilities.get("visibility")`
-> returns "IAB visibility is not supported in a subagent thread" — **crashes the
-> whole Codex app** (observed live: the senior-frontend subagent took the app down
-> on a mobile-catalog screenshot). DOM-reading QA above (`playwright.evaluate`,
-> goto, viewport) is safe in a subagent; pixel capture is not. For visual evidence
-> when you are a role subagent, use one of these instead, and cite the artifact path
-> in your digest:
-> 1. **Project Playwright to a file** (separate browser process, never touches the
->    editor): a Playwright `page.screenshot({ path: ".traffic-one/reports/qa/<runId>/<name>.png" })`
->    via the project's e2e setup, or the browser-automation MCP above.
-> 2. **Defer the screenshot to the parent/orchestrator thread**, where `visibility`
->    toggles cleanly and `qaTab.screenshot()` is safe.
->
-> Only call the in-app `qaTab.screenshot()` / set `visibility` from the PARENT
-> thread, never inside a `spawn_agent` role worker. The `setup-gate`/orchestrator
-> already runs roles as subagents on Codex, so a role doing visual QA must take
-> path 1 or 2.
+## Canonical runtime runner
 
-Before running visual QA, identify the design brief or acceptance criteria:
-primary action, intended hierarchy, responsive behavior, state coverage, and
-screenshots required. If no brief exists, infer it from the user request and
-the current UI, then state the assumption.
+Do not hand-author `report-v2.json`, build fingerprints, route booleans, or
+Lighthouse summaries. The bundled dependency-free runner computes the build
+manifest, owns the listener, loads Playwright and Lighthouse only from the
+project, writes machine evidence, writes `report-v2.json`, validates it while
+the listener is live, and then tears the listener down.
 
-### Preferred Lighthouse Runner
-
-For React/Vite, Next.js, and Ionic web routes, use the Traffic One Lighthouse
-runner before declaring page-speed work complete:
+After the stack's production build, run this manifest preflight with the actual
+output directory:
 
 ```bash
-node ~/.traffic-one/bin/lighthouse-runner.cjs --route /
+node ~/.traffic-one/bin/qa-evidence-runner.cjs manifest \
+  --run-id "$RUN_ID" \
+  --build-dir apps/web/dist
 ```
 
-When working from the plugin source checkout, run it from the app/repo root with:
+Write a bounded scenario at
+`.traffic-one/reports/qa/$RUN_ID/scenario-v1.json`. It must cover
+`changedRoutes` exactly. Every route needs a stable selector, its planned final
+path, and at least one real `click`, `fill`, `press`, `check`, or `select`
+action—not only visibility assertions:
+
+```json
+{
+  "schemaVersion": 1,
+  "routes": [{
+    "route": "/",
+    "finalPath": "/",
+    "stableSelector": "main",
+    "steps": [
+      { "type": "click", "selector": "button[data-testid='primary-action']" },
+      { "type": "expect-visible", "selector": "main" }
+    ]
+  }]
+}
+```
+
+`route` is the compiled contract's route IDENTITY and the key the evidence is
+filed under — it is matched against `changedRoutes`, never fetched. When the
+identity is not a literal path, add `startPath` with the concrete URL to visit:
+
+```json
+{ "route": "*", "startPath": "/does-not-exist", "finalPath": "/does-not-exist", "stableSelector": "[data-testid='not-found']", "steps": [ … ] }
+{ "route": "/courses/:courseSlug", "startPath": "/courses/html-css", "finalPath": "/courses/html-css", "stableSelector": "main", "steps": [ … ] }
+```
+
+A route that `fill`s a form must also SUBMIT it (`click`/`press` after the last
+`fill`) and assert the result afterwards (`expect-visible`, `expect-text`, or
+`expect-url`). A scenario that fills fields and stops is compatible with the
+form being completely broken and still reports `actions: passed`. The success
+assertion must name the working outcome — never a degraded-state affordance
+(a "configure this first" call to action, a placeholder, a coming-soon panel,
+or an off-site `a[href='https://…']` link). Asserting the fallback the app
+renders when it is misconfigured makes the bug the pass condition; the runner
+rejects such a scenario.
+
+`startPath` must satisfy its own pattern, and a `*` probe must be a URL no other
+declared route claims — otherwise the sweep exercises the sibling route instead
+of the 404. Never rewrite the architecture to turn a pattern into a literal path
+to simplify the scenario.
+
+Run the exact QA command:
 
 ```bash
-node ~/.traffic-one/bin/lighthouse-runner.cjs --route /
+node ~/.traffic-one/bin/qa-evidence-runner.cjs browser \
+  --run-id "$RUN_ID" \
+  --build-dir apps/web/dist \
+  --scenario-file ".traffic-one/reports/qa/$RUN_ID/scenario-v1.json"
 ```
 
-The runner builds the project, starts a production preview on a free local port
-(`vite preview`, `next start`, or static `out/` serving for Next
-`output: "export"`), runs Lighthouse mobile Performance, writes JSON and HTML
-reports to `.traffic-one/reports/lighthouse/`, extracts FCP/LCP/TBT/CLS, and
-fails when the route misses the default Traffic One thresholds:
+For an SSR/custom server, append a bounded argv adapter. The runner starts it
+behind its own listener; `{PORT}` is replaced without a shell:
 
-- Lighthouse Performance ≥ 90, with 100 as the ideal
-- FCP ≤ 1.5 s
-- LCP ≤ 2.5 s
-- TBT ≤ 200 ms
-- CLS ≤ 0.1
-
-If Lighthouse reports avoidable opportunities, apply targeted fixes and rerun
-the runner once or twice before final delivery. Prefer route splitting, dynamic
-imports for form/schema/chart/editor code, optimized media dimensions/formats,
-and removing render-blocking or unused first-route JS.
-
-Coverage and iteration rules:
-- Audit `/` PLUS the 1–2 heaviest public routes (`--route <path>` per run) —
-  the home route alone hides heavy-route regressions.
-- A metric reported under `withinTolerance` PASSED the gate (run-to-run noise
-  band) — do not spend further fix cycles on it; report it as residual.
-- A confirmation re-run with no code changes in between may use `--skip-build`.
-- The summary includes Accessibility/Best-Practices/SEO scores from the same
-  audit at zero extra cost — treat an a11y warning as a real finding for the
-  fix cycle, not noise.
-
-The runner is time-bounded: it self-terminates within its runtime budget
-(~4 min by default; `--max-runtime <ms>` / `--lighthouse-timeout <ms>` to
-override) and ALWAYS prints one final JSON line — either the summary or a
-structured `blocked:*` status (`blocked:sandbox`, `blocked:usage-limit`, or
-`blocked:timeout`). It will not hang, so if your harness auto-backgrounds long
-commands, poll the background task with the harness's non-blocking wait
-mechanism (an until-loop / Monitor-style tool) — NOT a foreground
-`sleep ...; tail`, which the sandbox sleep-guard may block. A `blocked:timeout`
-means the audit or preview hung — treat page speed as unverified and report it;
-do not silently retry forever.
-
-### Phase 1: Smoke Test
-```
-1. Navigate to target URL
-2. Check for console errors (filter noise: analytics, third-party)
-3. Verify no 4xx/5xx in network requests
-4. Screenshot above-the-fold on desktop + mobile viewport
-5. Run `node ~/.traffic-one/bin/lighthouse-runner.cjs` against the built production preview with mobile emulation
-6. Record Lighthouse Performance and Core Web Vitals: LCP < 2.5s, CLS < 0.1, INP < 200ms where available, TBT < 200ms
+```bash
+--server-command-json '["pnpm","exec","next","start","-H","127.0.0.1","-p","{PORT}"]'
 ```
 
-Do not run Lighthouse against a dev server unless the user explicitly asks for
-a diagnostic-only result. If the built preview is unavailable, report
-"Lighthouse mobile performance: unverified" and list the concrete page-speed
-risks instead of claiming the page-speed standard was verified.
+Use the real output root for each stack (`dist`, `.next`, `.output`, or the
+custom build directory); never point at source files. `behavioral` success
+needs no screenshot, but the runner captures one when a behavioral assertion
+fails. `visual` captures and decodes the contract widths and rejects horizontal
+overflow. Evidence paths containing dot/traversal segments, globs, control
+characters, or symlink escapes are invalid.
 
-### Phase 2: Interaction Test
-```
-1. Click every nav link — verify no dead links
-2. Submit forms with valid data — verify success state
-3. Submit forms with invalid data — verify error state
-4. Test auth flow: login → protected page → logout
-5. Test critical user journeys (checkout, onboarding, search)
-```
+The run takes MINUTES (screenshots × widths × routes, plus Lighthouse when
+performance is required). Run it in the foreground with a long timeout and
+watch the `qa-evidence: …` heartbeat lines on stderr; the single JSON line on
+stdout is the completion signal. NEVER start a second instance while one is
+running — a per-run lock makes the second exit immediately with
+`{"status":"already-running","lockPid":…}` (exit code 3); treat that as "a
+runner is already working: wait", not as an error to retry. Overlapping
+runners once interleaved artifacts and invalidated an entire QA pass.
 
-### Phase 3: Visual Regression
-```
-1. Screenshot key pages at 3 breakpoints (375px, 768px, 1440px)
-2. Compare against baseline screenshots (if stored)
-3. Flag layout shifts > 5px, missing elements, overflow
-4. Check dark mode if applicable
-5. Compare hierarchy, spacing, primary CTA clarity, and state styling against the design brief
-```
+The command produces:
 
-### Phase 4: Accessibility
-```
-1. Run axe-core or equivalent on each page
-2. Flag WCAG AA violations (contrast, labels, focus order)
-3. Verify keyboard navigation works end-to-end
-4. Check screen reader landmarks
-```
+- `.traffic-one/reports/qa/$RUN_ID/machine-evidence-v1.json`;
+- risk-required/failure screenshots, plus Playwright traces for FAILED viewports only (a fully green run keeps zero trace zips — the diagnostic is discarded at emit time since evidence v2);
+- `.traffic-one/reports/qa/$RUN_ID/report-v2.json`;
+- when performance is required, `lighthouse.raw.json` and
+  `lighthouse-evidence-v1.json`.
 
-### Phase 5: Design State Coverage
-```
-1. Capture loading, empty, error, disabled, focused, and active states where the UI exposes them
-2. Verify text fits in controls and cards at each breakpoint
-3. Verify reduced-motion mode does not hide essential feedback
-4. Verify mobile primary actions are reachable and not hidden by keyboard/safe areas
-```
+When `performance.required` is true, install project-local `lighthouse`; the
+same browser command runs it against the same live origin and port before
+report validation. Add `--with-lighthouse` only for an explicitly requested
+advisory audit. An artifact from another localhost port is stale/foreign and
+must fail. Explicit thresholds have zero tolerance; advisory thresholds retain
+the contract's 3% tolerance; SEO gates only with explicit `seoMin`.
 
-## Output Format
+Missing project-local Playwright/browser or required Lighthouse is
+`blocked-environment`, never a code pass. A chat summary, copied screenshot,
+timestamp-only Lighthouse JSON, arbitrary server self-report, or manually set
+booleans is not canonical evidence.
 
-```markdown
-## QA Report — [URL] — [timestamp]
+## Blocked environment
 
-### Smoke Test
-- Console errors: 0 critical, 2 warnings (analytics noise)
-- Network: all 200/304, no failures
-- Build mode: production preview
-- Route audited: /dashboard
-- Lighthouse mobile Performance: 98 (100 ideal)
-- Core Web Vitals: LCP 1.2s ✓, CLS 0.02 ✓, INP 89ms ✓, TBT 72ms ✓
-- Page-speed blockers: none
+Use `status: "blocked-environment"` with a short, secret-free blocker summary
+when the contract requires a real browser or native runtime and that environment
+cannot run. This is nonterminal: never reinterpret it as verified and never
+fabricate screenshots.
 
-### Interactions
-- [✓] Nav links: 12/12 working
-- [✗] Contact form: missing error state for invalid email
-- [✓] Auth flow: login/logout working
+## Handoff
 
-### Visual
-- [✗] Hero section overflows on 375px viewport
-- [✓] Dark mode: all pages consistent
-- [✓] Primary CTA remains visible and dominant on mobile
-- [✗] Empty state spacing does not match the design brief
-
-### Accessibility
-- 2 AA violations: missing alt text on hero image, low contrast on footer links
-
-### Verdict: SHIP WITH FIXES (2 issues, page speed verified with minor opportunities)
-```
-
-## Integration
-
-Works with any browser MCP:
-- `mChild__claude-in-chrome__*` tools (preferred — uses your actual Chrome)
-- Playwright via `mcp__browserbase__*`
-- Direct Puppeteer scripts
-
-Pair with `/canary-watch` for post-deploy monitoring.
+Report the contract hash, UI impact, commands, source/build fingerprint, routes,
+widths, artifact paths, Lighthouse gate/advisories when applicable, and the
+runtime verifier result.

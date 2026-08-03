@@ -19,7 +19,7 @@ test('Cursor retry authority prose is identical in delivered docs, the runtime b
   const teamRule = read('src/modules/rules/rules/common/senior-engineer-team.md');
   const orchestrator = read('src/modules/skills/skills-catalog/senior-eng-orchestrator/SKILL.md');
   const gateSkill = read('src/modules/agent-model/skill/SKILL.md');
-  const runtime = read('src/modules/agent-model/cursor-failures.ts');
+  const runtime = read('src/modules/agent-model/cursor-failure-prose.ts');
 
   for (const [name, source] of [
     ['team rule', teamRule],

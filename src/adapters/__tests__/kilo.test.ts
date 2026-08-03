@@ -43,6 +43,23 @@ test('kilo: parses documented tool hook payload shape', () => {
     output: { args: { patch: '*** Begin Patch' } },
   }));
   assert.equal(patched.tool?.patchText, '*** Begin Patch');
+
+  const editArgs = {
+    file_path: 'src/App.tsx',
+    old_string: 'const title = "old";',
+    new_string: 'const title = "new";',
+    replace_all: false,
+  };
+  const edited = kilo.parse(inv('before-tool-use', {
+    event: 'tool.execute.before',
+    cwd: '/repo',
+    tool: 'edit',
+    output: { args: editArgs },
+  }));
+  assert.equal(edited.tool?.class, 'file-edit');
+  assert.equal(edited.tool?.filePath, 'src/App.tsx');
+  assert.deepEqual((edited.raw as Record<string, unknown>).tool_input, editArgs);
+  assert.deepEqual((edited.raw as Record<string, unknown>).toolInput, editArgs);
 });
 
 test('kilo: maps chat.message and system transform hook events', () => {
@@ -74,4 +91,13 @@ test('kilo: context and noop use wrapper JSON protocol', async () => {
   ];
   assert.deepEqual(JSON.parse(await dispatch(kilo, handlers, inv('session-start', { cwd: '/x' }))), { kind: 'context', context: 'hello' });
   assert.deepEqual(JSON.parse(await dispatch(kilo, [{ id: 'n', event: 'SessionStart', priority: 0, run: () => noop() }], inv('session-start', {}))), { kind: 'noop' });
+});
+
+test('kilo: the session-idle subcommand maps to the Stop event (never the session catch-all)', () => {
+  const adapter = makeKiloAdapter();
+  const parsed = adapter.parse({
+    stdin: JSON.stringify({ event: 'session.idle', cwd: '/tmp/p', session_id: 's' }),
+    argv: ['session-idle', '--host=kilo'],
+  });
+  assert.equal(parsed.event, 'Stop');
 });

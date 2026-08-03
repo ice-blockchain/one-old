@@ -22,7 +22,6 @@ import {
   ONE_MCP_CODEX_TOOL_TIMEOUT_SEC,
   ONE_MCP_MANAGED_TOOLS,
   ONE_MCP_SERVER_NAME,
-  publicEndpoint,
 } from '../config/one-mcp';
 
 export function codexConfigPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -156,7 +155,7 @@ function managedCodexMcpBlock(config: string): ManagedCodexMcpBlock | null {
 // Public traffic-one-mcp registration is deliberately inert: hook-owned HTTP
 // clients perform sync/reporting, while Codex sees neither public tool. Keep the
 // block append-only and byte-preserving like the proven opencode-worker path.
-export function codexOneMcpServerBlock(endpoint: string = DEFAULT_PUBLIC_ENDPOINT): string {
+function codexOneMcpServerBlock(endpoint: string = DEFAULT_PUBLIC_ENDPOINT): string {
   return [
     '',
     '# >>> traffic-one managed public MCP (disabled)',
@@ -375,7 +374,7 @@ export type CodexMcpRegistration =
   | 'skipped-no-root'
   | 'failed';
 
-export type CodexOneMcpRemoval = 'removed' | 'absent' | 'modified' | 'failed';
+type CodexOneMcpRemoval = 'removed' | 'absent' | 'modified' | 'failed';
 
 export function ensureCodexMcpServerRegistered(
   env: NodeJS.ProcessEnv = process.env,
@@ -434,7 +433,7 @@ export function ensureCodexOneMcpServerRegistered(env: NodeJS.ProcessEnv = proce
       // block. In both cases, leave every byte untouched and rely on the
       // universal hook deny if the user independently enabled that server.
       if (hasCodexMcpServerConfig(existing, ONE_MCP_SERVER_NAME)) return 'already-present';
-      fs.appendFileSync(cfgPath, codexOneMcpServerBlock(publicEndpoint(env)));
+      fs.appendFileSync(cfgPath, codexOneMcpServerBlock(DEFAULT_PUBLIC_ENDPOINT));
       return 'registered';
     });
   } catch {
@@ -455,7 +454,7 @@ export function removeCodexOneMcpServerRegistration(
     return withCodexMcpLock(cfgPath, () => {
       if (!fs.existsSync(cfgPath)) return 'absent';
       const existing = fs.readFileSync(cfgPath, 'utf8');
-      const block = codexOneMcpServerBlock(publicEndpoint(env));
+      const block = codexOneMcpServerBlock(DEFAULT_PUBLIC_ENDPOINT);
       const first = existing.indexOf(block);
       if (first < 0) {
         return existing.includes('# >>> traffic-one managed public MCP (disabled)')

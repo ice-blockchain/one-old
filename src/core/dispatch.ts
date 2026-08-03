@@ -7,7 +7,9 @@ import type { Handler } from './types';
 import type { HostAdapter, RawInvocation } from '../adapters/types';
 import { buildContext } from './context';
 import { runPipeline } from './pipeline';
-import { maybeTraceHook } from '../shared/hook-trace';
+import { maybeTraceHook } from '../shared/hook/trace';
+import { observeCurrentRunHostCapabilityFromHook } from '../shared/host/capabilities';
+import { resolveToolProjectRoot } from '../shared/tool-scope';
 
 export async function dispatch(
   adapter: HostAdapter,
@@ -17,7 +19,28 @@ export async function dispatch(
   const input = adapter.parse(raw);
   maybeTraceHook(input, raw.stdin); // off-by-default; gated by TRAFFIC_ONE_HOOK_TRACE
   const ctx = buildContext(input);
+  // Persist what this run actually observed. A SessionStart-only host remains
+  // completion-only; only the native primary before-tool point can upgrade the
+  // per-run sidecar to preventive enforcement. Resolve from the full tool
+  // scope, not raw cwd: hooks may start in a nested package or in this plugin's
+  // source while targeting an external end-user project.
+  observeCurrentRunHostCapabilityFromHook(
+    resolveToolProjectRoot(ctx),
+    input,
+    process.env,
+    'invoked',
+  );
   const result = await runPipeline(handlers, ctx);
+  // The first build gate may mint currentRunId during this invocation. Record
+  // the canonical pipeline decision separately from hook coverage: merely
+  // reaching a before-tool callback (or dispatching with no handlers) is not
+  // evidence that this host/runtime can enforce a denial.
+  observeCurrentRunHostCapabilityFromHook(
+    resolveToolProjectRoot(ctx),
+    input,
+    process.env,
+    result.kind === 'deny' ? 'denied' : 'allowed',
+  );
   return adapter.serialize(result, input);
 }
 

@@ -13,15 +13,15 @@ import { nowIsoNoMs } from '../../shared/text';
 import { spawnTool } from '../../shared/spawn-tool';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 
-export const SPEC_PATH = path.join(__dirname, 'toolchain-versions.json');
+const SPEC_PATH = path.join(__dirname, 'toolchain-versions.json');
 
 type Rec = Record<string, unknown>;
-export interface ToolSpec {
+interface ToolSpec {
   recommended?: string;
   minimum?: string;
   installLatest?: boolean;
   npmPackage?: string;
-  pipxPackage?: string;
+  pipPackage?: string;
   runtime?: 'python' | 'node';
   runtimeMinMajor?: number;
   runtimeMinMinor?: number;
@@ -31,7 +31,7 @@ export interface ToolSpec {
   [k: string]: unknown;
 }
 
-export interface ToolRuntimeReq {
+interface ToolRuntimeReq {
   runtime: 'python' | 'node' | null;
   minMajor: number;
   minMinor: number;
@@ -47,7 +47,7 @@ export function toolInstallSpec(toolName: string): string | null {
   const spec = getToolSpec(toolName);
   if (!spec) return null;
   const npmPkg = typeof spec.npmPackage === 'string' ? spec.npmPackage : '';
-  const pipPkg = typeof spec.pipxPackage === 'string' ? spec.pipxPackage : '';
+  const pipPkg = typeof spec.pipPackage === 'string' ? spec.pipPackage : '';
   const rec = typeof spec.recommended === 'string' && spec.recommended ? spec.recommended : '';
   const latest = spec.installLatest === true || !rec;
   if (npmPkg) return latest ? `${npmPkg}@latest` : `${npmPkg}@${rec}`;
@@ -66,9 +66,9 @@ export function toolRuntime(toolName: string): ToolRuntimeReq {
   return { runtime, minMajor, minMinor };
 }
 
-export type ToolStatusKind = 'unknown' | 'missing' | 'too-old' | 'outdated' | 'current';
+type ToolStatusKind = 'unknown' | 'missing' | 'too-old' | 'outdated' | 'current';
 
-export interface ToolProbe {
+interface ToolProbe {
   binPath: string | null;
   version: string | null;
   status: ToolStatusKind;

@@ -7,22 +7,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { readJson } from './fsjson';
-import { resolveProjectRoot } from './hook-paths';
+import { resolveProjectRoot } from './hook/paths';
 import { obj } from './obj';
 
-export interface RetentionPolicy {
+interface RetentionPolicy {
   keepRuns: number;
   backupKeep: number;
   orphanTtlDays: number;
+  /** Newest Lighthouse runs kept per route; older ones are superseded copies. */
+  lighthouseKeepPerRoute: number;
 }
 
-export interface RetentionAction {
+interface RetentionAction {
   action: 'remove';
   path: string;
   reason: string;
 }
 
-export interface RetentionResult {
+interface RetentionResult {
   cwd: string;
   dryRun: boolean;
   policy: RetentionPolicy;
@@ -31,10 +33,15 @@ export interface RetentionResult {
   removed: number;
 }
 
+// Tightened after the 12co audit: 5 retained runs held 113 files / 1.17 MB in
+// `runs/` plus 9.5 MB of reports for a single settled run; backups were all
+// byte-identical. One backup, three runs, and one Lighthouse pair per route
+// cover every recovery path the runtime actually exercises.
 const DEFAULT_POLICY: RetentionPolicy = {
-  keepRuns: 5,
-  backupKeep: 3,
-  orphanTtlDays: 7,
+  keepRuns: 3,
+  backupKeep: 1,
+  orphanTtlDays: 3,
+  lighthouseKeepPerRoute: 1,
 };
 
 function readPolicy(cwd: string): RetentionPolicy {
@@ -43,10 +50,14 @@ function readPolicy(cwd: string): RetentionPolicy {
   const keepRuns = Number(raw.keepRuns);
   const backupKeep = Number(raw.backupKeep);
   const orphanTtlDays = Number(raw.orphanTtlDays);
+  const lighthouseKeepPerRoute = Number(raw.lighthouseKeepPerRoute);
   return {
     keepRuns: Number.isFinite(keepRuns) && keepRuns >= 1 ? Math.floor(keepRuns) : DEFAULT_POLICY.keepRuns,
     backupKeep: Number.isFinite(backupKeep) && backupKeep >= 0 ? Math.floor(backupKeep) : DEFAULT_POLICY.backupKeep,
     orphanTtlDays: Number.isFinite(orphanTtlDays) && orphanTtlDays >= 0 ? orphanTtlDays : DEFAULT_POLICY.orphanTtlDays,
+    lighthouseKeepPerRoute: Number.isFinite(lighthouseKeepPerRoute) && lighthouseKeepPerRoute >= 1
+      ? Math.floor(lighthouseKeepPerRoute)
+      : DEFAULT_POLICY.lighthouseKeepPerRoute,
   };
 }
 
@@ -140,13 +151,17 @@ function collectRunIds(cwd: string): string[] {
   return [...ids].sort(numericDesc);
 }
 
-function keepRunIds(cwd: string, policy: RetentionPolicy): Set<string> {
+function keepRunIds(cwd: string, policy: RetentionPolicy, protectRunIds: readonly string[] = []): Set<string> {
   const current = readCurrentRunId(cwd);
   const ids = collectRunIds(cwd);
   const keep = new Set<string>();
   if (current) keep.add(current);
+  // Caller-protected ids (the run being settled) are unconditional: a settle
+  // of an OLDER run must never reclaim the ledger it wrote milliseconds ago.
+  for (const id of protectRunIds) if (id) keep.add(id);
+  const reserved = keep.size;
   for (const id of ids) {
-    if (keep.size >= policy.keepRuns + (current ? 1 : 0)) break;
+    if (keep.size >= policy.keepRuns + reserved) break;
     keep.add(id);
   }
   return keep;
@@ -164,9 +179,9 @@ function isOlderThan(filePath: string, ttlMs: number, nowMs: number): boolean {
   }
 }
 
-function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { keep: Set<string>; actions: RetentionAction[] } {
+function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number, protectRunIds: readonly string[] = []): { keep: Set<string>; actions: RetentionAction[] } {
   const t1 = path.join(cwd, '.traffic-one');
-  const keep = keepRunIds(cwd, policy);
+  const keep = keepRunIds(cwd, policy, protectRunIds);
   const actions: RetentionAction[] = [];
 
   for (const rel of ['runs', 'digests', 'fix-cycles', path.join('reports', 'qa')]) {
@@ -175,6 +190,23 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
       if (id === '.once') continue;
       if (!keep.has(id)) maybeAction(actions, path.join(root, id), `older than retained run set (${policy.keepRuns})`);
     }
+  }
+
+  // Runs that never reached a compiled architecture are not runs — they were
+  // minted, captured a baseline, and abandoned. Observed 8cl: a run minted 3.5
+  // minutes AFTER the previous one settled `agent-failed`, holding a 1.63 MB
+  // baseline, still `status: active`, while `currentRunId` stayed on the earlier
+  // run. Nothing reclaimed it because the keep-set counts it as one of the five
+  // most recent. The TTL keeps an in-flight pre-PLAN_READY run untouched.
+  const ttl = policy.orphanTtlDays * 24 * 60 * 60 * 1000;
+  const currentRunId = readCurrentRunId(cwd);
+  for (const id of listDirs(path.join(t1, 'runs'))) {
+    if (id === '.once' || id === currentRunId || protectRunIds.includes(id)) continue;
+    const runDir = path.join(t1, 'runs', id);
+    if (actions.some((action) => action.path === runDir)) continue;
+    if (fs.existsSync(path.join(runDir, 'architecture-v1.json'))) continue;
+    if (!isOlderThan(runDir, ttl, nowMs)) continue;
+    maybeAction(actions, runDir, `abandoned before architecture compilation and older than ${policy.orphanTtlDays} days`);
   }
 
   const backups = listDirs(path.join(t1, 'backups')).sort(numericDesc);
@@ -208,12 +240,59 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
     }
   }
 
+  // Per-run diagnostic captures (claim-capture.jsonl, plan-guard-deny.jsonl)
+  // live under runs/<id>/debug/ and were previously reclaimed only when the
+  // whole run dir aged out of the keep set — RETAINED runs kept them forever.
+  for (const id of listDirs(path.join(t1, 'runs'))) {
+    if (id === '.once') continue;
+    const runDebug = path.join(t1, 'runs', id, 'debug');
+    for (const name of listFiles(runDebug)) {
+      const target = path.join(runDebug, name);
+      if (ttlMs === 0 || isOlderThan(target, ttlMs, nowMs)) {
+        maybeAction(actions, target, `stale run debug log older than ${policy.orphanTtlDays} days`);
+      }
+    }
+  }
+
   for (const rel of [path.join('reports', 'lighthouse'), 'logs']) {
     const root = path.join(t1, rel);
     for (const name of [...listDirs(root), ...listFiles(root)]) {
       const target = path.join(root, name);
       if (ttlMs === 0 || isOlderThan(target, ttlMs, nowMs)) {
         maybeAction(actions, target, `stale ${rel} artefact older than ${policy.orphanTtlDays} days`);
+      }
+    }
+  }
+
+  // Lighthouse reports carry a timestamp in their filename, so no run ever
+  // supersedes the previous one and a TTL-only sweep keeps every copy inside the
+  // window. Observed 9co: 10 HTML+JSON pairs, 13.6 MB, one run — while the actual
+  // evidence artefact is an 863-byte `lighthouse-evidence-v1.json` in the QA dir.
+  // Keep the newest few per route; the rest are superseded duplicates.
+  const lighthouseRoot = path.join(t1, 'reports', 'lighthouse');
+  // Reports are written run-scoped (`reports/lighthouse/<runId>/…`); pre-1.0.40
+  // artefacts sit flat in the root, so both layouts are swept.
+  for (const dir of ['', ...listDirs(lighthouseRoot)]) {
+    const root = dir ? path.join(lighthouseRoot, dir) : lighthouseRoot;
+    const byRoute = new Map<string, string[]>();
+    for (const name of listFiles(root)) {
+      if (actions.some((action) => action.path === path.join(root, name))) continue;
+      // `<route>[-<buildTag>]-<ISO timestamp>.report.{json,html}` — group on the
+      // route+build prefix, so a new build never supersedes another build's file.
+      const match = /^(.*?)-\d{4}-\d{2}-\d{2}T[\d-]+Z\.report\.(?:json|html)$/.exec(name);
+      if (!match) continue;
+      const bucket = byRoute.get(match[1]!) || [];
+      bucket.push(name);
+      byRoute.set(match[1]!, bucket);
+    }
+    for (const [, names] of byRoute) {
+      // Two files per run (json + html), so keeping 2 runs means 4 files.
+      for (const name of names.sort().reverse().slice(policy.lighthouseKeepPerRoute * 2)) {
+        maybeAction(
+          actions,
+          path.join(root, name),
+          `superseded Lighthouse report (keeping ${policy.lighthouseKeepPerRoute} per route)`,
+        );
       }
     }
   }
@@ -225,10 +304,10 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
   return { keep, actions };
 }
 
-export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; nowMs?: number } = {}): RetentionResult {
+export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; nowMs?: number; protectRunIds?: readonly string[] } = {}): RetentionResult {
   const dryRun = opts.dryRun !== false;
   const policy = readPolicy(cwd);
-  const { keep, actions } = collectActions(cwd, policy, opts.nowMs ?? Date.now());
+  const { keep, actions } = collectActions(cwd, policy, opts.nowMs ?? Date.now(), opts.protectRunIds ?? []);
   let removed = 0;
   if (!dryRun) {
     for (const action of actions) {
@@ -248,4 +327,44 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
     actions,
     removed,
   };
+}
+
+// Post-settlement trigger: reclaim superseded artefacts the moment a run reaches
+// a terminal ledger state instead of waiting for the next SessionStart (observed
+// 12co: 113 run files + 9.5 MB of reports sat untouched until a later session
+// swept). Runs strictly AFTER the terminal ledger write. The settled run id is
+// protected EXPLICITLY: `currentRunId` alone is not enough — the deny remedies
+// legitimately settle OLDER runs (blocked/failed cleanup), and an adversarial
+// review proved the keep-window could reclaim the very ledger such a settle
+// wrote milliseconds earlier.
+export function sweepAfterTerminalSettlement(cwd: string, settledRunId?: string): void {
+  try {
+    sweepTrafficOneRetention(cwd, {
+      dryRun: false,
+      ...(settledRunId ? { protectRunIds: [settledRunId] } : {}),
+    });
+  } catch {
+    // best-effort: settlement must never fail because cleanup did
+  }
+}
+
+// Enforce the backup cap at WRITE time. The full sweep only runs at SessionStart,
+// so a session that re-bootstraps the code graph N times accumulates N snapshots
+// (measured: 9 in 18 minutes under `backupKeep: 3`, all byte-identical). `keepName`
+// is the snapshot the caller may still restore from — never a candidate — and at
+// least one snapshot always survives even when the policy asks for zero.
+export function pruneTrafficOneBackups(cwd: string, keepName?: string): number {
+  const root = path.join(cwd, '.traffic-one', 'backups');
+  const keep = Math.max(1, readPolicy(cwd).backupKeep);
+  let removed = 0;
+  for (const name of listDirs(root).sort(numericDesc).slice(keep)) {
+    if (keepName && name === keepName) continue;
+    try {
+      fs.rmSync(path.join(root, name), { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // best-effort; never abort a bootstrap because one path is busy
+    }
+  }
+  return removed;
 }

@@ -27,6 +27,11 @@ const SUB_TO_EVENT: Readonly<Record<string, CanonicalEvent>> = {
   'before-tool-use': 'PreToolUse',
   'after-tool-use': 'PostToolUse',
   'user-prompt-submit': 'UserPromptSubmit',
+  // The wrapper's `event` hook forwards session.idle as this subcommand — the
+  // turn-end (Stop) surface. Keyed on the SUBCOMMAND deliberately: the payload
+  // event string 'session.idle' would hit normalizeEvent's 'session' catch-all
+  // and misparse as SessionStart.
+  'session-idle': 'Stop',
 };
 
 function subcommandOf(argv: readonly string[]): string {
@@ -183,6 +188,9 @@ export function makeKiloAdapter(): HostAdapter {
       const data = asRecord(parseJson<Record<string, unknown>>(raw.stdin, {}));
       const event = SUB_TO_EVENT[sub] ?? normalizeEvent(data.event ?? data.hook_event_name ?? data.hookEventName);
       const tool = event === 'PreToolUse' || event === 'PostToolUse' ? makeTool(data) : undefined;
+      const normalizedToolInput = tool
+        ? nestedInputRecord(data, nestedToolRecord(data))
+        : {};
       const prompt = firstString(
         data.prompt, data.message, data.text,
         asRecord(data.input).prompt, asRecord(data.input).message,
@@ -192,8 +200,13 @@ export function makeKiloAdapter(): HostAdapter {
       return {
         event,
         host: 'kilo',
+        ...(sub === 'before-tool-use' ? { hostHookPoint: 'tool.execute.before' } : {}),
         ...cwd,
-        raw: data,
+        // Preserve lossless edit evidence from the documented `output.args`
+        // wrapper for structural post-Edit reconstruction.
+        raw: tool
+          ? { ...data, tool_input: normalizedToolInput, toolInput: normalizedToolInput }
+          : data,
         ...(tool ? { tool } : {}),
         ...(prompt ? { prompt } : {}),
       };
@@ -231,4 +244,3 @@ export function makeKiloAdapter(): HostAdapter {
   };
 }
 
-export const kiloAdapter = makeKiloAdapter();

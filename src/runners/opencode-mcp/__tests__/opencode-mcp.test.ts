@@ -6,7 +6,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { attach, delegateFromPlanResumable, delegateResumable, delegateStatus, dispatch, parseRunnerResult, planQueueRoles, runDelegate, runDelegateFromPlan } from '../index';
-import { parsePlanDelegationUnits, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
+import { clearOpenCodeApplyInProgress, markOpenCodeApplyInProgress, openCodeApplyInProgress, parsePlanDelegationUnits, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 import { buildOpenCodeQueue, readOpenCodeUnitStatuses } from '../../../shared/opencode-queue';
 import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../../config/opencode-mcp';
 
@@ -278,16 +278,220 @@ test('delegateResumable re-call without a task keeps waiting on the in-flight ru
   });
 });
 
-test('delegateStatus reports running → done', async () => {
+test('delegateStatus reports running → done, surfaces reservedFiles while running', async () => {
   await withStubRunner(SLOW_STUB, async (projectRoot) => {
     const args = { role: 'senior-frontend', task: 'slow', runId: 'res-2', allowedFiles: 'apps/web/src/**', projectRoot };
-    await delegateResumable(args, 100); // start (returns running)
-    assert.equal((delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot }) as Any).status, 'running');
+    const started = (await delegateResumable(args, 100)) as Any; // start (returns running)
+    assert.deepEqual(started.reservedFiles, ['apps/web/src/**']);
+    const running = (await delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot })) as Any;
+    assert.equal(running.status, 'running');
+    assert.deepEqual(running.reservedFiles, ['apps/web/src/**']);
     await delegateResumable(args, 2000); // wait for completion
-    const st = delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot }) as Any;
+    const st = (await delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot })) as Any;
     assert.equal(st.status, 'done');
     assert.equal(st.result.ok, true);
-    assert.equal((delegateStatus({ runId: 'nope', projectRoot }) as Any).status, 'unknown');
+    assert.equal(((await delegateStatus({ runId: 'nope', projectRoot })) as Any).status, 'unknown');
+  });
+});
+
+test('delegateStatus waitMs is a bounded long wait that returns the terminal result', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-wait', allowedFiles: 'apps/web/src/**', projectRoot };
+    const first = (await delegateResumable(args, 100)) as Any; // stub sleeps 1200ms
+    assert.equal(first.running, true);
+    // One long status wait collects the terminal result — no re-poll loop.
+    const st = (await delegateStatus({ runId: 'res-wait', role: 'senior-frontend', projectRoot, waitMs: 3000 })) as Any;
+    assert.equal(st.status, 'done');
+    assert.equal(st.result.ok, true);
+  });
+});
+
+test('delegateStatus cancel kills the worker and marks the delegation cancelled', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-cancel', allowedFiles: 'apps/web/src/**', projectRoot };
+    const first = (await delegateResumable(args, 100)) as Any;
+    assert.equal(first.running, true);
+    const cancelled = (await delegateStatus({ runId: 'res-cancel', role: 'senior-frontend', projectRoot, cancel: true })) as Any;
+    assert.equal(cancelled.status, 'done');
+    assert.equal(cancelled.result.ok, false);
+    assert.equal(cancelled.result.action, 'cancelled');
+    assert.match(String(cancelled.result.error), /explicitly cancelled/);
+    // Idempotent: cancelling a finished run just replays its terminal result.
+    const again = (await delegateStatus({ runId: 'res-cancel', role: 'senior-frontend', projectRoot, cancel: true })) as Any;
+    assert.equal(again.status, 'done');
+    // Unknown runs cannot be cancelled — say so instead of pretending.
+    const unknown = (await delegateStatus({ runId: 'never-started', projectRoot, cancel: true })) as Any;
+    assert.equal(unknown.status, 'unknown');
+    assert.match(String(unknown.message), /nothing to cancel/);
+  });
+});
+
+test('a role-less cancel targets the single tracked delegation instead of the plan key', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-roleless', allowedFiles: 'apps/web/src/**', projectRoot };
+    const first = (await delegateResumable(args, 100)) as Any;
+    assert.equal(first.running, true);
+    // The prose shows bare {cancel:true}; with exactly one tracked delegation
+    // for this run it must cancel THAT, not answer 'nothing to cancel' on the
+    // plan key while the worker keeps running (adversarial review).
+    const cancelled = (await delegateStatus({ runId: 'res-roleless', projectRoot, cancel: true })) as Any;
+    assert.equal(cancelled.status, 'done');
+    assert.equal(cancelled.result.action, 'cancelled');
+    assert.equal(cancelled.role, 'senior-frontend');
+  });
+});
+
+// The apply-back latch is PID-verified, not mtime-fresh: the guarded section's
+// own budget (several 120s verification commands) outlives any short TTL, and
+// an aged-but-live latch expiring mid-typecheck let a cancel strand an
+// applied-unverified diff (adversarial review).
+test('the apply latch holds while its runner pid is alive, past any freshness window', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-latch-pid-'));
+  try {
+    markOpenCodeApplyInProgress(projectRoot, 'latch-run', 'senior-frontend');
+    const latchDir = path.join(projectRoot, '.traffic-one', 'runs', 'latch-run', 'opencode-applying');
+    const latchFile = path.join(latchDir, 'senior-frontend');
+    // Age the file two minutes: pid (this process) is alive → still held.
+    const old = new Date(Date.now() - 2 * 60_000);
+    fs.utimesSync(latchFile, old, old);
+    assert.equal(openCodeApplyInProgress(projectRoot, 'latch-run'), true, 'a live runner holds the latch past 60s');
+    // Past the hard cap the latch is a runaway backstop, held or not.
+    assert.equal(openCodeApplyInProgress(projectRoot, 'latch-run', Date.now() + 16 * 60_000), false);
+    // A DEAD pid is ignored immediately — a crashed runner never bricks cancel.
+    fs.writeFileSync(latchFile, `${JSON.stringify({ armedAt: new Date().toISOString(), pid: 999_999_999 })}\n`, 'utf8');
+    assert.equal(openCodeApplyInProgress(projectRoot, 'latch-run'), false, 'a dead runner releases the latch');
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+// Cancelling a multi-role plan batch must stop the SEQUENTIAL loop: killing
+// the current shard while the loop went on to spawn the next role's runner
+// landed diffs underneath the paid fallback (adversarial review).
+test('plan-batch cancel stops the sequential loop before the next role spawns', async () => {
+  // Sleeps far longer than the observation window so the FIRST shard is still
+  // running when the cancel lands even under full-suite load (a 1.5s stub
+  // could finish naturally before a starved event loop delivered the cancel,
+  // making the second spawn legitimate and the test flaky).
+  const SLOW_COUNTING_STUB = [
+    'const fs = require("fs");',
+    'const path = require("path");',
+    'const marker = path.join(path.dirname(process.argv[1]), "shard-spawns");',
+    'fs.appendFileSync(marker, process.argv.slice(2).join(" ") + "\\n");',
+    'setTimeout(() => { console.log(JSON.stringify({ total: 1, delegated: 0, units: [{ role: "frontend", task: "t", action: "failed", touched: [] }] })); }, 8000);',
+  ].join('\n');
+  await withStubRunner(SLOW_COUNTING_STUB, async (projectRoot) => {
+    fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), PLAN_TWO_ROLES, 'utf8');
+    writePlanQueue(projectRoot, 'cancel-loop', PLAN_TWO_ROLES);
+    const first = (await delegateFromPlanResumable({ runId: 'cancel-loop', projectRoot }, 100)) as Any;
+    assert.equal(first.running, true);
+    const cancelled = (await delegateStatus({ runId: 'cancel-loop', projectRoot, cancel: true })) as Any;
+    assert.equal(cancelled.status, 'done');
+    assert.equal(cancelled.result.action, 'abandoned');
+    // Give the killed shard's close event (and any wrongly-spawned successor)
+    // time to surface. Under load the FIRST shard can be SIGTERMed while node
+    // is still booting — before its marker append — so a missing/empty marker
+    // is a legitimate outcome. The invariant is strictly "no LATER role shard
+    // ever spawns after the cancel".
+    await new Promise((r) => setTimeout(r, 2_000));
+    const marker = path.join(path.dirname(process.env[OPENCODE_RUNNER_OVERRIDE_ENV] as string), 'shard-spawns');
+    let spawns: string[] = [];
+    try {
+      spawns = fs.readFileSync(marker, 'utf8').trim().split('\n').filter(Boolean);
+    } catch {
+      spawns = []; // shard 1 died pre-append — fine; shard 2 must still be absent
+    }
+    assert.ok(spawns.length <= 1, `the cancelled batch must not spawn later role shards (saw: ${spawns.join(' | ')})`);
+    assert.ok(!spawns.some((line) => line.includes('--roles tester')), `the second role's shard must never spawn after cancel (saw: ${spawns.join(' | ')})`);
+  });
+});
+
+test('delegateStatus cancel is REFUSED while the apply-back latch is fresh', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-latch', allowedFiles: 'apps/web/src/**', projectRoot };
+    const first = (await delegateResumable(args, 100)) as Any;
+    assert.equal(first.running, true);
+    // Arm the latch the way run-model does around its apply-back section.
+    markOpenCodeApplyInProgress(projectRoot, 'res-latch', 'senior-frontend');
+    try {
+      const refused = (await delegateStatus({ runId: 'res-latch', role: 'senior-frontend', projectRoot, cancel: true })) as Any;
+      assert.equal(refused.status, 'running');
+      assert.equal(refused.applying, true);
+      assert.match(String(refused.message), /cancel refused/);
+    } finally {
+      clearOpenCodeApplyInProgress(projectRoot, 'res-latch', 'senior-frontend');
+    }
+    // Latch cleared → the cancel goes through.
+    const cancelled = (await delegateStatus({ runId: 'res-latch', role: 'senior-frontend', projectRoot, cancel: true })) as Any;
+    assert.equal(cancelled.status, 'done');
+    assert.equal(cancelled.result.action, 'cancelled');
+  });
+});
+
+// Records every spawn (one line per invocation, naming the allowlist it got) so
+// a test can prove whether a re-call actually re-delegated or replayed a cache
+// entry, then fails terminally the way a rejected preflight does.
+const COUNT_STUB = [
+  'const a = process.argv.slice(2);',
+  'const get = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : null; };',
+  'const fs = require("fs");',
+  'const path = require("path");',
+  'fs.appendFileSync(path.join(process.cwd(), "spawns.log"), get("--allowed-files") + "\\n");',
+  'console.log(JSON.stringify({ ok: false, action: "failed", error: "stub rejected: " + get("--allowed-files"), digest: null, touched: [] }));',
+].join('\n');
+
+function spawnCount(projectRoot: string): number {
+  const log = path.join(projectRoot, 'spawns.log');
+  if (!fs.existsSync(log)) return 0;
+  return fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length;
+}
+
+test('delegateResumable re-delegates when a finished call is retried with a corrected allowlist', async () => {
+  await withStubRunner(COUNT_STUB, async (projectRoot) => {
+    const base = { role: 'senior-backend', task: 'batch update endpoint', runId: 'res-retry', projectRoot };
+    // 1) globs — the shape maintenance rejects outright.
+    const globs = (await delegateResumable({ ...base, allowedFiles: 'routes/**, app/Http/Controllers/**' }, 2000)) as Any;
+    assert.equal(globs.ok, false);
+    assert.match(globs.error, /routes\/\*\*/);
+    assert.equal(spawnCount(projectRoot), 1);
+
+    // 2) corrected to exact files — must actually run, not replay the rejection.
+    const exact = (await delegateResumable({ ...base, allowedFiles: 'routes/api.php, app/Http/Controllers/BatchController.php' }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 2, 'a corrected allowlist starts a new delegation');
+    assert.match(exact.error, /routes\/api\.php/);
+    assert.doesNotMatch(exact.error, /\*\*/, 'the stale glob rejection is not replayed');
+
+    // 3) same file SET, newline-separated instead of comma-separated → replay.
+    const reordered = (await delegateResumable({ ...base, allowedFiles: 'app/Http/Controllers/BatchController.php\nroutes/api.php' }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 2, 'separator/order changes alone must not re-delegate');
+    assert.equal(reordered.error, exact.error);
+
+    // 4) a changed task is also new work.
+    const newTask = (await delegateResumable({ ...base, task: 'batch delete endpoint', allowedFiles: 'routes/api.php, app/Http/Controllers/BatchController.php' }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 3, 'a changed task starts a new delegation');
+    assert.equal(newTask.ok, false);
+  });
+});
+
+test('delegateResumable does not start a second run while one is still in flight, even with different args', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const first = (await delegateResumable({ role: 'senior-frontend', task: 'slow unit', runId: 'res-inflight', allowedFiles: 'apps/web/src/A.tsx', projectRoot }, 100)) as Any;
+    assert.equal(first.running, true);
+    // Different allowlist while the run is still RUNNING → keep waiting on it.
+    const second = (await delegateResumable({ role: 'senior-frontend', task: 'slow unit', runId: 'res-inflight', allowedFiles: 'apps/web/src/B.tsx', projectRoot }, 2000)) as Any;
+    assert.equal(second.ok, true);
+    assert.equal(second.action, 'delegated');
+  });
+});
+
+test('delegateFromPlanResumable replays its finished batch instead of re-running it', async () => {
+  await withStubRunner(COUNT_STUB, async (projectRoot) => {
+    const first = (await delegateFromPlanResumable({ runId: 'res-plan', projectRoot }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 1);
+    const second = (await delegateFromPlanResumable({ runId: 'res-plan', projectRoot }, 2000)) as Any;
+    assert.equal(spawnCount(projectRoot), 1, 'the plan batch has no per-call args and must never restart');
+    assert.equal(second.error, first.error);
   });
 });
 
@@ -413,7 +617,7 @@ test('an unpolled background delegation is cancelled by the watchdog (action: ab
       assert.equal(first.running, true);
       // No further polls: the watchdog should cancel after ~300ms + a tick.
       await new Promise((r) => setTimeout(r, 900));
-      const status = delegateStatus({ projectRoot, runId: 'aband-1', role: 'senior-frontend' }) as Any;
+      const status = (await delegateStatus({ projectRoot, runId: 'aband-1', role: 'senior-frontend' })) as Any;
       assert.equal(status.status, 'done');
       assert.equal(status.result?.action, 'abandoned');
       assert.match(status.result?.error || '', /stopped polling/);
@@ -471,7 +675,7 @@ test('plan batch watchdog abandon writes terminal batch.json (fail-open gate)', 
       const first = (await delegateFromPlanResumable(args, 100)) as Any;
       assert.equal(first.running, true);
       await new Promise((r) => setTimeout(r, 900));
-      const status = delegateStatus({ projectRoot, runId: 'aband-plan-1' }) as Any;
+      const status = (await delegateStatus({ projectRoot, runId: 'aband-plan-1' })) as Any;
       assert.equal(status.status, 'done');
       assert.equal(status.result?.action, 'abandoned');
       assert.ok(Array.isArray(status.result?.units));

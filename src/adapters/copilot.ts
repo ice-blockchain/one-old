@@ -11,7 +11,7 @@ import { patchTextFromToolInput } from '../shared/apply-patch';
 import { asRecord, asString, firstString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
 
-export type CopilotWireSurface = 'cli' | 'vscode';
+type CopilotWireSurface = 'cli' | 'vscode';
 
 const SUB_TO_EVENT: Readonly<Record<string, { event: CanonicalEvent; tool?: ToolClass }>> = {
   'session-start': { event: 'SessionStart' },
@@ -284,4 +284,3 @@ export function makeCopilotAdapter(surface?: CopilotWireSurface): HostAdapter {
   };
 }
 
-export const copilotAdapter = makeCopilotAdapter();

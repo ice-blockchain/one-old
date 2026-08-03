@@ -16,12 +16,12 @@ function withProject(stateExtra: Record<string, unknown>, fn: (cwd: string) => v
   const previous = {
     prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
     state: env.TRAFFIC_ONE_STATE_PATH,
-    cache: env.TRAFFIC_ONE_MCP_CACHE_PATH,
+    xdgState: env.XDG_STATE_HOME,
     plan: env.TRAFFIC_ONE_USER_PLAN,
   };
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(dir, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(dir, 'state');
   env.TRAFFIC_ONE_USER_PLAN = 'free';
   const { team: teamExtra, performance: performanceExtra, ...sharedExtra } = stateExtra;
   const team = teamExtra && typeof teamExtra === 'object'
@@ -45,7 +45,7 @@ function withProject(stateExtra: Record<string, unknown>, fn: (cwd: string) => v
   } finally {
     if (previous.prefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previous.prefs;
     if (previous.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = previous.state;
-    if (previous.cache === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = previous.cache;
+    if (previous.xdgState === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = previous.xdgState;
     if (previous.plan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = previous.plan;
     fs.rmSync(dir, { recursive: true, force: true });
   }

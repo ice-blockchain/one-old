@@ -12,15 +12,40 @@ live in `frontend/react/performance.md`.
 
 ## Lighthouse standard
 
-- Default launch standard: Lighthouse Performance >= 90 on mobile against a
-  built production preview, with 100 as the ideal.
-- Use the Traffic One runner by default for React/Vite and Ionic web routes:
+- Lighthouse is not part of every functional QA run. Run it when
+  `VerificationContractV2.performance.required` OR `.advisory` is true.
+  - `required` (a declared budget: explicit thresholds, architect
+    `performanceRisk`, or a redesign) — a missed threshold BLOCKS the run.
+  - `advisory` (a substantial visual change) — measure and report, but a missed
+    threshold is a warning. It never fails the run, never goes to an
+    implementer, and never starts or consumes a fix cycle.
+- The budget lives on the contract (`performance.thresholds`) and is the single
+  authority: the QA report and the standalone runner both judge it, so they
+  cannot disagree. A metric the contract does not declare is not gated at all —
+  do not reintroduce a local default. An explicit `--fcp-max`-style flag still
+  overrides, for a human deliberately tightening one run.
+- When auditing, use the Traffic One runner against a built production preview:
   `node ~/.traffic-one/bin/lighthouse-runner.cjs --route /`.
   The runner builds the app, starts production preview, runs Lighthouse mobile,
   writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
-  non-zero below the default thresholds.
-- Run the audit for the primary generated route and any route whose above-the-fold content, media, or third-party scripts changed.
+  non-zero below the contract's thresholds.
+- Do not re-audit an unchanged build. If the same production build was already
+  audited in this run, reuse that result; a change confined to tests, reports or
+  documentation is not a reason to re-run Lighthouse.
+- Install `lighthouse` as a workspace devDependency at scaffold time so the
+  runner always finds a local binary. Without one it falls back to a network
+  install (`pnpm dlx lighthouse@…`), and approval layers that deny
+  registry-download execution (Codex Desktop guardian) then deny the WHOLE
+  runner. On such hosts run
+  `node ~/.traffic-one/bin/lighthouse-runner.cjs --route / --local-only`;
+  a `blocked:lighthouse-missing` result means: add the devDependency with the
+  project's package manager, then re-run — never retry the dlx path there.
+- Run the audit only for routes named by the performance contract, prioritizing
+  routes whose above-the-fold content, media, or third-party scripts changed.
 - Use Lighthouse findings to fix avoidable page-speed regressions before delivery.
+- Explicit thresholds are exact gates with no tolerance. Runtime-provided
+  advisory thresholds may use the documented 3% tolerance. SEO is advisory
+  unless the contract contains an explicit `seoMin`.
 - The runner is time-bounded and always emits one final JSON status line; a `blocked:timeout` (or other `blocked:*`) result means page speed is UNVERIFIED — report it with concrete risks, do not invent scores, and do not poll the runner with a foreground sleep loop.
 - If Lighthouse cannot be run, report page speed as unverified and list concrete risks such as heavy initial JS, unoptimized media, blocking fonts, third-party scripts, or layout shifts.
 
@@ -51,9 +76,12 @@ claiming it passed.
     split into route-level chunks
   - Specialist heavy routes (charts, maps, editors, 3D, video) must lazy-load
     the heavy library at the usage site and document the reason if over budget
-- Keep each generated route inside its budget before declaring page-speed work complete.
+- When performance work is in scope, keep each affected route inside its budget
+  before declaring that work complete. Otherwise treat these budgets as review
+  guidance, not manufactured verification gates.
 
-Analyse before every release with a bundle visualiser. Fail CI when over budget.
+Analyse high-risk releases with a bundle visualiser. Fail CI only against an
+explicit project or verification-contract budget.
 
 ## Code splitting & loading
 

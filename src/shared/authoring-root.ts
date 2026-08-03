@@ -62,7 +62,7 @@ export function hasPluginAuthoringMarkers(root: string): boolean {
     || hasGeneratedPluginTree(path.join(root, 'dist'));
 }
 
-// Mirrors MAX_ROOT_WALK in hook-paths.ts: a hook never spends unbounded fs
+// Mirrors MAX_ROOT_WALK in hook/paths.ts: a hook never spends unbounded fs
 // reads climbing toward /.
 const MAX_AUTHORING_WALK = 40;
 
@@ -130,6 +130,42 @@ function realResolve(p: string): string {
   }
 }
 
+// Host and tooling STATE directories under $HOME. These hold the editor's own
+// data — sessions, plans, plugin caches, per-user config — and are never an
+// end-user project. Without this, merely NAMING one of these paths in a
+// read-only tool call adopts it as an un-onboarded project and the gate demands
+// onboarding for the host's own state. Observed live: Claude Code could not
+// write its plan file (it lives in ~/.claude/plans), and a worker reading a
+// Codex rollout under ~/.codex/sessions was handed the setup question as tool
+// output. Adding a host is one line here; XDG overrides are honoured too.
+const HOME_STATE_DIRNAMES = [
+  '.claude',
+  '.codex',
+  '.cursor',
+  '.opencode',
+  '.kilo',
+  '.kilocode',
+  '.windsurf',
+  '.devin',
+  '.config',
+  '.local',
+  'Library',
+] as const;
+
+function homeStateRoots(home: string): string[] {
+  const roots = HOME_STATE_DIRNAMES.map((name) => path.join(home, name));
+  for (const key of ['XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME'] as const) {
+    const value = process.env[key];
+    if (value) roots.push(value);
+  }
+  return roots;
+}
+
+function isInsideOrEqualRoot(resolved: string, root: string): boolean {
+  const real = realResolve(root);
+  return resolved === real || resolved.startsWith(real + path.sep);
+}
+
 export function isMachineConfigRoot(p: string): boolean {
   const resolved = realResolve(p);
   if (resolved === path.parse(resolved).root) return true; // filesystem root
@@ -138,6 +174,12 @@ export function isMachineConfigRoot(p: string): boolean {
   if (home && resolved === home) return true;
   const envHome = process.env.HOME ? realResolve(process.env.HOME) : '';
   if (envHome && resolved === envHome) return true;
+  for (const base of [home, envHome]) {
+    if (!base) continue;
+    for (const root of homeStateRoots(base)) {
+      if (isInsideOrEqualRoot(resolved, root)) return true;
+    }
+  }
   // System temp ROOTS are shared scratch space, never a project root themselves:
   // a stray `.traffic-one` minted into a /tmp-family dir (a scratch write with a
   // temp cwd) must not make every later temp-path hook adopt e.g. /private/tmp

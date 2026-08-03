@@ -11,10 +11,12 @@ import { currentHostModelTarget } from '../current-model-tiers';
 import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
-  publicEndpoint,
+  ONE_MCP_MAX_MODELS_PER_TIER,
+  DEFAULT_PUBLIC_ENDPOINT,
 } from '../../config/one-mcp';
 import { captureCursorModels } from '../materialize/cursor-models';
-import { writeOneMcpConfigCacheEntry } from '../one-mcp-cache';
+import { modelTierSnapshot, resolveModel } from '../model-tiers';
+import { writeOneMcpConfigCacheEntry } from '../one-mcp/cache';
 import { oneMcpPayloadFingerprint } from '../one-mcp';
 import {
   ensureRunModelPolicy,
@@ -35,7 +37,7 @@ function fixture<T>(body: (cwd: string, env: NodeJS.ProcessEnv) => T): T {
     ...process.env,
     TRAFFIC_ONE_HOST: 'codex',
     TRAFFIC_ONE_USER_PLAN: 'pro',
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(cwd, 'state'),
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
   };
   try {
@@ -104,7 +106,7 @@ function publishCursorPayload(
   version: number,
 ): void {
   writeOneMcpConfigCacheEntry('cursor', {
-    endpoint: publicEndpoint(env),
+    endpoint: DEFAULT_PUBLIC_ENDPOINT,
     configName: ONE_MCP_CONFIG_NAME_BY_HOST.cursor,
     decoderVersion: ONE_MCP_DECODER_VERSION,
     version,
@@ -172,15 +174,19 @@ test('Codex run policies encode the approved standard and override E2E profiles'
 test('run policy freezes a selected same-tier model first and preserves the remaining fallback order', () => {
   fixture((cwd, baseEnv) => {
     const env = { ...baseEnv, TRAFFIC_ONE_HOST: 'claude', TRAFFIC_ONE_USER_PLAN: 'max' };
-    const state = claudeStateFor(env, { 'senior-architect': 'claude-opus-4-8' });
+    // Pick a NON-preferred member of the row so the hoist is actually exercised,
+    // whichever model currently anchors the tier.
+    const highestRow = modelTierSnapshot('claude', undefined).highest;
+    const selected = highestRow[1] as string;
+    const state = claudeStateFor(env, { 'senior-architect': selected });
     const policy = ensureRunModelPolicy(cwd, 'selected-model', 'claude', state, env);
 
     assert.ok(policy);
-    assert.deepEqual(policy!.tiers.highest, ['claude-fable-5', 'claude-opus-4-8', 'opus']);
+    assert.deepEqual(policy!.tiers.highest, highestRow);
     assert.deepEqual(policy!.roles['senior-architect'], {
       tier: 'highest',
-      preferredModel: 'claude-opus-4-8',
-      acceptableModels: ['claude-opus-4-8', 'claude-fable-5', 'opus'],
+      preferredModel: selected,
+      acceptableModels: [selected, ...highestRow.filter((model) => model !== selected)],
     });
     assert.deepEqual(
       readRunModelPolicy(cwd, 'selected-model')?.roles['senior-architect'],
@@ -191,7 +197,7 @@ test('run policy freezes a selected same-tier model first and preserves the rema
     const changedState = claudeStateFor(env, { 'senior-architect': 'opus' });
     const stillFrozen = ensureRunModelPolicy(cwd, 'selected-model', 'claude', changedState, env);
     assert.equal(stillFrozen?.policyId, policy!.policyId);
-    assert.equal(stillFrozen?.roles['senior-architect']?.preferredModel, 'claude-opus-4-8');
+    assert.equal(stillFrozen?.roles['senior-architect']?.preferredModel, selected);
   });
 });
 
@@ -268,12 +274,15 @@ test('a published run policy is immutable across later Performance changes and c
   });
 });
 
-test('run policy decoding rejects a four-model tier even when its integrity hash is valid', () => {
+test('run policy decoding rejects an over-cap tier even when its integrity hash is valid', () => {
   fixture((cwd, env) => {
     assert.ok(ensureRunModelPolicy(cwd, 'oversized-tier', 'codex', stateFor(env, 'high'), env));
     const file = runModelPolicyPath(cwd, 'oversized-tier');
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
-    const oversized = ['gpt-5.6-sol', 'sol-fallback-1', 'sol-fallback-2', 'sol-fallback-3'];
+    const oversized = [
+      'gpt-5.6-sol',
+      ...Array.from({ length: ONE_MCP_MAX_MODELS_PER_TIER }, (_, i) => `sol-fallback-${i + 1}`),
+    ];
     (raw.tiers as Record<string, unknown>).highest = oversized;
     for (const role of Object.values(raw.roles as Record<string, Record<string, unknown>>)) {
       if (role.tier === 'highest') role.acceptableModels = [...oversized];
@@ -290,7 +299,7 @@ test('Cursor cannot freeze a partial picker capture or decode a policy without c
     const env = { ...baseEnv, TRAFFIC_ONE_HOST: 'cursor', TRAFFIC_ONE_USER_PLAN: 'pro' };
     const state = cursorStateFor(env, 'pro', 'balanced');
 
-    assert.equal(captureCursorModels(cwd, ['claude-fable-5-thinking-high'], 'pro', new Date().toISOString(), env), true);
+    assert.equal(captureCursorModels(cwd, [`${resolveModel('highest', 'cursor', 'pro')}-thinking-high`], 'pro', new Date().toISOString(), env), true);
     assert.equal(
       ensureRunModelPolicy(cwd, 'cursor-partial', 'cursor', state, env),
       null,
@@ -299,7 +308,7 @@ test('Cursor cannot freeze a partial picker capture or decode a policy without c
     assert.equal(fs.existsSync(runModelPolicyPath(cwd, 'cursor-partial')), false);
 
     const completeCapture = [
-      'claude-fable-5-thinking-high',
+      `${resolveModel('highest', 'cursor', 'pro')}-thinking-high`,
       'gpt-5.6-terra-medium',
       'composer-2.5-fast',
     ];
@@ -406,7 +415,7 @@ test('concurrent parents publish one valid create-once policy', async () => {
     ...process.env,
     TRAFFIC_ONE_HOST: 'codex',
     TRAFFIC_ONE_USER_PLAN: 'pro',
-    TRAFFIC_ONE_MCP_CACHE_PATH: path.join(cwd, 'one-mcp.json'),
+    XDG_STATE_HOME: path.join(cwd, 'state'),
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
     TRAFFIC_ONE_POLICY_STATE: path.join(cwd, 'state.json'),
   };

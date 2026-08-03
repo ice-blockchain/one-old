@@ -36,6 +36,8 @@ export const RUNNER_SHIMS: ReadonlyArray<{ shim: string; rel: string }> = [
   { shim: 'one-mcp-report.cjs', rel: 'scripts/one-mcp-report.cjs' },
   { shim: 'traffic-one-cleanup.cjs', rel: 'scripts/traffic-one-cleanup.cjs' },
   { shim: 'doctor.cjs', rel: 'scripts/doctor.cjs' },
+  { shim: 'run-status.cjs', rel: 'scripts/run-status.cjs' },
+  { shim: 'qa-evidence-runner.cjs', rel: 'scripts/qa-evidence-runner.cjs' },
   { shim: 'windsurf-hook-runtime.cjs', rel: 'scripts/windsurf-hook-runtime.cjs' },
 ];
 
@@ -63,6 +65,13 @@ function candidateRoots() {
     if (v) roots.push(v);
   }
   const home = os.homedir();
+  // Collect EVERY (host, marketplace, version) install first, then order by VERSION
+  // across all hosts. Ordering by host first is what silently served stale code: with
+  // .codex holding only 1.0.15 and .claude holding 1.0.17, the first-host-wins walk
+  // returned 1.0.15 and never even considered 1.0.17 — observed live in cursor-15c,
+  // where Cursor's MCP server ran 1.0.15 (90s OpenCode ceiling) while the hooks in the
+  // SAME session ran 1.0.17 (600s). Version sorting used to apply only WITHIN one host.
+  const versioned = [];
   for (const host of ['.codex', '.claude', '.cursor']) {
     const cache = path.join(home, host, 'plugins', 'cache');
     let marketplaces;
@@ -71,9 +80,11 @@ function candidateRoots() {
       const pluginDir = path.join(cache, mk, 'traffic-one');
       let versions;
       try { versions = fs.readdirSync(pluginDir).filter((v) => /^\\d/.test(v)); } catch { continue; }
-      for (const v of versions.sort(numericDesc)) roots.push(path.join(pluginDir, v));
+      for (const v of versions) versioned.push({ version: v, dir: path.join(pluginDir, v) });
     }
   }
+  versioned.sort((a, b) => numericDesc(a.version, b.version));
+  for (const entry of versioned) roots.push(entry.dir);
   // Local (unversioned) installs — Cursor's \`plugins/local/traffic-one\` has no
   // cache dir and the host sets no *_PLUGIN_ROOT for MCP-server processes, so this
   // is the only way the shim resolves the plugin when launched bare (CWD=\$HOME).

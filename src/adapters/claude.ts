@@ -22,6 +22,8 @@ function normalizeEvent(value: unknown): CanonicalEvent {
       return 'PostToolUse';
     case 'SubagentStart':
       return 'SubagentStart';
+    case 'Stop':
+      return 'Stop';
     default:
       return 'PreToolUse';
   }
@@ -39,11 +41,15 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
 
       let tool: ToolInput | undefined;
       if (rawName) {
-        const command = asString(toolInput.command ?? toolInput.cmd);
+        const isPatchTool = /^(?:apply_patch|patch)$/i.test(rawName.split('.').pop() || '');
+        // Codex sends the apply_patch payload in tool_input.command; that is
+        // patch DATA, not a shell command — leaving it on `command` makes every
+        // command-text scanner treat patch content as shell (observed 3co).
+        const command = isPatchTool ? '' : asString(toolInput.command ?? toolInput.cmd);
         const workdir = asString(toolInput.workdir ?? toolInput.cwd);
         const filePath = asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
         const content = asString(toolInput.content ?? toolInput.new_content ?? toolInput.newContent);
-        const patchText = /^(?:apply_patch|patch)$/i.test(rawName.split('.').pop() || '')
+        const patchText = isPatchTool
           ? patchTextFromToolInput(rawToolInput, data)
           : '';
         tool = {
@@ -91,6 +97,26 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
           },
         });
       }
+      // A deny on Stop is a turn-end block, not a tool permission: Claude Code's
+      // Stop protocol is {"decision":"block","reason"} (the reason is fed to the
+      // model, which must continue instead of ending the turn). Codex gets the
+      // same shape plus the marked additionalContext evidence channel — if a
+      // Codex build does not honor Stop blocking, the reason still reaches the
+      // model as context instead of vanishing.
+      if (input.event === 'Stop') {
+        return JSON.stringify({
+          decision: 'block',
+          reason: result.reason,
+          ...(id === 'codex'
+            ? {
+              hookSpecificOutput: {
+                hookEventName: 'Stop',
+                additionalContext: markCodexHookContext('Stop', result.reason),
+              },
+            }
+            : {}),
+        });
+      }
       return JSON.stringify({
         ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
         ...(result.promptRequest !== undefined ? { promptRequest: result.promptRequest } : {}),
@@ -109,5 +135,4 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
   };
 }
 
-export const claudeAdapter = makeClaudeAdapter('claude');
 export const codexAdapter = makeClaudeAdapter('codex');

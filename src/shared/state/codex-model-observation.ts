@@ -14,7 +14,21 @@ const STORE_FILE = 'codex-model-observations.json';
 const LOCK_TIMEOUT_MS = 1_000;
 const LOCK_STALE_MS = 10_000;
 
-export type CodexModelObservationStatus = 'pending-role' | 'verified' | 'mismatch' | 'conflict';
+type CodexModelObservationStatus = 'pending-role' | 'verified' | 'mismatch' | 'conflict';
+
+// A verified row whose reason carries this prefix accepted ONE host continuation
+// on a different model than its anchor (see evaluate()). Readers that compare the
+// hook's model against the anchor must consult this, or a tolerated continuation
+// looks like an identity mismatch and wedges the child.
+const CONTINUATION_REASON_PREFIX = 'continuation-on-';
+
+export function continuationModelOf(observation: CodexModelObservation | null | undefined): string | null {
+  const reason = observation?.reason;
+  if (observation?.status !== 'verified' || typeof reason !== 'string') return null;
+  return reason.startsWith(CONTINUATION_REASON_PREFIX)
+    ? reason.slice(CONTINUATION_REASON_PREFIX.length) || null
+    : null;
+}
 
 export interface CodexModelObservation {
   childId: string;
@@ -156,17 +170,62 @@ function evaluate(
       writeStore(cwd, runId, observations);
       return conflict;
     }
+    // Parent identity has two grades of evidence: SubagentStart fires in the
+    // spawner's context before the child rollout is readable (its parent notion
+    // may be missing or the ROOT session), while PreToolUse reads the child's
+    // line-zero `parent_thread_id` (the immediate parent). A disagreement across
+    // grades is an upgrade, not a contradiction — flagging it stranded every
+    // depth-2 replacement with `parent-session-conflict` (observed 9c-codex).
+    // Same-grade disagreement (line-zero itself changed) remains terminal.
+    let resolvedParent = previous?.parentSessionId || parentSessionId;
     if (previous?.parentSessionId && parentSessionId && previous.parentSessionId !== parentSessionId) {
-      const conflict = { ...previous, status: 'conflict' as const, reason: 'parent-session-conflict', updatedAt: now };
-      observations[childId] = conflict;
-      writeStore(cwd, runId, observations);
-      return conflict;
+      const previousAuthoritative = (previous.modelSources || []).includes('PreToolUse');
+      const incomingAuthoritative = source === 'PreToolUse';
+      if (incomingAuthoritative && !previousAuthoritative) {
+        resolvedParent = parentSessionId;
+      } else if (!incomingAuthoritative && previousAuthoritative) {
+        resolvedParent = previous.parentSessionId;
+      } else {
+        const conflict = { ...previous, status: 'conflict' as const, reason: 'parent-session-conflict', updatedAt: now };
+        observations[childId] = conflict;
+        writeStore(cwd, runId, observations);
+        return conflict;
+      }
     }
+    // Observed-model drift is terminal UNLESS this is a trusted CONTINUATION of a
+    // thread the CHILD ITSELF already verified.
+    //
+    // Why the source matters: SubagentStart fires in the SPAWNER's context and
+    // reports the model the parent REQUESTED, before the child runs. Accepting a
+    // drift off that anchor would make the child's own first blocking turn
+    // vacuous — a child actually running on a model its role forbids would pass,
+    // and the immutable policy would keep the requested value as its record. So a
+    // drift is only a continuation once `modelSources` includes 'PreToolUse': the
+    // child's own blocking turn has been checked against the frozen policy.
+    //
+    // After that, a different observed model means the HOST continued/reattached
+    // that same runtime (Codex runs a follow-up turn on the PARENT's model).
+    // Treating that as a breach retired every continuation, so the orchestrator
+    // could only ever spawn FRESH agents per fix cycle — each reloading the full
+    // rules+skills+plan context and re-exploring the codebase, defeating the
+    // "ONE live agent per role" reuse the design exists for (observed
+    // 12c/15c/17c/18c: senior_<role>_fix_1, _fix_2, … proliferation). The
+    // child-verified model stays the anchor (nextModel prefers
+    // previous.actualModel below), so the policy record is never rewritten.
+    // Accepted trade-off: a continuation turn may run on the parent's tier — a
+    // cost/tier leak, strictly cheaper than a full context reload per fix cycle.
+    let continuationDrift: string | null = null;
     if (previous?.actualModel && actualModel && previous.actualModel !== actualModel) {
-      const conflict = { ...previous, status: 'conflict' as const, reason: 'hook-model-conflict', updatedAt: now };
-      observations[childId] = conflict;
-      writeStore(cwd, runId, observations);
-      return conflict;
+      const childVerifiedItself = previous.status === 'verified'
+        && (previous.modelSources || []).includes('PreToolUse');
+      if (childVerifiedItself) {
+        continuationDrift = actualModel;
+      } else {
+        const conflict = { ...previous, status: 'conflict' as const, reason: 'hook-model-conflict', updatedAt: now };
+        observations[childId] = conflict;
+        writeStore(cwd, runId, observations);
+        return conflict;
+      }
     }
     if (previous?.role && role && previous.role !== role && !allowRoleCorrection) {
       const conflict = { ...previous, status: 'conflict' as const, reason: 'role-conflict', updatedAt: now };
@@ -194,12 +253,17 @@ function evaluate(
     } else {
       reason = 'role-not-observed';
     }
+    // Keep the accepted continuation auditable: the row stays verified against
+    // its anchor model while naming the model the host actually continued on.
+    if (continuationDrift && status === 'verified') {
+      reason = `${CONTINUATION_REASON_PREFIX}${continuationDrift}`;
+    }
     // A terminal mismatch cannot be healed by an ordinary delayed event. Only an
     // authoritative role correction may re-evaluate the same immutable model.
     if (previous?.status === 'mismatch' && !allowRoleCorrection) return previous;
     const next: CodexModelObservation = {
       childId,
-      parentSessionId: previous?.parentSessionId || parentSessionId,
+      parentSessionId: resolvedParent,
       policyId: policy.policyId,
       role: nextRole,
       actualModel: nextModel,

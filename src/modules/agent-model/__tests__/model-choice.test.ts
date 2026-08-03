@@ -104,9 +104,9 @@ test('modelChoiceReplyPending: true when unavailable picks exist and no choice; 
   const env = process.env;
   const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const pl = env.TRAFFIC_ONE_USER_PLAN;
-  const mc = env.TRAFFIC_ONE_MCP_CACHE_PATH;
+  const xdgState = env.XDG_STATE_HOME;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, 'prefs.json');
-  env.TRAFFIC_ONE_MCP_CACHE_PATH = path.join(cwd, 'one-mcp.json');
+  env.XDG_STATE_HOME = path.join(cwd, 'state');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -131,7 +131,7 @@ test('modelChoiceReplyPending: true when unavailable picks exist and no choice; 
   } finally {
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
-    if (mc === undefined) delete env.TRAFFIC_ONE_MCP_CACHE_PATH; else env.TRAFFIC_ONE_MCP_CACHE_PATH = mc;
+    if (xdgState === undefined) delete env.XDG_STATE_HOME; else env.XDG_STATE_HOME = xdgState;
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

@@ -4,7 +4,8 @@
 // and model-gate (spawn map stdout). Project agent contracts stay model-agnostic.
 
 import { AGENT_ROLES } from '../../config/performance';
-import { detectHostPlan } from '../host-plan';
+import { hostSpawnType } from '../host/spawn-types';
+import { detectHostPlan } from '../host/plan';
 import { currentAcceptableModels } from '../current-model-tiers';
 import { roleModelSelection } from '../performance';
 import { obj } from '../obj';
@@ -88,18 +89,39 @@ export function buildCursorSpawnModelMap(cwd: string, state: Rec): Record<string
   return map;
 }
 
-export function formatCursorSpawnMapLines(map: Record<string, string>): string[] {
+/**
+ * `freshlyMaterialized` = the role contracts under `.cursor/agents/` were
+ * written during the session this map is printed into. Cursor captured its
+ * subagent-type list before those files existed, so recommending the role-named
+ * type there is a guaranteed-failed first spawn — the user sees "Couldn't
+ * start" and the orchestrator burns a retry (observed 1cu and 3cu). Recommend
+ * the built-in worker instead; the gate accepts either, and the role travels in
+ * the `[t1-role: …]` prompt marker regardless of the type.
+ */
+export function formatCursorSpawnMapLines(
+  map: Record<string, string>,
+  freshlyMaterialized = false,
+): string[] {
   return Object.keys(map)
     .sort()
-    .map((role) => `   - ${role} → ${map[role]}`);
+    .map((role) => {
+      const spawn = hostSpawnType('cursor', role);
+      const type = freshlyMaterialized ? (spawn.fallback || spawn.primary) : spawn.primary;
+      return `   - ${role} → subagent_type: "${type}", model: ${map[role]}`;
+    });
 }
 
-export function formatCursorSpawnMapBlock(map: Record<string, string>): string {
-  const lines = formatCursorSpawnMapLines(map);
+export function formatCursorSpawnMapBlock(map: Record<string, string>, freshlyMaterialized = false): string {
+  const lines = formatCursorSpawnMapLines(map, freshlyMaterialized);
   if (!lines.length) return '';
+  const note = freshlyMaterialized
+    ? '   The built-in worker type above is deliberate: `.cursor/agents/<role>.md` was written during THIS session, so a role-named `subagent_type` is not in the type list this session captured and Cursor answers "Couldn\'t start". A later session that starts with those files present may use the role name instead — both are accepted.'
+    : `   If Cursor rejects a subagent_type (invalid enum / unknown type), the role files were written after this session captured its type list: retry that one spawn with \`subagent_type: "${hostSpawnType('cursor', 'senior-architect').fallback}"\`.`;
   return [
-    'traffic-one model-gate: spawn map — pass these EXACT captured Task `model` params (never an uncaptured family guess):',
+    'traffic-one model-gate: spawn map — pass BOTH values below on every Task spawn. The `model` must be an exact captured id (never an uncaptured family guess):',
     ...lines,
+    note,
+    '   Keep `[t1-role: senior-<role>]` as the FIRST prompt line whichever type you pass — that marker is what binds the role — and tell the child to read `.cursor/agents/<role>.md`. Do NOT build the role inline.',
   ].join('\n');
 }
 

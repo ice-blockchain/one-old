@@ -1,63 +1,66 @@
 ---
-description: "Apply when scaffolding a brand-new Traffic One project: the full setup flow, gates, and project structure."
-# Loaded when mode = new-project (≤5 source files detected)
+description: "Apply to every brand-new Traffic One project: compile the runtime-owned capability and architecture contracts before scaffolding, then follow only the selected profile."
+# Loaded when runtime-owned mode = new-project.
 ---
 
-# Mode: New Project — Real-time React Monorepo
+# Mode: New Project — Capability Contract First
 
-Clean slate. Scaffold the monorepo before writing any feature code.
-Default backend for new projects that need auth, user data, files, or real-time
-features is Supabase. Only choose frontend-only, an external API, self-hosted
-Postgres, or another provider when the user explicitly asks for it or declines
-Supabase.
-This is a default architecture decision, not a later optional integration. When
-the requested product includes auth, profiles, CRUD records, jobs, applications,
-uploads/files, real-time updates, dashboards backed by user data, or any durable
-user-owned data, scaffold the Supabase baseline before or alongside feature code.
-Do not describe Supabase as something that can merely be added later. Client-side
-mocks, seed data, or `localStorage` may support demos only after the Supabase
-contract, env validation, and migrations/RLS baseline are in place.
+A new project does not imply a particular language, framework, directory tree,
+role lineup, or test tool. Treat `.traffic-one/.one.json` as onboarding input,
+not as permission to invent a default surface.
 
-## Mandatory frontend baselines
+## Runtime authority
 
-The blocking frontend baselines (i18n by default, per-route SEO metadata, the
-shared EnvBanner/setup CTA to `https://traffic.io/`) are owned by the setup
-steps — see `rules/modes/new-project-setup.md` (steps 2, 5, 7, 12).
+Before scaffolding, require the current run's immutable capability snapshot and
+runtime-compiled architecture contract. They own:
 
-## Target architecture
+- project surfaces and framework;
+- router, source roots, entrypoints, and layer roots;
+- eligible roles and skills;
+- allowed outputs and assignment allowlists;
+- verification adapters and required QA.
 
-pnpm + Turborepo monorepo: `apps/web` (React/Vite) plus shared `packages/*`
-(ui, api-client, i18n, config), Supabase under `supabase/`, project memory
-under `.traffic-one/`. The full annotated tree and package boundaries live in
-`rules/modes/new-project-architecture.md` — read it before scaffolding.
+The architect supplies semantic routes, modules, optional i18n locale/exact-brand
+intent, and narrow exception requests.
+It must not write profile ids, roots, output paths, ownership, scanner limits,
+baseline data, or verification requirements into its input. If a needed output
+is absent, replan and recompile before implementation; never widen the contract
+during a child run.
 
-## Setup checklist (do these in order, do not skip)
+## Scaffold protocol
 
-The detailed steps live in `rules/modes/new-project-setup.md` — read it BEFORE
-scaffolding and follow it step by step. The order is:
+1. Complete onboarding and establish the run id.
+2. The architect writes only the semantic plan/project memory,
+   `ArchitectureInputV1`, and its digest. It never creates packages, workspace
+   files, configs, Tailwind assets, barrels, tests, source, or assignments.
+3. Let the runtime compile and hash `CompiledArchitectureV1`,
+   `VerificationContractV2`, runtime-owned assignments, and every eligible
+   `WorkUnitContractV1`/bootstrap before any implementer spawn.
+4. Each eligible implementer scaffolds only the framework, roots, entrypoints,
+   modules, tests, and configuration in its compiled outputs/allowlist. Use the
+   active profile's package/build conventions.
+5. Keep each child inside its compiled output allowlist. A missing planned
+   source, test, config, or generated artifact is a replan, not an ad-hoc write.
+6. Run the selected verification adapters and stack-native build, lint, and test
+   commands. Missing required tooling is `blocked-environment`, never verified.
+7. For every compiled UI surface, wire the profile-native i18n runtime/resources
+   before feature copy and satisfy locale key parity. Apply the selected
+   frontend profile's rendering primitive from `rules/frontend/i18n.md`.
 
-1. Workspace skeleton (package.json, pnpm-workspace, turbo, tsconfig, git).
-2. Project memory baseline (`.traffic-one/` files + active stack bundle).
-3. Shared packages first (`packages/*` before apps).
-4. Supabase backend baseline (when backend is supabase/our-fork).
-5. Mandatory frontend design gate.
-6. App scaffold (`apps/web`).
-7. Mandatory SEO baseline.
-8. CI/CD pipeline (Turborepo caching).
-9. Deployment artifact baseline.
-10. Tooling guards.
-11. Mandatory auto-documentation baseline.
-12. Supabase setup details (when backend is supabase/our-fork).
-13. Codebase graph (after first successful build).
+The runtime materializes a profile-specific new-project rule only when the
+selected profile has one. Read that rule before scaffolding. If no
+profile-specific rule is present in the active rule index, follow this spine
+plus the compiled contracts and the stack rules already selected by runtime.
 
-Never start feature code with earlier steps unfinished or unverified.
+## Universal completion baseline
 
-## What happens when the user asks to build something
-
-- Acknowledge mode: **new project, monorepo not yet scaffolded**.
-- If the request implies backend-backed features, state that Supabase is the
-  selected default backend and include it in the scaffold.
-- Confirm with the user **once**: "I'll scaffold the Turborepo workspace as above before any feature code. Proceed?"
-- On yes: scaffold in the order above. Stop after each step to verify (`pnpm install`, `pnpm -w turbo run lint typecheck`).
-- On no: ask which constraint they want relaxed; do not silently skip steps.
-- Never write feature code into a missing skeleton.
+- Create and maintain the canonical `.traffic-one/` project memory and
+  architecture artifacts.
+- Keep runtime-owned contracts, assignments, hashes, baselines, model policies,
+  and bootstraps read-only; replan semantic input instead of editing them.
+- Keep configuration deterministic, secrets out of source, and dependency
+  choices stack-native.
+- Produce real verification evidence for the selected surfaces; never claim
+  checks that the active adapter did not run.
+- Do not add an unselected application surface, framework, workspace topology,
+  data provider, role, skill, or QA adapter as a convenience default.

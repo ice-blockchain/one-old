@@ -31,7 +31,7 @@ import { managedRuntimeDir } from './toolchain-paths';
 
 export type { RuntimeKind } from '../config/managed-runtimes';
 
-export interface ManagedRuntimeResult {
+interface ManagedRuntimeResult {
   ok: boolean;
   path: string | null;    // absolute interpreter binary (…/bin/python3 | …/bin/node)
   binDir: string | null;  // its bin dir → callers find npm/pip alongside

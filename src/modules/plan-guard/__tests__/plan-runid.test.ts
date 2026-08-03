@@ -43,6 +43,31 @@ test('runIdPathViolation: catches a stray id in a shell redirect command', () =>
   assert.match(v as string, /2026-06-17T12-09-40Z/);
 });
 
+test('runIdPathViolation: a pure READ of a stray runs/<id> path does NOT deny (11c)', () => {
+  // The run-id-announce hook can point the agent at a now-stale id; reading that
+  // orphaned run dir strands no state, so a read-only command must not be denied.
+  for (const command of [
+    "sed -n '1,80p' .traffic-one/runs/2026-06-17T12-09-40Z/model-policy.json",
+    'cat .traffic-one/runs/2026-06-17T12-09-40Z/run.json',
+    'find .traffic-one/runs/2026-06-17T12-09-40Z -type f',
+  ]) {
+    assert.equal(runIdPathViolation({ state: { currentRunId: CURRENT }, relTargets: [], command, block }), null,
+      `read must not deny: ${command}`);
+  }
+});
+
+test('runIdPathViolation: a cp/mv WRITE to a stray runs/<id> path still denies', () => {
+  for (const command of [
+    'cp ./x.json .traffic-one/runs/2026-06-17T12-09-40Z/assignments.json',
+    'mv ./x.json .traffic-one/digests/2026-06-17T12-09-40Z/architect.md',
+    'tee .traffic-one/runs/2026-06-17T12-09-40Z/run.json < x',
+  ]) {
+    const v = runIdPathViolation({ state: { currentRunId: CURRENT }, relTargets: [], command, block });
+    assert.ok(v, `write must deny: ${command}`);
+    assert.match(v as string, /2026-06-17T12-09-40Z/);
+  }
+});
+
 test('runIdPathViolation: no currentRunId → no enforcement (returns null)', () => {
   assert.equal(runIdPathViolation({
     state: {},

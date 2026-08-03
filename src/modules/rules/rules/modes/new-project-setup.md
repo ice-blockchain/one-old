@@ -1,11 +1,24 @@
 ---
-description: "Apply when executing new-project scaffolding: the detailed 12-step setup checklist (workspace, memory, packages, Supabase, design/SEO gates, CI, deployment, docs, code graph)."
+description: "Read on demand only for the default stack when CompiledArchitectureV1 profileId=vite-react: detailed workspace, Supabase, UI, CI, deployment, docs, and code-graph setup."
 ---
 
-# New Project — Setup Checklist (full detail)
+# Default Vite React — Setup Checklist (full detail)
 
-Read-on-demand slice of `rules/modes/new-project.md`. Do the steps in order;
-do not skip. The spine carries the step index — this file is the detail.
+Read-on-demand resource routed by
+`rules/modes/new-project-vite-react.md`. Apply it only when runtime selected the
+default stack (or its legacy `react-realtime-monorepo` alias) and the immutable
+compiled profile is `vite-react`. Never apply
+this checklist to Next.js, Nuxt, Laravel, backend-only, native, or another
+custom profile. Evaluate the steps in order.
+
+This is an implementation-role checklist. The architect never executes it.
+Create only scaffold/config/source/test outputs present in the active
+`WorkUnitContractV1`; another role's output and every runtime-owned contract,
+assignment, baseline, hash, or bootstrap remain read-only.
+Every path named below is conditional on that exact compiled output. A
+directory, convention, CLI example, or checklist item never grants ownership.
+When a required path is absent, return a blocker for runtime recompilation
+instead of creating it out of scope.
 
 1. **Workspace skeleton**
    - First write the root `package.json`, with `"private": true`, a
@@ -16,21 +29,24 @@ do not skip. The spine carries the step index — this file is the detail.
      registry (`npm view`, `npm outdated`, …) for this or any scaffold version —
      the stack rules pin every choice; install with their ranges and move on.
    - `pnpm-workspace.yaml` listing `apps/*` and `packages/*`.
-   - `turbo.json` with the pipeline shown above.
+   - `turbo.json` with explicit `tasks` for the compiled scripts.
    - `tsconfig.base.json` with strict settings.
-   - `.gitignore`, `.nvmrc`, `.editorconfig`, `.prettierrc`.
+   - `.gitignore`, `.nvmrc`, `.editorconfig`, `.prettierrc`,
+     `.prettierignore`, and `.github/workflows/ci.yml`.
    - Initialise git, set Gitflow branches: `main`, `develop`.
    - Use Write/Edit for every scaffold file; parent directories are created by
      those tools. Bash is for read-only inspection or verification, never
      `mkdir`, redirection, heredocs, `tee`, `cp`, `mv`, or scripted writes.
 
 2. **Project memory baseline**
-   - Create `.traffic-one/` before feature work and invoke `project-memory`.
+   - Verify the architect's `.traffic-one/` project-memory baseline before
+     feature work. If it is incomplete, stop and return a planning blocker;
+     never fill it from an implementation work unit.
    - Confirm root `.traffic-one/.one.json` exists with the full Traffic One state
      schema. `.traffic-one/` is memory; `.traffic-one/.one.json` is stack/state.
-   - Write the full `.traffic-one/` memory-baseline file inventory — the
-     canonical list and per-file purpose live in
-     `rules/common/project-memory.md`.
+   - Verify the full `.traffic-one/` memory-baseline inventory against
+     `rules/common/project-memory.md`. It is architect/runtime/materializer
+     owned; an implementer must never create, repair, or claim those paths.
    - Ensure the generated active stack bundle exists before feature-source
      writes: `.traffic-one/rules/**`,
      `.traffic-one/manifest.json`, `.traffic-one/skills/**`, root `AGENTS.md`
@@ -53,12 +69,21 @@ do not skip. The spine carries the step index — this file is the detail.
      `.traffic-one/rules/AGENTS.md`; `.traffic-one/rules/` must contain only
      generated rule files. Root `CLAUDE.md` should be a symlink to root
      `AGENTS.md` for host compatibility only when `CLAUDE.md` is absent.
-   - If the project has no DB yet, `.traffic-one/schema.sql` says
-     `Not applicable` with the reason. Once migrations exist, refresh it after
-     every migration.
+   - If the project has no DB yet, verify `.traffic-one/schema.sql` says
+     `Not applicable` with the reason. Once migrations exist, verify the
+     architect/runtime refreshed it after every migration; block when stale
+     rather than editing it from an implementation work unit.
    - Keep `.traffic-one/digests/`, `.traffic-one/reports/`,
-     `.traffic-one/backups/`, `graphify-out/`, and `.gitnexus/` gitignored
-     as local caches; the memory baseline files above are source.
+     `.traffic-one/backups/`, `.traffic-one/one-mcp-report.json`,
+     `graphify-out/`, and `.gitnexus/` gitignored as local caches; the memory
+     baseline files above are source. The report status file carries a
+     machine-local report id, attempt counts, and timestamps — it is per-clone
+     state, never a shared artifact.
+   - `.prettierignore` must exclude `node_modules`, build output, and the WHOLE
+     `.traffic-one` directory. Narrowing it to `.traffic-one/reports` lets a
+     workspace-wide `prettier --write` rewrite run artifacts owned by other
+     roles — observed 2cu, a formatter run reformatted another role's handoff
+     digest with no gate in the way.
 
 3. **Shared packages first**
    - `packages/tsconfig` and `packages/eslint-config` — used by everything else.
@@ -72,10 +97,14 @@ do not skip. The spine carries the step index — this file is the detail.
    - `packages/utils` — empty barrel; populate as needed.
    - `packages/api-client` — Supabase browser client, axios instance, AppError type, RTK Query baseQuery.
    - `packages/ws-client` — transport + protocol scaffolding (per `rules/frontend/realtime.md`).
-   - `packages/ui` — run `npx shadcn@latest init` here, then add the first batch:
-     `npx shadcn@latest add button input label card dialog dropdown-menu form sheet tabs select sonner badge separator`.
-     The CLI populates `src/components/ui/` and `src/lib/utils.ts` (`cn()`).
-     Storybook stories cover the primitives.
+   - `packages/ui` — initialize the active adapter using its official monorepo
+     CLI/configuration, then add exactly the deduplicated
+     `CompiledArchitectureV1.uiPrimitives`. There is no fixed starter batch:
+     every identifier comes from the product's catalog-first lookup. The CLI
+     alone populates `src/components/ui/`; reusable domain-agnostic
+     compositions live in `src/components/`, and `src/index.ts` exposes the
+     `@app/ui` API. Storybook stories cover the installed primitives and shared
+     compositions.
 
 4. **Supabase backend baseline**
    - Add `@supabase/supabase-js` and validate `VITE_SUPABASE_URL` /
@@ -89,16 +118,15 @@ do not skip. The spine carries the step index — this file is the detail.
    - Do not store service-role keys or other secrets in frontend env vars.
 
 5. **Mandatory frontend design gate**
-   - Invoke `frontend-design` and apply `rules/frontend/ui-quality.md` plus
-     `rules/frontend/typography.md` before writing any generated app, site,
-     page, screen, or feature UI. React web also applies
-     `rules/frontend/react/design-quality.md`; Expo/RN applies the native UI
-     rules together with the shared UI-quality gate. This applies to every
-     frontend stack, including explicit Next.js or fallback/minimal projects
-     when they have a UI.
+   - Invoke `frontend-design` and apply `rules/frontend/ui-quality.md`,
+     `rules/frontend/typography.md`, and
+     `rules/frontend/react/design-quality.md` before writing UI assigned by
+     this `vite-react` work unit. Other profiles use their own selected rules;
+     this checklist never supplies a fallback.
    - If the user did not provide references, pick and state 2–3 real
      best-in-class products in the same domain before implementation. Record a
-     compact design brief in `.traffic-one/plan.md` or the architecture docs:
+     compact design brief in the frontend digest; do not edit the architect's
+     plan or runtime-owned contracts:
      target user, primary action, first-screen hierarchy, chosen references,
      visual direction, token plan, motion/interactivity plan, responsive
      behavior, state coverage, and screenshot acceptance checks.
@@ -122,12 +150,15 @@ do not skip. The spine carries the step index — this file is the detail.
      import `@app/tailwind-config/globals.css` from `src/main.tsx`. No
      `tailwind.config.*`, no PostCSS config, no autoprefixer — v4 handles
      prefixing and content scanning itself.
-   - `components.json` (shadcn CLI config) points the alias `ui` at
-     `@app/ui/components/ui` so future `npx shadcn add` calls in the app land
-     in the shared package.
+   - `packages/ui/components.json` is the one canonical shadcn CLI config and
+     points its aliases at the `@app/ui` package. Run catalog-selected add
+     commands against that package; do not create a second app-local
+     `components.json`.
    - Wire `packages/i18n` into the app provider chain before adding generated
      page/feature UI. All starter copy, navigation labels, setup banners, and
-     state text use catalog keys; rich copy with links uses `<Trans>`.
+     state text use locale-parity catalog keys. Every static React child,
+     simple or rich, uses `<Trans ns="…" i18nKey="…">fallback</Trans>`; use
+     `t()` only for string-valued props, metadata, validation, and imperative APIs.
    - Wire Redux store with `api-client` RTK Query and one starter feature slice.
    - Set up Storybook for `packages/ui` (Vite builder).
    - Set up Playwright with one smoke spec hitting `/`, and wire the root `e2e`
@@ -197,25 +228,28 @@ do not skip. The spine carries the step index — this file is the detail.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
 
-11. **Mandatory auto-documentation baseline**
+11. **Mandatory documentation verification**
    - Invoke `auto-documentation-generator` for every generated project before
      calling the scaffold complete, even if the user did not explicitly request
      docs.
-   - Create or refresh the relevant canonical docs from
-     `rules/common/documentation.md`: `README.md`, `AGENTS.md`, concise
-     `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `.traffic-one/plan.md`,
-     `.traffic-one/decisions/`, `.traffic-one/api.md`,
-     `.traffic-one/database.md`, `.traffic-one/deployment.md`,
-     `.traffic-one/security.md`, `CHANGELOG.md`,
-     `.traffic-one/environment-setup.md`, `CONTRIBUTING.md`, and served
-     `/llms.txt` for web surfaces. Do not create duplicate root-level
-     `api.md`, `database.md`, `deployment.md`, `environment-setup.md`, or
-     `security.md`; merge legacy copies into `.traffic-one/`.
+   - Create or refresh only documentation paths in the active work-unit
+     allowlist, including the compiled `README.md`. `AGENTS.md`, `CLAUDE.md`,
+     and every `.traffic-one/**` path are runtime/materializer/architect owned
+     and remain read-only to implementers. Verify them and return a blocker
+     when they are absent or stale.
+   - Other suggested files from `rules/common/documentation.md`—such as
+     `CHANGELOG.md` or `CONTRIBUTING.md`—are created only when their exact paths
+     are compiled. Do not infer permission from this checklist and do not create
+     duplicate root-level memory documents. The served `/llms.txt` IS compiled
+     for every web profile with a `public/` crawl-asset set: write it at
+     `public/llms.txt`, never at the repo root.
    - Mark facts as `Unverified` with the exact needed command/input instead of
      inventing deploy URLs, database output, secret values, or production
      configuration.
-   - Do not leave the project with only a README. The reviewer must treat a
-     missing mandatory docs baseline as `CHANGES_REQUESTED`.
+   - The reviewer verifies every compiled documentation output plus the
+     runtime-owned memory baseline. A repository with only `README.md` in the
+     implementation allowlist is valid; never request an uncompiled document
+     merely to make the list longer.
 
 12. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
 
@@ -229,20 +263,18 @@ do not skip. The spine carries the step index — this file is the detail.
       ```json
       "scripts": {
         "supabase":         "supabase",
-        "db:start":         "supabase start",
-        "db:stop":          "supabase stop",
-        "db:reset":         "supabase db reset",
         "db:push":          "supabase db push --linked",
         "db:diff":          "supabase db diff -f",
         "gen:types":        "supabase gen types typescript --linked > packages/api-client/src/database.types.ts",
-        "functions:new":    "supabase functions new",
-        "functions:deploy": "supabase functions deploy",
-        "functions:serve":  "supabase functions serve",
         "secrets:set":      "supabase secrets set",
         "link":             "supabase link --project-ref"
       }
       ```
-      All commands run via the local devDep — no global install required.
+      All commands run via the local devDep — no global install required. Do NOT
+      add `db:start`/`db:stop`/`db:reset` or any local-stack script: the local
+      Supabase stack (Docker containers) is never part of this flow — the
+      project connects through the traffic.io platform, and the linked scripts
+      above are deploy-time (shipper-gated), not build-time.
 
    c. `.env.example` (committed) and `.env.local` (gitignored). Write the example
       file even before keys exist:
@@ -266,25 +298,49 @@ do not skip. The spine carries the step index — this file is the detail.
       Never call `createClient` at module top level. Never assume `getSupabase()`
       is non-null in a service or store.
 
-   e. **Invoke the `supabase-setup` skill** to actually link the project and
-      push migrations — do **not** finish the scaffold by writing manual
-      "open SQL editor and paste this" instructions in README. The skill
-      offers two paths and runs one of them: (A) cloud — user provisions a
-      project, you run `pnpm link <ref>` then `pnpm db:push` to apply the
-      migrations you just scaffolded; (B) local auto-run — `pnpm db:start`
-      (Docker required) boots local Postgres + Auth + Storage and applies
-      migrations on boot, printing the keys to paste. Pick with the user;
-      default to cloud. The schema must land before you mark the scaffold
-      "ready to build".
+      There is exactly ONE `createClient` call in the repository, in the
+      backend-owned `packages/api-client/src/supabase.ts` factory, re-exported
+      from `packages/api-client/src/index.ts` alongside the typed services and
+      `database.types.ts`. Frontends import that factory; they never construct a
+      client of their own and never pass client closures back into a service.
+      Observed 6co: with no compiled home for the factory, the frontend built
+      its own client inside an auth feature and threaded closures into
+      backend-owned services, so the boundary existed only by convention.
+      `packages/api-client/package.json` declares its own `typecheck` (and
+      `test`, where the package has tests) script — a root `turbo run typecheck`
+      finds no target in a package that declares none and exits 0.
+
+   e. **Do not link, push, or boot anything during the build.** The committed
+      `supabase/` artifacts (config, migration, and seed paths compiled for the
+      run) plus the EnvBanner CTA are the deliverable: the user connects the
+      real project — env keys and migration apply — through the traffic.io
+      platform (`https://traffic.io/`), and until then the app runs in
+      not-configured demo mode. Never start the
+      local Supabase stack (`supabase start`, `db:start`, Docker/OrbStack) and
+      never walk the user through the Supabase dashboard or "open SQL editor
+      and paste this" instructions. `pnpm db:push --linked` remains a
+      shipper-gated deploy action for after the platform connection exists.
 
    f. Add-ons (storage, auth, realtime, vector, pg_cron, pg_net) are gated. The
       plugin's `requireAddon` gate (`scripts/shared/state/normalize.js` in the installed plugin) reads
-      `.traffic-one/.one.json` → `supabaseAddons[<name>]`. Ask the user once before
-      enabling each, then write `approved` and proceed silently for that add-on.
+      `.traffic-one/.one.json` → `supabaseAddons[<name>]`. Ask the user once
+      before enabling each; onboarding/runtime persists `approved`. The
+      implementer waits for and verifies that state, but never writes it.
 
-   g. Edge Functions (`supabase/functions/<name>/`) auto-deploy on save when
-      `.traffic-one/.one.json` → `supabaseFunctionsAutoDeploy: true`. The
-      PostToolUse hook prompts the user the first time.
+   g. Edge Functions apply only when an exact
+      `supabase/functions/<name>/...` output is compiled. The architect declares
+      one as an `edge-function` module; runtime compiles it to
+      `supabase/functions/<kebab(name)>/index.ts` and gives it to
+      `senior-backend`. The file runs on **Deno**, not this project's TypeScript
+      program: it stays out of every app `tsconfig` include and out of the
+      ESLint project (the seeded `eslint.config.js` ignores
+      `supabase/functions/**`), it declares its own imports the Deno way, and no
+      app module imports it — the client calls
+      `supabase.functions.invoke('<name>')`. Runtime may auto-deploy
+      on save when `.traffic-one/.one.json` records
+      `supabaseFunctionsAutoDeploy: true`; the PostToolUse hook prompts and
+      persists the user's choice. An implementer neither creates an uncompiled
+      function nor edits that state flag.
 
 13. **Codebase graph (after first successful build, REQUIRED at onboarding)**
 
@@ -299,22 +355,25 @@ do not skip. The spine carries the step index — this file is the detail.
    Read replaces dozens of grep calls and cuts cross-session token usage by
    an estimated 50–70% on multi-file work.
 
+   Never install either provider by hand and never invoke it raw — a global
+   `npm install -g` / `pipx install` lands outside the Traffic One toolchain
+   root (and survives an uninstall), and a raw `gitnexus analyze .` /
+   `graphify update .` writes its output into the project ROOT. The runners own
+   both halves: they install into `~/.traffic-one/toolchains/<tool>/` and
+   relocate the output under `.traffic-one/`. To force a rebuild now:
+
    **When `codeGraphProvider: "gitnexus"`** (PolyForm Noncommercial license):
    ```bash
-   npm install -g gitnexus    # one-time install (Node CLI)
-   gitnexus analyze .         # index lands at .traffic-one/.gitnexus/ (the plugin runner relocates it)
+   node ~/.traffic-one/bin/gitnexus-runner.cjs   # index lands at .traffic-one/.gitnexus/
    ```
    GitNexus auto-writes `AGENTS.md`, `CLAUDE.md`, and `.claude/skills/`,
-   which conflict with traffic-one's own. The runner
-   (`scripts/gitnexus-runner.cjs`) backs those three up to
+   which conflict with traffic-one's own. The runner backs those three up to
    `.traffic-one/backups/<run-stamp>/` before each run and restores
    traffic-one's versions if changed.
 
    **When `codeGraphProvider: "graphify"`** (MIT license):
    ```bash
-   pipx install graphifyy     # one-time install (Python tool)
-   graphify update .          # report lands at .traffic-one/graphify-out/GRAPH_REPORT.md (the plugin runner relocates it)
-   graphify hook install      # optional: regenerate on every git commit
+   node ~/.traffic-one/bin/graphify-runner.cjs   # report lands at .traffic-one/graphify-out/GRAPH_REPORT.md
    ```
 
    The plugin's PostToolUse hook emits this hint automatically after the first

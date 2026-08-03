@@ -12,6 +12,19 @@ paths:
   - ".prettierrc*"
   - ".lintstagedrc*"
   - "lint-staged.config.*"
+  - "go.mod"
+  - "go.sum"
+  - "pyproject.toml"
+  - "requirements*.txt"
+  - "composer.json"
+  - "composer.lock"
+  - "Cargo.toml"
+  - "Cargo.lock"
+  - "Package.swift"
+  - "build.gradle*"
+  - "**/build.gradle*"
+  - "pubspec.yaml"
+  - "Makefile"
   - ".github/workflows/**"
 ---
 
@@ -20,56 +33,106 @@ paths:
 Code-quality automation must be deterministic, local to the project, and hard
 to bypass accidentally.
 
-## Required scripts
+## The project's quality config is the bar — read it before you write
 
-Every JavaScript/TypeScript project exposes these root scripts when applicable:
+Where that config comes from depends on the mode:
 
-- `format` and `format:check` for Prettier or the repo-selected formatter.
-- `lint` and `lint:fix` for ESLint or the repo-selected linter.
-- `typecheck` for `tsc --noEmit` or the framework-equivalent type check.
-- `test` for unit/integration tests.
-- `build` for the production build.
+- **`new-project`** — runtime compiles it for the selected stack as scaffold output
+  and seeds canonical content at `PLAN_READY`, before any implementer writes a
+  line: `eslint.config.js` + `.prettierrc` for JS/TS, `ruff.toml` for Python,
+  `.golangci.yml` for Go, `pint.json` for PHP/Laravel, `rustfmt.toml` for Rust.
+  Install the matching tools and expose the `format`/`lint` scripts that run them —
+  a config with no installed tool and no script is inert.
+- **`existing-codebase`** — the repository already has its own configuration and it
+  is authoritative. Runtime scaffolds nothing and overwrites nothing. Read what is
+  there and match it; do not migrate the project to a different toolchain, and do
+  not add a second linter beside the one it uses.
 
-Monorepos route the root scripts through Turborepo or workspace filters instead
-of requiring agents to remember per-package commands.
+Either way the config in the repository is the ONLY place the quality bar is
+expressed:
+
+- **Do not author a competing config.** If one already exists, extend it; do not
+  add a second linter or a parallel ruleset.
+- **Do not weaken it to make your own change pass.** Size limits, boundary rules,
+  and strictness flags exist because the plan asked for them. Raising a limit or
+  disabling a compiler flag to get past your own finding is a config-tamper
+  violation, not a fix — split the module or correct the code instead.
+- **Run it.** A config nobody runs proves nothing: the format and lint commands
+  belong in the scripts you expose and in CI.
+- If a rule in it is genuinely wrong for this project, say so in your digest with
+  the failing rule and the reason, and leave the config alone.
+
+## Capability-derived checks
+
+Read the immutable capability profile, the baseline, and existing project
+configuration before choosing commands. Run only checks that belong to the
+active stack and touched surfaces:
+
+- formatter or format-check configured by the repository;
+- language linter/static analyzer;
+- compiler/type checker where the stack has one;
+- focused unit/integration tests, then the stack's broader test suite;
+- production build/package step when the project produces a deployable
+  artifact.
+
+Do not create `package.json` scripts, pnpm workspaces, ESLint, Prettier,
+TypeScript, or Turborepo configuration in Go, Python, PHP/Laravel, Rust,
+Swift/Kotlin, Flutter, native, data-only, or other non-JS projects.
 
 Script/config parity: only emit a script whose tool, config, and
-devDependencies you also scaffold in the same change. A `lint` script without an
-ESLint config (or a `test` script without a runner config) fails the whole
-pipeline for every later agent — either scaffold the config + deps alongside the
-script or omit the script until an implementer adds them.
-
-Every workspace package that ships source exposes its own `test` script (vitest
-on web stacks) so `turbo run test` covers it; a package with intentionally no
-tests declares `"test": "echo \"no tests\" && exit 0"` explicitly rather than
-omitting the script.
+dependencies/tool declarations you also scaffold in the same change. A command
+that names an absent tool or config makes later verification meaningless.
+Never add a no-op test command to manufacture a green pipeline.
 
 ## Local tooling only
 
-- Use repo-owned dependencies and scripts: `pnpm lint`, `pnpm typecheck`,
-  `pnpm format:check`, `pnpm test`, `pnpm build`.
+- Use repository-owned tools and the active ecosystem's lockfile/package
+  manager. Examples include project scripts for JS/TS, `go` tooling, a Python
+  virtual environment/locked runner, Composer/Artisan, Cargo, Gradle, SwiftPM,
+  or Flutter as selected by the project.
 - Do not wire hooks or docs to remote one-off package execution such as
   `npx <tool>@latest` unless the user explicitly approves that tool and version.
 - If a formatter/linter is missing, add it through the dependency quality gate
-  before relying on it.
+  only when the compiled plan calls for that tool; otherwise report the missing
+  check instead of inventing a new toolchain.
 
-## ESLint and Prettier
+## JavaScript/TypeScript only
 
-- ESLint config lives at the root or in `packages/eslint-config`; package-level
-  overrides are allowed only for real environment differences.
-- Prettier owns formatting; ESLint owns correctness and maintainability. Avoid
-  duplicate style rules that fight Prettier.
+- Expose `format`/`format:check`, `lint`/`lint:fix`, `typecheck`, `test`, and
+  `build` scripts when applicable, backed by the matching installed tools and
+  configuration.
+- When Prettier is selected, its ignore file covers generated output, reports,
+  lockfiles, and `.traffic-one/`. When ESLint is selected, keep correctness
+  rules separate from formatter-owned style.
+- Vite and many bundlers transpile TypeScript without proving correctness; run
+  a separate `tsc --noEmit` or framework-equivalent check.
+- Use pnpm and Turborepo only when the baseline/compiled profile selects them.
+  In such monorepos, root scripts may route through workspace filters or
+  Turborepo. Do not introduce that layout into a custom single-app JS project.
+- A workspace package that ships runtime source needs a real applicable test
+  command; config-only packages may omit it.
+
+## Other stack examples
+
+- Go: repository-selected generation, `gofmt`/format check, `go vet`, focused
+  and full `go test`, and `go build` where an executable/service is produced.
+- Python: the configured environment plus the project's formatter/linter/type
+  checker/test runner (for example Ruff/Black, mypy/pyright, pytest). Do not
+  require all examples when the project did not select them.
+- PHP/Laravel: Composer scripts and configured Pint/PHPStan/Psalm/Pest/PHPUnit
+  or Artisan checks.
+- Rust: `cargo fmt --check`, configured Clippy policy, `cargo test`, and build.
+- Swift/Kotlin/Flutter/native: the selected package/build system and
+  simulator/emulator tests from the capability profile; never substitute
+  browser or Node tooling.
+
+## Generated and vendored files
+
 - Ignore generated output, build artifacts, vendored code, and reports. Do not
   ignore application source to make the checker pass.
-- `_` prefixes are the standard way to mark intentionally unused variables or
-  parameters.
-
-## Type checks
-
-- Vite and most bundlers transpile TypeScript but do not prove type correctness.
-  CI and pre-PR verification must run a separate `typecheck` script.
-- Long-running local type checks may use incremental build info under
-  `node_modules/.cache/`; do not commit `.tsbuildinfo` files.
+- Source is WRITTEN formatted, never collapsed: one statement per line and
+  readable multi-line markup/DSL structure. Collapsed/minified product source
+  is a defect regardless of the formatter.
 
 ## Config tamper guard
 
@@ -80,7 +143,8 @@ omitting the script.
 
 ## CI baseline
 
-- CI runs frozen install, `format:check` when available, `lint`, `typecheck`,
-  `test`, and `build` before preview or production deploy steps.
+- CI restores dependencies from the active ecosystem's lock/verification
+  mechanism, then runs the repository's available format, lint/static-analysis,
+  test, and build/package gates before deploy.
 - High-severity dependency audits are handled by the security gate, not ignored
   in package-manager config.

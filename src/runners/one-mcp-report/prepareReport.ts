@@ -11,8 +11,8 @@ import { isNonProjectRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
 import { pluginUseEnabled } from '../../shared/state/plugin-use';
 import { hasRealCodebase } from './hasRealCodebase';
-import { SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
-import { oneMcpReportingEnabled, publicEndpoint } from '../../config/one-mcp';
+import { ONE_MCP_REPORT, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
+import { DEFAULT_PUBLIC_ENDPOINT } from '../../config/one-mcp';
 import { nowIso, readJson, stateForReport, writeJson } from './lib';
 import { createReportId } from './report-id-mint';
 import { backfillDebugPayload, debugPayloadForReport } from './report-payload';
@@ -22,11 +22,10 @@ import { stageReportId } from './stageReportId';
 type Rec = Record<string, unknown>;
 export interface PrepareOptions {
   endpoint?: string;
-  env?: NodeJS.ProcessEnv;
   trigger?: string;
   state?: unknown;
   spawn?: boolean;
-  /** Internal test seam; production callers must omit this build-gate override. */
+  /** Internal test seam; production callers use the compiled ONE_MCP_REPORT. */
   featureEnabled?: boolean;
 }
 export interface PrepareResult {
@@ -38,18 +37,14 @@ export interface PrepareResult {
 }
 
 export function prepareReport(cwd: string, options: PrepareOptions = {}): PrepareResult {
-  const env = options.env ?? process.env;
-  if (/^(1|true|on|yes)$/i.test(String(env.TRAFFIC_ONE_DISABLE_ONE_MCP || ''))) {
-    return { started: false, reason: 'disabled' };
-  }
-  if (!oneMcpReportingEnabled(env, options.featureEnabled)) {
+  if (!(options.featureEnabled ?? ONE_MCP_REPORT)) {
     return { started: false, reason: 'reporting-inactive' };
   }
   const root = path.resolve(cwd);
   // The plugin's own repo/install is never reported on. Check this before any
   // project preference lookup so authoring roots remain entirely inert.
   if (isNonProjectRoot(root)) return { started: false, reason: 'plugin-authoring-root' };
-  if (!pluginUseEnabled(root, env)) return { started: false, reason: 'plugin-use-not-enabled' };
+  if (!pluginUseEnabled(root)) return { started: false, reason: 'plugin-use-not-enabled' };
   if (!hasRealCodebase(root)) return { started: false, reason: 'no-codebase' };
 
   // The lock-backed mint is also the one-winner spawn decision. Only the
@@ -76,7 +71,7 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
     const nextStatus = {
       status: 'queued',
       reportId: idState.id,
-      endpoint: options.endpoint || publicEndpoint(env),
+      endpoint: options.endpoint ?? DEFAULT_PUBLIC_ENDPOINT,
       queuedAt: nowIso(),
       lastAttemptAt: status && status.lastAttemptAt ? status.lastAttemptAt : null,
       attempts: status && Number.isInteger(status.attempts) ? status.attempts : 0,
@@ -86,7 +81,7 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
     writeJson(statusPath, nextStatus);
   }
 
-  if (options.spawn === false || env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN === '1') {
+  if (options.spawn === false) {
     return { started: true, reportId: idState.id, spawned: false };
   }
 
@@ -94,10 +89,6 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
     cwd: root,
     detached: true,
     stdio: 'ignore',
-    env: {
-      ...env,
-      TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: options.endpoint || publicEndpoint(env),
-    },
   });
   child.unref();
   return { started: true, reportId: idState.id, spawned: true };

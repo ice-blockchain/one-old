@@ -23,6 +23,7 @@ export const EXISTING_PROJECT_CASES: Case[] = [
     assertions: [
       { id: 'onboarding-complete' },
       { id: 'materialized-assets' },
+      { id: 'host-triage-rubric' },
       { id: 'feature-files-present', params: { anyOf: ['src/components/ContactForm.tsx', 'src/ContactForm.tsx'] } },
     ],
   },
@@ -35,6 +36,7 @@ export const EXISTING_PROJECT_CASES: Case[] = [
     prompt: "Rename the primary button label from 'Submit' to 'Send' wherever it appears.",
     assertions: [
       { id: 'onboarding-complete' },
+      { id: 'host-triage-rubric' },
       { id: 'feature-files-present', params: { contains: [{ path: 'src/App.tsx', text: 'Send' }] } },
     ],
   },

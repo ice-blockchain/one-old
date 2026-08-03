@@ -43,12 +43,10 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     promptVia: 'arg',
     // DEFAULTS-TO-VERIFY: confirm `codex exec` accepts a positional prompt, the
     // --json envelope, and the correct sandbox-bypass flag for headless writes.
-    // The isolated temp workspace is disposable, so the generic behavior matrix
-    // bypasses hook trust for its content-addressed (new-per-run) marketplace.
-    // This is NOT evidence that persisted Codex hook trust survives an upgrade;
-    // run.ts requires the separate no-bypass trust-upgrade proof before any
-    // selected Codex E2E case is allowed to start.
-    runArgs: ['exec', '--json', '--cd', '{CWD}', '--sandbox', 'danger-full-access', '--dangerously-bypass-hook-trust', '-c', 'plugins."traffic-one@traffic-one-local".enabled=false', '-m', '{MODEL}', '{PROMPT}'],
+    // run.ts verifies the exact staged hook ABI/source, persists trust only in
+    // the disposable CODEX_HOME, re-lists every hook as trusted, and runs exec
+    // without a hook-trust bypass.
+    runArgs: ['exec', '--json', '--cd', '{CWD}', '--sandbox', 'danger-full-access', '-c', 'plugins."traffic-one@traffic-one-local".enabled=false', '-m', '{MODEL}', '{PROMPT}'],
     outputFormat: 'json',
     probeArgs: ['--version'],
     installArgs: [
@@ -58,6 +56,18 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     currentDistProof: 'host-install',
     headlessSubagents: 'unsupported',
     defaultModelByTier: defaultModels('codex'),
+    // Keep release-harness behavior checks independent from the newest model
+    // family in model-tiers. Older supported Codex CLIs can reject that family
+    // before SessionStart, which tests CLI/model rollout instead of the plugin.
+    testModel: 'gpt-5.4',
+    // Release-E2E compatibility catalog. The harness first proves these exact
+    // slugs through Codex model/list, then writes them only to the case-local
+    // One MCP sidecar. Production keeps the normal gpt-5.6 registry.
+    testModelByTier: {
+      highest: 'gpt-5.5',
+      balanced: 'gpt-5.4',
+      cheapest: 'gpt-5.4-mini',
+    },
     verified: false,
   },
 

@@ -8,7 +8,7 @@
 // gate, never by this map. Keys mirror FRONTEND_IDS / BACKEND_IDS / MOBILE_FRAMEWORK_IDS
 // in src/config/state.ts so the vocabulary stays in sync.
 
-export interface LayoutSeed {
+interface LayoutSeed {
   frontend: string[];
   backend: string[];
   mobile: string[];

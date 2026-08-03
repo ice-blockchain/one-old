@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { AGENT_ROLE_BASE_RULES, STACKS, composeRuleManifest, roleScopedRules, templatePath } from '../index';
 
@@ -52,22 +54,127 @@ test('minimal stack pushes common references into mandatory', () => {
   assert.ok(STACKS.minimal.mandatory.includes('rules/common/stack-recommendations.md'));
 });
 
-test('ionic-capacitor adds the react base + ionic optional rules', () => {
-  const m = composeRuleManifest({
-    stack: 'custom-frontend', frontend: 'none', backend: 'supabase',
+test('ionic-capacitor overlays the selected web framework without forcing React', () => {
+  for (const frontend of ['react-vite', 'vue', 'angular']) {
+    const manifest = composeRuleManifest({
+      stack: 'custom-frontend',
+      frontend,
+      backend: 'external-api',
+      mobile: { enabled: true, framework: 'ionic-capacitor' },
+    });
+    assert.ok(manifest.optional.includes('rules/frontend/ionic/capacitor.md'));
+    assert.equal(
+      manifest.mandatory.includes('rules/frontend/react/core.md'),
+      frontend === 'react-vite',
+      `${frontend} keeps only its selected base framework`,
+    );
+  }
+});
+
+test('ionic-capacitor contributes no rules without an explicit web framework', () => {
+  const manifest = composeRuleManifest({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'external-api',
     mobile: { enabled: true, framework: 'ionic-capacitor' },
   });
-  assert.ok(m.mandatory.includes('rules/frontend/react/core.md'));
-  assert.ok(m.optional.includes('rules/frontend/ionic/capacitor.md'));
+  assert.ok(!manifest.optional.includes('rules/frontend/ionic/capacitor.md'));
+  assert.ok(!manifest.mandatory.includes('rules/frontend/react/core.md'));
 });
 
 test('roleScopedRules scopes per role and returns null for unknown roles', () => {
   const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' } };
   const fe = roleScopedRules('senior-frontend', state);
   assert.ok(fe && fe.includes('rules/frontend/i18n.md'));
+  assert.ok(fe && fe.includes('rules/core.md'));
   const be = roleScopedRules('senior-backend', state);
   assert.ok(be && be.includes('rules/backend/postgres.md'));
+  assert.ok(be && !be.includes('rules/core.md'));
   assert.equal(roleScopedRules('bogus', state), null);
+});
+
+test('API-only roles never inherit TypeScript or frontend rules from universal role bases', () => {
+  const state = {
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    mobile: { framework: 'none' },
+  };
+  for (const role of ['senior-architect', 'senior-backend', 'senior-reviewer', 'senior-tester']) {
+    const rules = roleScopedRules(role, state) || [];
+    assert.ok(!rules.includes('rules/core.md'), `${role} leaked TypeScript core`);
+    assert.ok(!rules.some((rule) => rule.startsWith('rules/frontend/')), `${role} leaked frontend rules`);
+  }
+  assert.ok(roleScopedRules('senior-backend', state)?.includes('rules/backend/golang.md'));
+  assert.ok(!roleScopedRules('senior-backend', state)?.includes('rules/backend/postgres.md'));
+});
+
+test('stateless language backends get Postgres rules only with provider or data evidence', () => {
+  for (const backend of ['node', 'python', 'go', 'laravel', 'rust']) {
+    const manifest = composeRuleManifest({
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend,
+      mobile: { framework: 'none' },
+    });
+    assert.equal(
+      manifest.optional.includes('rules/backend/postgres.md'),
+      false,
+      `${backend} must not imply Postgres`,
+    );
+  }
+  assert.ok(composeRuleManifest({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'go',
+    capabilitySurfaces: ['api', 'data'],
+  }).optional.includes('rules/backend/postgres.md'));
+  assert.ok(composeRuleManifest({
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'python',
+    databaseProvider: 'postgresql',
+  }).optional.includes('rules/backend/postgres.md'));
+});
+
+test('common rules stay stack-native and defer classification to runtime contracts', () => {
+  const common = path.resolve(__dirname, '../../../modules/rules/rules/common');
+  const clean = fs.readFileSync(path.join(common, 'clean-code.md'), 'utf8');
+  assert.doesNotMatch(clean, /`const` by default|`camelCase` vars|800 hard cap|~50 lines max/);
+  // Numeric size budgets moved out of hook heuristics into the project's own
+  // compiled linter config, so the prose must point at that config rather than
+  // restate thresholds the scanner no longer owns.
+  assert.match(clean, /numeric size budget lives in the project's own linter config/);
+  assert.match(clean, /max-lines[\s\S]*eslint\.config\.js[\s\S]*ruff\.toml[\s\S]*\.golangci\.yml/);
+  assert.match(clean, /Do not weaken it to pass your own change/);
+  // What stays blocking is only what a linter cannot see, because it compares
+  // against the compiled architecture rather than the source alone.
+  assert.match(clean, /Runtime structural findings remain blocking where a linter cannot see them/);
+  assert.match(clean, /route\/contract mismatches[\s\S]*allowlist gaps/);
+  assert.match(clean, /Collapsed source is also still rejected at the write/);
+
+  const tooling = fs.readFileSync(path.join(common, 'quality-tooling.md'), 'utf8');
+  // The compiled config is the single expression of the quality bar, and the
+  // tamper guard is what stops a role from raising a limit to pass its own change.
+  assert.match(tooling, /quality config is the bar — read it before you write/);
+  assert.match(tooling, /eslint\.config\.js[\s\S]*ruff\.toml[\s\S]*\.golangci\.yml/);
+  assert.match(tooling, /Do not author a competing config/);
+  assert.match(tooling, /Config tamper guard/);
+  // Mode-aware by construction: runtime seeds the config only on a new project and
+  // never replaces an existing repository's own configuration.
+  assert.match(tooling, /`new-project`[\s\S]*seeds canonical content at `PLAN_READY`/);
+  assert.match(tooling, /`existing-codebase`[\s\S]*Runtime scaffolds nothing and overwrites nothing/);
+  assert.match(tooling, /JavaScript\/TypeScript only/);
+  assert.match(tooling, /Go:[\s\S]*go test/);
+  assert.match(tooling, /Python:[\s\S]*pytest/);
+  assert.match(tooling, /Do not create `package\.json` scripts[\s\S]*non-JS projects/);
+
+  const routing = fs.readFileSync(path.join(common, 'project-routing.md'), 'utf8');
+  assert.match(routing, /capability-v1\.json/);
+  assert.match(routing, /baseline sidecars/);
+  assert.doesNotMatch(routing, /fewer than 5|@supabase\/supabase-js|State Supabase as the selected default/);
+  assert.match(routing, /Go services, Python scripts\/CLIs\/workers, Laravel API-only projects/);
+  assert.match(routing, /cannot reclassify those projects/);
 });
 
 test('onboarding-only rules drop out of maintenance-phase manifests', () => {
@@ -86,4 +193,32 @@ test('onboarding-only rules drop out of maintenance-phase manifests', () => {
   assert.ok(!existing.mandatory.includes('rules/common/onboarding.md'));
   assert.ok(!existing.mandatory.includes('rules/common/stack-recommendations.md'));
   assert.ok(existing.mandatory.includes('rules/common/library-catalog.md'), 'library-catalog stays useful post-setup');
+});
+
+test('every implementing role loads the quality-tooling and clean-code baselines', () => {
+  // The gap this guards: senior-frontend did NOT load `quality-tooling.md`, whose
+  // "Config tamper guard" section forbids weakening a config to hide a failure —
+  // and in 9co that role disabled `noUncheckedIndexedAccess` for the whole
+  // monorepo to get past a blocking finding. The rule existed; the role never
+  // received it. The architect needs it too now that runtime compiles the
+  // project's formatter/linter config as scaffold output.
+  for (const role of [
+    'senior-architect',
+    'senior-frontend',
+    'senior-backend',
+    'senior-reviewer',
+    'senior-tester',
+    'quick-fix',
+  ]) {
+    const rules = AGENT_ROLE_BASE_RULES[role];
+    assert.ok(rules, `${role} must have a base rule set`);
+    assert.ok(
+      rules.includes('rules/common/quality-tooling.md'),
+      `${role} must load quality-tooling.md`,
+    );
+    assert.ok(
+      rules.includes('rules/common/clean-code.md'),
+      `${role} must load clean-code.md`,
+    );
+  }
 });

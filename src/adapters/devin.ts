@@ -82,4 +82,3 @@ export function makeDevinAdapter(): HostAdapter {
   };
 }
 
-export const devinAdapter = makeDevinAdapter();

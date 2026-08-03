@@ -8,22 +8,17 @@ import {
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
   ONE_MCP_MANAGED_TOOLS,
-  ONE_MCP_REPORT_TIMEOUT_MS,
+  ONE_MCP_REGISTRATION,
   ONE_MCP_SESSION_SYNC_TIMEOUT_MS,
+  ONE_MCP_SYNC,
   ONE_MCP_TIMEOUT_MS,
-  assertOneMcpPublicReleaseReady,
-  authenticatedEndpoint,
   isSafeOneMcpModelId,
-  isDirectSupabaseOneMcpEndpoint,
-  oneMcpRegistrationEnabled,
-  oneMcpReportingEnabled,
-  oneMcpSyncEnabled,
-  publicEndpoint,
 } from '../../config/one-mcp';
+import { ONE_MCP_REPORT_TIMEOUT_MS } from '../../config/reporting';
 
 test('one-mcp config centralizes endpoints, managed tools, and all host config names', () => {
-  assert.equal(DEFAULT_ENDPOINT, 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/mcp');
-  assert.equal(DEFAULT_PUBLIC_ENDPOINT, 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/public-mcp');
+  assert.equal(DEFAULT_ENDPOINT, 'https://otxgutlmatdihqkbsvvh.supabase.co/functions/v1/traffic-one-mcp/mcp');
+  assert.equal(DEFAULT_PUBLIC_ENDPOINT, 'https://otxgutlmatdihqkbsvvh.supabase.co/functions/v1/traffic-one-mcp/public-mcp');
   assert.deepEqual(ONE_MCP_MANAGED_TOOLS, ['get_config', 'report_codebase_metadata']);
   assert.deepEqual(ONE_MCP_CONFIG_NAME_BY_HOST, {
     claude: 'traffic_one_claude_code_plugin_ai_model_configuration',
@@ -56,72 +51,9 @@ test('one-mcp config centralizes safe model-id grammar and reporter timeout', ()
   assert.equal(isSafeOneMcpModelId(`model\u202eoverride`), false);
 });
 
-test('public endpoint preserves the legacy reporter alias behind the canonical override', () => {
-  assert.equal(authenticatedEndpoint({} as NodeJS.ProcessEnv), DEFAULT_ENDPOINT);
-  assert.equal(authenticatedEndpoint({ TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'https://auth.test/mcp' } as NodeJS.ProcessEnv), 'https://auth.test/mcp');
-  assert.equal(publicEndpoint({} as NodeJS.ProcessEnv), DEFAULT_PUBLIC_ENDPOINT);
-  assert.equal(
-    publicEndpoint({ TRAFFIC_ONE_ONE_MCP_ENDPOINT: 'https://legacy.test/mcp' } as NodeJS.ProcessEnv),
-    'https://legacy.test/mcp',
-  );
-  assert.equal(publicEndpoint({
-    TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: 'https://canonical.test/mcp',
-    TRAFFIC_ONE_ONE_MCP_ENDPOINT: 'https://legacy.test/mcp',
-  } as NodeJS.ProcessEnv), 'https://canonical.test/mcp');
-});
-
-test('hook-owned sync is active while registration and reporting stay build-disabled', () => {
-  assert.equal(oneMcpSyncEnabled({} as NodeJS.ProcessEnv), true);
-  assert.equal(oneMcpSyncEnabled({ TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: 'true' } as NodeJS.ProcessEnv), false);
-  assert.equal(oneMcpSyncEnabled({ TRAFFIC_ONE_MODEL_STATUS_OFF: '1' } as NodeJS.ProcessEnv), true);
-  assert.equal(oneMcpRegistrationEnabled({} as NodeJS.ProcessEnv), false);
-  assert.equal(oneMcpReportingEnabled({} as NodeJS.ProcessEnv), false);
-  assert.equal(oneMcpReportingEnabled({ TRAFFIC_ONE_DISABLE_ONE_MCP: 'on' } as NodeJS.ProcessEnv), false);
-  assert.equal(oneMcpSyncEnabled({} as NodeJS.ProcessEnv, true), true);
-  assert.equal(oneMcpSyncEnabled({ TRAFFIC_ONE_DISABLE_ONE_MCP_SYNC: '1' } as NodeJS.ProcessEnv, true), false);
-});
-
-test('public release readiness permits read-only sync but protects registration and reporting', () => {
-  const off = { sync: false, registration: false, reporting: false };
-  assert.doesNotThrow(() => assertOneMcpPublicReleaseReady(off));
-  assert.equal(isDirectSupabaseOneMcpEndpoint(DEFAULT_PUBLIC_ENDPOINT), true);
-  assert.equal(isDirectSupabaseOneMcpEndpoint('https://other-project.supabase.co/functions/v1/x/public-mcp'), true);
-  assert.equal(isDirectSupabaseOneMcpEndpoint('https://mcp.traffic-one.example/public-mcp'), false);
-
-  assert.doesNotThrow(() => assertOneMcpPublicReleaseReady({
-    ...off,
-    sync: true,
-  }));
-
-  for (const feature of ['registration', 'reporting'] as const) {
-    assert.throws(() => assertOneMcpPublicReleaseReady({
-      ...off,
-      [feature]: true,
-    }), new RegExp(`blocked for ${feature}`));
-  }
-  assert.throws(() => assertOneMcpPublicReleaseReady({
-    sync: true,
-    registration: true,
-    reporting: true,
-  }, 'https://mcp.traffic-one.example/public-mcp'), /seven live rows/);
-  assert.doesNotThrow(() => assertOneMcpPublicReleaseReady({
-    sync: true,
-    registration: true,
-    reporting: true,
-  }, 'https://mcp.traffic-one.example/public-mcp', true));
-  assert.doesNotThrow(() => assertOneMcpPublicReleaseReady({
-    sync: true,
-    registration: false,
-    reporting: false,
-  }, 'http://mcp.traffic-one.example/public-mcp'));
-  assert.throws(() => assertOneMcpPublicReleaseReady({
-    sync: false,
-    registration: true,
-    reporting: false,
-  }, 'https://user:secret@mcp.traffic-one.example/public-mcp', true), /HTTPS WAF\/rate-limit domain/);
-  assert.throws(() => assertOneMcpPublicReleaseReady({
-    sync: false,
-    registration: false,
-    reporting: true,
-  }, 'https://mcp.traffic-one.example/public-mcp#fragment', true), /HTTPS WAF\/rate-limit domain/);
+test('one-mcp runtime behavior uses only compiled feature switches and fixed endpoints', () => {
+  assert.equal(ONE_MCP_SYNC, true);
+  assert.equal(ONE_MCP_REGISTRATION, false);
+  assert.match(DEFAULT_ENDPOINT, /^https:\/\/.+\/traffic-one-mcp\/mcp$/);
+  assert.match(DEFAULT_PUBLIC_ENDPOINT, /^https:\/\/.+\/traffic-one-mcp\/public-mcp$/);
 });

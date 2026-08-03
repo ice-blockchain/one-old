@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { HOST_IDS } from '../../../config/model-tiers';
 import {
+  DEFAULT_PUBLIC_ENDPOINT,
   ONE_MCP_CACHE_SCHEMA_VERSION,
   ONE_MCP_CONFIG_NAME_BY_HOST,
   ONE_MCP_DECODER_VERSION,
@@ -42,6 +43,7 @@ import {
 } from '../codex-hook-trust';
 import { buildFindings } from '../findings';
 import { selectDoctorProjectCwd } from '../index';
+import { createPaidFallbackCompletion } from '../../../shared/maintenance/fallback-proof';
 
 function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `t1-doctor-${prefix}-`));
@@ -175,6 +177,76 @@ test('probeProject reads + normalizes the state file', () => {
   }
 });
 
+test('probeProject reports legacy custom-backend migration conservatively without writing state', () => {
+  const safe = tmp('legacy-safe');
+  const ambiguous = tmp('legacy-ambiguous');
+  try {
+    for (const dir of [safe, ambiguous]) {
+      fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+        mode: 'existing-codebase',
+        stack: 'custom-backend',
+        frontend: 'react-vite',
+        backend: 'other',
+      }));
+    }
+    fs.writeFileSync(path.join(ambiguous, 'package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0' },
+    }));
+    assert.equal(probeProject(safe).legacyCapabilityMigration.status, 'auto-correctable');
+    assert.equal(probeProject(ambiguous).legacyCapabilityMigration.status, 'ambiguous');
+    const onDisk = JSON.parse(fs.readFileSync(path.join(safe, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(onDisk.frontend, 'react-vite', 'doctor remains read-only');
+  } finally {
+    fs.rmSync(safe, { recursive: true, force: true });
+    fs.rmSync(ambiguous, { recursive: true, force: true });
+  }
+});
+
+test('probeProject evaluates fallback-paid terminality from the complete runtime proof', () => {
+  const dir = tmp('paid-fallback-proof');
+  try {
+    const runId = 'paid';
+    const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'existing-codebase',
+      currentRunId: runId,
+    }));
+    const marker = {
+      version: 1,
+      role: 'quick-fix',
+      outcome: 'fallback-paid',
+      overallOutcome: 'fallback-paid',
+      workUnitContractHash: '1'.repeat(64),
+      allowlistHash: '2'.repeat(64),
+    };
+    fs.writeFileSync(path.join(runDir, 'maintenance.json'), JSON.stringify(marker));
+    assert.equal(probeProject(dir).runState.maintenanceTerminalOrFallbackPending, false);
+
+    const fallbackCompletion = createPaidFallbackCompletion({
+      role: 'quick-fix',
+      envelopeHash: '3'.repeat(64),
+      workUnitContractHash: marker.workUnitContractHash,
+      allowlistHash: marker.allowlistHash,
+      digestPath: '.traffic-one/digests/paid/quick-fix.md',
+      digestHash: '4'.repeat(64),
+      sourceBaselineHash: '5'.repeat(64),
+      sourceResultHash: '6'.repeat(64),
+      runBaselineHash: '7'.repeat(64),
+      changedPaths: ['src/value.ts'],
+      completedAt: '2026-07-27T00:00:00.000Z',
+    });
+    fs.writeFileSync(path.join(runDir, 'maintenance.json'), JSON.stringify({
+      ...marker,
+      fallbackCompletion,
+    }));
+    assert.equal(probeProject(dir).runState.maintenanceTerminalOrFallbackPending, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('probeCodexHooks parses structural plugin/workspace state but does not claim structural hook trust', async () => {
   const home = tmp('codexhome');
   const savedHome = process.env.CODEX_HOME;
@@ -240,18 +312,16 @@ test('probeCanonicalAuth reports path, validity, and update time without exposin
 
 test('probeOneMcp reports bounded runtime-usable cache state for all hosts without payloads or remote text', () => {
   const root = tmp('onemcp');
-  const file = path.join(root, 'one-mcp.json');
-  const env = {
-    TRAFFIC_ONE_MCP_CACHE_PATH: file,
-    TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: 'https://must-not-appear.example/public-mcp',
-  } as NodeJS.ProcessEnv;
+  const file = path.join(root, 'traffic-one', 'one-mcp.json');
+  const env = { XDG_STATE_HOME: root } as NodeJS.ProcessEnv;
   try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, `${JSON.stringify({
       schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
       hosts: {
         codex: {
           config: {
-            endpoint: 'https://must-not-appear.example/public-mcp',
+            endpoint: DEFAULT_PUBLIC_ENDPOINT,
             configName: ONE_MCP_CONFIG_NAME_BY_HOST.codex,
             decoderVersion: ONE_MCP_DECODER_VERSION,
             version: 9,
@@ -316,12 +386,10 @@ test('probeOneMcp reports bounded runtime-usable cache state for all hosts witho
 
 test('probeOneMcp falls back to bundled when runtime rejects a cache from another endpoint', () => {
   const root = tmp('onemcp-unusable');
-  const file = path.join(root, 'one-mcp.json');
-  const env = {
-    TRAFFIC_ONE_MCP_CACHE_PATH: file,
-    TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT: 'https://current.example/public-mcp',
-  } as NodeJS.ProcessEnv;
+  const file = path.join(root, 'traffic-one', 'one-mcp.json');
+  const env = { XDG_STATE_HOME: root } as NodeJS.ProcessEnv;
   try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, `${JSON.stringify({
       schemaVersion: ONE_MCP_CACHE_SCHEMA_VERSION,
       hosts: {
@@ -511,6 +579,7 @@ function baseProject(over: Partial<ProjectProbe> = {}): ProjectProbe {
     runState: runState(),
     nestedTrafficOneRoots: [],
     openCodeCli: 'managed',
+    legacyCapabilityMigration: { status: 'not-applicable', message: null },
     ...over,
   };
 }
@@ -521,8 +590,8 @@ type VerifiedHookTrust = Extract<CodexHookTrustProbe, { evaluation: 'verified' }
 const healthyHookTrust = (over: Partial<VerifiedHookTrust> = {}): VerifiedHookTrust => ({
   evaluation: 'verified',
   source: 'codex-hooks-list',
-  expectedCount: 15,
-  counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
+  expectedCount: 16,
+  counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 16 },
   missingKeys: [],
   unexpectedKeys: [],
   hooks: CODEX_TRAFFIC_ONE_HOOK_KEYS.map((key) => ({
@@ -671,8 +740,8 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 14, trusted: 14, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 14 },
-        missingKeys: [CODEX_TRAFFIC_ONE_HOOK_KEYS[14] as string],
+        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
+        missingKeys: [CODEX_TRAFFIC_ONE_HOOK_KEYS[15] as string],
       }),
     }),
   });
@@ -682,7 +751,7 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 1, runnable: 14 },
+        counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 1, runnable: 15 },
       }),
     }),
   });
@@ -692,7 +761,7 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 15, trusted: 0, managed: 0, modified: 13, untrusted: 2, disabled: 0, runnable: 0 },
+        counts: { discovered: 16, trusted: 0, managed: 0, modified: 14, untrusted: 2, disabled: 0, runnable: 0 },
       }),
     }),
   });
@@ -702,7 +771,7 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 14 },
+        counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
       }),
     }),
   });
@@ -721,6 +790,24 @@ test('buildFindings: legacy state shape + local prefs in project state', () => {
   const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject({ state: { projectMode: 'new-project', team: {} } }) });
   assert.ok(f.some((x) => x.code === 'LEGACY_TRAFFIC_ONE_STATE'));
   assert.ok(f.some((x) => x.code === 'LOCAL_PREFERENCES_IN_PROJECT_STATE'));
+});
+
+test('buildFindings distinguishes safe and ambiguous legacy capability migrations', () => {
+  const safe = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      legacyCapabilityMigration: { status: 'auto-correctable', message: 'no frontend artifacts were detected' },
+    }),
+  });
+  assert.equal(safe.find((item) => item.code === 'LEGACY_CUSTOM_BACKEND_SAFE_MIGRATION')?.severity, 'info');
+
+  const ambiguous = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      legacyCapabilityMigration: { status: 'ambiguous', message: 'active run preserves its original capability profile' },
+    }),
+  });
+  assert.equal(ambiguous.find((item) => item.code === 'LEGACY_CUSTOM_BACKEND_AMBIGUOUS')?.severity, 'fix-needed');
 });
 
 test('buildFindings: gitnexus crash-risk + node-too-old-no-nvm', () => {

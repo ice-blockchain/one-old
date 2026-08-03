@@ -10,13 +10,11 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-entry-'));
   const env = process.env;
   const saved = {
-    ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT,
     state: env.TRAFFIC_ONE_STATE_PATH,
     prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
     noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
     authFlag: env.TRAFFIC_ONE_AUTH,
   };
-  env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
@@ -32,7 +30,6 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
     await fn(dir);
   } finally {
     for (const [key, value] of Object.entries({
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep,
       TRAFFIC_ONE_STATE_PATH: saved.state,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn,

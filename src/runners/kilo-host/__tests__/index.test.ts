@@ -71,6 +71,14 @@ test('install requires explicit consent and writes an owned global Kilo wrapper'
     assert.ok(body.includes('shell.env'));
     assert.ok(body.includes('permission.ask'));
     assert.ok(body.includes('event'));
+    // v2 wrapper surfaces: session.idle turn-end delivery via a FEATURE-DETECTED
+    // host toast (never client.session.prompt — that injects a model turn), and
+    // the composed [Traffic One] banner (systemMessage) in chat.message.
+    assert.ok(body.includes('session.idle'));
+    assert.ok(body.includes("typeof tui.showToast === 'function'"), 'toast delivery must be feature-detected');
+    assert.ok(!body.includes('client.session.prompt'), 'never inject a model turn from the wrapper');
+    assert.ok(body.includes("'\\n\\n[Traffic One]\\n' + banner"), 'the systemMessage banner must survive composition (not shadowed by context)');
+    assert.ok(body.includes('"wrapperApi":2'), 'the owner stamp carries the wrapper API generation');
     assert.ok(body.includes('--host=kilo'));
     assert.ok(body.includes('TRAFFIC_ONE_HOST'));
     assert.ok(body.includes('id: "traffic-one"'));
@@ -87,14 +95,13 @@ test('install requires explicit consent and writes an owned global Kilo wrapper'
 
 test('central registration switch installs the Kilo wrapper without creating public MCP config', () => {
   withHome((env) => {
-    env.TRAFFIC_ONE_DISABLE_ONE_MCP_REGISTRATION = 'true';
     const configPath = kiloGlobalConfigPath(env);
-    const installed = installWrapper(env, ['install', '--yes']);
+    const installed = installWrapper(env, ['install', '--yes'], false);
     assert.equal(installed.code, 0);
     assert.equal(fs.existsSync(kiloGlobalPluginPath(env)), true);
     assert.equal(fs.existsSync(configPath), false);
     assert.match(installed.stdout, /registration is disabled/);
-    const doctor = doctorWrapper(env);
+    const doctor = doctorWrapper(env, ['doctor'], false);
     assert.equal(doctor.code, 0);
     assert.match(doctor.stdout, /config: registration-disabled/);
   });
@@ -528,4 +535,21 @@ test('Kilo wrapper denies managed MCP tools even with no project root or runtime
     else process.env.HOME = previousHome;
     fs.rmSync(base, { recursive: true, force: true });
   }
+});
+
+test('doctor reports stale-wrapper for a generation-1 owner stamp', () => {
+  withHome((env) => {
+    assert.equal(installWrapper(env, ['install', '--yes'], true).code, 0);
+    const file = kiloGlobalPluginPath(env);
+    // Rewrite the owner stamp WITHOUT wrapperApi — the pre-v2 install shape.
+    const body = fs.readFileSync(file, 'utf8');
+    const downgraded = body.replace(/"wrapperApi":\d+,/, '');
+    assert.notEqual(downgraded, body, 'the fresh stamp must have carried wrapperApi');
+    fs.writeFileSync(file, downgraded, 'utf8');
+    const doctor = doctorWrapper(env, ['doctor'], true);
+    assert.equal(doctor.code, 1, 'a stale wrapper is a doctor failure until reinstalled');
+    assert.match(doctor.stdout, /wrapperApi: 1/);
+    assert.match(doctor.stdout, /stale-wrapper/);
+    assert.match(doctor.stdout, /install --yes/);
+  });
 });

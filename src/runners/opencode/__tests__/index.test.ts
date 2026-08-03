@@ -5,9 +5,16 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
+import { delegate, delegateFromPlan, normalizeOpenCodeI18nScope, normalizePlanI18nUnits, normalizePlanRole, parsePlanDelegationQueue, postApplyI18n, postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
+import { compileArchitecture, persistCompiledArchitecture } from '../../../shared/architecture-contract';
+import { openCodeQueuePolicyViolations } from '../../../shared/opencode-queue';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
+import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-bootstrap-policy';
+import { reconcileRunSettlement } from '../../../shared/run-settlement';
+import { ensureRunAgentClaim } from '../../../shared/state';
+import { currentHostModelTarget } from '../../../shared/current-model-tiers';
+import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 
 function sh(cwd: string, cmd: string, args: string[]): void {
   spawnSync(cmd, args, { cwd, encoding: 'utf8', stdio: 'ignore' });
@@ -53,7 +60,24 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts';
+function withCodexProPolicyEnv(
+  fn: (target: ReturnType<typeof currentHostModelTarget>) => void,
+): void {
+  const previousHost = process.env.TRAFFIC_ONE_HOST;
+  const previousPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_HOST = 'codex';
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    fn(currentHostModelTarget('codex', 'pro', process.env));
+  } finally {
+    if (previousHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = previousHost;
+    if (previousPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = previousPlan;
+  }
+}
+
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts' | 'prompt' | 'collapsed' | 'twopart';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -72,6 +96,21 @@ const i = process.argv.indexOf('--dir');
 const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created foo.txt' } }) + '\\n');
 fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
+`,
+    // The ONLY stub that emits more than one text part, and the whole point of
+    // it. Every other stub emits exactly one, so a digest summary built by
+    // head-slicing the joined narration and one built from the model's last
+    // message are byte-identical under all of them — the behaviour was
+    // untestable until a run had a preamble AND a conclusion. Real runs always
+    // do: the observed shape was "Let me check the existing setup first." as the
+    // summary of a run that ended by reporting what it built.
+    twopart: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'Let me check the existing setup first.' } }) + '\\n');
+fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created foo.txt with the requested helper' } }) + '\\n');
 `,
     // simulates a unit that ran an install in the sandbox: writes a real source
     // file PLUS node_modules junk and a wrong-package-manager lockfile. The
@@ -138,6 +177,17 @@ const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created src/foo.ts' } }) + '\\n');
 fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
 fs.writeFileSync(path.join(dir, 'src', 'foo.ts'), 'export const foo = 1;\\n');
+`,
+    // captures the composed prompt OUTSIDE the worktree (writing it inside would
+    // stage it as a delegated diff), so a test can assert what the model was told.
+    prompt: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+if (process.env.T1_PROMPT_CAPTURE) fs.writeFileSync(process.env.T1_PROMPT_CAPTURE, String(process.argv[3] || ''), 'utf8');
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created src/a.ts' } }) + '\\n');
+fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'src', 'a.ts'), 'export const a = 1;\\n');
 `,
     // reads the worktree's foo.txt (which reflects the sandbox BASE) and appends a
     // marker. Lets a test assert which base the sandbox branched from: if the runner
@@ -302,6 +352,19 @@ process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 
 fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
 execSync('git add -A && git commit -q -m delegated', { cwd: dir, stdio: 'ignore', shell: '/bin/sh' });
 `,
+    // 7co shape: the free model returns working, type-correct code with the
+    // whole component packed onto one line. Typecheck cannot see it, so without
+    // the quality check the unit is recorded DELEGATED_OK and the paid role
+    // integrates against collapsed source.
+    collapsed: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created CourseCard' } }) + '\\n');
+fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'src', 'CourseCard.tsx'),
+  'export function CourseCard({ title, summary }) { const open = useState(false); return <article className="card"><h3>{title}</h3><p>{summary}</p><footer><span>{title}</span></footer></article> }\\n');
+`,
   };
   fs.writeFileSync(path.join(bin, 'opencode'), scripts[behavior], { mode: 0o755 });
   return bin;
@@ -402,8 +465,41 @@ test('delegate applies a successful run to the working tree + writes a digest', 
     const digest = path.join(dir, '.traffic-one', 'digests', '2026-01-01T00-00-00Z', 'frontend.md');
     assert.equal(r.digest, digest);
     assert.match(fs.readFileSync(digest, 'utf8'), /verdict: DELEGATED_OK/);
+    // A whole-role delegation writes the ROLE's digest, so it keeps the hint the
+    // orchestrator acts on.
+    assert.match(fs.readFileSync(digest, 'utf8'), /normalize_to: IMPLEMENTED/);
+    const runDir = path.join(dir, ['.traffic', '-one'].join(''), 'runs', '2026-01-01T00-00-00Z');
+    // Observed live: a direct (non-plan-queue) delegation carried no unit id and
+    // was therefore recorded NOWHERE in the unit ledger — the tester delegated
+    // its whole suite to the free model and only the attempt log knew.
+    const statuses = JSON.parse(fs.readFileSync(path.join(runDir, 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses.length, 1);
+    assert.equal(statuses[0].role, 'frontend');
+    assert.equal(statuses[0].status, 'delegated');
+    assert.equal(statuses[0].source, 'direct');
+    assert.equal(statuses[0].model, OPENCODE_FREE_MODELS[0]);
+    // ...and the model that actually wrote the files now has provenance.
+    const provenance = JSON.parse(fs.readFileSync(path.join(runDir, 'delegated-model-observations.json'), 'utf8')) as any[];
+    assert.equal(provenance.length, 1);
+    assert.equal(provenance[0].model, OPENCODE_FREE_MODELS[0]);
+    assert.equal(provenance[0].action, 'delegated');
+    assert.deepEqual(provenance[0].touched, ['foo.txt']);
     // worktree cleaned up
     assert.equal(spawnSync('git', ['-C', dir, 'worktree', 'list'], { encoding: 'utf8' }).stdout.trim().split('\n').length, 1);
+  });
+});
+
+test('the digest summary is what the model concluded, not how it opened', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('twopart');
+    const r = delegate(dir, { role: 'frontend', task: 'create foo.txt', runId: '2026-01-01T00-00-00Z' });
+    assert.equal(r.ok, true);
+    const body = fs.readFileSync(path.join(dir, '.traffic-one', 'digests', '2026-01-01T00-00-00Z', 'frontend.md'), 'utf8');
+    const summary = /^- unit 1 .*$/m.exec(body)?.[0] || '';
+    assert.match(summary, /created foo\.txt with the requested helper/);
+    // The load-bearing half. Reverted, the summary is the JOIN of every part cut
+    // to a head slice, so it starts with the preamble and this fails.
+    assert.doesNotMatch(summary, /Let me check/, 'a preamble is not a report of work done');
   });
 });
 
@@ -654,6 +750,33 @@ test('delegateFromPlan deterministically delegates every queued bounded unit', (
   });
 });
 
+test('two units of the SAME role accumulate into one digest instead of overwriting it', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: frontend-a | role: frontend | files: unit-1.txt | task: make unit A',
+      '- id: frontend-b | role: frontend | files: unit-2.txt | task: make unit B',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'plan-acc' });
+    assert.equal(r.delegated, 2);
+    // Observed live: four frontend units ran and the digest listed only the
+    // LAST unit's files — each unit overwrote the previous one at this path.
+    const digest = fs.readFileSync(path.join(dir, '.traffic-one', 'digests', 'plan-acc', 'opencode-frontend.md'), 'utf8');
+    assert.match(digest, /^delegated_units: 2$/m);
+    assert.match(digest, /- unit-1\.txt/);
+    assert.match(digest, /- unit-2\.txt/);
+    assert.match(digest, /- unit 1 \(.+, 1 file\): unit 1/);
+    assert.match(digest, /- unit 2 \(.+, 1 file\): unit 2/);
+    // A plan-unit digest is the run's delegation ledger, not the role's verdict,
+    // so it carries no never-applied normalize_to instruction.
+    assert.doesNotMatch(digest, /normalize_to:/);
+    assert.match(digest, /verdict: DELEGATED_OK/);
+  });
+});
+
 test('delegateFromPlan without opts.runId uses currentRunId from project state', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('multi');
@@ -733,46 +856,81 @@ test('delegateFromPlan ignores stale plan queues in maintenance runs', () => {
 });
 
 test('delegateFromPlan delegates in maintenance when the architect wrote a fresh run-scoped queue', () => {
-  withRepo({ openCode: { enabled: true } }, (dir) => {
-    stubOpencode('multi');
-    const memoryDir = '.traffic' + '-one';
-    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
-    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
-      mode: 'existing-codebase',
-      onboardingComplete: true,
-      lifecycle: { phase: 'maintenance' },
-      currentRunId: 'maint-fresh',
-    }), 'utf8');
-    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
-      '<!-- opencode-delegate:start -->',
-      '- id: revamp-ui | role: frontend | files: unit-1.txt | task: build a revamp unit',
-      '<!-- opencode-delegate:end -->',
-    ].join('\n'), 'utf8');
-    // A run-scoped assignments.json PLUS architect-run evidence (digest) is the
-    // architect's freshness proof: together they flip `hasFreshArchitectQueueForRun`
-    // true so the maintenance from-plan batch delegates THIS run's queue instead
-    // of suppressing it. (The manifest alone doesn't count — an orchestrator can
-    // hand-copy it; observed 11c.)
-    fs.mkdirSync(path.join(dir, memoryDir, 'runs', 'maint-fresh'), { recursive: true });
-    fs.writeFileSync(path.join(dir, memoryDir, 'runs', 'maint-fresh', 'assignments.json'), JSON.stringify({
-      version: 1,
-      runId: 'maint-fresh',
-      createdBy: 'senior-architect',
-      assignments: [{ role: 'senior-frontend', scope: { include: ['unit-1.txt'], exclude: [] } }],
-    }), 'utf8');
-    fs.mkdirSync(path.join(dir, memoryDir, 'digests', 'maint-fresh'), { recursive: true });
-    fs.writeFileSync(path.join(dir, memoryDir, 'digests', 'maint-fresh', 'architect.md'),
-      '# architect digest — run maint-fresh\n\nverdict: PLAN_READY\n', 'utf8');
+  withCodexProPolicyEnv((target) => {
+    withRepo({ openCode: { enabled: true } }, (dir) => {
+      stubOpencode('multi');
+      const memoryDir = '.traffic' + '-one';
+      const state = {
+        mode: 'existing-codebase',
+        stack: 'default',
+        frontend: 'react-vite',
+        backend: 'supabase',
+        onboardingComplete: true,
+        lifecycle: { phase: 'maintenance' },
+        currentRunId: 'maint-fresh',
+        performance: {
+          level: 'balanced',
+          target: {
+            plan: 'pro',
+            appliedFingerprint: target.appliedFingerprint,
+            configVersion: target.configVersion,
+          },
+        },
+        team: { mode: 'subagents', approved: true },
+      };
+      fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state), 'utf8');
+      fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+        '<!-- opencode-delegate:start -->',
+        '- id: revamp-ui | role: frontend | files: unit-1.txt | task: build a revamp unit',
+        '<!-- opencode-delegate:end -->',
+      ].join('\n'), 'utf8');
+      // A run-scoped assignments.json PLUS architect-run evidence (digest) is the
+      // architect's freshness proof: together they flip `hasFreshArchitectQueueForRun`
+      // true so the maintenance from-plan batch delegates THIS run's queue instead
+      // of suppressing it. (The manifest alone doesn't count — an orchestrator can
+      // hand-copy it; observed 11c.)
+      fs.mkdirSync(path.join(dir, memoryDir, 'runs', 'maint-fresh'), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, 'runs', 'maint-fresh', 'assignments.json'), JSON.stringify({
+        version: 1,
+        runId: 'maint-fresh',
+        createdBy: 'senior-architect',
+        assignments: [{ role: 'senior-frontend', scope: { include: ['unit-1.txt'], exclude: [] } }],
+      }), 'utf8');
+      fs.mkdirSync(path.join(dir, memoryDir, 'digests', 'maint-fresh'), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, 'digests', 'maint-fresh', 'architect.md'),
+        '# architect digest — run maint-fresh\n\nverdict: PLAN_READY\n', 'utf8');
+      assert.ok(ensureRunModelPolicy(dir, 'maint-fresh', 'codex', state, process.env));
 
-    const r = delegateFromPlan(dir);
+      const r = delegateFromPlan(dir);
 
-    assert.equal(r.total, 1);
-    assert.equal(r.delegated, 1);
-    assert.notEqual(r.units[0]?.id, '__no_units__');
+      assert.equal(r.total, 1);
+      assert.equal(r.delegated, 1);
+      assert.notEqual(r.units[0]?.id, '__no_units__');
+      const bootstrap = readActiveRunBootstrap(dir, 'maint-fresh', 'senior-frontend');
+      assert.ok(bootstrap);
+      assert.equal(bootstrap.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+      assert.deepEqual(bootstrap.workUnit.outputs, [
+        '.traffic-one/digests/maint-fresh/frontend.md',
+        'unit-1.txt',
+      ]);
+      const marker = JSON.parse(fs.readFileSync(
+        path.join(dir, memoryDir, 'runs', 'maint-fresh', 'maintenance.json'),
+        'utf8',
+      )) as any;
+      assert.equal(marker.role, 'senior-frontend');
+      assert.equal(marker.overallOutcome, 'code-delivered');
+      assert.equal(marker.fallbackAllowed, false);
+      const settlement = JSON.parse(fs.readFileSync(
+        path.join(dir, memoryDir, 'runs', 'maint-fresh', 'settlement-v2.json'),
+        'utf8',
+      )) as any;
+      assert.equal(settlement.status, 'code-delivered');
+    });
   });
 });
 
-test('maintenance ad-hoc delegation writes a terminal maintenance marker with failureKind', () => {
+test('maintenance delegation without a parent-published work-unit contract fails closed', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('error');
     const memoryDir = ['.traffic', '-one'].join('');
@@ -784,14 +942,278 @@ test('maintenance ad-hoc delegation writes a terminal maintenance marker with fa
       lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-01-01T00:00:00Z' },
     }), 'utf8');
 
-    const r = delegate(dir, { role: 'quick-fix', task: 'try small fix', runId: 'maint-1' });
+    const r = delegate(dir, {
+      role: 'quick-fix',
+      task: 'try small fix',
+      runId: 'maint-1',
+      allowedFiles: 'README.md',
+    });
 
+    // The delegation still declines — the tool-result contract is unchanged, so
+    // the orchestrator falls back to the paid role exactly as before.
     assert.equal(r.action, 'failed');
-    assert.equal(r.failureKind, 'opencode-error');
+    // 'preflight-rejected', not 'diff-rejected': there was no diff. The old
+    // label sent 16co's orchestrator hunting an allowlist violation that did
+    // not exist while the real input to fix was the contract publication.
+    assert.equal(r.failureKind, 'preflight-rejected');
     const marker = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'maintenance.json'), 'utf8')) as any;
-    assert.equal(marker.outcome, 'failed');
+    // …but the preflight refused before anything ran, so this is NOT terminal:
+    // a terminal `failed` here settled the whole run and deadlocked every later
+    // role claim (no ledger transition leaves `failed`).
+    assert.equal(marker.outcome, 'preflight-rejected');
+    assert.equal(marker.overallOutcome, 'preflight-rejected');
+    assert.equal(marker.preflightRejected, true);
+    assert.equal(marker.fallbackAllowed, false);
+    assert.equal(marker.failureKind, 'preflight-rejected');
+    assert.equal(marker.workUnitContractHash, undefined);
+    assert.equal(marker.allowlistHash, undefined);
+    // The SPECIFIC preflight reason survives (this fixture has no model policy).
+    assert.match(marker.error, /no immutable parent model policy/i);
+    assert.match(marker.error, /no parent-published WorkUnitContract/);
+    // No settlement is minted at all — the run stays drivable.
+    assert.equal(fs.existsSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'settlement-v2.json')), false);
+    const ledgerFile = path.join(dir, memoryDir, 'runs', 'maint-1', 'run.json');
+    if (fs.existsSync(ledgerFile)) {
+      const ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf8')) as any;
+      assert.notEqual(ledger.status, 'failed');
+    }
+  });
+});
+
+test('a preflight-rejected delegation leaves the run drivable: reconciliation stays non-terminal and role claims still bind', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('error');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    const state = {
+      version: 1,
+      mode: 'new-project',
+      currentRunId: 'maint-drivable',
+      materializedStack: 'custom-stack|other|laravel|none',
+      lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-01-01T00:00:00Z' },
+    };
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state), 'utf8');
+
+    // Globs cannot authorize a paid fallback → the preflight refuses outright.
+    const r = delegate(dir, {
+      role: 'senior-backend',
+      task: 'batch update endpoint',
+      runId: 'maint-drivable',
+      allowedFiles: 'routes/**, app/Http/Controllers/**',
+    });
+    assert.equal(r.ok, false);
+
+    const marker = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-drivable', 'maintenance.json'), 'utf8')) as any;
+    assert.equal(marker.overallOutcome, 'preflight-rejected');
+    assert.match(marker.error, /exact-file allowlist/i, 'the rejected-allowlist reason reaches the marker');
+
+    // Reconciliation must not derive a terminal `failed` from the marker.
+    const settled = reconcileRunSettlement(dir, 'maint-drivable');
+    assert.notEqual(settled?.status, 'failed');
+
+    // The decisive regression: the run's ledger still admits role claims, so the
+    // paid fallback the orchestrator now owes can actually be staked.
+    const claim = ensureRunAgentClaim(dir, state, 'senior-backend', { session_id: 'parent-1' }, { toolName: 'Task' });
+    assert.ok(claim, 'a preflight rejection must not block the paid fallback claim');
+    assert.equal(claim?.role, 'senior-backend');
+  });
+});
+
+test('maintenance failure reuses an exact parent-published contract for fallback-pending', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('error');
+    const memoryDir = ['.traffic', '-one'].join('');
+    const state = {
+      version: 1,
+      mode: 'existing-codebase',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'python',
+      currentRunId: 'maint-bound',
+      lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-01-01T00:00:00Z' },
+    };
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state), 'utf8');
+    const bootstrap = ensureRunBootstrap(dir, 'maint-bound', 'quick-fix', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'test-parent',
+      modelPolicyId: 'test-policy',
+      boundedOutputs: ['README.md'],
+      boundedAllowlist: ['README.md'],
+    });
+    assert.ok(bootstrap);
+
+    const r = delegate(dir, {
+      role: 'quick-fix',
+      task: 'try small fix',
+      runId: 'maint-bound',
+      allowedFiles: 'README.md',
+    });
+    assert.equal(r.action, 'failed');
+
+    const marker = JSON.parse(fs.readFileSync(
+      path.join(dir, memoryDir, 'runs', 'maint-bound', 'maintenance.json'),
+      'utf8',
+    )) as any;
     assert.equal(marker.fallbackAllowed, true);
-    assert.equal(marker.failureKind, 'opencode-error');
+    assert.equal(marker.overallOutcome, 'fallback-pending');
+    assert.equal(marker.workUnitContractHash, bootstrap?.workUnit.contractHash);
+    assert.match(marker.allowlistHash, /^[a-f0-9]{64}$/);
+    const settlement = JSON.parse(fs.readFileSync(
+      path.join(dir, memoryDir, 'runs', 'maint-bound', 'settlement-v2.json'),
+      'utf8',
+    )) as any;
+    assert.equal(settlement.status, 'active');
+    assert.equal(settlement.reason, 'fallback-pending');
+    assert.equal(settlement.fallback.workUnitContractHash, bootstrap?.workUnit.contractHash);
+    assert.equal(settlement.fallback.allowlistHash, marker.allowlistHash);
+  });
+});
+
+test('maintenance preflight publishes the exact quick-fix WorkUnit before OpenCode can fail', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('error');
+    const previousHost = process.env.TRAFFIC_ONE_HOST;
+    const previousPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+    process.env.TRAFFIC_ONE_HOST = 'codex';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    try {
+      const target = currentHostModelTarget('codex', 'pro', process.env);
+      const state = {
+        version: 1,
+        mode: 'existing-codebase',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: 'python',
+        currentRunId: 'maint-preflight',
+        lifecycle: { phase: 'maintenance' },
+        performance: {
+          level: 'balanced',
+          target: {
+            plan: 'pro',
+            appliedFingerprint: target.appliedFingerprint,
+            configVersion: target.configVersion,
+          },
+        },
+        team: { mode: 'subagents', approved: true },
+      };
+      const memoryDir = ['.traffic', '-one'].join('');
+      fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state));
+      assert.ok(ensureRunModelPolicy(dir, 'maint-preflight', 'codex', state, process.env));
+      assert.equal(readActiveRunBootstrap(dir, 'maint-preflight', 'quick-fix'), null);
+
+      const result = delegate(dir, {
+        role: 'quick-fix',
+        task: 'try the exact README fix',
+        runId: 'maint-preflight',
+        allowedFiles: 'README.md',
+      });
+      assert.equal(result.action, 'failed');
+      const bootstrap = readActiveRunBootstrap(dir, 'maint-preflight', 'quick-fix');
+      assert.ok(bootstrap);
+      assert.equal(bootstrap.evidenceSource, 'opencode-maintenance-preflight');
+      assert.deepEqual(bootstrap.workUnit.outputs, [
+        '.traffic-one/digests/maint-preflight/quick-fix.md',
+        'README.md',
+      ]);
+      const marker = JSON.parse(fs.readFileSync(
+        path.join(dir, memoryDir, 'runs', 'maint-preflight', 'maintenance.json'),
+        'utf8',
+      )) as any;
+      assert.equal(marker.overallOutcome, 'fallback-pending');
+      assert.equal(marker.workUnitContractHash, bootstrap.workUnit.contractHash);
+      assert.ok(marker.fallbackSourceBaseline);
+    } finally {
+      if (previousHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+      else process.env.TRAFFIC_ONE_HOST = previousHost;
+      if (previousPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+      else process.env.TRAFFIC_ONE_USER_PLAN = previousPlan;
+    }
+  });
+});
+
+test('maintenance frontend failure publishes an exact bounded WorkUnit and enables only its paid fallback', () => {
+  withCodexProPolicyEnv((target) => {
+    withRepo({ openCode: { enabled: true } }, (dir) => {
+      stubOpencode('error');
+      const memoryDir = ['.traffic', '-one'].join('');
+      const state = {
+        version: 1,
+        mode: 'existing-codebase',
+        stack: 'default',
+        frontend: 'react-vite',
+        backend: 'supabase',
+        currentRunId: 'maint-frontend-fail',
+        lifecycle: { phase: 'maintenance' },
+        performance: {
+          level: 'balanced',
+          target: {
+            plan: 'pro',
+            appliedFingerprint: target.appliedFingerprint,
+            configVersion: target.configVersion,
+          },
+        },
+        team: { mode: 'subagents', approved: true },
+      };
+      fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+      fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify(state));
+      assert.ok(ensureRunModelPolicy(dir, 'maint-frontend-fail', 'codex', state, process.env));
+
+      const result = delegate(dir, {
+        role: 'frontend',
+        task: 'try the exact README frontend fix',
+        runId: 'maint-frontend-fail',
+        allowedFiles: 'README.md',
+      });
+      assert.equal(result.action, 'failed');
+      const bootstrap = readActiveRunBootstrap(dir, 'maint-frontend-fail', 'senior-frontend');
+      assert.ok(bootstrap);
+      assert.equal(bootstrap.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+      assert.deepEqual(bootstrap.workUnit.outputs, [
+        '.traffic-one/digests/maint-frontend-fail/frontend.md',
+        'README.md',
+      ]);
+      const marker = JSON.parse(fs.readFileSync(
+        path.join(dir, memoryDir, 'runs', 'maint-frontend-fail', 'maintenance.json'),
+        'utf8',
+      )) as any;
+      assert.equal(marker.role, 'senior-frontend');
+      assert.equal(marker.overallOutcome, 'fallback-pending');
+      assert.equal(marker.fallbackAllowed, true);
+      assert.equal(marker.workUnitContractHash, bootstrap.workUnit.contractHash);
+      assert.ok(marker.fallbackSourceBaseline);
+    });
+  });
+});
+
+test('maintenance frontend delegation without a parent model policy fails before OpenCode', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('edit');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
+      version: 1,
+      mode: 'existing-codebase',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      currentRunId: 'maint-frontend-no-policy',
+      lifecycle: { phase: 'maintenance' },
+    }));
+
+    const result = delegate(dir, {
+      role: 'frontend',
+      task: 'must not reach OpenCode',
+      runId: 'maint-frontend-no-policy',
+      allowedFiles: 'foo.txt',
+    });
+    assert.equal(result.action, 'failed');
+    assert.equal(result.failureKind, 'preflight-rejected');
+    assert.match(result.error || '', /no immutable parent model policy/i);
+    assert.equal(fs.existsSync(path.join(dir, 'foo.txt')), false);
+    assert.equal(readActiveRunBootstrap(dir, 'maint-frontend-no-policy', 'senior-frontend'), null);
   });
 });
 
@@ -1109,6 +1531,26 @@ test('delegated diff fails closed when assignments changed while OpenCode was ru
   });
 });
 
+test('delegate rejects a generated/internal allowlist entry before spending a model run', () => {
+  // 1cu-cursor: `.traffic-one/digests/<run>/backend.md` in `allowedFiles` was
+  // only caught by the post-run diff validator, which discards the WHOLE diff —
+  // four delegations, zero files. The runner writes the digest itself.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const r = delegate(dir, {
+      role: 'backend',
+      runId: 'r-unsafe',
+      task: 'implement the api client',
+      allowedFiles: 'packages/api-client/src/AuthAPIService.ts,.traffic-one/digests/r-unsafe/backend.md',
+    });
+    assert.equal(r.action, 'failed');
+    assert.match(r.error || '', /generated\/internal path/);
+    assert.match(r.error || '', /digests\/r-unsafe\/backend\.md/);
+    // no CLI attempt was made at all
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'r-unsafe', 'opencode-attempts', 'backend')), false);
+  });
+});
+
 test('delegateFromPlan enforces the files/area allowlist before applying', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('multi');
@@ -1171,6 +1613,240 @@ test('delegateFromPlan rejects only unsafe dependency units and still runs safe 
     const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'r-selective-policy', 'opencode-units.json'), 'utf8')) as any[];
     assert.equal(statuses.find((s) => s.id === 'ui-copy')?.status, 'delegated');
     assert.equal(statuses.find((s) => s.id === 'deps')?.status, 'rejected_policy');
+  });
+});
+
+test('delegateFromPlan skips a unit whose declared dependency failed', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: deps | role: backend | files: package.json, pnpm-lock.yaml | task: install zod',
+      '- id: helper | role: backend | files: unit-2.txt | depends: deps | task: create the second unit file on top of zod',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-dep-skip' });
+    assert.equal(r.delegated, 0);
+    assert.equal(r.units.find((u) => u.id === 'deps')?.status, 'rejected_policy');
+    const dependent = r.units.find((u) => u.id === 'helper');
+    assert.equal(dependent?.status, 'skipped');
+    assert.match(String(dependent?.error), /dependency `deps` did not land/);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), false,
+      'the dependent never runs, so it cannot burn a delegation rebuilding its own prerequisites');
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'r-dep-skip', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses.find((s) => s.id === 'helper')?.status, 'skipped');
+    assert.equal(statuses.find((s) => s.id === 'helper')?.attempts?.[0]?.action, 'skipped-dependency-failed',
+      'the discriminating action survives in the attempt log');
+  });
+});
+
+// 16co, the whole point of the kind-derived edge: `news-fixtures` (kind feature)
+// lost its diff to the 400-line cap, and `news-article-presentation` (kind page)
+// was STILL sent to the model — 565s, then `TS2305 … has no exported member
+// 'getNewsBySlug'` against exports that had just been rolled back. Their
+// allowlists are disjoint, so the overlap rule never demanded a `depends:` edge
+// and the plan declared none.
+test('delegateFromPlan skips a page unit whose same-role feature producer failed, with no declared edge', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: news-fixtures | role: frontend | kind: feature | files: src/features/news/index.tsx | task: Add the typed News fixtures and pure selectors.',
+      '- id: news-article | role: frontend | kind: page | files: unit-1.txt | task: Build the article presentation against the declared News selectors.',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-producer-skip' });
+    assert.equal(r.delegated, 0);
+    assert.equal(r.units.find((u) => u.id === 'news-fixtures')?.status, 'rejected_policy');
+    const consumer = r.units.find((u) => u.id === 'news-article');
+    assert.equal(consumer?.status, 'skipped');
+    assert.match(String(consumer?.error), /producer `news-fixtures` did not land/);
+    assert.match(String(consumer?.error), /declared no `depends:` edge/);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-1.txt')), false,
+      'the doomed consumer never reaches the model — this is the 565s 16co burned');
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'r-producer-skip', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses.find((s) => s.id === 'news-article')?.status, 'skipped');
+    assert.equal(statuses.find((s) => s.id === 'news-article')?.attempts?.[0]?.action, 'skipped-producer-failed',
+      'the INFERRED skip is distinguishable from a declared-dependency skip in the ledger');
+  });
+});
+
+// Negative row: the inferred edge must be inert in a healthy batch. A producer
+// that LANDS leaves its consumer delegated exactly as before — the inference can
+// never cost a delegation that would have succeeded.
+test('a landed feature producer leaves its same-role page unit delegated', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: news-fixtures | role: frontend | kind: feature | files: unit-1.txt | task: Add the typed News fixtures and pure selectors.',
+      '- id: news-article | role: frontend | kind: page | files: unit-2.txt | task: Build the article presentation against the declared News selectors.',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-producer-ok' });
+    assert.equal(r.delegated, 2);
+    assert.equal(r.units.find((u) => u.id === 'news-article')?.status, 'delegated');
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), true);
+  });
+});
+
+// Negative rows: the edge is strictly backwards-looking and strictly same-role.
+test('the inferred producer edge never points forward and never crosses roles', () => {
+  const memoryDir = ['.traffic', '-one'].join('');
+  // A consumer queued BEFORE the producer has no prerequisite to lose.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: news-article | role: frontend | kind: page | files: unit-1.txt | task: Build the article presentation.',
+      '- id: news-fixtures | role: frontend | kind: feature | files: src/features/news/index.tsx | task: Add the typed News fixtures and pure selectors.',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-producer-order' });
+    assert.equal(r.units.find((u) => u.id === 'news-fixtures')?.status, 'rejected_policy');
+    assert.equal(r.units.find((u) => u.id === 'news-article')?.status, 'delegated');
+  });
+  // A different role's failed feature is a different package; the plan gate
+  // orders cross-role work, and inferring here would strand whole shards.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: api-feature | role: backend | kind: feature | files: src/features/api/index.tsx | task: Add the typed API fixtures and pure selectors.',
+      '- id: news-article | role: frontend | kind: page | files: unit-1.txt | task: Build the article presentation.',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-producer-role' });
+    assert.equal(r.units.find((u) => u.id === 'api-feature')?.status, 'rejected_policy');
+    assert.equal(r.units.find((u) => u.id === 'news-article')?.status, 'delegated');
+  });
+});
+
+test('the delegated model is told its edit boundary before it works', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('prompt');
+    const capture = path.join(os.tmpdir(), `t1-prompt-${process.pid}-${Date.now()}.txt`);
+    process.env.T1_PROMPT_CAPTURE = capture;
+    try {
+      const r = delegate(dir, { role: 'senior-frontend', task: 'build the card', allowedFiles: 'src/a.ts' });
+      assert.equal(r.ok, true);
+      const prompt = fs.readFileSync(capture, 'utf8');
+      assert.match(prompt, /^build the card/, 'the task still comes first');
+      assert.match(prompt, /Create or modify ONLY: src\/a\.ts/);
+      assert.match(prompt, /NEVER touch: `\.traffic-one\/\*\*`/);
+      assert.match(prompt, /package\.json/);
+      assert.match(prompt, /re-export from a barrel\/index file/);
+      assert.match(prompt, /overrides any AGENTS\.md/);
+    } finally {
+      delete process.env.T1_PROMPT_CAPTURE;
+      fs.rmSync(capture, { force: true });
+    }
+  });
+});
+
+test('the edit boundary omits the allowlist line when no allowlist was given', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('prompt');
+    const capture = path.join(os.tmpdir(), `t1-prompt-none-${process.pid}-${Date.now()}.txt`);
+    process.env.T1_PROMPT_CAPTURE = capture;
+    try {
+      delegate(dir, { role: 'senior-frontend', task: 'build the card' });
+      const prompt = fs.readFileSync(capture, 'utf8');
+      assert.ok(!/Create or modify ONLY:/.test(prompt), 'no empty allowlist line');
+      assert.match(prompt, /NEVER touch/, 'the forbidden-path clause is unconditional');
+    } finally {
+      delete process.env.T1_PROMPT_CAPTURE;
+      fs.rmSync(capture, { force: true });
+    }
+  });
+});
+
+test('delegateFromPlan rejects a unit whose files belong to another role BEFORE delegating', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    const runId = 'r-scope-clash';
+    fs.mkdirSync(path.join(dir, memoryDir, 'runs', runId), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'runs', runId, 'assignments.json'), JSON.stringify({
+      version: 1,
+      runId,
+      createdBy: 'senior-architect',
+      assignments: [
+        { role: 'senior-frontend', agentKey: 'senior-frontend', summary: 'ui', scope: { include: ['unit-1.txt'], exclude: [] } },
+        { role: 'senior-backend', agentKey: 'senior-backend', summary: 'server', scope: { include: ['unit-2.txt'], exclude: [] } },
+      ],
+    }, null, 2), 'utf8');
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: ui-copy | role: frontend | files: unit-1.txt | task: create the first unit file',
+      '- id: cross-role | role: frontend | files: unit-2.txt | task: create the second unit file',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+
+    const r = delegateFromPlan(dir, { runId });
+    assert.equal(r.units.find((u) => u.id === 'ui-copy')?.status, 'delegated',
+      'a unit inside its own role scope still runs');
+    const clash = r.units.find((u) => u.id === 'cross-role');
+    assert.equal(clash?.status, 'rejected_policy');
+    assert.match(String(clash?.error), /outside frontend's assignment scope: unit-2\.txt/);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), false,
+      'the contradiction is caught without spending a delegation');
+  });
+});
+
+test('delegateFromPlan skips across role shards using the persisted ledger', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    const runId = 'r-dep-shard';
+    fs.mkdirSync(path.join(dir, memoryDir, 'runs', runId), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: schemas | role: backend | files: unit-1.txt | task: author the shared schemas',
+      '- id: fixtures | role: tester | files: unit-2.txt | depends: schemas | task: typed fixtures over the shared schemas',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    // The backend shard already ran in its own runner process and was rejected.
+    fs.writeFileSync(path.join(dir, memoryDir, 'runs', runId, 'opencode-units.json'), JSON.stringify([{
+      id: 'schemas',
+      role: 'senior-backend',
+      status: 'rejected_policy',
+      action: 'failed',
+      error: 'delegated diff touched file(s) outside the plan files/area allowlist',
+      touched: [],
+      updatedAt: new Date().toISOString(),
+      attempts: [],
+    }], null, 2), 'utf8');
+
+    const r = delegateFromPlan(dir, { runId, roles: ['tester'] });
+    assert.equal(r.units.find((u) => u.id === 'fixtures')?.status, 'skipped',
+      'a dependency that failed in an earlier shard must still block');
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), false);
+  });
+});
+
+test('delegateFromPlan still runs a dependent whose dependency succeeded or was never recorded', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: ui-copy | role: frontend | files: unit-1.txt | task: create the first unit file',
+      '- id: ui-more | role: frontend | files: unit-2.txt | depends: ui-copy | task: create the second unit file',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-dep-ok' });
+    assert.equal(r.delegated, 2, 'a landed dependency must never block its dependent');
+    assert.equal(r.units.find((u) => u.id === 'ui-more')?.status, 'delegated');
   });
 });
 
@@ -1257,6 +1933,192 @@ test('post-apply typecheck skips on pre-existing breakage (errors only in untouc
   });
 });
 
+test('a delegated unit that lands collapsed source is rejected and reverted, not DELEGATED_OK', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('collapsed');
+    const result = delegate(dir, { role: 'frontend', task: 'add the course card', runId: 'r-collapsed' });
+
+    // 7co: this exact shape typechecks, so only a quality check can catch it.
+    assert.equal(result.action, 'failed');
+    assert.match(String(result.error), /collapsed source/);
+    assert.match(String(result.error), /src\/CourseCard\.tsx:1/);
+    // Reverted: the paid implementer must inherit a clean tree, not the
+    // collapsed file it would otherwise have to notice and rewrite.
+    assert.equal(fs.existsSync(path.join(dir, 'src', 'CourseCard.tsx')), false);
+  });
+});
+
+test('postApplyQuality reads landed files and spares strings, types, and non-source', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocq-'));
+  const write = (rel: string, body: string): string => {
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), body, 'utf8');
+    return rel;
+  };
+
+  const collapsed = write('src/Nav.tsx',
+    'export function Nav(){const [o,setO]=useState(false);return <header><nav><a href="/">H</a></nav><button>{o}</button></header>}\n');
+  assert.match(String(postApplyQuality(dir, [collapsed])), /src\/Nav\.tsx:1/);
+
+  // Formatted source, a long Tailwind className, and a one-line type body are
+  // all clean — the same corpora the write-time rule was calibrated against.
+  const formatted = write('src/Card.tsx', [
+    'export function Card({ title }: Props) {',
+    '  return (',
+    '    <article className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">',
+    '      <h3>{title}</h3>',
+    '    </article>',
+    '  )',
+    '}',
+  ].join('\n'));
+  const types = write('src/types.ts',
+    'export interface Unit { id?: string; role: string; task: string; action: string; status?: string; touched: string[]; model?: string }\n');
+  assert.equal(postApplyQuality(dir, [formatted, types]), null);
+
+  // Generated, test, and non-source paths are out of scope; a deleted file in
+  // the touched list must not throw.
+  const generated = write('src/database.types.ts', 'export type A={a:string};export type B={b:string};export function f(){return 1;}\n');
+  const spec = write('src/Card.test.tsx',
+    'it("x", () => { const a = 1; render(<A/>); expect(<B><C/></B>).toBeTruthy(); expect(a).toBe(1); });\n');
+  const readme = write('README.md', 'x'.repeat(400));
+  assert.equal(postApplyQuality(dir, [generated, spec, readme, 'src/deleted.tsx']), null);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// Existing-* modes: whole-file post-apply architecture judgments (collapse,
+// module size, styling-system coherence) stand down — an existing repo's own
+// pre-collapsed, oversized, or atomic-CSS-styled files must not make every
+// delegated maintenance diff un-landable. Typecheck and catalog validation
+// keep applying.
+test('postApply quality/size/styling stand down on an existing codebase', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocq-existing-'));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    const collapsed = 'src/Nav.tsx';
+    fs.writeFileSync(path.join(dir, collapsed),
+      'export function Nav(){const [o,setO]=useState(false);return <header><nav><a href="/">H</a></nav><button>{o}</button></header>}\n');
+    const tailwindish = 'src/Card.tsx';
+    fs.writeFileSync(path.join(dir, tailwindish), [
+      'export function Card() {',
+      '  return (',
+      '    <article className="flex items-center justify-between">',
+      '      <h3 className="rounded-lg border px-4">x</h3>',
+      '      <p className="bg-white py-3 shadow-sm gap-4">y</p>',
+      '    </article>',
+      '  )',
+      '}',
+    ].join('\n'));
+    const oversized = 'src/legacy.ts';
+    fs.writeFileSync(path.join(dir, oversized),
+      Array.from({ length: 450 }, (_, i) => `export const v${i} = ${i};`).join('\n'));
+
+    const writeMode = (mode: string): void => {
+      fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+        mode, stack: 'minimal', backend: 'other', frontend: 'none', onboardingComplete: true,
+      }), 'utf8');
+    };
+    writeMode('existing-codebase');
+    // No git HEAD to attribute authorship → fail toward the stand-down.
+    assert.equal(postApplyQuality(dir, [collapsed]), null);
+    assert.equal(postApplyStyling(dir, [tailwindish]), null);
+    assert.equal(postApplySize(dir, [oversized]), null);
+
+    // With a HEAD, only files that existed there are the repo owner's: a file
+    // the delegated diff CREATED is wholly run-authored and judged normally
+    // even on an existing codebase (the 7co/8co delegated channel never
+    // passes the write gate).
+    const git = (...args: string[]): void => {
+      const r = spawnSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+      assert.equal(r.status, 0, `git ${args[0]} failed: ${r.stderr}`);
+    };
+    git('init', '-q');
+    git('add', collapsed, tailwindish, oversized);
+    git('commit', '-q', '-m', 'legacy');
+    assert.equal(postApplyQuality(dir, [collapsed]), null);
+    assert.equal(postApplyStyling(dir, [tailwindish]), null);
+    const created = 'src/FreshCard.tsx';
+    fs.writeFileSync(path.join(dir, created),
+      'export function FreshCard(){const [o,setO]=useState(false);return <header><nav><a href="/">H</a></nav><button>{o}</button></header>}\n');
+    assert.match(String(postApplyQuality(dir, [collapsed, created])), /src\/FreshCard\.tsx:1/);
+
+    // The same bytes on a new project keep the rollback everywhere.
+    writeMode('new-project');
+    assert.match(String(postApplyQuality(dir, [collapsed])), /src\/Nav\.tsx:1/);
+    assert.match(String(postApplyStyling(dir, [tailwindish])), /no tailwindcss dependency/);
+    assert.match(String(postApplySize(dir, [oversized])), /logical lines/);
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// An i18n runtime dependency with a catalog layout the detector cannot parse
+// used to reject EVERY delegated frontend diff on such repos. "Cannot judge"
+// means advise on an existing codebase, and keeps blocking on a new project.
+test('postApplyI18n: undetectable catalog contract advises instead of blocking on an existing codebase', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-existing-'));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'legacy',
+      dependencies: { react: '18.0.0', 'react-i18next': '13.0.0', i18next: '23.0.0' },
+    }));
+    const rel = 'src/Panel.tsx';
+    fs.writeFileSync(path.join(dir, rel), 'export const panelWidth = 320;\n');
+    const writeMode = (mode: string): void => {
+      fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+        mode, stack: 'custom-frontend', frontend: 'react-vite', backend: 'none', onboardingComplete: true,
+      }), 'utf8');
+    };
+    writeMode('new-project');
+    assert.match(String(postApplyI18n(dir, [rel])), /no existing catalog contract/);
+    writeMode('existing-codebase');
+    assert.equal(postApplyI18n(dir, [rel]), null);
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('postApplyQuality formats a collapsed landed file in place when the project prettier is reachable', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocq-fmt-'));
+  try {
+    const rel = 'src/Nav.tsx';
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel),
+      'export function Nav(){const [o,setO]=useState(false);return <header><nav><a href="/">H</a></nav><button>{o}</button></header>}\n');
+    const binDir = path.join(dir, 'node_modules', '.bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    // Stand-in for the project's own prettier: `--write <file>` rewrites the
+    // file with formatted (non-collapsed) source; stdin mode prints it.
+    fs.writeFileSync(path.join(binDir, 'prettier'), [
+      '#!/usr/bin/env node',
+      "const fs = require('fs');",
+      "const clean = 'export function Nav() {\\n  return null;\\n}\\n';",
+      'const args = process.argv.slice(2);',
+      "const writeAt = args.indexOf('--write');",
+      'if (writeAt >= 0) fs.writeFileSync(args[writeAt + 1], clean);',
+      'else process.stdout.write(clean);',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    assert.equal(postApplyQuality(dir, [rel]), null);
+    assert.match(fs.readFileSync(path.join(dir, rel), 'utf8'), /return null;/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('post-apply verifier prefers nearest package typecheck script over raw tsconfig fallback', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ packageManager: 'pnpm@9.0.0' }), 'utf8');
@@ -1306,4 +2168,318 @@ test('delegateFromPlan honors opts.roles with senior- prefix normalization', () 
     assert.equal(normalizePlanRole('senior-tester'), 'tester');
     assert.equal(normalizePlanRole('Tester'), 'tester');
   });
+});
+
+test('postApplyStyling rejects Tailwind utilities without a toolchain and passes with one', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocs-'));
+  const write = (rel: string, body: string): string => {
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), body, 'utf8');
+    return rel;
+  };
+  const card = write('src/CourseCard.tsx', [
+    'export function CourseCard() {',
+    '  return (',
+    '    <article className="flex flex-col gap-3 rounded-xl bg-white p-6 shadow-sm">',
+    '      <h2 className="text-lg font-semibold">Course</h2>',
+    '    </article>',
+    '  )',
+    '}',
+  ].join('\n'));
+  // No tailwindcss anywhere: the delegated output styles with an absent system.
+  write('package.json', JSON.stringify({ name: 'fixture', dependencies: {} }));
+  assert.match(String(postApplyStyling(dir, [card])), /Tailwind utilities/);
+
+  // Declaring the dependency legitimizes the same markup.
+  write('package.json', JSON.stringify({ name: 'fixture', devDependencies: { tailwindcss: '4.0.0' } }));
+  assert.equal(postApplyStyling(dir, [card]), null);
+
+  // Plain hand-written class names never trip it, with or without Tailwind.
+  write('package.json', JSON.stringify({ name: 'fixture', dependencies: {} }));
+  const plain = write('src/Plain.tsx', [
+    'export function Plain() {',
+    '  return (',
+    '    <article className="card card-elevated">',
+    '      <h2 className="card-title">Course</h2>',
+    '    </article>',
+    '  )',
+    '}',
+  ].join('\n'));
+  assert.equal(postApplyStyling(dir, [plain]), null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Step-0 honours a contract that pins Tailwind before the manifest exists', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocpin-'));
+  try {
+    const card = 'src/CourseCard.tsx';
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, card), [
+      'export function CourseCard() {',
+      '  return (',
+      '    <article className="flex flex-col gap-3 rounded-xl bg-white p-6 shadow-sm">',
+      '      <h2 className="text-lg font-semibold">Course</h2>',
+      '    </article>',
+      '  )',
+      '}',
+    ].join('\n'), 'utf8');
+
+    // The greenfield Step-0 tree: no manifest anywhere, so the filesystem probe
+    // can only say "no Tailwind" — and a unit's allowlist may never add one.
+    assert.match(String(postApplyStyling(dir, [card])), /Tailwind utilities/);
+
+    // Compile the vite-react contract, whose scaffold outputs include the
+    // Tailwind home. The stack pins Tailwind, so the same markup is correct.
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+    });
+    assert.ok(
+      (architecture.scaffoldOutputs || []).some((output) => output.path.includes('tailwind-config')),
+      'fixture guard: the vite-react contract must scaffold a Tailwind home',
+    );
+    // Step-0 runs after the architect phase, so the compiled contract is on disk
+    // by then — that is where the pinned-stack answer comes from.
+    persistCompiledArchitecture(dir, architecture);
+    assert.equal(
+      postApplyStyling(dir, [card], 'R'),
+      null,
+      'a pinned Tailwind stack must not reject Tailwind-composed output at Step-0',
+    );
+
+    // A run id with no compiled contract falls back to the filesystem answer, so
+    // the original 8co defect stays caught.
+    assert.match(String(postApplyStyling(dir, [card], 'MISSING')), /Tailwind utilities/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode expands frontend scope with compiled locale catalogs and serializes shared catalogs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-'));
+  try {
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home', path: '/', moduleId: 'home-page' }],
+      modules: [
+        { id: 'home-page', name: 'Home', kind: 'page' },
+        { id: 'shared-card', name: 'Shared Card', kind: 'component' },
+      ],
+      i18n: { sourceLocale: 'en', locales: ['en', 'ro'] },
+    });
+    persistCompiledArchitecture(dir, architecture);
+    const home = architecture.modules.find((module) => module.id === 'home-page')!.output;
+    const card = architecture.modules.find((module) => module.id === 'shared-card')!.output;
+    const scope = normalizeOpenCodeI18nScope(dir, 'R', 'frontend', home);
+    assert.deepEqual(scope.injectedCatalogs.sort(), [
+      'packages/i18n/src/locales/en/home.json',
+      'packages/i18n/src/locales/ro/home.json',
+    ]);
+    assert.match(scope.prompt, /Every static React child string uses/);
+    assert.match(scope.prompt, /declared locales: en, ro/);
+    assert.match(scope.prompt, /Never render `\{t\(\.\.\.\)\}` as a React child/i);
+
+    const normalized = normalizePlanI18nUnits(dir, 'R', [
+      { id: 'card-a', role: 'frontend', files: card, task: 'create shared card' },
+      { id: 'card-b', role: 'frontend', files: card, task: 'refine shared card' },
+    ]);
+    assert.equal(normalized.errors.size, 0);
+    assert.ok(normalized.units[0]!.files.includes('locales/en/common.json'));
+    assert.deepEqual(normalized.units[1]!.dependsOn, ['card-a']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('catalog-OWNING units register in serialization: declared same-namespace catalogs get depends edges and pass the overlap policy', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18nown-'));
+  try {
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home', path: '/', moduleId: 'home-page' }],
+      modules: [{ id: 'home-page', name: 'Home', kind: 'page' }],
+      i18n: { sourceLocale: 'en', locales: ['en', 'ro'] },
+    });
+    persistCompiledArchitecture(dir, architecture);
+    const common = architecture.i18n!.catalogs.filter((catalog) => catalog.namespaces.includes('common'));
+    const enCommon = common.find((catalog) => catalog.locales.includes('en'))!.path;
+    const roCommon = common.find((catalog) => catalog.locales.includes('ro'))!.path;
+
+    // 13cl: units DECLARING their catalogs explicitly never registered in
+    // lastUnitByCatalog (only injected paths did), so no depends edge was
+    // added and the overlap policy rejected the whole queue.
+    const normalized = normalizePlanI18nUnits(dir, 'R', [
+      { id: 'i18n-en', role: 'frontend', files: enCommon, task: 'seed english strings' },
+      { id: 'i18n-ro', role: 'frontend', files: roCommon, task: 'seed romanian strings' },
+    ]);
+    assert.equal(normalized.errors.size, 0);
+    assert.deepEqual(normalized.units[1]!.dependsOn, ['i18n-en']);
+    assert.deepEqual(openCodeQueuePolicyViolations(normalized.units), []);
+
+    // Id-less units serialize under the same computed fallback id the errors
+    // map uses — the `if (unit.id)` hole skipped their registration entirely.
+    const anonymous = normalizePlanI18nUnits(dir, 'R', [
+      { role: 'frontend', files: enCommon, task: 'seed english strings' },
+      { role: 'frontend', files: roCommon, task: 'seed romanian strings' },
+    ]);
+    assert.deepEqual(anonymous.units[1]!.dependsOn, ['position-1']);
+
+    // 14cl counter-evidence: only ONE unit touches catalogs → serialization
+    // must not invent any edge (that queue delegated 5/5 in the field).
+    const home = architecture.modules.find((module) => module.id === 'home-page')!.output;
+    const singleOwner = normalizePlanI18nUnits(dir, 'R', [
+      { id: 'home-ui', role: 'frontend', files: home, task: 'compose the home page' },
+      { id: 'seed', role: 'backend', files: 'supabase/seed.sql', task: 'seed demo rows' },
+      { id: 'docs', role: 'docs', files: 'README.md', task: 'draft the readme' },
+    ]);
+    assert.equal(singleOwner.errors.size, 0);
+    for (const unit of singleOwner.units) assert.deepEqual(unit.dependsOn, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('postApplyI18n rejects rendered t()/hardcoded copy and accepts Trans with locale parity', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-verify-'));
+  try {
+    const architecture = compileArchitecture(dir, 'R', {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+    }, {
+      schemaVersion: 1,
+      routes: [{ id: 'home', path: '/', moduleId: 'home-page' }],
+      modules: [{ id: 'home-page', name: 'Home', kind: 'page' }],
+      i18n: { sourceLocale: 'en', locales: ['en', 'ro'] },
+    });
+    persistCompiledArchitecture(dir, architecture);
+    const home = architecture.modules[0]!.output;
+    fs.mkdirSync(path.dirname(path.join(dir, home)), { recursive: true });
+    fs.writeFileSync(path.join(dir, home), [
+      "import { useTranslation } from 'react-i18next';",
+      'export default function Home() {',
+      "  const { t } = useTranslation('home');",
+      '  return <main><h1>Welcome</h1><button>{t("save")}</button></main>;',
+      '}',
+    ].join('\n'));
+    assert.match(String(postApplyI18n(dir, [home], 'R', 'frontend')), /i18n contract|STRUCT_/i);
+
+    fs.writeFileSync(path.join(dir, home), [
+      "import { Trans } from 'react-i18next';",
+      'export default function Home() {',
+      '  return <main><h1><Trans ns="home" i18nKey="welcome">Welcome</Trans></h1></main>;',
+      '}',
+    ].join('\n'));
+    const catalogs = architecture.i18n!.catalogs.filter((catalog) => catalog.namespaces.includes('home'));
+    for (const catalog of catalogs) {
+      fs.mkdirSync(path.dirname(path.join(dir, catalog.path)), { recursive: true });
+      fs.writeFileSync(path.join(dir, catalog.path), JSON.stringify({
+        welcome: catalog.locales.includes('ro') ? 'Bun venit' : 'Welcome',
+      }));
+    }
+    assert.equal(postApplyI18n(
+      dir,
+      [home, ...catalogs.map((catalog) => catalog.path)],
+      'R',
+      'frontend',
+    ), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ad-hoc OpenCode reuses detected catalogs and fails closed when runtime catalogs are unknown', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oci18n-adhoc-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: {
+        react: '19.0.0',
+        vite: '7.0.0',
+        i18next: '25.0.0',
+        'react-i18next': '16.0.0',
+      },
+    }));
+    const source = 'apps/web/src/Home.tsx';
+    const en = 'apps/web/src/i18n/locales/en/common.json';
+    const ro = 'apps/web/src/i18n/locales/ro/common.json';
+    for (const [relative, body] of [
+      [source, 'export const Home = () => <h1><Trans ns="common" i18nKey="welcome">Welcome</Trans></h1>;'],
+      [en, JSON.stringify({ welcome: 'Welcome' })],
+      [ro, JSON.stringify({ welcome: 'Bun venit' })],
+    ] as const) {
+      fs.mkdirSync(path.dirname(path.join(dir, relative)), { recursive: true });
+      fs.writeFileSync(path.join(dir, relative), body);
+    }
+
+    const scope = normalizeOpenCodeI18nScope(dir, '', 'frontend', source);
+    assert.equal(scope.error, null);
+    assert.deepEqual(scope.injectedCatalogs, [en, ro]);
+    assert.match(scope.prompt, /declared locales: en, ro/);
+    assert.equal(postApplyI18n(dir, [source, en, ro], '', 'frontend'), null);
+
+    // A key the in-change <Trans>fallback</Trans> references and a locale is
+    // missing is deterministic to fix: runtime seeds the source-locale fallback
+    // and a marked TODO into the other locales instead of rolling back.
+    fs.writeFileSync(path.join(dir, ro), JSON.stringify({}));
+    assert.equal(postApplyI18n(dir, [source, ro], '', 'frontend'), null);
+    const seededRo = JSON.parse(fs.readFileSync(path.join(dir, ro), 'utf8')) as Record<string, string>;
+    assert.equal(seededRo.welcome, 'TODO(en copy): Welcome');
+
+    // A parity gap with NO in-change fallback to seed from stays a rollback:
+    // the reference-free source cannot authorize inventing catalog content.
+    fs.writeFileSync(path.join(dir, ro), JSON.stringify({}));
+    const plain = 'apps/web/src/Plain.tsx';
+    fs.writeFileSync(path.join(dir, plain), 'export const Plain = () => null;');
+    assert.match(String(postApplyI18n(dir, [plain, ro], '', 'frontend')), /STRUCT_I18N_CATALOG/);
+
+    fs.rmSync(path.join(dir, 'apps'), { recursive: true, force: true });
+    const closed = normalizeOpenCodeI18nScope(dir, '', 'frontend', 'src/Home.tsx');
+    assert.match(closed.error || '', /fails closed/);
+    assert.deepEqual(closed.injectedCatalogs, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Step-0 rejects a module the structural write gate would refuse to edit', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocsize-'));
+  try {
+    const rel = 'src/features/demo-catalog/index.ts';
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    // 9co: Step-0 accepted an oversized data module and the write gate then
+    // refused every edit to it, leaving its owner unable to fix a 5-character
+    // type error.
+    const oversized = `export const rows = [\n${Array.from({ length: 500 }, (_, i) => `  { id: ${i} },`).join('\n')}\n];\n`
+      + Array.from({ length: 60 }, (_, i) => `export const v${i} = ${i};`).join('\n');
+    fs.writeFileSync(path.join(dir, rel), oversized, 'utf8');
+    assert.match(String(postApplySize(dir, [rel])), /logical lines, over the 400 limit/);
+
+    const small = 'src/features/ok/index.ts';
+    fs.mkdirSync(path.join(dir, path.dirname(small)), { recursive: true });
+    fs.writeFileSync(path.join(dir, small), 'export const a = 1;\n', 'utf8');
+    assert.equal(postApplySize(dir, [small]), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

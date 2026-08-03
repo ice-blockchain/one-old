@@ -30,11 +30,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { countSourceFiles } from '../../shared/detection';
+import { sweepAfterTerminalSettlement } from '../../shared/retention';
 import {
   hasActiveRunClaims,
   isMaintenancePhase,
   markMaintenance,
   pruneExpiredPendingClaims,
+  releaseRunClaims,
   runHasEnvironmentBlockedQaOutcome,
   runVerificationState,
   settleTerminalRunLedger,
@@ -141,7 +143,12 @@ function buildSettlement(root: string, state: unknown, atPromptBoundary: boolean
     return { settled: true, terminal: true, runId };
   }
   if (atPromptBoundary && verification === 'nonterminal' && runHasEnvironmentBlockedQaOutcome(root, runId)) {
-    transitionRunStatus(root, runId, { status: 'blocked', outcome: 'environment-blocked' });
+    // Release before settling — a terminal transition fails closed while claims
+    // are still active, and nothing else releases them on the non-verified path.
+    releaseRunClaims(root, runId, 'terminal-environment-blocked');
+    if (transitionRunStatus(root, runId, { status: 'blocked', outcome: 'environment-blocked' })) {
+      sweepAfterTerminalSettlement(root, runId);
+    }
   }
   return {
     settled: atPromptBoundary && verification === 'not-started',

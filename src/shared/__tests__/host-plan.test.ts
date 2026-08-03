@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 
-import { detectHostPlan, detectHostPlanFresh } from '../host-plan';
+import { detectHostPlan, detectHostPlanFresh } from '../host/plan';
 
 const hasSqlite3 = (() => { try { return spawnSync('sqlite3', ['-version']).status === 0; } catch { return false; } })();
 const hasNodeSqlite = (() => { try { require('node:sqlite'); return true; } catch { return false; } })();

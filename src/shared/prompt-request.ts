@@ -2,12 +2,12 @@
 // Host modal/popup-input request specs used by the agent-model gate. Onboarding
 // and API-key intake live exclusively in the local wizard.
 
-export interface PromptOption {
+interface PromptOption {
   id: string;
   label: string;
 }
 
-export interface PromptRequest {
+interface PromptRequest {
   id: string;
   kind: string;
   title: string;
@@ -17,7 +17,7 @@ export interface PromptRequest {
   fallbackText?: string;
 }
 
-export function singleSelectPromptRequest(args: {
+function singleSelectPromptRequest(args: {
   id: string;
   title: string;
   question: string;

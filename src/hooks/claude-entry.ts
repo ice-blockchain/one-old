@@ -14,7 +14,7 @@ import { selectAdapter } from '../adapters/select';
 import { detectHost } from '../shared/host';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { hasValidPreToolPayload, isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
-import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp-agent-tools';
+import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
 import { markCodexHookContext } from '../shared/codex-hook-evidence';
 
 export interface HookOutput { stdout: string; exitCode: number; }

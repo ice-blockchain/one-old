@@ -7,7 +7,7 @@ import * as path from 'path';
 
 import { templatePath } from './stacks/template-path';
 
-export interface PackResult {
+interface PackResult {
   body: string;
   included: string[];
 }
@@ -67,9 +67,23 @@ export function roleDigestName(role: unknown): string {
 }
 
 export function packFixCycleHeader(_cwd: string, role: string, runId: string, spawnIndex: number): PackResult {
-  const fixCycleFile = `.traffic-one/fix-cycles/${runId}/${role}-fix-${spawnIndex - 1}.md`;
+  // Canonical fix-cycle filename carries the FULL role (senior-frontend-fix-1.md).
+  // Orchestrators reading the older `<role>` placeholder prose wrote the
+  // digest-style short name (frontend-fix-1.md) — observed live on 12co, where
+  // an existing findings file was silently skipped and the header degraded to
+  // the no-context branch. Probe both spellings; canonical wins when both exist.
+  const canonicalFile = `.traffic-one/fix-cycles/${runId}/${role}-fix-${spawnIndex - 1}.md`;
+  const legacyFile = `.traffic-one/fix-cycles/${runId}/${roleDigestName(role)}-fix-${spawnIndex - 1}.md`;
+  const onDisk = (rel: string): boolean => (_cwd ? fs.existsSync(path.join(_cwd, rel)) : false);
+  const hasCanonical = onDisk(canonicalFile);
+  const hasLegacy = !hasCanonical && legacyFile !== canonicalFile && onDisk(legacyFile);
+  const fixCycleFile = hasLegacy ? legacyFile : canonicalFile;
   const digestFile = `.traffic-one/digests/${runId}/${roleDigestName(role)}.md`;
-  const hasFixCycleFile = _cwd ? fs.existsSync(path.join(_cwd, fixCycleFile)) : false;
+  const hasFixCycleFile = hasCanonical || hasLegacy;
+  // Runtime-consolidated write-time quality findings (batched instead of
+  // per-write denies); when present, they are part of the same single-turn fix.
+  const qualityFile = `.traffic-one/fix-cycles/${runId}/${role}-quality-findings.md`;
+  const hasQualityFile = _cwd ? fs.existsSync(path.join(_cwd, qualityFile)) : false;
   const lines = [
     `═══ traffic-one — ${role} FIX-CYCLE #${spawnIndex - 1} (run ${runId}) ═══`,
     '',
@@ -79,6 +93,12 @@ export function packFixCycleHeader(_cwd: string, role: string, runId: string, sp
       ? '1. Read the fix-cycle context (exact reviewer findings with file:line):'
       : '1. No fix-cycle context file exists on disk for this replacement. Use ONLY the spawn prompt/new message for exact findings; do not fabricate or read a missing fix-cycle path:',
     `   ${fixCycleFile}`,
+    ...(hasQualityFile
+      ? [
+        '   Also apply ALL accumulated quality findings (batched write-time findings, one list) in the same turn:',
+        `   ${qualityFile}`,
+      ]
+      : []),
     '',
     '2. Recall your prior work from your previous digest:',
     `   ${digestFile}`,

@@ -17,6 +17,10 @@ function withPlugin(fn: (project: string, home: string) => void, plan = 'free'):
   fs.writeFileSync(path.join(plugin, 'skills-catalog', 'project-memory', 'SKILL.md'), '# project-memory\nbody\n', 'utf8');
   fs.mkdirSync(path.join(plugin, 'src', 'modules', 'senior-architect'), { recursive: true });
   fs.writeFileSync(path.join(plugin, 'src', 'modules', 'senior-architect', 'agent.md'), '---\nname: senior-architect\n---\nRequired project-memory baseline\nPLAN_READY\n', 'utf8');
+  const frontendSource = path.resolve(__dirname, '..', '..', '..', 'modules', 'senior-frontend', 'agent.md');
+  const frontendTarget = path.join(plugin, 'src', 'modules', 'senior-frontend', 'agent.md');
+  fs.mkdirSync(path.dirname(frontendTarget), { recursive: true });
+  fs.copyFileSync(frontendSource, frontendTarget);
   fs.mkdirSync(project, { recursive: true });
   fs.mkdirSync(home, { recursive: true });
   const prevRoot = process.env.TRAFFIC_ONE_PLUGIN_ROOT;
@@ -66,6 +70,27 @@ test('writeOpenCodeHostAssets pins paid OpenCode Go models in the user profile',
     const architect = fs.readFileSync(openCodeGlobalAgentPath(project, 'senior-architect'), 'utf8');
     assert.match(architect, /^model: opencode-go\//m);
   }, 'go');
+});
+
+test('generated OpenCode frontend agent carries the mandatory i18n role contract', () => {
+  withPlugin((project) => {
+    fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    const state = {
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      team: { mode: 'subagents', approved: true },
+      performance: { level: 'balanced' },
+    };
+    writeOpenCodeHostAssets(project, state, ['i18n-text']);
+    const frontend = fs.readFileSync(openCodeGlobalAgentPath(project, 'senior-frontend'), 'utf8');
+    assert.match(frontend, /apply `rules\/frontend\/i18n\.md`/);
+    assert.match(frontend, /Every static React child string uses `<Trans>`/);
+    assert.match(frontend, /`t\(\)` is only for string-valued/);
+  });
 });
 
 test('writeOpenCodeHostAssets cleans only generated project agents and preserves user-authored files', () => {
@@ -122,5 +147,22 @@ test('writeOpenCodeHostAssets does not mirror skills and removes a stale generat
 
     assert.equal(fs.existsSync(skillDir), false);
     assert.equal(fs.existsSync(path.join(project, OPENCODE_HOST_SKILLS_REL)), false);
+  });
+});
+
+test('OpenCode lineup excludes frontend for a detected Go API', () => {
+  withPlugin((project) => {
+    fs.writeFileSync(path.join(project, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
+    const state = {
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'other',
+      mobile: { framework: 'none' },
+      team: { mode: 'subagents', approved: true },
+      performance: { level: 'balanced' },
+    };
+    writeOpenCodeHostAssets(project, state, []);
+    assert.equal(fs.existsSync(openCodeGlobalAgentPath(project, 'senior-backend')), true);
+    assert.equal(fs.existsSync(openCodeGlobalAgentPath(project, 'senior-frontend')), false);
   });
 });

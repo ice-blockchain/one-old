@@ -27,7 +27,7 @@ export function loadPreviousManifest(cwd: string): Rec {
   return {};
 }
 
-export function migrateLegacyMemoryFile(cwd: string, fileName: string): boolean {
+function migrateLegacyMemoryFile(cwd: string, fileName: string): boolean {
   const legacyPath = path.join(cwd, '.traffic-one', 'rules', fileName);
   const targetPath = path.join(cwd, '.traffic-one', fileName);
   if (!fs.existsSync(legacyPath) || fs.lstatSync(legacyPath).isDirectory()) return false;
@@ -74,7 +74,7 @@ function migratedRootDocBlock(fileName: string, content: string): string {
   ].join('\n');
 }
 
-export function migrateLegacyRootDocumentationFile(cwd: string, fileName: string): boolean {
+function migrateLegacyRootDocumentationFile(cwd: string, fileName: string): boolean {
   const legacyPath = path.join(cwd, fileName);
   const targetPath = path.join(cwd, '.traffic-one', fileName);
   if (!fs.existsSync(legacyPath) || fs.lstatSync(legacyPath).isDirectory()) return false;
@@ -113,7 +113,7 @@ export function migrateLegacyRootDocumentationFile(cwd: string, fileName: string
   return true;
 }
 
-export function migrateLegacyRootDocumentation(cwd: string): number {
+function migrateLegacyRootDocumentation(cwd: string): number {
   let migrated = 0;
   for (const fileName of LEGACY_ROOT_DOCUMENTATION_FILES) {
     if (migrateLegacyRootDocumentationFile(cwd, fileName)) migrated += 1;
@@ -149,11 +149,89 @@ export function cleanupPrevious(cwd: string, previous: Rec, nextRulePaths: Set<s
   return removed;
 }
 
-export function modeRulesForState(root: string, state: Rec): string[] {
+const NEW_PROJECT_ARCHITECTURE_RULE = 'rules/modes/new-project-architecture.md';
+const DEFAULT_VITE_NEW_PROJECT_SETUP_RULE = 'rules/modes/new-project-setup.md';
+
+// Closed at compile time in this dependency-free materializer layer.
+// profile-rule-routing.test.ts also compares it against the canonical runtime
+// STRUCTURAL_PROFILE_IDS tuple, so either side changing alone fails the suite.
+type StructuralProfileId =
+  | 'vite-react'
+  | 'next-app'
+  | 'next-pages'
+  | 'nuxt'
+  | 'vue'
+  | 'sveltekit'
+  | 'svelte'
+  | 'astro'
+  | 'angular'
+  | 'server-rendered'
+  | 'generic-web'
+  | 'unsupported-hybrid'
+  | 'react-native'
+  | 'swift-native'
+  | 'kotlin-native'
+  | 'flutter-native'
+  | 'backend-only';
+
+export const NEW_PROJECT_PROFILE_RULE_BY_ID: Readonly<Record<StructuralProfileId, string>> = {
+  'vite-react': 'rules/modes/new-project-vite-react.md',
+  'next-app': 'rules/modes/new-project-next-app.md',
+  'next-pages': 'rules/modes/new-project-next-pages.md',
+  nuxt: 'rules/modes/new-project-nuxt.md',
+  vue: 'rules/modes/new-project-vue.md',
+  sveltekit: 'rules/modes/new-project-sveltekit.md',
+  svelte: 'rules/modes/new-project-svelte.md',
+  astro: 'rules/modes/new-project-astro.md',
+  angular: 'rules/modes/new-project-angular.md',
+  'server-rendered': 'rules/modes/new-project-server-rendered.md',
+  'generic-web': 'rules/modes/new-project-generic-web.md',
+  'unsupported-hybrid': 'rules/modes/new-project-unsupported-hybrid.md',
+  'react-native': 'rules/modes/new-project-react-native.md',
+  'swift-native': 'rules/modes/new-project-swift-native.md',
+  'kotlin-native': 'rules/modes/new-project-kotlin-native.md',
+  'flutter-native': 'rules/modes/new-project-flutter-native.md',
+  'backend-only': 'rules/modes/new-project-backend-only.md',
+};
+
+function profileRuleFor(profileId?: string): string | null {
+  if (
+    !profileId
+    || !Object.prototype.hasOwnProperty.call(NEW_PROJECT_PROFILE_RULE_BY_ID, profileId)
+  ) {
+    return null;
+  }
+  return NEW_PROJECT_PROFILE_RULE_BY_ID[profileId as StructuralProfileId];
+}
+
+function defaultViteNewProject(state: Rec, profileId?: string): boolean {
+  const defaultStack = state.stack === 'default' || state.stack === 'react-realtime-monorepo';
+  return defaultStack && profileId === 'vite-react';
+}
+
+function existingRulePaths(root: string, relPaths: readonly string[]): string[] {
+  return relPaths.filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
+}
+
+/**
+ * Blocking mode rules. The new-project spine is universal and exactly one
+ * profile rule is selected from the immutable runtime capability profile.
+ * Missing/unknown profiles fail closed to the spine instead of guessing.
+ */
+export function modeRulesForState(root: string, state: Rec, profileId?: string): string[] {
   const mode = state && typeof state.mode === 'string' ? state.mode : '';
   if (!mode) return [];
   const relPath = `rules/modes/${mode}.md`;
   if (!fs.existsSync(path.join(root, templatePath(relPath)))) return [];
+  if (mode === 'new-project') {
+    const profileRule = profileRuleFor(profileId);
+    return [
+      relPath,
+      ...(profileRule && fs.existsSync(path.join(root, templatePath(profileRule)))
+        ? [profileRule]
+        : []),
+    ];
+  }
   // Large mode rules are split into on-demand slices named `<mode>-<topic>.md`
   // next to the spine; materialize whatever slices exist so the spine's
   // pointers resolve inside the project.
@@ -167,4 +245,19 @@ export function modeRulesForState(root: string, state: Rec): string[] {
     // best effort — the spine alone still materializes
   }
   return [relPath, ...slices];
+}
+
+/**
+ * Every new project receives the universal architecture/control-plane index.
+ * The detailed setup checklist remains exclusive to the default Vite profile.
+ */
+export function modeReferenceRulesForState(root: string, state: Rec, profileId?: string): string[] {
+  const mode = state && typeof state.mode === 'string' ? state.mode : '';
+  if (mode !== 'new-project') return [];
+  return existingRulePaths(root, [
+    NEW_PROJECT_ARCHITECTURE_RULE,
+    ...(defaultViteNewProject(state, profileId)
+      ? [DEFAULT_VITE_NEW_PROJECT_SETUP_RULE]
+      : []),
+  ]);
 }

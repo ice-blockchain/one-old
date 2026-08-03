@@ -53,7 +53,7 @@ function channelRel(args: readonly string[]): string {
   return WINDSURF_HOST_CONFIG_DIR_REL;
 }
 
-export function windsurfConfigDir(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = []): string {
+function windsurfConfigDir(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = []): string {
   const explicit = argValue(args, '--config-dir');
   if (explicit) return path.resolve(explicit);
   return path.join(homeDir(env), channelRel(args));

@@ -49,6 +49,20 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
     : null;
   const pluginExplicitlyDeclined = pluginUse?.enabled === false;
 
+  if (project.legacyCapabilityMigration.status === 'auto-correctable') {
+    findings.push({
+      severity: 'info',
+      code: 'LEGACY_CUSTOM_BACKEND_SAFE_MIGRATION',
+      message: 'Legacy custom-backend + react-vite state has no frontend artifacts. Runtime will safely normalize frontend to none at the next parent SessionStart; Doctor remains read-only.',
+    });
+  } else if (project.legacyCapabilityMigration.status === 'ambiguous') {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'LEGACY_CUSTOM_BACKEND_AMBIGUOUS',
+      message: `Legacy custom-backend + react-vite state was not changed: ${project.legacyCapabilityMigration.message || 'frontend evidence is ambiguous'}. Confirm the intended surface after the active run settles; no mid-run migration is allowed.`,
+    });
+  }
+
   if (sessionDiagnostics) {
     if (sessionDiagnostics.found === false) {
       findings.push({

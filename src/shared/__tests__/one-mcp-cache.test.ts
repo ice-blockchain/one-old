@@ -24,12 +24,13 @@ import {
   readOneMcpCache,
   writeOneMcpConfigCacheEntry,
   type OneMcpConfigCacheEntry,
-} from '../one-mcp-cache';
+} from '../one-mcp/cache';
 
 function withCache(fn: (file: string, env: NodeJS.ProcessEnv, dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-one-mcp-cache-'));
-  const file = path.join(dir, 'one-mcp.json');
-  const env = { TRAFFIC_ONE_MCP_CACHE_PATH: file } as NodeJS.ProcessEnv;
+  const file = path.join(dir, 'traffic-one', 'one-mcp.json');
+  const env = { XDG_STATE_HOME: dir } as NodeJS.ProcessEnv;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   try {
     fn(file, env, dir);
   } finally {
@@ -41,8 +42,9 @@ async function withCacheAsync(
   fn: (file: string, env: NodeJS.ProcessEnv, dir: string) => Promise<void>,
 ): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-one-mcp-cache-'));
-  const file = path.join(dir, 'one-mcp.json');
-  const env = { TRAFFIC_ONE_MCP_CACHE_PATH: file } as NodeJS.ProcessEnv;
+  const file = path.join(dir, 'traffic-one', 'one-mcp.json');
+  const env = { XDG_STATE_HOME: dir } as NodeJS.ProcessEnv;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   try {
     await fn(file, env, dir);
   } finally {
@@ -343,22 +345,21 @@ test('an old empty One MCP cache lock left by an interrupted release is recovere
 });
 
 test('concurrent One MCP cache writers preserve different host entries', async () => {
-  await withCacheAsync(async (file) => {
-    const modulePath = path.resolve(__dirname, '..', 'one-mcp-cache.ts');
+  await withCacheAsync(async (file, env, dir) => {
+    const modulePath = path.resolve(__dirname, '..', 'one-mcp', 'cache.ts');
     const childSource = [
       `const { writeOneMcpConfigCacheEntry } = require(${JSON.stringify(modulePath)});`,
       'const host = process.argv[1];',
-      'const file = process.argv[2];',
-      'const version = Number(process.argv[3]);',
+      'const version = Number(process.argv[2]);',
       `const { oneMcpPayloadFingerprint } = require(${JSON.stringify(path.resolve(__dirname, '..', 'one-mcp', 'index.ts'))});`,
       'const payload = { tiers: { high: [`${host}-high`], balanced: [`${host}-balanced`], low: [`${host}-low`], auto: [`${host}-auto`] } };',
       'const entry = { endpoint: "https://example.test/public-mcp", configName: `traffic_one_${host}_plugin_ai_model_configuration`, decoderVersion: 2, version, createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-17T00:00:00.000Z", payload, payloadFingerprint: oneMcpPayloadFingerprint(payload) };',
-      'for (let i = 0; i < 20; i += 1) writeOneMcpConfigCacheEntry(host, entry, { TRAFFIC_ONE_MCP_CACHE_PATH: file });',
+      'for (let i = 0; i < 20; i += 1) writeOneMcpConfigCacheEntry(host, entry);',
     ].join(' ');
     const run = (host: HostModelKey, version: number) => new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, ['--import', 'tsx', '-e', childSource, host, file, String(version)], {
+      const child = spawn(process.execPath, ['--import', 'tsx', '-e', childSource, host, String(version)], {
         cwd: path.resolve(__dirname, '../../..'),
-        env: { ...process.env },
+        env: { ...process.env, XDG_STATE_HOME: dir },
         stdio: 'pipe',
       });
       let stderr = '';
@@ -368,7 +369,6 @@ test('concurrent One MCP cache writers preserve different host entries', async (
     });
 
     await Promise.all([run('codex', 1), run('cursor', 2)]);
-    const env = { TRAFFIC_ONE_MCP_CACHE_PATH: file } as NodeJS.ProcessEnv;
     assert.equal(readOneMcpConfigCacheEntry('codex', env)?.version, 1);
     assert.equal(readOneMcpConfigCacheEntry('cursor', env)?.version, 2);
     assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((name) => name.includes('.tmp')), []);

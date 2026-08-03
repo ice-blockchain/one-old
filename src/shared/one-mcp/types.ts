@@ -39,20 +39,20 @@ export interface OneMcpFullConfigOutcome {
   readonly payloadFingerprint: string;
 }
 
-export interface OneMcpUpToDateOutcome {
+interface OneMcpUpToDateOutcome {
   readonly kind: 'up-to-date';
   readonly version: number;
 }
 
-export interface OneMcpConfigNotFoundOutcome {
+interface OneMcpConfigNotFoundOutcome {
   readonly kind: 'config-not-found';
 }
 
-export interface OneMcpTemporaryErrorOutcome {
+interface OneMcpTemporaryErrorOutcome {
   readonly kind: 'temporary-error';
 }
 
-export interface OneMcpInvalidResponseOutcome {
+interface OneMcpInvalidResponseOutcome {
   readonly kind: 'invalid-response';
   readonly reason: OneMcpInvalidResponseReason;
   /** Valid server row version observed before the remaining body was rejected. */

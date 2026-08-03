@@ -72,16 +72,25 @@ function styleObjectIsStatic(objText: string): boolean {
   return sawEntry;
 }
 
+// File-integrity check, NOT an architecture opinion: SVG text in a bitmap path
+// is a broken asset in every project. Split out so the existing-codebase
+// stand-down in the plan-write dispatcher can keep it while the prescribed
+// stack/layout checks below stand down.
+export function assetExtensionMismatchViolations(filePath: string, content: string, block: Block): string[] {
+  if (/\.(png|jpe?g|webp|avif)$/i.test(filePath) && /^\s*(?:<\?xml\b|<svg\b)/i.test(content)) {
+    return [block('asset-extension-mismatch',
+      'Asset gate: do not write SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. Save SVG content with a `.svg` extension, or generate/provide a real bitmap asset for bitmap extensions.')];
+  }
+  return [];
+}
+
 // Collect plan gate violations for a single file write/edit. `isNative`
 // selects React Native vs web style/placement rules.
 export function planStaticViolations(filePath: string, content: string, isNative: boolean, block: Block): string[] {
   const violations: string[] = [];
   const INLINE_STYLE = 'style={' + '{';
 
-  if (/\.(png|jpe?g|webp|avif)$/i.test(filePath) && /^\s*(?:<\?xml\b|<svg\b)/i.test(content)) {
-    violations.push(block('asset-extension-mismatch',
-      'Asset gate: do not write SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. Save SVG content with a `.svg` extension, or generate/provide a real bitmap asset for bitmap extensions.'));
-  }
+  violations.push(...assetExtensionMismatchViolations(filePath, content, block));
 
   if (/(apps\/[^/]+\/)?src\/pages\/.*\.(service|store|hook|query|slice|api)\.(ts|tsx)$/.test(filePath)) {
     violations.push(block('pages-service-files',
@@ -93,7 +102,31 @@ export function planStaticViolations(filePath: string, content: string, isNative
       'Expo Router route files must stay thin. Service/store/hook/slice files belong in src/features/, src/services/, or packages/*.'));
   }
 
-  if (/(apps\/[^/]+\/)?src\/[A-Z][a-zA-Z]+\.(tsx|ts)$/.test(filePath)) {
+  // `src/App.tsx` is exempt: it is the canonical root component of every Vite
+  // (and src-layout RN/Expo) template — index.html → main.tsx → App. Denying it
+  // forces a non-standard `src/components/App.tsx` relocation (observed
+  // 8c-codex). Every other capitalized module directly in src/ stays gated.
+  //
+  // `packages/**` is exempt too: this is an APP-source placement rule, and a
+  // workspace package root is where the message itself points ("or
+  // packages/ui/*"). Unanchored, the pattern denied both the destination it
+  // recommends (`packages/ui/src/Button.tsx`) and the backend service modules
+  // the RUNTIME compiles into an assignment — observed 1cu-cursor:
+  // `packages/api-client/src/AuthAPIService.ts` was in senior-backend's
+  // compiled `assignments.json` scope and denied 4× by this line, which ended
+  // the run with zero backend files. A gate must never deny a path runtime
+  // itself owns.
+  //
+  // A `.ts` module cannot contain JSX, so a PascalCase `.ts` directly in `src/`
+  // is a service/store/type module far more often than a component — and both
+  // supabase (`packages/api-client/src/AuthAPIService.ts`) and the generic TS
+  // backend (`services/api/src/AuthAPIService.ts`) compile exactly that shape.
+  // Require a real component signal there; `.tsx` stays gated on path alone.
+  const componentSignal = /\.tsx$/.test(filePath) || /(?:React\.)?createElement\s*\(/.test(content);
+  if (componentSignal
+    && !/(?:^|\/)packages\//.test(filePath)
+    && /(apps\/[^/]+\/)?src\/[A-Z][a-zA-Z]+\.(tsx|ts)$/.test(filePath)
+    && !/(?:^|\/)src\/App\.(?:tsx|ts)$/.test(filePath)) {
     const target = isNative
       ? 'src/components/, src/features/<name>/components/, or packages/ui-native/*'
       : 'src/components/, src/features/<name>/components/, or packages/ui/*';
@@ -108,8 +141,13 @@ export function planStaticViolations(filePath: string, content: string, isNative
       .map((match) => match[1])
       .filter((feature) => feature !== current);
     if (cross.length > 0) {
+      // Remedies must be writable in the run's compiled scope: packages/utils
+      // does not exist in most compiled profiles (observed 3co — the message
+      // recommended it while the only frontend-writable shared homes were
+      // packages/ui and src/components/), and domain types/state usually live
+      // in the backend-owned api-client package that any feature may import.
       violations.push(block('cross-feature-import',
-        `Cross-feature import detected (${current} -> ${cross}). Share via packages/ui, packages/ui-native, packages/utils, or a feature-agnostic store slice.`,
+        `Cross-feature import detected (${current} -> ${cross}). Never import one feature from another. Import shared domain types/data contracts from the api-client workspace package; put shared UI in src/components/ or packages/ui (packages/ui-native for native) when your allowlist includes it. If the shared piece has no writable home in your compiled scope, ask for the owning \`service\`/\`store\`/\`component\` module via ArchitectureInputV1 instead of widening imports.`,
         { CURRENT: current, CROSS: String(cross) }));
     }
   }
@@ -123,13 +161,22 @@ export function planStaticViolations(filePath: string, content: string, isNative
   // under app/ (never matched here), and web page components under src/pages/
   // are loaded via React.lazy, whose contract is a default export — denying
   // them forces the `.then((m) => ({ default: m.X }))` shim (observed 8c).
+  //
+  // The compiled FEATURE entry (`features/<kebab>/index.tsx`, .tsx since the
+  // kind stopped compiling to a JSX-illegal `.ts`) is deliberately NOT a third
+  // exemption. Nothing lazy-loads it by the default-export contract — routes
+  // compile to the pages root — and every other `.tsx` under `features/` has
+  // always required a named export, so exempting exactly the entry would be
+  // the inconsistency. The remedy is a one-token rename inside the same file,
+  // never a relocation, and the mode rules state the convention next to the
+  // path they print. See `rules/frontend/react/core.md` ("Absolute rules").
   if (
     filePath.endsWith('.tsx')
     && /(src|packages\/(ui|ui-native))\/(components|features)\//.test(filePath)
     && /^export default /m.test(content)
   ) {
     violations.push(block('default-export',
-      'Use named exports only for reusable components. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.'));
+      'Use named exports only for reusable components — including the compiled feature entry `features/<name>/index.tsx`, which is a module entry, not a route file. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.'));
   }
 
   if (isNative) {

@@ -12,7 +12,7 @@ import { isKnownStack } from '../config';
 import { postWriteIncompleteWarning } from '../directives';
 import { isNonProjectRoot } from '../authoring-root';
 import { ensureRunnerShims } from '../runner-shims';
-import { isUnclaimedWorkspaceSubPackage } from '../hook-paths';
+import { isUnclaimedWorkspaceSubPackage } from '../hook/paths';
 import { detectMode } from '../detection';
 import { STACKS } from '../stacks';
 import { nowIsoNoMs } from '../text';
@@ -48,7 +48,7 @@ export interface MaterializeOutcome {
   result: MaterializeResult | null;
 }
 
-export interface ConvergeOptions {
+interface ConvergeOptions {
   trigger?: string;
   // Fire-and-forget one-mcp first-look reporter; injected so shared/ stays
   // free of the runner layer. Defaults to a no-op.

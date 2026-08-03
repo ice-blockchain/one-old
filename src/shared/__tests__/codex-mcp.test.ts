@@ -429,13 +429,12 @@ test('Codex MCP registration recovers an old empty lock left by an interrupted r
   });
 });
 
-test('Codex One MCP removal restores surrounding bytes and honors endpoint overrides', () => {
+test('Codex One MCP removal restores surrounding bytes for the fixed endpoint', () => {
   withCodexHome((_home, env) => {
-    env.TRAFFIC_ONE_MCP_PUBLIC_ENDPOINT = 'https://edge.example.test/public-mcp';
     const cfgPath = codexConfigPath(env);
     fs.writeFileSync(cfgPath, '# before\nmodel = "gpt-5"\n', 'utf8');
     assert.equal(ensureCodexOneMcpServerRegistered(env), 'registered');
-    assert.match(fs.readFileSync(cfgPath, 'utf8'), /edge\.example\.test/);
+    assert.match(fs.readFileSync(cfgPath, 'utf8'), /supabase\.co/);
     assert.equal(removeCodexOneMcpServerRegistration(env), 'removed');
     assert.equal(fs.readFileSync(cfgPath, 'utf8'), '# before\nmodel = "gpt-5"\n');
     assert.equal(removeCodexOneMcpServerRegistration(env), 'absent');

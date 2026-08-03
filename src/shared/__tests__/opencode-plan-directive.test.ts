@@ -10,7 +10,7 @@ import {
   buildPostPlanReadyOpenCodeDirective,
   buildPreSpawnOpenCodeDirective,
   shouldWaitForOpenCodePlanBatch,
-} from '../opencode-plan-directive';
+} from '../opencode-plan/directive';
 import { markOpenCodePlanBatchComplete } from '../opencode-roles';
 import { hostScopedPerformancePrefs } from '../../test-support/host-prefs';
 

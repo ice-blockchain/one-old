@@ -7,6 +7,7 @@ import * as path from 'path';
 import {
   buildOpenCodeQueue,
   hasRunningOpenCodeUnits,
+  implicitProducerDependencies,
   openCodeQueuePolicyViolations,
   readOpenCodeQueue,
   readOpenCodeUnitStatuses,
@@ -14,6 +15,8 @@ import {
   reconcileStaleRunningUnits,
   recordOpenCodeFallback,
   recordOpenCodeUnitStatus,
+  statusFromDelegateAction,
+  writeOpenCodeQueue,
 } from '../opencode-queue';
 import { parsePlanDelegationUnits } from '../opencode-roles';
 
@@ -35,8 +38,7 @@ test('readOpenCodeQueue + readOpenCodeUnitStatuses round-trip queue and status f
       '<!-- opencode-delegate:end -->',
     ].join('\n'));
     const queue = buildOpenCodeQueue(cwd, runId, units);
-    fs.mkdirSync(path.join(cwd, '.traffic-one', 'runs', runId), { recursive: true });
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-queue.json'), `${JSON.stringify(queue, null, 2)}\n`, 'utf8');
+    writeOpenCodeQueue(cwd, queue);
     recordOpenCodeUnitStatus(cwd, runId, {
       id: 'ui-card',
       role: 'frontend',
@@ -51,6 +53,55 @@ test('readOpenCodeQueue + readOpenCodeUnitStatuses round-trip queue and status f
     assert.equal(statuses.length, 1);
     assert.equal(statuses[0]?.status, 'running');
     assert.equal(hasRunningOpenCodeUnits(cwd, runId), true);
+    assert.deepEqual(
+      fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId))
+        .filter((name) => name.endsWith('.tmp') || name.endsWith('.lock')),
+      [],
+    );
+  });
+});
+
+test('recordOpenCodeUnitStatus folds repeated terminal writes into one attempt and keeps the model', () => {
+  withRunDir((cwd, runId) => {
+    const unit = { id: 'responsive-navigation', role: 'frontend', touched: ['src/Nav.tsx'] };
+    // The exact 6co sequence for one successful unit: the delegate records the
+    // terminal status, the batch records it again 2 ms later, and batch
+    // finalization reconciles it a third time without model metadata.
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'running', action: 'running', model: null, updatedAt: '2026-07-29T09:18:50.380Z',
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'delegated', action: 'delegated', model: 'opencode/deepseek-v4-flash-free', updatedAt: '2026-07-29T09:22:09.278Z',
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'delegated', action: 'delegated', model: 'opencode/deepseek-v4-flash-free', updatedAt: '2026-07-29T09:22:09.280Z',
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'delegated', action: 'delegated', model: null, updatedAt: '2026-07-29T09:33:12.688Z',
+    });
+
+    const [status] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.deepEqual(
+      (status?.attempts || []).map((attempt) => attempt.status),
+      ['running', 'delegated'],
+      'one terminal transition must record one attempt',
+    );
+    assert.equal(status?.attempts?.[1]?.model, 'opencode/deepseek-v4-flash-free');
+    assert.equal(status?.attempts?.[1]?.updatedAt, '2026-07-29T09:22:09.278Z');
+    assert.equal(status?.model, 'opencode/deepseek-v4-flash-free', 'reconciliation must not blank the model');
+
+    // A genuine retry is still a new attempt — the cap protects real history.
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'running', action: 'running', model: null, updatedAt: '2026-07-29T09:40:00.000Z',
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      ...unit, status: 'failed', action: 'failed', model: 'opencode/other', error: 'boom', updatedAt: '2026-07-29T09:41:00.000Z',
+    });
+    const [retried] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.deepEqual(
+      (retried?.attempts || []).map((attempt) => attempt.status),
+      ['running', 'delegated', 'running', 'failed'],
+    );
   });
 });
 
@@ -79,6 +130,53 @@ test('recordOpenCodeUnitStatus keeps best status and appends attempts', () => {
   });
 });
 
+test('recordOpenCodeUnitStatus caps attempt history and stores a repeated error once', () => {
+  withRunDir((cwd, runId) => {
+    const error = `delegation denied: ${'x'.repeat(400)}`;
+    // Real retries alternate running/terminal; consecutive identical terminals
+    // are duplicate reporting and now fold into one attempt, so the cap is
+    // exercised with the shape it actually protects.
+    for (let index = 0; index < 12; index += 1) {
+      recordOpenCodeUnitStatus(cwd, runId, {
+        id: 'ui-card',
+        role: 'frontend',
+        status: 'running',
+        action: 'running',
+        touched: [],
+      });
+      recordOpenCodeUnitStatus(cwd, runId, {
+        id: 'ui-card',
+        role: 'frontend',
+        status: 'failed',
+        action: 'failed',
+        failureKind: 'gate-denied',
+        error,
+        touched: [],
+      });
+    }
+    const [status] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.equal(status?.error, error, 'full error lives once at the entry level');
+    assert.equal(status?.attempts?.length, 8, 'attempt history is capped');
+    const materialized = (status?.attempts || []).filter((attempt) => (
+      attempt.error && attempt.error !== '(unchanged)'
+    ));
+    assert.equal(materialized.length, 0, 'repeated error is never re-stored in capped history');
+    assert.ok((status?.attempts || []).every((attempt) => !('touched' in attempt)));
+
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'ui-card',
+      role: 'frontend',
+      status: 'failed',
+      action: 'failed',
+      failureKind: 'gate-denied',
+      error: 'a different failure',
+      touched: [],
+    });
+    const [after] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.equal(after?.attempts?.[after.attempts.length - 1]?.error, 'a different failure');
+  });
+});
+
 test('recordOpenCodeFallback annotates units without appending attempts', () => {
   withRunDir((cwd, runId) => {
     recordOpenCodeUnitStatus(cwd, runId, {
@@ -96,6 +194,27 @@ test('recordOpenCodeFallback annotates units without appending attempts', () => 
     assert.equal(after?.fallback?.status, 'paid_spawned');
     assert.equal(after?.fallback?.agentId, 'agent-1');
     assert.equal(after?.attempts?.length, 1);
+  });
+});
+
+// A parallel-mode paid spawn records a fallback for its role WHILE the free
+// unit is still executing — flipping that live row destroyed its file
+// reservation the instant the flag's designed use case fired (adversarial
+// review). Live rows survive; dead ones still flip.
+test('recordOpenCodeFallback never flips a VERIFIABLY RUNNING unit; a dead running row still falls back', () => {
+  withRunDir((cwd, runId) => {
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'live-unit', role: 'frontend', status: 'running', action: 'running', touched: [],
+      allowedFiles: ['src/features/news/**'],
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'dead-unit', role: 'frontend', status: 'running', action: 'running', touched: [],
+      updatedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+    recordOpenCodeFallback(cwd, runId, 'senior-frontend', { status: 'paid_spawned', agentId: 'agent-2' });
+    const statuses = readOpenCodeUnitStatuses(cwd, runId);
+    assert.equal(statuses.find((s) => s.id === 'live-unit')?.status, 'running', 'a live executor keeps its row (and its reservation)');
+    assert.equal(statuses.find((s) => s.id === 'dead-unit')?.status, 'fallback_required', 'a dead running row still records the fallback');
   });
 });
 
@@ -129,6 +248,30 @@ test('openCodeQueuePolicyViolations: a docs-only unit documenting test commands 
     '<!-- opencode-delegate:end -->',
   ].join('\n'));
   assert.deepEqual(openCodeQueuePolicyViolations(units), []);
+});
+
+// Regression (4cl, 1.0.28): 4/5 units invented helper paths no module compiles
+// (src/lib/format.ts) — the rejection must PRINT real in-scope paths so the
+// architect stops guessing, and must say the files are unwritable for everyone.
+test('openCodeQueuePolicyViolations: out-of-scope unit rejection lists real in-scope files for the role', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: format-helpers | role: frontend | kind: pure-helper | files: apps/web/src/lib/format.ts | task: pure formatting helpers',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  const errors = openCodeQueuePolicyViolations(units, {
+    assignments: [{
+      role: 'senior-frontend',
+      scope: {
+        include: ['apps/web/src/App.tsx', 'apps/web/src/features/course-catalog/index.ts', 'README.md'],
+        exclude: [],
+      },
+    }],
+  });
+  const scopeError = errors.find((error) => /outside frontend's assignment scope/.test(error));
+  assert.ok(scopeError, errors.join(' | '));
+  assert.match(scopeError as string, /apps\/web\/src\/features\/course-catalog\/index\.ts/);
+  assert.match(scopeError as string, /NOT writable by the implementers either/);
 });
 
 test('openCodeQueuePolicyViolations: a non-docs unit mentioning tests still needs test paths in its allowlist', () => {
@@ -253,4 +396,108 @@ test('reconcileStaleRunningUnits marks long-running units failed', () => {
     assert.match(reconciled[0]?.error || '', /stale running status reconciled/);
     assert.equal(hasRunningOpenCodeUnits(cwd, runId), false);
   });
+});
+
+// The 16co news-fixtures shape: a `kind: feature` unit whose allowlist is ONLY
+// the barrel. Every source file is capped at 400 logical lines by the compiled
+// lint rule, so a barrel-only allowlist turns the unit into a coin flip on model
+// verbosity — 16co lost 8 minutes to a 461-line barrel and the failure cascaded
+// through the batch. The role owns the feature DIRECTORY, so requiring a listed
+// sibling costs nothing.
+test('openCodeQueuePolicyViolations rejects a feature unit that allows only its barrel', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news-editorial/index.tsx | task: Add the bounded typed English News fixtures and pure selectors.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  const errors = openCodeQueuePolicyViolations(units);
+  assert.ok(
+    errors.some((error) => /allows ONLY the barrel/.test(error)),
+    JSON.stringify(errors),
+  );
+  // The named remedy must be a real sibling path, not prose.
+  assert.ok(errors.some((error) => error.includes('apps/web/src/features/news-editorial/selectors.ts')));
+});
+
+test('openCodeQueuePolicyViolations accepts a feature unit with a listed sibling, and non-feature single files', () => {
+  // Negative row 1: barrel + one sibling — the exact remedy — passes.
+  const withSibling = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news-editorial/index.tsx, apps/web/src/features/news-editorial/selectors.ts | task: Add the typed News fixtures and pure selectors.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(withSibling), []);
+
+  // Negative row 2: a single-file unit that is NOT a feature barrel (a page)
+  // stays legal — the check is about the barrel-monolith shape, not about
+  // single-file units in general.
+  const page = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: news-listing | role: frontend | kind: page | files: apps/web/src/pages/NewsListingPage.tsx | task: Build the listing presentation.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(page), []);
+});
+
+// The kind-derived producer edge, in isolation. The 16co queue declared
+// `dependsOn: []` on all three units because their allowlists were disjoint —
+// the overlap rule needs intersecting paths and an import intersects nothing.
+test('implicitProducerDependencies derives the feature -> page edge the plan left out', () => {
+  const queue = buildOpenCodeQueue('', '', parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news-editorial/index.tsx, apps/web/src/features/news-editorial/selectors.ts | task: Add the typed News fixtures and pure selectors.',
+    '- id: news-listing | role: frontend | kind: page | files: apps/web/src/pages/NewsListingPage.tsx | task: Build the listing presentation.',
+    '- id: news-article | role: senior-frontend | kind: page | files: apps/web/src/pages/NewsArticlePage.tsx | task: Build the article presentation.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n')));
+  const edges = implicitProducerDependencies(queue.units);
+  assert.deepEqual(edges.get('news-listing'), ['news-fixtures']);
+  // `senior-frontend` and `frontend` are the same shard.
+  assert.deepEqual(edges.get('news-article'), ['news-fixtures']);
+  assert.equal(edges.has('news-fixtures'), false, 'a producer never depends on itself');
+});
+
+test('implicitProducerDependencies stays inert on shapes it must not touch', () => {
+  const edgesFor = (lines: string[]): Map<string, string[]> => implicitProducerDependencies(
+    buildOpenCodeQueue('', '', parsePlanDelegationUnits([
+      '<!-- opencode-delegate:start -->',
+      ...lines,
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'))).units,
+  );
+
+  // Negative row 1: a producer queued AFTER its consumer is not a prerequisite.
+  assert.equal(edgesFor([
+    '- id: news-article | role: frontend | kind: page | files: apps/web/src/pages/NewsArticlePage.tsx | task: Build the article presentation.',
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news/index.tsx, apps/web/src/features/news/selectors.ts | task: Add fixtures and selectors.',
+  ]).size, 0);
+
+  // Negative row 2: cross-role pairs are never inferred.
+  assert.equal(edgesFor([
+    '- id: api-service | role: backend | kind: service | files: packages/api-client/src/index.ts | task: Add the typed client.',
+    '- id: news-article | role: frontend | kind: page | files: apps/web/src/pages/NewsArticlePage.tsx | task: Build the article presentation.',
+  ]).size, 0);
+
+  // Negative row 3: an already-DECLARED edge is not duplicated, so the runner
+  // keeps reporting the plan's own field rather than an inferred one.
+  assert.equal(edgesFor([
+    '- id: news-fixtures | role: frontend | kind: feature | files: apps/web/src/features/news/index.tsx, apps/web/src/features/news/selectors.ts | task: Add fixtures and selectors.',
+    '- id: news-article | role: frontend | kind: page | depends: news-fixtures | files: apps/web/src/pages/NewsArticlePage.tsx | task: Build the article presentation.',
+  ]).size, 0);
+
+  // Negative row 4: units with no `kind:` (the majority of legacy queues) are
+  // outside the vocabulary entirely — no edge in either direction.
+  assert.equal(edgesFor([
+    '- id: seed | role: backend | files: supabase/seed.sql | task: Add seed rows.',
+    '- id: readme | role: docs | files: README.md | task: Draft the readme.',
+  ]).size, 0);
+});
+
+// The inferred skip must be readable as a SKIP, not folded into `failed`, or
+// the batch finalizer would count a zero-cost skip as a delegation failure.
+test('statusFromDelegateAction maps the inferred producer skip to skipped', () => {
+  assert.equal(statusFromDelegateAction('skipped-producer-failed'), 'skipped');
+  assert.equal(statusFromDelegateAction('skipped-dependency-failed'), 'skipped');
+  // Negative row: an unrelated action is still a failure.
+  assert.equal(statusFromDelegateAction('failed', 'boom'), 'failed');
 });

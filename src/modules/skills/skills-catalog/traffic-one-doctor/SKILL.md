@@ -135,17 +135,22 @@ traffic-one doctor — summary: ACTION_NEEDED
 Findings:
   1. [fix-needed] GITNEXUS_IN_OLD_NVM_NODE
      `gitnexus` on PATH lives in old nvm Node folder; will crash on invoke.
-     Fix: `npm install -g gitnexus` from a Node 22 shell.
+     The onboarding hook installs a managed copy when the provider is
+     selected — no user command needed.
 
   2. [info] NODE_LT22_BUT_V22_AVAILABLE
      Active Node is 20 but nvm v22 (v22.22.2) is installed. The runner
      uses the absolute v22 path; no action required.
 
-Next step: shall I run `npm install -g gitnexus` via the Bash tool?
+Next step: none — both findings resolve themselves on the next hook run.
 ```
 
 Always wait for user confirmation before running any `recommendedCommand` —
-the Bash tool's permission prompt is the consent gate.
+the Bash tool's permission prompt is the consent gate. Never invent one: a
+finding without a `recommendedCommand` is not an invitation to propose a global
+`npm install -g` / `pipx install`. Traffic One installs every managed tool into
+`~/.traffic-one/toolchains/` itself, and a hand-run global install lands outside
+that root, where uninstall cannot reach it.
 
 ## Must-not-do
 

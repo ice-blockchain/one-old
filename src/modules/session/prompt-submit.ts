@@ -10,13 +10,18 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
-import { detectMode, isLikelyCodingPrompt, isRuntimeControlPrompt, promptHasStackSignal } from '../../shared/detection';
+import { detectMode, detectStackFromCodebase, isLikelyCodingPrompt, isRuntimeControlPrompt, promptHasStackSignal } from '../../shared/detection';
+import {
+  techClassifyHints,
+  techClassifyRequiredCompactReason,
+  techClassifyRequiredReason,
+} from '../../shared/onboarding-server/tech-classify-setup';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { resolveProjectRoot } from '../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
-import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
+import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingSetTechCommandTemplate, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
@@ -27,17 +32,20 @@ import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath } from '../../shared/state';
+import { isUninstallTrafficOneIntent, uninstallDirective } from '../../shared/uninstall-intent';
+import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
-import { obj } from '../../shared/obj';
+import { uiLibraryFromPrompt } from '../../shared/capabilities';
 import { firstEmitThisSession } from '../../shared/once';
-import { commitWizardLinksShown } from '../../shared/onboarding-server/wizard-links';
+import { localFallbackLine, localFallbackSection, type LocalFallback } from '../../shared/onboarding-server/wizard-links';
 import { maintenanceTriageDirective, unresolvedRunDirective } from './triage-directive';
-import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
+import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan/directive';
 import { recordPendingModelChoiceReply } from '../agent-model/choice-reply';
 import { runSessionStartAuthed } from './session-start';
 import { ensureOpenCodeDelegationReady } from './session-start-lib';
 import * as fs from 'fs';
+import { finalizePaidMaintenanceFallback } from '../../shared/maintenance/fallback';
+import { reconcileRunSettlement } from '../../shared/run-settlement';
 
 type Rec = Record<string, unknown>;
 
@@ -45,11 +53,11 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
 
-function opencodeSetupDirective(url: string, localUrl: string, waitCommand: string, hostLabel = 'OpenCode'): string {
+function opencodeSetupDirective(url: string, localFallback: LocalFallback, waitCommand: string, hostLabel = 'OpenCode'): string {
   return [
     'Traffic One project setup is required before building.',
     `Setup link: ${url}`,
-    `Direct local fallback: ${localUrl}`,
+    ...(localFallback ? [String(localFallback)] : []),
     `Wait command: ${waitCommand}`,
     'Show the setup link, then immediately run the wait command in the current turn; do not wait for another user message first.',
     `If the wait command prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart ${hostLabel}, then type "continue" or "resume" after restart.`,
@@ -66,6 +74,20 @@ function opencodeSetupDirective(url: string, localUrl: string, waitCommand: stri
 // that request never reaches UserPromptSubmit).
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
+  // ── Uninstall request ──
+  // Deliberately the FIRST thing checked, ahead of every gate below. Uninstalling
+  // is machine-global, so cwd is irrelevant: isNonProjectRoot would drop the
+  // request when it is typed from $HOME or a non-project dir, the declined-project
+  // branch matches the very same "traffic one" mention and would answer with how to
+  // RE-ENABLE, and the coding-intent gate drops it on an uninitialized project
+  // because asking to uninstall is not a coding prompt. This is also the last
+  // moment our code can run at all — no host fires a plugin uninstall hook, so once
+  // the bundle is gone nothing of ours executes again. The directive only ARMS the
+  // cleanup; the agent takes one explicit confirmation before running it.
+  if (isUninstallTrafficOneIntent(ctx.input.prompt || promptTextFromSubmit(ctx.input.raw))) {
+    return context(uninstallDirective(ctx.host), { systemMessage: 'traffic-one [uninstall requested]' });
+  }
+
   if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
   initializeTrafficOneEnv(cwd, ctx.host);
@@ -124,8 +146,9 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // tutors and students"). Without it, such a first prompt is dropped here, the
   // FIRST project description is captured nowhere (seedOriginalPrompt runs only
   // past this gate), and a later thin "ok build it" becomes originalPrompt — which
-  // classifyPromptForStack maps to `minimal`. A signal-less greeting/question still
-  // has no stack signal, so genuine chit-chat is still suppressed.
+  // classifyPromptForStack maps to a bare frontend shell carrying none of the real
+  // project's surfaces. A signal-less greeting/question still has no stack signal,
+  // so genuine chit-chat is still suppressed.
   if (uninitialized && !serverRecordExists(cwd)
     && !isLikelyCodingPrompt(promptText) && !promptHasStackSignal(promptText)) {
     return noop();
@@ -141,11 +164,27 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // Ask-first pending: write NOTHING before the user's answer — the prompt
     // rides the yes command (--seed-prompt) inside the question the authed body
     // just emitted, and the runner seeds it after recording the yes.
-    if (!usePluginQuestionPending(cwd)) seedOriginalPrompt(cwd, promptText);
+    if (!usePluginQuestionPending(cwd)) {
+      seedOriginalPrompt(cwd, promptText);
+      const explicitUiLibrary = uiLibraryFromPrompt(promptText);
+      if (explicitUiLibrary && fs.existsSync(statePath(cwd))) {
+        writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary });
+      }
+    }
     return bootstrapped;
   }
-  const state = readEffectiveState(cwd);
+  let state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return runSessionStartAuthed(ctx);
+  const explicitUiLibrary = uiLibraryFromPrompt(promptText);
+  if (explicitUiLibrary && state.uiLibrary !== explicitUiLibrary && !isSubagentThread(raw)) {
+    writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary });
+    state = { ...state, uiLibrary: explicitUiLibrary };
+  }
+  const settlementRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (settlementRunId && !isSubagentThread(raw)) {
+    const fallback = finalizePaidMaintenanceFallback(cwd, settlementRunId);
+    if (fallback.status !== 'completed') reconcileRunSettlement(cwd, settlementRunId);
+  }
 
   const stack = (state.stack as string) || (state.mode as string) || 'unknown';
   const normalizedState = JSON.parse(JSON.stringify(state)) as Rec;
@@ -162,7 +201,8 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // The wizard owns the questions + state writes; the agent only points the user
   // at it and waits. Covers new-project onboarding AND an already-configured
   // project missing this user's local preferences.
-  if (!computeOnboarding(cwd).done) {
+  const onboardingView = computeOnboarding(cwd);
+  if (!onboardingView.done) {
     // Subagents never onboard — onboarding is the parent/main-agent's job and a
     // worker thread cannot drive the wizard (see the onboarding-gate handler). If a
     // subagent prompt reaches here (e.g. a stray nested root), don't surface it.
@@ -183,6 +223,22 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       });
     }
     seedOriginalPrompt(cwd, promptText);
+    // Setup is pending on the AGENT (tech classification), not the user: no
+    // wizard server, no link — hand the classification recipe to the agent
+    // (the seeded prompt above still feeds postSetupTriage after completion).
+    if (onboardingView.step === 'tech-detect') {
+      const template = onboardingSetTechCommandTemplate(cwd, ctx.host, syncSession);
+      const hints = techClassifyHints(detectStackFromCodebase(cwd));
+      const reason = ctx.host === 'opencode' || ctx.host === 'kilo'
+        ? techClassifyRequiredCompactReason(template, hints)
+        : block('tech-classify-required', {
+          SET_TECH_TEMPLATE: template,
+          HINTS: hints,
+        }, techClassifyRequiredReason(template, hints));
+      return context(`[ACTIVE STACK: ${stack}]\n\n${reason}`, {
+        systemMessage: 'traffic-one [setup required]',
+      });
+    }
     const prepared = prepareOnboardingServer(cwd, ctx.host, { syncSession });
     if (prepared.kind !== 'ready') {
       return context(`[ACTIVE STACK: ${stack}]\n\n${prepared.reason}`, {
@@ -192,25 +248,24 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       });
     }
     const { server, waitCommand } = prepared;
+    // Hosted link alone when the dashboard is healthy; the loopback wizard joins it
+    // only when the probe says the hosted page is unusable (or has not answered yet).
+    const localFallback = localFallbackSection(cwd, server.localWizardUrl, process.env, ctx.host);
     if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-      const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, server.localWizardUrl, 'traffic-one [setup required]');
-      const result = context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.dashboardUrl, server.localWizardUrl, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
+      const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, localFallback, 'traffic-one [setup required]');
+      return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.dashboardUrl, localFallbackLine(cwd, server.localWizardUrl, process.env, ctx.host), waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
         systemMessage,
       });
-      commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
-      return result;
     }
     if (ctx.host === 'windsurf') {
       const first = firstEmitThisSession(cwd, 'onboarding-deny', sessionId);
-      const vars = { URL: server.dashboardUrl, LOCAL_URL: server.localWizardUrl, WAIT_CMD: waitCommand };
+      const vars = { URL: server.dashboardUrl, LOCAL_FALLBACK: localFallback, WAIT_CMD: waitCommand };
       const directive = first
-        ? block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, server.localWizardUrl, waitCommand))
-        : block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(server.dashboardUrl, server.localWizardUrl, waitCommand));
-      const result = context(directive, {
-        systemMessage: formatWizardBanner(ctx.host, server.dashboardUrl, server.localWizardUrl, 'traffic-one [setup required]'),
+        ? block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, localFallback, waitCommand))
+        : block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(server.dashboardUrl, localFallback, waitCommand));
+      return context(directive, {
+        systemMessage: formatWizardBanner(ctx.host, server.dashboardUrl, localFallback, 'traffic-one [setup required]'),
       });
-      commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
-      return result;
     }
     // Full walkthrough once per session (shared marker with the PreToolUse gate);
     // repeat prompts get the short URL + wait-command essentials.
@@ -221,19 +276,16 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // ONLY place the URL would appear unless the agent reposts it as a link — and it
     // may not. So also put the LIVE clickable wizard URL in the user-facing channel
     // (systemMessage → user_message on Cursor), so the user always gets a working link
-    // on the first prompt regardless of the agent. Host-gated: Claude opens the wizard
-    // in its preview pane and Codex via its own recipe, so they keep the plain banner.
-    const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, server.localWizardUrl, 'traffic-one [setup required]');
-    const result = context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, {
+    // on the first prompt regardless of the agent.
+    const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, localFallback, 'traffic-one [setup required]');
+    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, {
       URL: server.dashboardUrl,
-      LOCAL_URL: server.localWizardUrl,
+      LOCAL_FALLBACK: localFallback,
       WAIT_CMD: waitCommand,
       DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host),
     })}`, {
       systemMessage,
     });
-    commitWizardLinksShown(cwd, server.token, result, server.dashboardUrl, server.localWizardUrl, syncSession);
-    return result;
   }
 
   // ── A settled new-project build flips to maintenance at the prompt boundary ──
@@ -258,7 +310,15 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   const unresolved = runtimeControl ? '' : unresolvedRunDirective(cwd, normalizedState, promptText, raw);
   const parentOwned = runtimeControl || Boolean(unresolved);
   const openCodeReadiness = parentOwned ? '' : ensureOpenCodeDelegationReady(cwd, normalizedState);
-  const planBatchReminder = parentOwned ? '' : buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
+  // Full pending-batch recipe once per session, then a one-line reminder — this
+  // fires on EVERY prompt while the batch is open. The spawn gate stays the
+  // enforcement; the marker is burned only when a directive actually emitted.
+  const planBatchDirective = parentOwned ? '' : buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
+  const planBatchReminder = planBatchDirective
+    ? (firstEmitThisSession(cwd, 'opencode-plan-batch-pending', sessionId)
+      ? planBatchDirective
+      : '[traffic-one] OpenCode Step 0 still pending — finish the plan batch via `opencode_delegate_from_plan` before implementer spawns (full recipe earlier this session).')
+    : '';
   const triage = unresolved || maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
 
   const prefixOpenCode = [openCodeReadiness, planBatchReminder].filter(Boolean).join('\n');

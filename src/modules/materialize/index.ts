@@ -34,7 +34,7 @@ export const handlers: Handler[] = [
     priority: 60,
     run: (ctx) => runPostStackSetup(ctx, {
       // Single onboarding-finalized report gate (see runPostStackSetup).
-      // prepareReport owns the canonical auth check.
+      // prepareReport owns exact plugin-use consent and codebase checks.
       reportOneMcp: (cwd, state, trigger) => {
         maybeStartOneMcpReport(cwd, { state, trigger });
       },

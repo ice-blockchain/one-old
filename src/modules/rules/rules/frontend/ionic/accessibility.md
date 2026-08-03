@@ -3,10 +3,15 @@ paths:
   - "apps/**/src/components/**"
   - "apps/**/src/features/**/components/**"
   - "apps/**/src/pages/**"
+  - "web/**/src/**"
+  - "frontend/**/src/**"
+  - "client/**/src/**"
+  - "packages/**/src/**"
   - "packages/ui/**"
   - "src/components/**"
   - "src/features/**/components/**"
   - "src/pages/**"
+  - "src/**"
 ---
 
 # Ionic Accessibility Rules

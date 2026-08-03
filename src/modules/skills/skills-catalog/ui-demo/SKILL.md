@@ -250,7 +250,9 @@ Guidelines:
 
 Skeleton of the recorder script the agent expands. Top: `'use strict'`,
 `require('playwright')` + `path`/`fs`, then constants —
-`BASE_URL = process.env.QA_BASE_URL || 'http://localhost:3000'`, a `VIDEO_DIR`
+`BASE_URL = process.env.QA_BASE_URL` (required — never default to a shared port
+like 3000/4173/5173: another project's server answers it and the recording shows
+the wrong app), a `VIDEO_DIR`
 under `__dirname`, an `OUTPUT_NAME` (`demo-FEATURE.webm`), and
 `REHEARSAL = process.argv.includes('--rehearse')`. Paste the helpers
 (`injectCursor`, `injectSubtitleBar`, `showSubtitle`, `moveAndClick`,

@@ -13,8 +13,8 @@ import { STATE_DIR } from '../../config/paths';
 import { detectHost } from '../host';
 import { sha256 } from '../text';
 
-export const PROJECT_LOCAL_PREFS_REL = path.join(STATE_DIR, 'preferences.json');
-export const PROJECT_LOCAL_MACHINE_REL = path.join(STATE_DIR, 'machine.json');
+const PROJECT_LOCAL_PREFS_REL = path.join(STATE_DIR, 'preferences.json');
+const PROJECT_LOCAL_MACHINE_REL = path.join(STATE_DIR, 'machine.json');
 
 const LEGACY_PROJECT_LOCAL_RUNTIME = [
   PROJECT_LOCAL_PREFS_REL,

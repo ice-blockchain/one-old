@@ -165,9 +165,10 @@ recipe lives in `rules/frontend/ionic/styles.md` — apply it verbatim.
 - Single bridge file `src/styles/ionic-theme-bridge.css` defines the shadcn
   HSL vars (`--background`, `--foreground`, `--primary`, …) and maps them to
   `--ion-color-*` tokens. Imported once in `src/main.tsx` after Ionic core CSS.
-- Add new shadcn primitives via `npx shadcn@latest add <name>` into
-  `packages/ui/src/components/ui/` — never hand-roll a button / dialog /
-  dropdown / form control.
+- Inventory each UI need and search the official shadcn catalog by name,
+  behavior, and synonyms. Add only the matching compiled identifiers via
+  `npx shadcn@latest add <name>` into `packages/ui/src/components/ui/`; never
+  hand-roll or duplicate a catalog primitive.
 - Compose shadcn primitives inside `IonContent`. Inside `IonHeader` /
   `IonToolbar` prefer Ionic's tap states over shadcn buttons — the OS-feel is
   better.

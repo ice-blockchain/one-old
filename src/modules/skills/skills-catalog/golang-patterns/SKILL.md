@@ -338,6 +338,14 @@ func WriteAndFlush(w io.Writer, data []byte) error {
 
 ### Standard Project Layout
 
+**On a Traffic One-compiled project the runtime owns the layout — do not apply
+this section there.** Your writable paths are exactly the compiled outputs in
+your work unit; a write anywhere else is denied with
+`STRUCT_ASSIGNMENT_ALLOWLIST_GAP`, and the deny tells you not to retry it or
+relocate it. Read your allowlist first and write the module where the contract
+put it. The layout below is the community convention, for reading and extending
+a repo Traffic One did not compile (`existing-codebase` mode).
+
 ```text
 myproject/
 ├── cmd/
@@ -531,8 +539,15 @@ result := strings.Join(parts, ",")
 ### Essential Commands
 
 ```bash
-# Build and run
-go build ./...
+# Compile-check everything. The `-o` sink is not optional: bare `go build ./...`
+# writes a binary named after the package directory whenever the pattern matches
+# exactly one `main` package, and on a Traffic One compiled layout that name is
+# the directory itself — `build output "internal" already exists and is a
+# directory`, exit 1, with nothing wrong in the code. Verified twice: the QA
+# runner hit it in 15cl, and 18cl's reviewer re-derived it from an ADR that had
+# copied the bare form. `-o /dev/null` is Go's own compile-check idiom (on
+# Windows: `-o NUL`) — the object is discarded and no file lands in the tree.
+go build -o /dev/null ./...
 go run ./cmd/myapp
 
 # Testing
@@ -556,29 +571,32 @@ goimports -w .
 
 ### Recommended Linter Configuration (.golangci.yml)
 
+Schema **v2**. Settings live under `linters.settings`; the v1 top-level
+`linters-settings` key makes v2 refuse to run at all (`additional properties
+'linters-settings' not allowed`), so a config carrying it disables the linter
+rather than loosening it. `gosimple` merged into `staticcheck` and
+`govet.check-shadowing` was removed in v2. Traffic One seeds a smaller version of
+this file on Go projects — edit it, do not fight it.
+
 ```yaml
+version: "2"
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - unparam
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-  govet:
-    check-shadowing: true
-
-issues:
-  exclude-use-default: false
+  settings:
+    errcheck:
+      check-type-assertions: true
+formatters:
+  enable:
+    - gofmt
+    - goimports
 ```
 
 ## Quick Reference: Go Idioms

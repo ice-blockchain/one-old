@@ -90,7 +90,7 @@ export function updateTeamModeChangeApprovalFromPrompt(cwd: string, state: unkno
   return { recorded: false, cleared: clearTeamModeChangeApproval(cwd, s) };
 }
 
-export function writeLikeStateFileTarget(toolName: unknown, toolInput: unknown): boolean {
+function writeLikeStateFileTarget(toolName: unknown, toolInput: unknown): boolean {
   if (!isWriteLikeToolName(toolName)) return false;
   const ti = obj(toolInput);
   const filePath = ti && typeof ti.file_path === 'string' ? ti.file_path : '';
@@ -141,7 +141,7 @@ function proposedStateFromStateWrite(cwd: string, toolName: unknown, toolInput: 
   return normalized;
 }
 
-export function proposedTeamModeFromStateWrite(cwd: string, toolName: unknown, toolInput: unknown): string | null {
+function proposedTeamModeFromStateWrite(cwd: string, toolName: unknown, toolInput: unknown): string | null {
   const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
   if (proposed) {
     const team = obj(proposed.team);
@@ -154,7 +154,7 @@ export function proposedTeamModeFromStateWrite(cwd: string, toolName: unknown, t
   return null;
 }
 
-export function proposedStateWritesModeChangeApproval(cwd: string, toolName: unknown, toolInput: unknown): boolean {
+function proposedStateWritesModeChangeApproval(cwd: string, toolName: unknown, toolInput: unknown): boolean {
   const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
   const team = proposed && obj(proposed.team);
   if (team) return Object.prototype.hasOwnProperty.call(team, 'modeChangeApproval');
