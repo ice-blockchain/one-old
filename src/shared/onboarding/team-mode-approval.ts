@@ -8,7 +8,8 @@
 
 import { obj, type Rec } from '../obj';
 import { detectMode } from '../detection';
-import { normalizeState, writeState } from '../state';
+import { detectHost } from '../host';
+import { mergeProjectHostPrefs, normalizeState, readEffectiveState } from '../state';
 import { sha256, nowIsoNoMs } from '../text';
 import {
   existingStateFilePath,
@@ -55,26 +56,80 @@ export function hasFreshTeamModeChangeApproval(state: unknown, nowMs = Date.now(
   return Number.isFinite(requestedAt) && requestedAt <= nowMs && nowMs - requestedAt <= TEAM_MODE_CHANGE_APPROVAL_TTL_MS;
 }
 
+/**
+ * Persist (or withdraw) the marker WHERE THE GATE READS IT, and answer whether
+ * the gate can now see it.
+ *
+ * Not `writeState`, which is what both writers used to call, and the reason this
+ * subsystem never worked: `team` is a HOST preference
+ * (state/local-prefs/pref-schema.ts's HOST_PREF_KEYS), so writeState's
+ * splitLocalPreferences STRIPS it out of the shared state file, while
+ * extractProjectPrefs deliberately refuses to route a generic top-level `team`
+ * into the per-user store ("so they cannot be attributed to whichever host
+ * happens to scrub the shared file first"). Measured on a consented, onboarded,
+ * subagents-mode project: writeState reported no error, `.one.json` came back
+ * with no `team` at all, the per-user prefs were untouched, and
+ * `hasFreshTeamModeChangeApproval(readEffectiveState(cwd))` — the exact question
+ * the downgrade gate asks — was false. So a returned boolean from the write
+ * could not have caught this: the write LANDED, and the field was gone before
+ * it. Only reading back what the consumer reads can.
+ *
+ * The per-user host bucket is where `team.mode` itself lives, so the
+ * authorization sits beside the setting it authorizes, and the prefs schema
+ * already expects it there: `normalizeTeam` keeps `modeChangeApproval` while
+ * mode is `subagents` and drops it otherwise — which also retires the marker for
+ * free once the downgrade it authorized has landed. Being outside the project
+ * tree, it is also not forgeable through the state-file write that
+ * teamModeMarkerWriteViolation exists to deny.
+ */
+function persistTeamModeApproval(cwd: string, team: Rec, approval: Rec | null): boolean {
+  const nextTeam: Rec = { ...team };
+  if (approval) nextTeam.modeChangeApproval = approval;
+  else delete nextTeam.modeChangeApproval;
+  try {
+    mergeProjectHostPrefs(cwd, detectHost(), { team: nextTeam });
+  } catch {
+    // The per-user store re-throws a real errno (EACCES/ENOSPC). Nothing landed,
+    // and a hook must not fail a tool call over it — report the refusal instead.
+    return false;
+  }
+  const readBack = obj(readEffectiveState(cwd).team);
+  return approval
+    // The consumer's own predicate on the consumer's own data source: stronger
+    // than a hash compare here, because it is not a proxy for what the gate will
+    // conclude, it IS what the gate concludes.
+    ? hasFreshTeamModeChangeApproval(readEffectiveState(cwd))
+    // Absence, not staleness: `hasFreshTeamModeChangeApproval` is also false for
+    // an EXPIRED marker, so testing it here would report a refused withdrawal of
+    // a stale marker as a successful one.
+    : !(readBack && Object.prototype.hasOwnProperty.call(readBack, 'modeChangeApproval'));
+}
+
+// True only when the approval is READABLE BY THE GATE afterwards. `true` here is
+// the claim "the user's authorization to move team mode from subagents to
+// main-agent is recorded", and prompt-submit tells the user exactly that, so it
+// may not be minted by this function — it has to be observed.
 export function setTeamModeChangeApproval(cwd: string, state: unknown, promptText: unknown): boolean {
   const s = obj(state);
   const team = s && obj(s.team);
   if (!s || !team) return false;
-  team.modeChangeApproval = {
+  const approval: Rec = {
     from: 'subagents', to: 'main-agent', source: 'user-prompt',
     requestedAt: nowIsoNoMs(), promptHash: hashPromptText(promptText),
   };
-  writeState(cwd, s);
-  return true;
+  team.modeChangeApproval = approval;
+  return persistTeamModeApproval(cwd, team, approval);
 }
 
+// True only when the approval is GONE from the gate's view afterwards. A `true`
+// that outlives the marker is a single-use authorization nobody can withdraw.
 export function clearTeamModeChangeApproval(cwd: string, state: unknown): boolean {
   const s = obj(state);
   const team = s && obj(s.team);
   if (!s || !team) return false;
   if (!Object.prototype.hasOwnProperty.call(team, 'modeChangeApproval')) return false;
   delete team.modeChangeApproval;
-  writeState(cwd, s);
-  return true;
+  return persistTeamModeApproval(cwd, team, null);
 }
 
 export function updateTeamModeChangeApprovalFromPrompt(cwd: string, state: unknown, promptText: unknown): { recorded: boolean; cleared: boolean } {
@@ -84,8 +139,11 @@ export function updateTeamModeChangeApprovalFromPrompt(cwd: string, state: unkno
   if (!s || s.onboardingComplete !== true) return { recorded: false, cleared: false };
   if (!team || team.mode !== 'subagents') return { recorded: false, cleared: false };
   if (isExplicitSubagentsToMainAgentIntent(promptText)) {
-    setTeamModeChangeApproval(cwd, s, promptText);
-    return { recorded: true, cleared: false };
+    // Forwarded, never asserted. `recorded: true` reaches the user as
+    // "[team mode switch authorized]" on the very next prompt (session/
+    // prompt-submit.ts), and the only thing that can honour it is the marker the
+    // downgrade gate reads out of the per-user store in a LATER hook process.
+    return { recorded: setTeamModeChangeApproval(cwd, s, promptText), cleared: false };
   }
   return { recorded: false, cleared: clearTeamModeChangeApproval(cwd, s) };
 }
@@ -182,8 +240,14 @@ export function teamModeDowngradeViolation(cwd: string, toolName: unknown, toolI
   if (!team || team.mode !== 'subagents') return false;
   if (proposedTeamModeFromStateWrite(cwd, toolName, toolInput) !== 'main-agent') return false;
   if (hasFreshTeamModeChangeApproval(s)) {
-    clearTeamModeChangeApproval(cwd, s);
-    return false;
+    // Allowing this write is how the marker is SPENT, so a withdrawal that did
+    // not land leaves the same authorization readable for the rest of its TTL and
+    // admits every further downgrade inside it. Deny rather than spend a token we
+    // could not cancel: the header calls this marker single-use, and the deny
+    // prose tells the user how to re-authorize, whereas a token that never
+    // retires is silent. (The `return true` below is the other half of the same
+    // fail-closed rule — absent approval, absent authorization.)
+    return !clearTeamModeChangeApproval(cwd, s);
   }
   return true;
 }

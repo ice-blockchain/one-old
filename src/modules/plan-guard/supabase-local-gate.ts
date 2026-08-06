@@ -49,5 +49,6 @@ export function supabaseLocalGate(ctx: Ctx): HookResult {
   return deny(block('supabase-local-stack-gate',
     'Supabase gate: the local Supabase stack is not part of this project\'s flow — do not run `supabase start`/`stop`, `supabase db reset`, `supabase functions serve`, or the `db:start`/`db:stop`/`db:reset`/`functions:serve` scripts, and do not boot Docker/OrbStack/Colima for them. '
     + 'Author `supabase/config.toml`, `supabase/migrations/*.sql`, and `supabase/functions/**` in the repo only; the user connects the real project (env keys, migration apply) through the traffic.io platform — every setup CTA links to `https://traffic.io/` — and the app must run in not-configured demo mode behind the EnvBanner until then. '
-    + 'Verify SQL by review and committed migrations, not against a local database; `supabase db push --linked` stays a shipper-gated deploy action.'));
+    + 'Verify SQL by review and committed migrations, not against a local database; `supabase db push --linked` stays a shipper-gated deploy action.'),
+    { denyId: 'supabase-local-stack-gate', denyTarget: command });
 }

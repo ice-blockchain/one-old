@@ -38,6 +38,26 @@ export function truncateSeedPrompt(prompt: string): string {
   return text.length > SEED_PROMPT_MAX_LENGTH ? text.slice(0, SEED_PROMPT_MAX_LENGTH) : text;
 }
 
+/**
+ * VERDICT on the dropped write below: acceptable as-is, and deliberately so.
+ *
+ * `writeState` answers `false` for a refused seed and that answer is discarded —
+ * but the outcome it reports is the one the adjacent `catch` already accepts in
+ * writing, and it is accepted for a reason that does not depend on which channel
+ * carried it: a lost seed costs prompt-tailored wizard defaults, nothing more.
+ * There is no in-memory state to outlive the call (`state` is local, the function
+ * hands nothing back) and no irreversible act on either side of the write — the
+ * one caller that precedes it with a mutation, onboarding-wait's `--use`
+ * handler, records CONSENT, which the seed does not justify and which a lost seed
+ * does not invalidate.
+ *
+ * The consumer is also already built for the seed being absent: onboarding-server
+ * flow.ts's finalize has an explicit no-signal floor for exactly this case
+ * (observed on Cursor 9b, where the host payload carried no prompt text so this
+ * function never ran at all), and it floors to the default build stack rather
+ * than deriving an empty one. A seed refused by the fence and a seed that never
+ * existed are the same fact to that code path, and it is correct for both.
+ */
 export function seedOriginalPrompt(cwd: string, prompt: string): void {
   const text = (prompt || '').trim();
   if (!text) return;

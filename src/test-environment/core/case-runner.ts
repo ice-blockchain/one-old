@@ -18,6 +18,8 @@ import {
   RUNTIME_PROOF_FILE_ENV,
   RUNTIME_PROOF_TOKEN_ENV,
 } from './current-dist';
+import { caseConsent, establishCaseConsent, type ConsentFact } from './consent';
+import { runDeclineProbe } from './decline-sim';
 import { materializeFixture } from './fixtures';
 import { preseed } from './preseed';
 import { driveOnboarding } from './onboarding-sim';
@@ -70,10 +72,16 @@ export async function runCase(
 
   const env: CaseEnv = buildCaseEnv(config, caseFolder, distRoot, target);
 
+  const consent = caseConsent(testCase.consent);
+
   // --- seed / onboard / simulate (in-process, isolated) ---
-  const seeded = withCaseEnv(env, (): { blocker: string; runSim: RunSimTranscript | null } => {
+  // Consent comes FIRST and unconditionally. The write fence is default-closed
+  // (shared/state/plugin-use.ts), so without a recorded answer writeState below
+  // is refused at the fsjson chokepoint, `.one.json` never exists, and every
+  // assertion in the case fails on the same missing step — 104 red assertions
+  // for one un-answered question, measured. See core/consent.ts.
+  const seeded = withCaseEnv(env, (): { blocker: string; seedRefusal: string; consentFact: ConsentFact | null } => {
     let blocker = '';
-    let runSim: RunSimTranscript | null = null;
     if (target === 'codex') {
       try {
         seedCodexE2eModelCatalog(config.hosts.codex, env);
@@ -81,18 +89,58 @@ export async function runCase(
         blocker = `blocked-environment: could not seed the isolated Codex E2E model catalog: ${String(error)}`;
       }
     }
+    // The decline direction owns its whole sequence (residue → answer →
+    // observation) and must NOT be seeded: "nothing was written" is the claim.
+    if (consent === 'decline') return { blocker, seedRefusal: '', consentFact: null };
+
+    const consentFact = establishCaseConsent(tmpDir, consent, caseFolder, env);
     if (testCase.scriptedAnswers && testCase.scriptedAnswers.length > 0) {
       // Flow-sim: start from an incomplete state carrying only the mode, then
-      // drive the real wizard to completion.
-      writeState(tmpDir, { mode: testCase.preSeed.mode });
+      // drive the real wizard to completion. The seed IS the wizard's starting
+      // point, so a refusal here means the harness could not build the world the
+      // case describes — reported as such below instead of letting driveOnboarding
+      // produce a sim of a project that has no state and every assertion fail on
+      // the same missing step (104 red assertions for one cause, measured).
+      //
+      // Kept separate from `blocker`: that one reaches a verdict only through the
+      // host-run branch, which a pure-node case never enters — and both flow-sim
+      // cases in the corpus are layer 'pure-node'.
+      if (!writeState(tmpDir, { mode: testCase.preSeed.mode })) {
+        return {
+          blocker,
+          seedRefusal: `blocked-environment: the state write fence refused the flow-sim seed \`${path.join(tmpDir, '.traffic-one', '.one.json')}\`, `
+            + 'so the wizard was never given its starting mode and this case measured nothing',
+          consentFact,
+        };
+      }
       const sim = driveOnboarding(tmpDir, testCase.scriptedAnswers);
       fs.writeFileSync(path.join(caseFolder, 'onboarding-sim.json'), JSON.stringify(sim, null, 2));
-      return { blocker, runSim };
+      return { blocker, seedRefusal: '', consentFact };
     }
-    preseed(tmpDir, testCase.preSeed);
-    return { blocker, runSim };
+    // The twin of the flow-sim seed above, and reported the same way: this is the
+    // "onboarding pre-completed" world every non-flow-sim case is measured
+    // against, so a refused seed leaves a project with no onboarding state and
+    // every assertion red on that one step instead of on what the case names.
+    if (!preseed(tmpDir, testCase.preSeed)) {
+      return {
+        blocker,
+        seedRefusal: `blocked-environment: the state write fence refused the pre-seed \`${path.join(tmpDir, '.traffic-one', '.one.json')}\`, `
+          + 'so this case was measured against a project with no onboarding state',
+        consentFact,
+      };
+    }
+    return { blocker, seedRefusal: '', consentFact };
   });
-  const modelCatalogBlocker = seeded.blocker;
+  const modelCatalogBlocker = seeded.blocker || seeded.seedRefusal;
+  if (seeded.consentFact) {
+    fs.writeFileSync(path.join(caseFolder, 'consent.json'), JSON.stringify(seeded.consentFact, null, 2));
+  }
+
+  if (consent === 'decline') {
+    const probe = await withCaseEnvAsync(env, () => runDeclineProbe(tmpDir, caseFolder, env));
+    fs.writeFileSync(path.join(caseFolder, 'decline-probe.json'), JSON.stringify(probe, null, 2));
+    fs.writeFileSync(path.join(caseFolder, 'consent.json'), JSON.stringify(probe.consent, null, 2));
+  }
 
   // Run-sim: onboarding is pre-completed above, then the whole post-onboarding
   // chain runs with scripted role writes against the real gates. Separate from
@@ -165,17 +213,31 @@ export async function runCase(
   }
 
   // --- assertions ---
-  const results = await runAssertions(
-    testCase,
-    target,
-    tmpDir,
-    caseFolder,
-    env,
-    hostResult,
-    assertions,
-    config,
-    assertionSpecsForRun(testCase, target),
-  );
+  // A refused seed is not something to measure the product against: the project
+  // the case names was never built, so every spec would be evaluated against a
+  // stateless directory and report the same false failure. INCONCLUSIVE is what
+  // this harness already reports for a spec it cannot evaluate (runAssertions
+  // below) and the contract for an environment it could not construct — not a
+  // pass, and not a verdict on the code.
+  const specs = assertionSpecsForRun(testCase, target);
+  const results = seeded.seedRefusal
+    ? specs.map((spec): AssertionResult => ({
+      id: spec.id,
+      title: assertions.get(spec.id)?.title ?? spec.id,
+      status: 'INCONCLUSIVE',
+      detail: seeded.seedRefusal,
+    }))
+    : await runAssertions(
+      testCase,
+      target,
+      tmpDir,
+      caseFolder,
+      env,
+      hostResult,
+      assertions,
+      config,
+      specs,
+    );
   if (target !== 'pure-node') {
     hostResult = {
       ...hostResult,
@@ -332,6 +394,14 @@ export function assertionSpecsForRun(
   ) {
     specs.push({ id: 'plugin-runtime-fingerprint' });
   }
+  // Consent is the same class of thing: an invariant of every run, not something
+  // a case opts into. It is injected rather than listed per case because when the
+  // fence went default-closed EVERY case broke, and a per-case opt-in would have
+  // let the next case author omit the one assertion that names why.
+  const consentSpec = caseConsent(testCase.consent) === 'decline'
+    ? 'consent-decline-fence'
+    : 'consent-fence';
+  if (!specs.some((spec) => spec.id === consentSpec)) specs.push({ id: consentSpec });
   return specs;
 }
 

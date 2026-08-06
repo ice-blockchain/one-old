@@ -1060,6 +1060,34 @@ function bladeView(ctx: ImplementContext, rel: string, kind: string): string {
   ].join('\n');
 }
 
+// The web outputs the compiler hands a run whose UI it does not touch: the
+// profile entrypoints senior-frontend owns, and the unconditional test
+// infrastructure senior-tester owns for any web-surface profile.
+const WEB_SHAPE_OUTPUT_RE = /(?:^|\/)main\.[tj]sx?$|^vitest\.config\.ts$|^playwright\.config\.ts$|^tests\/e2e\/smoke\.spec\.ts$/;
+
+/**
+ * True when `rel` is a web-shape output the repo ALREADY has and this run plans
+ * no UI (no routes, no app-shell) — in which case the tier must leave it alone.
+ *
+ * `goEntrypoint` has always applied this rule to a repo's own `main.go`: a shape
+ * the project brought is not ours to rewrite. It matters more than tidiness for
+ * the `nonvisual` impact. Those two output groups are attached to a web profile
+ * unconditionally, so a run that changes no UI still had them rewritten — a Vue
+ * bootstrap over a vanilla `web/src/main.js`, mounting nothing because the route
+ * table is empty, plus a first-ever Playwright config. That put changed `.ts`
+ * and `.js` files in the baseline diff, and the `nonvisual` contract published
+ * at PLAN_READY came back `behavioral` (browser-required, and unsettleable on a
+ * machine with no Chromium) on the next refresh. The impact of a change must
+ * come from the change, not from the tier's own boilerplate.
+ */
+function repoOwnedNoUiOutput(rel: string, ctx: ImplementContext): boolean {
+  if (!WEB_SHAPE_OUTPUT_RE.test(rel)) return false;
+  const plansUi = ctx.architecture.routes.some((route) => !route.redirect)
+    || ctx.architecture.modules.some((module) => module.kind === 'app-shell');
+  if (plansUi) return false;
+  return fs.existsSync(path.join(ctx.projectRoot, rel));
+}
+
 // --- the resolver ----------------------------------------------------------
 
 /**
@@ -1072,6 +1100,9 @@ export function sourceFor(rel: string, ctx: ImplementContext): string | null {
   if (/\.(png|ico|jpg|jpeg|webp|woff2?)$/i.test(rel)) return null;
   // Crawl assets: see the header comment.
   if (/(?:^|\/)(robots\.txt|sitemap\.xml)$/i.test(rel)) return null;
+  // A file the REPO already brought, on a run that plans no UI at all: nothing
+  // here is ours to rewrite. See repoOwnedNoUiOutput.
+  if (repoOwnedNoUiOutput(rel, ctx)) return null;
 
   const module = ctx.moduleAt(rel);
 

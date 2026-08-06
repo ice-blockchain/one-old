@@ -20,7 +20,7 @@ import { asString } from '../../adapters/coerce';
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
-import { captureClaimDebug, claimThreadRole, readEffectiveState, recordRunAgent } from '../../shared/state';
+import { captureClaimDebug, claimThreadRole, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { canonicalHost } from '../../shared/model-tiers';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
@@ -64,14 +64,12 @@ export function opencodeSubagentBind(ctx: Ctx): HookResult {
     );
   }
   captureClaimDebug(ctx.cwd, runId, 'opencode-subagent-prompt', { sessionId, role });
+  // Claim only. This used to ALSO mirror the child into the role-keyed reuse
+  // registry, and that row was the one piece of state here that no host ever
+  // corroborated: its role came from the marker parsed above, i.e. the prompt the
+  // orchestrator wrote. The reuse registry now stands down on both hosts this
+  // handler serves (subagentContinuationAvailable), so the row would be unread
+  // by the spawn gate yet still able to disown a live same-role claim.
   claimThreadRole(ctx.cwd, state, sessionId, role, { recordAgent: false, evidence });
-  if (runId) {
-    recordRunAgent(ctx.cwd, runId, role, {
-      agentId: sessionId,
-      agentType: role,
-      parentSessionId: null,
-      roleSource: evidence.source,
-    });
-  }
   return noop();
 }

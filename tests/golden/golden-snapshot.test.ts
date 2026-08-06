@@ -5,8 +5,7 @@ import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { runGen } from '../../src/gen';
-import { GOLDEN_EXCLUDED } from '../../src/build/golden-update';
+import { GOLDEN_EXCLUDED, materializeGoldenTree } from '../../src/build/golden-update';
 
 // Golden snapshot of every artifact the generator must reproduce byte-for-byte:
 // the 4 host configs, 5 manifests, AGENTS.md, and the content trees (skills,
@@ -36,15 +35,33 @@ function readManifest(): Entry[] {
   return entries;
 }
 
-test('golden manifest is non-empty + well-formed', () => {
+// Deliberately no entry-count floor. Any constant here is either stale the
+// moment a generator is added or so far below the real count (a `>= 270`
+// against 456 entries let 40% of the tree vanish) that it certifies nothing.
+// Exact coverage is proven by the next test in both directions — every
+// manifest line must exist in the freshly materialized tree, and every file in
+// that tree must be in the manifest — which is strictly stronger than any
+// count. What is worth asserting here is what that test cannot see: a manifest
+// that lists the same path twice would silently let one of the two hashes
+// never be compared.
+test('golden manifest is non-empty, well-formed, and lists each path once', () => {
   const entries = readManifest();
-  assert.ok(entries.length >= 270, `expected the full generated tree, got ${entries.length}`);
+  assert.ok(entries.length > 0, 'golden manifest is empty — run `npm run golden:update`');
+  const seen = new Set<string>();
+  const duplicated = entries.map((e) => e.rel).filter((rel) => !seen.add(rel));
+  assert.deepEqual(duplicated, [], `golden manifest lists the same path more than once:\n${duplicated.join('\n')}`);
 });
 
 test('every generated artifact matches its golden hash (byte-identical)', () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 't1-golden-'));
   try {
-    runGen({ check: false, root: scratch, sourceRoot: REPO_ROOT });
+    // The SAME recipe `npm run golden:update` uses (gen, then the build's own
+    // copyModuleDescriptors for the scripts/modules subtree gen never emits),
+    // so refreshing the manifest cannot produce a tree this test can't
+    // reproduce. Because the module assets arrive through the real build step
+    // rather than a copy of src/, a build that stopped shipping gate prose
+    // fails here instead of silently shipping the TS fallback wording.
+    materializeGoldenTree(scratch, REPO_ROOT);
     const entries = readManifest();
     const missing: string[] = [];
     const drifted: string[] = [];

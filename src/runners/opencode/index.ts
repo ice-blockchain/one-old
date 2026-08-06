@@ -8,7 +8,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { OPENCODE_FREE_MODELS } from '../../config/model-tiers';
 import { gatewayBreakerMs, maxConsecutiveStalls } from '../../config/opencode-timeouts';
+import { projectOwnedGitignore } from '../../shared/architecture-contract';
 import { ensureInitialCommit } from '../../shared/git-init';
+import { greenfieldEvidence } from '../../shared/greenfield-evidence';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import {
   markOpenCodeGatewayOutage,
@@ -159,7 +161,25 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
     // whole build. Self-heal: initialize (new-project only) + initial-commit the
     // scaffold, then retry. Still skips when no HEAD can be produced (a non-git folder
     // outside new-project mode, or nothing to commit) → caller falls back as before.
-    ensureInitialCommit(cwd, { initIfNeeded: state.mode === 'new-project' });
+    //
+    // `initIfNeeded` is the only arm of this that reaches a tree the user did not
+    // ask Traffic One to version: it `git init`s and then `git add -A` + commits
+    // AS `Traffic One <noreply@traffic.io>`. `state.mode` alone must not authorize
+    // that — it reads `new-project` for any repository with few files in
+    // SOURCE_EXTS — so the disk gets a veto. Note what it buys beyond the unasked
+    // `.git`: on a misclassified repo the gitignore writer deliberately withholds
+    // its `.env` opinions (createdBlockScope → `traffic-one`), so `add -A` here
+    // would sweep the project's real `.env` into the first commit.
+    // Both arms are needed and neither alone is enough. NO history is the state
+    // `initIfNeeded` exists for, so it cannot discriminate by itself; and the
+    // project's own `.gitignore` lines are the statement that it manages its own
+    // version control — read WITHOUT Traffic One's managed region, which
+    // materialization has already written by the time any delegation runs and
+    // which would otherwise veto every genuinely greenfield project too.
+    ensureInitialCommit(cwd, {
+      initIfNeeded: state.mode === 'new-project'
+        && greenfieldEvidence(cwd, projectOwnedGitignore(cwd)),
+    });
     head = git(cwd, ['rev-parse', '--verify', 'HEAD']);
     if (head.status !== 0) {
       return maintenanceEarlyResult({ ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' });

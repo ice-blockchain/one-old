@@ -9,6 +9,13 @@ import { projectPhase, readState, transitionRunStatus } from '../../../shared/st
 
 const prefsFile = path.join(os.tmpdir(), `to-bc-prefs-${process.pid}.json`);
 let prevPrefs: string | undefined;
+// Every mkproject() tree this file makes, removed together in `after`. Each is
+// a ~30-file project and this file builds ~30 of them per run, so leaving them
+// behind costs ~4 MB per run — 2,376 leaked `to-build-complete-*` trees (303 MB)
+// had accumulated in the OS tmpdir before this cleanup existed. Two tests below
+// additionally rm their own dir in a `finally`; rmSync(force) is idempotent, so
+// tracking them here as well is harmless.
+const projectDirs: string[] = [];
 before(() => {
   prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prefsFile;
@@ -16,6 +23,10 @@ before(() => {
 after(() => {
   if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+  for (const dir of projectDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+  fs.rmSync(prefsFile, { force: true });
 });
 
 interface ProjectOpts {
@@ -39,6 +50,7 @@ interface ProjectOpts {
 
 function mkproject(opts: ProjectOpts): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-build-complete-'));
+  projectDirs.push(dir);
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   const state: Record<string, unknown> = {
     mode: opts.mode ?? 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',

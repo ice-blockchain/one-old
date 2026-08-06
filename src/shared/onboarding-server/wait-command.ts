@@ -9,6 +9,7 @@
 import * as path from 'path';
 
 import type { HostId } from '../../core/types';
+import { hostFlags } from '../host/capability-flags';
 import { qualifiesAsSeedPrompt, truncateSeedPrompt } from '../onboarding/seed-prompt';
 import { trafficOneEnvShellPrefix } from '../state/traffic-one-paths';
 import { pluginRoot } from '../paths';
@@ -127,7 +128,7 @@ export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: strin
     + 'Recommend it, but do not decide for the user: still STOP and wait for their answer.',
     '',
     '- If the user answers YES, do these steps IN ORDER:',
-    `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately${host === 'codex'
+    `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately${hostFlags(host).sandboxNeedsEscalation
       ? '. Codex: run it via exec_command with `sandbox_permissions: "require_escalated"` — it stores the choice under `~/.traffic-one`, outside the workspace sandbox, so an unescalated run fails with EPERM'
       : ''}:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt, syncSession)}`,
     '  2. Post that setup link to the user in a CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. The command output in step 1 does NOT count as showing it: several hosts collapse or hide it, and an agent that treats it as shown leaves the user with no link at all. Do NOT open the link yourself with a browser tool or an `open`/`xdg-open`/`start` command — the user clicks it and completes setup themselves. (Skip this step if step 1 printed TRAFFIC_ONE_SETUP_COMPLETE. If it printed TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED, follow its printed classification instructions first — inspect the repo, run the printed `--set-tech` command with the tech you identified — and it will print the setup link.)',

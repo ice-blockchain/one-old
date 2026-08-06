@@ -60,7 +60,11 @@ export function repairNewProjectOnboardingState(cwd: string, state: unknown, tri
   try {
     const repaired = JSON.parse(JSON.stringify(state)) as Rec;
     normalizeState(repaired, (repaired.mode as string) || detectMode(cwd));
-    writeState(cwd, repaired);
+    // The repair IS the canonical rewrite; materializing is what follows from it.
+    // A refused write left the noncanonical state on disk and still handed back a
+    // materialize outcome, so `null` — already this function's "could not be
+    // auto-repaired, fall through to the onboarding prompt" — is the answer.
+    if (!writeState(cwd, repaired)) return null;
     return materializeProjectFromState(cwd, { trigger });
   } catch (error) {
     const detail = error && (error as Error).message ? (error as Error).message : String(error || 'unknown error');

@@ -59,14 +59,18 @@ function context(project: string, dist: string): AssertionContext {
   };
 }
 
+// `consent-fence` joins `plugin-runtime-fingerprint` as an INJECTED invariant
+// rather than a per-case opt-in: when the ask-first fence went default-closed,
+// every case in the suite broke at once, and a per-case list would have let the
+// next case author omit the one assertion that names why.
 test('every selected host-E2E run receives the runtime fingerprint invariant', () => {
   assert.deepEqual(
     assertionSpecsForRun(CASE, 'cursor').map((spec) => spec.id),
-    ['onboarding-complete', 'plugin-runtime-fingerprint'],
+    ['onboarding-complete', 'plugin-runtime-fingerprint', 'consent-fence'],
   );
   assert.deepEqual(
     assertionSpecsForRun(CASE, 'pure-node').map((spec) => spec.id),
-    ['onboarding-complete'],
+    ['onboarding-complete', 'consent-fence'],
   );
 });
 

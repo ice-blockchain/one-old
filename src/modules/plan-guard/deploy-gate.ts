@@ -9,6 +9,7 @@
 
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import type { DenyId } from '../../config/deny-ids';
 import { computeProjectFingerprint } from '../../runners/security-check';
 import { readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
@@ -25,7 +26,15 @@ const SECURITY_CHECK_WINDOW_MS = 10 * 60 * 1000;
 // so the ${...} stays verbatim, exactly as the legacy reason text).
 const SECURITY_RUN_CMD = 'node ~/.traffic-one/bin/security-check-runner.cjs --strict --stamp';
 
-interface StampCheck { ok: boolean; reason?: string; }
+// A failure REQUIRES both halves of its identity: every branch below already
+// declared a reason and a denyId, but with them optional the call site had to
+// carry a `??` arm for a state that cannot occur — and that arm needed its own
+// catalog id (`deploy-gate-security-check-failed`) which nothing could ever
+// record. The discriminated union removes the unreachable branch instead of
+// documenting it.
+type StampCheck =
+  | { ok: true }
+  | { ok: false; reason: string; denyId: DenyId };
 
 function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
   const status = state.lastSecurityCheckStatus;
@@ -37,6 +46,7 @@ function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
       reason: 'Deploy gate: the Traffic One pre-deployment security check has not passed in the last 10 minutes. Run '
         + `\`${SECURITY_RUN_CMD}\` `
         + 'from the project root, address any findings, then deploy through `senior-shipper`.',
+      denyId: 'deploy-gate-security-check-stale',
     };
   }
 
@@ -44,7 +54,7 @@ function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
   try {
     current = computeProjectFingerprint(cwd).fingerprint;
   } catch (error) {
-    return { ok: false, reason: `Deploy gate: could not compute the current security fingerprint: ${(error as Error).message}` };
+    return { ok: false, reason: `Deploy gate: could not compute the current security fingerprint: ${(error as Error).message}`, denyId: 'deploy-gate-fingerprint-error' };
   }
 
   if (state.lastSecurityCheckFingerprint !== current) {
@@ -53,6 +63,7 @@ function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
       reason: 'Deploy gate: the worktree changed after the last passing security check. Rerun '
         + `\`${SECURITY_RUN_CMD}\` `
         + 'so the security fingerprint matches the code being deployed.',
+      denyId: 'deploy-gate-fingerprint-mismatch',
     };
   }
 
@@ -75,11 +86,13 @@ export function deployGate(ctx: Ctx): HookResult {
     return deny('Deploy gate: this command publishes to production. Run '
       + 'the `senior-shipper` subagent first; it stamps `lastShipperApprovalAt` '
       + 'in .traffic-one/.one.json after pre-flight (reviewer APPROVED, tests green, '
-      + 'user confirmed). The stamp grants a 10-minute deploy window.');
+      + 'user confirmed). The stamp grants a 10-minute deploy window.',
+      { denyId: 'deploy-gate-shipper-approval-required', denyTarget: command });
   }
 
   const securityCheck = checkSecurityDeployStamp(state, projectRoot);
-  if (!securityCheck.ok) return deny(securityCheck.reason ?? 'Deploy gate: security check failed.');
+  if (!securityCheck.ok) return deny(securityCheck.reason,
+    { denyId: securityCheck.denyId, denyTarget: command });
 
   return noop();
 }

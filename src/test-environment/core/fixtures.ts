@@ -25,6 +25,59 @@ function writeProjectMarkers(dir: string, name: string, opts: { git?: boolean } 
   if (!fs.existsSync(gitDir)) fs.mkdirSync(gitDir, { recursive: true });
 }
 
+/**
+ * The e2e/unit-runner files `testerOutputs()` hands senior-tester for every
+ * web-surface profile, planted as if the repo had always had them.
+ *
+ * Written from here rather than shipped under ../fixtures because the root
+ * tsconfig includes `src/**\/*.ts`: three fixture files importing
+ * `@playwright/test` and `vitest/config` break `npm run typecheck` for the whole
+ * repo. (The existing React fixture only gets away with real source files
+ * because `.tsx` is outside that include.)
+ *
+ * They have to pre-exist at all because these three paths are the difference
+ * between a `nonvisual` case and none: they are unconditional tester scaffolds
+ * for a web profile, and a repo adopting Playwright for the FIRST time inside
+ * the run puts new `.ts` files in the baseline diff, which raises the impact to
+ * `behavioral`. A project that already owns its test infrastructure is the
+ * normal case; adopting a test runner is a different change shape.
+ */
+function writeWebTestInfrastructure(dir: string): void {
+  const files: Record<string, string> = {
+    'vitest.config.ts': [
+      "import { defineConfig } from 'vitest/config';",
+      '',
+      'export default defineConfig({',
+      "  test: { environment: 'jsdom', globals: true },",
+      '});',
+      '',
+    ].join('\n'),
+    'playwright.config.ts': [
+      "import { defineConfig } from '@playwright/test';",
+      '',
+      'export default defineConfig({',
+      "  testDir: './tests/e2e',",
+      "  use: { baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4321' },",
+      '});',
+      '',
+    ].join('\n'),
+    'tests/e2e/smoke.spec.ts': [
+      "import { expect, test } from '@playwright/test';",
+      '',
+      "test('home renders its heading', async ({ page }) => {",
+      "  await page.goto('/');",
+      "  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();",
+      '});',
+      '',
+    ].join('\n'),
+  };
+  for (const [rel, content] of Object.entries(files)) {
+    const target = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+  }
+}
+
 function copyDir(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -72,6 +125,22 @@ export function materializeFixture(dir: string, kind: FixtureKind): string {
       const skeleton = path.join(FIXTURE_SRC_DIR, 'existing-go-api');
       if (fs.existsSync(skeleton)) copyDir(skeleton, dir);
       writeProjectMarkers(dir, 'existing-go-api', { git: false });
+      break;
+    }
+    // A Go binary that serves its own browser bundle from `web/`. The ONLY
+    // fixture whose capability profile has a web surface AND a root toolchain
+    // this machine can actually execute, which is what makes a `nonvisual`
+    // contract reachable: that impact requires `stack-build` to genuinely pass
+    // (validateQaReportV2 refuses a justified not-applicable for it alone), and
+    // an npm-shaped web fixture with no node_modules can only report "declared
+    // but its binary is absent". Deliberately ships no root package.json scripts
+    // so `resolveStackCommand` falls through to `go.mod`, the toolchain
+    // AGENTS.md already requires for this tier.
+    case 'existing-go-web': {
+      const skeleton = path.join(FIXTURE_SRC_DIR, 'existing-go-web');
+      if (fs.existsSync(skeleton)) copyDir(skeleton, dir);
+      writeWebTestInfrastructure(dir);
+      writeProjectMarkers(dir, 'existing-go-web', { git: false });
       break;
     }
     case 'existing-node-api': {

@@ -63,9 +63,13 @@ test('runMaterializeProject is a noop in the plugin authoring root', () => {
 
 test('runMaterializeProject (authed, no spawn) delegates to convergence and maps the outcome', () => {
   withFreshAuthProject((dir) => {
-    // The fixture state is materialized-shaped but not fully onboarding-complete,
-    // so the convergence reports "incomplete" — which proves the auth gate passed
-    // (fresh canonical auth, no CLI spawn) and the outcome mapped to a context result.
+    // This `incomplete` is the STATE-validation branch: the fixture's `.one.json`
+    // omits fields `trafficOneStateValidationIssues` requires, so convergence
+    // returns there and never reaches `materializeProjectAssets`. The one-rule /
+    // one-skill manifest `writeMaterialized` writes is therefore unread on this
+    // path — deleting that write leaves all three tests green. What the case pins
+    // is the auth gate passing (fresh canonical auth, no CLI spawn) and the
+    // outcome mapping to a context result, nothing about materialized content.
     writeMaterialized(dir);
     const r = runMaterializeProject(ctxFor(dir));
     assert.equal(r.kind, 'context');

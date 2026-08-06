@@ -60,6 +60,11 @@ exercises their COMPOSITION.
 tree (additions-aware); `npm run golden:update` is the only supported way to
 refresh it. A version bump churns the host manifests in the snapshot — expected.
 
+`npm test` preloads `src/build/test-preload.mjs`, which pins every test's
+`TRAFFIC_ONE_PLUGIN_ROOT` to this checkout; a test that deliberately needs a
+different root can opt out with `TRAFFIC_ONE_TEST_PLUGIN_ROOT_PIN=off` set
+before that file loads.
+
 ## Refreshing your own hosts (`npm run plugin:sync`)
 
 Deliberately NOT part of the chain above — it mutates machine state (host plugin
@@ -75,8 +80,11 @@ npm run plugin:sync -- --host=codex   # a specific host
 npm run plugin:sync -- --all          # every host, even inside a session
 ```
 
-A single-host sync that succeeds prints one line and nothing else; any failure
-replays the full transcript. Success is decided from filesystem state, not exit
+A single-host sync that succeeds prints the success line plus a mandatory
+restart instruction, and nothing else — the restart line is mandatory because
+hosts freeze their hook wiring at startup, so an already-open session keeps
+running the old bundle, silently, until it restarts. Any failure replays the
+full transcript. Success is decided from filesystem state, not exit
 codes — `claude plugin marketplace add` and `codex plugin marketplace add` fail
 routinely on a re-run, so exit status alone cannot tell a healthy sync from a
 broken one. `cursor` has no scriptable install and pulls in `claude`, the

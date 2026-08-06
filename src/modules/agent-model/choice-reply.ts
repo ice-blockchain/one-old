@@ -37,11 +37,30 @@ export function recordPendingModelChoiceReply(cwd: string, promptText: string): 
   if (!modelChoiceReplyPending(cwd, state as Record<string, unknown>)) return null;
   const modelChoice = parseModelChoice(promptText);
   if (!modelChoice) return null;
-  writeModelChoice(cwd, runId, modelChoice);
+  // Announcing "recorded" is only honest if it was. The write is fenced
+  // (fsjson.ts), and dropping its refusal told the user their answer had landed
+  // while readModelChoice still returned null — so the gate went on demanding
+  // the reply they had just given and been thanked for, which from the user's
+  // seat is a deadlock with no diagnosable cause. Verbatim prose in TS rather
+  // than a new T1BLOCK: this reports a runtime refusal, not a gate decision.
+  if (!writeModelChoice(cwd, runId, modelChoice)) {
+    return context(
+      `traffic-one — your "${modelChoice}" answer could NOT be recorded for run ${runId}: `
+      + `the runtime write to \`.traffic-one/runs/${runId}/model-choice.json\` was refused. `
+      + 'Nothing was persisted and the model gate will ask again. If this project\'s '
+      + '"use Traffic One here?" question is still unanswered, answer it first; otherwise check that '
+      + `\`.traffic-one/runs/${runId}/\` is a real directory (not a symbolic link) and re-send the answer.`,
+      { systemMessage: 'traffic-one: model choice could NOT be recorded' },
+    );
+  }
   // "enable" means the user fixed the budget / re-enabled the model — the
   // run's exhausted-model condemnations are stale by definition. Clearing
   // them lets the restored model actually be retried; keeping them would
   // immediately re-rotate the role off the model the user just restored.
+  //
+  // Ordered AFTER the recorded check on purpose: clearing the ledger for a
+  // choice that was never persisted would re-arm rotation onto the model the
+  // user only conditionally restored.
   if (modelChoice === 'enable-retry') clearExhaustedModels(cwd, runId);
   const recordedBlock = modelChoice === 'enable-retry' ? 'model-choice-recorded-enable' : 'model-choice-recorded-fallback';
   return context(skillBlock('agent-model', recordedBlock, {}), { systemMessage: 'traffic-one: model choice recorded' });

@@ -7,7 +7,7 @@
 // premature activation on a brand-new project when the prompt is clearly not a
 // coding/implementation request. API-key intake belongs to the wizard.
 
-import { context, noop } from '../../core/result';
+import { context, mergeResults, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode, detectStackFromCodebase, isLikelyCodingPrompt, isRuntimeControlPrompt, promptHasStackSignal } from '../../shared/detection';
@@ -62,6 +62,14 @@ function opencodeSetupDirective(url: string, localFallback: LocalFallback, waitC
     'Show the setup link, then immediately run the wait command in the current turn; do not wait for another user message first.',
     `If the wait command prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart ${hostLabel}, then type "continue" or "resume" after restart.`,
   ].join('\n\n');
+}
+
+// The prompt is the only source of `uiLibrary` — there is no wizard step for it —
+// so a refused write is the loss of an explicit user instruction, not a cache miss.
+// Said once, in both places that record it.
+function uiLibraryNotRecorded(library: string): string {
+  return `[traffic-one] the UI library you named (\`${library}\`) could not be recorded: the state write fence refused `
+    + '`.traffic-one/.one.json`. It will not be applied to this project until that file is writable and you name it again.';
 }
 
 // `originalPrompt` seeding lives in shared/onboarding/seed-prompt (also used by
@@ -168,7 +176,14 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       seedOriginalPrompt(cwd, promptText);
       const explicitUiLibrary = uiLibraryFromPrompt(promptText);
       if (explicitUiLibrary && fs.existsSync(statePath(cwd))) {
-        writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary });
+        // The prompt is the ONLY source of `uiLibrary` — the wizard has no step
+        // for it — so a refused write loses the user's explicit request outright
+        // unless they happen to name the library again in a later prompt. Merged
+        // onto the bootstrap result rather than dropped; a deny short-circuits the
+        // merge, so this never dilutes a refusal.
+        if (!writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary })) {
+          return mergeResults([bootstrapped, context(uiLibraryNotRecorded(explicitUiLibrary))]);
+        }
       }
     }
     return bootstrapped;
@@ -176,9 +191,17 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   let state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return runSessionStartAuthed(ctx);
   const explicitUiLibrary = uiLibraryFromPrompt(promptText);
+  let uiLibraryRefused = '';
   if (explicitUiLibrary && state.uiLibrary !== explicitUiLibrary && !isSubagentThread(raw)) {
-    writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary });
-    state = { ...state, uiLibrary: explicitUiLibrary };
+    // Only mirror into the in-memory state once the write has landed: everything
+    // below this point reads `state`, and carrying a `uiLibrary` that `.one.json`
+    // does not have is how the rest of the session behaves correctly on a value
+    // no later hook can read back.
+    if (writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary })) {
+      state = { ...state, uiLibrary: explicitUiLibrary };
+    } else {
+      uiLibraryRefused = uiLibraryNotRecorded(explicitUiLibrary);
+    }
   }
   const settlementRunId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (settlementRunId && !isSubagentThread(raw)) {
@@ -321,7 +344,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     : '';
   const triage = unresolved || maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
 
-  const prefixOpenCode = [openCodeReadiness, planBatchReminder].filter(Boolean).join('\n');
+  const prefixOpenCode = [uiLibraryRefused, openCodeReadiness, planBatchReminder].filter(Boolean).join('\n');
 
   // ── Generic convergence ──
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic user-prompt convergence' });

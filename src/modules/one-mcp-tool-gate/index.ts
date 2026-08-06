@@ -25,7 +25,7 @@ export const handlers: Handler[] = [
     priority: -100,
     run: (ctx) => (
       ctx.input.tool && isManagedOneMcpAgentTool(ctx.host, ctx.input.tool.rawName)
-        ? deny(ONE_MCP_AGENT_TOOL_DENY_REASON)
+        ? deny(ONE_MCP_AGENT_TOOL_DENY_REASON, { denyId: 'one-mcp-tool-gate', denyTarget: ctx.input.tool.rawName })
         : noop()
     ),
   },

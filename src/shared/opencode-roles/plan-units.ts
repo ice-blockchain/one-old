@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DEFAULT_OPENCODE_DELEGATE_ROLES } from '../../config/opencode-delegation';
 import { detectHost } from '../host';
+import { hostFlags } from '../host/capability-flags';
 import { canonicalHost } from '../model-tiers';
 import { obj } from '../obj';
 
@@ -63,7 +64,7 @@ export function openCodeParallelImplementers(state: unknown): boolean {
 // must not self-delegate or spawn the worker recursively.
 export function shouldRunRoleOnOpenCode(role: string, state: unknown, host: unknown = detectHost()): boolean {
   const h = canonicalHost(host);
-  if (h === 'opencode' || h === 'kilo') return false;
+  if (hostFlags(h).opencodeSelfHosted) return false;
   if (!role || !openCodeEnabled(state)) return false;
   return openCodeDelegateRoles(state).includes(role);
 }

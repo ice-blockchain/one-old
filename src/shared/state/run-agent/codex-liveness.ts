@@ -38,11 +38,19 @@ import {
   agentRegistryFile,
   idsForRunAgent,
   readRunAgentRegistry,
-  withAgentRegistryLock,
+  withAgentRegistryLockResult,
   type RunAgentEntry,
 } from './registry';
 import {
-  annotateClaimRoleSource,
+  applied,
+  mutationApplied,
+  preconditionFailed,
+  retryWhileUnavailable,
+  unavailable,
+  type MutationResult,
+} from './mutation-result';
+import {
+  annotateClaimRoleSourceResult,
 } from './context-resolve';
 import {
   authoritativeRebindThreadRole,
@@ -139,26 +147,37 @@ function annotateCodexRegistryEvidence(
   source: string,
   transcriptPath: string,
   parentSessionId: string | null,
-): RunAgentEntry | null {
-  let result: RunAgentEntry | null = null;
-  withAgentRegistryLock(cwd, runId, () => {
+): MutationResult<RunAgentEntry> {
+  // Fix #4 of the eleven. The lock result was discarded and `result` was only
+  // ever set on the success path, so a contended registry lock returned the same
+  // `null` as "this row is not the agent we expected".
+  //
+  // The three-valued answer is returned rather than flattened because its one
+  // caller is the LAST step of a reuse that has already verified the child, so
+  // the two refusals mean opposite things there: a lost CAS says another writer
+  // owns this row, while a contended lock says nothing was read or written at
+  // all. Retrying is therefore worth one more lock timeout on a path whose
+  // alternative is denying a verified continuation.
+  return retryWhileUnavailable(() => withAgentRegistryLockResult<RunAgentEntry>(cwd, runId, () => {
     const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
     const agents = obj(registry.agents) || {};
     const current = obj(agents[role]);
-    if (!current || current.replaced === true) return;
+    if (!current || current.replaced === true) return preconditionFailed('row-absent-or-replaced');
     const expectedIds = new Set(idsForRunAgent(expected));
-    if (!idsForRunAgent(current).some((id) => expectedIds.has(id))) return;
+    if (!idsForRunAgent(current).some((id) => expectedIds.has(id))) return preconditionFailed('expected-id-mismatch');
     current.roleSource = strongestRoleSource(source, current.roleSource);
     current.transcriptPath = transcriptPath;
     if (parentSessionId) current.parentSessionId = parentSessionId;
     try {
-      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
-      result = readRunAgentRegistry(cwd, runId)[role] || null;
+      if (!writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents })) {
+        return unavailable<RunAgentEntry>('registry-write-refused');
+      }
+      const stored = readRunAgentRegistry(cwd, runId)[role];
+      return stored ? applied(stored) : unavailable<RunAgentEntry>('registry-readback-empty');
     } catch {
-      result = null;
+      return unavailable<RunAgentEntry>('registry-write-failed');
     }
-  });
-  return result;
+  }));
 }
 
 function retireCodexRegistryEntryIfMatches(
@@ -167,26 +186,44 @@ function retireCodexRegistryEntryIfMatches(
   role: string,
   expected: RunAgentEntry,
   reason: string,
-): boolean {
-  let retired = false;
-  withAgentRegistryLock(cwd, runId, () => {
+): MutationResult<void> {
+  // Fix #5 of the eleven, the same shape as its sibling above.
+  return withAgentRegistryLockResult<void>(cwd, runId, () => {
     const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
     const agents = obj(registry.agents) || {};
     const current = obj(agents[role]);
-    if (!current || current.replaced === true) return;
+    if (!current || current.replaced === true) return preconditionFailed('row-absent-or-replaced');
     const expectedIds = new Set(idsForRunAgent(expected));
-    if (!idsForRunAgent(current).some((id) => expectedIds.has(id))) return;
+    if (!idsForRunAgent(current).some((id) => expectedIds.has(id))) return preconditionFailed('expected-id-mismatch');
     current.replaced = true;
     current.replacedAt = stateTimestamp();
     current.replacementReason = reason;
     try {
-      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
-      retired = true;
+      // `retired = true` was unconditional on a completed call, so a refused
+      // registry file reported a retired agent that is still live.
+      if (!writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents })) {
+        return unavailable('registry-write-refused');
+      }
+      return applied(undefined);
     } catch {
-      retired = false;
+      return unavailable('registry-write-failed');
     }
   });
-  return retired;
+}
+
+// The retire's three-valued face. Exported for the same reason as
+// disownConflictedRoleAgentResult: the boolean below cannot tell a contended
+// registry lock from "that row is not the agent you named", so the distinction is
+// asserted against a held lock in
+// __tests__/mutation-result-lock-contract.test.ts.
+export function retireUnverifiedCodexRunAgentResult(
+  cwd: string,
+  runId: string,
+  role: string,
+  entry: RunAgentEntry,
+  reason: string = 'explicit-unverified-codex-replacement',
+): MutationResult<void> {
+  return retireCodexRegistryEntryIfMatches(cwd, runId, role, entry, reason);
 }
 
 export function retireUnverifiedCodexRunAgent(
@@ -196,7 +233,7 @@ export function retireUnverifiedCodexRunAgent(
   entry: RunAgentEntry,
   reason: string = 'explicit-unverified-codex-replacement',
 ): boolean {
-  return retireCodexRegistryEntryIfMatches(cwd, runId, role, entry, reason);
+  return mutationApplied(retireUnverifiedCodexRunAgentResult(cwd, runId, role, entry, reason));
 }
 
 export function validateCodexLiveRunAgent(
@@ -301,16 +338,46 @@ export function validateCodexLiveRunAgent(
           ? { status: 'verified-match', entry: readRunAgentRegistry(cwd, runId)[requestedRole] || entry }
           : { status: 'conflict', entry, reason: 'codex-claim-registry-role-split' };
       }
-      if (claimed && !annotateClaimRoleSource(cwd, runId, claimed.key, claimed.claim, evidence)) {
-        return { status: 'conflict', entry, reason: 'codex-claim-evidence-cas-lost' };
+      if (claimed) {
+        // The same split as the registry annotation below, for the same reason and
+        // one function earlier: `cas-lost` says another writer owns this claim,
+        // while a contended CLAIMS lock says nothing was read or written at all.
+        // Measured before the fix: 2016ms — one full claims-lock timeout — handed
+        // to the gate as a lost compare-and-swap.
+        const annotatedClaim = annotateClaimRoleSourceResult(cwd, runId, claimed.key, claimed.claim, evidence);
+        if (annotatedClaim.outcome !== 'applied') {
+          return {
+            status: 'conflict',
+            entry,
+            reason: annotatedClaim.outcome === 'unavailable'
+              ? `codex-claim-evidence-${annotatedClaim.reason}`
+              : 'codex-claim-evidence-cas-lost',
+          };
+        }
       }
       const annotated = annotateCodexRegistryEvidence(
         cwd, runId, requestedRole, entry, evidence.source, transcriptPath!,
         meta!.parentThreadId || currentParentSessionId || entry.parentSessionId,
       );
-      return annotated
-        ? { status: 'verified-match', entry: annotated }
-        : { status: 'conflict', entry, reason: 'codex-registry-evidence-cas-lost' };
+      if (annotated.outcome === 'applied' && annotated.value) {
+        return { status: 'verified-match', entry: annotated.value };
+      }
+      // Everything above this line VERIFIED the child; only the provenance
+      // write-back failed. `cas-lost` therefore has to stay reserved for the
+      // lost compare-and-swap, or a contended registry lock reads as "another
+      // writer owns this row" and the gate's `agent-reuse-await-codex-meta`
+      // prose sends the orchestrator to wait for a rollout flush that already
+      // happened. The status stays `conflict` for BOTH deliberately: `unverified`
+      // is what lets a justified [t1-replace-agent] retire the row, and retiring
+      // a child whose role we just proved would trade two seconds of contention
+      // for a destroyed live agent.
+      return {
+        status: 'conflict',
+        entry,
+        reason: annotated.outcome === 'unavailable'
+          ? `codex-registry-evidence-${annotated.reason}`
+          : 'codex-registry-evidence-cas-lost',
+      };
     }
 
     const baseClaim: Rec = claimed?.claim || {
@@ -347,9 +414,20 @@ export function validateCodexLiveRunAgent(
     ? 'codex-session-meta-missing-or-mismatched'
     : 'codex-session-meta-role-absent';
   if (timestampAgeMs(entry.recordedAt) > SUBAGENT_STALE_MS) {
-    return retireCodexRegistryEntryIfMatches(cwd, runId, requestedRole, entry, 'codex-session-meta-missing-stale')
-      ? { status: 'stale-retired' }
-      : { status: 'conflict', entry, reason: 'codex-stale-retire-cas-lost' };
+    // `retireCodexRegistryEntryIfMatches` answers with a MutationResult, and an
+    // object is always truthy: the ternary that used to be here reported EVERY
+    // call as `stale-retired`, including a contended registry lock and a refused
+    // write, which told the reuse gate the role was free while its live row sat
+    // unretired on disk — and made `codex-stale-retire-cas-lost` unreachable.
+    const retired = retireCodexRegistryEntryIfMatches(cwd, runId, requestedRole, entry, 'codex-session-meta-missing-stale');
+    if (retired.outcome === 'applied') return { status: 'stale-retired' };
+    return {
+      status: 'conflict',
+      entry,
+      reason: retired.outcome === 'unavailable'
+        ? `codex-stale-retire-${retired.reason}`
+        : 'codex-stale-retire-cas-lost',
+    };
   }
   return { status: 'unverified', entry, reason };
 }

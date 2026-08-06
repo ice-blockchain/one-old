@@ -30,12 +30,15 @@ import {
 import {
   wrapperSource,
 } from './wrapper-source';
+import { uncertifiedHostInstallRefusal } from '../../shared/host/tiers';
 
 export function installWrapper(
   env: NodeJS.ProcessEnv = process.env,
   argv: readonly string[] = process.argv.slice(2),
   registrationFeatureEnabled?: boolean,
 ): RunnerOutput {
+  const refusal = uncertifiedHostInstallRefusal('opencode', env);
+  if (refusal) return { code: 1, stderr: `${refusal}\n`, stdout: '' };
   if (!argv.includes('--yes')) {
     return {
       code: 2,

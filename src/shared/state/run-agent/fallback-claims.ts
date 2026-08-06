@@ -19,7 +19,11 @@ import {
 } from './run-paths';
 import {
   withOwnedDirLock,
+  withOwnedDirLockResult,
 } from './locks';
+import {
+  type MutationResult,
+} from './mutation-result';
 import {
   isFreshTimestamp,
 } from './session-identity';
@@ -39,6 +43,21 @@ function fallbackClaimsLockDir(cwd: string, runId: string): string {
 
 export function withFallbackClaimsLock(cwd: string, runId: string, mutate: () => void): boolean {
   return withOwnedDirLock(
+    fallbackClaimsLockDir(cwd, runId),
+    FALLBACK_CLAIMS_LOCK_TIMEOUT_MS,
+    FALLBACK_CLAIMS_LOCK_STALE_MS,
+    FALLBACK_CLAIMS_LOCK_RETRY_MS,
+    FALLBACK_CLAIMS_WAIT,
+    mutate,
+  );
+}
+
+export function withFallbackClaimsLockResult<T>(
+  cwd: string,
+  runId: string,
+  mutate: () => MutationResult<T>,
+): MutationResult<T> {
+  return withOwnedDirLockResult(
     fallbackClaimsLockDir(cwd, runId),
     FALLBACK_CLAIMS_LOCK_TIMEOUT_MS,
     FALLBACK_CLAIMS_LOCK_STALE_MS,

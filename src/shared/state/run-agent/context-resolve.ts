@@ -61,7 +61,15 @@ import {
   listClaimedAgents,
   releaseSupersededRoleClaimsLocked,
   withRunAgentClaimsLock,
+  withRunAgentClaimsLockResult,
 } from './claims-store';
+import {
+  applied,
+  preconditionFailed,
+  retryWhileUnavailable,
+  unavailable,
+  type MutationResult,
+} from './mutation-result';
 import {
   agentRegistryFile,
 } from './registry';
@@ -95,38 +103,85 @@ export function contextFromClaim(claim: Rec, source: string): RunAgentContext {
   };
 }
 
-export function annotateClaimRoleSource(
+/**
+ * Stamp the claim with the provenance of the evidence that just proved its role.
+ *
+ * Three-valued because the boolean lock result could not tell its two callers
+ * apart from each other's needs: a CONTENDED claims lock (nothing read, nothing
+ * written, retrying may well work) and a LOST CAS (the claim on disk is no
+ * longer the one we validated) both came back as the same `null`. Measured, with
+ * the lock held by another process: 2016ms — one full claims-lock timeout —
+ * reported downstream as a lost compare-and-swap, and the resolver below turned
+ * it into "this hook resolves NO role" for a Codex child whose claim was on
+ * disk, valid for this run, and already carrying the CORRECT role.
+ *
+ * `precondition-failed` is the only TERMINAL answer here: another writer
+ * legitimately removed or re-keyed this claim, so the snapshot we validated must
+ * not bind. Everything else is "we could not find out", and the retry is inside
+ * this helper because both callers want it — one is a verified continuation's
+ * last step, the other is a live child's write.
+ */
+export function annotateClaimRoleSourceResult(
   cwd: string,
   runId: string,
   key: string,
   expected: Rec,
   evidence: RoleEvidence,
-): Rec | null {
-  if (expected.roleSource === evidence.source) return expected;
-  let result: Rec | null = null;
-  const locked = withRunAgentClaimsLock(cwd, runId, () => {
+): MutationResult<Rec> {
+  if (expected.roleSource === evidence.source) return applied(expected);
+  return retryWhileUnavailable(() => withRunAgentClaimsLockResult<Rec>(cwd, runId, () => {
     const file = runAgentFile(cwd, runId, key);
     const current = readClaimFile(file);
-    if (!current || current.role !== expected.role || current.claimId !== expected.claimId) return;
+    if (!current) return preconditionFailed<Rec>('claim-absent');
+    if (current.role !== expected.role || current.claimId !== expected.claimId) {
+      return preconditionFailed<Rec>('claim-cas-mismatch');
+    }
     const source = strongestRoleSource(evidence.source, current.roleSource);
     const next = source === current.roleSource ? current : { ...current, roleSource: source };
     try {
-      if (next !== current) writeJson(file, next);
-      result = next;
+      // The write's own refusal was discarded (`result = next` ran either way),
+      // so a fenced project reported a provenance stamp that is not on disk.
+      if (next !== current && !writeJson(file, next)) return unavailable<Rec>('claim-write-refused');
+      return applied(next);
     } catch {
-      result = null;
+      return unavailable<Rec>('claim-write-failed');
     }
-  });
-  return locked ? result : null;
+  }));
 }
 
+// `foreign-run-claim` is not one of claimRejectReason's verdicts and never can
+// be: that function is handed a claim with no idea where it was found, and this
+// is a fact about WHERE. It says "the only claim under your keys is an earlier
+// run's, and nothing in this run is yours".
+type RunAgentDiagnosisReason = RunAgentUnresolvedReason | 'foreign-run-claim';
+
 interface RunAgentUnresolvedDiagnosis {
-  reason: RunAgentUnresolvedReason;
+  reason: RunAgentDiagnosisReason;
   runId?: string;
   role?: string;
   claimFingerprint?: string;
   ledgerFingerprint?: string;
   liveFingerprint?: string;
+}
+
+// Is a claim found under `foundInRunId` evidence about the CURRENT run, or is it
+// residue from an earlier one? Structural, and it takes BOTH coordinates because
+// the two stores disagree about which one identifies a claim: the explainer finds
+// claims by DIRECTORY (runIdsForLookup walks every run on disk), while
+// resolveRunAgentContext admits them on the claim BODY alone — claimAllowsState
+// never learns the directory. Measured: a claim file left in run 1's directory
+// whose body names run 2 BINDS in run 2. So a claim is this run's if either
+// coordinate says so, and residue is the case where neither does. With no
+// currentRunId there is no run to be foreign to, and the resolver will bind any
+// run's claim, so nothing is residue.
+function claimIsCurrentRunResidue(
+  currentRunId: string | null,
+  foundInRunId: string,
+  claim: Rec,
+): boolean {
+  if (!currentRunId) return false;
+  if (foundInRunId === currentRunId) return false;
+  return claim.runId !== currentRunId;
 }
 
 // Why the claims ON DISK do not bind for this hook payload. Read-only companion
@@ -143,10 +198,27 @@ export function explainUnresolvedRunAgent(
   const keys = [identity.agentId, identity.threadId, identity.sessionId]
     .filter((v): v is string => Boolean(v));
   // Most specific first: a fingerprint/run mismatch on a real claim explains far
-  // more than "no claim file existed under this key".
-  const ranked: RunAgentUnresolvedReason[] = [
+  // more than "no claim file existed under this key" — but only for a claim that
+  // is THIS run's. Residue ranks below `no-claim`, because "some earlier run
+  // holds a claim under this key" is not a fact about this run at all, and the
+  // loop below scans every run directory on disk, not just the current one.
+  //
+  // Ranking it above `no-claim` misdiagnosed the ordinary shape it was most
+  // likely to meet: a host that reuses one session id across runs (Cursor), a
+  // second feature started in that session, and run 1's claims still on disk
+  // under the same key. A child in run 2 that never claimed was then reported as
+  // `run-id-mismatch`, which plan-runteam.ts renders as identity DRIFT and, since
+  // that render suppresses the respawn tail, costs such a child the one remedy
+  // that works — it has no live context to preserve. The render was self-refuting
+  // on its face: with both runs on one machine the claim, ledger and live
+  // fingerprints it prints are all three EQUAL, under a sentence asserting the
+  // run's identity drifted away from its claims.
+  const ranked: RunAgentDiagnosisReason[] = [
     'fingerprint-mismatch', 'run-id-mismatch', 'not-materialized', 'claim-stale', 'no-claim',
+    'foreign-run-claim',
   ];
+  const stateRunId = obj(state)?.currentRunId;
+  const currentRunId = typeof stateRunId === 'string' && stateRunId ? stateRunId : null;
   let best: RunAgentUnresolvedDiagnosis = { reason: 'no-claim' };
   let bestRank = ranked.length;
   for (const runId of runIdsForLookup(cwd, state)) {
@@ -155,11 +227,21 @@ export function explainUnresolvedRunAgent(
       if (!claim) continue;
       const reason = claimRejectReason(cwd, state, claim);
       if (!reason) continue; // resolvable — some other stage rejected it
-      const rank = ranked.indexOf(reason);
+      // A stray run id inside a claim filed in THIS run's directory keeps its
+      // rank: it is a real disagreement about identity WITHIN this run, and the
+      // only shape in which `run-id-mismatch` describes this run at all — demote
+      // it too and plan-runteam.ts's `run-id-mismatch` drift arm becomes dead
+      // code. No writer in this tree produces it (each stamps the directory it
+      // writes into), so it means a claim file corrupted, restored, or edited out
+      // of band. Only a claim that is this run's by neither measure is demoted.
+      const effective: RunAgentDiagnosisReason = claimIsCurrentRunResidue(currentRunId, runId, claim)
+        ? 'foreign-run-claim'
+        : reason;
+      const rank = ranked.indexOf(effective);
       if (rank < 0 || rank >= bestRank) continue;
       bestRank = rank;
       best = {
-        reason,
+        reason: effective,
         runId,
         role: typeof claim.role === 'string' ? claim.role : undefined,
         claimFingerprint: typeof claim.stackFingerprint === 'string' ? claim.stackFingerprint : undefined,
@@ -278,8 +360,24 @@ export function resolveRunAgentContext(
                 model: observed?.actualModel || identity.model,
               });
             }
-            const annotated = annotateClaimRoleSource(cwd, runId, key, claim, meta.role.evidence);
-            return annotated ? contextFromClaim(annotated, 'run-agent') : null;
+            const annotated = annotateClaimRoleSourceResult(cwd, runId, key, claim, meta.role.evidence);
+            // The role is ALREADY proven on this line: `claim.role` equals the role
+            // line zero names, for a claim this state accepted, keyed by this
+            // hook's own thread. So the annotation is PROVENANCE, and a lock we
+            // could not take must not un-resolve it — that answer is not "no role",
+            // it is "ask again", and the difference is a build: with the claims
+            // lock held, this child's feature-source write was denied as `main
+            // agent` and the run-team prose told the orchestrator to stop or
+            // replace a correctly-claimed live agent.
+            //
+            // Binding the un-annotated claim grants nothing extra: roleSource is
+            // not part of RunAgentContext, and a weaker stamp leaves the claim MORE
+            // correctable (isCorrectionGradeEvidence requires strictly stronger
+            // evidence), never less. `precondition-failed` stays terminal: there
+            // the claim we validated is gone or re-keyed under us, and binding a
+            // stale snapshot could hand this thread a role another writer took.
+            if (annotated.outcome === 'precondition-failed') return null;
+            return contextFromClaim(annotated.value || claim, 'run-agent');
           }
         }
         return contextFromClaim(claim, 'run-agent');
@@ -397,7 +495,20 @@ export function resolveRunAgentContext(
           sessionId,
           parentSessionId: effectiveParentSessionId || currentPending.parentSessionId || null,
           claimedAt: stateTimestamp(),
-          roleSource: strongestRoleSource(inferredEvidence?.source, currentPending.roleSource) || 'pending-correlation',
+          // Two DIFFERENT questions share this field, and only the first one is
+          // about this thread: the transcript branch above proved the child's own
+          // role, while the correlation branch proved only that exactly one
+          // handoff matches its immutable parent/model facts. Inheriting the
+          // pending claim's source stamped the PARENT's spawn-time tier on a bind
+          // the child evidenced nothing for — and at tier 3 (`host-*`) that stamp
+          // is also a CEILING: isCorrectionGradeEvidence corrects only a STRICTLY
+          // weaker source, so a later authoritative `codex-session-meta-*` naming
+          // a different role could never rebind it, leaving the misclaimed worker
+          // permanently wrong instead of merely wrong until its own metadata
+          // arrived. Correlation records itself as correlation.
+          roleSource: inferredEvidence
+            ? strongestRoleSource(inferredEvidence.source, currentPending.roleSource) || 'pending-correlation'
+            : 'pending-correlation',
           transcriptPath: inferenceTranscriptPath || null,
         };
         fs.mkdirSync(runDir(cwd, runId), { recursive: true });

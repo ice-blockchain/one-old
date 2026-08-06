@@ -400,6 +400,62 @@ test('legacy SessionStart trust vector remains reproducible', () => {
   );
 });
 
+// A hardcoded hook count in prose is the defect class itself: README.md and the
+// shipped traffic-one-doctor skill both tell the user to distrust a healthy
+// install if Codex's `/hooks` review shows a count that differs from theirs.
+// Every occurrence must track CODEX_HOOK_EXPECTED_COUNT (which this same file
+// already ties to ABI_FIXTURE.entries.length above) so a future ABI bump
+// cannot leave stale prose telling testers to refuse a good install.
+//
+// Matched against whitespace-NORMALIZED text (every run of whitespace,
+// including line breaks, collapsed to one space) on generic count-bearing
+// idioms rather than exact sentence fragments — a harmless reflow of a
+// paragraph must not fail this test for the wrong reason.
+const COUNT_BEARING_IDIOMS: readonly RegExp[] = [
+  /(\d+) trusted\s*\/\s*(\d+) runnable/g,
+  /(\d+) Traffic One hook/g,
+  /(\d+) hook keys/g,
+  /(\d+) fixture entries/g,
+];
+
+// The guarantee is the count-EQUALITY assertion below, which applies to every
+// mention found in either file. The per-file minimum is only a floor against an
+// edit that deletes the last mention outright (or rewrites it into an idiom
+// COUNT_BEARING_IDIOMS no longer recognizes), which would leave this test
+// vacuously green. README.md, audited here, states the count 4 times; the doctor
+// skill's prose is owned elsewhere and is free to state it once, so its floor is
+// the weakest one that still proves a mention exists.
+const DOC_HOOK_COUNT_FILES: Readonly<Record<string, number>> = {
+  'README.md': 4,
+  'src/modules/skills/skills-catalog/traffic-one-doctor/SKILL.md': 1,
+};
+
+test('README.md and the shipped doctor skill state the real Codex hook count', () => {
+  for (const [relPath, minMatches] of Object.entries(DOC_HOOK_COUNT_FILES)) {
+    const normalized = fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8').replace(/\s+/g, ' ');
+    let found = 0;
+    for (const pattern of COUNT_BEARING_IDIOMS) {
+      for (const match of normalized.matchAll(pattern)) {
+        found += 1;
+        for (const group of match.slice(1)) {
+          assert.equal(
+            Number(group),
+            CODEX_HOOK_EXPECTED_COUNT,
+            `${relPath}: "${match[0]}" states ${group} Codex hooks, but CODEX_HOOK_EXPECTED_COUNT `
+            + `(derived from the hooks/hooks.json generator) is ${CODEX_HOOK_EXPECTED_COUNT}`,
+          );
+        }
+      }
+    }
+    assert.ok(
+      found >= minMatches,
+      `${relPath}: expected at least ${minMatches} Codex hook-count mentions, found ${found} — the `
+      + 'prose may have moved beyond what COUNT_BEARING_IDIOMS recognizes; update the idiom list '
+      + '(do not just delete this assertion)',
+    );
+  }
+});
+
 test('ABI guard rejects positional and normalized-identity drift with migration guidance', async (t) => {
   const baseline = generatedHooksFile();
   const cases: Array<{ name: string; mutate: (hooksFile: unknown) => void }> = [

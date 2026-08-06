@@ -30,8 +30,15 @@ import {
 } from './run-paths';
 import {
   transitionRunStatus,
-  withRunLedgerLock,
+  withRunLedgerLockResult,
 } from './ledger';
+import {
+  applied,
+  mutationApplied,
+  preconditionFailed,
+  unavailable,
+  type MutationResult,
+} from './mutation-result';
 import {
   listClaimedAgents,
   releaseRunClaims,
@@ -65,27 +72,39 @@ function runEvidenceScore(cwd: string, runId: string): number {
   return score;
 }
 
-function backfillRunLedgerFingerprint(cwd: string, runId: string): boolean {
-  if (runLedgerFingerprint(cwd, runId)) return false;
+// ADVISORY (mutation-result.ts's split rule), and named as such by the plan. The
+// claim check already tolerates a ledger with no fingerprint — that is the whole
+// reason this backfill is a repair rather than a requirement — so a lost one
+// costs nothing beyond the repair not happening this pass. Fix #6 of the eleven:
+// the lock result was discarded, so a contended ledger lock and an
+// already-stamped ledger both returned `false`.
+export function backfillRunLedgerFingerprintResult(cwd: string, runId: string): MutationResult<void> {
+  if (runLedgerFingerprint(cwd, runId)) return preconditionFailed('already-stamped');
   const claims = listClaimedAgents(cwd, runId)
     .filter((claim) => typeof claim.stackFingerprint === 'string' && claim.stackFingerprint);
   const inherited = claims.length
     ? String(claims[claims.length - 1]!.stackFingerprint)
     : '';
-  if (!inherited || inherited === UNKNOWN_STACK_FINGERPRINT) return false;
-  let wrote = false;
-  withRunLedgerLock(cwd, runId, () => {
+  if (!inherited || inherited === UNKNOWN_STACK_FINGERPRINT) return preconditionFailed('nothing-to-inherit');
+  return withRunLedgerLockResult<void>(cwd, runId, () => {
     const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
-    if (!ledger || typeof ledger.stackFingerprint === 'string') return;
+    if (!ledger) return preconditionFailed('no-ledger');
+    if (typeof ledger.stackFingerprint === 'string') return preconditionFailed('already-stamped');
     try {
-      writeJson(runLedgerFile(cwd, runId), { ...ledger, stackFingerprint: inherited });
+      // `wrote = true` was unconditional, so a refused ledger reported a
+      // fingerprint the next read does not find.
+      const wrote = writeJson(runLedgerFile(cwd, runId), { ...ledger, stackFingerprint: inherited });
       invalidateRunLedgerFingerprint(cwd, runId);
-      wrote = true;
+      return wrote ? applied(undefined) : unavailable('ledger-write-refused');
     } catch {
       // Best effort — the claim check tolerates a ledger with no fingerprint.
+      return unavailable('ledger-write-failed');
     }
   });
-  return wrote;
+}
+
+function backfillRunLedgerFingerprint(cwd: string, runId: string): boolean {
+  return mutationApplied(backfillRunLedgerFingerprintResult(cwd, runId));
 }
 
 export function reconcileRunIdentityDrift(cwd: string, state: unknown): boolean {
@@ -117,7 +136,16 @@ export function reconcileRunIdentityDrift(cwd: string, state: unknown): boolean 
   const current = typeof s.currentRunId === 'string' ? s.currentRunId.trim() : '';
   if (current !== survivor.runId) {
     try {
-      writeState(cwd, { ...readJson<Rec>(path.join(cwd, STATE_FILE), {}), currentRunId: survivor.runId });
+      // The re-point is the PRECONDITION for the loop below, not its neighbour:
+      // releasing and failing the losers is only correct because `currentRunId`
+      // now names the survivor. A refused write left the losers settled while
+      // `.one.json` still pointed at one of them — so the next hook read a run
+      // whose claims this pass had just released and whose ledger it had just
+      // transitioned to `failed`, which is strictly worse than not repairing at
+      // all. Same exit the catch beside it already takes.
+      if (!writeState(cwd, { ...readJson<Rec>(path.join(cwd, STATE_FILE), {}), currentRunId: survivor.runId })) {
+        return changed;
+      }
       (state as Rec).currentRunId = survivor.runId;
       changed = true;
     } catch {

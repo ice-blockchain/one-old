@@ -96,7 +96,8 @@ export function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: 
   const altNote = altModels.length
     ? ` If this host's subagent runner does NOT offer "${shownExpected}" (it rejects an unavailable slug as invalid), pass instead the FIRST of these same-tier models the runner DOES offer — any of them satisfies the gate: ${altModels.join(', ')}.`
     : '';
-  return deny(block('performance-model-param', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: shownExpected, PASSED_NOTE: passedNote, ALTERNATES: altNote }));
+  return deny(block('performance-model-param', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: shownExpected, PASSED_NOTE: passedNote, ALTERNATES: altNote }),
+    { denyId: 'performance-model-param', denyTarget: role });
 }
 
 export function cursorExactModelDeny(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string, level: string, policy: RunModelPolicyV1 | null = null): HookResult | null {
@@ -114,7 +115,7 @@ export function cursorExactModelDeny(ctx: Ctx, cwd: string, role: string, passed
     PASSED: passedModel,
     EXPECTED: exact,
     CAPTURED: captured.join(', '),
-  }));
+  }), { denyId: 'cursor-exact-model-required', denyTarget: role });
 }
 
 // The "next eligible" model for a tier: the concrete build slug of the first same-tier
@@ -149,7 +150,7 @@ function fallbackModelFor(
 // fallback; rides the deny reason on Cursor/Codex and a promptRequest modal on Claude.
 function modelChoiceDeny(ctx: Ctx, role: string, level: string, shownExpected: string, fallback: string): HookResult {
   const reason = block('model-unavailable-choice', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: shownExpected, FALLBACK: fallback });
-  return deny(reason, { promptRequest: modelUnavailablePromptRequest(shownExpected, fallback, reason) });
+  return deny(reason, { promptRequest: modelUnavailablePromptRequest(shownExpected, fallback, reason), denyId: 'model-unavailable-choice', denyTarget: role });
 }
 
 

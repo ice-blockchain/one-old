@@ -52,6 +52,20 @@ export interface RunSimTranscript {
   // Set when the run stopped early. Names the phase and the cause, so a failing
   // case says WHICH link of the chain broke without opening the project dir.
   failure?: string;
+  /**
+   * Set INSTEAD of nothing when the run stopped because a required TOOLCHAIN is
+   * absent on this machine (the QA runner's own `blocked-environment` verdict).
+   * `failure` is still set — the run really did not finish — but assertions read
+   * this to report INCONCLUSIVE rather than FAIL.
+   *
+   * AGENTS.md has always promised that a missing toolchain is INCONCLUSIVE, not a
+   * pass; the browser half never delivered it. On a machine with no
+   * project-local Playwright, 48 assertions read "Project-local Playwright is
+   * unavailable" as a PRODUCT failure. Confusing "the answer is no" with "I could
+   * not look" is the exact inversion this suite exists to prevent, and it was
+   * happening in the suite itself.
+   */
+  environmentBlock?: string;
 }
 
 export interface ScriptedWrite {

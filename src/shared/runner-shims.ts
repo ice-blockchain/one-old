@@ -23,6 +23,31 @@ export function stableBinDir(): string {
   return path.join(path.dirname(toolchainRoot()), 'bin');
 }
 
+// `~/.traffic-one/bin` — the ONE spelling shipped prose hardcodes, in ~60
+// places across skills, rules, agent docs and the always-loaded plugin
+// instructions (`node ~/.traffic-one/bin/<shim>`), for ten of the shims below.
+// A static string cannot track stableBinDir(): that follows XDG_STATE_HOME
+// (routine on Linux) and TRAFFIC_ONE_TOOLCHAIN_ROOT, so on those machines every
+// documented command named a file ensureRunnerShims() had written elsewhere —
+// and, for doctor, one its own gate then refused (the grammar's shim anchor is
+// this same value). Relocating a large managed TOOLCHAIN is legitimate;
+// relocating a 4 KB launcher stub out from under the documentation is not.
+export function documentedBinDir(): string {
+  return path.join(process.env.HOME || os.homedir(), '.traffic-one', 'bin');
+}
+
+// Every directory the shims are written to, primary (env-derived) first and
+// deduplicated. Both spellings are written rather than one being pinned, so a
+// machine that has relocated its state keeps a live copy where it put it — a
+// pinned-to-HOME shim dir would strand those installs on the stale copy their
+// committed `.windsurf/hooks.json` still names, and would put nothing anywhere
+// at all on a machine whose HOME is not writable.
+export function runnerShimDirs(): string[] {
+  const primary = stableBinDir();
+  const documented = documentedBinDir();
+  return primary === documented ? [primary] : [primary, documented];
+}
+
 // Every runner an agent is told to invoke from prose. Shims are .cjs so a bare
 // `node <shim>` works regardless of the target's module flavor.
 export const RUNNER_SHIMS: ReadonlyArray<{ shim: string; rel: string }> = [
@@ -112,15 +137,15 @@ process.exit(1);
 `;
 }
 
-// Write/refresh all shims. Idempotent and cheap (skips identical content);
-// never throws — callers are SessionStart-grade best-effort sites.
-export function ensureRunnerShims(): { dir: string; written: string[] } {
-  const dir = stableBinDir();
+// Write/refresh every shim into one directory. Idempotent and cheap (skips
+// identical content); never throws — callers are SessionStart-grade
+// best-effort sites.
+function writeShimsTo(dir: string): string[] {
   const written: string[] = [];
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch {
-    return { dir, written };
+    return written;
   }
   for (const { shim, rel } of RUNNER_SHIMS) {
     const file = path.join(dir, shim);
@@ -138,5 +163,22 @@ export function ensureRunnerShims(): { dir: string; written: string[] } {
       // best-effort per shim; a read-only HOME must never break a session
     }
   }
-  return { dir, written };
+  return written;
+}
+
+// Writes every shim into every directory runnerShimDirs() names. The copies
+// cannot go stale relative to each other across an upgrade: both are written
+// from the same `shimSource(rel)` in the same pass, byte-compared first, and
+// there is no code path that refreshes one without the other — so a bump
+// rewrites all of them or (on a failed write) leaves the previous bytes for the
+// next SessionStart to retry.
+//
+// `dir`/`written` describe the PRIMARY directory, unchanged; `dirs` is the full
+// set, for callers that need to assert every documented path now exists.
+export function ensureRunnerShims(): { dir: string; written: string[]; dirs: string[] } {
+  const dirs = runnerShimDirs();
+  const [primary, ...rest] = dirs as [string, ...string[]];
+  const written = writeShimsTo(primary);
+  for (const dir of rest) writeShimsTo(dir);
+  return { dir: primary, written, dirs };
 }

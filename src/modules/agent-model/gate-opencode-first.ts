@@ -60,7 +60,7 @@ export function openCodeFirstGates(g: GateContext): HookResult | null {
         RUN_ID: spawnRunId,
         PROJECT_ROOT: cwd,
         QUEUED_ROLES: pendingPlanRoles.join(', '),
-      }), denyContext ? { context: denyContext } : {});
+      }), { ...(denyContext ? { context: denyContext } : {}), denyId: 'opencode-plan-batch-required', denyTarget: role });
     }
   }
 
@@ -86,7 +86,7 @@ export function openCodeFirstGates(g: GateContext): HookResult | null {
       ROLE: role,
       RUN_ID: spawnRunId,
       PROJECT_ROOT: cwd,
-    }, VERIFY_BATCH_RUNNING_FALLBACK));
+    }, VERIFY_BATCH_RUNNING_FALLBACK), { denyId: 'verify-batch-running', denyTarget: role });
   }
 
   // OpenCode role delegation (all modes, paid hosts only): a configured role MUST run
@@ -119,7 +119,8 @@ export function openCodeFirstGates(g: GateContext): HookResult | null {
       && !openCodePlanBatchComplete(cwd, runId)
       && !openCodeGateDenied(cwd, runId, role)) {
       markOpenCodeGateDenied(cwd, runId, role);
-      return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }));
+      return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }),
+        { denyId: 'opencode-role-delegate', denyTarget: role });
     }
   }
   if (shouldRunRoleOnOpenCode(role, state, ctx.host) && spawnRunId

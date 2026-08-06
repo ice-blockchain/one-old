@@ -175,7 +175,13 @@ export function stampExistingCodebaseDetection(
 
   if (options.persist === false) return { stamped: true, detected };
   try {
-    writeState(cwd, state);
+    // `write-failed` was reachable only from the catch, so the fence's own
+    // refusal — the commonest way this write does not happen — came back as
+    // `stamped: true` over a `.one.json` with no mode, no stack and no
+    // onboardingComplete. That is the state materializeProjectIfNeeded bails on
+    // and isOnboardedProjectRoot rejects, which is the exact pair this module's
+    // header says it exists to close.
+    if (!writeState(cwd, state)) return skip('write-failed', detected);
   } catch {
     // Best-effort: the SessionStart auto-detect flow still stamps on a later
     // session, and the gate's materialize-then-retry remains the backstop.
@@ -278,7 +284,11 @@ export function applyAgentTechClassification(
   applyDetectionStamp(cwd, state, mode, detected, { autoDetected: false });
   if (options.persist === false) return { ok: true, stack: String(state.stack || detected.stack), alreadyClassified: false };
   try {
-    writeState(cwd, state);
+    // Same unused channel as the stamp above. `ok: true` over a refused write
+    // told the agent its classification was committed, while the very next call
+    // re-reads a stack-less state and routes it back to 'tech-detect' — the
+    // agent is asked to classify the same codebase again with no explanation.
+    if (!writeState(cwd, state)) return { ok: false, reason: 'write-failed' };
   } catch {
     return { ok: false, reason: 'write-failed' };
   }

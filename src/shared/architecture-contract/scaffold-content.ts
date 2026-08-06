@@ -18,6 +18,8 @@ import * as path from 'path';
 
 import { SKIP_DIRS, SKIP_OS_FILES } from '../../config/reporting';
 import { profileHasWebUi, type CapabilityProfileV1 } from '../capabilities';
+import { O_NOFOLLOW, isSymlink, nofollowEnforcedByKernel, writeAll } from '../fs-nofollow';
+import { greenfieldEvidence, hasCommittedHistory } from '../greenfield-evidence';
 import { seedI18nCatalogKeys } from '../i18n-seed';
 import { profileUsesReactI18n } from './i18n';
 import { moduleSkeleton, type ModuleSkeletonReferenceV1 } from './skeletons';
@@ -484,12 +486,37 @@ const RUSTFMT_BODY = [
 // clone got a kernel pointing at ~50 files that were not in the repo.
 const GIT_TRACKED_SCAN_SKIPPED_DIRS = new Set<string>(['.traffic-one']);
 
-// Seeded from the SAME skip authority the verifier uses, so what the scans ignore
-// and what git ignores cannot drift. Two facts drove this: the prose telling agents
-// which paths to gitignore was prose only — nothing wrote the entries, so
+// Traffic One's own high-churn state under `.traffic-one/`: run artefacts,
+// per-run and project-level debug logs (see `collectActions` in
+// `shared/retention.ts` — `.traffic-one/debug/*` and `.traffic-one/runs/<id>/debug/*`
+// are exactly what it sweeps; the latter is already covered transitively by
+// the `runs/` entry below, since a directory pattern hides everything under it),
+// and the one-mcp status file. `digests/` is deliberately absent — the handoff
+// record is worth keeping.
+//
+// Every entry here carries a mid-pattern `/` once prefixed with `.traffic-one/`,
+// so git anchors it to THIS directory: a polyglot workspace member's own
+// `.traffic-one/` (e.g. `web/.traffic-one/runs/`) would not match. Recursive
+// coverage for that case is a deliberate one-line change — swap the template
+// below for `` `**/.traffic-one/${entry}` `` — left for the workspace work.
+const TRAFFIC_ONE_RUN_STATE_ENTRIES = ['runs/', 'reports/', 'backups/', 'debug/', 'one-mcp-report.json'] as const;
+
+// The GREENFIELD seed only — and "greenfield" is decided by EVIDENCE on disk
+// (`greenfieldEvidence`, further below), never by a caller's mode flag. It
+// reaches a project through the compiler's scaffold path
+// (`ensureScaffoldContent` + `seedIfBlank`, still below) or through
+// `ensureProjectGitignore` for any managed region whose recorded scope is
+// `full`. Seeded from the SAME skip
+// authority the verifier uses, so what the scans ignore and what git ignores
+// cannot drift. Two facts drove this: the prose telling agents which paths to
+// gitignore was prose only — nothing wrote the entries, so
 // `.traffic-one/runs/**` (including a 65 KB append-only debug log) got committed
 // and 122 paths sat untracked — and that prose list was inverted: it omitted
 // `runs/` (the real churn) and named `digests/` (the one thing worth keeping).
+//
+// This is deliberately NOT what an EXISTING project's `.gitignore` gets — see
+// TRAFFIC_ONE_BLOCK_BODY below for why deciding `vendor/`/`dist/`/`target/`
+// etc. for a repo Traffic One did not create is out of scope.
 //
 // The authority is shared but not verbatim: git semantics and verifier semantics
 // genuinely differ on `.traffic-one` (above) and on lockfiles (`SKIP_LOCKFILES`
@@ -504,10 +531,7 @@ const GITIGNORE_BODY = [
   '',
   '# Traffic One run state: high-churn, reproducible, and never source.',
   '# `digests/` is deliberately NOT ignored — the handoff record is worth keeping.',
-  '.traffic-one/runs/',
-  '.traffic-one/reports/',
-  '.traffic-one/backups/',
-  '.traffic-one/one-mcp-report.json',
+  ...TRAFFIC_ONE_RUN_STATE_ENTRIES.map((entry) => `.traffic-one/${entry}`),
   '',
   '# Local environment',
   '.env',
@@ -516,6 +540,445 @@ const GITIGNORE_BODY = [
   '!.env.example',
   '',
 ].join('\n');
+
+// The ONLY lines `ensureProjectGitignore` (below) ever imposes on a project it
+// did not scaffold. Everything else in GITIGNORE_BODY above — the
+// SKIP_DIRS/SKIP_OS_FILES-derived opinions, `.env*` — reaches a project only
+// where the disk itself proves greenfield (`greenfieldEvidence`: no
+// `.gitignore` content and no commit in the repository that owns the project
+// root), through either writer: deciding that an EXISTING repo's
+// `vendor/`, `dist/`, `target/`, `generated/`, etc. are safe to gitignore is
+// not ours to make. Go projects routinely commit `vendor/` (`go mod vendor`),
+// published libraries routinely commit `dist/`/`build/`, and git's ignore
+// rules never untrack what is already committed — so getting this wrong fails
+// silently: the next NEW file under one of those directories goes untracked
+// on the next clone, with no error anywhere near Traffic One.
+// Exported so the tests can assert the EXACT bytes of a converged file while
+// spelling the block's own format out independently (the greenfield body is
+// already reachable as `scaffoldFileContent('.gitignore')`). A format change
+// then has to be a deliberate edit in two places rather than something a test
+// silently ratifies.
+export const TRAFFIC_ONE_BLOCK_BODY = [
+  '# generated by traffic-one — Traffic One\'s own run state: high-churn, reproducible, never source.',
+  '# `digests/` is deliberately NOT ignored — the handoff record is worth keeping.',
+  ...TRAFFIC_ONE_RUN_STATE_ENTRIES.map((entry) => `.traffic-one/${entry}`),
+].join('\n');
+
+// Delimited block markers, same convention as the Windsurf global-rules block
+// (`OWNER_START`/`OWNER_END` in `runners/windsurf-host/index.ts`) and the
+// gitnexus AGENTS.md block (`gitnexus:start`/`gitnexus:end` in
+// `materialize/render-agents.ts`): a re-run can find and update exactly its
+// own region without touching a single byte the project owner wrote.
+export const GITIGNORE_BLOCK_START = '# traffic-one:gitignore:start';
+export const GITIGNORE_BLOCK_END = '# traffic-one:gitignore:end';
+
+/**
+ * Which of the two bodies a managed region carries.
+ *
+ * RECORDED IN THE REGION ITSELF (`scope=<id>` on the start marker) instead of
+ * being re-derived from the caller on every call. The caller's `newProject`
+ * flag is a guess about a project's history, and a provably unstable one:
+ * `materializeProjectAssets` derives it from `state.mode`, and
+ * `onboarding/repair.ts` re-derives a LOST mode with `detectMode(cwd)`, which
+ * counts source files — so a greenfield project that has since been populated
+ * comes back as `existing-codebase` and the same project's next call arrives
+ * with `newProject: false`. The file on disk is the only authority on what
+ * Traffic One already promised this project.
+ *
+ * Without the record, that flip narrowed an established full block down to
+ * `TRAFFIC_ONE_BLOCK_BODY` and DELETED `node_modules/ dist/ build/ vendor/
+ * target/ .env` from a real project's ignore list (measured: 866 → 924 → 356
+ * bytes over three calls). Nothing fails loudly when it happens — git never
+ * untracks what is already committed — so the damage surfaces later, as the
+ * user's next `git add .` committing a `.env` that stopped being ignored.
+ *
+ * The same unstable flag pointed the OTHER way is why the record alone is not
+ * enough: a region that starts life `full` because the flag said so is a
+ * permanent decision made on a guess, and `createdBlockScope` (below) is what
+ * stops the guess from making it.
+ */
+export type GitignoreScope = 'full' | 'traffic-one';
+
+const GITIGNORE_SCOPE_PREFIX = `${GITIGNORE_BLOCK_START} scope=`;
+
+function gitignoreScopeBody(scope: GitignoreScope): string {
+  return scope === 'full' ? GITIGNORE_BODY : TRAFFIC_ONE_BLOCK_BODY;
+}
+
+function gitignoreBlock(scope: GitignoreScope): string {
+  return [
+    `${GITIGNORE_SCOPE_PREFIX}${scope}`,
+    gitignoreScopeBody(scope).trimEnd(),
+    GITIGNORE_BLOCK_END,
+    '',
+  ].join('\n');
+}
+
+// Splits keeping each line's own terminator attached (including a `\r` before
+// a `\n`, if present), so slicing a contiguous run back out of the ORIGINAL
+// text reproduces every owner byte around it exactly — full-file `===`
+// equality (the previous check) missed the instant an owner added, reordered,
+// or trailing-newline-diffed a single line, and then silently doubled the
+// whole rule set below an unmarked copy on every call forever (never healed,
+// because the doubled state is itself stable under the same broken check).
+function linesKeepingTerminators(text: string): string[] {
+  return text.split(/(?<=\n)/);
+}
+
+function lineContent(line: string): string {
+  return line.replace(/\r?\n$/, '').replace(/[ \t]+$/, '');
+}
+
+// The greenfield seed's own content, landmark-matched line-by-line so CRLF and
+// trailing-whitespace differences (an editor's line-ending conversion, a
+// trailing-space autofix) can't defeat detection the way whole-file equality
+// did. `GITIGNORE_BODY` opens with a distinctive generated-header comment and
+// its shape is otherwise unique to this seed, so a contiguous match is
+// unambiguous — this is not fuzzy matching, it is the same content tolerant of
+// line-ending/whitespace noise only.
+const GITIGNORE_BODY_LINES = linesKeepingTerminators(GITIGNORE_BODY).map(lineContent);
+
+// The lines that exist ONLY in the full body. Any single one of them inside a
+// managed region proves the region carries `GITIGNORE_BODY`, which is how a
+// region written by an earlier release — marked, but with no `scope=` recorded
+// yet — gets classified without consulting the caller's flag.
+//
+// Deliberately the whole set of exclusive lines rather than just the header
+// comment: an owner who reworded or deleted our header must not thereby cause
+// every build-output opinion to be silently narrowed away, and a future release
+// that rewords the header must not quietly reintroduce the narrowing this
+// classification exists to prevent. Losing the distinction would require
+// deleting every opinion in the region — at which point there is nothing left
+// to destroy.
+const TRAFFIC_ONE_BLOCK_BODY_LINES = new Set(
+  linesKeepingTerminators(TRAFFIC_ONE_BLOCK_BODY).map(lineContent),
+);
+const GITIGNORE_FULL_ONLY_LINES = GITIGNORE_BODY_LINES.filter(
+  (line) => line !== '' && !TRAFFIC_ONE_BLOCK_BODY_LINES.has(line),
+);
+
+// Finds the legacy seed as a contiguous run of lines anywhere in `existing` —
+// above, below, or surrounded by owner content — and returns the raw
+// (unnormalized) text on each side, unsliced, so the caller can wrap just the
+// landmark region and hand every other byte back untouched.
+function findLegacyBodySpan(existing: string): { before: string; after: string } | null {
+  const rawLines = linesKeepingTerminators(existing);
+  const normalized = rawLines.map(lineContent);
+  const body = GITIGNORE_BODY_LINES;
+  for (let i = 0; i + body.length <= normalized.length; i += 1) {
+    let matches = true;
+    for (let j = 0; j < body.length; j += 1) {
+      if (normalized[i + j] !== body[j]) { matches = false; break; }
+    }
+    if (matches) {
+      return { before: rawLines.slice(0, i).join(''), after: rawLines.slice(i + body.length).join('') };
+    }
+  }
+  return null;
+}
+
+// Reads the scope off a start-marker line, or null when the line is not a start
+// marker at all.
+//
+// WHOLE-LINE and ANCHORED. The previous `indexOf` substring match treated an
+// owner's own PROSE ABOUT the markers as the marker itself: a line reading
+// `# note: # traffic-one:gitignore:start is how the block opens` opened "our"
+// region mid-line, and the next rewrite dropped that line's tail plus every
+// owner line between it and the real block (measured 87 → 444 → 378 bytes, two
+// owner lines destroyed). The mirror case — prose naming the END marker — was
+// worse: it made `end` precede `start` and the file grew by a full rule set on
+// every single call, unbounded (72 → 429 → 786 → 1143).
+//
+// Trailing whitespace is tolerated (an editor's trailing-space autofix must not
+// orphan a region); leading whitespace is deliberately NOT — an indented marker
+// is a quoted example in someone's notes, not our delimiter.
+function startMarkerScope(content: string): GitignoreScope | 'unknown' | null {
+  // Untagged: every block written before the scope was recorded. Classified
+  // from the region's own content below, then rewritten WITH the tag.
+  if (content === GITIGNORE_BLOCK_START) return 'unknown';
+  if (!content.startsWith(GITIGNORE_SCOPE_PREFIX)) return null;
+  const scope = content.slice(GITIGNORE_SCOPE_PREFIX.length);
+  return scope === 'full' || scope === 'traffic-one' ? scope : 'unknown';
+}
+
+type ManagedRegionScan =
+  | { kind: 'absent' }
+  | { kind: 'malformed' }
+  | { kind: 'present'; start: number; end: number; scope: GitignoreScope | 'unknown' };
+
+// Structural validation BEFORE any rewrite: exactly one start, exactly one end,
+// start above end. Anything else is a file a human hand-edited inside our own
+// region, and every possible repair has to guess which bytes are ours and which
+// are theirs — the guess is what deleted owner lines on five of the reviewer's
+// shapes. So the malformed verdict is not repaired, it is REFUSED (see
+// `nextGitignoreContent`).
+function scanManagedRegion(rawLines: readonly string[]): ManagedRegionScan {
+  let starts = 0;
+  let ends = 0;
+  let start = -1;
+  let end = -1;
+  let scope: GitignoreScope | 'unknown' = 'unknown';
+  let index = -1;
+  for (const raw of rawLines) {
+    index += 1;
+    const content = lineContent(raw);
+    const marker = startMarkerScope(content);
+    if (marker !== null) {
+      starts += 1;
+      start = index;
+      scope = marker;
+    } else if (content === GITIGNORE_BLOCK_END) {
+      ends += 1;
+      end = index;
+    }
+  }
+  if (starts === 0 && ends === 0) return { kind: 'absent' };
+  // Zero-with-one (a hand-deleted marker), duplicated, nested, and two whole
+  // blocks all land here, as does a reversed pair below.
+  if (starts !== 1 || ends !== 1) return { kind: 'malformed' };
+  if (start > end) return { kind: 'malformed' };
+  return { kind: 'present', start, end, scope };
+}
+
+// An untagged region's scope, read from what the region actually holds.
+function regionScope(regionLines: readonly string[]): GitignoreScope {
+  const content = new Set(regionLines.map(lineContent));
+  return GITIGNORE_FULL_ONLY_LINES.some((line) => content.has(line)) ? 'full' : 'traffic-one';
+}
+
+// Mirrors the Windsurf block replace, with one fix: that implementation
+// unconditionally inserts a blank-line separator before the block, so a file
+// whose entire content IS the block (the steady state right after this same
+// function created it) gets two spurious leading blank lines on every later
+// call. Only inserting the separator when a real preamble exists keeps a
+// no-op run byte-identical.
+//
+// The tail collapses BLANK LINES ONLY — never `/^\s+/`, which also ate the
+// INDENTATION of the first owner line below the end marker. Leading whitespace
+// is significant in a gitignore pattern (only TRAILING spaces are ignored, and
+// only when unquoted), so `  build/` names a directory literally called
+// `  build` and matches nothing real. Stripping the two spaces turns that inert
+// line into a live rule that hides the project's actual `build/` — a silent
+// widening of the ignore set, in bytes the block promises never to touch.
+function spliceGitignoreBlock(before: string, scope: GitignoreScope, after: string): string {
+  const preamble = before.trimEnd();
+  const tail = after.replace(/^(?:[ \t]*\r?\n)+/, '');
+  return `${preamble ? `${preamble}\n\n` : ''}${gitignoreBlock(scope)}${tail}`;
+}
+
+/**
+ * The file's next content, or `null` for REFUSE — leave every byte alone.
+ *
+ * `createdScope` is consulted for exactly one decision: which body a region
+ * being CREATED starts life with, and it is resolved lazily because answering
+ * it costs a walk up the filesystem (see `greenfieldEvidence`) that a refresh
+ * must not pay for. Refreshing an existing region always reads the scope out of
+ * the file (recorded tag first, region content second), so no caller can narrow
+ * a block the project already has.
+ *
+ * Refusing is the answer to a malformed marker pair because it is the only
+ * option that is provably non-destructive AND provably non-growing: nothing is
+ * written at all, so no owner line can be deleted, no rule can be duplicated,
+ * and the file is byte-identical after any number of calls. The cost is that a
+ * hand-mangled region stops receiving updates until a human repairs the pair —
+ * correct for a file whose delimiters someone has already edited by hand.
+ */
+function nextGitignoreContent(existing: string, createdScope: () => GitignoreScope): string | null {
+  const rawLines = linesKeepingTerminators(existing);
+  const scan = scanManagedRegion(rawLines);
+  if (scan.kind === 'malformed') return null;
+  if (scan.kind === 'present') {
+    const scope = scan.scope === 'unknown'
+      ? regionScope(rawLines.slice(scan.start, scan.end + 1))
+      : scan.scope;
+    return spliceGitignoreBlock(
+      rawLines.slice(0, scan.start).join(''),
+      scope,
+      rawLines.slice(scan.end + 1).join(''),
+    );
+  }
+  // The greenfield scaffold path already seeded this EXACT body, unmarked,
+  // before this block existed (`scaffoldFileContent('.gitignore')` still
+  // returns it, and `.gitignore` is in REPOSITORY_SCAFFOLD_OUTPUTS, so this is
+  // the live shape of every greenfield project, not a legacy population).
+  // Recognized by landmark, not by the caller's flag or whole-file equality
+  // (see findLegacyBodySpan): owner lines before and/or after the seed survive
+  // byte-for-byte, and the seed is re-wrapped WHOLE as `full` — the caller
+  // cannot narrow it — with that scope now recorded in the marker, so the
+  // classification never has to be re-derived on a later call.
+  const legacy = findLegacyBodySpan(existing);
+  if (legacy) return spliceGitignoreBlock(legacy.before, 'full', legacy.after);
+  const block = gitignoreBlock(createdScope());
+  return existing.trim() ? `${existing.trimEnd()}\n\n${block}` : block;
+}
+
+// `readFileSync`/`writeFileSync` both follow symlinks, so a `.gitignore` that is
+// a symlink pointing outside `projectRoot` would get written THROUGH the link
+// into whatever it targets. An `lstatSync` guard ahead of the write only NARROWS
+// that window — the path can become a symlink in between — so the refusal lives
+// in the open flags instead, where the kernel enforces it atomically.
+//
+// O_NOFOLLOW is undefined on Windows and degrades to 0 there, hence the retained
+// pre-open `lstat` for that case: no platform ends up with LESS protection than
+// the check alone gave it. Both live in shared/fs-nofollow.ts now — this file
+// solved the problem first and fsjson.ts's write fence needed the same
+// primitives, and two copies of a platform-degradation detail is exactly the
+// drift that turns one of them back into a hole.
+
+/** A regular-file fd opened for in-place update, or why we will not write. */
+function openGitignoreForUpdate(absolute: string): number | 'absent' | 'refused' {
+  if (!nofollowEnforcedByKernel && isSymlink(absolute)) return 'refused';
+  try {
+    // O_RDWR also refuses a DIRECTORY outright (EISDIR), and reading and
+    // writing through one fd guarantees the bytes we rewrite are the bytes we
+    // read — the path cannot be swapped underneath us between the two.
+    return fs.openSync(absolute, fs.constants.O_RDWR | O_NOFOLLOW);
+  } catch (error) {
+    // ELOOP (a symlink, refused by O_NOFOLLOW), EISDIR, EACCES, … all mean
+    // "not ours to rewrite". Only a genuinely absent path may be created.
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'refused';
+  }
+}
+
+function createGitignore(absolute: string, content: string): boolean {
+  try {
+    fs.mkdirSync(path.dirname(absolute), { recursive: true });
+    // O_EXCL: if ANYTHING materialized at this path since the open above —
+    // including a symlink planted deliberately — creation fails rather than
+    // writing through it, and the next call converges the real file.
+    const fd = fs.openSync(
+      absolute,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW,
+    );
+    try {
+      writeAll(fd, Buffer.from(content, 'utf8'));
+    } finally {
+      fs.closeSync(fd);
+    }
+    return true;
+  } catch {
+    return false; // best effort — never blocks the caller
+  }
+}
+
+// ── greenfield: EVIDENCE on disk, never a caller's guess ────────────────────
+//
+// `greenfieldEvidence` and `hasCommittedHistory` moved to
+// shared/greenfield-evidence.ts once a second consumer needed the same veto (the
+// same reason the symlink primitives moved to shared/fs-nofollow.ts). Their
+// semantics — walks UP to the owning repo, fails toward "has history", no
+// subprocess, veto only — are documented there and are what the two arms below
+// depend on.
+
+/**
+ * The `.gitignore` bytes the PROJECT wrote: everything outside Traffic One's own
+ * managed region, with a legacy unmarked seed treated as ours too.
+ *
+ * Exists because `greenfieldEvidence`'s first arm is self-poisoning for any
+ * consumer that runs after materialization. Materialization converges
+ * `.gitignore` on every SessionStart, long before a build delegates or compiles,
+ * so by then EVERY project — including a genuinely greenfield one — has
+ * `.gitignore` content, and the raw file would answer "not greenfield" for all
+ * of them. What the predicate actually wants to know is whether the project
+ * itself ever stated anything about git; Traffic One's own block is not the
+ * project stating anything.
+ */
+export function projectOwnedGitignore(projectRoot: string): string {
+  let existing: string;
+  try {
+    existing = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf8');
+  } catch {
+    return '';
+  }
+  const rawLines = linesKeepingTerminators(existing);
+  const scan = scanManagedRegion(rawLines);
+  // A malformed pair means a human edited our delimiters: every byte is theirs
+  // to account for, which is the conservative answer here as it is for the
+  // writer (`nextGitignoreContent` refuses).
+  if (scan.kind === 'present') {
+    return rawLines.slice(0, scan.start).join('') + rawLines.slice(scan.end + 1).join('');
+  }
+  const legacy = scan.kind === 'absent' ? findLegacyBodySpan(existing) : null;
+  return legacy ? legacy.before + legacy.after : existing;
+}
+
+/**
+ * The scope a block being CREATED starts life with.
+ *
+ * `newProject` is NECESSARY and no longer SUFFICIENT: it can only ever narrow.
+ * The caller's flag is a guess about history — `materializeProjectAssets`
+ * derives it from `state.mode`, which `detectMode` fills by counting source
+ * files — and a guess must not be able to hand an existing repository Traffic
+ * One's build-output opinions. So `full` requires the flag AND positive
+ * evidence, and the evidence acts purely as a veto: it never widens a block the
+ * caller did not ask to widen, which is what keeps an established
+ * `scope=traffic-one` project from acquiring opinions it was never given.
+ */
+function createdBlockScope(
+  projectRoot: string,
+  existing: string,
+  newProject: boolean | undefined,
+): GitignoreScope {
+  return newProject && greenfieldEvidence(projectRoot, existing) ? 'full' : 'traffic-one';
+}
+
+/**
+ * Idempotently converge `<projectRoot>/.gitignore` on the Traffic One block.
+ *
+ * Two bodies exist. A greenfield project — one Traffic One is scaffolding, with
+ * no history and no opinion of its own yet — carries the full
+ * SKIP_DIRS-derived `GITIGNORE_BODY`. Every existing repository gets ONLY
+ * `TRAFFIC_ONE_BLOCK_BODY`, because deciding that someone else's `vendor/`,
+ * `dist/` or `target/` is safe to ignore is not ours to make.
+ *
+ * A block being CREATED gets the full body only when `newProject` asks for it
+ * AND the project's own disk state proves greenfield (`createdBlockScope` /
+ * `greenfieldEvidence`); `newProject` alone cannot, because it is a guess about
+ * history that reads `new-project` for any repository with five or fewer files
+ * in `SOURCE_EXTS`. Refreshing a block that already exists reads its scope out
+ * of the FILE (see `GitignoreScope`), so no later call — including one whose
+ * `state.mode` was re-derived by `onboarding/repair.ts` into
+ * `existing-codebase` — can narrow an established full block and delete ignore
+ * rules the project has been relying on.
+ *
+ * Owner content outside the marker pair is never reordered, deduped, or
+ * rewritten, a malformed marker pair is refused rather than repaired, and a
+ * symlinked or non-regular path is never written at all. Returns true iff the
+ * file changed.
+ *
+ * The one production trigger is `materializeProjectAssets` (runs for every
+ * mode, guarded on Traffic One consent there) — this function itself performs
+ * no consent check, so any future caller must gate the same way.
+ */
+export function ensureProjectGitignore(projectRoot: string, opts: { newProject?: boolean } = {}): boolean {
+  const absolute = path.join(projectRoot, '.gitignore');
+  const opened = openGitignoreForUpdate(absolute);
+  if (opened === 'refused') return false;
+  if (opened === 'absent') {
+    return createGitignore(absolute, gitignoreBlock(createdBlockScope(projectRoot, '', opts.newProject)));
+  }
+  try {
+    // A directory already failed the open; this additionally refuses a fifo or
+    // device node, which must never be truncated and rewritten.
+    if (!fs.fstatSync(opened).isFile()) return false;
+    const existing = fs.readFileSync(opened, 'utf8');
+    // Lazily: a refresh reads its scope off the file and must not pay for the
+    // walk up the filesystem the evidence check performs.
+    const next = nextGitignoreContent(
+      existing,
+      () => createdBlockScope(projectRoot, existing, opts.newProject),
+    );
+    if (next === null || next === existing) return false;
+    const payload = Buffer.from(next, 'utf8');
+    fs.ftruncateSync(opened, 0);
+    writeAll(opened, payload);
+    return true;
+  } catch {
+    return false; // best effort — never blocks the caller
+  } finally {
+    try { fs.closeSync(opened); } catch { /* the fd is going away regardless */ }
+  }
+}
 
 export function scaffoldFileContent(
   relPath: string,
@@ -535,6 +998,39 @@ export function scaffoldFileContent(
   if (base === 'rustfmt.toml') return RUSTFMT_BODY;
   return null;
 }
+
+/**
+ * The scaffold bodies that are an opinion about someone else's REPOSITORY rather
+ * than about the toolchain this run compiles — every one of them a file its tool
+ * DISCOVERS automatically, so its mere presence changes how the project's own
+ * lint/format commands behave:
+ *
+ *   - `eslint.config.js` — ESLint 9 prefers flat config over `.eslintrc*`, so
+ *     this file does not extend a repo's lint setup, it REPLACES it, and hands it
+ *     a `max-lines: 400` error cap it never agreed to.
+ *   - `.prettierrc` (singleQuote, printWidth 80) and `.prettierignore` — the next
+ *     `prettier --write .`, which the seeded `package.json` adds as `format`,
+ *     reformats every file in the repository to those opinions.
+ *   - `ruff.toml` / `.golangci.yml` / `pint.json` / `rustfmt.toml` /
+ *     `.stylelintrc.json` — same shape per toolchain, and `ruff.toml` in
+ *     particular OUTRANKS a project's `pyproject.toml [tool.ruff]` section.
+ *
+ * They reach a project only under compile.ts's `isNewProject`, which is
+ * `state.mode === 'new-project'` — the guess. Matched by BASENAME because the
+ * node tooling root and a server-rendered backend's app root are not always `.`;
+ * `.gitignore` is only ever compiled at the project root.
+ */
+const PROJECT_CONVENTION_BASENAMES = new Set<string>([
+  '.gitignore',
+  'eslint.config.js',
+  '.prettierrc',
+  '.prettierignore',
+  '.stylelintrc.json',
+  'ruff.toml',
+  '.golangci.yml',
+  'pint.json',
+  'rustfmt.toml',
+]);
 
 export interface ScaffoldContentOptions {
   /**
@@ -577,11 +1073,35 @@ export function ensureScaffoldContent(
     ? null
     : toolingRoot === '.' ? 'package.json' : `${toolingRoot}/package.json`;
   const written: string[] = [];
+  // One walk up the filesystem for the whole loop, and only when a convention
+  // body is actually up for seeding — the answer cannot change mid-call.
+  let history: boolean | null = null;
+  const projectAlreadyHasHistory = (): boolean => {
+    if (history === null) history = hasCommittedHistory(projectRoot);
+    return history;
+  };
   for (const output of scaffoldOutputs) {
-    const body = normalized(output.path) === toolingManifest
+    const isToolingManifest = normalized(output.path) === toolingManifest;
+    const body = isToolingManifest
       ? packageJsonBody(profile)
       : scaffoldFileContent(output.path, profile);
     if (!body) continue;
+    // These bodies are opinions about someone else's repository (see
+    // PROJECT_CONVENTION_BASENAMES) and they arrive here on the same
+    // `state.mode` guess `ensureProjectGitignore` may no longer trust.
+    // `seedIfBlank` already supplies the "no existing content" arm of
+    // `greenfieldEvidence`; a commit in the owning repository supplies the
+    // other, and a project with history has conventions of its own whether or
+    // not it happens to spell them in the file we were about to create — an
+    // `.eslintrc.json`, a `[tool.ruff]` block in `pyproject.toml`, or a
+    // `biome.json` are all invisible to a missing-or-blank test on OUR path.
+    // The tooling `package.json` rides along: its whole content is the
+    // devDependencies and `lint`/`format` scripts for the eslint config being
+    // withheld, so seeding it alone would install a toolchain for a config that
+    // is not there.
+    const convention = isToolingManifest
+      || PROJECT_CONVENTION_BASENAMES.has(normalized(output.path).split('/').pop() || '');
+    if (convention && projectAlreadyHasHistory()) continue;
     if (seedIfBlank(projectRoot, output.path, body)) written.push(output.path);
   }
   if (options?.newProject && options.compiled) {

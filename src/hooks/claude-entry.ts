@@ -13,7 +13,7 @@ import { collectHandlers, defaultModulesDir, loadModules } from '../core/registr
 import { selectAdapter } from '../adapters/select';
 import { detectHost } from '../shared/host';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { hasValidPreToolPayload, isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
+import { hasValidPreToolPayload, isFailClosedRecoveryExemption, isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
 import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
 import { markCodexHookContext } from '../shared/codex-hook-evidence';
 
@@ -39,7 +39,9 @@ export async function runClaudeHook(
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: '', exitCode: 0 };
   const host = detectHost(env, ['--host', subcommand]); // never cursor here
-  if (isGatePreToolSubcommand(subcommand) && !hasValidPreToolPayload(stdin, subcommand, 'nested')) {
+  if (isGatePreToolSubcommand(subcommand)
+    && !hasValidPreToolPayload(stdin, subcommand, 'nested')
+    && !isFailClosedRecoveryExemption(stdin, subcommand, 'nested')) {
     return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };
   }
   // This subcommand is wired only to the exact managed MCP matcher. Deny before
@@ -59,6 +61,11 @@ export async function runClaudeHook(
       return { stdout: message ? sessionStartFallback(message, host) : '', exitCode: 0 };
     }
     if (isGatePreToolSubcommand(subcommand)) {
+      // The runtime just threw — module discovery, the pipeline, or state I/O
+      // is damaged, exactly the case PRE_TOOL_REMEDIATION tells the user to
+      // run doctor for. Recognize that exact recovery command here so it is
+      // not itself denied by the failure it is meant to diagnose.
+      if (isFailClosedRecoveryExemption(stdin, subcommand, 'nested')) return { stdout: '', exitCode: 0 };
       return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };
     }
     return { stdout: '', exitCode: 0 };

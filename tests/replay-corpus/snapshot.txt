@@ -1,0 +1,149 @@
+# tests/replay-corpus/snapshot.txt — REVIEW EVERY DIFF, DO NOT BLINDLY ACCEPT.
+#
+# This is the checked-in verdict baseline for the replay corpus
+# (tests/replay-corpus/replay.test.ts). Each line is one case's outcome:
+#   <case id>\t<decision>\t<gate>\t<denyId>\t<denyTarget shape>
+# sorted by case id. Regenerated ONLY by:
+#   npm run replay:rebaseline -- --confirm-verdict-change
+# (deliberately not "npm run golden:update" — this file is hand-authored
+# corpus, not a generated artifact, and golden:update must never be the way a
+# verdict diff goes away; see the harness's own report for why.)
+# That script refuses to run without the flag, and its own second line of
+# output on success is a reminder to re-read the diff it just produced. A
+# diff here means the pipeline's DECISIONS changed for a real payload+state
+# pair — every changed line must be read and is either an intentional,
+# annotated relaxation/tightening (name it in the same commit) or a
+# regression. Never regenerate this file just to make a red run go green.
+agent-model.absolute-traffic-one-path	deny	agent-model.spawn	absolute-traffic-one-path	abs-path-outside-project
+agent-model.architect-phase-incomplete	deny	agent-model.spawn	architect-phase-incomplete	token:senior-frontend
+agent-model.cursor-agent-type-required	deny	agent-model.spawn	cursor-agent-type-required	token:senior-architect
+agent-model.kilo-general-agent-required	deny	agent-model.spawn	kilo-general-agent-required	token:senior-architect
+agent-model.opencode-named-agent-required	deny	agent-model.spawn	opencode-named-agent-required	token:senior-architect
+agent-model.performance-main-agent	deny	agent-model.spawn	performance-main-agent	token:senior-frontend
+agent-model.performance-model-param-missing	deny	agent-model.spawn	performance-model-param	token:senior-architect
+agent-model.post-tool-use-shell-noop-control	noop			-
+agent-model.spawn-background-forbidden	deny	agent-model.spawn	spawn-background-forbidden	token:senior-frontend
+agent-model.spawn-child-cannot-mint-run	deny	agent-model.spawn	spawn-child-cannot-mint-run	-
+agent-model.spawn-claim-unavailable	deny	agent-model.spawn	spawn-claim-unavailable	token:quick-fix
+agent-model.spawn-role-conflict	deny	agent-model.spawn	spawn-role-conflict	-
+agent-model.spawn-run-id-mismatch	deny	agent-model.spawn	spawn-run-id-mismatch	run-id
+apply-patch.invalid-payload-via-workspace-boundary	deny	session.workspace-boundary	apply-patch-payload-invalid	-
+auth.enforced-declined-project-standsdown	allow			-
+auth.enforced-unauthenticated-mutating-shell	deny	session.auth	onboarding-use-plugin-question	-
+authoring-guard.agents-md-generated-rewrite-in-plugin-repo	deny	session.authoring-guard	authoring-guard	project-path:AGENTS.md
+authoring-guard.ordinary-source-edit-in-plugin-repo-allowed	allow			-
+authoring-guard.traffic-one-write-in-plugin-repo	deny	session.authoring-guard	authoring-guard	project-path:.traffic-one/stray.json
+consent.declined-onboarded-project-stands-down	allow			-
+consent.declined-onboarded-session-start-silent	noop			-
+consent.declined-project-deploy-gate-stands-down	allow			-
+consent.declined-project-library-gate-stands-down	allow			-
+consent.declined-project-scaffold-gate-stands-down	allow			-
+consent.declined-project-supabase-gate-stands-down	allow			-
+consent.pre-consent-writes-fenced-still-pending	deny	onboarding-gate	onboarding-use-plugin-question	-
+consent.pre-consent-writes-fenced-then-no	allow			-
+consent.pre-consent-writes-fenced-then-yes	deny	onboarding-gate	onboarding-server-deny-first	-
+host-coverage.claude-shell-readonly	allow			-
+host-coverage.codex-other	allow			-
+host-coverage.copilot-file-read	allow			-
+host-coverage.cursor-search	allow			-
+host-coverage.kilo-file-write-existing-codebase	allow			-
+host-coverage.kilo-search	allow			-
+host-coverage.opencode-other	allow			-
+host-coverage.windsurf-search	allow			-
+lifecycle.materialize-project-command	allow			-
+lifecycle.post-tool-use-shell-scaffolded-claude	context			-
+lifecycle.post-tool-use-write-greenfield-claude	noop			-
+lifecycle.session-start-existing-codebase-windsurf	context			-
+lifecycle.session-start-fresh-claude	noop			-
+lifecycle.session-start-onboarded-midrun-codex	context			-
+lifecycle.session-start-scaffolded-cursor	context			-
+lifecycle.session-start-undecided-claude	noop			-
+lifecycle.stop-midrun-cursor	noop			-
+lifecycle.stop-onboarded-cursor	noop			-
+lifecycle.stop-onboarding-incomplete-claude	noop			-
+lifecycle.subagent-start-codex-midrun	context			-
+lifecycle.subagent-stop-cursor-midrun	noop			-
+lifecycle.user-prompt-submit-fresh-claude	context			-
+lifecycle.user-prompt-submit-midrun-cursor	context			-
+lifecycle.user-prompt-submit-scaffolded-opencode	context			-
+model-choice.model-gate-command-user-approval-request	deny	agent-model.model-gate	user-approval-request	-
+model-choice.non-cursor-host-noop	allow			-
+model-choice.plan-write-pending-on-read-only-shell	deny	plan-guard.write	plan-write-model-choice-pending	-
+model-choice.stop-first-cursor	deny	model-choice-gate.pre-tool	model-choice-stop-first	abs-path-outside-project
+model-choice.stop-repeat-cursor	deny	model-choice-gate.pre-tool	model-choice-stop-repeat	abs-path-outside-project
+onboarding.browser-open-denied	deny	onboarding-gate	browser-open-denied	-
+onboarding.claude-orientation-allowed-after-consent	allow			-
+onboarding.claude-wait-background-denied	deny	onboarding-gate	claude-wait-background-denied	-
+onboarding.cursor-models-required	deny	onboarding-gate	onboarding-cursor-models-required	run-id
+onboarding.declined-project-standsdown	allow			-
+onboarding.doctor-command-allowed-pre-consent	allow			-
+onboarding.doctor-command-with-bundle-flag-allowed	allow			-
+onboarding.kilo-setup-required	deny	onboarding-gate	onboarding-setup-required-opencode	-
+onboarding.opencode-setup-required	deny	onboarding-gate	onboarding-setup-required-opencode	-
+onboarding.read-only-pre-consent-still-denied	deny	onboarding-gate	onboarding-use-plugin-question	-
+onboarding.repaired-materialization	deny	onboarding-gate	repaired-materialization	-
+onboarding.server-deny-first-claude	deny	onboarding-gate	onboarding-server-deny-first	-
+onboarding.server-deny-repeat-claude	deny	onboarding-gate	onboarding-server-deny-repeat	-
+onboarding.team-mode-downgrade-guard	deny	onboarding-gate	team-mode-downgrade-guard	-
+onboarding.team-mode-marker-guard	deny	onboarding-gate	team-mode-marker-guard	-
+onboarding.tech-classify-read-allowed	allow			-
+onboarding.tech-classify-required	deny	onboarding-gate	tech-classify-required	-
+onboarding.use-plugin-question-claude	deny	onboarding-gate	onboarding-use-plugin-question	-
+onboarding.use-plugin-question-cursor	deny	onboarding-gate	onboarding-use-plugin-question	-
+onboarding.windsurf-orientation-allowed	allow			-
+onboarding.windsurf-server-deny-first	deny	onboarding-gate	windsurf-server-deny-reason	-
+onboarding.windsurf-server-deny-repeat	deny	onboarding-gate	windsurf-server-deny-reason-repeat	-
+one-mcp.claude-get-config-denied	deny	one-mcp-tool-gate.agent-call	one-mcp-tool-gate	tool-name
+one-mcp.cursor-report-codebase-denied	deny	one-mcp-tool-gate.agent-call	one-mcp-tool-gate	tool-name
+one-mcp.opencode-get-config-denied	deny	one-mcp-tool-gate.agent-call	one-mcp-tool-gate	tool-name
+one-mcp.unmanaged-mcp-tool-allowed	allow			-
+order.auth-gate-runs-before-authoring-guard	deny	session.auth	onboarding-server-deny-first	-
+order.authoring-guard-runs-before-onboarding-gate	deny	session.authoring-guard	authoring-guard	abs-path-outside-project
+plan-guard.apply-patch-invalid-payload	deny	session.workspace-boundary	apply-patch-payload-invalid	-
+plan-guard.apply-patch-reconstruction-failed	deny	plan-guard.write	apply-patch-reconstruction-failed	project-path:src/index.ts
+plan-guard.deploy-fingerprint-mismatch	deny	plan-guard.deploy	deploy-gate-fingerprint-mismatch	tool-command
+plan-guard.deploy-non-publishing-command-allowed	allow			-
+plan-guard.deploy-security-check-stale	deny	plan-guard.deploy	deploy-gate-security-check-stale	tool-command
+plan-guard.deploy-shipper-approval-required	deny	plan-guard.deploy	deploy-gate-shipper-approval-required	tool-command
+plan-guard.feature-source-write-before-plan	deny	plan-guard.write	plan-gate	project-path:apps/web/src/components/Widget.tsx
+plan-guard.library-allowlist-allowed-redux	allow			-
+plan-guard.library-allowlist-forbidden-mobx	deny	plan-guard.library	library-allowlist-forbidden	tool-command
+plan-guard.monorepo-root-vite	deny	plan-guard.write	monorepo-root-vite	project-path:src/main.tsx
+plan-guard.opencode-external-temp-shell	deny	plan-guard.write	opencode-external-temp-shell	-
+plan-guard.readme-write-allowed-without-plan	allow			-
+plan-guard.registry-probe-gate	deny	plan-guard.write	registry-probe-gate	-
+plan-guard.run-id-mismatch-write	deny	plan-guard.write	run-id-mismatch	project-path:.traffic-one/digests/2026-06-17T12-09-40Z/architect.md
+plan-guard.runtime-assignments-owner-gate	deny	plan-guard.write	runtime-assignments-owner-gate	project-path:.traffic-one/runs/2026-06-17T12-09-40Z/assignments.json
+plan-guard.scaffold-gate-noop-other-hosts	allow			-
+plan-guard.scaffold-main-agent-plan-gate-windsurf	deny	plan-guard.scaffold	scaffold-main-agent-plan-gate	abs-path-outside-project
+plan-guard.scaffold-plan-gate-windsurf-subagents	deny	plan-guard.scaffold	scaffold-plan-gate	abs-path-outside-project
+plan-guard.scaffold-stack-gate-windsurf-nextjs	deny	plan-guard.scaffold	scaffold-stack-gate	abs-path-outside-project
+plan-guard.scaffolded-greenfield-edit-allowed	allow			-
+plan-guard.state-mode-downgrade	deny	plan-guard.write	state-mode-downgrade	project-path:.traffic-one/.one.json
+plan-guard.struct-scan-incomplete	deny	plan-guard.write	plan-write-struct-scan-incomplete	project-path:apps/web/src/App.tsx
+plan-guard.supabase-local-non-supabase-backend-allowed	allow			-
+plan-guard.supabase-local-stack-gate	deny	plan-guard.supabase-local	supabase-local-stack-gate	tool-command
+plan-static.asset-extension-mismatch	deny	plan-guard.write	asset-extension-mismatch	project-path:apps/web/public/logo.png
+plan-static.asset-extension-mismatch-existing-codebase	deny	plan-guard.write	asset-extension-mismatch	project-path:public/logo.png
+plan-static.component-placement	deny	plan-guard.write	component-placement	project-path:apps/web/src/Widget.tsx
+plan-static.cross-feature-import	deny	plan-guard.write	cross-feature-import	project-path:apps/web/src/features/cart/total.ts
+plan-static.css-ts-import	deny	plan-guard.write	css-ts-import	project-path:apps/web/src/components/panel.ts
+plan-static.deep-relative-package	deny	plan-guard.write	deep-relative-package	project-path:apps/web/src/features/cart/button.ts
+plan-static.default-export	deny	plan-guard.write	default-export	project-path:apps/web/src/components/Badge.tsx
+plan-static.dynamic-inline-style-allowed	allow			-
+plan-static.existing-codebase-standdown-allowed	allow			-
+plan-static.expo-route-service-files	deny	plan-guard.write	expo-route-service-files	project-path:apps/web/app/home.service.ts
+plan-static.monorepo-package-json	deny	plan-guard.write	monorepo-package-json	project-path:package.json
+plan-static.monorepo-root-flat-scaffold	deny	plan-guard.write	monorepo-root-flat-scaffold	project-path:tsconfig.app.json
+plan-static.native-dom-tags	deny	plan-guard.write	native-dom-tags	project-path:apps/mobile/src/components/Row.tsx
+plan-static.native-inline-style	deny	plan-guard.write	native-inline-style	project-path:apps/mobile/src/components/Card.tsx
+plan-static.no-any	deny	plan-guard.write	no-any	project-path:apps/web/src/components/util.ts
+plan-static.no-any-test-scope-allowed	allow			-
+plan-static.pages-service-files	deny	plan-guard.write	pages-service-files	project-path:apps/web/src/pages/home.service.ts
+plan-static.vanilla-extract-import	deny	plan-guard.write	vanilla-extract-import	project-path:apps/web/src/components/theme.ts
+plan-static.web-inline-style	deny	plan-guard.write	web-inline-style	project-path:apps/web/src/components/Box.tsx
+plan-static.websocket-location	deny	plan-guard.write	websocket-location	project-path:apps/web/src/components/live.ts
+undecided.mutating-shell-blocked-before-onboarding	deny	onboarding-gate	onboarding-use-plugin-question	-
+workspace-boundary.read-inside-workspace-allowed	allow			-
+workspace-boundary.read-outside-workspace	deny	session.workspace-boundary	workspace-boundary-guard	abs-path-outside-project
+workspace-boundary.shell-unresolved-expansion	deny	session.workspace-boundary	workspace-boundary-unresolved-expansion	project-path:$UNRESOLVED_VAR/out.txt

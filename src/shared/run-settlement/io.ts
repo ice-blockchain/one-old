@@ -11,6 +11,7 @@ import { isMaintenanceTerminal, maintenanceOutcome } from '../maintenance/termin
 import { paidFallbackCompletionFromMaintenance } from '../maintenance/fallback-proof';
 import { pluginVersion } from '../../config/plugin-identity';
 import { readJson, writeJson } from '../fsjson';
+import { runUsedOperatorOverride } from '../override';
 import { withProjectStateLock } from '../state/project-state-lock';
 import { strictRunVerificationEvidence } from '../strict-verification-evidence';
 
@@ -231,6 +232,31 @@ export function writeRunSettlement(
           }
         }
       }
+      // The operator-override abuse guard: a run somebody unblocked a gate for
+      // is PERMANENTLY ineligible for `verified`, and therefore for `shipped`
+      // too (writeLegacyProjection only projects the `shipped` outcome onto a
+      // `verified` settlement, so one refusal covers both).
+      //
+      // Read from OUTSIDE the project tree (shared/override/**), never from a
+      // flag stamped into run state. An in-project marker would be deletable by
+      // the same operator who minted the override — and by the agent — so the
+      // evidence and the guard have to be the same out-of-tree artefact. It is
+      // also why nothing had to be added to run.json, the claims store or the
+      // ledger for this.
+      //
+      // `validating`, not `blocked`/`failed`: the run is refused CERTIFICATION,
+      // not declared dead. It can still be settled failed or blocked through the
+      // ordinary paths, and the named incomplete check is what
+      // `run-status --status completed --outcome verified` reports back through
+      // transitionRunStatusResult's settlement-not-verified refusal.
+      //
+      // Deliberately TTL-BLIND (runOverrideRecords): if the guard expired with
+      // the token, waiting 30 minutes would launder the run.
+      if (status === 'verified' && runUsedOperatorOverride(projectRoot, runId)) {
+        status = 'validating';
+        reason = 'operator-override-used';
+        incompleteChecks.push('operator-override-used');
+      }
       if (update.status === 'verified' && (
         activeClaims > 0
         || incompleteChecks.length > 0
@@ -271,9 +297,19 @@ export function writeRunSettlement(
         revision: (previous?.revision || 0) + 1,
         updatedAt: new Date().toISOString(),
       };
-      written = { ...withoutHash, settlementHash: settlementHash(withoutHash) };
-      writeJson(runSettlementPath(projectRoot, runId), written);
-      writeLegacyProjection(projectRoot, written);
+      const candidate: RunSettlementV2 = { ...withoutHash, settlementHash: settlementHash(withoutHash) };
+      // The `| null` return already existed for the `catch` below; the fence's
+      // refusal (fsjson.ts: an unanswered consent question, a planted symlink, a
+      // path escaping the state dir) was the one outcome it never carried.
+      // `written` was assigned before the write, so a refused settlement came
+      // back as a non-null, hash-bearing record — and the projection below then
+      // stamped run.json with `settlementHash`/`canonicalStatus` for a
+      // settlement-v2.json that does not exist, leaving the compatibility
+      // projection describing a canonical record no reader can find. Both stop
+      // here: nothing on disk means nothing to project and nothing to report.
+      if (!writeJson(runSettlementPath(projectRoot, runId), candidate)) return;
+      written = candidate;
+      writeLegacyProjection(projectRoot, candidate);
     });
   } catch {
     return null;

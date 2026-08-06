@@ -31,14 +31,14 @@ import {
 } from './git';
 import {
   IMPORTANT_VISUAL_PATH_RE,
+  browserRequired,
   changedRoutes,
   deriveUiImpact,
   plannedImportantVisualChange,
-  plannedUiImpactFloor,
-  raiseImpact,
   rank,
   requiredChecks,
   thresholdsValid,
+  uiImpactWithPlannedFloor,
   validateAgentRaisedImpact,
   verificationHash,
 } from './impact';
@@ -98,10 +98,7 @@ export function buildVerificationContract(
     baselineDiff.paths,
     architecture.baseline,
   );
-  const runtimeImpact = raiseImpact(
-    derived.impact,
-    plannedUiImpactFloor(projectRoot, architecture),
-  );
+  const runtimeImpact = uiImpactWithPlannedFloor(projectRoot, architecture, derived.impact);
   const raised = options.agentRaisedImpact && rank(options.agentRaisedImpact) > rank(runtimeImpact)
     ? options.agentRaisedImpact
     : runtimeImpact;
@@ -154,7 +151,7 @@ export function buildVerificationContract(
     scanComplete: baselineDiff.complete,
     ...(baselineDiff.reason ? { scanReason: baselineDiff.reason } : {}),
     requiredChecks: requiredChecks(impact, !webUi && Boolean(options.performanceRisk)),
-    browserRequired: impact === 'behavioral' || impact === 'visual',
+    browserRequired: browserRequired(impact),
     nativeAdapter: impact === 'native-ui' ? (architecture.profile.qaAdapters[0] || null) : null,
     requiredScreenshotWidths: impact === 'visual' ? [390, ...(tabletRisk ? [768] : []), 1440] : [],
     tabletRisk,
@@ -198,14 +195,42 @@ export function buildVerificationContract(
   return contract;
 }
 
+/**
+ * Persist `contract` and hand back the contract that is now ON DISK, or `null`
+ * when the write chokepoint refused it (fsjson.ts: an unanswered consent
+ * question, a planted symlink, a path that escapes the state dir).
+ *
+ * The `| null` is the whole point, and it is deliberately in the RETURN VALUE
+ * the caller already consumes rather than in a second boolean beside it. This
+ * function used to drop writeJson's refusal and `return contract` on the next
+ * line, so a caller received a contract object that claimed to be published
+ * whether or not anything had been written — and every caller believed it. A
+ * separate boolean would have been just as droppable; a nullable contract is
+ * one the type checker will not let a caller use without deciding.
+ *
+ * Not a `MutationResult`: that type exists to keep "the world said no" apart
+ * from "I could not find out", and it carries a retry contract for the second.
+ * Every refusal reachable here is the FIRST kind — durable, deliberate and
+ * default-closed — so there is no second answer to distinguish and nothing a
+ * retry could change.
+ */
 export function publishVerificationContract(
   projectRoot: string,
   contract: VerificationContractV2,
-): VerificationContractV2 {
-  writeJson(verificationContractPath(projectRoot, contract.runId), contract);
-  return contract;
+): VerificationContractV2 | null {
+  return writeJson(verificationContractPath(projectRoot, contract.runId), contract) ? contract : null;
 }
 
+/**
+ * Compile and publish in one call. Used only by tests and test fixtures
+ * (production compiles with buildVerificationContract and publishes through
+ * publishVerificationContract, so it can route a refusal into its own gate's
+ * deny) — which is why a refused publish THROWS here instead of widening the
+ * return type to `| null` across ~40 assertion sites. It joins the three
+ * conditions this module already throws for: like an invalid runId or an
+ * impossible Lighthouse budget, a contract that could not be persisted is not a
+ * contract, and a test that continues against one is measuring nothing.
+ */
 export function compileVerificationContract(
   projectRoot: string,
   runId: string,
@@ -216,7 +241,9 @@ export function compileVerificationContract(
   const contract = buildVerificationContract(projectRoot, runId, state, architecture, options);
   const existing = readVerificationContract(projectRoot, runId);
   if (existing?.contractHash === contract.contractHash) return existing;
-  return publishVerificationContract(projectRoot, contract);
+  const published = publishVerificationContract(projectRoot, contract);
+  if (!published) throw new Error(`verification contract for run ${runId} could not be persisted`);
+  return published;
 }
 
 export function readVerificationContract(
@@ -294,5 +321,9 @@ export {
 } from './git';
 
 export {
+  browserRequired,
   deriveUiImpact,
+  plannedUiImpactFloor,
+  requiredChecks,
+  uiImpactWithPlannedFloor,
 } from './impact';

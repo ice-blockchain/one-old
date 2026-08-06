@@ -8,6 +8,7 @@ import {
 } from '../capabilities';
 
 import {
+  type CompiledArchitectureModuleV1,
   type CompiledArchitectureOutputV1,
 } from './types';
 import {
@@ -16,6 +17,24 @@ import {
 import {
   chosenRoot,
 } from './naming';
+
+/**
+ * Does THIS RUN plan UI work, as opposed to merely running in a project that
+ * has a UI? These are the kinds whose compiled outputs are markup; a plan
+ * holding none of them writes no page, shell or component, so it needs no
+ * browser evidence and no scope over the files that produce it.
+ *
+ * A web-surface PROFILE cannot answer this: it describes the project, and a
+ * service-only plan in a web project is the common maintenance shape.
+ */
+export function plansWebUiWork(modules: readonly CompiledArchitectureModuleV1[]): boolean {
+  return modules.some((module) => (
+    module.kind === 'app-shell'
+    || module.kind === 'page'
+    || module.kind === 'component'
+    || module.kind === 'feature'
+  ));
+}
 
 export function webPackageRoot(profile: CapabilityProfileV1): string {
   const candidates = [

@@ -9,6 +9,7 @@ import { obj, type Rec } from '../../../shared/obj';
 import { deny, noop } from '../../../core/result';
 import type { Ctx, HookResult } from '../../../core/types';
 import { isPluginAuthoringRoot } from '../../../shared/authoring-root';
+import { hostFlags } from '../../../shared/host/capability-flags';
 import { pluginUseDeclined } from '../../../shared/state/plugin-use';
 import { modelChoiceReplyPending } from '../../agent-model/model-choice';
 import {
@@ -30,7 +31,6 @@ import { pluginRoot } from '../../../shared/paths';
 import { makeSkillBlock } from '../../../shared/skill-block';
 import { activeAgentRole, explainUnresolvedRunAgent, hookSessionIdentity, isExistingProjectMode, isNativeState, readEffectiveState, readState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
 import { capturePlanGuardDebug } from '../../../shared/state/claim-capture';
-import { denyRepeatEscalation, denySignature, recordDenyRepeat } from '../../../shared/state/deny-repeat';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../../shared/tool-classify';
 import {
   capabilityProfileForRun,
@@ -43,6 +43,7 @@ import { runIdPathViolation } from '../plan-runid';
 import { openCodeReservedFilesViolation, runTeamEnforcementViolation } from '../plan-runteam';
 import { assetExtensionMismatchViolations, planStaticViolations, makePlanBlock } from '../plan-static';
 import { resolveToolScope } from '../../../shared/tool-scope';
+import { isDenyId, type DenyId } from '../../../config/deny-ids';
 
 import {
   appendUnique,
@@ -54,7 +55,33 @@ import {
   type GateTarget,
 } from './targets';
 
-const block = makePlanBlock(makeSkillBlock(pluginRoot));
+const rawBlock = makePlanBlock(makeSkillBlock(pluginRoot));
+
+// This single aggregator deny (bottom of planWriteGate) can be reached through
+// ~50 distinct block() call sites spread across plan-static/plan-readiness/
+// plan-runteam/plan-runid, each already naming its own cause. Rather than
+// invent one parallel id for the whole aggregator (which would collapse every
+// distinct cause into one budget bucket — exactly what a declared id exists to
+// avoid), mine the id from whichever registered block actually fired FIRST.
+// `run-team-suffix` is a decorative fragment glued onto a DIFFERENT violation's
+// text (see plan-runteam.ts), never itself a violation, so it is deliberately
+// skipped rather than recorded.
+//
+// The accumulator is PER INVOCATION and must stay that way: it was module
+// scope once, latched by a `!firstFired` guard that nothing reset, so in any
+// process that dispatches more than one hook (the replay corpus, test:env,
+// doctor's run reconstruction) every plan-write deny after the first reported
+// whichever cause fired first — ~50 distinct causes collapsing onto one id,
+// and a later allow-at-N budget keyed on `denyId` would then unblock all of
+// them at once after spending one bucket on an unrelated violation. One-shot
+// hook processes hid it. Created fresh here, per call, so the identity is a
+// function of THIS write and never of call ordering.
+function makeViolationBlock(fired: { denyId: DenyId | null }): typeof rawBlock {
+  return (name, fallback, vars) => {
+    if (!fired.denyId && name !== 'run-team-suffix' && isDenyId(name)) fired.denyId = name;
+    return rawBlock(name, fallback, vars);
+  };
+}
 
 export function planWriteGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
@@ -90,7 +117,8 @@ export function planWriteGate(ctx: Ctx): HookResult {
 
   const structuralPatch = isApplyPatch ? parseApplyPatch(rawPatchText) : null;
   if (structuralPatch && !structuralPatch.ok) {
-    return deny(`traffic-one — invalid apply_patch payload: ${structuralPatch.error}. No write was made.`);
+    return deny(`traffic-one — invalid apply_patch payload: ${structuralPatch.error}. No write was made.`,
+      { denyId: 'apply-patch-payload-invalid', denyTarget: rawFilePath || undefined });
   }
   const firstPatchTarget = structuralPatch?.ok ? structuralPatch.operations[0]?.path || '' : '';
   const patchBase = toolScope.base;
@@ -105,7 +133,14 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // pre-tool filesystem the patch itself was authored against.
   const reconstructedPatch = isApplyPatch ? parseApplyPatch(rawPatchText, { baseDir: patchBase }) : null;
   if (reconstructedPatch && !reconstructedPatch.ok) {
-    return deny(`traffic-one — invalid apply_patch payload: ${reconstructedPatch.error}. No write was made.`);
+    // A DIFFERENT cause from the structural failure above, and the remedy the
+    // agent has to act on differs too: the envelope parsed, so the syntax is
+    // fine — this is the patch's context not matching what is on disk under
+    // `patchBase` ("re-read the file and rebuild the hunks"), not "fix the
+    // patch syntax". One id per cause, so the budget can bound a drifting
+    // agent's re-reads without also spending the malformed-envelope bucket.
+    return deny(`traffic-one — invalid apply_patch payload: ${reconstructedPatch.error}. No write was made.`,
+      { denyId: 'apply-patch-reconstruction-failed', denyTarget: firstPatchTarget || rawFilePath || undefined });
   }
 
   // Preflight convergence: ensure .traffic-one/** is current for this project
@@ -146,17 +181,19 @@ export function planWriteGate(ctx: Ctx): HookResult {
         `traffic-one — plan gate violation(s):\n  - STRUCT_SCAN_INCOMPLETE: cannot safely reconstruct the complete post-Edit file `
         + `for ${directFilePath} (${reconstruction.error}). No write was made; retry with one exact old_string/new_string match `
         + 'or a complete apply_patch payload.',
+        { denyId: 'plan-write-struct-scan-incomplete', denyTarget: directFilePath },
       );
     }
     directResultContent = reconstruction.resultContent;
     directAddedContent = reconstruction.addedContent;
   }
 
-  if (ctx.host === 'cursor' && state && modelChoiceReplyPending(projectRoot, state as Rec)) {
+  if (hostFlags(ctx.host).modelChoiceNeedsUserReply && state && modelChoiceReplyPending(projectRoot, state as Rec)) {
     return deny(
       'traffic-one — model choice required (build paused): reply `fallback` to proceed on the listed fallback model(s), '
       + 'or `enable` to turn on the picked model(s), re-capture Cursor models, and retry. '
       + 'Do not spawn subagents, scaffold directly, or edit project files until the user replies.',
+      { denyId: 'plan-write-model-choice-pending' },
     );
   }
 
@@ -246,6 +283,12 @@ export function planWriteGate(ctx: Ctx): HookResult {
     if (!runTeamTargetPaths.includes(target)) runTeamTargetPaths.push(target);
   }
 
+  // Per-invocation violation identity (see makeViolationBlock): every gate
+  // below resolves its prose through this `block`, so the FIRST registered
+  // cause to fire during THIS call is the one the aggregator deny reports.
+  const firstFiredViolation: { denyId: DenyId | null } = { denyId: null };
+  const block = makeViolationBlock(firstFiredViolation);
+
   const violations: string[] = [];
   const readinessTargets = gateTargets.length > 0
     ? gateTargets
@@ -273,7 +316,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
       block,
     }));
   }
-  if ((ctx.host === 'opencode' || ctx.host === 'kilo') && writingExternalTempViaCommand) {
+  if (hostFlags(ctx.host).opencodeSelfHosted && writingExternalTempViaCommand) {
     violations.push(block('opencode-external-temp-shell',
       'OpenCode/Kilo external-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.'));
   }
@@ -410,15 +453,20 @@ export function planWriteGate(ctx: Ctx): HookResult {
     ...(effectiveRole ? {} : { unresolved: explainUnresolvedRunAgent(projectRoot, state, raw) }),
     violations: violations.map((v) => (v.length > 400 ? `${v.slice(0, 400)}…` : v)),
   });
-  // A gate is a pure function of on-disk state, so an unchanged retry draws this
-  // exact message again — forever, with nothing counting. Measured in 17cl: 15 of
-  // 25 denies were repeats of four (file, reason) pairs, one refused seven times
-  // over 25 minutes before a replan resolved a one-line fix the text had already
-  // named. Say so from the third identical attempt; the escalation is advice, not
-  // a cap — capping here would strand a run whose next attempt was about to work.
-  const repeats = recordDenyRepeat(projectRoot, runId, denySignature(filePath, violations));
+  // An unchanged retry draws this exact message again — forever, with nothing
+  // counting (measured in 17cl: 15 of 25 denies were repeats of four (file,
+  // reason) pairs, one refused seven times over 25 minutes before a replan
+  // resolved a one-line fix the text had already named). This gate used to count
+  // that itself and append the escalation here; core/pipeline.ts's deny exit now
+  // does it for EVERY gate, keyed on this whole rendered reason plus `denyTarget`
+  // — which is strictly more discriminating than the (filePath, violations) key
+  // that lived here, and no longer something the other ~120 gates have to
+  // remember. Nothing about the text below changed; the paragraph is appended to
+  // it on the way out.
+  //
   // The trailing line prevents a real recovery failure: after a deny on a NEW
   // file the agent assumed partial content existed and issued Edit calls
   // against it ("File does not exist" ×2, observed 5cl-claude on plan.md).
-  return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}\nNo write was applied — the denied Write/Edit/apply_patch left the target file(s) unchanged on disk. Fix the violation(s) and re-issue the FULL corrected write; do not Edit content that was never written.${denyRepeatEscalation(repeats, filePath)}`);
+  return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}\nNo write was applied — the denied Write/Edit/apply_patch left the target file(s) unchanged on disk. Fix the violation(s) and re-issue the FULL corrected write; do not Edit content that was never written.`,
+    { denyId: firstFiredViolation.denyId ?? 'plan-write-violation-unattributed', denyTarget: filePath || undefined });
 }

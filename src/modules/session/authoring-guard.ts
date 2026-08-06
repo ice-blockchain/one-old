@@ -34,7 +34,8 @@ const AUTHORING_DENY_FALLBACK = 'traffic-one — blocked: "{{PATH}}" is inside t
 const MATERIALIZED_TITLE = '# Traffic One Local Agent Context';
 
 function denyAuthoringWrite(targetPath: string, root: string): HookResult {
-  return deny(skillBlock('session', 'authoring-write-guard', { PATH: targetPath, ROOT: root }, AUTHORING_DENY_FALLBACK));
+  return deny(skillBlock('session', 'authoring-write-guard', { PATH: targetPath, ROOT: root }, AUTHORING_DENY_FALLBACK),
+    { denyId: 'authoring-guard', denyTarget: targetPath });
 }
 
 function writtenContent(toolInput: Rec): string {
@@ -67,7 +68,8 @@ export function authoringWriteGuard(ctx: Ctx): HookResult {
     const patchText = patchTextFromToolInput(ctx.input.tool?.patchText, raw.tool_input, raw.toolInput, raw.input, raw, toolInput);
     const parsedPatch = parseApplyPatch(patchText);
     if (!parsedPatch.ok) {
-      return deny(`traffic-one — invalid apply_patch payload: ${parsedPatch.error}. No write was made.`);
+      return deny(`traffic-one — invalid apply_patch payload: ${parsedPatch.error}. No write was made.`,
+        { denyId: 'apply-patch-payload-invalid', denyTarget: filePath || undefined });
     }
     candidates.push(...patchOperationPaths(parsedPatch.operations));
   }

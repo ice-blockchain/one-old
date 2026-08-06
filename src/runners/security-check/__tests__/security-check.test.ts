@@ -247,3 +247,61 @@ test('projectFiles skips template/detector/onboarding trees ONLY on the plugin a
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+// REGRESSION: stampState dropped writeJson's refusal and returned void, so
+// `security-check --strict --stamp` printed `PASSED` and exited 0 with nothing
+// stamped — while deploy-gate.ts, which reads lastSecurityCheckStatus and
+// lastSecurityCheckFingerprint straight back out of `.one.json`, denied the
+// deploy for a missing stamp. Two Traffic One components reporting opposite
+// answers about one fact, with nothing in either message connecting them; the
+// shipper role's only recourse was to re-run the scan that "passed".
+//
+// The gate's direction is correct and untouched: no stamp must deny. What is
+// fixed is the producer certifying a stamp it never landed.
+//
+// Fenced with the SYMLINK half of fsjson.ts's write guard: it refuses this one
+// path while the reports directory beside it stays writable, so the scan still
+// completes normally and the only difference is the stamp.
+test('a refused security stamp is reported as a failed run, not a passed one', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sec-stamp-refused-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    const report: Report = {
+      generatedAt: '2026-07-17T12:00:00Z',
+      status: 'passed',
+      strict: false,
+      cwd: dir,
+      fingerprint: { fingerprint: 'a'.repeat(64), head: 'no-git', fileCount: 1 },
+      tools: {},
+      externalReports: {},
+      issues: [],
+    };
+
+    // Baseline: the same call on a writable path stamps and reads back.
+    assert.equal(stampState(dir, report, '.traffic-one/reports/security.json'), true);
+    assert.equal(
+      JSON.parse(fs.readFileSync(statePath, 'utf8')).lastSecurityCheckStatus,
+      'passed',
+    );
+
+    fs.rmSync(statePath);
+    fs.symlinkSync(path.join(dir, '.traffic-one', 'absent.json'), statePath);
+    assert.equal(
+      stampState(dir, report, '.traffic-one/reports/security.json'),
+      false,
+      'the refusal must reach the caller instead of a void',
+    );
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'absent.json')), false,
+      'fixture guard: nothing was written through the link');
+
+    // End to end: the runner must not headline PASSED, and must not exit 0, for a
+    // stamp the deploy gate cannot find.
+    const result = runSecurityCheck({ cwd: dir, stamp: true, reportDir: '.traffic-one/reports' });
+    assert.equal(result.report.status, 'passed', 'fixture guard: the scan itself found nothing');
+    assert.equal(result.stamped, false, 'the requested stamp did not land');
+    assert.equal(result.exitCode, 1, 'a run that was asked to stamp and did not is not a success');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

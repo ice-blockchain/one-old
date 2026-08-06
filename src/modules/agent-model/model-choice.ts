@@ -68,12 +68,18 @@ export function readModelChoice(cwd: string, runId: string): ModelChoiceStatus |
   }
 }
 
+// The boolean is the WRITE's verdict, not "we got as far as attempting one".
+// This used to `return true` after the call, so a write the chokepoint refused
+// (fsjson.ts: an unanswered consent question, a planted symlink at
+// model-choice.json, a path escaping the state dir) reported the same success as
+// a durable one — and the try/catch could not cover it, because a refusal is a
+// `false` return, never a throw. readModelChoice then read nothing back, so the
+// gate kept demanding the answer the user had just been told was recorded.
 export function writeModelChoice(cwd: string, runId: string, status: ModelChoiceStatus): boolean {
   if (!runId || !VALID.has(status) || isNonProjectRoot(cwd)) return false;
   try {
     const p = choicePath(cwd, runId);
-    writeJson(p, { status, updatedAt: new Date().toISOString() });
-    return true;
+    return writeJson(p, { status, updatedAt: new Date().toISOString() });
   } catch {
     return false;
   }

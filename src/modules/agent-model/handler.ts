@@ -92,7 +92,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
       candidates: conflictCandidates,
     });
     return deny(block('spawn-role-conflict', { CANDIDATES: candidateList },
-      `Traffic One spawn identity gate: this spawn carries conflicting valid Traffic One role evidence in the same highest-priority tier: ${candidateList}. The spawn was blocked before a child started. Do not retry it unchanged and do not guess which role won. Correct or remove the stale identity field or marker so every valid item in that tier agrees on exactly one canonical role, then retry the same task. On Codex, keep one exact canonical task_name and ensure higher-tier agent_path/agent_type metadata, when present, names the same role.`));
+      `Traffic One spawn identity gate: this spawn carries conflicting valid Traffic One role evidence in the same highest-priority tier: ${candidateList}. The spawn was blocked before a child started. Do not retry it unchanged and do not guess which role won. Correct or remove the stale identity field or marker so every valid item in that tier agrees on exactly one canonical role, then retry the same task. On Codex, keep one exact canonical task_name and ensure higher-tier agent_path/agent_type metadata, when present, names the same role.`),
+      { denyId: 'spawn-role-conflict' });
   }
   if (roleResolution.kind !== 'evidence') return noop();
   const roleEvidence = roleResolution.evidence;
@@ -109,6 +110,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (toolInput.run_in_background === true) {
     return deny(
       `traffic-one — spawn blocked: role agents must run in the FOREGROUND of the orchestrator turn. Re-issue this exact \`${role}\` spawn WITHOUT \`run_in_background\` and wait for the child's result in this same turn — a backgrounded role agent is killed when the turn or session ends, leaving its run claim dangling and nothing delivered.`,
+      { denyId: 'spawn-background-forbidden', denyTarget: role },
     );
   }
 
@@ -136,6 +138,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     return deny(
       'traffic-one — spawn blocked: a child cannot mint the parent run id or model policy. '
       + 'The parent must start the run, acknowledge Performance, and freeze model-policy.json before spawning children.',
+      { denyId: 'spawn-child-cannot-mint-run' },
     );
   }
   const spawnRunId = ensureCurrentRunId(cwd, state);
@@ -146,6 +149,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
       'traffic-one — spawn blocked: .traffic-one/.one.json exists but could not be parsed, so no run id '
       + 'could be resolved. Do NOT mint one or hand-write the file: repair or restore .one.json '
       + '(a backup may exist under .traffic-one/backups/) and retry the spawn.',
+      { denyId: 'spawn-run-id-unparseable' },
     );
   }
   const configuredSubagentTeam = obj(state.team)?.mode === 'subagents';
@@ -154,18 +158,21 @@ export function agentModelGate(ctx: Ctx): HookResult {
     return deny(
       `traffic-one — spawn blocked: immutable model-policy.json is corrupt for run ${spawnRunId}. `
       + 'Do not reconstruct it from the current plan, One MCP cache, or project availableModels; start a repaired parent run.',
+      { denyId: 'spawn-model-policy-corrupt', denyTarget: spawnRunId },
     );
   }
   if (existingRunPolicy && existingRunPolicy.host !== ctx.host) {
     return deny(
       `traffic-one — spawn blocked: run ${spawnRunId} is frozen for host ${existingRunPolicy.host}, `
       + `not ${ctx.host}. Start a new parent run for the active host; do not rebase model-policy.json.`,
+      { denyId: 'spawn-model-policy-host-mismatch', denyTarget: spawnRunId },
     );
   }
   if (spawnIdentity.isSubagent && !existingRunPolicy) {
     return deny(
       `traffic-one — spawn blocked: a child cannot create or rebase immutable model-policy.json for run ${spawnRunId}. `
       + 'The parent must repair the run before spawning or retrying a child.',
+      { denyId: 'spawn-child-cannot-create-policy', denyTarget: spawnRunId },
     );
   }
   const subagentTeam = configuredSubagentTeam || Boolean(existingRunPolicy);
@@ -182,7 +189,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
       RUN_ID: spawnRunId,
       MISSING_TIERS: cursorMissingTiers.join(', '),
       CAPTURE_CMD: modelCaptureCommand(cwd, 'cursor'),
-    }, CURSOR_MODELS_CAPTURE_FALLBACK));
+    }, CURSOR_MODELS_CAPTURE_FALLBACK), { denyId: 'cursor-models-capture', denyTarget: spawnRunId });
   }
   const runPolicy = existingRunPolicy
     || (configuredSubagentTeam
@@ -198,6 +205,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     return deny(
       `traffic-one — spawn blocked: immutable model-policy.json is unavailable for run ${spawnRunId}. `
       + 'The parent must complete/acknowledge Performance and freeze the active host catalog before any child starts.',
+      { denyId: 'spawn-model-policy-unavailable', denyTarget: spawnRunId },
     );
   }
   // The spawn's prompt across every host field — reused by the run-id guard here AND
@@ -235,7 +243,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
     const action = fixed.length <= 2000
       ? `RE-ISSUE THE SAME Task spawn — same subagent_type, same model — with this exact prompt (run-id already corrected), copied VERBATIM:\n----\n${fixed}\n----`
       : `RE-ISSUE THE SAME Task spawn — same subagent_type, same model — after replacing EVERY \`${strayRunId}\` with \`${spawnRunId}\` in your prompt (it appears in the "Run ID:" line and the \`.traffic-one/runs/\` and \`digests/\` paths).`;
-    return deny(`traffic-one — run-id gate: your spawn prompt used run-id \`${strayRunId}\`, but the ONLY valid run-id is \`currentRunId\` = \`${spawnRunId}\` (read from .traffic-one/.one.json — never \`date\`/ISO/UTC). ${action}`);
+    return deny(`traffic-one — run-id gate: your spawn prompt used run-id \`${strayRunId}\`, but the ONLY valid run-id is \`currentRunId\` = \`${spawnRunId}\` (read from .traffic-one/.one.json — never \`date\`/ISO/UTC). ${action}`,
+      { denyId: 'spawn-run-id-mismatch', denyTarget: spawnRunId });
   }
 
   // Claude can rewrite a tool call's input from PreToolUse (updatedInput — a
@@ -263,6 +272,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
         return deny(
           `traffic-one — spawn blocked: per-run host capability evidence is missing or corrupt for ${ctx.host}. `
           + 'No child was started. Repair the parent run and retry.',
+          { denyId: 'spawn-host-capability-missing', denyTarget: spawnRunId },
         );
       }
       // A spawn that fell back to the host's built-in generic worker (because this
@@ -345,6 +355,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
           && !publishedAssignments.assignments.some((entry) => entry.role === role)) {
           return deny(
             `traffic-one — spawn blocked: \`${role}\` has NO compiled assignment in run ${spawnRunId} — the plan gives this role nothing to build, so it is not part of this run. Do not spawn or retry it; proceed with the assigned roles (${publishedAssignments.assignments.map((entry) => entry.role).join(', ') || 'none'}). If this role genuinely has work, replan: change ArchitectureInputV1 so runtime compiles an assignment for it.`,
+            { denyId: 'spawn-role-no-compiled-assignment', denyTarget: role },
           );
         }
         // A bounded-capable maintenance role spawned with NO scope in a run
@@ -359,11 +370,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
           && ['quick-fix', 'senior-frontend', 'senior-backend'].includes(role)) {
           return deny(
             `traffic-one — spawn blocked: \`${role}\` needs a parent-supplied bounded maintenance scope, and this spawn carried none (run ${spawnRunId} has no compiled assignments to scope it from). Re-send the SAME spawn and include the exact files this task may create or modify: either the structured \`allowedFiles\` field, or ONE line in the prompt of the form [t1-bounded-scope: {"outputs": ["src/App.tsx"]}] listing every exact repo-relative file path (globs and directories are rejected). The runtime publishes the bounded WorkUnitContract from that scope; without it no maintenance write can be authorized. Do not retry without adding the scope.`,
+            { denyId: 'spawn-bounded-scope-missing', denyTarget: role },
           );
         }
         return deny(
           `traffic-one — spawn blocked: parent could not resolve and atomically publish the role/rule/skill bootstrap `
           + `for ${role} in run ${spawnRunId}. No child was started. Repair the parent materialization/policy and retry.`,
+          { denyId: 'spawn-bootstrap-publish-failed', denyTarget: role },
         );
       }
       // The immutable envelope is the bootstrap transport shared by all hosts.

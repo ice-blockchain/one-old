@@ -20,7 +20,7 @@ import * as path from 'path';
 
 import { readCompiledArchitecture } from '../../shared/architecture-contract';
 import type { Assertion } from '../core/types';
-import { effState, latestRunId, readRunSimTranscript, rec, result, str } from './util';
+import { effState, latestRunId, readRunSimTranscript, rec, result, runSimStop, str } from './util';
 
 // Configs the compiler scaffolds for a NEW project. None may appear in a repo
 // that arrived without them.
@@ -53,9 +53,11 @@ export const assertion: Assertion = {
   run: (ctx) => {
     const transcript = readRunSimTranscript(ctx);
     if (!transcript) return result(ctx, 'FAIL', 'No run-sim transcript was persisted.');
-    if (transcript.ok !== true) {
-      return result(ctx, 'FAIL', `The simulated run did not complete: ${str(transcript.failure) || 'unknown failure'}`);
-    }
+    // The stand-down is fully observable once the implementers have landed: the
+    // scaffold intruders, the compiled contract and the deny reasons are all on
+    // disk before QA runs, so a toolchain block later must not hide them.
+    const stop = runSimStop(ctx, transcript, 'The simulated run did not complete', 'implemented');
+    if (stop) return stop;
 
     const runId = str(transcript.runId) || latestRunId(ctx.cwd, effState(ctx));
     if (!runId) return result(ctx, 'FAIL', 'The simulated run recorded no run id.');

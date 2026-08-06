@@ -24,6 +24,10 @@ test('cursor: before-shell-execution → PreToolUse/shell; deny → flat permiss
   ];
   const parsed = JSON.parse(await dispatch(cursor, handlers, inv('before-shell-execution', { command: 'rm' })));
   assert.equal(parsed.permission, 'deny');
+  // Verbatim: core/pipeline.ts echoes its "(traffic-one ref: ...)" correlation
+  // suffix only when a decision record is actually written, on the same fence
+  // as the write itself (stampDeny / projectWritesPermitted) — this fixture
+  // project never answered the use-plugin question.
   assert.equal(parsed.user_message, 'nope');
   assert.equal(parsed.agent_message, 'nope');
 });
@@ -40,6 +44,11 @@ test('cursor: askUser on a PreToolUse (beforeShellExecution) → permission:"ask
   ];
   const parsed = JSON.parse(await dispatch(cursor, handlers, inv('before-shell-execution', { command: 'gate' })));
   assert.equal(parsed.permission, 'ask', 'emits permission:ask, not deny');
+  // The question reaches the modal verbatim. An askUser reason NEVER carries
+  // the correlation suffix, in any project: it is the text of a yes/no dialog,
+  // not agent-facing prose, and its `agent_message` half is never stamped
+  // either — see the dedicated pipeline test (which asserts this inside a
+  // consented, actively-logging project, where a plain deny WOULD get a ref).
   assert.equal(parsed.user_message, 'Sonnet not available — approve fallback or reject to enable?');
   assert.equal(parsed.agent_message, 'on approve proceed; on reject stop', 'agent_message carries the per-branch instructions');
 });

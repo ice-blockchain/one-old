@@ -118,6 +118,35 @@ function waitFor(pred: () => boolean, timeoutMs: number): Promise<void> {
   });
 }
 
+/**
+ * The HANG CEILING for every wait below whose subject is a delegation's
+ * BEHAVIOUR rather than its duration. Never a budget: `waitBounded` resolves
+ * the instant the run settles, so a green test costs what the stub costs and
+ * this number never elapses.
+ *
+ * It replaces a family of waits sized off the stub's own sleep constant
+ * ("the stub sleeps 1200 ms, so 1500 ms is plenty"), an arithmetic that
+ * silently assumes a child boots in ~0 ms. It does not. Measured on this
+ * repo's suite machine (10 cores), spawn-to-close overhead for a node child
+ * that prints on a fixed timer:
+ *
+ *     idle                    p50  51 ms   max  59 ms
+ *     40 concurrent spawns    p50 363 ms   max 442 ms
+ *
+ * `npm test` runs 291 test files as parallel processes, so the full suite is
+ * the 40-spawn column, and a 1500 ms wait against a 1200 ms stub left ~355 ms
+ * of boot budget — a coin flip. Two tests in this file were measured red under
+ * exactly that pressure and 35/35 green in isolation.
+ *
+ * Widening a wait is only safe where the assertion does not depend on it, so
+ * the resumable tests below no longer leave "did this re-call start a SECOND
+ * runner?" to the clock at all. They never checked it reliably: a restarted
+ * delegation settles in boot + 1200 ms, comfortably inside the 1500 ms and
+ * 2000 ms waits it was supposedly bounded by. SLOW_COUNTING_STUB counts the
+ * spawns instead, which is checkable at any speed.
+ */
+const TERMINAL_WAIT_CEILING_MS = 60_000;
+
 test('runDelegate plumbs role/runId/task-file and runs in projectRoot', async () => {
   await withStubRunner(ECHO_STUB, async (projectRoot) => {
     const r = (await runDelegate({ role: 'senior-frontend', task: 'build the card', runId: 'run-123', allowedFiles: 'apps/web/src/Card.tsx', projectRoot })) as Any;
@@ -251,30 +280,63 @@ const SLOW_STUB = [
   'setTimeout(() => { console.log(JSON.stringify({ ok: true, action: "delegated", role: get("--role"), digest: null, touched: [] })); }, 1200);',
 ].join('\n');
 
+// SLOW_STUB plus a spawn ledger, appended at BOOT (before the sleep) so the
+// count is complete the moment any delegation reports a terminal result. This
+// is what proves a re-call waited on the IN-FLIGHT run rather than starting a
+// second one: a second runner answers ok:true too, so no assertion on the
+// RESULT can tell the two apart, at any wait length.
+const SLOW_COUNTING_STUB = [
+  'const fs = require("fs"); const path = require("path");',
+  'fs.appendFileSync(path.join(__dirname, "slow-spawns"), process.argv.slice(2).join(" ") + "\\n");',
+  'const a = process.argv.slice(2);',
+  'const get = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : null; };',
+  'setTimeout(() => { console.log(JSON.stringify({ ok: true, action: "delegated", role: get("--role"), digest: null, touched: [] })); }, 1200);',
+].join('\n');
+
+function slowSpawnCount(): number {
+  const marker = path.join(path.dirname(process.env[OPENCODE_RUNNER_OVERRIDE_ENV] as string), 'slow-spawns');
+  try {
+    return fs.readFileSync(marker, 'utf8').trim().split('\n').filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+}
+
 test('delegateResumable returns {running} within the wait window, then the result on re-call (idempotent)', async () => {
-  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+  await withStubRunner(SLOW_COUNTING_STUB, async (projectRoot) => {
     const args = { role: 'senior-frontend', task: 'slow unit', runId: 'res-1', allowedFiles: 'apps/web/src/**', projectRoot };
-    const first = (await delegateResumable(args, 200)) as Any; // run sleeps 1200ms > 200ms window
+    // 200 ms IS the subject here and stays small: the stub cannot print before
+    // 1200 ms, so this window is short whatever the machine is doing.
+    const first = (await delegateResumable(args, 200)) as Any;
     assert.equal(first.running, true);
     assert.equal(first.runId, 'res-1');
     assert.equal(first.ok, undefined); // not a terminal result → not a fallback signal
-    await new Promise((r) => setTimeout(r, 1400)); // let the background run finish
-    const second = (await delegateResumable(args, 200)) as Any;
+    // Waits for the run to SETTLE, rather than sleeping a guessed interval and
+    // hoping it has. The old `setTimeout(1400)` + 200 ms window was a 600 ms
+    // boot budget and was measured red under a full suite.
+    const second = (await delegateResumable(args, TERMINAL_WAIT_CEILING_MS)) as Any;
     assert.equal(second.ok, true);
     assert.equal(second.action, 'delegated');
     assert.equal(second.role, 'senior-frontend');
     const third = (await delegateResumable(args, 50)) as Any; // cached → idempotent
     assert.equal(third.ok, true);
+    assert.equal(slowSpawnCount(), 1, 'a re-call replays the finished run; it never re-spawns the runner');
   });
 });
 
 test('delegateResumable re-call without a task keeps waiting on the in-flight run', async () => {
-  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+  await withStubRunner(SLOW_COUNTING_STUB, async (projectRoot) => {
     const start = (await delegateResumable({ role: 'senior-tester', task: 'slow', runId: 'res-3', allowedFiles: 'apps/web/e2e/**', projectRoot }, 100)) as Any;
     assert.equal(start.running, true);
-    // re-call omits task — must NOT error ("task is required") since the run exists
-    const again = (await delegateResumable({ role: 'senior-tester', runId: 'res-3', projectRoot, task: '' } as any, 1500)) as Any;
+    // The re-call omits the task. The claim is BEHAVIOURAL and checkable under
+    // any load: it must attach to the existing run instead of re-running the
+    // "task is required" argument check. That error is TERMINAL, so a
+    // regression surfaces on the first reply — the ceiling below is never
+    // reached and the assertion cannot pass by waiting.
+    const again = (await delegateResumable({ role: 'senior-tester', runId: 'res-3', projectRoot, task: '' } as any, TERMINAL_WAIT_CEILING_MS)) as Any;
+    assert.doesNotMatch(String(again.error ?? ''), /task is required/, 'a re-call must not re-assert the start-time argument checks');
     assert.equal(again.ok, true);
+    assert.equal(slowSpawnCount(), 1, 'it waited on the IN-FLIGHT run, not a second delegation');
   });
 });
 
@@ -286,7 +348,7 @@ test('delegateStatus reports running → done, surfaces reservedFiles while runn
     const running = (await delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot })) as Any;
     assert.equal(running.status, 'running');
     assert.deepEqual(running.reservedFiles, ['apps/web/src/**']);
-    await delegateResumable(args, 2000); // wait for completion
+    await delegateResumable(args, TERMINAL_WAIT_CEILING_MS); // wait for completion, however slow the boot was
     const st = (await delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot })) as Any;
     assert.equal(st.status, 'done');
     assert.equal(st.result.ok, true);
@@ -299,8 +361,10 @@ test('delegateStatus waitMs is a bounded long wait that returns the terminal res
     const args = { role: 'senior-frontend', task: 'slow', runId: 'res-wait', allowedFiles: 'apps/web/src/**', projectRoot };
     const first = (await delegateResumable(args, 100)) as Any; // stub sleeps 1200ms
     assert.equal(first.running, true);
-    // One long status wait collects the terminal result — no re-poll loop.
-    const st = (await delegateStatus({ runId: 'res-wait', role: 'senior-frontend', projectRoot, waitMs: 3000 })) as Any;
+    // One long status wait collects the terminal result — no re-poll loop, so
+    // the poll-until-terminal shape used elsewhere would destroy the claim.
+    // The ceiling is what makes the single call honest instead of a race.
+    const st = (await delegateStatus({ runId: 'res-wait', role: 'senior-frontend', projectRoot, waitMs: TERMINAL_WAIT_CEILING_MS })) as Any;
     assert.equal(st.status, 'done');
     assert.equal(st.result.ok, true);
   });
@@ -450,47 +514,59 @@ function spawnCount(projectRoot: string): number {
 test('delegateResumable re-delegates when a finished call is retried with a corrected allowlist', async () => {
   await withStubRunner(COUNT_STUB, async (projectRoot) => {
     const base = { role: 'senior-backend', task: 'batch update endpoint', runId: 'res-retry', projectRoot };
+    // Every wait here is the ceiling, not a budget: each assertion below reads
+    // a TERMINAL result (`error`) or a side effect the child writes before it
+    // prints (`spawnCount`), and both are undefined while a call is still
+    // {running:true}. Under the old 2000 ms waits a slow boot turned
+    // `reordered.error === exact.error` into `null === null` — green, having
+    // checked nothing.
     // 1) globs — the shape maintenance rejects outright.
-    const globs = (await delegateResumable({ ...base, allowedFiles: 'routes/**, app/Http/Controllers/**' }, 2000)) as Any;
+    const globs = (await delegateResumable({ ...base, allowedFiles: 'routes/**, app/Http/Controllers/**' }, TERMINAL_WAIT_CEILING_MS)) as Any;
     assert.equal(globs.ok, false);
     assert.match(globs.error, /routes\/\*\*/);
     assert.equal(spawnCount(projectRoot), 1);
 
     // 2) corrected to exact files — must actually run, not replay the rejection.
-    const exact = (await delegateResumable({ ...base, allowedFiles: 'routes/api.php, app/Http/Controllers/BatchController.php' }, 2000)) as Any;
+    const exact = (await delegateResumable({ ...base, allowedFiles: 'routes/api.php, app/Http/Controllers/BatchController.php' }, TERMINAL_WAIT_CEILING_MS)) as Any;
     assert.equal(spawnCount(projectRoot), 2, 'a corrected allowlist starts a new delegation');
     assert.match(exact.error, /routes\/api\.php/);
     assert.doesNotMatch(exact.error, /\*\*/, 'the stale glob rejection is not replayed');
 
     // 3) same file SET, newline-separated instead of comma-separated → replay.
-    const reordered = (await delegateResumable({ ...base, allowedFiles: 'app/Http/Controllers/BatchController.php\nroutes/api.php' }, 2000)) as Any;
+    const reordered = (await delegateResumable({ ...base, allowedFiles: 'app/Http/Controllers/BatchController.php\nroutes/api.php' }, TERMINAL_WAIT_CEILING_MS)) as Any;
     assert.equal(spawnCount(projectRoot), 2, 'separator/order changes alone must not re-delegate');
     assert.equal(reordered.error, exact.error);
 
     // 4) a changed task is also new work.
-    const newTask = (await delegateResumable({ ...base, task: 'batch delete endpoint', allowedFiles: 'routes/api.php, app/Http/Controllers/BatchController.php' }, 2000)) as Any;
+    const newTask = (await delegateResumable({ ...base, task: 'batch delete endpoint', allowedFiles: 'routes/api.php, app/Http/Controllers/BatchController.php' }, TERMINAL_WAIT_CEILING_MS)) as Any;
     assert.equal(spawnCount(projectRoot), 3, 'a changed task starts a new delegation');
     assert.equal(newTask.ok, false);
   });
 });
 
 test('delegateResumable does not start a second run while one is still in flight, even with different args', async () => {
-  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+  await withStubRunner(SLOW_COUNTING_STUB, async (projectRoot) => {
     const first = (await delegateResumable({ role: 'senior-frontend', task: 'slow unit', runId: 'res-inflight', allowedFiles: 'apps/web/src/A.tsx', projectRoot }, 100)) as Any;
     assert.equal(first.running, true);
     // Different allowlist while the run is still RUNNING → keep waiting on it.
-    const second = (await delegateResumable({ role: 'senior-frontend', task: 'slow unit', runId: 'res-inflight', allowedFiles: 'apps/web/src/B.tsx', projectRoot }, 2000)) as Any;
+    // The spawn count is the actual claim, and it is checked directly: a second
+    // runner would have settled in boot + 1200 ms and answered ok:true here, so
+    // the terminal assertions alone never distinguished the two outcomes.
+    const second = (await delegateResumable({ role: 'senior-frontend', task: 'slow unit', runId: 'res-inflight', allowedFiles: 'apps/web/src/B.tsx', projectRoot }, TERMINAL_WAIT_CEILING_MS)) as Any;
     assert.equal(second.ok, true);
     assert.equal(second.action, 'delegated');
+    assert.equal(slowSpawnCount(), 1, 'a differing allowlist must not start a second concurrent runner');
   });
 });
 
 test('delegateFromPlanResumable replays its finished batch instead of re-running it', async () => {
   await withStubRunner(COUNT_STUB, async (projectRoot) => {
-    const first = (await delegateFromPlanResumable({ runId: 'res-plan', projectRoot }, 2000)) as Any;
+    const first = (await delegateFromPlanResumable({ runId: 'res-plan', projectRoot }, TERMINAL_WAIT_CEILING_MS)) as Any;
     assert.equal(spawnCount(projectRoot), 1);
-    const second = (await delegateFromPlanResumable({ runId: 'res-plan', projectRoot }, 2000)) as Any;
+    const second = (await delegateFromPlanResumable({ runId: 'res-plan', projectRoot }, TERMINAL_WAIT_CEILING_MS)) as Any;
     assert.equal(spawnCount(projectRoot), 1, 'the plan batch has no per-call args and must never restart');
+    // Both must be TERMINAL for this to compare anything: two {running:true}
+    // replies both carry `error: null` and would match vacuously.
     assert.equal(second.error, first.error);
   });
 });
@@ -640,9 +716,14 @@ test('active polling keeps a slow delegation alive past the abandon threshold', 
   try {
     await withStubRunner(SLOW_STUB, async (projectRoot) => { // stub finishes after 1200ms > abandon 400ms
       const args = { role: 'senior-backend', task: 'slow but polled', runId: 'alive-1', allowedFiles: 'services/api/src/**', projectRoot };
-      let res = (await delegateResumable(args, 150)) as Any;
       // Poll repeatedly (each poll refreshes the keep-alive) until terminal.
-      for (let i = 0; i < 20 && res.running; i++) {
+      // Bounded by a DEADLINE rather than an iteration count: 20 polls of
+      // 150 ms is a 3 s budget for a 1200 ms stub, i.e. the same boot race one
+      // notch further out. The 150 ms cadence itself stays put — it is the
+      // poll interval the abandon threshold is being tested against.
+      const deadline = Date.now() + TERMINAL_WAIT_CEILING_MS;
+      let res = (await delegateResumable(args, 150)) as Any;
+      while (res.running && Date.now() < deadline) {
         res = (await delegateResumable(args, 150)) as Any;
       }
       assert.equal(res.ok, true, 'polled run must complete, not be abandoned');

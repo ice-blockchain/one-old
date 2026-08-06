@@ -8,6 +8,7 @@
 
 import { obj } from '../obj';
 import { detectHostPlanFresh } from '../host/plan';
+import { hostFlags } from '../host/capability-flags';
 import { canonicalHost } from '../model-tiers';
 import { currentHostModelTarget } from '../current-model-tiers';
 import { teamModeForLevel } from '../performance';
@@ -56,7 +57,7 @@ export function nextLocalPreferenceStep(
   const s = obj(state);
   if (!s || !s.stack) return null;
   const activeHost = canonicalHost(host);
-  if (activeHost !== 'opencode' && activeHost !== 'kilo' && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
+  if (!hostFlags(activeHost).opencodeSelfHosted && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
   if (!hasValidPerformanceState(s.performance)) return 'performance';
   const current = target === undefined ? currentLocalPreferenceTarget(activeHost) : target;
   if (current && !performanceTargetMatches(s.performance, current)) return 'performance';

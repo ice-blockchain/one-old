@@ -73,6 +73,13 @@ export function openCodeMcpServerEntry(pluginRootEnvKeys: readonly string[]): Mc
     `const candidate=root?p.join(root,'${OPENCODE_MCP_SHIM_PATH}'):'';`,
     "const isPlugin=(r)=>{try{return JSON.parse(fs.readFileSync(p.join(r,'package.json'),'utf8')).name==='traffic-one';}catch{return false;}};",
     "const direct=candidate&&fs.existsSync(candidate)&&isPlugin(root)?candidate:'';",
+    // One of the TWO copies of globalTrafficOneDir() (shared/state-root.ts) that
+    // cannot import it; the other is the launcher in shared/windsurf-hook-command
+    // .ts. This string is `node -e` source for a process the HOST spawns
+    // — outside the plugin, before any plugin path is known, which is the entire
+    // reason the stable-shim fallback below exists. Every other resolver in the
+    // codebase goes through the shared base; a precedence step added there is
+    // owed here too, by hand, and nothing but this comment will say so.
     "const state=e.XDG_STATE_HOME?p.join(e.XDG_STATE_HOME,'traffic-one'):p.join(e.HOME||os.homedir(),'.traffic-one');",
     "const fallback=p.join(state,'bin','opencode-mcp.cjs');",
     "const target=direct||(fs.existsSync(fallback)?fallback:'');",

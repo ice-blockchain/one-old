@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { copyModuleDescriptors } from './copy-module-assets';
+import { buildProvenance } from '../gen/lib/build-provenance';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -114,7 +115,16 @@ export function buildLighthouse(outDir: string): void {
   fs.writeFileSync(path.join(outDir, 'lighthouse-runner.mjs'), "import './runners/lighthouse/index.mjs';\n", 'utf8');
 }
 
-export interface BuildResult { modulesCopied: number; assetsCopied: string[]; shimsWritten: string[]; lighthouseEmitted: boolean; }
+export interface BuildResult {
+  // Distinct module-id count (NOT a file count — see copy-module-assets.ts's
+  // CopyResult doc: a module shipping N skill files used to be counted as N
+  // modules).
+  modulesCopied: number;
+  moduleIds: ReadonlySet<string>;
+  assetsCopied: string[];
+  shimsWritten: string[];
+  lighthouseEmitted: boolean;
+}
 
 function isWithin(parent: string, candidate: string): boolean {
   const rel = path.relative(parent, candidate);
@@ -167,11 +177,19 @@ export function buildRuntime(outDir: string): BuildResult {
   if (tsc.status !== 0) {
     throw new Error(`tsc failed:\n${tsc.stdout || ''}${tsc.stderr || ''}`);
   }
-  const { copied } = copyModuleDescriptors(path.join(REPO_ROOT, 'src', 'modules'), path.join(resolvedOutDir, 'modules'));
+  const { moduleIds } = copyModuleDescriptors(path.join(REPO_ROOT, 'src', 'modules'), path.join(resolvedOutDir, 'modules'));
   const assetsCopied = copyRunnerAssets(resolvedOutDir);
   const shimsWritten = writeShims(resolvedOutDir);
   buildLighthouse(resolvedOutDir);
-  return { modulesCopied: copied.length, assetsCopied, shimsWritten, lighthouseEmitted: true };
+  // Runtime-subtree half of the build-identity stamp (see
+  // ../gen/lib/build-provenance.ts) — written here so dist/scripts/ carries
+  // its own copy of the same identity dist/ gets from `npm run gen`.
+  fs.writeFileSync(
+    path.join(resolvedOutDir, 'build-provenance.json'),
+    `${JSON.stringify(buildProvenance(REPO_ROOT), null, 2)}\n`,
+    'utf8',
+  );
+  return { modulesCopied: moduleIds.size, moduleIds, assetsCopied, shimsWritten, lighthouseEmitted: true };
 }
 
 if (require.main === module) {

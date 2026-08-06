@@ -11,7 +11,7 @@
 // failures; a row that stops denying is, because that means a gate went quiet.
 
 import type { Assertion } from '../core/types';
-import { readRunSimTranscript, result, str } from './util';
+import { readRunSimTranscript, result, runSimIncomplete, str } from './util';
 
 interface WriteRow {
   ordinal?: unknown;
@@ -66,8 +66,11 @@ export const assertion: Assertion = {
       });
     }
 
+    // Deliberately last: every gate verdict above is judged on its own merits
+    // first, so a false deny is still a FAIL even when the run later stopped for
+    // a missing toolchain.
     if (transcript.ok !== true) {
-      return result(ctx, 'FAIL', `No write was falsely denied, but the run did not complete: ${str(transcript.failure) || 'unknown failure'}`);
+      return runSimIncomplete(ctx, transcript, 'No write was falsely denied, but the run did not complete');
     }
 
     const phases = Array.isArray(transcript.phasesCompleted)

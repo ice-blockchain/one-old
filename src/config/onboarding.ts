@@ -1,8 +1,8 @@
 // src/config/onboarding.ts
 // Onboarding + session-choice knobs: the canonical project-context answer keys,
 // the wizard's static question catalog (step copy, options, form fields, and the
-// senior-team roster), and the team-mode-change approval TTL. This file is data-only
-// (dependency-free). The dynamic assembly — step ordering, the per-host/plan
+// senior-team roster), and the team-mode-change approval TTL. This file stays
+// dependency-free (no runtime imports). The dynamic assembly — step ordering, the per-host/plan
 // team line-up + model resolution, and answer application — reads these from
 // shared/onboarding-server/flow.ts; other knobs are read in
 // shared/onboarding/**.
@@ -17,6 +17,20 @@
 // user explicitly asks for Traffic One again. Runtime override:
 // TRAFFIC_ONE_ASK_USE_PLUGIN=1|0.
 export const ASK_USE_PLUGIN_FIRST = true;
+
+// The flag WITH its runtime override applied. Lives here, beside the default,
+// because two very distant modules need the same answer — the wizard view layer
+// (shared/onboarding-server/flow-view.ts) and the write fence the hook pipeline
+// consults on every tool call (shared/state/plugin-use.ts). They used to carry
+// a copy each: flow-view sits far above shared/state in the import graph, so
+// neither could import the other without inverting an edge. This file is a
+// data-only leaf both of them already import, so hosting the four lines here
+// costs no new edge and makes the two copies drifting apart impossible.
+export function askUsePluginFirst(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+  if (typeof raw === 'string' && raw.trim()) return /^(1|true|on|yes)$/i.test(raw.trim());
+  return ASK_USE_PLUGIN_FIRST;
+}
 
 export const PROJECT_CONTEXT_ANSWER_KEYS = [
   'audience',

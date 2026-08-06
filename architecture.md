@@ -482,8 +482,15 @@ in:
    the explicit stamp never landed: new-project mode, run settled, no active
    claims, > 15 source files on disk.
 
-`mode` deliberately stays `new-project` after the first build — the lifecycle
-is what says the greenfield build is over.
+`mode` is not what says the greenfield build is over — the lifecycle is. A
+project that was scaffolded keeps `mode: new-project` for as long as its state
+file survives, but the value is not immutable: when the recorded mode is lost,
+`repairNewProjectOnboardingState` (`src/shared/onboarding/repair.ts`) re-derives
+it with `detectMode(cwd)`, which answers `existing-codebase` for a directory
+that now has files in it. Nothing may treat `mode` as stable for a project's
+lifetime; anything that needs a durable new-project decision must record it
+where it can be read back (as the `.gitignore` block records its own scope —
+`GitignoreScope` in `src/shared/architecture-contract/scaffold-content.ts`).
 
 ### 7.2 Triage: every maintenance prompt
 

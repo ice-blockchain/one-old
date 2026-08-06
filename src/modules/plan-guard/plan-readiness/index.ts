@@ -26,6 +26,7 @@ import { detectMode } from '../../../shared/detection';
 import {  stateRequiresNewProjectMonorepo } from '../../../shared/hook/paths';
 import { hasMaterializedProjectAssets } from '../../../shared/materialize';
 import { canonicalHost } from '../../../shared/model-tiers';
+import { hostFlags } from '../../../shared/host/capability-flags';
 import { openCodeDelegationActive } from '../../../shared/performance';
 import { OPENCODE_PLAN_MIN_UNITS } from '../../../shared/opencode-roles';
 import {
@@ -471,7 +472,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       violations.push(block('architect-opencode-queue-gate',
         `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- id: <stable-unit-id> | role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
     }
-    if (state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
+    if (state.mode === 'new-project' && hostFlags(currentHost).opencodeSelfHosted && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
       violations.push(block('architect-opencode-self-delegation-gate',
         'Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the current host.'));
     }
@@ -601,30 +602,43 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
                 compiled,
                 newProject: state.mode === 'new-project',
               });
-              publishVerificationContract(projectRoot, verification);
-              const assignments = publishRuntimeAssignments(
-                projectRoot,
-                compiled,
-                verification.contractHash,
-              );
-              // A SKIPPED delegation's pending-fallback pin is superseded by
-              // the freshly compiled contracts — without this the bounded
-              // 2-file hashes veto every envelope this same accept path is
-              // about to publish (see supersedeSkippedDelegationFallback).
-              supersedeSkippedDelegationFallback(projectRoot, runId, compiled.contractHash);
-              const settlement = writeRunSettlement(projectRoot, runId, {
-                status: 'active',
-                incompleteChecks: ['verification-not-started'],
-              });
-              if (!settlement) {
+              // The publish is fenced (fsjson.ts: an unanswered consent
+              // question, a planted symlink, a path that escapes the state
+              // dir), and its refusal used to be dropped — so the accept path
+              // went on to publish assignments, settle the run `active` and
+              // hand implementers a bootstrap that all reference a contract
+              // hash no file on disk carries. Every sidecar below depends on
+              // this one landing, so a refusal ends the accept path here.
+              const publishedVerification = publishVerificationContract(projectRoot, verification);
+              if (!publishedVerification) {
                 violations.push(block('architecture-contract-gate',
-                  `Architecture contract gate: the V2 rollback barrier is active, but the canonical run settlement could not be published for run \`${runId}\`. The run remains fail-closed and no implementer may spawn.`,
-                  { ERROR: 'canonical V2 settlement publication failed' }));
-              } else if (modelPolicy) {
-                if (!ensureRunPolicyBootstraps(projectRoot, modelPolicy, state)) {
-                  violations.push(block('bootstrap-publication-gate',
-                    `Bootstrap gate: the parent could not atomically publish role/rule/skill and work-unit envelopes against architecture=${compiled.contractHash}, verification=${verification.contractHash}, and assignments=${assignments.assignmentsHash}. No implementer may spawn until the immutable envelopes are published.`,
-                    { ERROR: 'bootstrap publication failed' }));
+                  `Architecture contract gate: the V2 rollback barrier is active, but the runtime could not persist \`.traffic-one/runs/${runId}/verification-v2.json\`. No assignments, settlement or implementation bootstrap was published; the run remains fail-closed.`,
+                  { ERROR: 'V2 verification contract publication was refused' }));
+              } else {
+                const assignments = publishRuntimeAssignments(
+                  projectRoot,
+                  compiled,
+                  verification.contractHash,
+                );
+                // A SKIPPED delegation's pending-fallback pin is superseded by
+                // the freshly compiled contracts — without this the bounded
+                // 2-file hashes veto every envelope this same accept path is
+                // about to publish (see supersedeSkippedDelegationFallback).
+                supersedeSkippedDelegationFallback(projectRoot, runId, compiled.contractHash);
+                const settlement = writeRunSettlement(projectRoot, runId, {
+                  status: 'active',
+                  incompleteChecks: ['verification-not-started'],
+                });
+                if (!settlement) {
+                  violations.push(block('architecture-contract-gate',
+                    `Architecture contract gate: the V2 rollback barrier is active, but the canonical run settlement could not be published for run \`${runId}\`. The run remains fail-closed and no implementer may spawn.`,
+                    { ERROR: 'canonical V2 settlement publication failed' }));
+                } else if (modelPolicy) {
+                  if (!ensureRunPolicyBootstraps(projectRoot, modelPolicy, state)) {
+                    violations.push(block('bootstrap-publication-gate',
+                      `Bootstrap gate: the parent could not atomically publish role/rule/skill and work-unit envelopes against architecture=${compiled.contractHash}, verification=${verification.contractHash}, and assignments=${assignments.assignmentsHash}. No implementer may spawn until the immutable envelopes are published.`,
+                      { ERROR: 'bootstrap publication failed' }));
+                  }
                 }
               }
             }
@@ -658,7 +672,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- id: <stable-unit-id> | role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`. A rewrite may omit the block only after a queue was accepted for the current run — runtime then preserves and re-appends it. Concrete example of a runnable unit row:\n\`<!-- opencode-delegate:start -->\`\n\`- id: seed-demo-data | role: backend | files: supabase/seed.sql | task: Seed the demo rows the plan data section describes\`\n\`<!-- opencode-delegate:end -->\``));
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && hasOpenCodeDelegateMarker(content)) {
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && hostFlags(currentHost).opencodeSelfHosted && hasOpenCodeDelegateMarker(content)) {
     violations.push(block('plan-opencode-self-delegation-gate',
       'Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the current host.'));
   }

@@ -10,8 +10,16 @@ import * as path from 'path';
 
 import type { HostId } from '../../core/types';
 import { STATE_DIR } from '../../config/paths';
+import { removePath } from '../fsjson';
 import { detectHost } from '../host';
+import { globalTrafficOneDir } from '../state-root';
 import { sha256 } from '../text';
+
+// Re-exported, not redefined: this module is the historical home of the name and
+// six callers import it from here, but the resolver itself now lives in the leaf
+// shared/state-root.ts so shared/toolchain-paths.ts can share it without
+// inheriting this module's fsjson/host/text/config dependencies.
+export { globalTrafficOneDir };
 
 const PROJECT_LOCAL_PREFS_REL = path.join(STATE_DIR, 'preferences.json');
 const PROJECT_LOCAL_MACHINE_REL = path.join(STATE_DIR, 'machine.json');
@@ -33,35 +41,44 @@ export function projectLocalMachinePath(cwd: string): string {
   return path.join(path.resolve(cwd), PROJECT_LOCAL_MACHINE_REL);
 }
 
-export function globalTrafficOneDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.XDG_STATE_HOME
-    ? path.join(env.XDG_STATE_HOME, 'traffic-one')
-    : path.join(env.HOME || os.homedir(), '.traffic-one');
-}
-
 function isExactPath(value: string | undefined, expected: string): boolean {
   return typeof value === 'string' && path.resolve(value) === expected;
 }
 
 // Remove only files/directories created by the retired project-local fallback.
 // The shared project state (.traffic-one/.one.json) is deliberately untouched.
-export function removeLegacyProjectLocalTrafficOneRuntime(cwd: string): void {
+// Guarded (fsjson.removePath): this runs from initializeTrafficOneEnv at the
+// very top of SessionStart, before any consent check, so on a project whose
+// use-plugin question is unanswered it was deleting six project-local paths
+// before the user had said anything at all.
+//
+// Answers whether EVERY legacy path is gone, because the caller (state/runtime-env
+// .ts) has to know: it deletes the only copy of the user's onboarding answers, so
+// a refused delete means the bridge is unfinished and a later process must retry
+// it. `removePath` reports `true` for a path that was already absent, so a project
+// carrying none of these is a completed cleanup, not a failed one.
+export function removeLegacyProjectLocalTrafficOneRuntime(cwd: string): boolean {
   const root = path.resolve(cwd);
+  let removed = true;
   for (const relativePath of LEGACY_PROJECT_LOCAL_RUNTIME) {
     try {
-      fs.rmSync(path.join(root, relativePath), { recursive: true, force: true });
+      if (!removePath(path.join(root, relativePath))) removed = false;
     } catch {
       // Best-effort. Path selection remains global even when cleanup is denied.
+      removed = false;
     }
   }
+  return removed;
 }
 
 // Project-tree artifacts that a pre-guard plugin version could materialize INTO
 // the machine dir when a session ran with cwd=$HOME — <$HOME>/.traffic-one IS
 // the machine dir, so the "project" tree landed among machine state. These
 // names are never legitimate at the machine dir's top level; remove on sight.
-// Machine-owned entries (one.json, projects/, bin/, toolchains/,
-// windsurf-plugin-root, secret.env) are deliberately NOT listed.
+// Machine-owned entries (one.json, projects/, bin/, toolchains/, overrides/,
+// windsurf-plugin-root, secret.env) are deliberately NOT listed — the
+// authoritative set is MACHINE_OWNED_ENTRIES in state/plugin-use.ts, of which
+// this array is the complement; keep the two in step.
 const STRAY_PROJECT_ARTIFACTS = [
   '.one.json', 'manifest.json', 'rules', 'skills', 'plan.md', 'runs', 'digests',
   'graph-preview.md', '.gitnexus', 'graphify-out', '.codegraph-build-lock',
@@ -71,7 +88,27 @@ const STRAY_PROJECT_ARTIFACTS = [
 
 // Self-heal for machines the pre-guard bug already touched. Also drops the
 // per-project prefs bucket the bogus "$HOME project" acquired (its hash is the
-// sha256 of the home dir), which carries the stale onboarding server record.
+// sha256 of the home dir), which carries the stale onboarding server record —
+// but ONLY while that bucket holds no recorded use-plugin ANSWER.
+//
+// The bucket is where a `$HOME` session's yes/no is stored, and this function
+// runs unconditionally at the top of EVERY SessionStart in EVERY project, so the
+// unconditional delete meant a `$HOME` answer could never survive: measured, a
+// decline recorded for `$HOME` was gone after the next session in any unrelated
+// directory, and the user was asked again — and answering "no" again re-ran the
+// decline sweep against the machine dir (see removeDeclinedProjectArtifacts in
+// state/plugin-use.ts, which is the half that used to delete it). Together those
+// two made `$HOME` the one shape that could neither consent nor decline safely.
+//
+// The ARTIFACT sweep above stays unconditional on purpose. `$HOME` is an
+// isMachineConfigRoot (shared/authoring-root.ts), so every hook entry stands
+// down there and Traffic One never legitimately materializes a project tree into
+// it — a `.one.json`/`plan.md`/`rules/` at the machine dir's top level is
+// pre-guard residue whether or not an answer exists for `$HOME`.
+//
+// Lazy require, not an import: state/plugin-use.ts reads the per-user prefs
+// through local-prefs, which resolves their path through THIS module, so a static
+// import would close a cycle. Same documented escape shared/fsjson.ts uses.
 export function removeStrayProjectArtifactsFromGlobalDir(env: NodeJS.ProcessEnv = process.env): void {
   const dir = globalTrafficOneDir(env);
   for (const name of STRAY_PROJECT_ARTIFACTS) {
@@ -83,6 +120,9 @@ export function removeStrayProjectArtifactsFromGlobalDir(env: NodeJS.ProcessEnv 
   }
   try {
     const home = path.resolve(env.HOME || os.homedir());
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { readPluginUseChoice } = require('./plugin-use') as typeof import('./plugin-use');
+    if (readPluginUseChoice(home, env)) return;
     fs.rmSync(path.join(dir, 'projects', sha256(home)), { recursive: true, force: true });
   } catch {
     // best-effort

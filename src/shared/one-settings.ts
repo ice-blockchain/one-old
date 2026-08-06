@@ -13,11 +13,11 @@
 // touched section, and writes atomically (temp + rename).
 
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import { ONE_SETTINGS_VERSION } from '../config/one-settings';
 import { readJson } from './fsjson';
+import { globalTrafficOneDir } from './state-root';
 
 interface OneApiKeyAuth {
   version: 1;
@@ -45,16 +45,10 @@ export const ONE_SETTINGS_LOCK_TIMEOUT_MS = 500;
 const ONE_SETTINGS_LOCK_RETRY_MS = 10;
 const ONE_SETTINGS_LOCK_STALE_MS = 10_000;
 
-function settingsDir(env: NodeJS.ProcessEnv): string {
-  return env.XDG_STATE_HOME
-    ? path.join(env.XDG_STATE_HOME, 'traffic-one')
-    : path.join(env.HOME || os.homedir(), '.traffic-one');
-}
-
 export function oneSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.TRAFFIC_ONE_STATE_PATH;
   if (override) return path.resolve(override);
-  return path.join(settingsDir(env), 'one.json');
+  return path.join(globalTrafficOneDir(env), 'one.json');
 }
 
 function record(value: unknown): Record<string, unknown> | null {

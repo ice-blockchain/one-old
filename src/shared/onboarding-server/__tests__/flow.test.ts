@@ -1477,10 +1477,21 @@ test('new-project: an unwritable user home never falls back to project-local pre
   const cwd = path.join(dir, 'project');
   fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
   const prevHome = process.env.HOME;
+  const prevXdg = process.env.XDG_STATE_HOME;
   const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
   const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
   process.env.HOME = blockedHome;
+  // XDG_STATE_HOME as well as HOME, or the precondition this case is named for
+  // does not hold. globalTrafficOneDir/machineStateDir consult XDG_STATE_HOME
+  // FIRST and only fall back to HOME, so pinning HOME alone made the per-user
+  // prefs unwritable on a machine where XDG_STATE_HOME happened to be unset and
+  // perfectly writable everywhere else — including, once the suite pinned its own
+  // state root (src/build/test-preload.mjs), every test run, where the write then
+  // succeeded and `assert.throws` reported "Missing expected exception".
+  // Both resolvers are aimed at the same non-directory so the refusal is a
+  // property of the fixture rather than of the developer's environment.
+  process.env.XDG_STATE_HOME = blockedHome;
   delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   delete process.env.TRAFFIC_ONE_STATE_PATH;
   process.env.TRAFFIC_ONE_USER_PLAN = 'max';
@@ -1494,6 +1505,7 @@ test('new-project: an unwritable user home never falls back to project-local pre
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'machine.json')), false);
   } finally {
     if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevXdg === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prevXdg;
     if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH; else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
     if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN; else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;

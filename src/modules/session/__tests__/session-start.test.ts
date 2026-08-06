@@ -58,6 +58,33 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   }
 }
 
+// Materialization only accepts an 'installed' plugin root, so a test that wants
+// to observe what it wrote has to supply one. The suite's ambient root is this
+// checkout ('source'), which materialization refuses rather than resolving to
+// an empty rule set and sweeping the project clean.
+function withInstalledPluginRoot(fn: () => void): void {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sstart-plugin-'));
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'hook-runtime.cjs'), '// test fixture stub\n', 'utf8');
+  // The real shipped trees, through symlinks. A one-rule stub used to be enough
+  // because materializeProjectAssets only refused a root that resolved NOTHING;
+  // it now refuses one that resolves part of what the project's runtime declares
+  // (src/shared/materialize/materialize.ts tornRootRefusal), which is what a
+  // half-copied install looks like — and what this fixture was.
+  const modules = path.resolve(__dirname, '..', '..', '..', 'modules');
+  fs.symlinkSync(path.join(modules, 'rules', 'rules'), path.join(root, 'rules'), 'dir');
+  fs.symlinkSync(path.join(modules, 'skills', 'skills-catalog'), path.join(root, 'skills-catalog'), 'dir');
+  const previous = process.env.TRAFFIC_ONE_PLUGIN_ROOT;
+  process.env.TRAFFIC_ONE_PLUGIN_ROOT = root;
+  try {
+    fn();
+  } finally {
+    if (previous === undefined) delete process.env.TRAFFIC_ONE_PLUGIN_ROOT;
+    else process.env.TRAFFIC_ONE_PLUGIN_ROOT = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 function localPrefs(extra: Record<string, unknown> = {}): Record<string, unknown> {
   const {
     performance = { level: 'low', source: 'prompted' },
@@ -162,10 +189,13 @@ test('runSessionStartAuthed from a workspace package resolves to the ancestor pr
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ private: true, packageManager: 'pnpm@9.0.0', workspaces: ['apps/*'] }), 'utf8');
     const app = path.join(cwd, 'apps', 'web');
     fs.mkdirSync(app, { recursive: true });
-    const result = runSessionStartAuthed(ctx(app));
-    assert.equal(result.kind, 'context');
     const memoryDir = '.traffic' + '-one';
-    assert.equal(fs.existsSync(path.join(cwd, memoryDir, 'manifest.json')), true);
+    withInstalledPluginRoot(() => {
+      const result = runSessionStartAuthed(ctx(app));
+      assert.equal(result.kind, 'context');
+      assert.equal(fs.existsSync(path.join(cwd, memoryDir, 'manifest.json')), true);
+      assert.equal(fs.existsSync(path.join(cwd, memoryDir, 'rules', 'core.md')), true);
+    });
     assert.equal(fs.existsSync(path.join(app, memoryDir)), false);
   });
 });
@@ -257,6 +287,65 @@ test('Flow 3: a new project with no Traffic One state points at the setup wizard
     if (r.kind === 'context') {
       assert.ok(r.context.toLowerCase().includes('setup'), 'points at the setup wizard');
       assert.ok(r.context.includes('Baseline rules'));
+    }
+  });
+});
+
+// SessionStart's five state writes all land on the same `.one.json`, and it must
+// never fail a session over a refused one — but it must not hand back a session
+// context describing state no later hook can read back either, which is what
+// dropping all five booleans did. Both flows that return a context are covered:
+// Flow 1's packed-bundle header and Flow 3's setup directive.
+//
+// Move-aside rather than dangling: writeState re-reads `.one.json` and this body
+// reads it repeatedly (readEffectiveState, the scrub, the reconcilers), so a
+// dangling link makes it bail on its own precondition and the case passes
+// vacuously — which the writable baseline cannot catch, being a different project.
+function fenceProjectState(cwd: string): string {
+  const statePath = path.join(cwd, '.traffic-one', '.one.json');
+  const aside = `${statePath}.aside`;
+  const before = fs.readFileSync(statePath, 'utf8');
+  fs.renameSync(statePath, aside);
+  fs.symlinkSync(aside, statePath);
+  assert.equal(fs.readFileSync(statePath, 'utf8'), before,
+    'fixture guard: reads still resolve through the link, so the body reaches its writes');
+  return statePath;
+}
+
+test('SessionStart says so when its state stamps could not be written, and still hands back the rules', () => {
+  withProject(existingState(), (cwd) => {
+    writeLocalPrefs();
+    const baseline = runSessionStartAuthed(ctx(cwd));
+    assert.equal(baseline.kind, 'context');
+    if (baseline.kind === 'context') {
+      assert.doesNotMatch(baseline.context, /session state was NOT recorded/,
+        'writable baseline: an unfenced session says nothing about a refusal');
+    }
+  });
+
+  // Flow 1 — the packed rule bundle.
+  withProject(existingState(), (cwd) => {
+    writeLocalPrefs();
+    fenceProjectState(cwd);
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context', 'a refused stamp never fails the session');
+    if (r.kind === 'context') {
+      assert.match(r.context, /session state was NOT recorded/,
+        'the header says the session state is not on disk');
+      assert.match(r.context, /\.one\.json/, 'and names the exact refused path');
+      assert.ok(r.context.includes('stack: minimal'), 'while the rule context beside it is still delivered');
+    }
+  });
+
+  // Flow 3 — the setup directive, whose state write is the toolchain skeleton.
+  withProject({ mode: 'new-project' }, (cwd) => {
+    fenceProjectState(cwd);
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.match(r.context, /session state was NOT recorded/,
+        'the setup directive carries it too — this flow returns no header to hide it in');
+      assert.ok(r.context.includes('Baseline rules'), 'and the baseline rules are still delivered');
     }
   });
 });

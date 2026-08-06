@@ -27,6 +27,7 @@ export {
   activeClaimForOtherThread,
   claimThreadRole,
   disownConflictedRoleAgent,
+  disownConflictedRoleAgentResult,
 } from './claim-thread-role';
 export {
   pruneExpiredPendingClaims,
@@ -34,12 +35,21 @@ export {
 } from './claims-pending';
 export {
   ensureRunAgentClaim,
+  ensureRunAgentClaimResult,
   releaseAllRunClaims,
   releaseRunClaims,
+  releaseRunClaimsResult,
   runRoleHasBoundClaim,
 } from './claims-store';
 export {
+  isApplied,
+  retryWhileUnavailable,
+  type MutationOutcome,
+  type MutationResult,
+} from './mutation-result';
+export {
   retireUnverifiedCodexRunAgent,
+  retireUnverifiedCodexRunAgentResult,
   type CodexLiveAgentValidation,
   validateCodexLiveRunAgent,
 } from './codex-liveness';
@@ -83,10 +93,13 @@ export {
 } from './identity-drift';
 export {
   ensureRunLedger,
+  ensureRunLedgerResult,
   recordRunStackDrift,
+  recordRunStackDriftResult,
   runIdentityFrozen,
   runLedgerAdmitsClaims,
   transitionRunStatus,
+  transitionRunStatusResult,
   type RunLedgerOutcome,
   type RunLedgerStatus,
 } from './ledger';
@@ -98,8 +111,11 @@ export {
   liveRunAgent,
   markRunAgentReplaced,
   markRunAgentReplacedIfMatches,
+  markRunAgentReplacedIfMatchesResult,
+  markRunAgentReplacedResult,
   readRunAgentRegistry,
   recordRunAgent,
+  recordRunAgentResult,
   refreshCursorRunAgentFromTranscriptCache,
   roleForRunSessionId,
   subagentContinuationAvailable,

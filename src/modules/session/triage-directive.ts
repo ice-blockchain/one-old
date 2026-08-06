@@ -15,6 +15,7 @@
 import { detectMode, isLikelyEditRequest, isRuntimeControlPrompt } from '../../shared/detection';
 import { canonicalHost } from '../../shared/model-tiers';
 import { currentModelForTier } from '../../shared/current-model-tiers';
+import { hostFlags } from '../../shared/host/capability-flags';
 import { detectHostPlan } from '../../shared/host/plan';
 import { obj, type Rec } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
@@ -52,9 +53,36 @@ function isExplicitRunResumePrompt(promptText: string): boolean {
     .test(promptText);
 }
 
-// Exported for the run-sim tier, which drives a real second run in the same
-// project. A replica in the test would drift from this; calling it is the point.
-export function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string): void {
+/**
+ * Rotate the maintenance run id, reporting whether `state.currentRunId` still
+ * names a run `.one.json` also names.
+ *
+ * `false` has exactly one cause: the rotation write was REFUSED — an unanswered
+ * consent question, or a planted symlink at `.traffic-one/.one.json` — so the id
+ * this call minted lives only in this process. Deliberately NOT the same list as
+ * "everything that can stop the write": fsjson.ts's `act` answers `false` only
+ * for the consent/path guard and ELOOP and RETHROWS every other errno, so an
+ * EACCES leaves through an exception, which core/pipeline.ts converts into the
+ * fail-closed `pipeline-handler-crashed` deny. See the errno case in
+ * __tests__/triage-rotation-refusal.test.ts. `true` covers a completed
+ * rotation AND a deliberate non-rotation (a LIVE run stays pinned) — in both,
+ * memory and disk agree, which is the only thing a caller can act on.
+ *
+ * The write moved AHEAD of the ledger settlement and the claim release, and that
+ * ordering IS the fix rather than a tidy-up: those two dismantle the OUTGOING
+ * run, and they are only correct because `.one.json` now names a different one.
+ * With the write last, a refusal left `.one.json` naming a run whose claims had
+ * just been released and whose ledger had just been settled terminal, while this
+ * process carried on under an id nothing on disk knew — so the routing directive
+ * handed the agent, and `opencode_delegate`, a run every gate resolves
+ * differently, and a ledger plus a create-once model policy were opened under it.
+ * Same shape and same remedy as run-agent/identity-drift.ts's
+ * re-point-before-release.
+ *
+ * Exported for the run-sim tier, which drives a real second run in the same
+ * project. A replica in the test would drift from this; calling it is the point.
+ */
+export function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string): boolean {
   // Never rotate while the CURRENT run is still LIVE: it has run artifacts
   // (assignments/digests) but has NOT reached a terminal verdict. Rotating then would
   // split run state across two ids — the run-id gate resolves no scope for the in-flight
@@ -71,7 +99,17 @@ export function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string):
   // strict reviewer + tester + QA terminal settlement; the state helper retains the
   // historical green-verdict compatibility only for legacy runs. A LIVE run does not
   // rotate, preserving currentRunId and its role agents for continuation.
-  if (current && runHasOrchestratedArtifacts(cwd, current) && !runSettledForRotation(cwd, current)) return;
+  if (current && runHasOrchestratedArtifacts(cwd, current) && !runSettledForRotation(cwd, current)) return true;
+  const runId = runIdNow();
+  const sharedState = readState(cwd);
+  const rotatedState = { ...sharedState, currentRunId: runId, spawnIndex: {} };
+  const rotated = writeState(cwd, rotatedState);
+  // Nothing below may run over a refused rotation: every one of them is either
+  // irreversible (dismantling the outgoing run) or opens run-scoped state under
+  // an id `.one.json` does not carry (the ledger, and a model policy that is
+  // create-once and therefore unrepairable in place). Leaving the previous run
+  // wholly intact is the only outcome the next hook can read consistently.
+  if (!rotated) return rotated;
   if (current) {
     // The outgoing run is settled (or produced nothing): finalize its ledger
     // (evidence-gated no-op when unproven) and release its agent claims so the
@@ -79,10 +117,6 @@ export function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string):
     settleTerminalRunLedger(cwd, current);
     releaseRunClaims(cwd, current, 'run-rotated');
   }
-  const runId = runIdNow();
-  const sharedState = readState(cwd);
-  const rotatedState = { ...sharedState, currentRunId: runId, spawnIndex: {} };
-  writeState(cwd, rotatedState);
   ensureRunLedger(cwd, runId, { status: 'planned', kind: 'maintenance-triage', stackFingerprint: stackFingerprint(rotatedState) });
   // Freeze this maintenance run's model policy at mint, exactly as the build run
   // does in the onboarding-gate spawn preflight. Without it the FIRST followup_task
@@ -98,6 +132,7 @@ export function beginFreshMaintenanceRun(cwd: string, state: Rec, host: string):
   } catch { /* best-effort freeze; the deny path still covers a missing policy */ }
   state.currentRunId = runId;
   state.spawnIndex = {};
+  return rotated;
 }
 
 // Prompt-boundary recovery for a run whose verification has started but has not
@@ -190,13 +225,19 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   // may bypass claim suppression. The run-rotation guard remains authoritative,
   // though: an artifact-bearing nonterminal run keeps currentRunId so unresolved
   // verification is never replaced with a greenfield maintenance run.
-  const kiloPromptBoundary = canonicalHost(host) === 'kilo';
+  const kiloPromptBoundary = hostFlags(canonicalHost(host)).noTaskCompletionLifecycle;
   if (hasActiveRunClaims(cwd, state, { since: lifecycleCompletedAt(state) }) && !kiloPromptBoundary) return '';
 
   const hint = classifyPromptComplexity(promptText);
   const teamMode = resolvedTeamMode(state);
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
-  if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state, host);
+  // A rotation the fence refused must not be routed into: the rubric and the
+  // `opencode_delegate` reminder below both NAME a run id, and the id this
+  // process would name is one no gate can resolve. Refused before the
+  // once-marker burn, for the same reason the bootstrap refusal is.
+  if (teamMode === 'subagents' && !beginFreshMaintenanceRun(cwd, state, host)) {
+    return rotationRefusedRefusal(state);
+  }
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
   // The refusal is evaluated AFTER rotation (the escape hatch has already been
   // written to disk, so it can never be suppressed) and BEFORE the once-marker
@@ -220,6 +261,29 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
     CONFIDENCE: hint.confidence,
     SIGNALS: signals,
   });
+}
+
+// ── The run the routing would name was never written down ────────────────────
+// The rotation write is the ONLY thing that makes a fresh maintenance run id
+// real: every consumer that does not route through `ensureCurrentRunId` reads
+// `currentRunId` straight off `.one.json` (the pipeline's decision correlation,
+// plan-write's compiled-architecture lookup, codex-child-model, the doctor and
+// run-status runners, isSubagentSession). So a refused rotation is the same
+// two-hooks-one-turn contradiction as the 16co refusal below — this hook naming
+// run B while every gate enforces run A — reached through the write fence rather
+// than a frozen policy. `state.currentRunId` is still the previous run, which is
+// the one on disk, so the message names IT rather than the id nobody kept.
+function rotationRefusedRefusal(state: Rec): string {
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
+  return [
+    'TRAFFIC_ONE_RUN_ROTATION_REFUSED',
+    'A fresh maintenance run could not be started: the project state write fence refused `.traffic-one/.one.json`, so the new run id was never recorded and this request has no run to route into.',
+    runId
+      ? `The project is still on run "${runId}" — the previous, already-settled run. Nothing about it was released or settled by this attempt, so it is intact, but it is not a run to start new work in.`
+      : 'The project state names no run at all.',
+    'Do NOT spawn a role subagent, do NOT call `opencode_delegate`, and do NOT start a quick-fix: a child would bind its claim to a run id the parent gates do not agree on.',
+    'Report the refused path to the user. A planted symlink at `.traffic-one/.one.json` is the usual cause (the fence refuses writing through a link, dangling or not); restore it as a regular file, or if this project has not answered "use Traffic One here?" answer it, then retry the request.',
+  ].join('\n');
 }
 
 // ── The run the routing would name is one the parent gates refuse ────────────
@@ -308,7 +372,7 @@ export function maintenanceTriageFallbackDirective(cwd: string, state: Rec, raw:
   if (isSubagentThread(raw)) return '';
   // Same suppression as the prompt boundary: fresh claims newer than the
   // lifecycle watermark mean a worker is live — continuation owns the request.
-  const kiloBoundary = canonicalHost(host) === 'kilo';
+  const kiloBoundary = hostFlags(canonicalHost(host)).noTaskCompletionLifecycle;
   if (hasActiveRunClaims(cwd, state, { since: lifecycleCompletedAt(state) }) && !kiloBoundary) return '';
   // A pinned wedged run must not be named for routing here either (the 16co
   // hazard), and the refusal precedes the marker burn for the same reason as

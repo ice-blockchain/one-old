@@ -5,6 +5,9 @@
 
 import { toolStatus } from '../toolchain';
 import { codeGraphProviderFromValue, normalizedProjectState, onboardingStateIssues, rawStateHasLegacyShape } from './lib';
+import type { OverrideProbe } from './override-probe';
+import type { PluginRootProbe } from './plugin-root-probe';
+import type { RunDiagnosticProbe } from './run-diagnostic';
 import type {
   CodexHooksProbe,
   GitnexusProbe,
@@ -37,10 +40,126 @@ export interface BuildFindingsInput {
   oneMcp?: OneMcpProbe | null;
   openCodeMcp?: OpenCodeMcpProbe | null;
   sessionDiagnostics?: SessionDiagnosticsResult;
+  pluginRoot?: PluginRootProbe | null;
+  // `doctor --run <id>`/`--bundle`'s run probe. Load-bearing for the SUMMARY:
+  // without it, `summary` was computed with no knowledge of stale agents or
+  // expired claims, so a machine reader (an agent following the doctor skill)
+  // saw HEALTHY on a wedged run while stderr's operator report printed
+  // "⚠ N agent(s)/claim(s) are past their liveness window".
+  runDiagnostic?: RunDiagnosticProbe | null;
+  // The operator-override ledger (shared/override). Optional because every
+  // caller that predates the primitive passes probes positionally by name and
+  // an absent ledger is indistinguishable from "no override was ever minted".
+  overrides?: OverrideProbe | null;
 }
 
-export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, oneMcp = null, openCodeMcp = null, sessionDiagnostics = null }: BuildFindingsInput): Finding[] {
+// A run whose ledger has reached one of these is DONE — nothing is expected to
+// be alive for it, so "no live agent" is not a wedge. Mirrors
+// run-settlement/projection.ts's TERMINAL_LEGACY_STATUS (canonical
+// verified/failed/blocked ⇒ legacy completed/failed/blocked).
+const TERMINAL_CANONICAL_STATUS = new Set(['verified', 'failed', 'blocked']);
+const TERMINAL_LEGACY_STATUS = new Set(['completed', 'failed', 'blocked']);
+
+function ledgerIsTerminal(ledger: RunDiagnosticProbe['ledger']): boolean {
+  if (ledger.canonicalStatus) return TERMINAL_CANONICAL_STATUS.has(ledger.canonicalStatus);
+  return Boolean(ledger.effectiveStatus && TERMINAL_LEGACY_STATUS.has(ledger.effectiveStatus));
+}
+
+// Every wedge shape the run probe can see, as machine-readable findings. Kept
+// here rather than in run-diagnostic.ts so `summary` and the findings list stay
+// single-sourced: one probe, one severity decision.
+function runDiagnosticFindings(runDiagnostic: RunDiagnosticProbe): Finding[] {
   const findings: Finding[] = [];
+  if (!runDiagnostic.runDirExists) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'RUN_DIR_MISSING',
+      message: `No \`.traffic-one/runs/${runDiagnostic.runId}/\` directory exists for the diagnosed run id. Either the id was never minted or doctor resolved a different project root than the one the run lives under.`,
+    });
+    return findings;
+  }
+  const staleAgents = runDiagnostic.liveAgents.filter((agent) => agent.stale);
+  const liveAgents = runDiagnostic.liveAgents.filter((agent) => !agent.stale);
+  const staleClaims = runDiagnostic.claims.filter((claim) => claim.stale);
+  if (staleAgents.length > 0) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'RUN_AGENT_STALE',
+      message: `${staleAgents.length} registered agent(s) for run ${runDiagnostic.runId} are past their liveness window `
+        + `(${staleAgents.map((agent) => `${agent.role} ${Math.round(agent.ageMs / 1000)}s into a ${Math.round(agent.windowMs / 1000)}s window${agent.replaced ? ' [replaced]' : ''}`).join('; ')}). `
+        + 'A parent waiting on one of these will never be released. Doctor is read-only: confirm the agent process is gone, then let the next parent turn re-drive the run.',
+    });
+  }
+  if (staleClaims.length > 0) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'RUN_CLAIM_EXPIRED',
+      message: `${staleClaims.length} held claim(s) for run ${runDiagnostic.runId} are past their liveness window `
+        + `(${staleClaims.map((claim) => `[${claim.state}] ${claim.role} ${Math.round(claim.ageMs / 1000)}s into a ${Math.round(claim.windowMs / 1000)}s window`).join('; ')}). `
+        + 'An expired claim keeps that role slot occupied, so a retry cannot take it. Doctor never prunes claims; expiry is reclaimed by the runtime on the next claim attempt for that role.',
+    });
+  }
+  if (!ledgerIsTerminal(runDiagnostic.ledger) && liveAgents.length === 0) {
+    const status = runDiagnostic.ledger.canonicalStatus
+      ?? runDiagnostic.ledger.effectiveStatus
+      ?? (runDiagnostic.ledger.exists ? '(no status)' : '(no run.json)');
+    findings.push({
+      severity: 'fix-needed',
+      code: 'RUN_STALLED_NO_LIVE_AGENT',
+      message: `Run ${runDiagnostic.runId} is not in a terminal state (status ${status}) but has no live agent — nothing is going to advance it on its own. `
+        + `${runDiagnostic.denyCount} of ${runDiagnostic.decisionCount} recorded decisions were denies`
+        + `${runDiagnostic.topDenies.length > 0 ? ` (most repeated: ${runDiagnostic.topDenies.slice(0, 3).map((deny) => `${deny.denyId}×${deny.count}`).join(', ')})` : ''}. `
+        + 'Re-prompt the parent agent in the same project so the run is re-driven; do not hand-edit the ledger.',
+    });
+  }
+  if (runDiagnostic.ledger.rollbackBarrierNote) {
+    findings.push({
+      severity: 'info',
+      code: 'RUN_LEDGER_ROLLBACK_BARRIER',
+      message: runDiagnostic.ledger.rollbackBarrierNote,
+    });
+  }
+  return findings;
+}
+
+export function buildFindings({
+  node, nvm, gitnexus, project, codexHooks = null, oneMcp = null, openCodeMcp = null, sessionDiagnostics = null, pluginRoot = null,
+  runDiagnostic = null, overrides = null,
+}: BuildFindingsInput): Finding[] {
+  const findings: Finding[] = [];
+
+  // Reported FIRST, above every environment finding: an override is the one
+  // condition under which the rest of this report describes a project whose
+  // enforcement was deliberately relaxed, and a reader who learns that after
+  // scrolling past twenty toolchain findings has already drawn conclusions.
+  if (overrides) {
+    if (overrides.unvouchable > 0) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'OVERRIDE_LEDGER_UNVERIFIED',
+        // Never a silent drop. The gates already ignore these lines (an
+        // unverifiable token is absent, full stop), so this finding is the ONLY
+        // way anyone learns the file was written by something that did not hold
+        // the per-install key — or that the key itself was replaced, which
+        // invalidates every override previously minted on this machine.
+        message: `${overrides.unvouchable} operator-override ledger line(s) cannot be verified against this install's key and are being IGNORED. Either the per-install key under the machine dir was rotated/restored from another machine, or something wrote that file directly. No enforcement is relaxed by these lines.`,
+      });
+    }
+    for (const token of overrides.active) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'OPERATOR_OVERRIDE_ACTIVE',
+        message: `An operator override is live: gate \`${token.target}\` is not enforced for run \`${token.runId}\` until ${token.expiresAt} (token ${token.id}). That run can never settle as verified or shipped.`,
+      });
+    }
+    if (overrides.runMinted > 0 && !overrides.active.length) {
+      findings.push({
+        severity: 'info',
+        code: 'OPERATOR_OVERRIDE_SPENT',
+        message: `${overrides.runMinted} operator override(s) were minted for this run and have expired. Enforcement is back on, but the run remains permanently ineligible for verified/shipped.`,
+      });
+    }
+  }
   const rawState = project.state && typeof project.state === 'object' ? project.state : null;
   const state = normalizedProjectState(project as unknown as Rec);
   const provider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
@@ -62,6 +181,31 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
       message: `Legacy custom-backend + react-vite state was not changed: ${project.legacyCapabilityMigration.message || 'frontend evidence is ambiguous'}. Confirm the intended surface after the active run settles; no mid-run migration is allowed.`,
     });
   }
+
+  // Report-only, never a deny — the plan is explicit that the allowlist making
+  // `doctor` undeniable does not exist yet, so denying here would block the
+  // very command that diagnoses it. A 'source' layout (the authoring checkout,
+  // or `dist/` before its first build) is normal and gets no finding; only an
+  // 'unverified' root (nothing recognizable at the resolved path) or two
+  // present-but-disagreeing build-provenance.json copies (a stale mixed
+  // install — see plugin-root-probe.ts) are worth surfacing.
+  if (pluginRoot) {
+    if (pluginRoot.layout === 'unverified') {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'PLUGIN_ROOT_UNVERIFIED',
+        message: `The resolved plugin root (${pluginRoot.root}, from ${pluginRoot.source === 'default' ? 'the runtime\'s own location' : pluginRoot.source}) contains neither a compiled runtime (scripts/hook-runtime.cjs) nor generated content (rules/ or skills-catalog/) nor the source checkout markers. Materialization and prose lookups will silently resolve zero rules/skills against this root. Reinstall or update the plugin, or unset a stale *_PLUGIN_ROOT override.`,
+      });
+    } else if (pluginRoot.layerMismatch) {
+      findings.push({
+        severity: 'info',
+        code: 'PLUGIN_ROOT_LAYER_MISMATCH',
+        message: `The resolved plugin root's content subtree (${pluginRoot.contentProvenancePath}: git ${pluginRoot.contentProvenance?.gitSha ?? 'unknown'}) and its runtime subtree (${pluginRoot.runtimeProvenancePath}: git ${pluginRoot.runtimeProvenance?.gitSha ?? 'unknown'}) were built from different sources. New gate logic may be running against old prose/binaries, or the reverse. Reinstall or update the plugin so both subtrees come from the same build.`,
+      });
+    }
+  }
+
+  if (runDiagnostic) findings.push(...runDiagnosticFindings(runDiagnostic));
 
   if (sessionDiagnostics) {
     if (sessionDiagnostics.found === false) {
@@ -211,6 +355,18 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
   }
 
   const runState = project.runState;
+  // A registered agent or a held claim IS orchestration in progress, even
+  // before the first assignment or digest is written — and the run probe is
+  // the only thing that can see them (runState only knows about assignment/
+  // digest FILES). Without this, doctor read a run with three registered
+  // agents as a ghost and advised clearing its id, which is the single most
+  // destructive thing an operator could do to a live run.
+  const runHasRegisteredWork = Boolean(
+    runDiagnostic
+    && runDiagnostic.runId === runState?.currentRunId
+    && runDiagnostic.runDirExists
+    && (runDiagnostic.liveAgents.length > 0 || runDiagnostic.claims.length > 0),
+  );
   if (runState?.currentRunId) {
     if (!runState.runDirExists) {
       findings.push({
@@ -223,6 +379,12 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
         severity: 'info',
         code: runState.maintenanceFallbackAllowed ? 'MAINTENANCE_FALLBACK_PENDING' : 'MAINTENANCE_RUN_TERMINAL',
         message: `currentRunId=${JSON.stringify(runState.currentRunId)} has maintenance metadata (${runState.maintenanceOverallOutcome || runState.maintenanceOutcome || runState.maintenanceOpencodeOutcome || 'unknown'}). This is not a ghost run; Doctor will not rewrite it automatically.`,
+      });
+    } else if (!runState.hasOrchestratedArtifacts && runState.runJsonStatus !== 'planned' && runHasRegisteredWork) {
+      findings.push({
+        severity: 'info',
+        code: 'RUN_ORCHESTRATION_IN_PROGRESS',
+        message: `currentRunId=${JSON.stringify(runState.currentRunId)} has no assignments/digests yet, but the run probe found ${runDiagnostic?.liveAgents.length ?? 0} registered agent(s) and ${runDiagnostic?.claims.length ?? 0} held claim(s). This is not a ghost run — do not clear or rotate the id. See the RUN_* findings for its liveness.`,
       });
     } else if (!runState.hasOrchestratedArtifacts && runState.runJsonStatus !== 'planned') {
       findings.push({

@@ -46,17 +46,37 @@ test('all seven supported hosts have one runtime-owned enforcement contract', ()
   }
 });
 
-test('only Claude/Codex/Cursor claim automatic live certification', () => {
+test('only Claude/Codex claim automatic live certification; Cursor is certified but manual-e2e', () => {
   const auto = Object.values(HOST_CAPABILITIES)
     .filter((capability) => capability.certification === 'contract+live-auto')
     .map((capability) => capability.host)
     .sort();
-  assert.deepEqual(auto, ['claude', 'codex', 'cursor']);
+  assert.deepEqual(auto, ['claude', 'codex']);
   const manual = Object.values(HOST_CAPABILITIES)
     .filter((capability) => capability.certification === 'contract+manual-e2e')
     .map((capability) => capability.host)
     .sort();
-  assert.deepEqual(manual, ['copilot', 'kilo', 'opencode', 'windsurf']);
+  // Cursor joins the manual-e2e slot for a different reason than the other
+  // four: it is certified (tier) but has no scriptable install for release CI
+  // to drive live, so `certification` and `tier` diverge for it alone.
+  assert.deepEqual(manual, ['copilot', 'cursor', 'kilo', 'opencode', 'windsurf']);
+});
+
+test('host tier is the product enforcement-guarantee decision, independent of release certification', () => {
+  const certified = Object.values(HOST_CAPABILITIES)
+    .filter((capability) => capability.tier === 'certified')
+    .map((capability) => capability.host)
+    .sort();
+  assert.deepEqual(certified, ['claude', 'codex', 'cursor']);
+  const uncertified = Object.values(HOST_CAPABILITIES)
+    .filter((capability) => capability.tier === 'uncertified')
+    .map((capability) => capability.host)
+    .sort();
+  assert.deepEqual(uncertified, ['copilot', 'kilo', 'opencode', 'windsurf']);
+  // Cursor is the one host where certification (release-harness proof
+  // methodology) and tier (end-user enforcement guarantee) disagree.
+  assert.equal(HOST_CAPABILITIES.cursor.tier, 'certified');
+  assert.equal(HOST_CAPABILITIES.cursor.certification, 'contract+manual-e2e');
 });
 
 test('only Codex claims authoritative child-model observation at the first tool', () => {

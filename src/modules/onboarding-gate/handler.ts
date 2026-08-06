@@ -141,6 +141,24 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // (the onboarding wait command, read-only orientation) silently fail on Cursor.
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
+  // Doctor is the recovery command this gate's own deny prose prescribes, so it
+  // must be callable from EVERY state a user can be stuck in — including the
+  // pre-consent one, where the ask-first fence below denies unconditionally,
+  // and the onboarded-but-unbuildable ones, where the Cursor model-policy
+  // branches deny long after any per-branch exemption. Hoisted to the top of
+  // the handler, ahead of every fence, because an exemption placed inside one
+  // branch is only reachable on that branch's `prepared.kind` and left doctor
+  // denied in exactly the states it exists for.
+  //
+  // Nothing above it and nothing after it runs: this returns before
+  // resolveToolScope, initializeTrafficOneEnv, computeOnboarding,
+  // prepareOnboardingServer (which would SPAWN a wizard server) and the
+  // ensureCurrentRunId/ensureRunModelPolicy writers — so a pre-consent project
+  // stays byte-identical, which is the consent write fence's requirement.
+  // isTrafficOneDoctorCommand is a bounded exact-argv grammar over
+  // `node <this runtime's own doctor.cjs> [one recognized flag]`
+  // (tool-classify.ts), so this cannot widen to any other command.
+  if (isTrafficOneDoctorCommand(toolName, toolInput)) return noop();
   const cwd = ctx.cwd;
 
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
@@ -187,10 +205,10 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // Team-mode write guards stay active — these are post-onboarding runtime
   // guardrails, not onboarding questions.
   if (teamModeMarkerWriteViolation(root, toolName, toolInput)) {
-    return deny(block('team-mode-marker-guard'));
+    return deny(block('team-mode-marker-guard'), { denyId: 'team-mode-marker-guard' });
   }
   if (teamModeDowngradeViolation(root, toolName, toolInput, effectiveState)) {
-    return deny(block('team-mode-downgrade-guard'));
+    return deny(block('team-mode-downgrade-guard'), { denyId: 'team-mode-downgrade-guard' });
   }
 
   // The model is allowed to write the canonical state file itself.
@@ -230,7 +248,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
       return deny(block('claude-wait-background-denied', {
         URL_LINE: urlLine,
         WAIT_CMD: observed,
-      }, claudeWaitBackgroundDeniedReason(urlLine, observed)));
+      }, claudeWaitBackgroundDeniedReason(urlLine, observed)), { denyId: 'claude-wait-background-denied' });
     }
     // The approved bootstrap is the only way a sandboxed hook can start an
     // unsandboxed wizard that owns ~/.traffic-one/projects. Admit it before the
@@ -242,7 +260,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // link themselves; an agent that opens it also tends to believe it "shared"
     // the link, and then never posts it (observed 2cu/5cu).
     if (isBrowserOpenCommand(toolName, toolInput)) {
-      return deny(block('browser-open-denied', {}, browserOpenDeniedReason()));
+      return deny(block('browser-open-denied', {}, browserOpenDeniedReason()), { denyId: 'browser-open-denied' });
     }
     // Setup is pending on the AGENT (tech classification), not the user: the
     // deterministic tables derived no stack, so the agent must inspect the repo
@@ -262,7 +280,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
           SET_TECH_TEMPLATE: template,
           HINTS: hints,
         }, techClassifyRequiredReason(template, hints));
-      return deny(reason);
+      return deny(reason, { denyId: 'tech-classify-required' });
     }
     if (isOnboardingWaitCommand(toolName, toolInput)) {
       // Ask-first pending: the runner invocation IS the answer path (--use /
@@ -304,7 +322,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
             URL: server.dashboardUrl,
             LOCAL_FALLBACK: localFallback,
             WAIT_CMD: waitCommand,
-          }, cursorWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+          }, cursorWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)), { denyId: 'cursor-wait-link-first' });
         }
       }
       // Claude mirrors the Cursor link-first deny: hook output and blocked
@@ -336,7 +354,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
                 URL: server.dashboardUrl,
                 LOCAL_FALLBACK: localFallback,
                 WAIT_CMD: waitCommand,
-              }, claudeWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+              }, claudeWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)), { denyId: 'claude-wait-link-first' });
             }
           }
         }
@@ -365,7 +383,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
                 URL: server.dashboardUrl,
                 LOCAL_FALLBACK: localFallback,
                 WAIT_CMD: waitCommand,
-              }, codexWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)));
+              }, codexWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)), { denyId: 'codex-wait-link-first' });
             }
           }
         }
@@ -389,18 +407,22 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // Deny mutating work with the HOST-CHAT question — no wizard server, no
     // setup URL, until the user answers (yes → --use runs the normal wait).
     if (usePluginQuestionPending(root)) {
-      return deny(usePluginQuestion(root, ctx.host, undefined, syncSession));
+      return deny(usePluginQuestion(root, ctx.host, undefined, syncSession), { denyId: 'onboarding-use-plugin-question' });
     }
     const declineCmd = onboardingDeclineCommand(root, ctx.host);
     const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
     if (prepared.kind !== 'ready') {
-      if (prepared.kind === 'start-failed' && isTrafficOneDoctorCommand(toolName, toolInput)) return noop();
+      // (The doctor exemption that used to live here, guarded on
+      // `prepared.kind === 'start-failed'`, is now unconditional at the top of
+      // this handler — it was unreachable from the ask-first fence above and
+      // from the Cursor branches below, which is precisely the states a stuck
+      // user runs doctor from.)
       // Windsurf renders a denied read as a failed tool card. Its prompt hook
       // already carries this bootstrap recipe, so preserve harmless orientation
       // and repeat the actionable block on the first mutation. Other hosts need
       // the first tool denial because that is their most reliable visible channel.
       if (ctx.host === 'windsurf' && isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
-      return deny(prepared.reason);
+      return deny(prepared.reason, { denyId: 'onboarding-server-not-ready' });
     }
     const { server, waitCommand } = prepared;
     // Every deny below prescribes the wait command; make sure the host's
@@ -439,6 +461,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
         + `Then immediately run this wait command in the current turn (timeout ~9 minutes); do not wait for another user message first:\n${vars.WAIT_CMD}\n\n`
         + restartNote
         + `If the user does not want Traffic One for this project, run instead: ${declineCmd}`,
+        { denyId: 'onboarding-setup-required-opencode' },
       );
     }
     if (ctx.host === 'windsurf') {
@@ -450,8 +473,8 @@ export function onboardingGate(ctx: Ctx): HookResult {
       if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
       const first = firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId);
       return first
-        ? deny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, localFallback, vars.WAIT_CMD)))
-        : deny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, localFallback, vars.WAIT_CMD)));
+        ? deny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, localFallback, vars.WAIT_CMD)), { denyId: 'windsurf-server-deny-reason' })
+        : deny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, localFallback, vars.WAIT_CMD)), { denyId: 'windsurf-server-deny-reason-repeat' });
     }
     // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
     // session — INCLUDING a read-only orientation call. On Codex the PreToolUse
@@ -491,7 +514,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
     if (firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId)) {
       return deny(wizardIsOpen
         ? block('server-deny-reason-links-shown', vars)
-        : block('server-deny-reason', vars), copilotDenyBanner());
+        : block('server-deny-reason', vars), { ...copilotDenyBanner(), denyId: wizardIsOpen ? 'onboarding-server-deny-links-shown' : 'onboarding-server-deny-first' });
     }
     // Recipe already delivered this session → orientation flows; every further
     // non-orientation / mutating attempt repeats only the URL + wait-command. The
@@ -502,7 +525,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
     }
     return deny(wizardIsOpen
       ? block('server-deny-reason-links-shown', vars)
-      : block('server-deny-reason-repeat', vars), copilotDenyBanner());
+      : block('server-deny-reason-repeat', vars), { ...copilotDenyBanner(), denyId: wizardIsOpen ? 'onboarding-server-deny-links-shown' : 'onboarding-server-deny-repeat' });
   }
 
   if (childEvent) return noop();
@@ -546,6 +569,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
           `traffic-one — Cursor models required: before run ${buildRunId} can be frozen, capture exact picker ids covering `
           + `${missingCursorTiers?.join(', ')} and run `
           + `\`${modelCaptureCommand(root, 'cursor')}\`. Retry this parent tool afterward. No child may start without the immutable snapshot.`,
+          { denyId: 'onboarding-cursor-models-required', denyTarget: buildRunId },
         );
       }
       const frozenPolicy = readRunModelPolicy(root, buildRunId);
@@ -553,6 +577,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
         return deny(
           `traffic-one — model policy unavailable: run ${buildRunId} is already frozen for ${frozenPolicy.host}, not ${ctx.host}. `
           + 'Start a new parent run for this host; do not rebase or replace model-policy.json.',
+          { denyId: 'onboarding-model-policy-host-mismatch', denyTarget: buildRunId },
         );
       }
       if (frozenPolicy) {
@@ -560,25 +585,28 @@ export function onboardingGate(ctx: Ctx): HookResult {
           `traffic-one — run bootstrap unavailable: Performance and immutable model policy are already saved for run ${buildRunId}, `
           + 'but the runtime could not publish or validate its capability baseline and parent bootstrap. Do not redo onboarding '
           + 'or replace model-policy.json. Update or repair Traffic One, then retry this parent tool with the same run.',
+          { denyId: 'onboarding-run-bootstrap-unavailable', denyTarget: buildRunId },
         );
       }
       return deny(
         'traffic-one — model policy unavailable: the parent could not freeze the acknowledged host/plan model catalog '
         + `for run ${buildRunId}. Reopen Performance if prompted, then retry this parent tool. Do not spawn a child `
         + 'and do not let a child create or replace model-policy.json.',
+        { denyId: 'onboarding-model-policy-freeze-failed', denyTarget: buildRunId },
       );
     }
     if (policy.host !== ctx.host) {
       return deny(
         `traffic-one — model policy unavailable: run ${buildRunId} is already frozen for ${policy.host}, not ${ctx.host}. `
         + 'Start a new parent run for this host; do not rebase or replace model-policy.json.',
+        { denyId: 'onboarding-model-policy-host-mismatch', denyTarget: buildRunId },
       );
     }
   }
 
   const materialized = materializeProjectIfNeeded(root, { trigger: 'generic pre-tool convergence' });
   if (materialized) {
-    if (isMutatingPreToolUse(toolName, toolInput)) return deny(block('repaired-materialization'));
+    if (isMutatingPreToolUse(toolName, toolInput)) return deny(block('repaired-materialization'), { denyId: 'repaired-materialization' });
     return context(materialized.context, { systemMessage: materialized.systemMessage });
   }
   // Headless sessions never fire UserPromptSubmit, so the prompt-boundary

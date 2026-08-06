@@ -14,7 +14,7 @@
 // 17c) the symptom was silent: fix cycles quietly spawned senior_<role>_fix_N.
 
 import type { Assertion } from '../core/types';
-import { readRunSimTranscript, rec, result, str } from './util';
+import { readRunSimTranscript, rec, result, runSimStop, str } from './util';
 
 interface Snapshot { spawnIndex?: unknown; claimIds?: unknown }
 
@@ -29,9 +29,9 @@ export const assertion: Assertion = {
   run: (ctx) => {
     const transcript = readRunSimTranscript(ctx);
     if (!transcript) return result(ctx, 'FAIL', 'No run-sim transcript was persisted.');
-    if (transcript.ok !== true) {
-      return result(ctx, 'FAIL', `The simulated run did not complete: ${str(transcript.failure) || 'unknown failure'}`);
-    }
+    // The fix cycle runs before QA, so its claim survives a later toolchain block.
+    const stop = runSimStop(ctx, transcript, 'The simulated run did not complete', 'fix-cycle');
+    if (stop) return stop;
 
     const cycle = rec(rec(transcript.facts).fixCycle);
     const before = rec(cycle.before) as Snapshot;

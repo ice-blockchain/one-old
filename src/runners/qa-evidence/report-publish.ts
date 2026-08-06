@@ -27,6 +27,39 @@ export interface CheckEvidenceInput {
 
 const RUNNER_PASS_SUMMARY = 'Executed by traffic-one-qa-runner.';
 
+/**
+ * The ids `computeBrowserCheckStatuses` has an explicit `case` for — everything
+ * its `default:` arm would fail closed on is deliberately absent. Exported so
+ * the producible-check invariant can probe these for a path to `passed` rather
+ * than trusting the switch to still contain what a contract asks for.
+ */
+export const BROWSER_CHECK_IDS = [
+  'stack-build', 'playwright-local', 'dom-assertions', 'actions', 'routing',
+  'hydration', 'console-errors', 'network-errors', 'responsive-screenshots',
+] as const;
+
+/**
+ * What a native adapter result actually attests, per id.
+ *
+ * One machine result answers all three: an xcodebuild-test / connectedAndroidTest
+ * run that reports passed > 0 and failed === 0 necessarily COMPILED the app
+ * (`stack-build`), ran its unit tests (`native-unit-tests`), and did so on a
+ * simulator or device (`simulator-or-emulator`) — and `validateNativeEvidence`
+ * re-checks the parser, the hashes and the summary before any of it counts.
+ *
+ * Nothing else may be stamped from that status. The previous mapping was
+ * WHOLESALE — every required id, whatever it was, took the overall verdict — so
+ * a native run reported `stack-format: passed / "Executed by
+ * traffic-one-qa-runner."` having never run a formatter. That is the mirror
+ * image of a check with no producer: instead of an unsatisfiable block, a silent
+ * pass with zero evidence. The stack-command ids a native contract also carries
+ * are substituted with their REAL executed results by run-context's
+ * withExecutedStackChecks.
+ */
+export const NATIVE_ATTESTED_CHECK_IDS = [
+  'stack-build', 'native-unit-tests', 'simulator-or-emulator',
+] as const;
+
 function bounded(value: string): string {
   // Check summaries must satisfy the schema's safe-string rule: no control
   // characters, 1..500 chars. Filter by char code — no control characters may
@@ -113,22 +146,26 @@ export function computeBrowserCheckStatuses(
   });
 }
 
-// Wholesale mapping for report shapes with no per-route evidence (native
-// adapter results): pass-through on passed/failed, but a blocked environment
-// marks the checks 'not-applicable' instead of fabricating failures for
-// checks that never ran.
-export function wholesaleCheckStatuses(
+// Report shapes with no per-route evidence (native adapter results): the adapter
+// verdict passes through on passed/failed, but a blocked environment marks the
+// checks 'not-applicable' instead of fabricating failures for checks that never
+// ran. Scoped to NATIVE_ATTESTED_CHECK_IDS — an id the adapter result says
+// nothing about fails closed here and must be produced by something that can.
+export function nativeCheckStatuses(
   requiredChecks: readonly string[],
   status: QaReportV2['status'],
   blockerSummary?: string,
 ): QaCheck[] {
-  return requiredChecks.map((id) => (
-    status === 'passed'
+  return requiredChecks.map((id) => {
+    if (!(NATIVE_ATTESTED_CHECK_IDS as readonly string[]).includes(id)) {
+      return { id, status: 'failed' as const, summary: 'Not attested by the native adapter result.' };
+    }
+    return status === 'passed'
       ? { id, status: 'passed' as const, summary: RUNNER_PASS_SUMMARY }
       : status === 'blocked-environment'
         ? { id, status: 'not-applicable' as const, summary: bounded(`not run: ${blockerSummary || 'required runtime environment is unavailable'}`) }
-        : { id, status: 'failed' as const, summary: bounded(blockerSummary || 'Runtime QA evidence did not pass.') }
-  ));
+        : { id, status: 'failed' as const, summary: bounded(blockerSummary || 'Runtime QA evidence did not pass.') };
+  });
 }
 
 // Progress heartbeat: stderr only — stdout stays reserved for the single

@@ -5,6 +5,8 @@
 
 import type { ArchitectureInputV1 } from '../../shared/architecture-contract';
 import type { HostModelObservation } from '../../shared/host/capabilities';
+import type { UiImpact } from '../../shared/verification-contract';
+import type { CaseConsent } from './consent';
 
 export type HostId = 'claude' | 'codex' | 'cursor' | 'opencode' | 'copilot' | 'windsurf' | 'kilo';
 export type VerdictHost = HostId | 'none';
@@ -47,7 +49,8 @@ export type FixtureKind =
   | 'react-vite'
   | 'existing-react-vite'
   | 'existing-node-api'
-  | 'existing-go-api';
+  | 'existing-go-api'
+  | 'existing-go-web';
 
 // The onboarding selection a case declares. preseed.ts turns this into an
 // AUTHENTIC .one.json + preferences.json by calling the real source writers,
@@ -92,6 +95,19 @@ export interface RunSimSpec {
   // How QA evidence is produced. Cross-checked against the PUBLISHED
   // contract.browserRequired so a shape can never silently take the cheap path.
   qa: QaExpectation;
+  /**
+   * The uiImpact the published contract must carry.
+   *
+   * `qa.mode` alone does NOT pin this: `none` and `nonvisual` both answer
+   * browserRequired=false, so a shape that slid from one to the other would keep
+   * every assertion green while silently changing which checks are required. The
+   * tier ran for a long time producing only `none` and `visual` — `nonvisual`,
+   * the base impact of every project with a web surface and therefore the
+   * commonest change shape in the product, was never exercised at all, and a hard
+   * settlement deadlock on it survived the one suite that tests composition.
+   * Naming the expected impact per case is what makes that gap visible.
+   */
+  expectUiImpact?: UiImpact;
   // Run a review round-trip (CHANGES_REQUESTED → re-implement → APPROVED) and
   // record the claim state either side of it. Off by default: one shape proves
   // the mechanism, and running it everywhere would only add wall-clock.
@@ -192,6 +208,13 @@ export interface Case {
   hostFilter?: HostId[]; // restrict to a subset of enabled hosts; default all
   fixture: FixtureKind;
   preSeed: PreSeed;
+  // The ask-first "use Traffic One here?" answer this case starts from; 'use'
+  // when absent. NOT optional in effect — the fence is default-closed, so a case
+  // with no answer on record cannot write `.traffic-one/` at all and every
+  // downstream assertion fails for that one reason (see core/consent.ts).
+  // 'decline' skips seeding entirely: the point of that direction is that
+  // nothing is written.
+  consent?: CaseConsent;
   // pure-node onboarding-flow simulation: scripted answers fed to applyAnswer().
   scriptedAnswers?: ScriptedAnswer[];
   // Required when layer === 'run-sim': the shape this simulated run builds.

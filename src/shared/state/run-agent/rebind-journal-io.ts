@@ -135,19 +135,44 @@ function removePendingClaimsByIdUnlocked(
   runId: string,
   claimIds: readonly string[],
 ): boolean {
-  for (const claimId of new Set(claimIds.filter(Boolean))) {
-    const file = path.join(pendingDir(cwd, runId), `${safePathSegment(claimId)}.json`);
-    if (!fs.existsSync(file)) continue;
+  const wanted = new Set(claimIds.filter(Boolean));
+  if (wanted.size === 0) return true;
+  // Matched on the claim id INSIDE each file, by scanning the directory.
+  //
+  // This used to address `pending/<claimId>.json` directly and called the
+  // filename half of "the pending-claim CAS" — but a name every writer derives
+  // from its own fresh random id is contended by nobody, so it was not a CAS at
+  // all. claims-store.ts's pendingClaimFile keys the slot by ROLE, which is
+  // contended by construction and gives the exclusive create something real to
+  // fail on. A content scan is the lookup that follows from that, and it is
+  // filename-agnostic: it still finds the `<claimId>.json` files an older build
+  // left behind.
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(pendingDir(cwd, runId), { withFileTypes: true });
+  } catch {
+    // No pending directory at all means nothing of this journal's is left there.
+    return true;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const file = path.join(pendingDir(cwd, runId), entry.name);
     const claim = readClaimFile(file);
-    // The filename and payload form the pending-claim CAS. If either cannot be
-    // verified, retain the journal instead of declaring cleanup complete.
-    if (!claim || firstString(claim.claimId) !== claimId) return false;
+    const id = firstString(claim?.claimId);
+    // A pending file whose claim id cannot be read might BE one of these, and the
+    // direct lookup was fail-closed about exactly that ("if either cannot be
+    // verified, retain the journal"). Keep the journal rather than declare a
+    // cleanup that may have missed a claim.
+    if (!id) return false;
+    if (!wanted.has(id)) continue;
     try {
       fs.rmSync(file, { force: true });
     } catch {
       return false;
     }
   }
+  // A wanted id with no file left is already cleaned up — the same tolerance the
+  // direct lookup had in its `existsSync` continue.
   return true;
 }
 export function completeAuthoritativeRebindJournalUnlocked(
@@ -195,10 +220,28 @@ export function completeAuthoritativeRebindJournalUnlocked(
     return { status: 'blocked' };
   }
 
+  // Both writes below reuse the `catch`'s own channel for the OTHER way they
+  // fail: shared/fsjson.ts answers `false` for a refusal (an unanswered consent
+  // question, a planted symlink, a path escaping the state dir) instead of
+  // throwing, and that answer was dropped.
+  //
+  // Not merely untidy, and not merely a divergence between the two paths. The
+  // claim file is keyed by THREAD, so the rebind rewrites the one file from
+  // oldRole to targetRole — and when the write was refused, the source claim was
+  // still sitting there, so the read-back at the end of this function found a
+  // claim, and this returned `{ status: 'complete', claim }` carrying the
+  // UN-REBOUND role. `authoritativeRebindThreadRole` then built a context from it
+  // labelled `authoritative-role-rebind`, and context-resolve.ts consumed
+  // `replay.claim` directly. The journal has already been deleted by then, so
+  // replay cannot recover it. `blocked` is the answer a malformed journal
+  // produces, and all three consumers refuse conservatively on it
+  // (codex-liveness.ts → `conflict`, rendered as the retryable
+  // `agent-reuse-await-codex-meta` deny; claim-thread-role.ts and
+  // context-resolve.ts → null), so it costs a retry and never a wrong role.
   if (!targetClaimMatches) {
     try {
       fs.mkdirSync(runDir(cwd, journal.runId), { recursive: true });
-      writeJson(claimFile, journal.targetClaim);
+      if (!writeJson(claimFile, journal.targetClaim)) return { status: 'blocked' };
     } catch {
       return { status: 'blocked' };
     }
@@ -234,12 +277,12 @@ export function completeAuthoritativeRebindJournalUnlocked(
       });
     }
     try {
-      writeJson(registryFile, {
+      if (!writeJson(registryFile, {
         ...registry,
         version: 1,
         agents,
         history: history.slice(-100),
-      });
+      })) return { status: 'blocked' };
     } catch {
       return { status: 'blocked' };
     }

@@ -13,6 +13,27 @@ export interface QaRunOutcome {
   code: number;
   detail: string;
   checks: Record<string, { status: string; summary: string }>;
+  /**
+   * The blocker summary when the PRODUCT itself judged this run
+   * `blocked-environment` — a required toolchain the machine does not have — and
+   * '' for every other outcome.
+   *
+   * Carried separately from `detail` because the two mean opposite things and the
+   * harness used to conflate them. AGENTS.md has always said a missing toolchain
+   * is INCONCLUSIVE rather than a pass; in practice a machine with no
+   * project-local Playwright turned 48 assertions RED with "Project-local
+   * Playwright is unavailable", i.e. the harness reported a product failure for a
+   * browser it never had. This value comes from the runner's own status
+   * (qa-report-v2 → `code: 'blocked-environment'`, set by browser.ts/native.ts
+   * only when the runtime is genuinely absent), never from pattern-matching the
+   * failure text, so a real red check cannot be laundered into a gap.
+   */
+  blocked: string;
+}
+
+function environmentBlocker(report: ReturnType<typeof readQaReportV2>): string {
+  if (report.ok || report.code !== 'blocked-environment') return '';
+  return report.message || 'Required runtime environment is unavailable.';
 }
 
 // Run the real qa-evidence `stack` command in-process and report what it did.
@@ -34,7 +55,7 @@ export async function runStackEvidence(cwd: string, runId: string): Promise<QaRu
   } else {
     detail = `${report.code}: ${report.message}`;
   }
-  return { code, detail, checks };
+  return { code, detail, checks, blocked: environmentBlocker(report) };
 }
 
 export async function runBrowserProbe(cwd: string, runId: string): Promise<number> {
@@ -70,5 +91,5 @@ export async function runBrowserEvidence(
       checks[check.id] = { status: check.status, summary: check.summary ?? '' };
     }
   }
-  return { code, detail, checks };
+  return { code, detail, checks, blocked: environmentBlocker(report) };
 }

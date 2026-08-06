@@ -55,8 +55,15 @@ import {
   idsForRunAgent,
   recordRunAgent,
   subagentContinuationAvailable,
-  withAgentRegistryLock,
+  withAgentRegistryLockResult,
 } from './registry';
+import {
+  applied,
+  mutationApplied,
+  preconditionFailed,
+  unavailable,
+  type MutationResult,
+} from './mutation-result';
 import {
   contextFromClaim,
   type RunAgentContext,
@@ -358,28 +365,29 @@ function roleRegistryDisownsClaim(
 // exactly the next verified same-role child claim the slot, and the recorder
 // preserves this lineage in registry history. Only the entry actually owned by
 // one of the given thread ids is marked; a live replacement is never touched.
-export function disownConflictedRoleAgent(
+export function disownConflictedRoleAgentResult(
   cwd: string,
   runId: string,
   role: string,
   threadIds: readonly string[],
   reason: string,
-): boolean {
-  if (!VALID_AGENT_ROLES.has(role) || !runId) return false;
+): MutationResult<void> {
+  if (!VALID_AGENT_ROLES.has(role) || !runId) return preconditionFailed('invalid-role-or-run');
   const ids = threadIds.map((id) => String(id || '').trim()).filter(Boolean);
-  if (ids.length === 0) return false;
-  let disowned = false;
-  withAgentRegistryLock(cwd, runId, () => {
+  if (ids.length === 0) return preconditionFailed('no-thread-ids');
+  // Fix #1 of the eleven. The lock result was discarded, so a contended registry
+  // lock reported the same `false` as "that thread does not own this role" — and
+  // this function's `false` is what keeps a stranded role slot occupied, the exact
+  // dead-end (8c-codex) it was written to clear.
+  const outcome = withAgentRegistryLockResult<void>(cwd, runId, () => {
     const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
     const agents = obj(registry.agents) || {};
     const entry = obj(agents[role]);
-    if (!entry) return;
+    if (!entry) return preconditionFailed('no-registry-row');
     const entryIds = idsForRunAgent(entry);
-    if (!ids.some((id) => entryIds.includes(id))) return;
-    if (entry.replaced === true) {
-      disowned = true;
-      return;
-    }
+    if (!ids.some((id) => entryIds.includes(id))) return preconditionFailed('thread-does-not-own-role');
+    // Already disowned: the slot IS clear, which is what the caller asked for.
+    if (entry.replaced === true) return applied(undefined);
     agents[role] = {
       ...entry,
       replaced: true,
@@ -388,12 +396,30 @@ export function disownConflictedRoleAgent(
     };
     try {
       fs.mkdirSync(runDir(cwd, runId), { recursive: true });
-      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
-      disowned = true;
+      if (!writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents })) {
+        return unavailable('registry-write-refused');
+      }
+      return applied(undefined);
     } catch {
       // best-effort: the deny still blocks the dead child; the parent can retry
+      return unavailable('registry-write-failed');
     }
   });
-  return disowned;
+  return outcome;
+}
+
+// The boolean face every product caller uses. It cannot express `unavailable`,
+// which is exactly why the Result above is the exported one: the three-valued
+// answer is asserted against a held lock in
+// __tests__/mutation-result-lock-contract.test.ts, so a later refactor cannot
+// collapse a contended lock back into this `false` unnoticed.
+export function disownConflictedRoleAgent(
+  cwd: string,
+  runId: string,
+  role: string,
+  threadIds: readonly string[],
+  reason: string,
+): boolean {
+  return mutationApplied(disownConflictedRoleAgentResult(cwd, runId, role, threadIds, reason));
 }
 

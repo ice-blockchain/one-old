@@ -59,8 +59,16 @@ export function renderMarkdownReport(report: Report): string {
   return `${lines.join('\n')}\n`;
 }
 
-export function stampState(cwd: string, report: Report, relativeReportPath: string): void {
-  withProjectStateLock(cwd, () => {
+// Returns whether the stamp is actually ON DISK. `.one.json` is written through
+// the fenced chokepoint, and the refusal used to be dropped here: the runner then
+// printed `PASSED` and exited 0 while nothing was stamped, and the deploy-gate —
+// which reads lastSecurityCheckStatus/Fingerprint straight back out of
+// `.one.json` — denied the deploy for a missing stamp. Two components, one fact,
+// opposite answers, and the shipper role had no way to tell which was lying.
+// The gate's own direction is fail-closed and stays untouched; what was broken is
+// that the producer certified a stamp it never landed.
+export function stampState(cwd: string, report: Report, relativeReportPath: string): boolean {
+  return withProjectStateLock(cwd, () => {
     const nextStatePath = statePath(cwd);
     const oldStatePath = legacyStatePath(cwd);
     let state: Rec = {};
@@ -79,6 +87,6 @@ export function stampState(cwd: string, report: Report, relativeReportPath: stri
     delete state.pluginVersion;
     const version = pluginVersion();
     if (version) state.version = version;
-    writeJson(nextStatePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, state)));
+    return writeJson(nextStatePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, state)));
   });
 }

@@ -11,6 +11,7 @@ import {
   type WorkUnitContractV1,
 } from '../architecture-contract';
 import { readJson, writeJson } from '../fsjson';
+import { hostFlags } from '../host/capability-flags';
 import { ensureOriginHeadRef } from '../git-init';
 import {
   ensureRunHostCapability,
@@ -68,7 +69,7 @@ export function ensureRunBootstrap(
   const resolved = resolvedRoleMaterials(cwd, role, {}, options.host, snapshot.profile);
   if (!resolved) return null;
   const hostCapability = ensureRunHostCapability(cwd, runId, options.host, {
-    ...(options.host === 'claude' ? { point: 'native-bootstrap' } : {}),
+    ...(hostFlags(options.host).nativeBootstrapEnforcementPoint ? { point: 'native-bootstrap' as const } : {}),
     event: 'bootstrap-published',
     source: 'runtime-bootstrap',
   });

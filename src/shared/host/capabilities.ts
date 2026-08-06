@@ -79,6 +79,8 @@ function parseRunHostCapability(
     || raw.certification !== contract.certification
     || raw.typedSubagents !== contract.typedSubagents
     || raw.modelObservation !== contract.modelObservation
+    || raw.tier !== contract.tier
+    || raw.primaryBlockingPointIsImplicit !== contract.primaryBlockingPointIsImplicit
     || !Array.isArray(raw.observedEnforcementPoints)
     || !raw.observedEnforcementPoints.every((point) => (
       typeof point === 'string' && contract.enforcementPoints.includes(point)
@@ -257,7 +259,13 @@ export function ensureRunHostCapability(
         result = existing;
         return;
       }
-      writeJson(file, candidate);
+      // A refused write (fsjson.ts) left `result` to the read-back below, which
+      // does not compare hashes — so it returned the STALE record as though the
+      // fresh observation had landed, and a host that lost a blocking point
+      // mid-run kept a record saying it still had one. The fence was also the
+      // only failure treated that way: an EACCES throws and the `catch` returns
+      // null. Report both the same way.
+      if (!writeJson(file, candidate)) return;
       result = readRunHostCapability(projectRoot, runId, host);
     });
   } catch {
@@ -290,14 +298,13 @@ function hookPoint(input: HookInput): string | null {
     return input.hostHookPoint;
   }
   if (observed && contract.enforcementPoints.includes(observed)) return observed;
-  // These three adapters receive a native, blocking PreToolUse invocation;
-  // their canonical event is authoritative even when the host omits the
-  // redundant raw hook_event_name field. Wrapper/event hosts must still name
-  // their concrete point explicitly.
-  if (
-    input.event === 'PreToolUse'
-    && (input.host === 'claude' || input.host === 'codex' || input.host === 'copilot')
-  ) return contract.primaryBlockingPoint;
+  // These adapters receive a native, blocking PreToolUse invocation; their
+  // canonical event is authoritative even when the host omits the redundant
+  // raw hook_event_name field (capability: primaryBlockingPointIsImplicit).
+  // Wrapper/event hosts must still name their concrete point explicitly.
+  if (input.event === 'PreToolUse' && contract.primaryBlockingPointIsImplicit) {
+    return contract.primaryBlockingPoint;
+  }
   return null;
 }
 

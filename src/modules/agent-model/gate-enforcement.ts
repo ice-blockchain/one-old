@@ -12,9 +12,11 @@ import {  currentModelForTier } from '../../shared/current-model-tiers';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import {
-  ensureRunAgentClaim,
+  ensureRunAgentClaimResult,
   isTeamApproved,
   readEffectiveState,
+  retryWhileUnavailable,
+  statePath,
 } from '../../shared/state';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
@@ -22,6 +24,7 @@ import { openCodeGlobalAgentName } from '../../shared/materialize/opencode-asset
 import { acceptableSpawnTypes } from '../../shared/host/spawn-types';
 import {
   ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
+  SPAWN_CLAIM_UNAVAILABLE_FALLBACK,
   block,
   isPlanBatchGatedRole,
 } from './handler-prose';
@@ -47,6 +50,38 @@ import {
 import type { HookResult } from '../../core/types';
 import type { GateContext } from './gate-context';
 
+/**
+ * Mint the spawn's role claim, and refuse the spawn if it could not be RECORDED.
+ *
+ * This is the enforcement half of state/run-agent/mutation-result.ts's split
+ * rule, at the only layer that holds a HookResult. All three claim mints in this
+ * file discarded their result, so a contended claims/ledger lock or a refused
+ * state write let the spawn through with no claim at all — and a child with no
+ * claim resolves to no role, writes as the main agent, is invisible to the
+ * duplicate-spawn gate, and is not released by the terminal sweep.
+ *
+ * `precondition-failed` returns null (spawn proceeds) and that is deliberate:
+ * its two causes are a closed run — which the ledger gates already deny, with
+ * the resume remedy — and the role's pending claim already existing, where a
+ * claim for the role is on disk either way and the child will bind to it. That
+ * second case is the Kilo corrective-spawn recovery, which must not be blocked.
+ */
+function claimMintDeny(g: GateContext, model: string): HookResult | null {
+  const { cwd, state, raw, toolName, toolInput, role, roleEvidence, spawnRunId } = g;
+  const minted = retryWhileUnavailable(() => ensureRunAgentClaimResult(cwd, state, role, raw, {
+    toolName,
+    agentType: spawnAgentType(toolInput) || undefined,
+    model,
+    roleSource: roleEvidence.source,
+  }));
+  if (minted.outcome !== 'unavailable') return null;
+  return deny(block('spawn-claim-unavailable', {
+    ROLE: role,
+    RUN_ID: spawnRunId,
+    REASON: minted.reason,
+  }, SPAWN_CLAIM_UNAVAILABLE_FALLBACK), { denyId: 'spawn-claim-unavailable', denyTarget: role });
+}
+
 export function modelEnforcementGates(g: GateContext): HookResult {
   const { ctx, cwd, state, raw, toolName, toolInput, role, roleEvidence, spawnRunId, runPolicy, allowSpawn } = g;
   // quick-fix is the post-build maintenance worker: its cheapest-model pin is
@@ -68,21 +103,31 @@ export function modelEnforcementGates(g: GateContext): HookResult {
     if (exact) return exact;
     recordSpawnParentSession(cwd, raw);
     if (ctx.host !== 'codex') {
-      ensureRunAgentClaim(cwd, state, role, raw, {
-        toolName,
-        agentType: spawnAgentType(toolInput) || undefined,
-        model: passedModel || expected || '',
-        roleSource: roleEvidence.source,
-      });
+      const unavailable = claimMintDeny(g, passedModel || expected || '');
+      if (unavailable) return unavailable;
     }
     return allowSpawn(noop());
   }
 
   const isNewProject = state.mode === 'new-project';
   if (isNewProject && !isCompletedTrafficOneMaterialization(cwd, state)) {
-    materializeIfNeeded(cwd);
-    if (isCompletedTrafficOneMaterialization(cwd, readEffectiveState(cwd))) return deny(block('agent-materialization-deny'));
-    return deny(block('agent-materialization-missing'));
+    // The stamp's own answer, and it deliberately does NOT vote on which deny.
+    // The read-back below is strictly stronger for that: it also catches a stamp
+    // that landed over incomplete assets, and an already-stamped project whose
+    // assets the sweep just restored under a REFUSED re-stamp — that project is
+    // complete and owes the re-issue deny, which `stamped` alone would downgrade.
+    // What only `stamped` can say is that this deny will REPEAT forever: a
+    // refused stamp is durable, so every later spawn re-runs the full sweep and
+    // lands here again with nothing on disk to show for it. Carried as the
+    // denyTarget — the refused path itself — because that is the channel the
+    // per-target deny budget and the decision record already read, and neither
+    // deny's prose can name a cause it cannot see.
+    const stamped = materializeIfNeeded(cwd);
+    if (isCompletedTrafficOneMaterialization(cwd, readEffectiveState(cwd))) return deny(block('agent-materialization-deny'), { denyId: 'agent-materialization-deny' });
+    return deny(block('agent-materialization-missing'), {
+      denyId: 'agent-materialization-missing',
+      ...(stamped ? {} : { denyTarget: statePath(cwd) }),
+    });
   }
 
   const performance = obj(state.performance);
@@ -95,10 +140,10 @@ export function modelEnforcementGates(g: GateContext): HookResult {
   if (!level) return allowSpawn(noop());
 
   if (teamModeForLevel(level) === 'main-agent') {
-    return deny(block('performance-main-agent', { LEVEL: level, ROLE: role }));
+    return deny(block('performance-main-agent', { LEVEL: level, ROLE: role }), { denyId: 'performance-main-agent', denyTarget: role });
   }
   if (!isTeamApproved(state.team)) {
-    return deny(block('team-confirmation', { LEVEL: level }));
+    return deny(block('team-confirmation', { LEVEL: level }), { denyId: 'team-confirmation' });
   }
 
   // Every active subagent run—greenfield or existing-codebase—must bind
@@ -112,7 +157,7 @@ export function modelEnforcementGates(g: GateContext): HookResult {
         ROLE: role,
         RUN_ID: spawnRunId,
         MISSING: incomplete.join('; '),
-      }, ARCHITECT_PHASE_INCOMPLETE_FALLBACK));
+      }, ARCHITECT_PHASE_INCOMPLETE_FALLBACK), { denyId: 'architect-phase-incomplete', denyTarget: role });
     }
   }
 
@@ -157,12 +202,8 @@ export function modelEnforcementGates(g: GateContext): HookResult {
   if (!expected) return allowSpawn(noop());
   if (!modelParamEnforced(ctx.host)) {
     recordSpawnParentSession(cwd, raw);
-    ensureRunAgentClaim(cwd, state, role, raw, {
-      toolName,
-      agentType: spawnAgentType(toolInput) || undefined,
-      model: passedModel || expected,
-      roleSource: roleEvidence.source,
-    });
+    const unavailable = claimMintDeny(g, passedModel || expected);
+    if (unavailable) return unavailable;
     return allowSpawn(noop());
   }
   if (!modelSatisfiesTier(ctx, passedModel, expected, runPolicy, role)) {
@@ -203,12 +244,8 @@ export function modelEnforcementGates(g: GateContext): HookResult {
 
   recordSpawnParentSession(cwd, raw);
   if (ctx.host !== 'codex') {
-    ensureRunAgentClaim(cwd, state, role, raw, {
-      toolName,
-      agentType: spawnAgentType(toolInput) || undefined,
-      model: passedModel,
-      roleSource: roleEvidence.source,
-    });
+    const unavailable = claimMintDeny(g, passedModel);
+    if (unavailable) return unavailable;
   }
   return allowSpawn(advisory ?? noop());
 }

@@ -17,6 +17,7 @@
     "plugin:build": "npm run gen && npm run build",
     "plugin:check": "npm run gen:check && npm run build:verify",
     "plugin:sync": "tsx src/build/sync-hosts.ts",
+    "replay:rebaseline": "node --import ./src/build/test-preload.mjs --import tsx tests/replay-corpus/rebaseline.ts",
     "smoke": "tsx src/build/compiled-smoke.ts",
     "test": "node --import ./src/build/test-preload.mjs --import tsx --test \"src/**/*.test.ts\" \"tests/**/*.test.ts\"",
     "test:env": "tsx src/test-environment/run.ts",

@@ -85,32 +85,44 @@ matrix therefore includes three small, isolated cases:
 - `enf-primary-pretool-deny` asks Claude, Codex, and Cursor to make exactly one
   runtime-owned write. It passes only when the valid per-run
   `HostCapabilityV1` sidecar records a real deny at that host's primary
-  before-tool point and the target file is absent.
+  before-tool point and the target file is absent. Claude and Codex prove
+  this live through the automated driver; Cursor's part of this case is
+  excluded from the automated run (see below) and is instead proven by the
+  copied per-run sidecar inside its manual certification record.
 - `enf-claude-child-bootstrap` requires live `native-bootstrap` and
   `SubagentStart` observations from one read-only quick-fix child.
 - `enf-codex-first-tool-model` requires `SubagentStart` plus a
   `first-tool-model-check` entry emitted specifically by
   `verified-child-model-gate`. The requested spawn model alone is not evidence.
 
-Run just these proofs in fresh projects:
+Run just the two automated proofs in fresh projects:
 
 ```bash
 npm run test:env:e2e -- \
-  --host=claude,codex,cursor \
+  --host=claude,codex \
   --case=enf-primary-pretool-deny,enf-claude-child-bootstrap,enf-codex-first-tool-model \
   --strict
 ```
 
+Cursor's `enf-primary-pretool-deny` evidence rides its manual certification
+record instead (`--host=cursor --manual-cert-dir=/absolute/release-certifications`,
+alongside OpenCode/Kilo/Copilot/Windsurf below).
+
 The current unattended command config explicitly declares headless subagents
 unsupported for Claude/Codex/Cursor. A host that really exposes the child tool
 can still pass by emitting the required live evidence; otherwise the child
-probe reports `UNSUPPORTED`, which fails strict certification. Cursor also
-cannot be prevention-certified from the primary deny alone: its contract still
-requires live `beforeShellExecution`, `beforeReadFile`, and
-`beforeMCPExecution` observations. Until a reproducible local MCP fixture and a
-scriptable current-plugin install replace Cursor's editor-only `/add-plugin`
-pointer, those missing points remain a reported certification gap, never a
-synthetic pass.
+probe reports `UNSUPPORTED`, which fails strict certification.
+
+Cursor is a certified host (`HOST_CAPABILITIES.cursor.tier`) but, unlike Claude
+and Codex, is classified `contract+manual-e2e`: it has no scriptable install
+(Cursor auto-imports Claude's user-scope bundle via an editor-only
+`/add-plugin` pointer, so release CI cannot drive an independent
+install→run→verify→settle sequence for it). `run.ts` excludes any host
+`hostRequiresManualCertification` returns true for from the automated
+host-E2E driver — Cursor's `cursor-agent` CLI is never spawned by this
+harness — and its release evidence is instead a dated manual certification
+record under `<manual-cert-dir>/cursor-manual-e2e.json`, exactly like
+OpenCode/Kilo/Copilot/Windsurf below.
 
 Codex release runs never reuse the maintainer's plugin selection or hook trust.
 The harness creates a marked `0700` `CODEX_HOME`, copies auth as `0600`,
@@ -122,14 +134,29 @@ marketplace, plugin, and home cleanup is fail-closed.
 
 ### Manual host certification
 
-OpenCode, Kilo, Copilot, and Windsurf are classified by
+Cursor, OpenCode, Kilo, Copilot, and Windsurf are classified by
 `HOST_CAPABILITIES` as `contract+manual-e2e`. The release harness does not
 schedule or install those hosts as unattended E2E targets. When one is selected,
 its release evidence comes from
 `<manual-cert-dir>/<host>-manual-e2e.json`. In strict mode, missing, malformed,
 stale-fingerprint, `FAIL`, and unwaived `NOT_RUN` records fail the release.
-Claude, Codex, and Cursor remain the ordinary automated defaults and do not
-require manual records.
+Claude and Codex remain the ordinary automated defaults and do not require
+manual records. Cursor is the one exception worth calling out explicitly: it
+is a certified (tier-1) host for enforcement purposes
+(`HOST_CAPABILITIES.cursor.tier === 'certified'`) — users get no install
+refusal and no SessionStart banner — but its *release* evidence is still a
+manual record, because Cursor auto-imports Claude's user-scope bundle and has
+no scriptable install of its own for CI to drive independently.
+
+**Per-push CI must not select a manual-certification host.** A record is bound
+to `installedPluginFingerprint`, the fingerprint of the exact `dist` a human
+installed and drove — and `dist` contains `build-provenance.json`, whose
+`gitSha` moves with every commit. So a committed record is stale by
+construction on the next push, and generating one inside the job would be
+manufacturing evidence for a session no human ran. `.github/workflows/generate-check.yml`
+therefore scopes its strict run to `--host=claude,codex`; manual records belong
+to a release run against fixed bytes. `src/test-environment/ci-strict-invocation.test.ts`
+enforces this against the workflow files themselves.
 
 Build the exact release bytes and print their stable, pre-runtime-proof
 fingerprint before installing that `dist` in the host:

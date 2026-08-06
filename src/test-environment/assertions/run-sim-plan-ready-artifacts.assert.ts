@@ -18,7 +18,7 @@ import { readActiveRunBootstrap, roleSkippableWithoutAssignment } from '../../sh
 import { readRunSettlement } from '../../shared/run-settlement';
 import { readVerificationContract } from '../../shared/verification-contract';
 import type { Assertion } from '../core/types';
-import { effState, latestRunId, readRunSimTranscript, rec, result, str } from './util';
+import { effState, latestRunId, readRunSimTranscript, rec, result, runSimStop, str } from './util';
 
 export const assertion: Assertion = {
   id: 'run-sim-plan-ready-artifacts',
@@ -29,9 +29,10 @@ export const assertion: Assertion = {
     if (!transcript) {
       return result(ctx, 'FAIL', 'No run-sim transcript was persisted — the simulated run never started.');
     }
-    if (transcript.ok !== true) {
-      return result(ctx, 'FAIL', `Simulated run did not complete: ${str(transcript.failure) || 'unknown failure'}`);
-    }
+    // `plan-ready` is where this assertion's whole subject is published, so a
+    // toolchain block in the later QA phase leaves it fully verifiable.
+    const stop = runSimStop(ctx, transcript, 'Simulated run did not complete', 'plan-ready');
+    if (stop) return stop;
 
     const runId = str(transcript.runId) || latestRunId(ctx.cwd, effState(ctx));
     if (!runId) return result(ctx, 'FAIL', 'The simulated run recorded no run id.');

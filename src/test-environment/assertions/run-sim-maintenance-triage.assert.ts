@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import type { Assertion } from '../core/types';
-import { readRunSimTranscript, rec, result, str } from './util';
+import { readRunSimTranscript, rec, result, runSimIncomplete, str } from './util';
 
 interface LegRow {
   ordinal?: unknown;
@@ -37,8 +37,10 @@ export const assertion: Assertion = {
   run: (ctx) => {
     const transcript = readRunSimTranscript(ctx);
     if (!transcript) return result(ctx, 'FAIL', 'No run-sim transcript was persisted.');
+    // The legs run last of all, so a toolchain block in the main QA phase means
+    // they never happened — nothing to judge either way.
     if (transcript.ok !== true) {
-      return result(ctx, 'FAIL', `The simulated run did not complete: ${str(transcript.failure) || 'unknown failure'}`);
+      return runSimIncomplete(ctx, transcript, 'The simulated run did not complete');
     }
 
     const declared = ctx.testCase.runSim?.maintenance ?? [];

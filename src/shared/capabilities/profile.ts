@@ -1,6 +1,9 @@
 // src/shared/capabilities/profile.ts
 // capabilityProfileForProject: the assembler.
 
+import * as path from 'path';
+
+import { countSourceFiles } from '../detection';
 import { obj } from '../obj';
 
 import {
@@ -42,6 +45,17 @@ import {
   type StructuralProfileV1,
 } from './profiles-native';
 
+// Kept out of the assembler so the tree walk stays behind the `new-project`
+// short-circuit: this runs in the Write pre-tool path, and only a project the
+// mode calls greenfield can have its app relocated in the first place.
+function webAppHoldsSource(
+  cwd: string,
+  detection: { onDisk: boolean; webRoot?: string },
+): boolean {
+  if (!detection.onDisk) return false;
+  return countSourceFiles(path.join(cwd, detection.webRoot || '.')) > 0;
+}
+
 export function capabilityProfileForProject(cwd: string, input: unknown): CapabilityProfileV1 {
   const state = obj(input) || {};
   const frontendDetection = detectFrontendFramework(cwd, state);
@@ -59,7 +73,45 @@ export function capabilityProfileForProject(cwd: string, input: unknown): Capabi
     'architectureTarget' | 'uiFrameworks' | 'blockingIssues'
   > = {};
 
+  // This becomes `frontendProfile`'s `preferredWebRoot`, which wins over its
+  // own on-disk probe, so it moves every compiled sourceRoot, entrypoint and
+  // layerRoot under `apps/web`.
+  //
+  // `state.mode` is a GUESS: `detectMode` answers `new-project` for anything
+  // with five or fewer files in `SOURCE_EXTS` (measured — a 3-file Terraform
+  // stack with a real commit reads `new-project`, and nothing later corrects it
+  // because the wizard's new-project branch only opens when the mode ALREADY
+  // says new-project and then re-stamps the same value). So the mode alone may
+  // decide where to put an app, but never that an app which already holds code
+  // should move: a relocated root orphans the project's own application, and an
+  // agent handed a contract pointing at an empty subtree writes there and is
+  // denied by the write gates — a deadlock.
+  //
+  // Hence the veto is "would this orphan source?", not "does a framework exist
+  // on disk?". The looser form cannot work: a manifest with NO source under it
+  // is a stub, not an application, and `detectMode` already calls a tree that
+  // thin a new project — vetoing on it would only stop us from planning the
+  // canonical layout for projects that have nothing to lose. Zero is the
+  // threshold rather than `detectMode`'s five because relocation is far more
+  // expensive than a rule-pack choice.
+  //
+  // Why not `greenfieldEvidence`/`hasCommittedHistory`: neither arm survives
+  // here. Materialization converges `.gitignore` on the first SessionStart, so
+  // the no-`.gitignore` arm is spent for every project by the time this runs;
+  // and a greenfield project routinely HAS a commit at this point (a user who
+  // ran `git init && git commit` first, and every run-sim case — `initRepo`
+  // commits before the run id is minted), so the history arm would narrow
+  // genuine greenfield runs.
+  //
+  // Why source on disk cannot be OUR OWN scaffold: the profile that compiles
+  // the contract is frozen once, by `ensureArchitectureRunSnapshot` at run-id
+  // mint, before `plan.md` exists and before any scaffolder runs at all
+  // (`ensureScaffoldContent` runs INSIDE the PLAN_READY transaction, after
+  // compilation). A genuine greenfield project has nothing on disk at that
+  // moment; and once we HAVE scaffolded, the app is at `apps/web`, so the
+  // detected root and the planned root agree and the profile stays stationary.
   const plannedWebWorkspace = state.mode === 'new-project'
+    && !webAppHoldsSource(cwd, frontendDetection)
     && profileSupportsShadcnWorkspace(cwd, frontend, state);
   const webStructural = hasWeb
     ? frontendProfile(

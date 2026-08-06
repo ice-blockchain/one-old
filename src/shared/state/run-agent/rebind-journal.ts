@@ -299,8 +299,16 @@ export function authoritativeRebindThreadRole(
       // never write a journal that the next process must reject as malformed.
       if (Buffer.byteLength(`${JSON.stringify(journal, null, 2)}\n`, 'utf8')
         > AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES) return;
+      // The journal is the RECOVERY RECORD for the transaction the next line
+      // starts, so a refusal here is not one more dropped boolean: the mutations
+      // ran with nothing on disk to replay them from, and a crash between the
+      // claim write and the registry write left a half-applied rebind that
+      // `replayAuthoritativeRebindJournal` reports as `{ status: 'none' }` —
+      // "nothing to replay" — because it decides that from the journal file's
+      // existence. Same `return` as the `catch`, for the same reason: no journal,
+      // no transaction. `corrected` stays null and the caller gets null.
       try {
-        writeJson(authoritativeRebindJournalFile(cwd, runId, id), journal);
+        if (!writeJson(authoritativeRebindJournalFile(cwd, runId, id), journal)) return;
       } catch {
         return;
       }

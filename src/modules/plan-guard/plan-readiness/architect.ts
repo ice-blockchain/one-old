@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { packageJsonDeclaresWorkspace } from '../../../shared/hook/paths';
+import { hostFlags } from '../../../shared/host/capability-flags';
 import { canonicalHost } from '../../../shared/model-tiers';
 import { OPENCODE_PLAN_MIN_UNITS, parsePlanDelegationUnits, planDelegationUnitCount } from '../../../shared/opencode-roles';
 import { openCodeQueuePolicyViolations, type OpenCodeQueuePolicyOptions } from '../../../shared/opencode-queue';
@@ -25,11 +26,11 @@ export const T1_MEMORY_DIR = '.traffic' + '-one';
 // wants the architect to list bounded units for the free OpenCode batch. On
 // Windsurf/Devin it must NOT block — Devin's agent treats any gate deny as terminal
 // (it stops, and a non-technical user is stuck with no "continue"), and OpenCode
-// delegation is best-effort anyway (a missing queue just falls back to paid). So
-// Windsurf never blocks here; other hosts keep the original hard block (their agents
-// read the deny and retry with the queue).
+// delegation is best-effort anyway (a missing queue just falls back to paid). So a
+// host where a deny ends the turn never blocks here; the rest keep the original hard
+// block (their agents read the deny and retry with the queue).
 export function opencodeQueueBlocks(host: string | undefined): boolean {
-  return canonicalHost(host) !== 'windsurf';
+  return !hostFlags(canonicalHost(host)).denyEndsTheTurn;
 }
 
 

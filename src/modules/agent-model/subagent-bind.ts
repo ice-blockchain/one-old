@@ -110,6 +110,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
         `traffic-one — Cursor child blocked: immutable model-policy.json is missing or corrupt for run ${runId || '(missing)'}. `
         + 'The child must not read the current plan, One MCP cache, or project availableModels to repair it. '
         + 'Stop this child and start a repaired parent run before respawning.',
+        { denyId: 'subagent-bind-cursor-policy-missing', denyTarget: runId || undefined },
       );
     }
     return context(
@@ -226,6 +227,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       return deny(
         `traffic-one — Cursor child blocked: role ${role} is absent from immutable policy ${runPolicy.policyId}. `
         + 'Stop this child and repair the parent run; do not infer a tier from current preferences.',
+        { denyId: 'subagent-bind-cursor-role-missing', denyTarget: role },
       );
     }
     return context(
@@ -249,10 +251,38 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       role,
       source: 'SubagentStart',
     });
+    // Three different answers used to render as one destroy instruction, and only
+    // one of them is a breach. By this line `runId`, `runPolicy`, its host, the
+    // child id and the role are all established, which are every OTHER null path
+    // observeCodexChildModel has — so a MISSING record can only be its store's own
+    // lock or write failing, and the old text guessed "model policy missing" at it.
+    // `pending-role` is not a verdict either: it means the model is not observable
+    // YET, and the child's own first PreToolUse observes it and verifies it against
+    // the same frozen policy. Only mismatch/conflict retire the thread.
     if (!codexObservation || codexObservation.status !== 'verified') {
+      if (!codexObservation) {
+        return context(
+          `Traffic One could not record this Codex child's observed model for ${role}: the run's `
+          + 'model-observation store was unavailable — a concurrent hook holds its lock, or the write was '
+          + `refused. This is NOT a policy or identity failure: run ${runId}'s immutable policy `
+          + `${runPolicy.policyId} is readable, names host codex, and lists this role. The child's own first `
+          + 'tool call re-observes the same model and verifies it there. Do NOT interrupt or replace this child '
+          + 'on this message; if its first tool call is denied for the same reason, replace it then.',
+        );
+      }
+      if (codexObservation.status === 'pending-role') {
+        return context(
+          `Traffic One has not finished verifying this Codex child for ${role}: its observed-model record is `
+          + `\`pending-role\` (${codexObservation.reason || 'model not observed yet'}). SubagentStart does not `
+          + 'always carry the child\'s model, so this is "not known yet", not a breach — the child\'s first tool '
+          + 'call observes the model and verifies it against the immutable run policy before anything else runs, '
+          + 'and is denied if it does not match. Parent: let this child take that first turn; replace it only on a '
+          + 'mismatch/conflict verdict from it.',
+        );
+      }
       return context(
         `Traffic One blocked Codex child activation for ${role}: observed model verification is `
-        + `${codexObservation?.status || 'unavailable'} (${codexObservation?.reason || 'model policy missing'}). `
+        + `${codexObservation.status} (${codexObservation.reason || 'unknown'}). `
         + 'This SubagentStart event is non-blocking, so the child must not call tools; its first PreToolUse is denied. '
         + 'Parent: interrupt/replace this child and respawn with the canonical task_name, the exact model printed '
         + 'by the run model policy, and `fork_turns: "none"`.',
@@ -324,6 +354,8 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       const reason = 'traffic-one — STOP: model choice required before starting the senior team. Reply `fallback` to use the listed fallback model(s), or `enable` to enable the picked model(s) and retry. Do not spawn subagents, scaffold directly, or edit project files until the user replies. This subagent must stop now and must not write files.';
       return deny(`${reason}\nBlocked role: ${role}.`, {
         agentMessage: `${reason} Blocked role: ${role}.`,
+        denyId: 'subagent-bind-model-choice-pending',
+        denyTarget: role,
       });
     }
   }

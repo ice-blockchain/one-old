@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -28,9 +28,22 @@ import {
   usage,
 } from '../lib';
 
+// Tracked centrally rather than at the call sites: most of them pass the result
+// straight into an expression and never bind it, so no site can be relied on to
+// clean up after itself. Nothing did, and one full suite run left 36 trees
+// behind.
+const tmpDirs: string[] = [];
+
 function tmp(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 't1-lh-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-lh-'));
+  tmpDirs.push(dir);
+  return dir;
 }
+
+after(() => {
+  for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
+  tmpDirs.length = 0;
+});
 
 test('parseArgs reads flags, valued options, and a positional http url', () => {
   const a = parseArgs(['--route', '/pricing', '--performance-min', '80', '--timeout', '90000', '--skip-build', '--skip-preview']);

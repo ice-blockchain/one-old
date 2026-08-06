@@ -15,7 +15,7 @@ import {
 } from '../onboarding/project-context';
 import { detectHost } from '../host';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
-import { ASK_USE_PLUGIN_FIRST, STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
+import { askUsePluginFirst, STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
 import { readPluginUseChoice } from '../state/plugin-use';
 import { TIER_IDS } from '../../config/model-tiers';
 import { recommendTierForPlan } from '../model-tiers';
@@ -307,11 +307,10 @@ export function enrichStepMeta(
 // the ask-first behavior can be toggled without rebuilding the plugin. When
 // active AND the project has no recorded use-plugin choice, the hooks ask the
 // question in the HOST CHAT (no wizard server, no URL) — see usePluginQuestion.
-export function askUsePluginFirst(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env.TRAFFIC_ONE_ASK_USE_PLUGIN;
-  if (typeof raw === 'string' && raw.trim()) return /^(1|true|on|yes)$/i.test(raw.trim());
-  return ASK_USE_PLUGIN_FIRST;
-}
+// The implementation lives in config/onboarding.ts so the write fence
+// (shared/state/plugin-use.ts) reads the identical answer; re-exported here
+// because this module's own name for it is the one every caller already imports.
+export { askUsePluginFirst };
 
 // True when the ask-first chat question is still pending for this project: the
 // feature is on and the user has recorded no use-plugin choice yet. Gates deny

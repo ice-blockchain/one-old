@@ -92,7 +92,12 @@ test('opencode: before-tool deny serializes as deny for wrapper throw', async ()
     { id: 'd', event: 'PreToolUse', tools: ['shell'], priority: 0, run: () => deny('blocked') },
   ];
   const out = JSON.parse(await dispatch(opencode, handlers, inv('before-tool-use', { tool_name: 'bash', tool_input: { command: 'rm -rf x' } })));
-  assert.deepEqual(out, { kind: 'deny', reason: 'blocked' });
+  assert.equal(out.kind, 'deny');
+  // Verbatim: core/pipeline.ts echoes its "(traffic-one ref: ...)" correlation
+  // suffix only when a decision record is actually written, on the same fence
+  // as the write itself (stampDeny / projectWritesPermitted) — this fixture
+  // project never answered the use-plugin question.
+  assert.equal(out.reason, 'blocked');
 });
 
 test('opencode: after-tool deny downgrades to context warning', async () => {

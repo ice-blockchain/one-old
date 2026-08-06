@@ -91,7 +91,7 @@ function explorationCapDeny(
       RUN_ID: runId,
       COUNT: count,
       CAP: cap,
-    }, EXPLORATION_CAP_FALLBACK));
+    }, EXPLORATION_CAP_FALLBACK), { denyId: 'agent-activity-exploration-cap', denyTarget: role });
   } catch {
     return null; // telemetry-derived enforcement must never break a tool call
   }
@@ -131,6 +131,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       return deny(
         `traffic-one — child blocked: immutable model-policy.json is missing, corrupt, or belongs to another host for run ${runId || '(missing)'}. `
         + 'Only the parent may create the run and freeze the policy; stop this child and repair/respawn it from the parent.',
+        { denyId: 'codex-child-model-policy-missing', denyTarget: runId || undefined },
       );
     }
     let claimedRole = typeof claimed?.role === 'string' ? claimed.role : '';
@@ -171,6 +172,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
         return deny(
           'traffic-one — child blocked: no parent-resolved trafficOneRole is bound to this child. '
           + 'Stop it and respawn from the parent after the role bootstrap is published.',
+          { denyId: 'codex-child-model-role-unbound' },
         );
       }
     }
@@ -184,6 +186,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       return deny(
         `traffic-one — child blocked: the parent role/rule/skill bootstrap for ${claimedRole} is missing, `
         + 'corrupt, or does not match model-policy.json. This child has zero tool access; repair and respawn it.',
+        { denyId: 'codex-child-model-bootstrap-mismatch', denyTarget: claimedRole },
       );
     }
     // Per-CHILD tally key: on Claude the hook session_id is the PARENT's, so a
@@ -238,6 +241,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     return deny(
       'traffic-one — Codex child blocked: hook, line-zero session metadata, and persisted model observation '
       + 'do not identify the same child/parent pair. Stop this child; the parent must respawn it.',
+      { denyId: 'codex-child-model-identity-conflict', denyTarget: hookChildId || undefined },
     );
   }
 
@@ -253,11 +257,13 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       + 'If that path is NOT the project you are building, this call re-anchored root resolution via its path arguments '
       + '(e.g. `../..` operands or an outside workdir) — re-run it with workdir set to the project root and paths inside it. '
       + 'Otherwise the parent must create the run policy before spawning; this child may not repair or replace it.',
+      { denyId: 'codex-child-model-run-missing', denyTarget: cwd },
     );
   }
   const childId = observation?.childId || hookChildId;
   if (!childId) {
-    return deny('traffic-one — Codex child blocked: the hook exposed no stable child id, so its observed model cannot be bound safely. Stop this child and respawn from the parent.');
+    return deny('traffic-one — Codex child blocked: the hook exposed no stable child id, so its observed model cannot be bound safely. Stop this child and respawn from the parent.',
+      { denyId: 'codex-child-model-no-child-id' });
   }
   // A SubagentStart task_name can arrive before the child rollout exposes its
   // authoritative line-zero agent_path. If that provisional role made the
@@ -280,6 +286,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
       + 'model from the immutable run policy, and fork_turns: "none". If this host\'s spawn tool exposes no '
       + 'task_name field, the FIRST line of the spawn message must carry the literal role marker '
       + '`[t1-role: senior-<role>]` instead.',
+      { denyId: 'codex-child-model-role-not-observable' },
     );
   }
   const actualModel = asString(raw.model ?? payload.model).trim() || observation?.actualModel || '';
@@ -291,8 +298,45 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     source: 'PreToolUse',
   });
   if (!updated || updated.status !== 'verified' || !updated.actualModel) {
-    const status = updated?.status || 'unavailable';
-    const reason = updated?.reason || 'run model policy missing';
+    // NOTHING was recorded, which is not the same answer as "the model is wrong"
+    // and used to render as one: the fallback reason GUESSED "run model policy
+    // missing" and prescribed replacing the child. The observation store returns
+    // null for a missing/foreign-host policy AND for its own contended lock or
+    // refused write, so read the policy — the only one of the two a respawn
+    // cannot fix — and let the other prescribe the retry it deserves, exactly as
+    // the claim-persist deny below does.
+    //
+    // The two answers carry two ids, chosen here (config/deny-ids.ts's naming
+    // rule) because one id could not tell them apart anywhere downstream: this
+    // gate writes no per-branch diagnostic, and `denyTarget` was the same `role`
+    // on both, so the decision log's `denyId` said one word for a two-second
+    // lock and for a run whose policy is gone.
+    if (!updated) {
+      const observationPolicy = readRunModelPolicy(cwd, runId);
+      if (!observationPolicy || observationPolicy.host !== 'codex') {
+        // Not a new cause: this is the same missing/corrupt/foreign-host run
+        // policy the non-Codex branch above refuses, with the same remedy, so it
+        // is the same id — and `denyTarget` is the RUN there, so it is the run
+        // here too. Sharing keeps one broken run in one bucket instead of one
+        // per role, and the log's `host` still separates the two call sites.
+        return deny(
+          `traffic-one — Codex child blocked: the immutable model policy for run \`${runId}\` is missing, corrupt, `
+          + 'or belongs to another host, so this child\'s observed model cannot be verified against anything. '
+          + 'Only the parent may create the run and freeze the policy: stop this child and repair/respawn it from '
+          + 'the parent.',
+          { denyId: 'codex-child-model-policy-missing', denyTarget: runId },
+        );
+      }
+      return deny(
+        `traffic-one — Codex child blocked: role \`${role}\` and policy \`${observationPolicy.policyId}\` are both `
+        + `intact for run \`${runId}\`, but the observed-model record could not be written — this is the observation `
+        + 'store\'s lock or filesystem, not a model breach, and nothing about this child was rejected. Retry this '
+        + 'tool once; if it repeats, replace the child from the parent.',
+        { denyId: 'codex-child-model-observation-persist-failed', denyTarget: role || undefined },
+      );
+    }
+    const status = updated.status;
+    const reason = updated.reason || 'unknown';
     // conflict/mismatch is terminal for THIS thread: every later call stays
     // denied, so durably disown its role slot in the reuse registry. Without
     // that marker no replacement could ever bind on Codex — the fresh verified
@@ -316,12 +360,21 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
         + 'nested from another senior '
         + "child: the host attributes a nested child's edits to the SPAWNING child, so it can never own this "
         + "role's disjoint files. Only the root parent respawns senior roles.",
+        { denyId: 'codex-child-model-status-conflict', denyTarget: role },
       );
     }
+    // All that is left is `pending-role`, which here can only mean no model was
+    // observed for this child on ANY event (the role is already resolved above and
+    // passed in). Nothing has been checked, so the call fails closed — and unlike
+    // the two answers above, a respawn IS the fix, because it can carry the model.
+    // The sole carrier of `codex-child-model-status-unverified`, and the only
+    // branch the name fits: a record exists here and its status is not verified.
     return deny(
       `traffic-one — Codex child blocked: observed model status is ${status} `
-      + `(${reason}). Parent: interrupt/replace this child and respawn `
+      + `(${reason}) — no model has been observed for this child on any event, so there is nothing to check against `
+      + 'the immutable policy. Parent: interrupt/replace this child and respawn '
       + 'with the exact model in .traffic-one/runs/<runId>/model-policy.json.',
+      { denyId: 'codex-child-model-status-unverified', denyTarget: role || undefined },
     );
   }
 
@@ -337,6 +390,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     return deny(
       `traffic-one — Codex child blocked: parent bootstrap for ${role} is missing, corrupt, or does not match `
       + 'the immutable run policy. This child may not read/search/write; the parent must repair and respawn it.',
+      { denyId: 'codex-child-model-bootstrap-mismatch', denyTarget: role },
     );
   }
 
@@ -366,7 +420,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
         + `\`node ~/.traffic-one/bin/run-status.cjs --run-id "${runId}" --status active --reason user-authorized-extra-cycle\`, `
         + `then confirm \`.traffic-one/runs/${runId}/settlement-v2.json\` reads \`"status": "active"\` before respawning `
         + 'this child. If it still reads `"status": "blocked"`, the resume did NOT take effect — do not spawn into this '
-        + 'run; settle it and mint a new one.');
+        + 'run; settle it and mint a new one.', { denyId: 'codex-child-model-ledger-closed', denyTarget: runId });
     }
     const rival = obj(activeClaimForOtherThread(cwd, state, runId, role, childId));
     if (rival) {
@@ -374,12 +428,12 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
         + `\`${String(rival.sessionId || 'unknown')}\` (claim \`${String(rival.claimId || 'unknown')}\`), and a verified `
         + 'child never displaces another live thread. Retrying this tool cannot succeed. ROOT orchestrator: keep the '
         + `incumbent and stop this duplicate, or retire the incumbent with a \`${REPLACE_AGENT_MARKER}\` spawn for `
-        + `\`${role}\` and let exactly ONE replacement bind.`);
+        + `\`${role}\` and let exactly ONE replacement bind.`, { denyId: 'codex-child-model-role-held', denyTarget: role });
     }
     return deny(`traffic-one — Codex child blocked: model verification passed but the verified role claim could not be `
       + `persisted atomically. The run ledger for \`${runId}\` still admits claims and role \`${role}\` is free, so this `
       + 'is a claim-lock or filesystem failure, not a closed run. Retry this tool once; if it repeats, replace the '
-      + 'child from the parent.');
+      + 'child from the parent.', { denyId: 'codex-child-model-claim-persist-failed', denyTarget: role });
   }
   if (!ensureRunHostCapability(cwd, runId, 'codex', {
     point: 'first-tool-model-check',
@@ -390,6 +444,7 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     return deny(
       'traffic-one — Codex child blocked: the verified first-tool model check could not be recorded in the '
       + 'runtime-owned HostCapabilityV1 ledger. Stop this child and repair the run from the parent.',
+      { denyId: 'codex-child-model-capability-record-failed' },
     );
   }
   const capDenyResult = explorationCapDeny(ctx, cwd, state, runId, role, childId);

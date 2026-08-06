@@ -56,7 +56,21 @@ import {
   updateCursorSpawnObservation,
   validateCodexLiveRunAgent,
   type CursorSpawnObservation,
+  type RunAgentEntry,
 } from '../run-agent';
+// Not on the barrel: its only product callers are in the same directory, and a
+// test is not a reason to widen the state layer's public surface (same call as
+// mutation-result-lock-contract.test.ts makes for backfillRunLedgerFingerprintResult).
+import { annotateClaimRoleSourceResult } from '../run-agent/context-resolve';
+// Same call: the residue rows below assert the verdict they DEMOTE before they
+// assert the demotion, so a fixture that stopped producing that verdict fails
+// loudly instead of passing on an empty finding.
+import { claimRejectReason } from '../run-agent/claims-pending';
+// Same call, same reason: the three tests below drive the rebind transaction's
+// own entry points rather than a hook path that happens to reach them, because
+// what they assert is which STATUS a refused write produces.
+import { authoritativeRebindThreadRole, replayAuthoritativeRebindJournal } from '../run-agent/rebind-journal';
+import { holdRunLock } from './owned-lock-fixture';
 import { resetAuthoringRootCache } from '../../authoring-root';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { ensureRunModelPolicy } from '../../run-model-policy';
@@ -2311,6 +2325,112 @@ test('authoritative rebind journal rolls forward every crash phase before exact-
   }
 });
 
+// The claim file and the registry are READ before they are written, so each
+// fence below is a move-aside plus a link to the moved file rather than a
+// dangling link: a dangling link fails the read, the transaction bails on its
+// own precondition, and the test passes without ever reaching the write. The
+// guard after each one asserts the read still resolves.
+function fenceByMoveAsideLink(file: string): void {
+  const aside = `${file}.aside`;
+  fs.renameSync(file, aside);
+  fs.symlinkSync(aside, file);
+}
+
+test('a rebind whose claim write is refused reports blocked instead of the un-rebound claim', () => {
+  withPrefs((dir) => {
+    const runId = 'run-rebind-claim-writable';
+    const fixture = writeRebindCrashFixture(dir, runId, 'prepared');
+    const replay = replayAuthoritativeRebindJournal(dir, fixture.state, runId, CODEX_V2_CHILD_THREAD);
+    assert.equal(replay.status, 'complete', 'baseline: the unfenced fixture rolls the journal forward');
+    assert.equal(fs.existsSync(fixture.journalFile), false);
+  });
+
+  withPrefs((dir) => {
+    const runId = 'run-rebind-claim-fenced';
+    const fixture = writeRebindCrashFixture(dir, runId, 'prepared');
+    fenceByMoveAsideLink(fixture.files.claimFile);
+    assert.equal(
+      JSON.parse(fs.readFileSync(fixture.files.claimFile, 'utf8')).role,
+      'senior-frontend',
+      'fixture guard: the SOURCE claim still reads through the link, so the transaction reaches its write',
+    );
+
+    const replay = replayAuthoritativeRebindJournal(dir, fixture.state, runId, CODEX_V2_CHILD_THREAD);
+    // The claim file is keyed by thread, so the refused write left the source
+    // claim exactly where the closing read-back looks. Dropping the refusal
+    // returned that claim — role `senior-frontend` — as `complete`.
+    assert.equal(replay.status, 'blocked', 'a refused claim write cannot be reported as a completed rebind');
+    assert.equal(fs.existsSync(fixture.journalFile), true, 'the recovery record survives, so a later replay can finish');
+    const registry = readRunAgentRegistry(dir, runId);
+    assert.equal(registry['senior-architect'], undefined, 'no registry row for a claim that was never written');
+    assert.equal(registry['senior-frontend']?.agentId, CODEX_V2_CHILD_THREAD);
+  });
+});
+
+test('a rebind whose registry write is refused keeps the journal that closes the divergence', () => {
+  withPrefs((dir) => {
+    const runId = 'run-rebind-registry-fenced';
+    const fixture = writeRebindCrashFixture(dir, runId, 'prepared');
+    fenceByMoveAsideLink(fixture.files.registryFile);
+    assert.ok(
+      JSON.parse(fs.readFileSync(fixture.files.registryFile, 'utf8')).agents['senior-frontend'],
+      'fixture guard: the source registry still reads through the link',
+    );
+
+    const replay = replayAuthoritativeRebindJournal(dir, fixture.state, runId, CODEX_V2_CHILD_THREAD);
+    assert.equal(replay.status, 'blocked', 'half a rebind is not a completed rebind');
+    assert.equal(
+      JSON.parse(fs.readFileSync(fixture.files.claimFile, 'utf8')).role,
+      'senior-architect',
+      'the claim half DID land — which is precisely why the journal must not be deleted',
+    );
+    assert.equal(fs.existsSync(fixture.journalFile), true, 'the retained journal is the only way the registry half ever lands');
+    assert.equal(readRunAgentRegistry(dir, runId)['senior-architect'], undefined);
+  });
+});
+
+test('an authoritative rebind whose journal write is refused never starts the transaction', () => {
+  const evidence = {
+    role: 'senior-architect',
+    source: 'codex-session-meta-agent-path',
+    authority: 'authoritative' as const,
+  };
+  const rebind = (dir: string, state: Record<string, unknown>, runId: string, claim: Record<string, unknown>) =>
+    authoritativeRebindThreadRole(dir, state, runId, CODEX_V2_CHILD_THREAD, claim, evidence, {
+      parentSessionId: CODEX_V2_PARENT_THREAD,
+      model: CODEX_V2_MODEL,
+    });
+
+  withPrefs((dir) => {
+    const runId = 'run-rebind-journal-writable';
+    const state = { ...materializedState(), currentRunId: runId };
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+    const claim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8')) as Record<string, unknown>;
+    assert.equal(rebind(dir, state, runId, claim)?.role, 'senior-architect', 'baseline: the unfenced rebind runs');
+  });
+
+  withPrefs((dir) => {
+    const runId = 'run-rebind-journal-fenced';
+    const state = { ...materializedState(), currentRunId: runId };
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+    const claim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8')) as Record<string, unknown>;
+    // Dangling is correct HERE and only here: nothing reads the journal before
+    // writing it, and replay's own `existsSync` sees a dangling link as absent,
+    // so the fence cannot be mistaken for a journal already on disk.
+    const journalFile = path.join(files.runDir, 'transactions', `rebind-${CODEX_V2_CHILD_THREAD}.json`);
+    fs.mkdirSync(path.dirname(journalFile), { recursive: true });
+    fs.symlinkSync(path.join(dir, 'no-such-dir', 'rebind.json'), journalFile);
+
+    assert.equal(rebind(dir, state, runId, claim), null, 'a transaction with no recovery record must not run');
+    assert.equal(
+      JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).role,
+      'senior-frontend',
+      'nothing was mutated, so there is no half-applied rebind for replay to answer `none` about',
+    );
+    assert.equal(readRunAgentRegistry(dir, runId)['senior-architect'], undefined);
+  });
+});
+
 test('same-role Codex metadata annotates the claim without releasing fallback locks', () => {
   withPrefs((dir) => {
     const runId = 'run-codex-same-role';
@@ -2815,6 +2935,75 @@ test('a roleless child with parent and model evidence never weakens an empty exa
   });
 });
 
+// ── The correlation tier ─────────────────────────────────────────────────────
+// The three tests above all run on CODEX, where resolveRunAgentContext refuses
+// the whole pending-correlation branch before it starts (`requiresCodexObservation`
+// → return null). They say nothing about uniquelyCorrelatedPendingClaim itself.
+// The two below are on the branch as it actually runs — a host with no
+// child-model observation requirement — which is the only place a roleless child
+// is allowed to consume a handoff at all.
+
+test('a correlated bind records the correlation, not the spawn evidence that named the role', () => {
+  withPrefs((dir) => {
+    const runId = 'run-correlation-tier';
+    const state = { ...materializedState(), currentRunId: runId };
+    // Tier-3 spawn evidence: authoritative about what the parent ASKED FOR, and
+    // silent about which of its threads received it.
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: 'parent-corr' }, {
+      toolName: 'Task', model: 'model-corr', roleSource: 'host-subagent-type',
+    }));
+
+    const bound = resolveRunAgentContext(dir, state, {
+      session_id: 'child-corr',
+      parent_session_id: 'parent-corr',
+      model: 'model-corr',
+    }, { claimPending: true, host: 'cursor' });
+    assert.equal(bound?.role, 'senior-frontend',
+      'a unique parent+model correlation still binds: a child refused a role fails every scope check and the run deadlocks');
+
+    const claimFile = path.join(dir, '.traffic-one', 'runs', runId, 'child-corr.json');
+    const claim = JSON.parse(fs.readFileSync(claimFile, 'utf8'));
+    assert.equal(claim.roleSource, 'pending-correlation',
+      'the claim records HOW THIS THREAD was matched, never what the parent declared when it staked the handoff');
+
+    // Why the tier has to be the weaker one: it is read as a correction CEILING.
+    // Stamped with the parent's tier-3 source, the child's own line-zero identity
+    // could not outrank it, so a FIFO misclaim stayed wrong for the whole run.
+    const rebound = claimThreadRole(dir, state, 'child-corr', 'senior-backend', {
+      parentSessionId: 'parent-corr',
+      model: 'model-corr',
+      evidence: { role: 'senior-backend', source: 'codex-session-meta-agent-path', authority: 'authoritative' },
+    });
+    assert.equal(rebound?.role, 'senior-backend',
+      'the child\'s own authoritative metadata must still be able to correct a correlated bind');
+    assert.equal(JSON.parse(fs.readFileSync(claimFile, 'utf8')).role, 'senior-backend');
+  });
+});
+
+test('two equally correlated handoffs bind nothing and consume nothing', () => {
+  withPrefs((dir) => {
+    const runId = 'run-correlation-ambiguous';
+    const state = { ...materializedState(), currentRunId: runId };
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: 'parent-amb' }, {
+      toolName: 'Task', model: 'model-amb', roleSource: 'host-subagent-type',
+    }));
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-backend', { session_id: 'parent-amb' }, {
+      toolName: 'Task', model: 'model-amb', roleSource: 'host-subagent-type',
+    }));
+    const pendingDir = path.join(dir, '.traffic-one', 'runs', runId, 'pending');
+    const before = fs.readdirSync(pendingDir).sort();
+
+    assert.equal(resolveRunAgentContext(dir, state, {
+      session_id: 'child-amb',
+      parent_session_id: 'parent-amb',
+      model: 'model-amb',
+    }, { claimPending: true, host: 'cursor' }), null,
+    'correlation is an evidence tier, not a tie-break: two equal matches decide nothing');
+    assert.deepEqual(fs.readdirSync(pendingDir).sort(), before);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', runId, 'child-amb.json')), false);
+  });
+});
+
 test('first-write self-heal rejects session_meta whose child or parent identity mismatches the hook', () => {
   withPrefs((dir) => {
     const runId = 'run-codex-meta-identity-mismatch';
@@ -2878,6 +3067,230 @@ test('bounded Codex legacy-registry validation verifies a matching line-zero tra
         'verified metadata backfills a missing legacy parent binding',
       );
     });
+  });
+});
+
+// The verification is COMPLETE before the provenance write-back at the end of
+// validateCodexLiveRunAgent runs, so the only thing a contended registry lock
+// costs is that write — but its failure was reported with the CAS-lost reason,
+// which says another writer owns the row. The gate embeds that reason verbatim in
+// `agent-reuse-await-codex-meta` and tells the orchestrator to retry once the
+// child rollout is flushed: a flush that already happened, for a child that was
+// already verified, on the run's own lock. Both halves are asserted, because the
+// contended half alone cannot tell a lock from a fixture that never reached it.
+test('a contended registry lock cannot report a verified Codex reuse as a lost evidence CAS', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, (sessionDir) => {
+      fs.writeFileSync(
+        path.join(sessionDir, `rollout-2026-07-16T11-15-39-${CODEX_V2_CHILD_THREAD}.jsonl`),
+        fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8'),
+        'utf8',
+      );
+      const verifiedRow = (runId: string): { state: Record<string, unknown>; entry: RunAgentEntry } => {
+        const state = { ...materializedState(), currentRunId: runId };
+        freezeCodexPolicyAndObservation(dir, state, runId, 'senior-architect');
+        recordRunAgent(dir, runId, 'senior-architect', {
+          agentId: CODEX_V2_CHILD_THREAD,
+          parentSessionId: null,
+          model: CODEX_V2_MODEL,
+        });
+        const entry = readRunAgentRegistry(dir, runId)['senior-architect'];
+        assert.ok(entry);
+        return { state, entry: entry! };
+      };
+
+      const freeRun = 'run-codex-evidence-lock-free';
+      const free = verifiedRow(freeRun);
+      assert.equal(
+        validateCodexLiveRunAgent(dir, free.state, {}, freeRun, 'senior-architect', free.entry).status,
+        'verified-match',
+        'with the lock free this row reuses, or the contended half below measures nothing about the lock',
+      );
+
+      const heldRun = 'run-codex-evidence-lock-held';
+      const held = verifiedRow(heldRun);
+      holdRunLock(dir, heldRun, 'registry');
+      const started = Date.now();
+      const contended = validateCodexLiveRunAgent(dir, held.state, {}, heldRun, 'senior-architect', held.entry);
+      const elapsed = Date.now() - started;
+      assert.equal(contended.status, 'conflict');
+      assert.equal(
+        contended.status === 'conflict' ? contended.reason : '',
+        'codex-registry-evidence-lock-unavailable',
+        'a contended lock is TRANSIENT; reported as codex-registry-evidence-cas-lost the gate prescribes the wrong wait',
+      );
+      assert.ok(elapsed >= 3_500 && elapsed < 12_000,
+        `expected two bounded lock timeouts (the unavailable retry), got ${elapsed}ms`);
+      assert.equal(readRunAgentRegistry(dir, heldRun)['senior-architect']?.replaced, false,
+        'a refused annotation never retires the child it just verified');
+    });
+  });
+});
+
+// The CLAIM annotation, one function earlier in the same reuse, with the same
+// defect: `withRunAgentClaimsLock` answers with a boolean, so a contended claims
+// lock and a genuinely lost claim CAS came back as one `null` and were reported
+// as one `codex-claim-evidence-cas-lost`. Measured before the fix at 2016ms — one
+// full claims-lock timeout — for a child whose claim was on disk carrying exactly
+// the role line zero had just proven. Both halves are asserted, because the
+// contended half alone cannot tell a lock from a fixture that never reached it.
+test('a contended claims lock cannot report a verified Codex reuse as a lost claim-evidence CAS', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, (sessionDir) => {
+      fs.writeFileSync(
+        path.join(sessionDir, `rollout-2026-07-16T11-15-39-${CODEX_V2_CHILD_THREAD}.jsonl`),
+        fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8'),
+        'utf8',
+      );
+      // A claim keyed by the child's own thread, already carrying the role line
+      // zero names and NOT yet carrying its provenance stamp: the exact state in
+      // which the annotation has work to do and its lock therefore matters.
+      const claimedRow = (runId: string): { state: Record<string, unknown>; entry: RunAgentEntry; claimFile: string } => {
+        const state = { ...materializedState(), currentRunId: runId };
+        const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-architect');
+        const entry = readRunAgentRegistry(dir, runId)['senior-architect'];
+        assert.ok(entry);
+        return { state, entry: entry!, claimFile: files.claimFile };
+      };
+
+      const freeRun = 'run-codex-claim-evidence-free';
+      const free = claimedRow(freeRun);
+      assert.equal(
+        validateCodexLiveRunAgent(dir, free.state, {}, freeRun, 'senior-architect', free.entry).status,
+        'verified-match',
+        'with the lock free this row reuses, or the contended half below measures nothing about the lock',
+      );
+      assert.match(
+        JSON.parse(fs.readFileSync(free.claimFile, 'utf8')).roleSource,
+        /^codex-session-meta-/,
+        'the free half really annotates, so the missing stamp below means the lock refused it',
+      );
+
+      const heldRun = 'run-codex-claim-evidence-held';
+      const held = claimedRow(heldRun);
+      holdRunLock(dir, heldRun, 'claims');
+      const started = Date.now();
+      const contended = validateCodexLiveRunAgent(dir, held.state, {}, heldRun, 'senior-architect', held.entry);
+      const elapsed = Date.now() - started;
+      assert.equal(contended.status, 'conflict');
+      assert.equal(
+        contended.status === 'conflict' ? contended.reason : '',
+        'codex-claim-evidence-lock-unavailable',
+        'a contended lock is TRANSIENT; reported as codex-claim-evidence-cas-lost the gate prescribes the wrong wait',
+      );
+      assert.ok(elapsed >= 3_500 && elapsed < 12_000,
+        `expected two bounded lock timeouts (the unavailable retry), got ${elapsed}ms`);
+      assert.equal(JSON.parse(fs.readFileSync(held.claimFile, 'utf8')).roleSource, undefined,
+        'the annotation was genuinely refused');
+      assert.equal(readRunAgentRegistry(dir, heldRun)['senior-architect']?.replaced, false,
+        'a refused annotation never retires the child it just verified');
+    });
+  });
+});
+
+// The SECOND caller of that same helper, and the reason it could not ride along
+// with the fix above: this one turns the annotation's answer into "this hook
+// resolves NO role at all". Measured before the fix, with the claims lock held by
+// another process: null after one full 2s timeout for a Codex child whose claim
+// is valid for this run, keyed by its own thread, and already carrying the role
+// line zero proves — after which the run-team gate denied its in-scope write as
+// `main agent` and told the orchestrator to stop or replace the child. The role
+// is PROVEN before the annotation runs, so the stamp is provenance and losing it
+// is a log line; losing the role costs a live agent.
+test('a contended claims lock cannot un-resolve a Codex child whose claim already carries the proven role', () => {
+  withPrefs((dir) => {
+    const write = (runId: string): { state: Record<string, unknown>; claimFile: string; transcript: string } => {
+      const state = { ...materializedState(), currentRunId: runId };
+      const transcript = writeCodexV2FixtureTranscript(dir);
+      const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-architect');
+      return { state, claimFile: files.claimFile, transcript };
+    };
+
+    const freeRun = 'run-codex-annotate-resolve-free';
+    const free = write(freeRun);
+    const resolvedFree = resolveRunAgentContext(dir, free.state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: free.transcript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    assert.equal(resolvedFree?.role, 'senior-architect');
+    assert.match(JSON.parse(fs.readFileSync(free.claimFile, 'utf8')).roleSource, /^codex-session-meta-/);
+
+    const heldRun = 'run-codex-annotate-resolve-held';
+    const held = write(heldRun);
+    holdRunLock(dir, heldRun, 'claims');
+    const started = Date.now();
+    const resolvedHeld = resolveRunAgentContext(dir, held.state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: held.transcript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    const elapsed = Date.now() - started;
+    assert.equal(resolvedHeld?.role, 'senior-architect',
+      'a busy claims lock is not an answer about this thread\'s role — un-resolving it denies a correctly claimed child as the main agent');
+    assert.equal(resolvedHeld?.claimId, `senior-architect-1-${CODEX_V2_CHILD_THREAD.slice(-8)}`,
+      'the un-annotated claim binds AS ITSELF, not as some weaker fallback identity');
+    assert.ok(elapsed >= 3_500 && elapsed < 12_000,
+      `expected two bounded lock timeouts (the unavailable retry), got ${elapsed}ms`);
+    assert.equal(JSON.parse(fs.readFileSync(held.claimFile, 'utf8')).roleSource, undefined,
+      'the provenance stamp really was refused, so this row measures the lock and not a no-op annotation');
+  });
+});
+
+// The helper's own four answers, since the two product surfaces above can only
+// show the ones their fixtures reach. `precondition-failed` is the single TERMINAL
+// one: the claim we validated is gone or re-keyed, and only there may a caller
+// refuse to bind.
+test('annotateClaimRoleSourceResult tells a lost claim CAS from a lock it never took', () => {
+  withPrefs((dir) => {
+    const runId = 'run-annotate-claim-answers';
+    const state = { ...materializedState(), currentRunId: runId };
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-architect');
+    const claim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8')) as Record<string, unknown>;
+    const evidence = {
+      role: 'senior-architect',
+      source: 'codex-session-meta-agent-path',
+      authority: 'authoritative' as const,
+    };
+    const annotate = (expected: Record<string, unknown>, key: string = CODEX_V2_CHILD_THREAD) => (
+      annotateClaimRoleSourceResult(dir, runId, key, expected, evidence)
+    );
+
+    const lost = annotate({ ...claim, claimId: 'another-writer-won' });
+    assert.equal(lost.outcome, 'precondition-failed', 'a re-keyed claim is a real CAS loss, and terminal');
+    assert.equal(lost.reason, 'claim-cas-mismatch');
+    assert.equal(annotate(claim, 'no-claim-under-this-key').reason, 'claim-absent');
+
+    // A PERSISTENTLY refused write, which the retry cannot absorb: the claim file
+    // is a planted symlink. Reads still follow it (so the CAS still matches) and
+    // every write refuses — the case that used to report a provenance stamp that
+    // is not on disk, because writeJson's own answer was discarded.
+    const planted = path.join(dir, 'planted-claim.json');
+    fs.renameSync(files.claimFile, planted);
+    fs.symlinkSync(planted, files.claimFile);
+    const refused = annotate(claim);
+    assert.equal(refused.outcome, 'unavailable');
+    assert.equal(refused.reason, 'claim-write-refused');
+    fs.unlinkSync(files.claimFile);
+    fs.renameSync(planted, files.claimFile);
+
+    assert.equal(annotate(claim).outcome, 'applied', 'with nothing in the way it stamps');
+    assert.equal(
+      JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).roleSource,
+      'codex-session-meta-agent-path',
+    );
+
+    // Already stamped: answered without taking the lock at all, which is why the
+    // contended rows above have to start from an UNSTAMPED claim.
+    holdRunLock(dir, runId, 'claims');
+    const started = Date.now();
+    const stamped = annotate({ ...claim, roleSource: evidence.source });
+    assert.equal(stamped.outcome, 'applied');
+    assert.ok(Date.now() - started < 500, 'the already-stamped short circuit never waits on the lock');
+    const contended = annotate(claim);
+    assert.equal(contended.outcome, 'unavailable');
+    assert.equal(contended.reason, 'lock-unavailable');
+    assert.equal(contended.value, null, 'a mutation that did not run must not hand back a value');
   });
 });
 
@@ -3123,6 +3536,52 @@ test('bounded Codex legacy-registry validation retires a stale missing transcrip
       );
       assert.equal(stale.status, 'stale-retired');
       assert.equal(readRunAgentRegistry(dir, staleRun)['senior-tester']?.replaced, true);
+    });
+  });
+});
+
+// `retireCodexRegistryEntryIfMatches` grew a MutationResult when the eleven were
+// fixed, and an object is ALWAYS truthy — so the ternary that read it reported
+// every call as `stale-retired`, including a contended registry lock and a refused
+// write, while the row it claimed to have retired stayed live on disk. The reuse
+// gate reads `stale-retired` as "this role is free" and lets a duplicate spawn
+// take it. `codex-stale-retire-cas-lost` was unreachable for the same reason. The
+// free half is the test above; this is the same fixture with the lock held.
+test('a contended registry lock cannot report an unretired stale Codex row as retired', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, () => {
+      const staleRun = 'run-codex-legacy-stale-lock-held';
+      const staleRunDir = path.join(dir, '.traffic-one', 'runs', staleRun);
+      const staleId = '019f69fe-e335-7de0-be43-1ee45e3535f7';
+      const staleModel = 'gpt-5.6-terra';
+      const state = { ...materializedState(), currentRunId: staleRun };
+      fs.mkdirSync(staleRunDir, { recursive: true });
+      freezeCodexPolicyAndObservation(dir, state, staleRun, 'senior-tester', staleId, CODEX_V2_PARENT_THREAD, staleModel);
+      fs.writeFileSync(path.join(staleRunDir, 'agents.json'), JSON.stringify({
+        version: 1,
+        agents: {
+          'senior-tester': legacyRegistryEntry(
+            staleId,
+            CODEX_V2_PARENT_THREAD,
+            staleModel,
+            new Date(Date.now() - 31 * 60 * 1000).toISOString(),
+          ),
+        },
+        history: [],
+      }), 'utf8');
+      const entry = readRunAgentRegistry(dir, staleRun)['senior-tester'];
+      assert.ok(entry);
+      holdRunLock(dir, staleRun, 'registry');
+      const validation = validateCodexLiveRunAgent(dir, state, {}, staleRun, 'senior-tester', entry!);
+      assert.equal(validation.status, 'conflict',
+        'a retire that could not be taken is not a retire, and reporting one frees a role whose live row is still there');
+      assert.equal(
+        validation.status === 'conflict' ? validation.reason : '',
+        'codex-stale-retire-lock-unavailable',
+        'transient; the CAS token stays for a row that is genuinely not the agent we named',
+      );
+      assert.equal(readRunAgentRegistry(dir, staleRun)['senior-tester']?.replaced, false,
+        'nothing was retired, which is exactly what the verdict must now say');
     });
   });
 });
@@ -4388,5 +4847,122 @@ test('explainUnresolvedRunAgent names the reason a child failed to bind', () => 
     assert.equal(diagnosis.reason, 'fingerprint-mismatch');
     assert.equal(diagnosis.role, 'senior-backend');
     assert.equal(diagnosis.claimFingerprint, 'drifted|identity|here|none');
+  });
+});
+
+// --- residue must not outrank "you never claimed" -----------------------------
+//
+// The explainer scans EVERY run directory on disk, not just the current one, and
+// it ranked `run-id-mismatch` above `no-claim`. So the ordinary shape below — a
+// host that reuses one session id across runs (Cursor is the clear case), a
+// second feature started in that session, and run 1's claims still on disk under
+// the same key — diagnosed a child that never claimed in run 2 as a child whose
+// claim DRIFTED. plan-runteam.ts renders that as identity drift and suppresses
+// the respawn tail with it, so the mis-diagnosis withheld the one remedy that
+// works on a child with no live context to preserve.
+
+const REUSED_SESSION = 'cursor-session-that-outlives-the-run';
+
+function claimFile(dir: string, runId: string, key: string): string {
+  return path.join(dir, T1_DIR, 'runs', runId, `${key}.json`);
+}
+
+test('a claim left in an earlier run cannot outrank "no claim" in this one', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const run1 = ensureCurrentRunId(dir, state);
+    assert.ok(claimThreadRole(dir, state, REUSED_SESSION, 'senior-frontend', { parentSessionId: 'orchestrator' }),
+      'fixture: run 1 must hold a REAL minted claim under the reused key — a hand-written one is not what a run leaves behind');
+
+    const run2 = String(Number(run1) + 1000);
+    const state2 = { ...state, currentRunId: run2 };
+    assert.equal(ensureRunLedger(dir, run2, { status: 'active', kind: 'agent-claim' })?.status, 'active',
+      'fixture: run 2 is a real active run, not a bare directory');
+
+    const residue = JSON.parse(fs.readFileSync(claimFile(dir, run1, REUSED_SESSION), 'utf8')) as Record<string, unknown>;
+    assert.equal(residue.runId, run1, 'fixture: the leftover names the run it belongs to');
+    assert.equal(fs.existsSync(claimFile(dir, run2, REUSED_SESSION)), false,
+      'fixture: nothing claimed under this key in run 2 — that is the entire point of the row');
+    // The fence: the leftover is still FOUND and still REJECTED as a run-id
+    // mismatch. Without this the assertions below would also pass against a
+    // fixture whose residue had gone missing or become resolvable, and the
+    // demotion would be measuring nothing.
+    assert.equal(claimRejectReason(dir, state2, residue), 'run-id-mismatch',
+      'fixture: the verdict being demoted must be the one that used to win');
+
+    const raw = { session_id: REUSED_SESSION, tool_name: 'Write' };
+    assert.equal(resolveRunAgentContext(dir, state2, raw), null,
+      'fixture: the child really does fail to bind in run 2, so the explainer is reached');
+
+    const diagnosis = explainUnresolvedRunAgent(dir, state2, raw);
+    assert.equal(diagnosis.reason, 'foreign-run-claim',
+      'an earlier run holding a claim under this key is residue, never this run\'s claim drifting');
+    assert.equal(diagnosis.runId, run1, 'and the residue still names the run it came from');
+    assert.equal(diagnosis.role, 'senior-frontend');
+  });
+});
+
+// The discriminator takes BOTH coordinates — the directory the claim was found in
+// AND the run its body names — because the two stores disagree about which one
+// identifies a claim: the explainer finds claims by directory, while
+// resolveRunAgentContext admits them on the body alone (claimAllowsState never
+// learns the directory). Demote on either coordinate by itself and one of the two
+// rows below silences a genuine current-run rejection.
+
+test('a stray run id inside a claim filed in THIS run keeps its run-id-mismatch rank', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runId = ensureCurrentRunId(dir, state);
+    assert.ok(claimThreadRole(dir, state, REUSED_SESSION, 'senior-backend', { parentSessionId: 'orchestrator' }));
+    const file = claimFile(dir, runId, REUSED_SESSION);
+    const claim = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    assert.equal(claim.runId, runId, 'fixture: a minted claim names its own run before this row corrupts it');
+    claim.runId = String(Number(runId) - 5000);
+    fs.writeFileSync(file, JSON.stringify(claim), 'utf8');
+
+    const s = { ...state, currentRunId: runId };
+    const raw = { session_id: REUSED_SESSION, tool_name: 'Write' };
+    assert.deepEqual(fs.readdirSync(path.join(dir, T1_DIR, 'runs')), [runId],
+      'fixture: there is no other run on disk, so nothing here can be residue');
+    assert.equal(resolveRunAgentContext(dir, s, raw), null, 'fixture: the corrupted claim does not bind');
+
+    const diagnosis = explainUnresolvedRunAgent(dir, s, raw);
+    assert.equal(diagnosis.reason, 'run-id-mismatch',
+      'this run\'s own directory holding a claim stamped with another run is a fact about THIS run');
+    assert.equal(diagnosis.runId, runId);
+  });
+});
+
+test('a claim in an earlier run directory that names THIS run keeps its rank', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const run1 = ensureCurrentRunId(dir, state);
+    assert.ok(claimThreadRole(dir, state, REUSED_SESSION, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+
+    const run2 = String(Number(run1) + 1000);
+    const state2 = { ...state, currentRunId: run2 };
+    // A frozen identity on run 2, or claimRejectReason skips the fingerprint
+    // check entirely (it falls back to run-id scoping) and this row measures the
+    // resolvable case instead of the rejected one.
+    ensureRunLedger(dir, run2, {
+      status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(state),
+    });
+
+    const file = claimFile(dir, run1, REUSED_SESSION);
+    const claim = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    claim.runId = run2;
+    claim.stackFingerprint = 'drifted|none|none|none';
+    fs.writeFileSync(file, JSON.stringify(claim), 'utf8');
+
+    const raw = { session_id: REUSED_SESSION, tool_name: 'Write' };
+    assert.equal(claimRejectReason(dir, state2, claim), 'fingerprint-mismatch',
+      'fixture: run 2 froze an identity and this claim really does contradict it');
+    assert.equal(resolveRunAgentContext(dir, state2, raw), null,
+      'fixture: a candidate for run 2 that run 2 rejects — the directory it sits in is not what excluded it');
+
+    const diagnosis = explainUnresolvedRunAgent(dir, state2, raw);
+    assert.equal(diagnosis.reason, 'fingerprint-mismatch',
+      'a claim whose body names this run is this run\'s, wherever the file happens to sit');
+    assert.equal(diagnosis.claimFingerprint, 'drifted|none|none|none');
   });
 });

@@ -213,7 +213,15 @@ export function modelIsExhausted(cwd: string, runId: string, role: string, model
 
 // Record `model` as exhausted for the role (idempotent — a family already present
 // refreshes its timestamp instead of duplicating). Expired entries are pruned on
-// write. Returns the fresh post-write list for the role.
+// write. Returns the fresh post-write list for the role — or, when the write
+// chokepoint refused it, the list that is still ON DISK.
+//
+// The returned list is what the rotation deny renders as "TRIED: …" and what the
+// caller compares the next candidate against, while the DISK is what the next
+// hook invocation reads. Returning the optimistic in-memory list after a refused
+// write put those two permanently out of step: the deny named a model as
+// condemned, the ledger never carried it, and the following invocation resolved
+// the same model as eligible again and prescribed the one that had just failed.
 export function recordExhaustedModel(cwd: string, runId: string, role: string, model: string, nowMs: number = Date.now()): string[] {
   const m = (model || '').trim();
   if (!runId || !role || !m) return exhaustedModelsForRole(cwd, runId, role, nowMs);
@@ -228,7 +236,9 @@ export function recordExhaustedModel(cwd: string, runId: string, role: string, m
       if (existing) existing.at = at;
       else state.entries.push({ model: m, at });
       store.roles[role] = state;
-      writeJson(exhaustedPath(cwd, runId), store);
+      if (!writeJson(exhaustedPath(cwd, runId), store)) {
+        return exhaustedModelsForRole(cwd, runId, role, nowMs);
+      }
       return state.entries.map((e) => e.model);
     });
   } catch {
@@ -244,14 +254,18 @@ export function markModelExhaustionTerminal(
 ): boolean {
   if (!runId || !role || isNonProjectRoot(cwd)) return false;
   try {
+    // The boolean is the WRITE's verdict. It used to be a literal `true`, so a
+    // refused write still told the caller the terminal marker was persisted —
+    // and both callers render that as "model rotation is TERMINAL for this
+    // role, stop retrying", a claim modelExhaustionTerminalForRole then
+    // contradicts on the very next read.
     return withStoreLock(cwd, runId, false, () => {
       const store = readStore(cwd, runId);
       pruneExpired(store, nowMs);
       const state = store.roles[role] ?? { entries: [] };
       state.terminal = { at: new Date(nowMs).toISOString() };
       store.roles[role] = state;
-      writeJson(exhaustedPath(cwd, runId), store);
-      return true;
+      return writeJson(exhaustedPath(cwd, runId), store);
     });
   } catch {
     return false;

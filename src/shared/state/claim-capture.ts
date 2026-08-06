@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
+import { appendTextFile } from '../fsjson';
 import { stateTimestamp } from './io';
 
 const MAX_CAPTURE_BYTES = 256 * 1024; // stop appending once the log gets this big
@@ -19,8 +20,11 @@ const MAX_DEPTH = 5;
 
 // Recursively shrink a value: keep every object key (the identity fields we need),
 // truncate long strings, and bound array length + recursion so a huge spawn prompt
-// can't bloat the line.
-function shrink(value: unknown, depth = 0): unknown {
+// can't bloat the line. Exported: decision-log.ts reuses the exact same
+// truncation contract to bound its own `inputs` field — one shape-preserving
+// bounding rule for every append-only debug capture in this directory,
+// rather than a second implementation that could drift from this one.
+export function shrink(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') {
     return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…[+${value.length - MAX_STRING}]` : value;
   }
@@ -46,21 +50,32 @@ export function captureClaimDebug(
   raw: unknown,
   extra: Record<string, unknown> = {},
 ): void {
+  let file = '';
   try {
     if (isNonProjectRoot(cwd)) return; // never write run state in the plugin's own repo
     if (!runId) return;
     const dir = path.join(cwd, '.traffic-one', 'runs', String(runId), 'debug');
-    const file = path.join(dir, 'claim-capture.jsonl');
+    file = path.join(dir, 'claim-capture.jsonl');
     try {
       if (fs.statSync(file).size > MAX_CAPTURE_BYTES) return; // cap reached → stop, keep the early evidence
     } catch {
       // missing file → first capture
     }
-    fs.mkdirSync(dir, { recursive: true });
     const entry = { at: stateTimestamp(), label, ...extra, raw: shrink(raw) };
-    fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf8');
+    // Guarded: these captures live beside the decision log under
+    // runs/<id>/debug/ and must not exist for a project whose use-plugin
+    // question is unanswered.
+    //
+    // The outcome reaches the decision log's `stateWrites` from inside
+    // appendTextFile, which now reports every write it makes — success, fence
+    // refusal, or fs failure. This used to announce it again from here, which
+    // once the chokepoint was instrumented meant two records describing one
+    // write, with the second one's `errno` derived from a `catch` that also
+    // covers statSync and JSON.stringify and so could attribute a non-write
+    // failure to the write.
+    appendTextFile(file, `${JSON.stringify(entry)}\n`);
   } catch {
-    // best-effort diagnostic; a capture failure must never affect the gate
+    // best-effort diagnostic; a capture failure must never affect the gate.
   }
 }
 
@@ -71,20 +86,21 @@ export function capturePlanGuardDebug(
   runId: string | null | undefined,
   extra: Record<string, unknown> = {},
 ): void {
+  let file = '';
   try {
     if (isNonProjectRoot(cwd)) return;
     if (!runId) return;
     const dir = path.join(cwd, '.traffic-one', 'runs', String(runId), 'debug');
-    const file = path.join(dir, 'plan-guard-deny.jsonl');
+    file = path.join(dir, 'plan-guard-deny.jsonl');
     try {
       if (fs.statSync(file).size > MAX_CAPTURE_BYTES) return;
     } catch {
       // missing file → first capture
     }
-    fs.mkdirSync(dir, { recursive: true });
     const entry = { at: stateTimestamp(), label: 'plan-guard-deny', ...extra };
-    fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf8');
+    // Reported from inside appendTextFile — see captureClaimDebug above.
+    appendTextFile(file, `${JSON.stringify(entry)}\n`);
   } catch {
-    // best-effort diagnostic
+    // best-effort diagnostic — a capture failure must never affect the gate.
   }
 }

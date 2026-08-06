@@ -7,7 +7,7 @@
 // asserted there.
 
 import type { Assertion } from '../core/types';
-import { effState, readRunSimTranscript, rec, result, str } from './util';
+import { effState, readRunSimTranscript, rec, result, runSimIncomplete, str } from './util';
 
 export const assertion: Assertion = {
   id: 'run-sim-maintenance-flip',
@@ -16,8 +16,10 @@ export const assertion: Assertion = {
   run: (ctx) => {
     const transcript = readRunSimTranscript(ctx);
     if (!transcript) return result(ctx, 'FAIL', 'No run-sim transcript was persisted.');
+    // No phase anchor: the flip is only observable after settlement, which a
+    // toolchain block prevents outright.
     if (transcript.ok !== true) {
-      return result(ctx, 'FAIL', `The simulated run did not complete: ${str(transcript.failure) || 'unknown failure'}`);
+      return runSimIncomplete(ctx, transcript, 'The simulated run did not complete');
     }
 
     const facts = rec(transcript.facts);

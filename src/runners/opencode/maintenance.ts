@@ -273,12 +273,21 @@ export function recordMaintenanceDelegationOutcome(
       [unitId || `direct:${canonicalRole}`]: unitRecord,
     };
     const projected = projectMaintenanceMarker(units) || unitRecord;
-    writeJson(file, {
+    // The settlement below is derived from `projected`, which is the IN-MEMORY
+    // merge — so the ledger write's refusal (fsjson.ts's consent/symlink/
+    // containment fence) has to stop it. Dropped, it pinned a `fallback-pending`
+    // debt into the settlement whose only possible discharge is a completion
+    // record in this very file: the proof chain reads maintenance.json back
+    // (fallbackCompletionMatch), finds nothing, and holds the run at
+    // `validating` forever. That is the debt this per-unit ledger exists to
+    // keep track of, un-trackable — the same erasure the wholesale overwrite
+    // caused, arriving through the other door.
+    if (!writeJson(file, {
       version: 1,
       kind: 'opencode-delegation',
       ...projected,
       units,
-    });
+    })) return;
     // A preflight rejection is not a lifecycle event for the RUN — nothing was
     // attempted — so it writes no settlement at all. Minting one here would
     // freeze a canonical V2 sidecar (terminal settlements are immutable) for a

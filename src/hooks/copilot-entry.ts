@@ -6,7 +6,7 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { detectCopilotWireSurface, makeCopilotAdapter } from '../adapters/copilot';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { copilotPreToolDeny, hasValidPreToolPayload } from './fail-closed';
+import { copilotPreToolDeny, hasValidPreToolPayload, isFailClosedRecoveryExemption } from './fail-closed';
 import { asRecord, firstString } from '../adapters/coerce';
 import { isManagedOneMcpAgentTool, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
 
@@ -57,7 +57,7 @@ export async function runCopilotHook(
   try { parsedRaw = JSON.parse(stdin); } catch { /* empty stdin */ }
   const surface = detectCopilotWireSurface(env, parsedRaw);
   const noop = surface === 'vscode' ? COPILOT_NOOP_VSCODE : COPILOT_NOOP_CLI;
-  if (subcommand === 'before-tool-use' && !inputValid) {
+  if (subcommand === 'before-tool-use' && !inputValid && !isFailClosedRecoveryExemption(stdin, subcommand, 'copilot')) {
     return { stdout: copilotPreToolDeny(surface), exitCode: 0 };
   }
   if (subcommand === 'before-tool-use' && isManagedCopilotMcpInvocation(parsedRaw)) {
@@ -75,6 +75,7 @@ export async function runCopilotHook(
       return { stdout: message ? sessionStartFallback(message, surface) : noop, exitCode: 0 };
     }
     if (subcommand === 'before-tool-use') {
+      if (isFailClosedRecoveryExemption(stdin, subcommand, 'copilot')) return { stdout: noop, exitCode: 0 };
       return { stdout: copilotPreToolDeny(surface), exitCode: 0 };
     }
     return { stdout: noop, exitCode: 0 };

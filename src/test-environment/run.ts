@@ -9,8 +9,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type { Category, CaseRunResult, HostId, RootTestConfig, VerdictHost } from './core/types';
-import { ALL_CATEGORIES, ALL_HOSTS, defaultConfig } from './config/test-config';
+import type { CaseRunResult, HostId, RootTestConfig } from './core/types';
+import { defaultConfig } from './config/test-config';
+import { UsageError, applyFlags, excludedHostNotes, parseFlags, type Flags } from './core/flags';
 import { ALL_CASES } from './config/cases';
 import { discoverAssertions } from './assertions/registry';
 import { preflight } from './core/preflight';
@@ -31,71 +32,6 @@ import {
   type ManualHostCertificationOutcome,
 } from './manual-host-certification';
 import type { CaseRunResult as CaseRunResultType, HostRunResult } from './core/types';
-
-interface Flags {
-  hosts?: HostId[];
-  categories?: Category[];
-  cases?: string[];
-  verdictHost?: VerdictHost;
-  noBuild?: boolean;
-  noInstall?: boolean;
-  concurrency?: number;
-  timeoutMs?: number;
-  auth?: 'on' | 'off';
-  dryRun?: boolean;
-  e2e?: boolean;
-  strict?: boolean;
-  runsDir?: string;
-  reassert?: string;
-  manualCertDir?: string;
-}
-
-function parseFlags(argv: string[]): Flags {
-  const f: Flags = {};
-  const multi = (raw: string): string[] => raw.split(',').map((s) => s.trim()).filter(Boolean);
-  for (const arg of argv) {
-    const [key, rawValue] = arg.includes('=') ? arg.split(/=(.*)/s) : [arg, ''];
-    const value = rawValue ?? '';
-    switch (key) {
-      case '--host': f.hosts = multi(value).filter((h): h is HostId => (ALL_HOSTS as string[]).includes(h)); break;
-      case '--category': f.categories = multi(value).filter((c): c is Category => (ALL_CATEGORIES as string[]).includes(c)); break;
-      case '--case': f.cases = multi(value); break;
-      case '--verdict-host': f.verdictHost = (value as VerdictHost); break;
-      case '--no-build': f.noBuild = true; break;
-      case '--no-install': f.noInstall = true; break;
-      case '--concurrency': f.concurrency = Number(value) || 1; break;
-      case '--timeout': f.timeoutMs = Number(value) || undefined; break;
-      case '--auth': f.auth = value === 'on' ? 'on' : 'off'; break;
-      case '--dry-run': f.dryRun = true; break;
-      case '--e2e': f.e2e = true; break;
-      case '--all': f.e2e = true; break;
-      case '--strict': f.strict = true; break;
-      case '--runs-dir': case '--artifacts': f.runsDir = value; break;
-      case '--reassert': f.reassert = value; break;
-      case '--manual-cert-dir': f.manualCertDir = value; break;
-      default: break;
-    }
-  }
-  return f;
-}
-
-function applyFlags(config: RootTestConfig, f: Flags): RootTestConfig {
-  if (f.hosts && f.hosts.length) config.enabledHosts = f.hosts;
-  if (f.categories && f.categories.length) config.enabledCategories = f.categories;
-  if (f.cases && f.cases.length) config.caseFilter = f.cases;
-  if (f.verdictHost) config.verdictHost = f.verdictHost;
-  if (f.noBuild) config.build.refreshDist = false;
-  if (f.noInstall) config.build.updateHosts = false;
-  if (f.concurrency) config.concurrency = f.concurrency;
-  if (f.timeoutMs) config.defaultTimeoutMs = f.timeoutMs;
-  if (f.auth) config.auth = f.auth;
-  if (f.dryRun) config.dryRun = true;
-  if (f.e2e) config.includeHostE2E = true;
-  if (f.strict) config.strict = true;
-  if (f.runsDir) config.runsRoot = f.runsDir;
-  if (f.manualCertDir !== undefined) config.manualCertDir = f.manualCertDir;
-  return config;
-}
 
 interface PlannedRun {
   caseId: string;
@@ -221,7 +157,18 @@ function updateLatestPointer(runsRoot: string, runDir: string): void {
 }
 
 async function main(): Promise<number> {
-  const flags = parseFlags(process.argv.slice(2));
+  let flags: Flags;
+  try {
+    flags = parseFlags(process.argv.slice(2));
+  } catch (err) {
+    // A usage error is the user's typo, not a harness crash: report it as one
+    // line and exit 2, rather than the stack trace the outer catch would print.
+    if (err instanceof UsageError) {
+      console.error(`test:env: ${err.message}`);
+      return 2;
+    }
+    throw err;
+  }
   const config = applyFlags(defaultConfig(), flags);
   const startedAt = new Date().toISOString();
   const runStamp = startedAt.replace(/[:.]/g, '-');
@@ -264,6 +211,10 @@ async function main(): Promise<number> {
     .map((host) => `${host}=${pf.hostAvailable[host] ? 'yes' : 'no'}`)
     .join(' ');
   console.log(`node ${process.version} (ok=${pf.nodeOk}) · automated hosts available: ${automatedAvailability || 'none selected'}`);
+  // Say out loud what this run does NOT cover. See excludedHostNotes().
+  const excludedHosts = excludedHostNotes(config);
+  console.log(`hosts selected: ${config.enabledHosts.join(', ') || 'none'}`);
+  for (const note of excludedHosts) console.log(`hosts EXCLUDED — ${note}`);
   if (!pf.nodeOk && releasePreparationRequired) {
     console.error('Node >=22 required for host-e2e/build. Run under nvm v22 (`nvm use 22`).');
     return 2;
@@ -421,6 +372,10 @@ async function main(): Promise<number> {
     if (summary.manualTotal > 0) {
       console.log(`manual certifications: ${summary.manualCertified}/${summary.manualTotal} certified`);
     }
+    // Repeated at the end, not only at the top: a CI log is read from its tail,
+    // and this is the line that stops a green "Full composition" check from
+    // being mistaken for full host coverage.
+    for (const note of excludedHosts) console.log(`hosts EXCLUDED — ${note}`);
 
     const verdict = await runVerdict(config, distRoot, runDir);
     if (verdict.ran) console.log(`verdict (${verdict.host}): ${verdict.status}${verdict.verdictPath ? ` → ${verdict.verdictPath}` : ` — ${verdict.note}`}`);

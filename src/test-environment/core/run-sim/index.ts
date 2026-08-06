@@ -264,6 +264,13 @@ export async function runSimulatedRun(
     if (failure) transcript.failure = failure;
     return transcript;
   };
+  // Stop for a reason that is NOT the product's fault: a required toolchain is
+  // absent here. The run still did not finish, so `failure` is set as usual, but
+  // `environmentBlock` tells the assertions to say INCONCLUSIVE instead of FAIL.
+  const finishBlocked = (phase: string, blocker: string): RunSimTranscript => {
+    transcript.environmentBlock = `${phase}: ${blocker}`;
+    return finish(`${phase} blocked-environment: ${blocker}`);
+  };
 
   // --- Phase 0: bootstrap, all real writers -------------------------------
   const materialized = materializeProjectFromState(cwd, { trigger: 'run-sim' });
@@ -491,6 +498,7 @@ export async function runSimulatedRun(
     const qa = await runStackEvidence(cwd, runId);
     transcript.facts.qaExitCode = qa.code;
     transcript.facts.qaChecks = qa.checks;
+    if (qa.blocked) return finishBlocked('phase-3 stack evidence', qa.blocked);
     if (qa.code !== 0) {
       return finish(`phase-3 stack evidence failed (exit ${qa.code}): ${qa.detail}`);
     }
@@ -505,6 +513,10 @@ export async function runSimulatedRun(
     const qa = await runBrowserEvidence(cwd, runId, buildDir, verification);
     transcript.facts.qaExitCode = qa.code;
     transcript.facts.qaChecks = qa.checks;
+    // The 48-red case: no project-local Playwright means no Chromium, which the
+    // runner correctly publishes as blocked-environment. That is a gap in this
+    // machine, not a defect in the product.
+    if (qa.blocked) return finishBlocked('phase-3 browser evidence', qa.blocked);
     if (qa.code !== 0) {
       return finish(`phase-3 browser evidence failed (exit ${qa.code}): ${qa.detail}`);
     }

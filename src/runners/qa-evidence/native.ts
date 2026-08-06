@@ -32,8 +32,9 @@ import {
   outputPath,
   publishQaReportV2,
   qaDir,
+  withExecutedStackChecks,
 } from './run-context';
-import { wholesaleCheckStatuses } from './report-publish';
+import { nativeCheckStatuses } from './report-publish';
 import {
   androidResultFiles,
   androidResultRoots,
@@ -218,12 +219,28 @@ function publishNativeResult(
     producer: 'parent-runner',
     status,
     sourceHash: loaded.sourceHash,
-    checks: wholesaleCheckStatuses(loaded.contract.requiredChecks, status, blockerSummary),
+    checks: withExecutedStackChecks(
+      args,
+      nativeCheckStatuses(loaded.contract.requiredChecks, status, blockerSummary),
+    ),
     routes: [],
     native: { evidencePath: out.relative },
     ...(blockerSummary ? { blockerSummary } : {}),
   };
-  publishQaReportV2(args.projectRoot, args.runId, report);
+  // A refused sidecar write is a failed run, not a passed one: validateQaReportV2
+  // below judges the in-memory object and would certify a report no gate can read.
+  if (!publishQaReportV2(args.projectRoot, args.runId, report)) {
+    process.stderr.write(`qa-evidence: could not persist ${qaReportV2Path(args.projectRoot, args.runId)} — the write was refused.\n`);
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      status,
+      nativeEvidencePath: out.relative,
+      reportPath: qaReportV2Path(args.projectRoot, args.runId),
+      validation: { ok: false, code: 'report-missing', message: 'the QA report sidecar could not be written' },
+      ...(blockerSummary ? { blockerSummary } : {}),
+    })}\n`);
+    return 1;
+  }
   const validation = validateQaReportV2(report, args.projectRoot, args.runId, loaded.contract);
   process.stdout.write(`${JSON.stringify({
     ok: validation.ok,

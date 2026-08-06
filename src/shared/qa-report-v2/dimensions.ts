@@ -14,6 +14,14 @@ import type { QaDimensionStatus, QaDimensionsV1, QaReportV2 } from './schema';
 
 // `lighthouse` is deliberately absent: it is not a check id, it is derived from
 // the performance contract plus its evidence.
+//
+// `axe-when-dom` is currently required by NO contract (see requiredChecks in
+// verification-contract/impact.ts): the product owns no axe integration, so
+// nothing could ever emit it as `passed`, and requiring it only deadlocked the
+// one impact that carried it. The mapping stays wired so that adding an
+// accessibility producer is the only step needed to light this dimension back
+// up; until then it reports `not-required`, which is the truth. It must NOT
+// report `passed` off a check that never ran.
 const ACCESSIBILITY_CHECKS = new Set(['axe-when-dom']);
 const RESPONSIVE_CHECKS = new Set(['responsive-screenshots']);
 

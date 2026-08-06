@@ -40,15 +40,44 @@ export function safeJsonParse(text: string, fallback: Rec | null = null): Rec | 
   }
 }
 
-export interface DoctorArgs { session: string | null; }
+export interface DoctorArgs {
+  session: string | null;
+  /** `--run <id>`: diagnose one run (live agents, claims, ledger, top denies). */
+  run: string | null;
+  /** `--bundle`: emit a state-only bug report instead of the plain report. */
+  bundle: boolean;
+  /**
+   * `--unblock <gateId>`: mint an operator override for that gate. The ONLY
+   * write doctor can perform, it happens outside the project tree, and it is
+   * DELIBERATELY absent from the gate-exemption argv grammar in
+   * shared/tool-classify.ts — an agent's tool call carrying this flag is not
+   * exempt from any gate, and the mint itself refuses a non-interactive stdin.
+   * See runners/doctor/unblock.ts.
+   */
+  unblock: string | null;
+  /** `--ttl 30m`: the override window. Parsed by shared/override (which owns
+   *  the default and the ceiling); meaningless without `--unblock`. */
+  ttl: string | null;
+}
 
 export function parseArgs(argv: string[] = process.argv.slice(2)): DoctorArgs {
-  const out: DoctorArgs = { session: null };
+  const out: DoctorArgs = { session: null, run: null, bundle: false, unblock: null, ttl: null };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--session' && argv[index + 1]) {
       out.session = argv[index + 1] ?? null;
       index += 1;
+    } else if (arg === '--run' && argv[index + 1]) {
+      out.run = argv[index + 1] ?? null;
+      index += 1;
+    } else if (arg === '--unblock' && argv[index + 1]) {
+      out.unblock = argv[index + 1] ?? null;
+      index += 1;
+    } else if (arg === '--ttl' && argv[index + 1]) {
+      out.ttl = argv[index + 1] ?? null;
+      index += 1;
+    } else if (arg === '--bundle') {
+      out.bundle = true;
     }
   }
   return out;

@@ -3,16 +3,19 @@ import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import { performance } from 'node:perf_hooks';
 
 import { planWriteGate } from '../plan-write';
-import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
+import { runPipeline } from '../../../core/pipeline';
+import { buildContext } from '../../../core/context';
+import type { Ctx, Handler, HookInput, HookResult, ToolClass, HostId } from '../../../core/types';
 import { writeModelChoice } from '../../agent-model/model-choice';
 import { claimThreadRole, ensureRunAgentClaim, transitionRunStatus } from '../../../shared/state/run-agent';
 import { observeCodexChildModel, readEffectiveState } from '../../../shared/state';
 import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { assertLatencyBudget } from '../../../test-support/__tests__/latency-budget';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { readDecisions } from '../../../shared/state/decision-log';
 import { makeKiloAdapter } from '../../../adapters/kilo';
 import { makeOpenCodeAdapter } from '../../../adapters/opencode';
 import {
@@ -22,7 +25,11 @@ import {
 } from '../../../shared/architecture-contract';
 import { compileVerificationContract } from '../../../shared/verification-contract';
 
-function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
+// Split into a fixture + two wrappers so the async wrapper below can AWAIT its
+// body before the teardown runs: `try { fn(dir) } finally { rm(dir) }` deletes
+// the project while a promise-returning body is still using it, which is a
+// leaked temp dir and a flaky test in one. Every sync caller is unchanged.
+function materializedFixture(stateExtra: Record<string, unknown>): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -56,12 +63,34 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
       hostScopedPerformancePrefs(performance, team, 'pro'),
     ), 'utf8');
   }
+  return {
+    dir,
+    cleanup: () => {
+      if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+      if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
+  const fixture = materializedFixture(stateExtra);
   try {
-    fn(dir);
+    fn(fixture.dir);
   } finally {
-    if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
-    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
-    fs.rmSync(dir, { recursive: true, force: true });
+    fixture.cleanup();
+  }
+}
+
+async function withMaterializedAsync(
+  stateExtra: Record<string, unknown>,
+  fn: (cwd: string) => Promise<void>,
+): Promise<void> {
+  const fixture = materializedFixture(stateExtra);
+  try {
+    await fn(fixture.dir);
+  } finally {
+    fixture.cleanup();
   }
 }
 
@@ -141,28 +170,71 @@ test('plugin authoring cwd does not exempt an absolute project file from the pla
 // same refusal forever with nothing counting. Measured in 17cl: 25 denies, 15 of
 // them repeats of four (file, reason) pairs, one refused seven times across 25
 // minutes before a replan resolved a one-line fix the deny text had already
-// named. The escalation is appended in `deny(...)` AFTER the violations are
-// assembled — which is why it can never appear in the deny journal, and why this
-// has to be asserted on the returned reason.
-test('an identical refusal escalates on the third attempt, and not before', () => {
-  withMaterialized({ currentRunId: 'R', team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
-    const write = (): ReturnType<typeof planWriteGate> => planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
-      file_path: 'apps/web/src/main.tsx',
-      content: 'export function App(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
+// named.
+//
+// Driven through runPipeline, not planWriteGate alone: the counter moved to the
+// pipeline's deny exit so that all ~120 gates get it and not just this one, so
+// the escalation is now a property of the COMPOSITION and asserting it on the
+// gate's bare return value would assert nothing. This is the real gate, the real
+// pipeline and the real project state — only the entry point changed. (The
+// production dispatcher is core/dispatch.ts, which is runPipeline plus adapter
+// serialization; the escalation rides `reason`, which every adapter emits.)
+test('an identical refusal escalates on the third attempt, and not before', async () => {
+  await withMaterializedAsync({ currentRunId: 'R', team: { mode: 'main-agent', source: 'prompted' } }, async (cwd) => {
+    const handler: Handler = {
+      id: 'plan-guard.write', event: 'PreToolUse', priority: 20, run: planWriteGate,
+    };
+    const write = async (): Promise<HookResult> => runPipeline([handler], buildContext({
+      event: 'PreToolUse',
+      host: 'claude',
+      cwd,
+      raw: {
+        tool_name: 'Write',
+        tool_input: {
+          file_path: 'apps/web/src/main.tsx',
+          content: 'export function App(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
+        },
+      },
+      tool: {
+        class: 'file-write',
+        rawName: 'Write',
+        filePath: 'apps/web/src/main.tsx',
+        content: 'export function App(){const a=1;return <main><section><h1>Home</h1><p>Text</p></section><footer><span>Foot</span></footer></main>;}\n',
+      },
     }));
     for (const attempt of [1, 2]) {
-      const early = write();
+      const early = await write();
       assert.equal(early.kind, 'deny');
       if (early.kind === 'deny') {
         assert.doesNotMatch(early.reason, /STOP RETRYING/, `attempt ${attempt} must read exactly as before`);
+        assert.match(early.reason, /STRUCT_COLLAPSED_LINE/, `attempt ${attempt} still carries the violation itself`);
       }
     }
-    const escalated = write();
+    const escalated = await write();
     assert.equal(escalated.kind, 'deny');
     if (escalated.kind === 'deny') {
       assert.match(escalated.reason, /STOP RETRYING/);
       assert.match(escalated.reason, /BLOCKED/, 'the escalation must name the honest exit');
+      assert.match(escalated.reason, /apps\/web\/src\/main\.tsx/, 'and names the file it keeps refusing');
+      assert.match(escalated.reason, /STRUCT_COLLAPSED_LINE/, 'without displacing the remedy it is telling the agent to apply');
     }
+
+    // Counted ONCE. This gate is the one place that used to count for itself, and
+    // its own escalation fired at the same threshold on the same prose — so if the
+    // call site were ever restored alongside the chokepoint, every assertion above
+    // would still pass while each attempt incremented two keys and the pipeline's
+    // key changed on the attempt that escalated. The ledger is where that shows:
+    // one signature, and `repeatCount` climbing 1,2,3 in step with what the agent
+    // was shown.
+    const counts = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'R', 'debug', 'deny-repeats.json'), 'utf8',
+    )) as Record<string, number>;
+    assert.deepEqual(Object.values(counts), [3], `one refusal, one count: ${JSON.stringify(counts)}`);
+    assert.deepEqual(
+      readDecisions(cwd, 'R').filter((record) => record.decision === 'deny').map((record) => record.repeatCount),
+      [1, 2, 3],
+      'the logged count is the one the prose was rendered from',
+    );
   });
 });
 
@@ -1201,7 +1273,14 @@ test('Edit hot structural gate allows a uniquely reconstructed non-structural ch
   });
 });
 
-test('complete Write pre-tool path remains below the 150 ms p95 budget with runtime contracts', () => {
+// Three-valued on purpose (see src/test-support/__tests__/latency-budget.ts).
+// The 150 ms budget is honest — the idle-machine p95 is ~28 ms, 5x of headroom
+// — but the INSTRUMENT was not: the same assertion returned 28 ms idle and
+// 166 ms, 16.8 s, 31 s and 47.9 s under load, so a red here carried no
+// information about the code. A wall clock taken while the machine is
+// descheduling this process is not evidence in either direction, and now says
+// so instead of guessing.
+test('complete Write pre-tool path remains below the 150 ms p95 budget with runtime contracts', (t) => {
   withMaterialized({
     currentRunId: 'run-hot-path',
     team: { mode: 'subagents', source: 'prompted', approved: true },
@@ -1243,20 +1322,20 @@ test('complete Write pre-tool path remains below the 150 ms p95 budget with runt
       ].join('\n'),
     }, { session_id: childId });
 
-    for (let warmup = 0; warmup < 20; warmup += 1) {
-      const result = planWriteGate(ctx);
-      assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
-    }
-    const durations: number[] = [];
-    for (let sample = 0; sample < 250; sample += 1) {
-      const started = performance.now();
-      const result = planWriteGate(ctx);
-      durations.push(performance.now() - started);
-      assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
-    }
-    durations.sort((a, b) => a - b);
-    const p95 = durations[Math.floor(durations.length * 0.95)]!;
-    assert.ok(p95 < 150, `complete Write pre-tool p95 ${p95.toFixed(2)} ms exceeds 150 ms`);
+    // Correctness of the measured path is asserted OUTSIDE the timed closure:
+    // a failed assertion inside it would be charged to the budget, and an
+    // assert.equal per sample is measurable work the production path does not
+    // do. One check before the loop is enough — the input never changes.
+    const probe = planWriteGate(ctx);
+    assert.equal(probe.kind, 'noop', probe.kind === 'deny' ? probe.reason : undefined);
+
+    assertLatencyBudget(t, {
+      label: 'complete Write pre-tool path',
+      budgetMs: 150,
+      samples: 250,
+      warmup: 20,
+      run: () => { planWriteGate(ctx); },
+    });
   });
 });
 

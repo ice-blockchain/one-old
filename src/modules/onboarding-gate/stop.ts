@@ -15,6 +15,7 @@
 import { obj } from '../../shared/obj';
 import { context, deny, followup, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import type { DenyId } from '../../config/deny-ids';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
@@ -90,7 +91,11 @@ export function onboardingStopGate(ctx: Ctx): HookResult {
   // duplicated the link live on 1.0.45): the turn stays on the waiter, no repost.
   const linkAlreadyPosted = !wizardOpened(root, link.token, process.env, ctx.host)
     && assistantPostedLink({ url: link.dashboardUrl, host: ctx.host, raw, sessionId, cwd: root });
-  const text = wizardOpened(root, link.token, process.env, ctx.host)
+  const wizardIsOpen = wizardOpened(root, link.token, process.env, ctx.host);
+  const denyId: DenyId = wizardIsOpen
+    ? 'onboarding-stop-links-shown'
+    : (linkAlreadyPosted ? 'onboarding-stop-link-posted' : 'onboarding-stop-required');
+  const text = wizardIsOpen
     ? block('stop-setup-links-shown', { WAIT_CMD: waitCommand }, stopSetupLinksShownReason(waitCommand))
     : (linkAlreadyPosted
       ? block('stop-setup-link-posted', { WAIT_CMD: waitCommand }, stopSetupLinkPostedReason(waitCommand))
@@ -100,7 +105,7 @@ export function onboardingStopGate(ctx: Ctx): HookResult {
         WAIT_CMD: waitCommand,
       }, stopSetupRequiredReason(link.dashboardUrl, link.localFallback, waitCommand)));
 
-  if (ctx.host === 'claude' || ctx.host === 'codex') return deny(text);
+  if (ctx.host === 'claude' || ctx.host === 'codex') return deny(text, { denyId });
   // Cursor consumes followup_message from its stop lifecycle events (bounded by
   // the host-side loop_limit: 8): enqueue the same prose as the next turn's
   // instruction. Runs at priority 10 — ahead of agent-model.cursor-stop (40),

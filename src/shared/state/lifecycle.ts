@@ -85,11 +85,18 @@ export function maintenanceLifecycle(source: string): LifecycleState {
 // minutes after it finishes). Best-effort — never throws (state IO failures must
 // not break a hook). Reads the raw on-disk state (not the local-prefs merge) so
 // the write round-trips cleanly through writeState.
+//
+// The flip is the PRECONDITION for both side effects below, not their neighbour:
+// each one is only correct because the project is recorded as settled. When the
+// write is refused they used to run anyway and this still returned true, so
+// build-complete pruned pending claims and reported a completed build over a
+// project whose state still says "building" — and `ensureInitialCommit` had
+// already made a git commit on the strength of it.
 export function markMaintenance(cwd: string, source: string): boolean {
   try {
     const state = readState(cwd);
     if (projectPhase(state, state.mode) === 'maintenance' && source !== 'orchestrator') return false;
-    writeState(cwd, { ...state, lifecycle: maintenanceLifecycle(source) });
+    if (!writeState(cwd, { ...state, lifecycle: maintenanceLifecycle(source) })) return false;
     // The build is settled: sweep the run's agent claims (pending deleted, claimed →
     // released) so finished runs never read as in-flight to hasActiveRunClaims.
     releaseAllRunClaims(cwd, 'maintenance-flip');

@@ -25,11 +25,30 @@ function withHome(fn: (env: NodeJS.ProcessEnv) => void): void {
     fn({
       HOME: path.join(dir, 'home'),
       TRAFFIC_ONE_PLUGIN_ROOT: path.join(dir, 'plugin'),
+      // Windsurf is an uncertified host (HOST_CAPABILITIES.windsurf.tier):
+      // installWrapper() refuses by default. These tests exercise install
+      // MECHANICS, so they opt in exactly like a maintainer testing the
+      // wrapper would — the refusal itself is covered separately below.
+      TRAFFIC_ONE_ALLOW_UNCERTIFIED_HOST: '1',
     } as NodeJS.ProcessEnv);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('install refuses by default for this uncertified host, and proceeds with the opt-out', () => {
+  withHome((env) => {
+    const { TRAFFIC_ONE_ALLOW_UNCERTIFIED_HOST, ...withoutOptOut } = env;
+    const refused = installWrapper(withoutOptOut as NodeJS.ProcessEnv, ['install', '--yes']);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stdout, /Windsurf is not a certified host/);
+    assert.match(refused.stdout, /TRAFFIC_ONE_ALLOW_UNCERTIFIED_HOST=1/);
+    assert.equal(fs.existsSync(windsurfHooksPath(env)), false);
+
+    const installed = installWrapper(env, ['install', '--yes']);
+    assert.equal(installed.code, 0);
+  });
+});
 
 test('install requires consent and writes Cascade + native hooks and global rule block', () => {
   withHome((env) => {

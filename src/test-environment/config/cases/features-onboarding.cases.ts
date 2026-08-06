@@ -196,4 +196,37 @@ export const FEATURE_ONBOARDING_CASES: Case[] = [
     ],
     notes: 'The agent-classification fallback: undetectable existing repo → tech-detect step → agent submission stamps custom-backend/node with autoDetected:false → short wizard completes.',
   },
+  {
+    id: 'onb-declined-project',
+    category: 'feature-onboarding',
+    layer: 'pure-node',
+    // The ONLY case in the suite that answers NO to the ask-first question, and
+    // therefore the only composed proof that the write fence CLOSES. Every other
+    // case is an opted-in project, so the whole suite could stay green with the
+    // fence hard-coded permissive — an asymmetry that made the decline direction
+    // untested at composition level, which is where materialization (the
+    // write-heaviest thing the product does) is live at all.
+    //
+    // A real repository on purpose: refusing to touch an empty directory proves
+    // much less than refusing to touch a project the runtime has every reason to
+    // want to annotate.
+    fixture: 'existing-react-vite',
+    consent: 'decline',
+    // Never applied: `consent: 'decline'` skips seeding entirely, because
+    // "nothing was written" is the claim. Kept because PreSeed is required, and
+    // it records what this project WOULD have been had the user said yes.
+    preSeed: {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+    },
+    assertions: [],
+    notes: 'The decline direction of the consent fence: durable opt-out, pre-decline residue swept, `.traffic-one/` absent after every hook entry point and a real materialization, and ordinary development still allowed.',
+  },
 ];

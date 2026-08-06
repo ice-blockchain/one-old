@@ -4,6 +4,7 @@
 // scripts/hook-runtime/handlers/_helpers.cjs.
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { isSafeOneMcpModelId, ONE_MCP_MAX_AVAILABLE_MODELS } from '../config/one-mcp';
@@ -17,12 +18,28 @@ import {
 } from './apply-patch';
 import { onboardingWaitScriptPath } from './onboarding-server/wait-command';
 import { modelGateScriptPath } from './model-gate-command';
-import { doctorScriptPath } from './doctor-command';
+// The id shape accepted on `--run`/`--session` lives beside the command
+// PRINTERS (doctor-command.ts) so what the runtime prints and what this grammar
+// admits cannot drift apart; see its header for the charset reasoning.
+import { gateExemptDoctorScriptPaths, isDoctorIdArgument } from './doctor-command';
 import { legacyStatePath, statePath } from './state';
 import { resolveTrafficOneEnv } from './state/traffic-one-paths';
 
 type Rec = Record<string, unknown>;
 
+// Strip a host/server qualifier and keep the bare tool name: Kilo/OpenCode send
+// `<server>.<tool>`, Codex sends `apply_patch` bare, Copilot may send
+// `mcp__x.Bash`. Consequence, by design and repo-wide: an MCP server can call
+// its tool `Bash` and be classified as a shell tool here. That is deliberately
+// NOT narrowed — every classifier in this file is used to decide whether to
+// GATE something, so treating a suspiciously-named MCP tool as shell means
+// scanning its arguments for mutations rather than waving them through, and the
+// wrapper hosts genuinely need the last segment. Narrowing it would silently
+// un-gate real wrapper tool calls to close a hole that only makes gates
+// stricter. The doctor exemption below does not rest on this: a fabricated
+// `mcp__x.Bash` still has to produce a `command` that byte-matches the running
+// runtime's own doctor path (gateExemptDoctorScriptPaths), and exemption only
+// ever yields "no opinion", never an elevated capability.
 export function normalizedToolName(toolName: unknown): string {
   const raw = String(toolName || '');
   return raw.includes('.') ? (raw.split('.').pop() as string) : raw;
@@ -218,12 +235,36 @@ export function isMutatingPreToolUse(
   return MUTATING_SHELL_COMMAND.test(command) || MUTATING_FIND_COMMAND.test(command) || INTERPRETER_EVAL.test(command);
 }
 
+interface ShellWordOptions {
+  /**
+   * Expand a leading, unquoted `~` (alone or before `/`) to this directory.
+   *
+   * Off by default: `~` is otherwise in the forbidden set below, because for
+   * every OTHER grammar here the expected argv is an absolute path this plugin
+   * generated itself, so a tilde can only be a mis-spelling or an attempt to
+   * make one path look like another. The doctor grammar opts in because shipped
+   * prose hands agents the `~/.traffic-one/bin/doctor.cjs` shim form (see
+   * doctor-command.ts) and a gate that rejects the string its own docs print is
+   * the bug this exemption exists to fix. Only `~`/`~/…` is expanded — never
+   * `~user` (bash's other tilde form), which stays rejected.
+   */
+  readonly tildeHome?: string;
+}
+
 // Parse the deliberately tiny shell grammar emitted by wait-command.ts. Shell
 // control characters are rejected outside quotes; `$`/backticks are rejected in
 // double quotes because the shell would still expand them. Single-quoted values
 // are inert and may contain any project-name character. This is intentionally not
 // a general shell parser.
-function cleanShellWords(command: string): string[] | null {
+//
+// Word splitting is `[ \t]` — POSIX IFS minus the newline the guard below
+// already rejects outright — deliberately NOT JS `\s`. `\s` also matches VT,
+// FF, NBSP, U+2028 and U+3000, none of which bash/zsh/sh treat as separators:
+// they stay part of the word, so `node\u00a0/…/doctor.cjs` is one word naming
+// no binary (127) rather than two. A parser that split there would tokenize an
+// argv the executor never produces, which is the one way a grammar this file
+// uses for allow-listing can disagree with what actually runs.
+function cleanShellWords(command: string, options: ShellWordOptions = {}): string[] | null {
   if (!command || /[\r\n]/.test(command)) return null;
   const words: string[] = [];
   let word = '';
@@ -251,13 +292,22 @@ function cleanShellWords(command: string): string[] | null {
       }
       continue;
     }
-    if (/\s/.test(ch)) {
+    if (ch === ' ' || ch === '\t') {
       if (started) {
         words.push(word);
         word = '';
         started = false;
       }
       continue;
+    }
+    // Word-initial only, exactly like the shell: `a~/b` is literal there too.
+    if (ch === '~' && !started && options.tildeHome) {
+      const next = command[i + 1];
+      if (next === undefined || next === '/' || next === ' ' || next === '\t') {
+        word += options.tildeHome;
+        started = true;
+        continue;
+      }
     }
     if (ch === "'") {
       quote = 'single';
@@ -283,6 +333,19 @@ function cleanShellWords(command: string): string[] | null {
   if (quote) return null;
   if (started) words.push(word);
   return words;
+}
+
+// Resolve two path spellings to one comparable form. realpath collapses
+// symlinks and `..`, which matters on macOS where the same directory is
+// reachable as both /tmp/x and /private/tmp/x; a nonexistent path degrades to
+// path.resolve so a comparison against a missing file is still deterministic
+// (and simply never equals an existing one).
+function comparablePath(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
 }
 
 interface OnboardingRunnerInvocation {
@@ -433,25 +496,116 @@ export function isOnboardingSetTechCommand(toolName: unknown, toolInput: unknown
   return onboardingRunnerInvocation(toolName, toolInput)?.setTech === true;
 }
 
-// A launcher/runtime failure explicitly prescribes the bundled read-only
-// doctor. Admit only that exact installed runner with no arbitrary argv, so the
-// recovery command cannot be trapped by the same onboarding gate it diagnoses.
+// The trust anchor for `words[1]`. Byte-equality against a path derived from
+// the RUNNING runtime (or from HOME) — never from a *_PLUGIN_ROOT env var; see
+// gateExemptDoctorScriptPaths() in doctor-command.ts for why. Compared through
+// realpath so the same file named two legitimate ways (a symlinked HOME, a
+// /tmp vs /private/tmp state dir) is one identity, while a DIFFERENT file that
+// merely ends in doctor.cjs is never admitted.
+function isGateExemptDoctorScript(candidate: string): boolean {
+  if (!path.isAbsolute(candidate)) return false;
+  const wanted = comparablePath(candidate);
+  return gateExemptDoctorScriptPaths().some((allowed) => comparablePath(allowed) === wanted);
+}
+
+type DoctorCommandKind = 'plain' | 'run' | 'bundle' | 'session';
+
+interface DoctorCommandInvocation {
+  readonly kind: DoctorCommandKind;
+  /** Present on kind === 'run', and on 'bundle' when `--run <id>` pinned it. */
+  readonly runId?: string;
+  /** Present only when kind === 'session'. */
+  readonly session?: string;
+}
+
+// The doctor grammar itself — the single place every accepted `node
+// <doctorScriptPath> …` argv is enumerated. Every caller (the onboarding gate,
+// the fail-closed exemption) goes through isTrafficOneDoctorCommand below,
+// which only asks "does SOME accepted form match"; this function is what
+// actually enumerates them, so widening what doctor accepts means editing
+// exactly this list, once.
+//
+// `words` is already the output of cleanShellWords (tool-classify.ts's own
+// tiny shell-word parser), so by the time this runs: `;`, `&`, `|`, backticks,
+// `$`, redirection, globs, and unterminated quotes have ALL already made
+// `words` null upstream (cleanShellWords returns null on any of them) — this
+// function never has to special-case chaining/substitution/redirection itself,
+// it only has to compare a flat, already-detokenized argv against an exact
+// shape. Case-sensitive throughout (`--Run`, `--BUNDLE`, `Node` all miss):
+// the shipped runner and its flags are lower-case, and loosening case here
+// would just admit more strings for the same one binary.
+function doctorCommandInvocation(toolName: unknown, toolInput: unknown): DoctorCommandInvocation | null {
+  if (!isShellToolName(toolName)) return null;
+  const words = cleanShellWords(commandFromToolInput(toolInput).trim(), {
+    tildeHome: process.env.HOME || os.homedir(),
+  });
+  if (!words || words.length < 2) return null;
+  // No `npx`/interpreter-flag/wrapper prefix is ever accepted: the first word
+  // must be the literal `node`, and the second must resolve to one of the two
+  // doctor.cjs paths derived from the running runtime and HOME
+  // (gateExemptDoctorScriptPaths) — never a substring match, never a different
+  // absolute path that merely ENDS in doctor.cjs, never a path handed in
+  // through a *_PLUGIN_ROOT env var. A caller who wants "run doctor with node"
+  // has exactly those two spellings, both of which shipped prose prints; a
+  // caller who names any other script or interpreter is never this
+  // exemption's business.
+  if (words[0] !== 'node' || !isGateExemptDoctorScript(words[1] as string)) return null;
+  const args = words.slice(2);
+  if (args.length === 0) return { kind: 'plain' };
+  if (args.length === 1 && args[0] === '--bundle') return { kind: 'bundle' };
+  if ((args.length === 2 || (args.length === 3 && args[2] === '--bundle')) && args[0] === '--run') {
+    // `--run <id>` and `--run <id> --bundle` (that order only): the runner
+    // reads the two flags independently (runners/doctor/lib.ts), the
+    // combination is what the operator report prints for a bug report, and it
+    // is as read-only as either flag alone.
+    const runId = args[1] as string;
+    if (!isDoctorIdArgument(runId)) return null;
+    return args.length === 3 ? { kind: 'bundle', runId } : { kind: 'run', runId };
+  }
+  // `--session <id>` is doctor's third shipped flag (runners/doctor/lib.ts) and
+  // is read-only in the same way: it selects a Codex transcript to ANALYZE.
+  if (args.length === 2 && args[0] === '--session') {
+    const session = args[1] as string;
+    return isDoctorIdArgument(session) ? { kind: 'session', session } : null;
+  }
+  // Everything else — extra trailing words after a recognized flag, an
+  // unrecognized flag, a flag value that fails DOCTOR_ID_PATTERN, combined or
+  // duplicate/reordered flags — is rejected. Biased toward DENY: an
+  // undocumented doctor invocation staying gated is a minor recovery
+  // inconvenience; a loosened match here is a gate-bypass hole.
+  //
+  // `--unblock <gateId>` (runners/doctor/unblock.ts) is now a SHIPPED flag and
+  // is still absent from this grammar. That omission is PERMANENT, and it is
+  // the only one of doctor's flags that is deliberate rather than incidental:
+  // every form above is read-only, while `--unblock` mints an operator
+  // override that switches a gate off for a run. The exemption's contract —
+  // stated three lines below and relied on by hooks/fail-closed.ts — is
+  // "this gate has no opinion, because doctor writes nothing anywhere". An
+  // override-minting invocation breaks that sentence, and an agent that can
+  // mint its own override does not have an escape hatch, it has a bypass:
+  // it would deny a gate, emit the command the deny printed, and proceed.
+  // The mint additionally refuses a non-interactive stdin, so admitting it
+  // here would buy nothing but the hole. The audience for `--unblock` is a
+  // human at their own terminal, where no hook fires at all.
+  return null;
+}
+
+// The bundled read-only doctor is the product's own answer to "the run is
+// wedged" — including when the thing that wedged it is a gate. Admit only that
+// exact installed runner with no arbitrary argv, so the recovery command cannot
+// be trapped by the same gate it diagnoses. Accepts exactly four documented
+// forms — the bare command, `--run <id>`, `--session <id>` and `--bundle` — in
+// either of two shipped path spellings, via doctorCommandInvocation's bounded
+
+// exact-argv grammar (`--run <id> --bundle` is the one accepted combination).
+// Exemption means "this gate has no opinion" (noop), never an elevated
+// capability: doctor writes nothing anywhere.
 export function isTrafficOneDoctorCommand(toolName: unknown, toolInput: unknown): boolean {
-  if (!isShellToolName(toolName)) return false;
-  const words = cleanShellWords(commandFromToolInput(toolInput).trim());
-  return Boolean(words && words.length === 2 && words[0] === 'node' && words[1] === doctorScriptPath());
+  return doctorCommandInvocation(toolName, toolInput) !== null;
 }
 
 interface ModelGateInvocation {
   readonly kind: 'gate' | 'capture';
-}
-
-function comparablePath(value: string): string {
-  try {
-    return fs.realpathSync(value);
-  } catch {
-    return path.resolve(value);
-  }
 }
 
 // The model gate is itself a recovery/enforcement command, so recognizing a

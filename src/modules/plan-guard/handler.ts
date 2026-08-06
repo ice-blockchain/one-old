@@ -37,5 +37,6 @@ export function libraryAllowlistGate(ctx: Ctx): HookResult {
   if (hits.length === 0) return noop();
 
   const lines = hits.map(([pattern, tip]) => `  - ${pattern}: ${tip}`).join('\n');
-  return deny(`Forbidden library:\n${lines}\n\nSee rules/core.md and the active stack core for the approved stack.`);
+  return deny(`Forbidden library:\n${lines}\n\nSee rules/core.md and the active stack core for the approved stack.`,
+    { denyId: 'library-allowlist-forbidden', denyTarget: command });
 }

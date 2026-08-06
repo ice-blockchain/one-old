@@ -655,3 +655,142 @@ test('a legacy single-slot marker keeps its exact-pin semantics', () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// ── When the marker write itself is REFUSED ──────────────────────────────────
+// `writeJson` returns false for a refusal the product makes on purpose (an
+// unanswered consent question, a planted symlink, a path escaping the state
+// dir), and both writers below dropped it — then derived a canonical settlement
+// from the marker state they had only INTENDED to write. Each case fences
+// exactly one file, maintenance.json, so everything around it stays writable and
+// the settlement write itself still succeeds; that is what makes the two records
+// able to disagree. Both cases are an A/B against the identical fixture with the
+// fence as the only variable, which doubles as the writable baseline.
+
+/** The one shape a pending debt may legally be superseded from. */
+function skippedDelegationMarker(markerPath: string): string {
+  const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as Record<string, unknown>;
+  fs.writeFileSync(markerPath, JSON.stringify({
+    ...marker, outcome: 'skipped', action: 'skipped', touched: [],
+  }));
+  return fs.readFileSync(markerPath, 'utf8');
+}
+
+/**
+ * Fence a path the writer READS before writing: rename the real file aside and
+ * link to it. A dangling link would make that read fail, the writer would bail
+ * on its own precondition, and the test would pass without the write ever being
+ * attempted.
+ */
+function fenceReadableFile(target: string): string {
+  const before = fs.readFileSync(target, 'utf8');
+  fs.renameSync(target, `${target}.aside`);
+  fs.symlinkSync(`${target}.aside`, target);
+  assert.equal(fs.readFileSync(target, 'utf8'), before,
+    'fixture guard: reads still resolve through the link, so the writer reaches its write');
+  return before;
+}
+
+test('a refused supersede write reports false and leaves the settlement pin standing', () => {
+  withFallbackProject(({ cwd, markerPath }) => {
+    skippedDelegationMarker(markerPath);
+    assert.equal(supersedeSkippedDelegationFallback(cwd, RUN_ID, 'arch-hash'), true,
+      'writable baseline: the unfenced transition really does supersede');
+    assert.equal(readRunSettlement(cwd, RUN_ID)?.fallback, undefined,
+      'writable baseline: superseding is what legitimately drops the settlement pin');
+  }, { role: 'senior-frontend' });
+
+  withFallbackProject(({ cwd, markerPath }) => {
+    const before = skippedDelegationMarker(markerPath);
+    fenceReadableFile(markerPath);
+
+    // Dropped, the refusal inverted the function: the marker kept its pending
+    // debt while the settlement below dropped the pin, so the debt was erased
+    // from the canonical record and left owed in the marker — and `true` told
+    // the caller the two now agreed.
+    assert.equal(supersedeSkippedDelegationFallback(cwd, RUN_ID, 'arch-hash'), false,
+      'the refusal is reported through the boolean the caller already reads');
+    assert.equal(readRunSettlement(cwd, RUN_ID)?.fallback?.state, 'pending',
+      'a debt the marker still owes must still be pinned in the settlement');
+    assert.equal(fs.readFileSync(markerPath, 'utf8'), before,
+      'the marker is byte-identical: nothing was superseded');
+  }, { role: 'senior-frontend' });
+});
+
+function withLedgerProject(run: (fixture: { cwd: string; state: Record<string, unknown> }) => void): void {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ledger-refusal-'));
+  try {
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'src', 'a.ts'), 'export const a = 1;\n');
+    git(cwd, ['init', '-q']);
+    git(cwd, ['config', 'user.email', 't@example.com']);
+    git(cwd, ['config', 'user.name', 'T']);
+    git(cwd, ['add', '-A']);
+    git(cwd, ['commit', '-q', '-m', 'baseline']);
+    const state = {
+      version: 1,
+      mode: 'existing-codebase',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      currentRunId: RUN_ID,
+      lifecycle: { phase: 'maintenance' },
+    };
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify(state));
+    run({ cwd, state });
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
+function delegateFailingUnit(cwd: string, state: Record<string, unknown>): void {
+  const bootstrap = ensureRunBootstrap(cwd, RUN_ID, 'senior-frontend', state, {
+    host: 'codex',
+    hostAgentType: null,
+    evidenceSource: 'opencode-maintenance-preflight',
+    modelPolicyId: 'test-policy',
+    boundedOutputs: ['src/a.ts'],
+    boundedAllowlist: ['src/a.ts'],
+  });
+  assert.ok(bootstrap, 'the bounded envelope must publish, or the outcome writes nothing at all');
+  // Passing the envelope explicitly is what makes this path reachable from a
+  // test: `undefined` would send it back through readActiveRunBootstrap.
+  recordMaintenanceDelegationOutcome(
+    cwd, state, RUN_ID, 'senior-frontend',
+    { ok: false, action: 'failed', digest: null, touched: [], error: 'typecheck failed', failureKind: 'verification-failed' },
+    Date.now(), true, bootstrap, 'unit-a',
+  );
+}
+
+test('a refused maintenance-ledger write publishes no settlement derived from it', () => {
+  withLedgerProject(({ cwd, state }) => {
+    delegateFailingUnit(cwd, state);
+    const marker = path.join(cwd, '.traffic-one', 'runs', RUN_ID, 'maintenance.json');
+    assert.equal(JSON.parse(fs.readFileSync(marker, 'utf8')).overallOutcome, 'fallback-pending',
+      'writable baseline: the unfenced ledger records the debt');
+    assert.equal(readRunSettlement(cwd, RUN_ID)?.fallback?.state, 'pending',
+      'writable baseline: and the settlement pins it, which is the point of the pair');
+  });
+
+  withLedgerProject(({ cwd, state }) => {
+    const marker = path.join(cwd, '.traffic-one', 'runs', RUN_ID, 'maintenance.json');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    // Dangling is correct here: this writer's read of the marker is a merge of
+    // PREVIOUS units, and "no previous units" is exactly what a fresh run has.
+    fs.symlinkSync(path.join(path.dirname(marker), 'no-such-target'), marker);
+    assert.equal(fs.existsSync(marker), false, 'fixture guard: the link is dangling');
+
+    delegateFailingUnit(cwd, state);
+
+    // The settlement's `fallback-pending` pin can only ever be discharged by a
+    // completion record in the file that was refused: fallbackCompletionMatch
+    // reads maintenance.json back, finds nothing, and holds the run at
+    // `validating` for good. Pinning a debt no record can discharge is the
+    // erasure the per-unit ledger exists to prevent, arriving from the other
+    // side — so a refused ledger has to stop the settlement too.
+    assert.equal(readRunSettlement(cwd, RUN_ID), null,
+      'no settlement may be derived from a ledger that never landed');
+    assert.ok(fs.lstatSync(marker).isSymbolicLink(), 'the link itself is left exactly as it was');
+    assert.equal(fs.existsSync(marker), false, 'and nothing was written through it');
+  });
+});

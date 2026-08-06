@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { readText } from '../fsjson';
+import { readText, removePath } from '../fsjson';
 import { writeTextIfChanged } from '../fs-text';
 import { pluginRoot } from '../paths';
 import { templatePath } from '../stacks';
@@ -160,6 +160,111 @@ function localContextName(fileName: string): string {
 // re-render ~2.5 KB of duplicated guidance into every generated AGENTS.md.
 const TOOL_MANAGED_BLOCK_RE = /<!--\s*gitnexus:start\s*-->[\s\S]*?<!--\s*gitnexus:end\s*-->/g;
 
+// Compared and STORED normalized. An editor that rewrites the root file's line
+// endings must not read as "this content is not preserved yet" — that answer
+// appends a second, byte-identical copy of the same notes on every single run,
+// forever, and the file it grows is the one the generated context inlines.
+function normalizeBody(text: string): string {
+  return text.replace(/\r\n/g, '\n').trim();
+}
+
+function firstPreservedDocument(fileName: string, body: string): string {
+  return [
+    `# Preserved ${fileName}`,
+    '',
+    `This content existed before Traffic One generated root ${fileName}.`,
+    '',
+    '---',
+    '',
+    body,
+    '',
+  ].join('\n');
+}
+
+// A LATER hand-written root file, preserved NEXT TO the earlier one. Same shape
+// migrateLegacyRootDocumentationFile uses for the same reason: the copy already
+// on disk is also content nobody agreed to lose, so a second takeover appends
+// rather than overwrites.
+function additionalPreservedBlock(fileName: string, body: string): string {
+  return [
+    '---',
+    '',
+    `## Also Preserved From Root \`${fileName}\``,
+    '',
+    `Root ${fileName} was hand-written again after an earlier takeover; this is that content.`,
+    '',
+    body,
+    '',
+  ].join('\n');
+}
+
+/**
+ * Put `body` in the preserved copy, and PROVE it is there.
+ *
+ * The precondition for the delete below is that THIS content is on disk — not
+ * that some file exists at `localPath`. Checking existence instead is how a
+ * project taken over twice lost the second version: the owner hand-wrote a new
+ * root AGENTS.md, the stale `AGENTS.local.md` from the first takeover satisfied
+ * the existence check, nothing was written, and the delete landed anyway — the
+ * new content then existed nowhere, not in the preserved copy and not in the
+ * generated context that inlines it (measured: preserved copy still carried
+ * "VERSION ONE (stale)", `VERSION TWO recoverable anywhere? false`).
+ *
+ * Re-reading after the write is deliberate rather than trusting the writer's
+ * return value: writeTextIfChanged also answers `false` for "already
+ * identical", and the consent fence answers `false` without writing.
+ */
+function preserveBody(localPath: string, fileName: string, body: string): boolean {
+  const carriesBody = (): boolean => normalizeBody(readText(localPath) ?? '').includes(body);
+  if (carriesBody()) return true;
+  const existing = readText(localPath);
+  writeTextIfChanged(
+    localPath,
+    existing && existing.trim()
+      ? `${existing.trimEnd()}\n\n${additionalPreservedBlock(fileName, body)}`
+      : firstPreservedDocument(fileName, body),
+  );
+  return carriesBody();
+}
+
+/**
+ * Take over a hand-written root AGENTS.md/CLAUDE.md, preserving its content in
+ * `.traffic-one/AGENTS.local.md` first.
+ *
+ * The ONLY function permitted to delete a user-authored root context file:
+ * writeRootAgents/writeRootClaude below both stand down on anything that is not
+ * already generated (or a symlink). So the delete here is what licenses the
+ * generated write that follows, and its precondition is that the CONTENT
+ * replacing it is on disk — see preserveBody, which re-reads to prove it rather
+ * than inferring it from a writer's return value or from a file merely existing
+ * at the preserved path.
+ *
+ * That ordering is the fix for observed data loss, not a hypothetical: on a
+ * project whose use-plugin question was unanswered the copy was refused by the
+ * consent fence (`.traffic-one/**`, shared/fsjson.ts) while this delete still
+ * landed with a raw `fs.rmSync` — so a hand-written root AGENTS.md was not
+ * overwritten, it was DESTROYED, with the only surviving copy suppressed. The
+ * refusal at the top of materializeProjectAssets now stops this function from
+ * running at all before consent, but the same split can be produced by any other
+ * write failure (EACCES, EROFS, ENOSPC), and there is no recovery from it: the
+ * content exists nowhere else. Declining to delete instead costs only the
+ * generated context — writeRootAgents sees a non-generated file and stands down,
+ * leaving the project exactly as the user left it.
+ *
+ * `state.mode` is a WEAK gate and is not what makes this safe. `detectMode`
+ * answers `new-project` for any repository with five or fewer files whose
+ * extension is in SOURCE_EXTS, so a Terraform stack, a dbt project, a docs site
+ * or a shell-tooling repo with real committed history arrives here as
+ * greenfield (measured: a 3-file Terraform repo, one commit, hand-written root
+ * AGENTS.md → 56 bytes replaced by 8790 generated ones). Narrowing that guess
+ * with on-disk evidence — the `greenfieldEvidence` predicate
+ * architecture-contract/scaffold-content.ts already uses for `.gitignore` —
+ * would shrink the blast radius but cannot close it: a genuinely greenfield
+ * project (no commits, no `.gitignore`) can still have a root AGENTS.md its
+ * owner wrote by hand five minutes ago. So the invariant this function keeps is
+ * the content one, and it holds for every mode: nothing is deleted until the
+ * bytes are provably reachable somewhere else.
+ */
 export function preserveManualRootContext(cwd: string, fileName: string, state: Rec): boolean {
   const rootPath = path.join(cwd, fileName);
   if (!fs.existsSync(rootPath)) return false;
@@ -168,23 +273,15 @@ export function preserveManualRootContext(cwd: string, fileName: string, state: 
   if (!state || state.mode !== 'new-project') return false;
 
   const localPath = path.join(cwd, '.traffic-one', localContextName(fileName));
-  const existing = (readText(rootPath) || '').replace(TOOL_MANAGED_BLOCK_RE, '').trim();
+  const body = normalizeBody((readText(rootPath) || '').replace(TOOL_MANAGED_BLOCK_RE, ''));
   // Nothing but tool-managed blocks → nothing user-authored to preserve.
-  if (existing) {
-    const preserved = [
-      `# Preserved ${fileName}`,
-      '',
-      `This content existed before Traffic One generated root ${fileName}.`,
-      '',
-      '---',
-      '',
-      existing,
-      '',
-    ].join('\n');
-    if (!fs.existsSync(localPath)) writeTextIfChanged(localPath, preserved);
-  }
-  fs.rmSync(rootPath, { force: true });
-  return true;
+  if (body && !preserveBody(localPath, fileName, body)) return false;
+  // `removePath` cannot fence a project-root path — the fence is addressed by
+  // `.traffic-one/**` and this file is outside it — but routing the delete
+  // through the chokepoint anyway means a fence that ever grows to cover root
+  // files covers this one too, instead of this being the site that remembers to
+  // opt in.
+  return removePath(rootPath);
 }
 
 function localContextBlocks(cwd: string): string[] {
@@ -205,11 +302,26 @@ function localContextBlocks(cwd: string): string[] {
   return blocks;
 }
 
+// The takeover, announced in the file it took over.
+//
+// `.traffic-one/AGENTS.local.md` exists for exactly one reason —
+// preserveManualRootContext replaced a hand-written root context file with this
+// generated one — and until now nothing said so anywhere the user looks. The
+// content was reachable (here, and in the preserved copy) but the REPLACEMENT
+// was silent: 56 bytes of "ask @sre before applying" became 8790 bytes of
+// generated context, and the only hint was a `M AGENTS.md` in `git status`,
+// which an untracked file does not even produce. This section is the one
+// surface this module owns that the user reads: it is the file whose disappearance
+// they are investigating. A run-level notice (SessionStart output, the
+// materialize outcome) needs MaterializeResult/converge.ts and is not this
+// module's to add.
+const TAKEOVER_NOTICE = 'Traffic One generated this file over a hand-written root `AGENTS.md`/`CLAUDE.md`. Nothing was discarded: the original content is reproduced verbatim below and kept at `.traffic-one/AGENTS.local.md` (`CLAUDE.local.md` for CLAUDE.md). Delete those files to drop it from this context.';
+
 export function renderAgentsWithLocalContext(cwd: string, state: Rec, rules: string[], skills: string[], options: RenderOptions = {}): string {
   const base = renderAgents(state, rules, skills, { leanMode: isLeanMaterialization(cwd, state), ...options }).trimEnd();
   const localBlocks = localContextBlocks(cwd);
   if (localBlocks.length === 0) return `${base}\n`;
-  return [base, '', '## Preserved Project Notes', '', ...localBlocks, ''].join('\n');
+  return [base, '', '## Preserved Project Notes', '', TAKEOVER_NOTICE, '', ...localBlocks, ''].join('\n');
 }
 
 function renderClaudeFallback(): string {

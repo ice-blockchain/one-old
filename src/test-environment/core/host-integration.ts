@@ -5,6 +5,7 @@
 import { spawnSync } from 'child_process';
 import * as path from 'path';
 
+import { hostFlags } from '../../shared/host/capability-flags';
 import type { HostId } from './types';
 
 export interface HostIntegrationResult {
@@ -19,7 +20,7 @@ export function prepareCaseHostIntegration(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): HostIntegrationResult {
-  if (host !== 'opencode' && host !== 'kilo') return { ok: true, prepared: false };
+  if (!hostFlags(host).opencodeSelfHosted) return { ok: true, prepared: false };
   const runner = path.join(distRoot, 'scripts', `${host}-host.cjs`);
   const commands = [
     ['install', '--yes'],

@@ -74,7 +74,12 @@ test('windsurf: deny serializes as runtime envelope', async () => {
     { id: 'g', event: 'PreToolUse', tools: ['shell'], priority: 0, run: () => deny('blocked') },
   ];
   const out = JSON.parse(await dispatch(windsurf, handlers, inv('pre_run_command', { command_line: 'rm -rf x' })));
-  assert.deepEqual(out, { kind: 'deny', reason: 'blocked' });
+  assert.equal(out.kind, 'deny');
+  // Verbatim: core/pipeline.ts echoes its "(traffic-one ref: ...)" correlation
+  // suffix only when a decision record is actually written, on the same fence
+  // as the write itself (stampDeny / projectWritesPermitted) — this fixture
+  // project never answered the use-plugin question.
+  assert.equal(out.reason, 'blocked');
 });
 
 test('windsurf: context serializes as runtime envelope', async () => {

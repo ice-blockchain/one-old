@@ -4,6 +4,7 @@
 // session that owns the path. Returns a single deny reason (or null). Deny PROSE comes
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 
+import { hostFlags } from '../../shared/host/capability-flags';
 import { obj, type Rec } from '../../shared/obj';
 import {
   isMaintenanceSourceWritePath,
@@ -33,6 +34,8 @@ import {
   type RunManifest,
   readRunAssignmentsResilient,
   resolveRunAgentContext,
+  runLedgerAdmitsClaims,
+  runLedgerStatusRecord,
   tryFallbackClaim,
   type RunAgentContext,
 } from '../../shared/state';
@@ -97,6 +100,12 @@ function attributeForeignWriteBySpawnScope(
   if (!role) return null;
   return claimThreadRole(projectRoot, state, sessionId, role, { parentSessionId: identity.parentSessionId || null });
 }
+
+// How a parent re-spawns a role so the child's identity actually binds. Shared by
+// the unresolved-child remedies that DO end in a respawn; the closed-run remedy
+// deliberately omits it, because there a respawn is the wrong action and naming
+// its contract reads as an instruction to take it.
+const CHILD_SPAWN_CONTRACT = 'On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.';
 
 // Returns the run-team deny reason, or null when the write is allowed.
 export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
@@ -167,7 +176,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
       'Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt. Two shell shapes ARE verifiable and stay allowed: a single `cp`/`mv` importing one file from outside the project, and a single `rm <path>` (at most `-f`, never `-r`, no globs, one operand) removing a stray file that is present on disk, untracked, absent from the immutable baseline, and owned by nobody in the compiled contract — that is cleanup of your own by-product, not an implementation write.'));
   }
 
-  const nativeAnonymousDevinWrite = args.host === 'windsurf'
+  const nativeAnonymousDevinWrite = hostFlags(args.host).nativeWritesCarryNoAgentIdentity
     && obj(rawData)?.hook_event_name === 'PreToolUse'
     && !obj(rawData)?.agent_action_name;
   const agentContext = resolveRunAgentContext(projectRoot, state, rawData, {
@@ -278,9 +287,72 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
       && (unresolvedDiagnosis.reason === 'fingerprint-mismatch' || unresolvedDiagnosis.reason === 'run-id-mismatch')
       ? ` DIAGNOSIS: a role claim for \`${unresolvedDiagnosis.role || 'this role'}\` exists under run \`${unresolvedDiagnosis.runId || '<unknown>'}\` but was rejected (${unresolvedDiagnosis.reason}; claim \`${unresolvedDiagnosis.claimFingerprint || 'none'}\` vs run \`${unresolvedDiagnosis.ledgerFingerprint || 'none'}\`, live \`${unresolvedDiagnosis.liveFingerprint || 'none'}\`). Respawning will NOT fix this and switching to main-agent mode is not the remedy: the run's identity drifted away from its claims. Let the next SessionStart reconcile it, or settle this run so a fresh one mints with the current identity.`
       : '';
-    const recovery = (unresolvedChild
-      ? 'This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Do not retry the edit and do not self-assert a role in assistant prose. The PARENT/orchestrator must stop or replace this child and retry the same role. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.'
-      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.') + driftReason;
+    // The child branch used to prescribe ONE remedy — destroy the child — for
+    // every cause that lands here, and resolution collapses at least three into
+    // the same `null`: a CLOSED run (no child of any generation can bind in it),
+    // a claims or model-observation lock another hook holds for up to ~2s (the
+    // claim was about to be minted and nothing was decided), and a claim that is
+    // genuinely absent. Probed in remedy order, closed ledger first because it is
+    // the only one no respawn can fix — the same order and the same reasoning as
+    // codex-child-model.ts's claim-failure probe.
+    //
+    // A closed run is not a fact about the CHILD, it is a fact about the RUN, so
+    // it disqualifies the parent arm's spawn order for exactly the reason it
+    // disqualifies the child arm's respawn order: the role the parent is being
+    // told to spawn cannot bind a claim either. This was consulted only by
+    // `childRecovery`, so a PARENT write into a closed run rendered byte-for-byte
+    // as an open one and ordered a spawn into the same wedge — the 10co respawn
+    // loop, surviving on the parent side. Both arms consult it now, so the probe
+    // below is never computed and dropped.
+    const closedLedger = stateRunId && !runLedgerAdmitsClaims(projectRoot, stateRunId)
+      ? runLedgerStatusRecord(projectRoot, stateRunId)
+      : null;
+    // Stated once, consumed by both closed arms: the two used to be able to
+    // disagree about a fact neither of them owns.
+    const closedRunClause = closedLedger
+      ? `the run ledger for \`${stateRunId}\` is \`${closedLedger.status || 'unreadable'}\`${closedLedger.outcome ? ` (${closedLedger.outcome})` : ''}, which admits NO claim from any child`
+      : '';
+    // `driftReason` is not a footnote. Its "respawning will NOT fix this" ANSWERS
+    // the same question the recovery paragraph answers, so appending it to an arm
+    // that ENDS in a respawn rendered both orders in adjacent sentences: "must
+    // stop or replace this child" immediately followed by "Respawning will NOT fix
+    // this", and on the parent arm "Spawn the owning role" followed by the same
+    // refusal. So the two COMPOSE instead of concatenating. Where an arm ends in a
+    // respawn, drift REPLACES that ending — these two tails are selected only when
+    // there is no drift — and where the arm already counsels against a respawn (the
+    // closed-ledger arm, whose settle-and-remint the diagnosis merely adds
+    // fingerprints to) drift stays purely additive and the arm is untouched.
+    // Dropping a tail drops its spawn contract with it, for the reason
+    // CHILD_SPAWN_CONTRACT already records: naming the contract reads as an
+    // instruction to take it. Nothing is left dangling either — the diagnosis
+    // carries the two remedies that DO terminate here (let the next SessionStart
+    // reconcile the identity, or settle this run and mint a fresh one), so a
+    // suppressed arm still names an action the addressee can take.
+    //
+    // `closedLedger` is the SECOND thing that can silence a respawn order, and it
+    // composes with drift rather than duplicating it: it selects the ARM, while
+    // drift selects whether the arm it selected carries its tail. So the two
+    // tails keep exactly the meaning they have above — they belong to the OPEN
+    // arms only — and neither closed arm reaches for one, because each already
+    // ends in the remedy its addressee can take. That ordering is also why a
+    // closed arm is not simply a third tail suppressor: suppressing the parent
+    // tail on a closed ledger would leave the paragraph naming no action at all.
+    const childRespawnTail = driftReason
+      ? ''
+      : ` If the same deny repeats, the claim is genuinely absent and the PARENT/orchestrator must stop or replace this child and retry the same role. ${CHILD_SPAWN_CONTRACT}`;
+    const parentSpawnTail = driftReason
+      ? ''
+      : ' Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.';
+    const childRecovery = closedLedger
+      ? `This appears to be a spawned child, and its per-run role claim did not resolve because ${closedRunClause}. No write was made. Do not retry the edit, and do not stop or replace this child — the replacement cannot bind a claim either, and looping on respawns is what this deny used to cause. The PARENT/orchestrator resumes the RUN first (only if the user authorized another cycle), or settles it and mints a fresh one; nothing can write in this run until then.`
+      : `This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Retry this exact write ONCE before anything else: while another hook holds this run's claims or model-observation lock the claim cannot be minted and this hook resolves NO role at all, and that clears in about two seconds. Do not self-assert a role in assistant prose — prose cannot create a claim.${childRespawnTail}`;
+    // Same taxonomy as the closed child arm, re-addressed: here the reader IS the
+    // orchestrator, so the remedy is second-person rather than a report of what
+    // some third party does.
+    const parentRecovery = closedLedger
+      ? `You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawning the owning role will not help here, because ${closedRunClause}. No write was made, and the role you spawn would land in this same deny — looping on respawns is what this deny used to cause. Resume the RUN first (only if the user authorized another cycle), or settle it and mint a fresh one; nothing can write in this run until then.`
+      : `You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself.${parentSpawnTail}`;
+    const recovery = (unresolvedChild ? childRecovery : parentRecovery) + driftReason;
     return deny(block('run-team-not-subagent',
       `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. ${recovery} Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role, RECOVERY: recovery }));

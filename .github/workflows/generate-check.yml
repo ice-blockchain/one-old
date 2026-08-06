@@ -1,8 +1,26 @@
 name: Generate check
 
-# Verifies the TypeScript engine typechecks, dist generation is deterministic,
-# the full test suite (incl. the byte-identical golden snapshot) is green, and
-# the compiled runtime dispatches under bare node.
+# Three jobs:
+#
+# `generate-check` (matrix: ubuntu-latest, macos-latest) is the FAST path:
+# typecheck, gen+build, two determinism gates (see comment below -- neither is
+# the src-to-content drift gate), the unit+golden test suite, and the
+# compiled-runtime smoke test. Running the matrix on macOS too is deliberate:
+# `npm run golden:update` is a maintainer command run on macOS, and
+# `.gitattributes` normalizes line endings for byte-identical hashing across
+# platforms, yet until now nothing in CI ever generated or hashed the tree
+# anywhere but ubuntu-latest.
+#
+# `latency-budget` is the QUIET path: one test file, alone, on a runner that has
+# done nothing else. It exists because the only measurement in this repo whose
+# subject is wall-clock time cannot be taken on a machine running 291 test files
+# at once, and a budget that is never evaluated anywhere is a budget that has
+# stopped being enforced.
+#
+# `test-env-strict` is the SLOW path: `npm run test:env -- --strict`, the only
+# thing that exercises how the gates, the architecture compiler, the QA runner
+# and settlement COMPOSE. It runs in its own job, in parallel with the fast
+# path, so the fast path's feedback latency is unaffected.
 
 on:
   push:
@@ -10,8 +28,16 @@ on:
 
 jobs:
   generate-check:
-    name: Typecheck + gen --check + tests
-    runs-on: ubuntu-latest
+    name: "Typecheck + determinism + tests (${{ matrix.os }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # Two full `tsc` builds plus the unit+golden suite. A hung step would
+    # otherwise burn GitHub's 6-hour default on two runners at once; the
+    # observed run is minutes, so this is a hang ceiling, not a budget.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,14 +60,315 @@ jobs:
       - name: Build plugin runtime
         run: npm run build
 
-      - name: Generated dist content in sync
-        run: npm run gen -- --check
+      # --- Determinism gates, not drift gates ---------------------------
+      # dist/ is gitignored (.gitignore) with ZERO tracked files, so there is
+      # nothing checked-in for `gen`/`build` output to drift from inside this
+      # job -- both steps below compare this job's own freshly generated dist
+      # against a second, independent generation/build of the SAME source in
+      # the SAME job. That proves the generator and the compiler are
+      # deterministic (same src -> byte-identical output, on this OS); it is
+      # not, and cannot be, evidence that dist matches src in general.
+      #
+      # The real src-to-content drift gate is
+      # tests/golden/golden-snapshot.test.ts (run below via `npm test`): it
+      # generates into a scratch dir and diffs every byte against the
+      # git-tracked tests/golden/generated-manifest.sha256, with an
+      # additions-aware reverse sweep so a new emitter can't ship unsnapshotted
+      # bytes. That comparison is against a tracked file, not against this
+      # job's own dist, so it is already machine-independent -- which is why it
+      # matters that it now also runs on macOS in this same matrix.
+      #
+      # Invoked as the COMPOSITE (`plugin:check` = `gen:check && build:verify`),
+      # not as its two halves. Both halves used to run here under their own
+      # names, which left the composite itself — the command AGENTS.md puts in
+      # the maintainer chain and the README hands to readers — never executed by
+      # anything. A wrapper script that CI never runs is a script whose chaining
+      # nobody checks. Attribution is not lost: each half prints its own name
+      # and npm reports which one exited non-zero.
+      - name: "Determinism: gen --check + build:verify (npm run plugin:check)"
+        run: npm run plugin:check
 
-      - name: Tests (unit + golden snapshot)
-        run: npm test
+      # --- Tests ------------------------------------------------------------
+      # ONCE, not twice. src/build/test-preload.mjs (loaded by every `npm test`
+      # invocation) pins TRAFFIC_ONE_PLUGIN_ROOT to this checkout and wipes the
+      # whole host-detection and plugin environment surface -- every TRAFFIC_ONE_
+      # and per-host namespace, not a hand-listed three -- before any test file
+      # loads, whatever the ambient shell had set. See that file for why: an
+      # exported TRAFFIC_ONE_HOST (which AGENTS.md tells maintainers to export
+      # for plugin:sync) used to make this step red for reasons no message named.
+      #
+      # There used to be a second full-suite leg here that built a mutated copy
+      # of dist, exported TRAFFIC_ONE_PLUGIN_ROOT at it, and re-ran everything
+      # "to prove the test-preload pin holds". It could not fail: the pin
+      # overwrote that variable before the first test file loaded, so the leg's
+      # environment was byte-identical to this one. It was this step, twice, at
+      # full cost, on every push.
+      #
+      # It is not restored with TRAFFIC_ONE_TEST_PLUGIN_ROOT_PIN=off either,
+      # and that is a measurement, not an aversion to red. Both stale roots
+      # below were run for real over the full suite, 3145 tests and otherwise
+      # green when the figures were taken:
+      #
+      #   env TRAFFIC_ONE_TEST_PLUGIN_ROOT_PIN=off TRAFFIC_ONE_PLUGIN_ROOT=<root> npm test
+      #
+      #   <root> = a dist copy, every T1BLOCK marker mangled  ->  77 failures
+      #   <root> = an empty directory (no resolvable prose)    -> 285 failures
+      #
+      # Quote the root with the number when you refresh these: they are not
+      # interchangeable (a factor of ~4), and this paragraph previously carried
+      # a mangled-marker figure while being read as the empty-root one. Both
+      # track the suite's size, so treat them as an order of magnitude.
+      #
+      # The failures are prose-resolution tests across agent-model,
+      # onboarding-gate, plan-guard, the host entries and the reuse registry --
+      # e.g. "session authoring guard prose remains available and substitutes
+      # paths". Those are not tests that accidentally leak ambient state; they
+      # assert on gate wording, wording lives in the plugin root, and there is
+      # no version of them that passes when the plugin root has no resolvable
+      # prose. The only way to make that leg green is to delete their prose
+      # assertions -- so the leg's cost is a duplicate suite run per push and
+      # its reward is pressure to weaken the suite.
+      #
+      # What the leg's NAME claimed is a property of ~20 lines of env handling,
+      # and it is now proven directly, from BOTH sides (pinned and opted-off,
+      # which no in-suite leg can observe), by
+      # src/build/__tests__/test-preload.test.ts -- included in the run below,
+      # in well under a second, on both operating systems instead of one.
+      - name: Tests
+        # No *_PLUGIN_ROOT var is set here on purpose.
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
+
+      # The Write pre-tool latency budget (src/test-support/__tests__/latency-budget.ts)
+      # is three-valued: PASS, FAIL, or "this machine could not answer". node:test
+      # has no third state, so INCONCLUSIVE is encoded as a SKIP -- and one skip
+      # inside a 3409-test run is invisible, which is exactly how a budget stops
+      # being enforced. This step cannot make it enforced here; it makes it SEEN.
+      #
+      # Deliberately a warning, and deliberately NOT T1_LATENCY_BUDGET_STRICT=1.
+      # `npm test` runs 291 test files as parallel processes, and a private repo's
+      # GitHub-hosted standard runner is 2 vCPU. Measured in a 2-vCPU container
+      # against the instrument's own decision procedure: a serial single-process
+      # measurement is delivered 100% of the CPU it asks for, while the same
+      # measurement alongside four competing workers is delivered 41% -- under the
+      # 0.8 floor, i.e. inside the inconclusive region by construction. Strict mode
+      # here would be red on most pushes for a reason no code change can fix,
+      # reinstating the flake the three-valued instrument was built to remove.
+      #
+      # The ENFORCING measurement is the `latency-budget` job below.
+      - name: "Latency budget: surface an unanswerable measurement"
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/npm-test.log"
+          [ -f "$log" ] || exit 0
+          grep -q 'LATENCY BUDGET INCONCLUSIVE' "$log" || exit 0
+          # The phrase appears on the banner's TITLE line and again on the
+          # diagnostic line that carries the numbers. Take the longest match, so
+          # the annotation is the one with the evidence in it rather than
+          # whichever the reporter happened to print first.
+          reason=$(grep -o 'LATENCY BUDGET INCONCLUSIVE.*' "$log" \
+            | awk '{ if (length($0) > length(best)) best = $0 } END { print best }')
+          # `%` is workflow-command syntax in an annotation message and must be
+          # encoded, and this reason always contains one ("delivered only 19%").
+          echo "::warning title=Latency budget not checked (${{ matrix.os }})::${reason//%/%25}"
+          {
+            echo "### Latency budget — NOT CHECKED on \`${{ matrix.os }}\` (parallel suite)"
+            echo
+            echo '```'
+            echo "$reason"
+            echo '```'
+            echo
+            echo "This is not a pass: the budget was not evaluated on this run."
+            echo "The enforcing measurement is the **Latency budget (serial)** job."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compiled-runtime smoke (bare-node dispatch)
         run: npm run smoke
 
-      - name: dist/scripts is the deterministic build output (no drift)
-        run: npm run build:verify
+  latency-budget:
+    name: "Latency budget (serial)"
+    runs-on: ubuntu-latest
+    # Its OWN job rather than a step appended to `generate-check`, and that is the
+    # whole point of it. A step there would measure on a runner that has just
+    # finished two `tsc` builds and a 3409-test parallel suite, and load decays
+    # slowly: the observed symptom of exactly that is this budget reporting
+    # INCONCLUSIVE during a full run and PASSING on the same machine twelve
+    # minutes later. A fresh runner carries no such history, and a single test
+    # file is a single mostly-single-threaded process, which is what puts a
+    # 2-vCPU runner comfortably inside the region where a verdict is possible.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No `gen`/`build` on purpose. src/build/test-preload.mjs pins the plugin
+      # root at this checkout and this file's prose resolves from `src/`, so the
+      # generated tree is never read -- verified by running this exact command
+      # against a `git archive HEAD` tree (tracked files only, no dist) inside a
+      # 2-vCPU container: 47/47, 0 skipped, budget PASS. Leaving them out is what
+      # keeps the runner idle right up to the measurement.
+      #
+      # The flags mirror package.json's `test` script deliberately instead of
+      # calling it: that script takes globs, so there is no way to ask `npm test`
+      # for one file. If its preload or loader changes, this line must follow.
+      - name: "Write pre-tool p95 budget (one file, alone, nothing else running)"
+        shell: bash
+        run: |
+          set -o pipefail
+          node --import ./src/build/test-preload.mjs --import tsx --test \
+            src/modules/plan-guard/__tests__/plan-write.test.ts 2>&1 \
+            | tee "$RUNNER_TEMP/latency-budget.log"
+
+      # A genuine breach has ALREADY failed the step above without any strict
+      # switch: classifyLatency returns FAIL, not INCONCLUSIVE, whenever the CPU
+      # alone is over budget or the wall clock is over budget on a machine proven
+      # to be delivering its CPU. So this job enforces the budget in every case
+      # the measurement can answer. What is left are the two ways its green tick
+      # could be hollow, and this step closes both.
+      - name: "Report the verdict (and refuse a hollow green)"
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/latency-budget.log"
+          name='complete Write pre-tool path remains below the 150 ms p95 budget'
+          # No log means an earlier step already failed this job; it does not
+          # need a second, less informative red on top.
+          [ -f "$log" ] || exit 0
+          # 1. This job is ONE test. If it did not run -- renamed, filtered out,
+          #    deleted -- a green job certifies nothing whatsoever.
+          if ! grep -qF "$name" "$log"; then
+            echo "::error title=Latency budget test did not run::nothing matching '$name' appeared in the output, and running exactly that test is this job's only purpose"
+            exit 1
+          fi
+          # 2. It ran and could not answer. That is not a pass, and it is the one
+          #    outcome that is otherwise a silent skip.
+          if grep -q 'LATENCY BUDGET INCONCLUSIVE' "$log"; then
+            # Longest match: the phrase is on the banner title AND on the
+            # diagnostic line that carries the numbers; only the latter is
+            # worth putting in front of a human.
+            reason=$(grep -o 'LATENCY BUDGET INCONCLUSIVE.*' "$log" \
+              | awk '{ if (length($0) > length(best)) best = $0 } END { print best }')
+            # `%` is workflow-command syntax in an annotation message.
+            echo "::warning title=Latency budget UNENFORCED on this run::${reason//%/%25}"
+            {
+              echo "### Latency budget — INCONCLUSIVE, budget NOT enforced"
+              echo
+              echo '```'
+              echo "$reason"
+              echo '```'
+              echo
+              echo "A serial single-process measurement was delivered 100% of its requested CPU"
+              echo "in a 2-vCPU container, so this is NOT the expected outcome here. If these"
+              echo "start recurring, the hosted runner cannot host this budget and it belongs in"
+              echo "the manual certification slot instead of a step that always warns."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "### Latency budget — measured, answered, and within budget" >> "$GITHUB_STEP_SUMMARY"
+
+  test-env-strict:
+    name: "Full composition (test:env --strict)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # Future polyglot-workspace case: a later work item adds a run-sim case
+      # that needs `php` + `composer` as further hard prerequisites. Add a
+      # `shivammathur/setup-php@v2` step here (it can install Composer too via
+      # `tools: composer`), pin its php-version the same way the steps below
+      # pin Go/Python/Playwright, and add its binaries to the versions-logging
+      # step further down. No other step in this job needs to change.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest + ruff
+        run: pip install pytest==8.3.4 ruff==0.8.4
+
+      # `createRequire` resolution in src/runners/qa-evidence/browser.ts walks
+      # up from each seeded case project through its ancestor node_modules, and
+      # every case project lives under the default runs root
+      # (~/traffic-one-test-runs) -- so installing @playwright/test once there,
+      # rather than in this checkout, is what src/test-environment/README.md
+      # means by "installed once at the runs root".
+      - name: Install Playwright + Chromium at the runs root
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/traffic-one-test-runs"
+          npm install --prefix "$HOME/traffic-one-test-runs" @playwright/test@1.49.0
+          npx --prefix "$HOME/traffic-one-test-runs" playwright install --with-deps chromium
+
+      - name: Toolchain versions (debug aid)
+        run: |
+          go version
+          python3 --version
+          pytest --version
+          ruff --version
+          node -e "console.log('@playwright/test', require('$HOME/traffic-one-test-runs/node_modules/@playwright/test/package.json').version)"
+
+      # --strict already turns any FAIL, and -- because of --strict -- any
+      # SKIP, INCONCLUSIVE, UNSUPPORTED, or uncertified host into a non-zero
+      # exit: see releaseResultFailed() in
+      # src/test-environment/core/result-policy.ts. No wrapper logic belongs
+      # here: a toolchain that is missing (or fails to install above) already
+      # fails this step, because run-sim reports that as INCONCLUSIVE, never
+      # PASS, and --strict is not a rubber stamp for it.
+      #
+      # `--host=claude,codex` is REQUIRED for this job to be able to pass, and
+      # costs nothing. defaultConfig().enabledHosts is [claude, codex, cursor];
+      # Cursor is classified `contract+manual-e2e` (certified, but with no
+      # scriptable install -- it auto-imports Claude's user-scope bundle via an
+      # editor-only /add-plugin pointer), so selecting it demands a manual
+      # certification record and, with no --manual-cert-dir, produces
+      # manualUncertified=1 -> exit 1 on a fully green tree, every commit.
+      #
+      # A committed cert dir cannot fix that, and this is not a workaround for
+      # skipping one: loadManualHostCertifications() binds every record to
+      # `installedPluginFingerprint == sha256:distTreeFingerprint(dist)` of the
+      # bytes being released (manual-host-certification.ts), and dist contains
+      # build-provenance.json, whose gitSha changes on every commit. So no
+      # human-executed record can ever be valid for a per-push build, and
+      # regenerating one in CI would be forging evidence for a run no human
+      # made. Dated manual records are real, and they belong to a release run
+      # against the exact bytes a maintainer installed and drove by hand --
+      # see "Manual host certification" in src/test-environment/README.md.
+      #
+      # Nothing is lost here: this job runs no host-e2e case (includeHostE2E is
+      # off without --e2e), so every planned target is `pure-node`.
+      # `npm run test:env -- --dry-run --strict` plans the SAME 22 case-runs
+      # with and without the flag; the only difference is the cursor manual
+      # certification demand this job has no evidence for and cannot obtain.
+      # src/test-environment/ci-strict-invocation.test.ts reads this exact
+      # command line out of this file and asserts releaseResultFailed() is
+      # false for an all-PASS run, so this cannot silently regress.
+      - name: "Full test-environment composition proof (--strict)"
+        run: npm run test:env -- --strict --host=claude,codex

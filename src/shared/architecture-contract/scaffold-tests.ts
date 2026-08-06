@@ -17,6 +17,7 @@ import {
   snake,
 } from './naming';
 import {
+  plansWebUiWork,
   selectedTargetHasWebUi,
   webPackageRoot,
   workspaceScaffoldOutputs,
@@ -125,10 +126,25 @@ export function testerOutputs(
       // `.traffic-one/reports/qa/<runId>/test-harness/` and installed 241 MB of
       // node_modules into the plugin's state directory, running the suite
       // against a config disconnected from the real workspace.
+      //
+      // Unconditional, unlike the browser smoke below: every plan compiles unit
+      // tests, including a service-only one, so the runner config is always work
+      // this run has. It is also inert for impact — `.config.` reads `nonvisual`
+      // (measured), so owning it can never escalate a run on its own.
       { path: 'vitest.config.ts', ownerRole: 'senior-tester', kind: 'test-infra' },
       { path: 'playwright.config.ts', ownerRole: 'senior-tester', kind: 'test-infra' },
-      { path: 'tests/e2e/smoke.spec.ts', ownerRole: 'senior-tester', kind: 'test' },
     );
+    // The browser smoke is the ONE tester output that is UI work, and it is only
+    // work when the plan holds UI. Emitted for a service-only plan it becomes a
+    // trap: the tester is told to write a `.ts` spec, and `deriveUiImpact` reads
+    // any changed `.ts` outside the nonvisual paths as `behavioral` (measured),
+    // so the IMPLEMENTED refresh raises a genuinely nonvisual run into the class
+    // that demands `playwright-local` and the DOM checks. On a machine with no
+    // Chromium that run cannot settle at all — the deadlock, caused by evidence
+    // the run itself manufactured.
+    if (plansWebUiWork(modules)) {
+      outputs.push({ path: 'tests/e2e/smoke.spec.ts', ownerRole: 'senior-tester', kind: 'test' });
+    }
   }
   if (profile.profileId === 'react-native') {
     outputs.push({ path: '.maestro/flows/smoke.yaml', ownerRole: 'senior-tester', kind: 'test-infra' });

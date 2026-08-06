@@ -17,6 +17,7 @@ import {
   isValidOneMcpReportId,
 } from '../../config/reporting';
 import { STATE_FILE } from '../../config/paths';
+import { ensureDir } from '../fsjson';
 
 interface ProjectStateLock {
   readonly dirPath: string;
@@ -194,9 +195,27 @@ function reapAbandonedPendingDirs(lockPath: string, now: number): void {
   }
 }
 
-function acquireProjectStateLock(cwd: string): ProjectStateLock {
+/**
+ * Stage and take the lock, or null when the project's state dir may not even be
+ * created — the consent fence (shared/fsjson.ts `ensureDir`) refuses it while
+ * this project's "use Traffic One here?" question is unanswered or was answered
+ * no. Null is the ONLY honest answer there: the alternatives are fabricating a
+ * lease for a directory that does not exist (whose release would then rename and
+ * delete a path this process never created) or throwing, and this acquisition
+ * path deliberately does not throw on contention — see the EPERM note in the
+ * retry loop for what a stray exception out of a hook costs.
+ *
+ * `ensureDir` does not swallow IO errors, so a genuine EACCES/EROFS on the state
+ * dir still propagates exactly as the bare `mkdirSync` did. The old call passed
+ * `mode: 0o700`, which this drops: `recursive: true` never re-modes an existing
+ * directory and fsjson's own writers create `<project>/.traffic-one/` with the
+ * default mode, so whichever writer arrived first already decided it. The modes
+ * that ARE load-bearing — 0700 on the staging dir, 0600 on the owner file — are
+ * below and unchanged.
+ */
+function acquireProjectStateLock(cwd: string): ProjectStateLock | null {
   const lockPath = projectStateLockPath(cwd);
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  if (!ensureDir(path.dirname(lockPath))) return null;
   const token = `${process.pid.toString(16)}${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
   const ownerName = `owner-${token}.json`;
   const pendingPath = `${lockPath}.${token}.pending`;
@@ -271,11 +290,30 @@ function releaseProjectStateLock(lock: ProjectStateLock): void {
  * Run one synchronous project-state transaction. Nested calls in the same
  * process are re-entrant; cross-process contenders always use the filesystem
  * lock. Callers must not return a Promise from `body`.
+ *
+ * When the lock cannot be taken because the state dir may not be created, the
+ * body runs UNSERIALIZED, and that is safe for one specific reason: this lock
+ * exists solely to serialize mutations of `<project>/.traffic-one/.one.json`
+ * (see the file header), every writer of that file goes through fsjson's
+ * `writeJson` (state/normalize.ts writeState is the funnel), and `ensureDir`
+ * refuses exactly when `writeJson` on that same project's state dir also
+ * refuses. There is therefore nothing to serialize: no writer inside `body` can
+ * mutate the file this lock protects, so no update can be lost.
+ *
+ * The body still runs, rather than being skipped, because these bodies read and
+ * compute as well as write — skipping them would change what a hook REPORTS on a
+ * project whose question is merely pending, and pending is not "plugin off": the
+ * user still has to be asked. Only the writes stand down, which is the fence's
+ * whole contract.
+ *
+ * No lease is fabricated and `heldLocks` is deliberately not touched: a lock this
+ * process does not hold must never look held, to itself or to the release path.
  */
 export function withProjectStateLock<T>(cwd: string, body: () => T): T {
   const lockPath = projectStateLockPath(cwd);
   if (heldLocks.has(lockPath)) return body();
   const lock = acquireProjectStateLock(cwd);
+  if (!lock) return body();
   heldLocks.add(lockPath);
   try {
     return body();

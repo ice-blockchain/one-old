@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { runClaudeHook } from '../claude-entry';
+import { runCursorHook } from '../cursor-entry';
 import { runDevinHook } from '../devin-entry';
 import { runKiloHook } from '../kilo-entry';
 import { runOpenCodeHook } from '../opencode-entry';
+import { doctorScriptPath } from '../../shared/doctor-command';
 
 const INVALID_HOOK_PAYLOADS = ['{', '[]', '{}', JSON.stringify({ cwd: process.cwd() })] as const;
 const INVALID_LIFECYCLE_PAYLOADS = ['{', '[]'] as const;
@@ -37,6 +39,46 @@ test('malformed and non-object pre-tool payloads fail closed on every affected e
     assert.equal(devin.decision, 'block');
     assert.match(devin.reason ?? '', /Traffic One Windsurf\/Devin pre-tool gate.*fail-closed/);
   }
+});
+
+test('the doctor recovery command survives the early payload-validation fail-closed check, on every entry point', async () => {
+  // These payloads carry NO workspace identity (no cwd/projectRoot/…), which
+  // hasValidPreToolPayload requires and would otherwise deny outright — proving
+  // this is the doctor exemption firing, not merely "the payload was valid".
+  const script = doctorScriptPath();
+
+  const claude = await runClaudeHook('check-plan-write', JSON.stringify({
+    tool_name: 'Bash', tool_input: { command: `node ${script} --bundle` },
+  }), { ...process.env, TRAFFIC_ONE_HOST: 'claude' });
+  assert.equal(claude.stdout, '', 'claude: exempt payload never dispatches, so no deny is emitted');
+
+  const cursor = await runCursorHook('before-shell-execution', JSON.stringify({
+    command: `node ${script} --run 123`,
+  }));
+  assert.equal(JSON.parse(cursor.stdout).permission, undefined, 'cursor: exempt payload is not the deny envelope');
+
+  const opencode = await runOpenCodeHook('before-tool-use', JSON.stringify({
+    tool_name: 'Bash', tool_input: { command: `node ${script}` },
+  }));
+  assert.equal(JSON.parse(opencode.stdout).kind, 'noop');
+
+  const kilo = await runKiloHook('before-tool-use', JSON.stringify({
+    tool: { name: 'Bash', args: { command: `node ${script} --bundle` } },
+  }));
+  assert.equal(JSON.parse(kilo.stdout).kind, 'noop');
+
+  const devin = await runDevinHook('check-plan-write', JSON.stringify({
+    tool_name: 'Bash', tool_input: { command: `node ${script} --run 456` },
+  }));
+  assert.equal(devin.stdout, '');
+});
+
+test('a shell command that only resembles doctor (wrong path/argv) stays denied with no workspace identity', async () => {
+  const claude = await runClaudeHook('check-plan-write', JSON.stringify({
+    tool_name: 'Bash', tool_input: { command: 'node /tmp/evil/doctor.cjs' },
+  }), { ...process.env, TRAFFIC_ONE_HOST: 'claude' });
+  const out = JSON.parse(claude.stdout) as { hookSpecificOutput?: { permissionDecision?: string } };
+  assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny');
 });
 
 test('malformed and non-object lifecycle payloads remain fail open', async () => {

@@ -7,6 +7,7 @@ import { execFileSync } from 'child_process';
 
 import {
   architectureInputPath,
+  buildRuntimeAssignments,
   captureArchitectureBaseline,
   compileArchitecture,
   ensureScaffoldContent,
@@ -32,6 +33,7 @@ import {
 } from '../architecture-contract';
 import { matchesScope } from '../scope';
 import { sha256 } from '../text';
+import { browserRequired, deriveUiImpact } from '../verification-contract/impact';
 import {
   compileVerificationContract,
   verificationContractPath,
@@ -1886,12 +1888,17 @@ test('runtime compiles workspace Next, Nuxt srcDir, and Laravel Inertia outputs'
       backend: 'laravel',
     }, featureInput);
     assert.equal(compiled.profile.router, 'inertia-react-router');
-    assert.ok(compiled.allowedOutputs.includes('apps/web/resources/js/i18n/locales/en/common.json'));
-    assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'apps/web/resources/js/app.tsx');
-    assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'apps/web/resources/js/Pages/News.tsx');
+    // CHANGED (every path was prefixed `apps/web/`): unlike the two cases above,
+    // whose apps already live at `apps/web`, this Laravel app is on disk AT THE
+    // ROOT — composer.json, `resources/js/app.tsx` — and it keeps that root. The
+    // Inertia conventions this case exists for (router, Pages/, Features/, the
+    // i18n home under the JS root) are unchanged.
+    assert.ok(compiled.allowedOutputs.includes('resources/js/i18n/locales/en/common.json'));
+    assert.equal(compiled.modules.find((module) => module.id === 'app-shell')?.output, 'resources/js/app.tsx');
+    assert.equal(compiled.modules.find((module) => module.id === 'news')?.output, 'resources/js/Pages/News.tsx');
     assert.equal(
       compiled.modules.find((module) => module.id === 'contact-section')?.output,
-      'apps/web/resources/js/Features/contact-section/index.tsx',
+      'resources/js/Features/contact-section/index.tsx',
     );
   });
 });
@@ -2529,6 +2536,11 @@ test('.gitignore is written from the shared skip authority, keeping digests', ()
     // and named `digests/` (the handoff record worth committing).
     assert.ok(body.includes('.traffic-one/runs/'));
     assert.ok(body.includes('.traffic-one/reports/'));
+    // Precondition for the decision-log work item: retention.ts sweeps
+    // `.traffic-one/debug/*` directly, and `.traffic-one/runs/<id>/debug/*`
+    // transitively — a directory pattern ignores everything beneath it — so
+    // only the project-level line needs to exist here.
+    assert.ok(body.includes('.traffic-one/debug/'));
     assert.ok(!body.includes('.traffic-one/digests/'), 'digests must stay committed');
     assert.ok(body.includes('!.env.example'));
 
@@ -2549,5 +2561,129 @@ test('.gitignore is written from the shared skip authority, keeping digests', ()
     }
     // OS droppings are the one part of SKIP_FILES git should still ignore.
     assert.ok(lines.includes('.DS_Store'));
+  });
+});
+
+// A web-surface PROFILE described the project; role scope was assigned from it
+// as if it described the RUN. So a service-only plan in a web project handed
+// senior-frontend the `.tsx` entrypoint and senior-tester a browser smoke spec —
+// neither of which the plan calls for — and both classify ABOVE the plan's own
+// nonvisual floor (`.tsx` visual, a `.ts` spec behavioral). A role that writes
+// what it was given then raises its own run into an impact class requiring
+// `playwright-local`, which a machine with no Chromium cannot produce: the run
+// cannot settle, on evidence the run manufactured for itself.
+test('a plan with no UI gets neither the web entrypoint nor a browser smoke in scope', () => {
+  const WEB_STATE = {
+    mode: 'existing-codebase',
+    stack: 'custom-frontend',
+    frontend: 'react-vite',
+    backend: 'none',
+    mobile: { framework: 'none' },
+  };
+  const seedWebApp = (cwd: string): void => {
+    fs.mkdirSync(path.join(cwd, 'web/src'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    fs.writeFileSync(path.join(cwd, 'web/src/main.tsx'), 'export {};\n');
+  };
+  const scopeFor = (
+    assignments: ReturnType<typeof buildRuntimeAssignments>,
+    role: string,
+  ): string[] => (
+    assignments.assignments.find((entry) => entry.role === role)?.scope.include || []
+  );
+
+  withProject((cwd) => {
+    seedWebApp(cwd);
+    const compiled = compileArchitecture(cwd, 'R', WEB_STATE, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'sync-service', name: 'Sync Service', kind: 'service' }],
+    });
+    // The project HAS a web surface — this is not a backend-only profile, which
+    // is what makes the run-scoped question the only one that separates them.
+    assert.ok(compiled.profile.surfaces.includes('web-ui'));
+    assert.deepEqual(compiled.entrypoints, ['web/src/main.tsx']);
+
+    const paths = (compiled.scaffoldOutputs || []).map((output) => output.path);
+    assert.ok(!paths.includes('tests/e2e/smoke.spec.ts'));
+    // The unit runner config stays: every plan compiles unit tests, and without a
+    // config the tester improvises a parallel harness (2cu).
+    assert.ok(paths.includes('vitest.config.ts'));
+
+    const assignments = buildRuntimeAssignments(compiled, 'vhash');
+    assert.ok(!scopeFor(assignments, 'senior-frontend').includes('web/src/main.tsx'));
+    assert.ok(!scopeFor(assignments, 'senior-tester').includes('tests/e2e/smoke.spec.ts'));
+
+    // The invariant behind both: no path granted because the PROJECT has a web
+    // surface — as opposed to a variant of a module this plan actually asked for
+    // — may carry the run above the nonvisual floor the plan declares.
+    const verification = compileVerificationContract(cwd, 'R', WEB_STATE, compiled);
+    assert.equal(verification.uiImpact, 'nonvisual');
+    assert.equal(verification.browserRequired, false);
+
+    // Asserted over the WHOLE scope now. This loop used to run over the
+    // profile-granted paths only, because the plan's own unit test
+    // (`tests/sync-service.test.ts`) also derived `behavioral`: deriveUiImpact
+    // read any `.ts` outside its nonvisual path list that way, while
+    // plannedUiImpactFloor deliberately skips tester-owned outputs. That
+    // asymmetry was a defect in the classifier rather than in scope assignment
+    // and is now closed — non-recognition no longer raises impact — so the
+    // invariant can be enforced where it was always meant to apply.
+    //
+    // The plan's own modules are the stated exception and are excluded: a role
+    // that writes `SyncService` as `.tsx` escalates its run, but that is the plan
+    // asking for a variant of its own module, not the profile handing out a path.
+    const plannedModuleVariants = new Set(compiled.modules.flatMap(moduleOutputVariants));
+    const anyRoleMayWrite = [...new Set(
+      assignments.assignments.flatMap((entry) => entry.scope.include),
+    )].filter((candidate) => !plannedModuleVariants.has(candidate));
+    assert.ok(anyRoleMayWrite.length > 0, 'fixture guard: the nonvisual plan grants a writable scope');
+    for (const candidate of anyRoleMayWrite) {
+      const derived = deriveUiImpact(cwd, compiled.profile, [candidate]);
+      assert.ok(
+        !browserRequired(derived.impact),
+        `${candidate} derives ${derived.impact} yet a role may write it on a nonvisual plan`,
+      );
+    }
+  });
+
+  // A plan that DOES hold UI keeps both: the entrypoint is where a new shell is
+  // mounted, and the smoke spec is the browser evidence such a plan owes.
+  withProject((cwd) => {
+    seedWebApp(cwd);
+    const compiled = compileArchitecture(cwd, 'R', WEB_STATE, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    });
+    const paths = (compiled.scaffoldOutputs || []).map((output) => output.path);
+    assert.ok(paths.includes('tests/e2e/smoke.spec.ts'));
+    const assignments = buildRuntimeAssignments(compiled, 'vhash');
+    assert.ok(scopeFor(assignments, 'senior-frontend').includes('web/src/main.tsx'));
+    assert.ok(scopeFor(assignments, 'senior-tester').includes('tests/e2e/smoke.spec.ts'));
+    assert.equal(compileVerificationContract(cwd, 'R', WEB_STATE, compiled).browserRequired, true);
+  });
+
+  // A feature-only plan is behavioral, so it owes browser evidence too and the
+  // smoke spec is real work — the gate is "plans UI", not "plans a page".
+  withProject((cwd) => {
+    seedWebApp(cwd);
+    const compiled = compileArchitecture(cwd, 'R', WEB_STATE, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'contact-section', name: 'Contact Section', kind: 'feature' }],
+    });
+    const paths = (compiled.scaffoldOutputs || []).map((output) => output.path);
+    assert.ok(paths.includes('tests/e2e/smoke.spec.ts'));
+    assert.ok(
+      buildRuntimeAssignments(compiled, 'vhash')
+        .assignments.find((entry) => entry.role === 'senior-frontend')
+        ?.scope.include.includes('web/src/main.tsx'),
+    );
   });
 });

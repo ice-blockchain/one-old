@@ -11,6 +11,7 @@ import * as path from 'path';
 import { architectPhaseIncompleteReasons } from './plan-readiness';
 import { capabilityProfileForRun } from '../../shared/architecture-contract';
 import type { CapabilityProfileV1 } from '../../shared/capabilities';
+import { hostFlags } from '../../shared/host/capability-flags';
 import { canonicalHost } from '../../shared/model-tiers';
 import { obj, type Rec } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
@@ -113,7 +114,7 @@ function kiloOpenCodeSubagentsBuild(state: Rec, host: string): boolean {
   // decision and only complex work may re-enter the orchestrator.
   if (isMaintenancePhase(state, state.mode)) return false;
   const h = canonicalHost(host);
-  if (h !== 'kilo' && h !== 'opencode') return false;
+  if (!hostFlags(h).opencodeSelfHosted) return false;
   const team = obj(state.team);
   if (!team || team.mode !== 'subagents' || team.approved !== true) return false;
   const performance = obj(state.performance);

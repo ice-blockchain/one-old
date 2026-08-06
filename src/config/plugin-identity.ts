@@ -20,6 +20,16 @@ export const AUTHOR = { name: 'Traffic-One' } as const;
 
 // Single source of the plugin version: package.json. The generator stamps this
 // into all 5 manifests; runtime reads the same value.
+//
+// `'0.0.0'` is a silent fallback, and it is silent on purpose — pluginRootInfo()
+// never throws (shared/paths.ts) and this is on the path that stamps host
+// manifests, the golden snapshot, and `state.materializedVersion`, so it cannot
+// be made to fail. Know what it costs when debugging: a root with NO
+// package.json (any fixture or half-copied plugin tree) reads as `0.0.0`, and
+// `state.materializedVersion === stateVersion()` then compares equal for every
+// such root — i.e. an unresolvable plugin root makes a project look
+// version-current rather than stale. If a materialization looks skipped for no
+// reason, check the root before the version.
 export function pluginVersion(root: string = pluginRoot()): string {
   const pkg = readJson<{ version?: string }>(path.join(root, 'package.json'), {});
   return pkg.version ?? '0.0.0';

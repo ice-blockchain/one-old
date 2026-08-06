@@ -48,6 +48,23 @@ import {
   viewportPassed,
 } from './evidence';
 
+/**
+ * The ids a project is allowed to not declare, exported so the producible-check
+ * invariant can assert the other direction: every entry here must name an id
+ * some producer can also emit `passed` for. An exemption that is the ONLY
+ * reachable outcome is not a justification, it is an unfailable check — the
+ * mirror image of an id with no producer at all, and it hides the next one.
+ *
+ * `stack-build` is deliberately excluded: a backend that does not build is
+ * broken, and every supported backend has a build form. Test and lint coverage
+ * is still guarded independently by the tester's own completion gate, so this
+ * cannot become the only thing standing between an untested service and
+ * settlement.
+ */
+export const JUSTIFIED_NO_STACK_COMMAND_CHECK_IDS = [
+  'stack-test', 'stack-lint', 'stack-format', 'stack-performance',
+] as const;
+
 function metric(
   evidence: QaLighthouseEvidenceV1,
   key: keyof QaLighthouseEvidenceV1,
@@ -231,27 +248,17 @@ function evaluateQaReportV2(
   const checks = new Map(report.checks.map((check) => [check.id, check]));
   for (const required of contract.requiredChecks) {
     const check = checks.get(required);
-    const justifiedNoDom = required === 'axe-when-dom'
-      && check?.status === 'not-applicable'
-      && typeof check.summary === 'string'
-      && (
-        /\bno\s+DOM\b/i.test(check.summary)
-        || /\bwithout(?:\s+any|\s+a)?\s+DOM\b/i.test(check.summary)
-        || /\bdoes(?:\s+not|n't)\s+(?:render|touch|create|use|produce|affect)\b.{0,60}\bDOM\b/i.test(check.summary)
-        || /\bDOM\b.{0,60}\b(?:is\s+)?(?:absent|not\s+present|unaffected)\b/i.test(check.summary)
-      );
     // A quality command the project does not declare is honestly reported, not
-    // silently passed. `stack-build` is deliberately excluded: a backend that
-    // does not build is broken, and every supported backend has a build form.
-    // Test and lint coverage is still guarded independently by the tester's own
-    // completion gate, so this cannot become the only thing standing between an
-    // untested service and settlement.
-    const justifiedNoStackCommand = (required === 'stack-test' || required === 'stack-lint' || required === 'stack-format' || required === 'stack-performance')
+    // silently passed. The `axe-when-dom` arm that used to sit beside this one
+    // is gone with the check itself: it excused a `not-applicable` whose prose
+    // no runner ever wrote, so the only report it ever accepted was a
+    // hand-authored one — see requiredChecks in verification-contract/impact.ts.
+    const justifiedNoStackCommand = (JUSTIFIED_NO_STACK_COMMAND_CHECK_IDS as readonly string[]).includes(required)
       && check?.status === 'not-applicable'
       && typeof check.summary === 'string'
       && /\bnot run:/i.test(check.summary)
       && /\b(?:declares no|could not be executed)\b/i.test(check.summary);
-    if (check?.status !== 'passed' && !justifiedNoDom && !justifiedNoStackCommand) {
+    if (check?.status !== 'passed' && !justifiedNoStackCommand) {
       return reject(projectRoot, runId, 'required-check-failed', `Required check ${required} did not pass.`, report, contract);
     }
   }

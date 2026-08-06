@@ -13,7 +13,11 @@ import {
 } from './host-capability-report';
 
 export const MANUAL_HOST_CERTIFICATION_SCHEMA_VERSION = 1 as const;
-export type ManualCertificationHost = 'opencode' | 'kilo' | 'copilot' | 'windsurf';
+// Every host classified `contract+manual-e2e` in HOST_CAPABILITIES (see
+// shared/host/capability-schema.ts): the four uncertified hosts, plus Cursor,
+// which is certified but has no scriptable install for release CI to drive
+// live — its release evidence is a manual record like the other four's.
+export type ManualCertificationHost = 'cursor' | 'opencode' | 'kilo' | 'copilot' | 'windsurf';
 export type ManualCertificationResult = 'PASS' | 'FAIL' | 'NOT_RUN';
 export type ManualCertificationLoadStatus = 'VALID' | 'MISSING' | 'INVALID';
 export type ManualCertificationWaiverStatus = 'NONE' | 'COMPLETE' | 'INVALID';

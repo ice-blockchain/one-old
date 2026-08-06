@@ -91,6 +91,36 @@ function projectPlaywright(
 
 
 
+/**
+ * Why the machine-evidence sidecar is not on disk — named as the refusal it is.
+ *
+ * `writeJson` answers `false` when the write chokepoint refused this exact path
+ * (fsjson.ts: an unanswered consent question, a planted symlink, a path that
+ * escapes the state dir). Both evidence writes below used to drop that boolean,
+ * and this runner then advertised `machineEvidencePath` for a file that is not
+ * there — so a consumer following the path gets ENOENT rather than merely
+ * finding nothing.
+ *
+ * On the terminal publication the refusal was only ever caught INCIDENTALLY, and
+ * only for as long as three unrelated facts hold: `validateMachineEvidence`
+ * re-reads the sidecar from disk, `contract.browserRequired` is true (which the
+ * guard at the top of browserCommand does guarantee), and nothing reorders the
+ * `blocked-environment` early return in front of it. The verdict it produced
+ * named none of this — `machine-evidence-invalid`, "missing, outside the run QA
+ * directory, or hash-invalid": three guesses, none of them the actual cause, and
+ * `persistGateRejection` then made that wrong cause DURABLE in report-v2.json.
+ * On the blocked-environment publication nothing caught it at all: validation
+ * rejects on the blocker before it ever looks at the file.
+ *
+ * Same shape as run-context.ts's `notPublished`, and for its stated reason: a
+ * refusal must name what refused and which path, so the reader can act.
+ */
+function machineEvidenceRefusal(runId: string, relative: string): string {
+  return `machine evidence for run ${runId} is not on disk: the project state write fence refused `
+    + `${relative}. Answer this project's "use Traffic One here?" question if it is still pending, `
+    + `and check that .traffic-one/reports/qa/${runId}/ contains no symbolic links.`;
+}
+
 async function runViewport(
   browser: BrowserLike,
   owned: OwnedServer,
@@ -342,7 +372,7 @@ export async function browserCommand(
       routes: [],
       blockerSummary,
     });
-    writeJson(out.absolute, evidence);
+    const evidenceOnDisk = writeJson(out.absolute, evidence);
     let published: ReturnType<typeof publishAndValidateReport>;
     try {
       published = publishAndValidateReport(
@@ -366,11 +396,20 @@ export async function browserCommand(
     } finally {
       await stopOnce();
     }
+    // `ok` and the exit code are NOT touched here: this path is already a
+    // refusal, and `playwright-missing` remains the primary cause — installing
+    // Playwright is still the first thing the reader must do. Only the PATH
+    // changes hands. Its whole purpose on this path is to point at the durable
+    // record of the blocker; when the write was refused there is no such record,
+    // so the field would send its reader to an ENOENT while the one fact worth
+    // reporting — that the blocker could not be written down — stayed invisible.
     process.stdout.write(`${JSON.stringify({
       ok: false,
       status: 'blocked-environment',
       reason: 'playwright-missing',
-      machineEvidencePath: out.relative,
+      ...(evidenceOnDisk
+        ? { machineEvidencePath: out.relative }
+        : { machineEvidenceRefused: machineEvidenceRefusal(args.runId, out.relative) }),
       reportPath: qaReportV2Path(args.projectRoot, args.runId),
       validation: {
         ok: published.ok,
@@ -472,7 +511,7 @@ export async function browserCommand(
     routes,
     ...(blockerSummary ? { blockerSummary } : {}),
   });
-  writeJson(out.absolute, evidence);
+  const evidenceOnDisk = writeJson(out.absolute, evidence);
   const reportRoutes = routes.map((route) => ({
     route: route.route,
     viewports: route.viewports.map((viewport) => ({
@@ -515,10 +554,19 @@ export async function browserCommand(
   } finally {
     await stopOnce();
   }
+  // Unlike the blocked-environment publication above, this one can CERTIFY, so
+  // the refusal has to reach the verdict itself and not only the path: `ok` and
+  // the exit code are decided here, and a run whose evidence is not on disk has
+  // produced none. `published.ok` happens to be false too — the validator's
+  // re-read catches it today — but it is a different module's implementation
+  // detail, and this runner must not depend on it to avoid certifying a file it
+  // was told it could not write.
   process.stdout.write(`${JSON.stringify({
-    ok: published.ok,
+    ok: published.ok && evidenceOnDisk,
     status,
-    machineEvidencePath: out.relative,
+    ...(evidenceOnDisk
+      ? { machineEvidencePath: out.relative }
+      : { machineEvidenceRefused: machineEvidenceRefusal(args.runId, out.relative) }),
     reportPath: qaReportV2Path(args.projectRoot, args.runId),
     validation: {
       ok: published.ok,
@@ -528,7 +576,7 @@ export async function browserCommand(
     ...(evidence.blockerSummary ? { blockerSummary: evidence.blockerSummary } : {}),
   })}\n`);
   if (status === 'blocked-environment') return 2;
-  return published.ok ? 0 : 1;
+  return published.ok && evidenceOnDisk ? 0 : 1;
   } finally {
     await stopOnce();
   }

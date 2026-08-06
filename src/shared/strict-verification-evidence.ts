@@ -1,6 +1,24 @@
 // Dependency-light terminal verification used by canonical settlement.
 // Deliberately does not import state/run-agent (which itself projects into the
 // settlement sidecar), avoiding a lifecycle import cycle.
+//
+// FOR WHOEVER IMPLEMENTS THE EVIDENCE WAIVER ("ship without check X"): this is
+// the function you will be tempted to give a bypass, and there must not be a
+// second override mechanism. The operator override already exists, already has
+// the trust model a waiver needs — user scope, outside the project tree,
+// HMAC'd with a per-install key, minted only through an interactive
+// confirmation, read-only to everything that consumes it, audited, snapshotted
+// — and its token carries a `scope` field with an unused `'evidence'` member
+// reserved for exactly this (shared/override/token.ts). A waiver is that scope
+// plus a check-id `target`; it is NOT a new file format, a new key, or a flag
+// in the QA report.
+//
+// The consequence is not optional either: settlement's abuse guard keys on a
+// token having been MINTED for the run (run-settlement/io.ts), so an evidence
+// waiver already costs the run its verified/shipped eligibility. If that reads
+// as too strict for a waiver, the answer is to argue about the guard in one
+// place — not to route around it with a second primitive that does not have
+// one.
 
 import * as fs from 'fs';
 import * as path from 'path';

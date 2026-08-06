@@ -49,15 +49,19 @@ function writePassArtifacts(dir: string): void {
   fs.writeFileSync(path.join(dir, 'project.tar'), 'fixture\n', 'utf8');
 }
 
-test('all four non-live-auto hosts have reproducible manual records and NOT_RUN is not certification', () => {
-  assert.deepEqual(MANUAL_CERTIFICATION_HOSTS, ['opencode', 'kilo', 'copilot', 'windsurf']);
+test('all five non-live-auto hosts have reproducible manual records and NOT_RUN is not certification', () => {
+  // Cursor joins the other four here for a different reason: it is a
+  // certified host (HOST_CAPABILITIES.cursor.tier), but has no scriptable
+  // install for release CI to drive live — see capability-schema.ts.
+  assert.deepEqual(MANUAL_CERTIFICATION_HOSTS, ['cursor', 'opencode', 'kilo', 'copilot', 'windsurf']);
   assert.deepEqual(
     selectedManualCertificationHosts(['claude', 'windsurf', 'opencode']),
     ['opencode', 'windsurf'],
   );
   assert.equal(hostRequiresManualCertification('claude'), false);
+  assert.equal(hostRequiresManualCertification('cursor'), true);
   assert.equal(hostRequiresManualCertification('kilo'), true);
-  for (const host of ['opencode', 'kilo', 'copilot', 'windsurf'] as const) {
+  for (const host of ['cursor', 'opencode', 'kilo', 'copilot', 'windsurf'] as const) {
     assert.deepEqual(validateManualHostCertification(record(host, 'NOT_RUN')), []);
     assert.equal(manualHostDeclaredCertified(record(host, 'NOT_RUN')), false);
     assert.equal(manualHostDeclaredCertified(record(host, 'FAIL')), false);
@@ -231,7 +235,7 @@ test('PASS evidence must be an existing non-symlink file contained by the certif
   assert.match(missing[0]?.errors.join('; ') ?? '', /artifact is missing/);
 });
 
-test('strict release policy and report consume manual outcomes while default auto hosts stay unaffected', (t) => {
+test('strict release policy and report consume manual outcomes while claude/codex stay unaffected', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-manual-host-report-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const runDir = path.join(dir, 'run');
@@ -272,8 +276,14 @@ test('strict release policy and report consume manual outcomes while default aut
     [{ result: 'NOT_RUN', waiverStatus: 'COMPLETE' }, { result: null, waiverStatus: 'NONE' }],
   );
 
+  // Cursor is in defaultConfig().enabledHosts (['claude', 'codex', 'cursor'])
+  // but is manual-e2e (certified, not live-auto) — it produces a MISSING
+  // outcome when no --manual-cert-dir is given. claude/codex never appear:
+  // hostRequiresManualCertification is false for both.
   const defaultOutcomes = loadManualHostCertifications(undefined, defaultConfig().enabledHosts);
-  assert.deepEqual(defaultOutcomes, []);
+  assert.deepEqual(defaultOutcomes.map((outcome) => outcome.host), ['cursor']);
+  assert.equal(defaultOutcomes[0]?.loadStatus, 'MISSING');
+  assert.equal(defaultOutcomes[0]?.certified, false);
   assert.equal(releaseResultFailed({ fail: 0, skip: 0, inconclusive: 0 }, true), false);
 });
 

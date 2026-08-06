@@ -7,7 +7,11 @@ import * as path from 'node:path';
 
 import { readRunSettlement, writeRunSettlement } from '../../../shared/run-settlement';
 import { type QaReportV2 } from '../../../shared/qa-report-v2';
-import { computeBrowserCheckStatuses, wholesaleCheckStatuses } from '../report-publish';
+import {
+  NATIVE_ATTESTED_CHECK_IDS,
+  computeBrowserCheckStatuses,
+  nativeCheckStatuses,
+} from '../report-publish';
 import { acquireQaRunLock, releaseQaRunLock } from '../lock';
 import { publishQaReportV2 } from '../run-context';
 
@@ -106,13 +110,25 @@ test('unknown check ids fail closed', () => {
   assert.equal(checks[0]?.status, 'failed');
 });
 
-test('wholesale mapping: blocked-environment yields not-applicable, failed keeps failed', () => {
-  const blocked = wholesaleCheckStatuses(['a', 'b'], 'blocked-environment', 'no simulator');
-  assert.ok(blocked.every((check) => check.status === 'not-applicable'));
-  const failed = wholesaleCheckStatuses(['a'], 'failed', 'assertion failed');
+// This case used to pass ids `'a'` and `'b'`, which is exactly the defect it was
+// characterizing: the mapping was WHOLESALE, so any id at all took the adapter's
+// overall verdict and a native run reported `stack-format: passed` having never
+// run a formatter. The pass-through behaviour below is unchanged for the ids the
+// adapter result genuinely attests; an id outside that set now fails closed and
+// must be produced by something that actually ran it.
+test('native mapping passes through only what the adapter result attests', () => {
+  const blocked = nativeCheckStatuses(NATIVE_ATTESTED_CHECK_IDS, 'blocked-environment', 'no simulator');
+  assert.ok(blocked.every((check) => check.status === 'not-applicable'), JSON.stringify(blocked));
+  const failed = nativeCheckStatuses(['native-unit-tests'], 'failed', 'assertion failed');
   assert.equal(failed[0]?.status, 'failed');
-  const passed = wholesaleCheckStatuses(['a'], 'passed');
-  assert.equal(passed[0]?.status, 'passed');
+  const passed = nativeCheckStatuses(NATIVE_ATTESTED_CHECK_IDS, 'passed');
+  assert.ok(passed.every((check) => check.status === 'passed'), JSON.stringify(passed));
+
+  const unattested = nativeCheckStatuses(['stack-format', 'made-up-check'], 'passed');
+  assert.ok(
+    unattested.every((check) => check.status === 'failed'),
+    'a green simulator run is not evidence that anything else ran',
+  );
 });
 
 test('QA run lock is exclusive, reports the holder, and reclaims dead pids', () => {

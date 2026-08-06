@@ -102,7 +102,8 @@ function addCandidatesFromRecord(out: string[], rec: Rec | null, opts: { include
 
 function denyOutsideWorkspace(target: string, workspaceRoot: string): HookResult {
   return deny(`${DENY_PREFIX}: "${target}" is outside the active workspace "${workspaceRoot}". `
-    + 'Open or switch to that workspace before reading, searching, writing, or delegating work there; sibling Traffic One projects are isolated.');
+    + 'Open or switch to that workspace before reading, searching, writing, or delegating work there; sibling Traffic One projects are isolated.',
+    { denyId: 'workspace-boundary-guard', denyTarget: target });
 }
 
 export function workspaceBoundaryGuard(ctx: Ctx): HookResult {
@@ -117,6 +118,7 @@ export function workspaceBoundaryGuard(ctx: Ctx): HookResult {
       `${DENY_PREFIX}: a shell write target contains an unresolved environment or command expansion `
       + `(${toolScope.unresolvedWriteTargets.join(', ')}). `
       + 'Use a literal path, $PWD/..., or ${PWD}/... so the boundary can be proven before the tool runs.',
+      { denyId: 'workspace-boundary-unresolved-expansion', denyTarget: toolScope.unresolvedWriteTargets.join(', ') },
     );
   }
   // Some hosts omit workspaceRoot. Reads keep their established behavior, but
@@ -152,7 +154,8 @@ export function workspaceBoundaryGuard(ctx: Ctx): HookResult {
     const patchText = patchTextFromToolInput(ctx.input.tool?.patchText, raw.tool_input, raw.toolInput, raw.input, raw, parsedInput);
     const parsedPatch = parseApplyPatch(patchText);
     if (!parsedPatch.ok) {
-      return deny(`${DENY_PREFIX}: apply_patch payload cannot be validated (${parsedPatch.error}). No write was made.`);
+      return deny(`${DENY_PREFIX}: apply_patch payload cannot be validated (${parsedPatch.error}). No write was made.`,
+        { denyId: 'apply-patch-payload-invalid', denyTarget: ctx.input.tool?.filePath || undefined });
     }
     candidates.push(...patchOperationPaths(parsedPatch.operations));
   }

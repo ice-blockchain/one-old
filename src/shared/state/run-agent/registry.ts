@@ -19,7 +19,14 @@ import {
 } from './run-paths';
 import {
   withOwnedDirLock,
+  withOwnedDirLockResult,
 } from './locks';
+import {
+  applied,
+  preconditionFailed,
+  unavailable,
+  type MutationResult,
+} from './mutation-result';
 import {
   strongestRoleSource,
 } from './role-evidence';
@@ -45,6 +52,23 @@ import { markRunAgentReplaced } from './registry-refresh';
 
 export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 
+// Hosts where a recorded agent can never be VERIFIED as the role it claims, so
+// reuse must not be claimed there at all. None of the three exposes a
+// continuation primitive: their `continuationRecipe` prose says so in as many
+// words ("OpenCode does not expose a resumable Task field", "Kilo does not
+// expose a resumable Task field") and resolves to wait-or-respawn, never a
+// send-to-agent call. Meanwhile the only role evidence their rows ever carry is
+// the spawn prompt's own `[t1-role:]` marker (opencode/kilo, recorded from the
+// child's first chat.message) or the requested spawn profile (windsurf) —
+// orchestrator-authored text, never host identity and never a session
+// transcript. That unverified row was still authority to DENY the role's next
+// spawn and, through roleRegistryDisownsClaim, to release another thread's live
+// claim: absent evidence behaving as evidence of no problem. All three are
+// `tier: 'uncertified'` for this release (see host/capability-schema.ts), so the
+// registry stands down and a duplicate same-role spawn proceeds as a FRESH spawn
+// rather than an unverifiable reuse.
+const HOSTS_WITHOUT_VERIFIABLE_REUSE: ReadonlySet<string> = new Set(['opencode', 'kilo', 'windsurf']);
+
 // Continuation needs the host's send-to-agent tool. On current Codex that is
 // followup_task/send_message — native to the collaboration toolset, with no flag (so
 // the one-live-agent registry/dedup must be ON there by default; keying only on
@@ -60,10 +84,15 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
   if (host) {
-    if (host === 'codex' || host === 'cursor' || host === 'copilot' || host === 'windsurf' || host === 'opencode' || host === 'kilo') return true;
+    if (HOSTS_WITHOUT_VERIFIABLE_REUSE.has(host)) return false;
+    if (host === 'codex' || host === 'cursor' || host === 'copilot') return true;
     return flag !== '';
   }
   const envHost = String(env.TRAFFIC_ONE_HOST ?? '').trim().toLowerCase();
+  // Ahead of every capability signal below, and returning rather than falling
+  // through: a stood-down host must not be re-enabled by a Claude agent-teams
+  // flag it merely inherited from the surrounding environment.
+  if (HOSTS_WITHOUT_VERIFIABLE_REUSE.has(envHost)) return false;
   // Codex: followup_task/send_message (native to the collaboration toolset).
   if (envHost === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
   // Cursor: live Cursor builds surface Task continuation as `resume` to resume a
@@ -75,15 +104,6 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   // Copilot: the plugin hook env carries only TRAFFIC_ONE_HOST=copilot, so this
   // must not depend on a Claude feature flag or the registry stays inert.
   if (envHost === 'copilot') return true;
-  // Windsurf/Devin Local: run_subagent + read_subagent (native custom profiles).
-  if (envHost === 'windsurf') return true;
-  // OpenCode has no resumable Task field in current builds, but Traffic One still
-  // records the active role session so duplicate same-role spawns are routed to
-  // wait/explicit replacement instead of silently creating another live role.
-  if (envHost === 'opencode') return true;
-  // Kilo has no true Task resume field, but the live-role registry still prevents
-  // duplicate general workers and requires an explicit replacement after completion.
-  if (envHost === 'kilo') return true;
   // Claude: SendMessage, gated by the agent-teams flag set at session start.
   return flag !== '';
 }
@@ -108,6 +128,21 @@ function agentRegistryLockDir(cwd: string, runId: string): string {
 // write rather than overwrite another role with stale state.
 export function withAgentRegistryLock(cwd: string, runId: string, mutate: () => void): boolean {
   return withOwnedDirLock(
+    agentRegistryLockDir(cwd, runId),
+    AGENT_REGISTRY_LOCK_TIMEOUT_MS,
+    AGENT_REGISTRY_LOCK_STALE_MS,
+    AGENT_REGISTRY_LOCK_RETRY_MS,
+    AGENT_REGISTRY_WAIT,
+    mutate,
+  );
+}
+
+export function withAgentRegistryLockResult<T>(
+  cwd: string,
+  runId: string,
+  mutate: () => MutationResult<T>,
+): MutationResult<T> {
+  return withOwnedDirLockResult(
     agentRegistryLockDir(cwd, runId),
     AGENT_REGISTRY_LOCK_TIMEOUT_MS,
     AGENT_REGISTRY_LOCK_STALE_MS,
@@ -263,19 +298,44 @@ type RunAgentRecordInput = {
   transcriptPath?: string | null;
 };
 
+/**
+ * Fix #11 of the eleven. The lock result was discarded, so a contended registry
+ * lock was indistinguishable from a recorded row — and this row is what the reuse
+ * gate reads to decide whether a role already has a live agent. Losing it makes
+ * the next spawn of the role look like a first spawn.
+ *
+ * Not advisory, but not deniable either: every caller is a PostToolUse/
+ * SubagentStart observation of a child that has ALREADY started, so there is
+ * nothing left to refuse — the spawn happened. The honest report is the outcome,
+ * which callers (and the decision log) can now see instead of assuming success.
+ */
+export function recordRunAgentResult(
+  cwd: string,
+  runId: string,
+  role: string,
+  entry: RunAgentRecordInput,
+): MutationResult<void> {
+  if (!VALID_AGENT_ROLES.has(role)) return preconditionFailed('invalid-role');
+  if (isNonProjectRoot(cwd)) return preconditionFailed('authoring-root'); // never write run state in the plugin's own repo
+  if (typeof entry.agentId !== 'string' || !entry.agentId.trim()) return preconditionFailed('no-agent-id');
+  return withAgentRegistryLockResult<void>(cwd, runId, () => recordRunAgentUnlocked(cwd, runId, role, entry));
+}
+
 export function recordRunAgent(
   cwd: string,
   runId: string,
   role: string,
   entry: RunAgentRecordInput,
 ): void {
-  if (!VALID_AGENT_ROLES.has(role)) return;
-  if (isNonProjectRoot(cwd)) return; // never write run state in the plugin's own repo
-  if (typeof entry.agentId !== 'string' || !entry.agentId.trim()) return;
-  withAgentRegistryLock(cwd, runId, () => recordRunAgentUnlocked(cwd, runId, role, entry));
+  recordRunAgentResult(cwd, runId, role, entry);
 }
 
-export function recordRunAgentUnlocked(cwd: string, runId: string, role: string, entry: RunAgentRecordInput): void {
+export function recordRunAgentUnlocked(
+  cwd: string,
+  runId: string,
+  role: string,
+  entry: RunAgentRecordInput,
+): MutationResult<void> {
   const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
   const agents = obj(registry.agents) || {};
   const history = Array.isArray(registry.history) ? registry.history.filter((item) => item && typeof item === 'object') : [];
@@ -317,7 +377,9 @@ export function recordRunAgentUnlocked(cwd: string, runId: string, role: string,
     } catch {
       // best-effort diagnostic; never bind the unsafe cross-role agent
     }
-    return;
+    // The REFUSAL is the outcome, whether or not its diagnostic persisted: this
+    // row was rejected on purpose, so the row a caller asked for does not exist.
+    return preconditionFailed('cross-role-agent-conflict');
   }
   const sameAgent = prior
     && prior.replaced !== true
@@ -363,10 +425,14 @@ export function recordRunAgentUnlocked(cwd: string, runId: string, role: string,
   };
   try {
     fs.mkdirSync(runDir(cwd, runId), { recursive: true });
-    writeJson(agentRegistryFile(cwd, runId), { version: 1, agents, history: nextHistory });
+    if (!writeJson(agentRegistryFile(cwd, runId), { version: 1, agents, history: nextHistory })) {
+      return unavailable('registry-write-refused');
+    }
   } catch {
     // best-effort registry; reuse falls back to fresh spawns when unwritable
+    return unavailable('registry-write-failed');
   }
+  return applied(undefined);
 }
 
 // Cursor sometimes exposes only `subagent_id: tool_<uuid>` at SubagentStart. That
@@ -402,4 +468,10 @@ export function liveRunAgent(
 // the registry entry only while it still represents that spawn; a delayed child
 // transcript must never retire a newer retry that already took over the role.
 
-export { markRunAgentReplaced, markRunAgentReplacedIfMatches, refreshCursorRunAgentFromTranscriptCache } from './registry-refresh';
+export {
+  markRunAgentReplaced,
+  markRunAgentReplacedIfMatches,
+  markRunAgentReplacedIfMatchesResult,
+  markRunAgentReplacedResult,
+  refreshCursorRunAgentFromTranscriptCache,
+} from './registry-refresh';

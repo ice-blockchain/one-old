@@ -4,15 +4,19 @@
 // and hook modules (e.g. the SessionStart OpenCode self-heal) — modules stay
 // runner-free, runners re-export these for their existing import sites.
 
-import * as os from 'os';
 import * as path from 'path';
 
+import { globalTrafficOneDir } from './state-root';
+
+// TRAFFIC_ONE_TOOLCHAIN_ROOT wins outright and is deliberately NOT part of the
+// shared base: it relocates only the gigabyte-scale half (venvs, npm prefixes,
+// browser binaries), while XDG_STATE_HOME relocates the whole kilobyte-scale
+// machine tree. Two complete, non-overlapping knobs — keep the fall-through
+// second, so a machine that has moved its state home still keeps toolchains
+// beside the rest of it.
 export function toolchainRoot(): string {
   if (process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT) return path.resolve(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT);
-  const stateHome = process.env.XDG_STATE_HOME
-    ? path.join(process.env.XDG_STATE_HOME, 'traffic-one')
-    : path.join(process.env.HOME || os.homedir(), '.traffic-one');
-  return path.join(stateHome, 'toolchains');
+  return path.join(globalTrafficOneDir(), 'toolchains');
 }
 
 export function managedToolDir(toolName: string): string {

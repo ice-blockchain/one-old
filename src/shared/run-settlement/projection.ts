@@ -148,7 +148,13 @@ export function activateRunV2RollbackBarrier(
         canonical,
         canonicalStatus,
       ) as RunV2RollbackBarrierProjection;
-      writeJson(file, next);
+      // Same `| null` channel the `catch` uses, for the other way this fails:
+      // the fence refuses the write (fsjson.ts) and returns `false`. That was
+      // dropped, so a barrier that never landed reported itself activated — and
+      // plan-readiness went on to publish verification-v2.json behind a run.json
+      // an older runtime still reads as resumable, which is exactly the crash
+      // window this separate atomic write exists to close.
+      if (!writeJson(file, next)) return;
       written = next;
     });
   } catch {
@@ -239,6 +245,24 @@ function recordProjectedTerminalTransition(
     : at;
 }
 
+/**
+ * Mirror a settlement into the legacy `run.json` fields, and into the same two
+ * fields on `maintenance.json` when that sidecar exists.
+ *
+ * `void` is deliberate, and it is only honest because of where this sits: the
+ * canonical record is `settlement-v2.json`, and `writeRunSettlement` (io.ts) now
+ * establishes that it is on disk BEFORE calling this. So a refused mirror leaves
+ * legacy readers on the previous consistent projection rather than an invented
+ * one, and nothing above has to revise a claim it already made. Returning a
+ * boolean here would only add one more droppable value — its three call sites
+ * have nothing they could do with it.
+ *
+ * What did have to change is the ORDER. Two writes to two paths carried the same
+ * `canonicalStatus`/`settlementHash`, and both refusals were dropped, so the
+ * sidecar could advance while `run.json` — the file every legacy reader consults
+ * through `effectiveLegacyRunStatus` — stayed behind, each one citing a different
+ * settlement. `run.json` is the primary, so its refusal now stops the pass.
+ */
 export function writeLegacyProjection(projectRoot: string, settlement: RunSettlementV2): void {
   const file = path.join(runDir(projectRoot, settlement.runId), 'run.json');
   const existing = readJson<Rec>(file, {});
@@ -297,7 +321,7 @@ export function writeLegacyProjection(projectRoot: string, settlement: RunSettle
   if (!next.runtimeV2RollbackGuard) delete next.runtimeV2RollbackGuard;
   if (!next.outcome) delete next.outcome;
   recordProjectedTerminalTransition(existing, next, settlement);
-  writeJson(file, next);
+  if (!writeJson(file, next)) return;
 
   const maintenanceFile = path.join(runDir(projectRoot, settlement.runId), 'maintenance.json');
   if (fs.existsSync(maintenanceFile)) {

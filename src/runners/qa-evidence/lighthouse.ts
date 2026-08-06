@@ -300,7 +300,19 @@ export function lighthouseCommand(
     generatedAt: new Date(Math.max(Date.now(), Date.parse(summary.generatedAt))).toISOString(),
     lighthouse: { evidencePath: out.relative },
   };
-  publishQaReportV2(args.projectRoot, args.runId, updated);
+  // A refused re-publish leaves the PREVIOUS report on disk, still without the
+  // `lighthouse` section — so certifying `updated` here would report a performance
+  // budget as measured against a sidecar that never records it.
+  if (!publishQaReportV2(args.projectRoot, args.runId, updated)) {
+    process.stderr.write(`qa-evidence: could not persist ${qaReportV2Path(args.projectRoot, args.runId)} — the write was refused.\n`);
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      lighthouse: { evidencePath: out.relative },
+      reportPath: qaReportV2Path(args.projectRoot, args.runId),
+      validation: { ok: false, code: 'report-missing', message: 'the Lighthouse-updated QA report could not be written' },
+    })}\n`);
+    return 1;
+  }
   const validation = validateQaReportV2(
     updated,
     args.projectRoot,

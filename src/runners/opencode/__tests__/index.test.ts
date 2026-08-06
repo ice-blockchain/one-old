@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { delegate, delegateFromPlan, normalizeOpenCodeI18nScope, normalizePlanI18nUnits, normalizePlanRole, parsePlanDelegationQueue, postApplyI18n, postApplyQuality, postApplySize, postApplyStyling, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
-import { compileArchitecture, persistCompiledArchitecture } from '../../../shared/architecture-contract';
+import { compileArchitecture, ensureProjectGitignore, persistCompiledArchitecture } from '../../../shared/architecture-contract';
 import { openCodeQueuePolicyViolations } from '../../../shared/opencode-queue';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
@@ -22,7 +22,16 @@ function sh(cwd: string, cmd: string, args: string[]): void {
 
 // A real git repo (HEAD commit so the worktree sandbox can branch) + sandboxed
 // prefs/toolchain root, then a stubbed managed `opencode` binary.
-function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opts: { noInitialCommit?: boolean } = {}): void {
+function withRepo(
+  prefs: Record<string, unknown>,
+  fn: (dir: string) => void,
+  // `noGitRepo` leaves the tree UNVERSIONED (no `git init` at all), the only
+  // shape in which delegate()'s `initIfNeeded` arm does anything: with a `.git`
+  // present, ensureInitialCommit commits a HEAD-less repo whatever the flag says.
+  // `state` seeds `.traffic-one/.one.json`, because `mode` is canonical state and
+  // does NOT come through the local-prefs path `prefs` writes (measured).
+  opts: { noInitialCommit?: boolean; noGitRepo?: boolean; state?: Record<string, unknown> } = {},
+): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocdel-'));
   const env = process.env;
   const savedPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -37,13 +46,19 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   // success test fails. (See the --dir/PWD pinning in runModel().)
   env.PWD = dir;
   fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
-  sh(dir, 'git', ['init', '-q']);
-  sh(dir, 'git', ['config', 'user.email', 't@example.com']);
-  sh(dir, 'git', ['config', 'user.name', 'T']);
+  if (opts.state) {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(opts.state), 'utf8');
+  }
+  if (!opts.noGitRepo) {
+    sh(dir, 'git', ['init', '-q']);
+    sh(dir, 'git', ['config', 'user.email', 't@example.com']);
+    sh(dir, 'git', ['config', 'user.name', 'T']);
+  }
   fs.writeFileSync(path.join(dir, 'README.md'), '# repo\n');
   // opts.noInitialCommit leaves the repo with NO HEAD (a fresh scaffold mid-build) so
   // a test can exercise the delegate() self-heal path.
-  if (!opts.noInitialCommit) {
+  if (!opts.noInitialCommit && !opts.noGitRepo) {
     sh(dir, 'git', ['add', '-A']);
     sh(dir, 'git', ['commit', '-q', '-m', 'init']);
   }
@@ -593,6 +608,49 @@ test('delegate self-heals a missing HEAD on a fresh scaffold (git repo, no commi
       'HEAD now exists so future delegations sandbox normally',
     );
   }, { noInitialCommit: true });
+});
+
+// `initIfNeeded` is the one arm of the self-heal above that reaches a tree the
+// user never chose to version: it `git init`s, then `git add -A` and commits AS
+// `Traffic One <noreply@traffic.io>`. `state.mode === 'new-project'` is not
+// authority for that — detectMode fills it by counting files in SOURCE_EXTS, so a
+// 3-file Terraform stack reads new-project — so the disk holds a veto, and the
+// project's own `.gitignore` lines are the statement that it manages its own
+// version control.
+test('delegate never git-inits an unversioned tree that states its own gitignore rules', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('edit');
+    fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "null_resource" "a" {}\n');
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.terraform/\n*.tfstate\n');
+    fs.writeFileSync(path.join(dir, '.env'), 'AWS_SECRET_ACCESS_KEY=real\n');
+    const r = delegate(dir, { role: 'quick-fix', task: 'edit main.tf', runId: 'unversioned-1' });
+    assert.equal(r.action, 'skipped', 'no HEAD can be produced, so the caller falls back to a paid worker');
+    assert.match(String(r.error), /No git HEAD/);
+    assert.equal(fs.existsSync(path.join(dir, '.git')), false, 'no repository was created');
+    // The reason the unasked `.git` is not the whole cost: on a misclassified repo
+    // the gitignore writer withholds its `.env` opinions on purpose, so an
+    // `add -A` here would have swept a real secret into the first commit.
+    assert.equal(fs.readFileSync(path.join(dir, '.env'), 'utf8'), 'AWS_SECRET_ACCESS_KEY=real\n');
+  }, { noGitRepo: true, state: { mode: 'new-project', stack: 'default', openCode: { enabled: true } } });
+});
+
+// The other side of that veto: a project that has stated nothing about git still
+// gets the free delegation the self-heal exists for. Traffic One's OWN managed
+// `.gitignore` region is not the project stating anything — materialization has
+// written it long before any delegation runs, so counting it would retire this
+// path for every greenfield project.
+test('delegate still git-inits a greenfield tree whose only gitignore lines are Traffic One\'s', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('edit');
+    assert.equal(ensureProjectGitignore(dir, { newProject: true }), true, 'precondition: materialization ran first');
+    assert.match(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8'), /traffic-one:gitignore:start/);
+    const r = delegate(dir, { role: 'quick-fix', task: 'create foo.txt', runId: 'greenfield-1' });
+    assert.equal(r.action, 'delegated', 'the scaffold is initialized + committed, then sandboxed');
+    assert.equal(
+      spawnSync('git', ['-C', dir, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' }).status, 0,
+      'HEAD now exists so future delegations sandbox normally',
+    );
+  }, { noGitRepo: true, state: { mode: 'new-project', stack: 'default', openCode: { enabled: true } } });
 });
 
 test('delegate failed apply is atomic: concurrent main-tree edits survive without partial conflict files', () => {
@@ -1928,8 +1986,15 @@ test('post-apply typecheck skips on pre-existing breakage (errors only in untouc
     stubOpencode('editts');
     const r = delegate(dir, { role: 'frontend', task: 'add foo', runId: 'r-preexist' });
     assert.equal(r.action, 'delegated');
-    // And the pure helper: no tsc on disk → verification skipped entirely.
-    assert.equal(postApplyTypecheck(fs.mkdtempSync(path.join(os.tmpdir(), 't1-notsc-')), ['src/foo.ts']), null);
+    // And the pure helper: no tsc on disk → verification skipped entirely. The
+    // tree has to live outside `dir`, whose stubbed tsc is exactly what this
+    // assertion needs absent, so it cannot ride withRepo's cleanup.
+    const noTsc = fs.mkdtempSync(path.join(os.tmpdir(), 't1-notsc-'));
+    try {
+      assert.equal(postApplyTypecheck(noTsc, ['src/foo.ts']), null);
+    } finally {
+      fs.rmSync(noTsc, { recursive: true, force: true });
+    }
   });
 });
 

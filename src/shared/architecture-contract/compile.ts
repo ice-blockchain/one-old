@@ -319,6 +319,14 @@ export function compileArchitecture(
     : parentBackedEntrypoints.length > 0
       ? [parentBackedEntrypoints[0]!]
       : entrypointCandidates.slice(0, 1);
+  // The `state.mode` guess, and the widest consumer of it: every scaffold set
+  // below is gated on it. Deliberately left as the guess, because what it
+  // produces is a DECLARATION — a list of paths and owners in the compiled
+  // contract, which nothing acts on until a writer does. The writers hold the
+  // evidence: `ensureScaffoldContent` withholds every repository-convention body
+  // from a project with commits, and seeds only missing-or-blank files. Adding a
+  // second evidence gate here would instead make the contract itself disagree
+  // with itself between runs as the tree fills in.
   const isNewProject = obj(state)?.mode === 'new-project';
   const i18n = resolveArchitectureI18n(profile, input, isNewProject, selectedEntrypoints);
   const scaffoldOutputs = resolveInitialScaffoldOwners(profile, [
@@ -427,15 +435,40 @@ export function compileArchitectureForRun(
   // DENIED digest flips every on-disk contract check while the role bootstraps
   // still describe the pre-compile world (observed 2cl: the live architect
   // lost all tool access mid-flight and had to be respawned).
-  if (options.persist !== false) writeJson(compiledArchitecturePath(projectRoot, runId), compiled);
+  if (options.persist !== false) persistCompiledArchitecture(projectRoot, compiled);
   return compiled;
 }
 
+/**
+ * Persist the compiled architecture, or THROW when the write chokepoint refused
+ * it (fsjson.ts: an unanswered consent question, a planted symlink, a path that
+ * escapes the state dir).
+ *
+ * Both callers used to drop that refusal and carry on describing a sidecar that
+ * was never written — `compileArchitectureForRun` returned the in-memory
+ * `compiled` object, and the architect accept path published verification-v2.json
+ * and assignments.json against a `contractHash` no file on disk carried. It was
+ * only ever caught downstream, and incidentally: publishRuntimeAssignments
+ * re-reads architecture-v1.json, so the run was denied for "assignments could not
+ * be persisted" — naming a file that was fine.
+ *
+ * A throw rather than a widened return, for the reason compileVerificationContract
+ * already gives: the value both callers hand back is non-nullable and consumed at
+ * ~20 assertion sites, and an architecture that could not be persisted is not an
+ * architecture. Both production paths run inside a gate's try/catch, which turns
+ * this into that gate's own deny — never a failed tool call.
+ */
 export function persistCompiledArchitecture(
   projectRoot: string,
   compiled: CompiledArchitectureV1,
 ): void {
-  writeJson(compiledArchitecturePath(projectRoot, compiled.runId), compiled);
+  if (!writeJson(compiledArchitecturePath(projectRoot, compiled.runId), compiled)) {
+    throw new Error(
+      `the compiled architecture for run ${compiled.runId} could not be persisted: `
+      + 'the project state write fence refused .traffic-one/runs/'
+      + `${compiled.runId}/architecture-v1.json`,
+    );
+  }
 }
 
 export function readCompiledArchitecture(

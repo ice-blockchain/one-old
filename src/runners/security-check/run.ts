@@ -22,7 +22,18 @@ import {
   writeReports,
 } from './lib';
 
-export interface SecurityCheckResult { report: Report; paths: ReportPaths; exitCode: number; }
+export interface SecurityCheckResult {
+  report: Report;
+  paths: ReportPaths;
+  exitCode: number;
+  /**
+   * Only present when `--stamp` was asked for on a passing report: whether the
+   * stamp the deploy-gate reads is actually in `.one.json`. `false` is a FAILED
+   * run — the caller asked for a stamp and has none — so it decides the exit code
+   * below rather than being reported alongside a `PASSED` headline.
+   */
+  stamped?: boolean;
+}
 
 export function runSecurityCheck(options: Partial<SecurityOptions> = {}): SecurityCheckResult {
   const cwd = path.resolve(options.cwd || process.cwd());
@@ -64,9 +75,13 @@ export function runSecurityCheck(options: Partial<SecurityOptions> = {}): Securi
   };
 
   const paths = writeReports(cwd, reportDir, serializable);
-  if (options.stamp && serializable.status === 'passed') {
-    stampState(cwd, serializable, paths.relativeJsonPath);
-  }
+  const wantsStamp = Boolean(options.stamp) && serializable.status === 'passed';
+  const stamped = wantsStamp ? stampState(cwd, serializable, paths.relativeJsonPath) : undefined;
 
-  return { report: serializable, paths, exitCode: serializable.status === 'passed' ? 0 : 1 };
+  return {
+    report: serializable,
+    paths,
+    exitCode: serializable.status === 'passed' && stamped !== false ? 0 : 1,
+    ...(stamped === undefined ? {} : { stamped }),
+  };
 }

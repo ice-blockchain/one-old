@@ -6,6 +6,7 @@ import { capabilityProfileForRun } from '../../shared/architecture-contract';
 import { buildOrchestrationDirective } from '../../modules/plan-guard/build-orchestration-directive';
 import { buildPreSpawnOpenCodeDirective } from '../../shared/opencode-plan/directive';
 import { detectHost } from '../../shared/host';
+import { hostFlags } from '../../shared/host/capability-flags';
 import { detectHostPlan } from '../../shared/host/plan';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
@@ -53,7 +54,7 @@ export function preSpawnRunIdDirective(cwd: string, host: string = detectHost())
         'Start a new parent run for the active host; do not rebase model-policy.json.',
       ].join('\n');
     }
-    if (canonicalHost(host) === 'cursor') {
+    if (hostFlags(canonicalHost(host)).availableModelsMustBeCaptured) {
       const plan = detectHostPlan('cursor');
       if (!existingPolicy && freshCursorModels(cwd, plan).length === 0) {
         return [
@@ -122,7 +123,7 @@ export function preSpawnRunIdBlocksSetup(directive: string): boolean {
 // proactive "do this next" push so the build follows the flow smoothly. Returns '' off Windsurf,
 // for non-new-project, or on any read error.
 export function preSpawnArchitectDirective(cwd: string, host: string = detectHost()): string {
-  if (canonicalHost(host) !== 'windsurf') return '';
+  if (!hostFlags(canonicalHost(host)).ignoresMaterializedGuidance) return '';
   try {
     const state = readEffectiveState(cwd) as Record<string, unknown>;
     if (!state || state.mode !== 'new-project') return '';

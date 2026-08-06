@@ -129,6 +129,86 @@ test('Astro follows its renderer while unsupported web profiles remain framework
   }
 });
 
+// `state.mode` is a detector guess (`detectMode`: five or fewer SOURCE_EXTS
+// files ⇒ new-project), so a real repository reads as greenfield and the planned
+// `apps/web` root then wins over the on-disk probe at every site in
+// profiles-web.ts. Reproduced live on a 3-file Terraform stack WITH a commit.
+// The cost is a contract addressed to a subtree that holds none of the user's
+// code: the agent writes there and the write gates deny it, which is a deadlock.
+test('a planned web workspace never relocates an app that already holds source', () => {
+  const NEW_PROJECT = {
+    mode: 'new-project',
+    stack: 'custom-frontend',
+    frontend: 'react-vite',
+    backend: 'none',
+    mobile: { framework: 'none' },
+  };
+
+  // A real Vite app at `web/`. The guess must not move it.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'web/src'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    fs.writeFileSync(path.join(cwd, 'web/src/main.tsx'), 'export {};\n');
+    const profile = capabilityProfileForProject(cwd, NEW_PROJECT);
+    assert.deepEqual(profile.sourceRoots, ['web/src']);
+    assert.ok(profile.entrypoints.includes('web/src/main.tsx'));
+    for (const compiled of [...profile.sourceRoots, ...profile.entrypoints]) {
+      assert.ok(!compiled.startsWith('apps/web'), compiled);
+    }
+  });
+
+  // Same for a flat app at the repo root — the shape `create-next-app .` leaves,
+  // whose file count lands under detectMode's threshold.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'app'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      dependencies: { next: '16.0.0', react: '19.0.0' },
+    }));
+    fs.writeFileSync(path.join(cwd, 'app/page.tsx'), 'export default () => null;\n');
+    const profile = capabilityProfileForProject(cwd, { ...NEW_PROJECT, frontend: 'nextjs' });
+    assert.deepEqual(profile.sourceRoots, ['app', 'src/app']);
+    assert.ok(profile.entrypoints.includes('app/layout.tsx'));
+    for (const compiled of [...profile.sourceRoots, ...profile.entrypoints]) {
+      assert.ok(!compiled.startsWith('apps/web'), compiled);
+    }
+  });
+
+  // A greenfield tree still gets the canonical workspace: there is no app to
+  // orphan, so the mode may choose where one goes.
+  withProject((cwd) => {
+    const profile = capabilityProfileForProject(cwd, NEW_PROJECT);
+    assert.deepEqual(profile.sourceRoots, ['apps/web/src']);
+    assert.ok(profile.entrypoints.includes('apps/web/src/main.tsx'));
+  });
+
+  // So does a manifest with NO source under it: that is a stub, not an
+  // application, and refusing to plan around it would only withhold the
+  // canonical layout from projects that have nothing to lose.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'web'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    const profile = capabilityProfileForProject(cwd, NEW_PROJECT);
+    assert.deepEqual(profile.sourceRoots, ['apps/web/src']);
+  });
+
+  // And once we have scaffolded, the detected root and the planned root agree,
+  // so the frozen profile stays stationary across a later run in the same tree.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web/src'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), 'export {};\n');
+    const profile = capabilityProfileForProject(cwd, NEW_PROJECT);
+    assert.deepEqual(profile.sourceRoots, ['apps/web/src']);
+    assert.ok(profile.entrypoints.includes('apps/web/src/main.tsx'));
+  });
+});
+
 test('UI-system priority is explicit choice, detected library, compatible default', () => {
   withProject((cwd) => {
     fs.mkdirSync(path.join(cwd, 'apps/web'), { recursive: true });

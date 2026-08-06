@@ -23,10 +23,11 @@ import {
 } from '../plan-readiness/checks';
 import {
   compileVerificationContract,
+  publishVerificationContract,
   readVerificationContract,
 } from '../../../shared/verification-contract';
 import { ensureRunBootstrap } from '../../../shared/run-bootstrap-policy';
-import { effectiveLegacyRunStatus } from '../../../shared/run-settlement';
+import { effectiveLegacyRunStatus, readRunSettlement } from '../../../shared/run-settlement';
 
 const names = (name: string): string => name;
 
@@ -798,6 +799,154 @@ test('PLAN_READY consumes strict verification intent and IMPLEMENTED refreshes u
       'an unplanned source path must require replanning before review');
     assert.ok(!review.includes('verification-contract-refresh-gate'),
       'the reviewer must not render the IMPLEMENTED-worded block');
+  });
+});
+
+// REGRESSION: publishVerificationContract dropped writeJson's refusal and
+// returned the contract anyway, so a refused write was indistinguishable from a
+// durable one — the refresh reported `changed: true` with `error: null`, and
+// architectPhaseIncompleteReasons then read verification-v2.json back and
+// declared the run incomplete, with nothing connecting the two reports.
+//
+// The fence used here is the SYMLINK half, not the consent half, because it is
+// the only one that can refuse this single path while leaving everything around
+// it writable: reads are never fenced, so the planted link still serves the
+// previous contract to readVerificationContract (the refresh needs a valid
+// `previous`), while every WRITE to it is refused.
+test('a refused verification-contract publish denies the IMPLEMENTED refresh instead of reporting a change', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+      currentRunId: 'R',
+      team: { mode: 'main-agent' },
+    };
+    for (const rel of ['apps/web/src/pages', 'apps/web/src/components', 'apps/web/src/features']) {
+      fs.mkdirSync(path.join(dir, rel), { recursive: true });
+    }
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: { react: '19', 'react-dom': '19', 'react-router-dom': '7', vite: '7' },
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/main.tsx'),
+      "import { createRoot } from 'react-dom/client';\nimport { App } from './App';\ncreateRoot(document.getElementById('root')!).render(<App />);\n",
+    );
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/App.tsx'),
+      "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\nimport { Home } from './pages/Home';\nconst router = createBrowserRouter([{ path: '/', element: <Home /> }]);\nexport function App(){ return <RouterProvider router={router} />; }\n",
+    );
+    const page = path.join(dir, 'apps/web/src/pages/Home.tsx');
+    fs.writeFileSync(page, 'export function Home(){ return <main>Home</main>; }\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+
+    writeRequiredMemory(dir, state);
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'plan', 'utf8');
+    writeArchitectureInputOnly(dir, 'R');
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
+    assert.deepEqual(planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }), []);
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R', 'architect.md'), 'verdict: PLAN_READY\n');
+    const planned = readVerificationContract(dir, 'R');
+    assert.ok(planned, 'fixture guard: PLAN_READY published a contract');
+
+    // Fence the one path: move the published contract aside (still inside the
+    // state dir, so containment holds) and leave a link where it was.
+    const contractPath = path.join(dir, '.traffic-one', 'runs', 'R', 'verification-v2.json');
+    const aside = path.join(dir, '.traffic-one', 'runs', 'R', 'verification-v2.kept.json');
+    fs.renameSync(contractPath, aside);
+    fs.symlinkSync(aside, contractPath);
+    assert.deepEqual(readVerificationContract(dir, 'R'), planned,
+      'fixture guard: reads still resolve through the link, so `previous` is valid');
+    assert.equal(publishVerificationContract(dir, planned), null,
+      'the write chokepoint refuses the link and the refusal reaches the caller');
+
+    // A real visual change, so the refresh has something to raise.
+    fs.writeFileSync(page, 'export function Home(){ return <main className="wide">Updated</main>; }\n');
+    const refresh = refreshVerificationAfterImplementation(dir, 'R', state);
+    assert.equal(refresh.changed, false, 'a refused publish is not a change');
+    // The refusal must be reported as ITSELF. Dropping it does not go unnoticed
+    // forever — publishRuntimeAssignments re-reads verification-v2.json and
+    // throws on the hash mismatch two statements later — but that arrives as
+    // "runtime assignments could not be persisted atomically", which names the
+    // wrong file and depends on the refresh being a hash CHANGE.
+    assert.match(refresh.error || '', /refreshed VerificationContractV2 could not be persisted/);
+    assert.equal(readVerificationContract(dir, 'R')?.contractHash, planned.contractHash,
+      'the on-disk contract is still the pre-implementation one');
+
+    // Nothing downstream of the refused publish may have run: assignments.json
+    // still certifies the pre-implementation contract hash.
+    assert.equal(readRuntimeAssignments(dir, 'R')?.verificationHash, planned.contractHash,
+      'a refused contract publish must not republish the assignments manifest');
+
+    // The gate the caller reports to must agree: an IMPLEMENTED verdict is
+    // blocked rather than accepted against a contract that never landed.
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(violations.includes('verification-contract-refresh-gate'),
+      `the refusal surfaces as the refresh-gate block, not a silent pass; got ${JSON.stringify(violations)}`);
+  });
+});
+
+// The PLAN_READY half of the same defect. The accept path published the
+// contract, then assignments, the `active` settlement and the implementation
+// bootstraps — all keyed to a hash no file on disk carried. It never shipped an
+// accepted run that way, but only by accident: publishRuntimeAssignments
+// re-reads verification-v2.json two statements later and throws on the
+// mismatch, so dropping the refusal denied the verdict for the WRONG REASON
+// ("runtime assignments could not be persisted atomically" — a different file,
+// and a check that only fires when the refresh is a hash CHANGE). The accept
+// path now names the refusal it actually got. A dangling link at the
+// destination is the fence shape that reaches a FIRST publish.
+test('PLAN_READY names a refused verification-contract publish and publishes no dependent sidecar', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true, currentRunId: 'R', team: { mode: 'main-agent' } };
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir, state);
+    writePlan(dir);
+    writeArchitectureInputOnly(dir, 'R');
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
+    const contractPath = path.join(dir, '.traffic-one', 'runs', 'R', 'verification-v2.json');
+    fs.mkdirSync(path.dirname(contractPath), { recursive: true });
+    fs.symlinkSync(path.join(path.dirname(contractPath), 'absent.json'), contractPath);
+
+    const reasons: string[] = [];
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: (name, message) => { reasons.push(message); return name; },
+    });
+    assert.ok(violations.includes('architecture-contract-gate'),
+      `a refused contract publish must deny PLAN_READY; got ${JSON.stringify(violations)}`);
+    assert.ok(reasons.some((reason) => /could not persist .*verification-v2\.json/.test(reason)),
+      `the deny must name the refused contract publish; got ${JSON.stringify(reasons)}`);
+    assert.equal(readVerificationContract(dir, 'R'), null, 'nothing was persisted through the link');
+    assert.equal(readRuntimeAssignments(dir, 'R'), null,
+      'assignments must not certify a contract hash that never landed');
+    assert.equal(readRunSettlement(dir, 'R'), null,
+      'the run must not be settled `active` off an unpublished contract');
   });
 });
 

@@ -17,7 +17,7 @@ import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-model
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted, markVerifyGateDenied } from '../../../shared/opencode-roles';
 import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext, runLedgerAdmitsClaims, transitionRunStatus } from '../../../shared/state';
 import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
-import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import type { Ctx, HookInput, HookResult, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import {
   CURSOR_HIGHEST_ALT as FIXTURE_CURSOR_HIGHEST_ALT,
@@ -687,8 +687,15 @@ test('Kilo: a corrective general spawn recovers from failed named-role pending c
 
     const runId = String(JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId);
     const pendingDir = path.join(cwd, '.traffic-one', 'runs', runId, 'pending');
-    assert.equal(fs.readdirSync(pendingDir).filter((name) => name.endsWith('.json')).length, 2,
-      'the corrective spawn is not blocked by a failed named-agent attempt');
+    // The corrective spawn is still not blocked — but it SUPERSEDES the failed
+    // named-agent attempt's handoff instead of adding a second one beside it.
+    // Both come from `kilo-parent`, and the role-keyed CAS slot
+    // (claims-store.ts's pendingClaimFile) holds exactly one claim per role, so
+    // the parent's own retry replaces its dead attempt. Two claims for one role
+    // was never the recovery working; it was `activeRunClaimCount` reporting two
+    // live architects and vetoing settlement until both expired.
+    assert.deepEqual(fs.readdirSync(pendingDir).filter((name) => name.endsWith('.json')), ['senior-architect.json'],
+      'the corrective spawn is not blocked, and replaces the failed attempt rather than doubling it');
 
     const childPrompt = '[t1-role: senior-architect]\nRead .kilo/agents/senior-architect.md before producing the plan.';
     opencodeSubagentBind({
@@ -707,7 +714,7 @@ test('Kilo: a corrective general spawn recovers from failed named-role pending c
     const context = resolveRunAgentContext(cwd, readEffectiveState(cwd), { session_id: 'kilo-general-child' });
     assert.equal(context?.role, 'senior-architect');
     assert.equal(fs.readdirSync(pendingDir).filter((name) => name.endsWith('.json')).length, 0,
-      'the child bind removes the failed named-agent pending claim and its replacement');
+      'the child bind consumes the role\'s pending claim');
   });
 });
 
@@ -721,8 +728,8 @@ test('OpenCode: task spawn does not require unsupported model parameter', () => 
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
     const runId = String(state.currentRunId || '');
     assert.ok(runId.length > 0, 'OpenCode spawn still mints/uses the Traffic One run id');
-    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-architect-'));
-    assert.ok(pending.length > 0, 'pending senior-architect claim staked for OpenCode');
+    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending'));
+    assert.deepEqual(pending, ['senior-architect.json'], 'pending senior-architect claim staked for OpenCode, in the role-keyed CAS slot');
   });
 });
 
@@ -787,7 +794,16 @@ test('OpenCode: spawn prompts cannot carry absolute .traffic-one paths from anot
   });
 });
 
-test('OpenCode: bound child session records a live role and duplicate same-role spawn requires explicit replacement', () => {
+// CHANGED BEHAVIOUR (was: 'OpenCode: bound child session records a live role and
+// duplicate same-role spawn requires explicit replacement'). The old test asserted
+// that the bind wrote a reuse-registry row and that the row then DENIED the role's
+// next spawn. The row's only role evidence was the `[t1-role:]` marker in the prompt
+// the orchestrator itself wrote, and OpenCode exposes no continuation primitive to
+// route the denied task to — so the deny rested on evidence no host ever
+// corroborated. Reuse now stands down on OpenCode; the child CLAIM (the part that
+// makes a child's writes resolve) is unchanged, which is what the assertions below
+// pin.
+test('OpenCode: a bound child claims its role but never a reusable agent row, so a same-role respawn is not denied', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const first = agentModelGate(spawnCtxWithSession(cwd, {
       subagent_type: openCodeGlobalAgentName(cwd, 'senior-frontend'),
@@ -803,20 +819,24 @@ test('OpenCode: bound child session records a live role and duplicate same-role 
       raw: { session_id: 'ses_oc_frontend_1', prompt: '[t1-role: senior-frontend]\nBuild the assigned UI scope.' },
     };
     opencodeSubagentBind({ input: bindInput, host: 'opencode', cwd, now: () => 'x' } as unknown as Ctx);
-    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend']?.agentId, 'ses_oc_frontend_1');
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend'], undefined,
+      'no unverifiable reuse row is written on OpenCode');
+    // The claim still binds — role resolution for the child's writes must not
+    // regress with the registry.
+    assert.equal(
+      resolveRunAgentContext(cwd, readEffectiveState(cwd), { session_id: 'ses_oc_frontend_1' }, { claimPending: false })?.role,
+      'senior-frontend',
+      'the child session still resolves its role from its claim',
+    );
 
     const duplicate = agentModelGate(spawnCtxWithSession(cwd, {
       subagent_type: openCodeGlobalAgentName(cwd, 'senior-frontend'),
       prompt: '[t1-role: senior-frontend]\nFix build errors.',
     }, 'parent-oc', 'opencode'));
-    assert.equal(duplicate.kind, 'deny');
-    if (duplicate.kind === 'deny') {
-      assert.ok(duplicate.reason.includes('ses_oc_frontend_1'));
-      assert.ok(duplicate.reason.includes('OpenCode'));
-      assert.ok(duplicate.reason.includes('[t1-replace-agent]'));
-      assert.ok(!duplicate.reason.includes('SendMessage'));
-    }
+    assert.equal(duplicate.kind, 'noop', 'the follow-up spawns fresh instead of being routed to an unverified child');
 
+    // The [t1-replace-agent] escape hatch stays satisfiable — it was the only exit
+    // from the old deny, and a host without the registry must not lose it.
     const replacement = agentModelGate(spawnCtxWithSession(cwd, {
       subagent_type: openCodeGlobalAgentName(cwd, 'senior-frontend'),
       prompt: '[t1-role: senior-frontend]\n[t1-replace-agent]\nPrevious OpenCode agent completed. Follow-up fix cycle: fix build errors only.',
@@ -985,8 +1005,8 @@ test('Cursor: model-param requires an exact captured Task-tool slug before staki
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
     assert.ok(runId.length > 0, 'currentRunId minted on Cursor spawn');
-    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-frontend-'));
-    assert.ok(pending.length > 0, 'pending senior-frontend claim staked on Cursor');
+    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending'));
+    assert.deepEqual(pending, ['senior-frontend.json'], 'pending senior-frontend claim staked on Cursor');
   });
 });
 
@@ -998,8 +1018,8 @@ test('Cursor: the configured same-tier FALLBACK model satisfies the gate when th
     // Allowed (first passing spawn of the run may carry the one-time model-availability advisory).
     assert.notEqual(ok.kind, 'deny', 'the configured same-tier fallback satisfies the gate');
     const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
-    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-frontend-'));
-    assert.ok(pending.length > 0, 'claim staked on the fallback-model spawn');
+    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending'));
+    assert.deepEqual(pending, ['senior-frontend.json'], 'claim staked on the fallback-model spawn');
   });
 });
 
@@ -1015,8 +1035,7 @@ test('Cursor: spawn gate resolves subpackage cwd to the workspace root before wr
     assert.ok(runId.length > 0, 'currentRunId is minted on the workspace root');
     assert.equal(fs.existsSync(path.join(pkg, '.traffic-one', '.one.json')), false, 'no stray package .traffic-one state is created');
     const pendingDir = path.join(cwd, '.traffic-one', 'runs', runId, 'pending');
-    const pending = fs.readdirSync(pendingDir).filter((f) => f.startsWith('senior-frontend-'));
-    assert.ok(pending.length > 0, 'run claim is staked under the workspace root');
+    assert.deepEqual(fs.readdirSync(pendingDir), ['senior-frontend.json'], 'run claim is staked under the workspace root');
   });
 });
 
@@ -1431,6 +1450,46 @@ test('quick-fix spawn mints only the exact machine-readable bounded scope', () =
   });
 });
 
+// CLAIM MINTING is the non-advisory half of the split rule in
+// state/run-agent/mutation-result.ts: an `unavailable` mint is retried and then
+// DENIED. Before this, all three mint call sites discarded the result, so a mint
+// that never happened allowed the spawn anyway — and the child that started
+// bound no role, wrote as the main agent, was invisible to the duplicate-spawn
+// gate and could not be released when the run settled.
+//
+// `unavailable` is provoked at the write chokepoint rather than by holding the
+// claims lock: a symlinked slot is refused by fsjson.ts's O_NOFOLLOW fence, which
+// answers immediately and deterministically, where a contended lock costs two
+// 2s timeouts and needs a live pid to stay unstale.
+test('a role claim that cannot be recorded denies the spawn instead of starting a claimless child', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
+    assert.equal(ok.kind, 'noop', 'the run and its claim slot exist before the slot is made unwritable');
+
+    const runId = String((readEffectiveState(cwd) as { currentRunId?: string }).currentRunId);
+    const slot = path.join(cwd, '.traffic-one', 'runs', runId, 'pending', 'quick-fix.json');
+    fs.rmSync(slot, { force: true });
+    fs.symlinkSync(path.join(os.tmpdir(), 't1-claim-slot-elsewhere.json'), slot);
+
+    const denied = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'quick-fix',
+      model: 'haiku',
+      prompt: QUICK_FIX_SCOPE_MARKER,
+    }));
+    assert.equal(denied.kind, 'deny', 'a spawn whose claim cannot be recorded must not proceed');
+    if (denied.kind === 'deny') {
+      assert.match(denied.reason, /could not be recorded/);
+      assert.match(denied.reason, /Retry the SAME spawn/);
+      assert.match(denied.reason, /binds no role/,
+        'the deny explains the harm it prevents, so the parent does not work around it');
+    }
+  });
+});
+
 test('a backgrounded role spawn is denied — foreground only', () => {
   // ep-new-feature e2e: the parent spawned the architect with
   // run_in_background:true, ended its turn "while it completes", and the
@@ -1578,8 +1637,7 @@ test('quick-fix pin is enforced on existing codebases too, and stakes a run clai
     const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
     assert.ok(runId.length > 0, 'currentRunId minted');
     const pendingDir = path.join(cwd, '.traffic-one', 'runs', runId, 'pending');
-    const pending = fs.readdirSync(pendingDir).filter((f) => f.startsWith('quick-fix-'));
-    assert.ok(pending.length > 0, 'pending quick-fix claim staked');
+    assert.deepEqual(fs.readdirSync(pendingDir), ['quick-fix.json'], 'pending quick-fix claim staked');
   });
 });
 
@@ -2682,6 +2740,126 @@ test('codex SubagentStart fails closed when the parent omitted currentRunId (exi
   });
 });
 
+// ── The observation store's own "I could not find out" ───────────────────────
+//
+// observeCodexChildModel returns null for a missing/foreign-host policy AND for
+// its own contended lock or refused write, and both gates below used to collapse
+// that into a verdict: the SubagentStart text rendered `unavailable (model policy
+// missing)` — a GUESS, with the policy sitting readable next to it — and the
+// PreToolUse deny rendered the same guess. Both then prescribed replacing the
+// child, which is the run-team defect in miniature: a lock another hook holds
+// for up to a second answered with "destroy it".
+
+// Hold that store's lock from THIS process. Sibling of
+// shared/state/__tests__/owned-lock-fixture.ts, kept here because this store is
+// not one of the four run-scoped owned-dir locks; the owner sentinel names this
+// pid and is stamped now, so no contender can steal or reclaim the lease.
+function holdCodexObservationLock(cwd: string, runId: string): string {
+  const lockDir = path.join(cwd, '.traffic-one', 'runs', runId, 'codex-model-observations.json.lock');
+  fs.mkdirSync(lockDir, { recursive: true });
+  fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({ pid: process.pid, at: Date.now() }));
+  return lockDir;
+}
+
+test('codex SubagentStart reports a contended observation store as retryable, not as a child to replace', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e353611';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_frontend'))}\n`,
+      'utf8',
+    );
+    const start = (): HookResult => subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: parentThread,
+      transcript_path: transcript, task_name: 'senior_frontend', model: 'gpt-5.6-sol',
+    }));
+
+    const lockDir = holdCodexObservationLock(cwd, 'run-test');
+    const held = start();
+    assert.equal(held.kind, 'context');
+    if (held.kind === 'context') {
+      assert.match(held.context, /model-observation store was unavailable/);
+      assert.match(held.context, /Do NOT interrupt or replace this child on this message/);
+      assert.doesNotMatch(held.context, /model policy missing/,
+        'the policy is readable right here, so naming it was a guess at a cause that is not the cause');
+    }
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childThread]), null,
+      'nothing was recorded, which is what makes this "not found out" rather than a verdict');
+
+    // The same event with the contention gone verifies the child normally. That is
+    // what makes the retryable wording TRUE rather than merely gentler.
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    assert.equal(start().kind, 'noop');
+    assert.equal(readCodexModelObservation(cwd, 'run-test', [childThread])?.status, 'verified');
+  });
+});
+
+test('codex child gate tells a contended observation store from a policy that is really missing', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'codex');
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e353612';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_frontend'))}\n`,
+      'utf8',
+    );
+    const call = (): HookResult => codexChildModelGate(
+      codexChildPreToolCtx(cwd, childThread, parentThread, transcript, 'gpt-5.6-sol'),
+    );
+
+    // The two branches carry two deny ids, and this row asserts both. Telling
+    // them apart in the PROSE was only half the repair: `denyId` is what the
+    // decision log records for a bug report, `denyTarget` is the same `role` on
+    // one branch and the run on the other, and this gate writes no per-branch
+    // diagnostic — so while both rendered `codex-child-model-status-unverified`
+    // the log could not distinguish a two-second lock from a run whose policy is
+    // gone, which is the same collapse one level down from the wording.
+    const lockDir = holdCodexObservationLock(cwd, 'run-test');
+    const held = call();
+    assert.equal(held.kind, 'deny', 'an unverified child still fails closed — only the REMEDY changes');
+    if (held.kind === 'deny') {
+      assert.equal(held.denyId, 'codex-child-model-observation-persist-failed');
+      assert.match(held.reason, /observed-model record could not be written/);
+      assert.match(held.reason, /Retry this tool once; if it repeats, replace the child from the parent/);
+      assert.doesNotMatch(held.reason, /model policy missing/);
+    }
+
+    // Same null from the store, genuinely durable cause: no policy to verify
+    // against. Here the parent really must repair the run, and no retry helps.
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    const policyFile = path.join(cwd, '.traffic-one', 'runs', 'run-test', 'model-policy.json');
+    const policy = fs.readFileSync(policyFile, 'utf8');
+    fs.rmSync(policyFile);
+    const missing = call();
+    assert.equal(missing.kind, 'deny');
+    if (missing.kind === 'deny') {
+      // The same missing/foreign-host run policy the non-Codex branch of this
+      // gate refuses, with the same remedy, so it is deliberately the SAME id
+      // rather than a third one — and the run, not the role, is what was
+      // refused.
+      assert.equal(missing.denyId, 'codex-child-model-policy-missing');
+      assert.equal(missing.denyTarget, 'run-test');
+      assert.match(missing.reason, /immutable model policy for run `run-test` is missing, corrupt/);
+      assert.doesNotMatch(missing.reason, /Retry this tool once/,
+        'nothing clears on its own here, so the retry must not be offered');
+    }
+    if (held.kind === 'deny' && missing.kind === 'deny') {
+      assert.notEqual(held.denyId, missing.denyId,
+        'one id for both is what sent a reader back to string-matching the prose');
+    }
+
+    // And with both restored the child verifies, so the transient row above was
+    // measuring the lock and not a broken fixture.
+    fs.writeFileSync(policyFile, policy, 'utf8');
+    assert.equal(call().kind, 'noop');
+  });
+});
+
 // ── Subagent reuse: recorder + duplicate-spawn deny ──────────────────────────
 
 function withTeamsEnv(fn: () => void): void {
@@ -3568,7 +3746,17 @@ test('reuse (Codex): matching line-zero metadata verifies continuation while a f
       assert.match(duplicate.reason, /codex-observed-model-missing/);
       assert.match(duplicate.reason, /Do not route `followup_task`\/`send_message` to this unverified id/);
       assert.match(duplicate.reason, /do not start a duplicate/i);
-      assert.match(duplicate.reason, /Retry after the child rollout is flushed/);
+      // CHANGED GUARD — was `assert.match(duplicate.reason, /Retry after the
+      // child rollout is flushed/)`. That sentence offered ONE cause as the
+      // entire explanation, and this deny is also reached with
+      // `codex-registry-evidence-lock-unavailable`, where nothing is flushing
+      // and the operator sent to wait on a rollout waits for an event that
+      // already happened. Both causes are pinned rather than one, so the prose
+      // cannot silently drop either half again, and the retry prescription the
+      // old assertion protected is still required to be present.
+      assert.match(duplicate.reason, /a child rollout that has not flushed yet/);
+      assert.match(duplicate.reason, /a registry row another process held while this hook ran/);
+      assert.match(duplicate.reason, /clear without your intervention/);
       assert.match(duplicate.reason, /use `\[t1-replace-agent\]` with the concrete failure reason/);
       assert.match(duplicate.reason, /exact task-name contract/);
       assert.match(duplicate.reason, /`senior_architect`/);
@@ -3754,7 +3942,13 @@ test('reuse (Copilot): records background agent_id and denies same-role respawn'
   });
 });
 
-test('reuse (Windsurf): records returned agent id and denies same-role respawn with run_subagent prose', () => {
+// CHANGED BEHAVIOUR (was: 'reuse (Windsurf): records returned agent id and denies
+// same-role respawn with run_subagent prose'). Windsurf returns a real agent id, but
+// Traffic One has no way to verify that the child behind it is the role the spawn
+// profile named, and `read_subagent` is a READ of a running child, not a
+// continuation — the old deny's own remedy was "call run_subagent again", i.e. spawn
+// fresh. Reuse now stands down and the respawn happens without the detour.
+test('reuse (Windsurf): the returned agent id is not recorded as reusable, and a same-role respawn is not denied', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     setCurrentRunId(cwd, 'run-windsurf-reuse');
     const rec = recordSpawnedAgent(postSpawnCtx(
@@ -3768,25 +3962,30 @@ test('reuse (Windsurf): records returned agent id and denies same-role respawn w
       'windsurf',
     ));
     assert.equal(rec.kind, 'noop');
-    assert.equal(readRunAgentRegistry(cwd, 'run-windsurf-reuse')['senior-frontend']?.agentId, 'devin-agent-123');
+    assert.equal(readRunAgentRegistry(cwd, 'run-windsurf-reuse')['senior-frontend'], undefined,
+      'the PostToolUse recorder writes no reuse row on Windsurf');
 
     const duplicate = agentModelGate(spawnCtxWithSession(cwd, {
       profile: 'senior-frontend',
       prompt: '[t1-role: senior-frontend]\npart 2: admin area',
     }, 'parent-1', 'windsurf'));
-    assert.equal(duplicate.kind, 'deny');
-    if (duplicate.kind === 'deny') {
-      assert.ok(duplicate.reason.includes('senior-frontend'));
-      assert.ok(duplicate.reason.includes('run_subagent'));
-      assert.ok(duplicate.reason.includes('profile `subagent_general`'));
-      assert.ok(duplicate.reason.includes('[t1-role: senior-frontend]'));
-      assert.ok(!duplicate.reason.includes('profile `devin-agent-123`'));
-      assert.ok(!duplicate.reason.includes('SendMessage'));
-    }
+    assert.equal(duplicate.kind, 'noop', 'part 2 spawns a fresh child rather than continuing an unverified one');
+    // The role is still tracked: the fresh spawn stakes exactly one pending claim
+    // in the role-keyed CAS slot, so settlement and scope checks still see it.
+    assert.deepEqual(
+      fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', 'run-windsurf-reuse', 'pending')),
+      ['senior-frontend.json'],
+    );
   });
 });
 
-test('reuse (Kilo): child binding records the live role and blocks a duplicate general task', () => {
+// CHANGED BEHAVIOUR (was: 'reuse (Kilo): child binding records the live role and
+// blocks a duplicate general task'). Same cause as the OpenCode case above: Kilo
+// binds through the identical marker path, has no resumable Task field, and
+// additionally carries `noTaskCompletionLifecycle` — a finished child can leave a
+// fresh `claimed` record behind, so the row the old deny trusted could name a worker
+// that had already exited.
+test('reuse (Kilo): child binding claims the role without a reusable agent row, and a duplicate general task is allowed', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     setCurrentRunId(cwd, 'run-kilo-reuse');
     freezeRunPolicy(cwd, 'kilo', 'run-kilo-reuse');
@@ -3796,18 +3995,18 @@ test('reuse (Kilo): child binding records the live role and blocks a duplicate g
       host: 'kilo', cwd, now: () => 'x',
     } as unknown as Ctx);
 
-    assert.equal(readRunAgentRegistry(cwd, 'run-kilo-reuse')['senior-frontend']?.agentId, 'kilo-child-fe');
+    assert.equal(readRunAgentRegistry(cwd, 'run-kilo-reuse')['senior-frontend'], undefined,
+      'no unverifiable reuse row is written on Kilo');
+    assert.equal(
+      resolveRunAgentContext(cwd, readEffectiveState(cwd), { session_id: 'kilo-child-fe' }, { claimPending: false })?.role,
+      'senior-frontend',
+      'the Kilo child still resolves its role from its claim',
+    );
     const duplicate = agentModelGate(spawnCtxWithSession(cwd, {
       subagent_type: 'general',
       prompt: '[t1-role: senior-frontend]\nApply the next frontend fix.',
     }, 'kilo-parent', 'kilo'));
-    assert.equal(duplicate.kind, 'deny');
-    if (duplicate.kind === 'deny') {
-      assert.ok(duplicate.reason.includes('Kilo'));
-      assert.ok(duplicate.reason.includes('[t1-replace-agent]'));
-      assert.ok(duplicate.reason.includes('[t1-role: senior-frontend]'));
-      assert.ok(duplicate.reason.includes('general'));
-    }
+    assert.equal(duplicate.kind, 'noop', 'the next fix spawns fresh instead of waiting on an unverified child');
   });
 });
 
@@ -3829,7 +4028,7 @@ test('Windsurf first-run: built-in general profile binds the marker role and is 
     }, 'parent-1', 'windsurf'));
     assert.equal(result.kind, 'noop');
     const pendingDir = path.join(cwd, '.traffic-one', 'runs', 'run-windsurf-general', 'pending');
-    assert.ok(fs.readdirSync(pendingDir).some((file) => file.startsWith('senior-architect-')));
+    assert.deepEqual(fs.readdirSync(pendingDir), ['senior-architect.json']);
   });
 });
 
@@ -4421,10 +4620,36 @@ test('subagentContinuationAvailable is true on Codex without the Claude flag, an
   assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'copilot' } as NodeJS.ProcessEnv), true);
   assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'copilot', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '0' } as NodeJS.ProcessEnv), false);
   assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'copilot'), true);
-  assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'windsurf'), true);
-  assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'windsurf' } as NodeJS.ProcessEnv), true);
-  assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'opencode'), true);
-  assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'opencode' } as NodeJS.ProcessEnv), true);
+});
+
+// CHANGED BEHAVIOUR: windsurf/opencode were asserted `true` here (and kilo was not
+// covered at all). All three are uncertified hosts with no continuation primitive
+// and no verifiable role evidence for a recorded child, so the reuse registry stands
+// down: the gate reads nothing and the recorders write nothing.
+test('agent reuse stands down on the uncertified hosts that cannot verify a recorded child', async () => {
+  const { subagentContinuationAvailable } = await import('../../../shared/state/run-agent');
+  for (const host of ['opencode', 'kilo', 'windsurf']) {
+    assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, host), false, host);
+    assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: host } as NodeJS.ProcessEnv), false, `${host} via env`);
+    // The stand-down must be an explicit answer, not a fall-through to the Claude
+    // agent-teams flag: these hooks run in whatever environment launched them, and
+    // an inherited flag would silently switch the registry back on.
+    assert.equal(
+      subagentContinuationAvailable({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } as NodeJS.ProcessEnv, host),
+      false,
+      `${host} with an inherited agent-teams flag`,
+    );
+    assert.equal(
+      subagentContinuationAvailable({ TRAFFIC_ONE_HOST: host, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } as NodeJS.ProcessEnv),
+      false,
+      `${host} via env with an inherited agent-teams flag`,
+    );
+  }
+  // Certified hosts (and Copilot, which does expose a real `agent_id` continuation)
+  // are untouched.
+  for (const host of ['codex', 'cursor', 'copilot']) {
+    assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, host), true, host);
+  }
 });
 
 test('Cursor reuse deny names the Task resume recipe and accepts continuation fields', () => {

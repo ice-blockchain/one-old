@@ -28,6 +28,11 @@ export function followup(message: string): HookResult {
     : noop();
 }
 
+// `opts.denyId` should be a literal from config/deny-ids.ts (see DenyId) — pass
+// it as a declared constant, never build it from `reason`. Omitting it is not
+// a type error (many call sites still need one added; see the completeness
+// test in tests/), but the pipeline will only synthesize an anonymous
+// fallback, not a real identity, so leaving it off a NEW call site is a bug.
 export function deny(reason: string, opts: { context?: string } & ResultMeta = {}): HookResult {
   const { context: extraContext, ...meta } = opts;
   return {
@@ -47,8 +52,21 @@ export function isDeny(result: HookResult): result is Extract<HookResult, { kind
 // semantics are unchanged (an unanswered ask blocks, like a deny); the Cursor adapter maps
 // `askUser` → `permission:"ask"` on PreToolUse. On Claude/Codex it serializes as a plain deny —
 // inert, because the only command it gates is Cursor-only.
+//
+// It carries a declared id like every other exit: leaving it off did not make
+// it identity-free, it made the pipeline mint `unattributed-handler:<gateId>`
+// for it, so the ONE surface meant to say "a fallback fired" started reporting
+// a routine, expected approval prompt. `user-approval-request` (see
+// config/deny-ids.ts) names the prompt class; `gateId` still says which gate
+// asked; and `askUser: true` remains the discriminator for a consumer holding
+// the result rather than a log record.
+//
+// A deny budget MUST SKIP these records — an approval prompt is not a refusal
+// and the human answering it is already the rate limit. Set here rather than
+// at the call site because there is nothing per-site to choose: any askUser IS
+// this cause.
 export function askUser(question: string, agentMessage: string): HookResult {
-  return { kind: 'deny', reason: question, askUser: true, agentMessage };
+  return { kind: 'deny', reason: question, askUser: true, agentMessage, denyId: 'user-approval-request' };
 }
 
 // Merge results: the first deny wins (short-circuit). Otherwise concatenate

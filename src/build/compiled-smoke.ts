@@ -16,10 +16,39 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { buildRuntime } from './build-runtime';
+import { listModuleIdsWithDescriptor, listModuleSkillDocs } from './copy-module-assets';
 
 function fail(msg: string): never {
   process.stderr.write(`compiled-smoke: FAIL — ${msg}\n`);
   process.exit(1);
+}
+
+function toPosix(rel: string): string {
+  return rel.split(path.sep).join('/');
+}
+
+// Run `body` with process.env overridden (an `undefined` value DELETES the var),
+// restoring the exact prior state — absent vars included — afterwards.
+// Needed because the compiled state API is also called IN-PROCESS here, and the
+// consent write fence it consults (shared/state/plugin-use.ts's
+// projectStateWriteAllowed) reads process.env directly: it takes no env
+// argument, since in production the hook process's env IS the answer. So a
+// fixture that hands an env object to the writer but leaves process.env alone
+// would resolve the consent record from the DEVELOPER's machine.
+function withProcessEnv<T>(overrides: Readonly<Record<string, string | undefined>>, body: () => T): T {
+  const saved = Object.keys(overrides).map((key) => [key, process.env[key]] as const);
+  const apply = (entries: readonly (readonly [string, string | undefined])[]): void => {
+    for (const [key, value] of entries) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+  apply(Object.entries(overrides));
+  try {
+    return body();
+  } finally {
+    apply(saved);
+  }
 }
 
 // Invoke a legacy-path shim (e.g. hook-runtime.cjs) at the scratch root.
@@ -99,7 +128,58 @@ async function main(): Promise<void> {
   try {
     // 1. Full cutover build: compile + descriptors + legacy-named shims.
     const built = buildRuntime(scratch);
-    if (built.modulesCopied < 6) fail(`expected module descriptors copied, got ${built.modulesCopied}`);
+    // src/dist module-set EQUALITY, not a floor: `modulesCopied` used to count
+    // files (module.json + each skill/*.md landed in the same `copied` array),
+    // so a module shipping 2 prose files was silently counted as 2 modules —
+    // this would have passed even with a broken copy that dropped a whole
+    // module, as long as some other module shipped enough extra skill files to
+    // clear the floor. Compare the actual module-id sets instead: every module
+    // in src/modules/ that ships a descriptor must be present in the built
+    // tree, and nothing extra may be.
+    //
+    // Both sides use the same predicate but must read DIFFERENT trees. The
+    // built side is read back OFF DISK, not taken from `built.moduleIds`:
+    // that set is populated inside copyModuleDescriptors' own loop over
+    // src/modules, so comparing it against a src/modules listing compared
+    // source with source — deleting the copyFileSync that writes the
+    // descriptor left this check green.
+    const srcModulesDir = path.join(__dirname, '..', 'modules');
+    const builtModulesDir = path.join(scratch, 'modules');
+    const srcModuleIds = listModuleIdsWithDescriptor(srcModulesDir);
+    const builtModuleIds = listModuleIdsWithDescriptor(builtModulesDir);
+    const missingModules = [...srcModuleIds].filter((id) => !builtModuleIds.has(id)).sort();
+    const extraModules = [...builtModuleIds].filter((id) => !srcModuleIds.has(id)).sort();
+    if (missingModules.length > 0 || extraModules.length > 0) {
+      fail(`built module set does not match src/modules/: missing [${missingModules.join(', ')}], extra [${extraModules.join(', ')}]`);
+    }
+
+    // Gate prose is copied by a SECOND loop inside copyModuleDescriptors that
+    // nothing compared, and no runtime assertion can cover it: every gate's TS
+    // fallback is byte-identical to its T1BLOCK block on purpose (a missing
+    // block must never change the deny wording), so a deny rendered from the
+    // fallback and one rendered from the shipped SKILL.md are indistinguishable
+    // downstream. The only place the difference is observable is here, on
+    // disk — so assert the files arrived, byte for byte.
+    const srcDocs = new Map(listModuleSkillDocs(srcModulesDir).map((doc) => [toPosix(doc.relPath), doc.absPath]));
+    const builtDocs = new Map(listModuleSkillDocs(builtModulesDir).map((doc) => [toPosix(doc.relPath), doc.absPath]));
+    const missingProse = [...srcDocs.keys()].filter((rel) => !builtDocs.has(rel)).sort();
+    const extraProse = [...builtDocs.keys()].filter((rel) => !srcDocs.has(rel)).sort();
+    if (missingProse.length > 0 || extraProse.length > 0) {
+      fail(`built gate prose does not match src/modules/: missing [${missingProse.join(', ')}], extra [${extraProse.join(', ')}] — every install would ship the TS fallback wording instead`);
+    }
+    const driftedProse = [...srcDocs.entries()]
+      .filter(([rel, abs]) => !fs.readFileSync(abs).equals(fs.readFileSync(builtDocs.get(rel)!)))
+      .map(([rel]) => rel)
+      .sort();
+    if (driftedProse.length > 0) fail(`built gate prose differs byte-wise from src/modules/: ${driftedProse.join(', ')}`);
+    // A descriptor with no prose is normal (only the gate modules author
+    // any); prose with no descriptor is not — the registry's readdir
+    // discovery keys off module.json, so that skill/ dir would ship dead.
+    const orphanProse = [...new Set([...builtDocs.keys()].map((rel) => rel.split('/')[0]!))]
+      .filter((id) => !builtModuleIds.has(id))
+      .sort();
+    if (orphanProse.length > 0) fail(`built tree ships gate prose for modules with no descriptor: ${orphanProse.join(', ')}`);
+
     for (const shim of ['hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'windsurf-hook-runtime.cjs', 'devin-hook-runtime.cjs']) {
       if (!fs.existsSync(path.join(scratch, shim))) fail(`missing shim ${shim}`);
     }
@@ -108,27 +188,66 @@ async function main(): Promise<void> {
     //    tool use must be denied. pluginRoot points at the realistic scratch
     //    install, so skillBlock reads the compiled skill prose from scripts/.
     //    Auth is enforced explicitly (TRAFFIC_ONE_AUTH=on). The priority-0 auth
-    //    gate, while unauthenticated, delegates to the onboarding gate (which opens
-    //    the wizard's api-key page and denies mutating tools); NO_SPAWN keeps that
-    //    delegation from launching a real wizard server in the smoke — the deny
-    //    still fires with the placeholder URL, which is what this proves.
+    //    gate, while unauthenticated, delegates to the onboarding gate, which
+    //    denies mutating tools until setup completes; NO_SPAWN keeps that
+    //    delegation from launching a real wizard server, so the deny arrives with
+    //    an empty setup link rather than a live one.
+    //
+    //    The fixture must ANSWER the use-plugin question for any of this to be
+    //    about auth. On an unanswered project the ask-first branch denies every
+    //    one of these calls before auth is ever consulted, so each host check
+    //    below went green off a deny that has nothing to do with authentication:
+    //    they passed identically with auth switched off, and would keep passing
+    //    if the priority-0 auth gate were deleted outright. Consent moves the
+    //    deny back onto the gate the assertions name — confirmed by the auth-off
+    //    control below, which stops being denied precisely because auth was the
+    //    only thing objecting.
+    const authHome = path.join(authTmp, 'home');
+    fs.mkdirSync(authHome, { recursive: true });
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      HOME: authHome,
       TRAFFIC_ONE_AUTH: 'on',
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
       TRAFFIC_ONE_STATE_PATH: path.join(authTmp, 'one.json'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(authTmp, 'prefs.json'),
       TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
     };
+    delete env.XDG_STATE_HOME;
+    delete env.TRAFFIC_ONE_ASK_USE_PLUGIN;
 
     // Each host gets its OWN project cwd. The unauthenticated gate delegates to the
     // onboarding gate, which writes per-project session markers (once-per-session
     // deny walkthrough); sharing one cwd across hosts would let the first call's
     // marker steer the next host's branch. A real session is one host per project,
-    // so per-host cwds match reality and keep the three checks independent.
+    // so per-host cwds match reality and keep the four checks independent.
     const claudeCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-claude-'));
     const cursorCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-cursor-'));
     const windsurfCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-windsurf-'));
+    const devinCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-devin-'));
+
+    // One record covers all four: TRAFFIC_ONE_PROJECT_PREFS_PATH pins a single
+    // prefs FILE, and projectPrefsPath returns it without consulting cwd, so the
+    // four hosts share the one answer they all read. Recorded through the same
+    // compiled entry point production's `--use` answer calls.
+    const compiledAuthPluginUse = require(path.join(scratch, 'shared', 'state', 'plugin-use.js')) as {
+      recordPluginUseChoice(cwd: string, enabled: boolean, source: string, env?: NodeJS.ProcessEnv): void;
+    };
+    withProcessEnv(
+      { HOME: authHome, XDG_STATE_HOME: undefined, TRAFFIC_ONE_ASK_USE_PLUGIN: undefined, TRAFFIC_ONE_PROJECT_PREFS_PATH: env.TRAFFIC_ONE_PROJECT_PREFS_PATH },
+      () => compiledAuthPluginUse.recordPluginUseChoice(claudeCwd, true, 'compiled-smoke', process.env),
+    );
+
+    // The auth gate's own words. Asserting the DECISION alone is not enough:
+    // every branch that could answer one of these calls answers with a deny, so
+    // `deny` on its own says only "something objected", not "the unauthenticated
+    // gate objected".
+    const AUTH_DENY = 'Traffic One setup is required before building';
+    const assertAuthDeny = (host: string, reason: unknown): void => {
+      if (!String(reason || '').includes(AUTH_DENY)) {
+        fail(`${host} deny did not come from the unauthenticated gate (reason: ${String(reason || '(empty)').slice(0, 160)})`);
+      }
+    };
 
     const claudeStdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(claudeCwd, 'x.ts'), content: 'export const x = 1;' }, cwd: claudeCwd });
     const claudeOut = JSON.parse(runShim(
@@ -139,32 +258,66 @@ async function main(): Promise<void> {
       { ...env, TRAFFIC_ONE_HOST: 'claude' },
     ) || '{}');
     if (claudeOut.hookSpecificOutput?.permissionDecision !== 'deny') fail('hook-runtime.cjs shim did not deny an unauthed write');
+    assertAuthDeny('Claude', claudeOut.hookSpecificOutput?.permissionDecisionReason);
     if (String(claudeOut.hookSpecificOutput?.additionalContext || '').includes('traffic-one-hook-context:v1')) {
       fail('Claude hook context incorrectly carried the Codex-only provenance marker');
+    }
+    // Control: the SAME call with auth not enforced. This is what makes the three
+    // denies above attributable — if they survive auth being switched off, they
+    // were never the auth gate's. Deliberately not asserted as an allow: the
+    // claim is only that this specific deny is auth's, so a future unrelated
+    // gate objecting here must not read as an auth-gate regression.
+    const claudeAuthOff = JSON.parse(runShim(
+      scratch,
+      'hook-runtime.cjs',
+      'check-plan-write',
+      claudeStdin,
+      { ...env, TRAFFIC_ONE_AUTH: 'off', TRAFFIC_ONE_HOST: 'claude' },
+    ) || '{}');
+    if (String(claudeAuthOff.hookSpecificOutput?.permissionDecisionReason || '').includes(AUTH_DENY)) {
+      fail('the unauthenticated deny fired with auth switched off — the checks above are not testing the auth gate');
     }
 
     const cursorOut = JSON.parse(runShim(scratch, 'cursor-hook-runtime.cjs', 'before-shell-execution', JSON.stringify({ cwd: cursorCwd, command: 'npm run build' }), env) || '{}');
     if (cursorOut.permission !== 'deny') fail('cursor-hook-runtime.cjs shim did not deny an unauthed shell');
-    if (!cursorOut.user_message) fail('cursor deny had no user_message (skillBlock did not resolve from src)');
+    // Cursor's wire shape carries the reason in user_message, so an empty one is
+    // a real defect on its own — but non-emptiness cannot say WHERE the wording
+    // came from: a resolved T1BLOCK and its verbatim TS fallback are byte-identical
+    // by design. "Prose actually shipped" is proven on disk by the built-vs-source
+    // cross-check in step 1; "the right gate spoke" is proven by the text below.
+    if (!cursorOut.user_message) fail('cursor deny had no user_message');
+    assertAuthDeny('Cursor', cursorOut.user_message);
 
+    // A MUTATING command, unlike Claude's and Cursor's calls above. Windsurf and
+    // Devin are the hosts whose gate releases read-only orientation while setup
+    // is pending (their recipe rides the native prompt-submit context instead),
+    // and `npm run build` classifies as orientation — so this leg and Devin's
+    // passed only while the ask-first deny was covering for them, and both went
+    // ALLOW the moment the fixture became a realistically consented project.
     const windsurfOut = runShimAllowingBlock(
       scratch,
       'windsurf-hook-runtime.cjs',
       'pre_run_command',
-      JSON.stringify({ agent_action_name: 'pre_run_command', tool_info: { cwd: windsurfCwd, command_line: 'npm run build' } }),
+      JSON.stringify({ agent_action_name: 'pre_run_command', tool_info: { cwd: windsurfCwd, command_line: 'git push --force' } }),
       env,
     );
     if (windsurfOut.status !== 2) fail(`windsurf-hook-runtime.cjs shim did not exit 2 on an unauthed shell (status ${windsurfOut.status})`);
     if (!windsurfOut.stderr) fail('windsurf deny had no stderr message');
+    assertAuthDeny('Windsurf', windsurfOut.stderr);
 
     const devinOut = JSON.parse(runShim(
       scratch,
       'devin-hook-runtime.cjs',
       'check-onboarding-gate',
-      JSON.stringify({ hook_event_name: 'PreToolUse', cwd: authTmp, tool_name: 'exec', tool_input: { command: 'npm run build' } }),
+      // Mutating, and its own cwd, for the same two reasons as Windsurf above:
+      // the Devin entry releases read-only orientation while setup is pending,
+      // and this call now writes once-per-session markers into whatever cwd it
+      // is handed (authTmp holds the fixture's prefs/state files, not a project).
+      JSON.stringify({ hook_event_name: 'PreToolUse', cwd: devinCwd, tool_name: 'exec', tool_input: { command: 'git push --force' } }),
       env,
     ) || '{}');
     if (devinOut.decision !== 'block') fail('devin-hook-runtime.cjs shim did not block an unauthed exec');
+    assertAuthDeny('Devin', devinOut.reason);
 
     // 3. Regression: Codex hooks run inside a workspace-only sandbox, while
     //    private onboarding state is intentionally user-local. Inject a real
@@ -390,8 +543,16 @@ async function main(): Promise<void> {
         'utf8',
       );
       const bgWait = builtWaitCommands.onboardingWaitCommand(bgProject, 'claude');
+      // HOME is pinned even though the deletions below already redirect the two
+      // pinned paths: the per-user prefs default to ~/.traffic-one/projects/<hash>,
+      // so an unpinned HOME leaves these calls reading — and, on any future code
+      // path that records rather than reads, WRITING — the developer's own
+      // machine state. The smoke must be inert on the machine that runs it.
+      const bgHome = path.join(onboardingTmp, 'claude-bg-home');
+      fs.mkdirSync(bgHome, { recursive: true });
       const bgEnv: NodeJS.ProcessEnv = {
         ...process.env,
+        HOME: bgHome,
         TRAFFIC_ONE_AUTH: 'off',
         TRAFFIC_ONE_ASK_USE_PLUGIN: 'off',
         TRAFFIC_ONE_HOST: 'claude',
@@ -491,51 +652,21 @@ async function main(): Promise<void> {
       currentRunId: cursorRunId,
     })}\n`, 'utf8');
 
-    const compiledCursorState = require(path.join(scratch, 'shared', 'state', 'index.js')) as {
-      recordCursorSpawnObservation(cwd: string, runId: string, input: Record<string, unknown>): Record<string, any> | null;
-      claimCursorSpawnObservation(cwd: string, runId: string, toolCallId: string, childTranscriptId: string, nowMs?: number): Record<string, any> | null;
-      updateCursorSpawnObservation(cwd: string, runId: string, childTranscriptId: string, patch: Record<string, unknown>, nowMs?: number): Record<string, any> | null;
-      consumeCursorSpawnObservation(cwd: string, runId: string, childTranscriptId: string, nowMs?: number): Record<string, any> | null;
-      listCursorSpawnObservations(cwd: string, runId: string): Array<Record<string, any>>;
-    };
-    const finalizedRoles = [
-      { role: 'senior-backend', toolCallId: 'tool_compiled_backend', childId: 'child-compiled-backend', model: 'compiled-backend-model' },
-      { role: 'senior-frontend', toolCallId: 'tool_compiled_frontend', childId: 'child-compiled-frontend', model: 'compiled-frontend-model' },
-    ];
-    const fixtureStartedAt = Date.now() - 5_000;
-    for (const [index, item] of finalizedRoles.entries()) {
-      const recorded = compiledCursorState.recordCursorSpawnObservation(cursorProject, cursorRunId, {
-        parentSessionId: cursorParentId,
-        toolCallId: item.toolCallId,
-        role: item.role,
-        requestedModel: item.model,
-        tier: 'balanced',
-        expectedModel: item.model,
-        startedAtMs: fixtureStartedAt + index,
-      });
-      if (!recorded) fail(`compiled cursor fixture did not record ${item.role}`);
-      const claimed = compiledCursorState.claimCursorSpawnObservation(
-        cursorProject, cursorRunId, item.toolCallId, item.childId, fixtureStartedAt + 100 + index,
-      );
-      if (!claimed) fail(`compiled cursor fixture did not claim ${item.role}'s child transcript`);
-      const updated = compiledCursorState.updateCursorSpawnObservation(cursorProject, cursorRunId, item.childId, {
-        outcome: 'generic',
-        error: `compiled generic failure for ${item.role}`,
-        directive: `compiled pending directive for ${item.role}`,
-        prescribedModel: null,
-      }, fixtureStartedAt + 200 + index);
-      if (!updated) fail(`compiled cursor fixture did not persist ${item.role}'s failure`);
-      const consumed = compiledCursorState.consumeCursorSpawnObservation(
-        cursorProject, cursorRunId, item.childId, fixtureStartedAt + 300 + index,
-      );
-      if (!consumed?.consumedAtMs) fail(`compiled cursor fixture did not finalize ${item.role}'s failure`);
-    }
-    const beforeLifecycle = compiledCursorState.listCursorSpawnObservations(cursorProject, cursorRunId);
-    if (beforeLifecycle.length !== 2
-      || beforeLifecycle.some((item) => !item.consumedAtMs || item.followupEmitted || item.retryHandled)) {
-      fail('compiled cursor fixture was not two finalized, unclaimed role failures');
-    }
-
+    // ONE env for both sides of this section. The lifecycle hooks below are real
+    // bare-node processes that get this object; the fixture calls run in THIS
+    // process and get the same values pinned onto process.env. They must agree,
+    // because both resolve the same per-project consent record — a fixture that
+    // consented somewhere the hooks don't read would leave the hooks writing
+    // nothing, silently, which is the exact failure mode being characterized.
+    //
+    // HOME + TRAFFIC_ONE_PROJECT_PREFS_PATH are what keep that record inside the
+    // scratch dir: the "use Traffic One here?" answer lives in the PER-USER
+    // prefs (~/.traffic-one/projects/<hash>/preferences.json), never in the
+    // project, so an unpinned run would write a consent row into the developer's
+    // real machine state. TRAFFIC_ONE_ASK_USE_PLUGIN is DELETED rather than set:
+    // this section is the only place the compiled fence is exercised, and it has
+    // to be exercised on the shipped default, not on whatever a developer shell
+    // happens to export.
     const cursorLifecycleEnv: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: cursorHome,
@@ -549,6 +680,102 @@ async function main(): Promise<void> {
     };
     delete cursorLifecycleEnv.NODE_OPTIONS;
     delete cursorLifecycleEnv.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+    delete cursorLifecycleEnv.XDG_STATE_HOME;
+    delete cursorLifecycleEnv.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    // Read back OUT of the child env, so the two can never drift apart.
+    const cursorFixtureEnv = Object.fromEntries([
+      'HOME',
+      'XDG_STATE_HOME',
+      'TRAFFIC_ONE_ASK_USE_PLUGIN',
+      'TRAFFIC_ONE_PROJECT_PREFS_PATH',
+      'TRAFFIC_ONE_STATE_PATH',
+    ].map((key) => [key, cursorLifecycleEnv[key]]));
+
+    const compiledCursorState = require(path.join(scratch, 'shared', 'state', 'index.js')) as {
+      recordCursorSpawnObservation(cwd: string, runId: string, input: Record<string, unknown>): Record<string, any> | null;
+      claimCursorSpawnObservation(cwd: string, runId: string, toolCallId: string, childTranscriptId: string, nowMs?: number): Record<string, any> | null;
+      updateCursorSpawnObservation(cwd: string, runId: string, childTranscriptId: string, patch: Record<string, unknown>, nowMs?: number): Record<string, any> | null;
+      consumeCursorSpawnObservation(cwd: string, runId: string, childTranscriptId: string, nowMs?: number): Record<string, any> | null;
+      listCursorSpawnObservations(cwd: string, runId: string): Array<Record<string, any>>;
+    };
+    // Not re-exported by shared/state/index.js — required by its own path, which
+    // is also what makes it the SAME module instance shared/fsjson.js lazily
+    // requires for the fence, so a consent recorded here is the consent the
+    // fence reads.
+    const compiledPluginUse = require(path.join(scratch, 'shared', 'state', 'plugin-use.js')) as {
+      recordPluginUseChoice(cwd: string, enabled: boolean, source: string, env?: NodeJS.ProcessEnv): void;
+    };
+    const finalizedRoles = [
+      { role: 'senior-backend', toolCallId: 'tool_compiled_backend', childId: 'child-compiled-backend', model: 'compiled-backend-model' },
+      { role: 'senior-frontend', toolCallId: 'tool_compiled_frontend', childId: 'child-compiled-frontend', model: 'compiled-frontend-model' },
+    ];
+    const fixtureStartedAt = Date.now() - 5_000;
+    const cursorSpawnsFile = path.join(cursorProject, '.traffic-one', 'runs', cursorRunId, 'cursor-spawns.json');
+    const spawnObservationInput = (item: typeof finalizedRoles[number], index: number): Record<string, unknown> => ({
+      parentSessionId: cursorParentId,
+      toolCallId: item.toolCallId,
+      role: item.role,
+      requestedModel: item.model,
+      tier: 'balanced',
+      expectedModel: item.model,
+      startedAtMs: fixtureStartedAt + index,
+    });
+
+    withProcessEnv(cursorFixtureEnv, () => {
+      // The fence FIRST, on the compiled runtime, before consent exists. This is
+      // the only place it is exercised compiled, and it is what stops the two
+      // halves below from being mutually compensating: without it, deleting the
+      // fence would leave this section green, and the consent recording would
+      // read as ceremony.
+      compiledCursorState.recordCursorSpawnObservation(
+        cursorProject, cursorRunId, spawnObservationInput(finalizedRoles[0]!, 0),
+      );
+      if (fs.existsSync(cursorSpawnsFile)) {
+        fail('the compiled consent fence let a reuse-registry write land on a project whose use-plugin question is unanswered');
+      }
+
+      // Now consent, through the SAME call production's `--use` answer makes
+      // (runners/onboarding-wait/wizard-output.ts's applyUseChoice). A project
+      // in which agents are spawning has necessarily already answered yes — the
+      // onboarding gate denies every mutating tool before that point — so a
+      // fixture that skips this is not a realistic project, it is a project the
+      // product would never have let get this far.
+      compiledPluginUse.recordPluginUseChoice(cursorProject, true, 'compiled-smoke', process.env);
+      const recordedConsent = path.join(cursorConcurrencyTmp, 'preferences.json');
+      if (!fs.existsSync(recordedConsent)) fail('compiled consent recording wrote no per-user prefs file');
+
+      for (const [index, item] of finalizedRoles.entries()) {
+        const recorded = compiledCursorState.recordCursorSpawnObservation(
+          cursorProject, cursorRunId, spawnObservationInput(item, index),
+        );
+        if (!recorded) fail(`compiled cursor fixture did not record ${item.role}`);
+        const claimed = compiledCursorState.claimCursorSpawnObservation(
+          cursorProject, cursorRunId, item.toolCallId, item.childId, fixtureStartedAt + 100 + index,
+        );
+        if (!claimed) fail(`compiled cursor fixture did not claim ${item.role}'s child transcript`);
+        const updated = compiledCursorState.updateCursorSpawnObservation(cursorProject, cursorRunId, item.childId, {
+          outcome: 'generic',
+          error: `compiled generic failure for ${item.role}`,
+          directive: `compiled pending directive for ${item.role}`,
+          prescribedModel: null,
+        }, fixtureStartedAt + 200 + index);
+        if (!updated) fail(`compiled cursor fixture did not persist ${item.role}'s failure`);
+        const consumed = compiledCursorState.consumeCursorSpawnObservation(
+          cursorProject, cursorRunId, item.childId, fixtureStartedAt + 300 + index,
+        );
+        if (!consumed?.consumedAtMs) fail(`compiled cursor fixture did not finalize ${item.role}'s failure`);
+      }
+      // Read back off DISK, not from the calls above: every one of those returns
+      // its in-memory row whether or not the store was actually persisted, which
+      // is precisely how a refused write reads as a successful one.
+      if (!fs.existsSync(cursorSpawnsFile)) fail('compiled cursor fixture persisted no cursor-spawns.json');
+      const beforeLifecycle = compiledCursorState.listCursorSpawnObservations(cursorProject, cursorRunId);
+      if (beforeLifecycle.length !== 2
+        || beforeLifecycle.some((item) => !item.consumedAtMs || item.followupEmitted || item.retryHandled)) {
+        fail('compiled cursor fixture was not two finalized, unclaimed role failures');
+      }
+    });
+
     const stopInput = JSON.stringify({
       cwd: cursorProject,
       workspace_roots: [cursorProject],
@@ -601,10 +828,9 @@ async function main(): Promise<void> {
       || afterLifecycle.some((item) => item.followupEmitted !== true || !item.consumedAtMs || item.retryHandled)) {
       fail('compiled Cursor lifecycle did not persist one complete at-most-once parent claim');
     }
-    const persistedCursorState = JSON.parse(fs.readFileSync(
-      path.join(cursorProject, '.traffic-one', 'runs', cursorRunId, 'cursor-spawns.json'),
-      'utf8',
-    )) as { observations?: Array<Record<string, unknown>> };
+    const persistedCursorState = JSON.parse(
+      fs.readFileSync(cursorSpawnsFile, 'utf8'),
+    ) as { observations?: Array<Record<string, unknown>> };
     if (persistedCursorState.observations?.length !== 2
       || persistedCursorState.observations.some((item) => item.followupEmitted !== true)) {
       fail('compiled Cursor at-most-once markers were not durable in cursor-spawns.json');
@@ -633,12 +859,21 @@ async function main(): Promise<void> {
     const hiddenModulesDir = path.join(scratch, 'modules-smoke-hidden');
     fs.renameSync(modulesDir, hiddenModulesDir);
     try {
+      // Same HOME/prefs pinning as the sections above. The fail-closed wrappers
+      // consult the per-project consent record before standing down, so without
+      // this the outcome of these seven checks would depend on the developer's
+      // own ~/.traffic-one rather than on the fixture.
+      const wrapperHome = path.join(authTmp, 'wrapper-home');
+      fs.mkdirSync(wrapperHome, { recursive: true });
       const wrapperEnv: NodeJS.ProcessEnv = {
         ...process.env,
+        HOME: wrapperHome,
         TRAFFIC_ONE_AUTH: 'off',
         TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
+        TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(authTmp, 'wrapper-prefs.json'),
       };
       delete wrapperEnv.NODE_OPTIONS;
+      delete wrapperEnv.XDG_STATE_HOME;
       delete wrapperEnv.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
 
       const invokeJson = (host: string, shim: string, subcommand: string, stdin: string, extraEnv: NodeJS.ProcessEnv = {}): Record<string, any> => {
@@ -707,8 +942,8 @@ async function main(): Promise<void> {
       fs.renameSync(hiddenModulesDir, modulesDir);
     }
 
-    for (const d of [claudeCwd, cursorCwd, windsurfCwd]) fs.rmSync(d, { recursive: true, force: true });
-    process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; authenticated gates work, Codex reports approved EPERM bootstrap recovery, Cursor lifecycle followups are parent-batch at-most-once under process contention, and all 7 host wrappers fail closed when compiled modules are unavailable.\n`);
+    for (const d of [claudeCwd, cursorCwd, windsurfCwd, devinCwd]) fs.rmSync(d, { recursive: true, force: true });
+    process.stdout.write(`compiled-smoke: PASS — built ${builtModuleIds.size} modules (${builtDocs.size} gate-prose files) + ${built.shimsWritten.length} shims; authenticated gates work, Codex reports approved EPERM bootstrap recovery, Cursor lifecycle followups are parent-batch at-most-once under process contention, and all 7 host wrappers fail closed when compiled modules are unavailable.\n`);
   } finally {
     fs.rmSync(scratchRoot, { recursive: true, force: true });
     fs.rmSync(authTmp, { recursive: true, force: true });

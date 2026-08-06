@@ -2,11 +2,18 @@
 // Conservative .traffic-one retention sweep. Durable project memory is never
 // touched; only correlated run artefacts and clearly-ephemeral logs/locks/backups
 // are candidates. Dry-run by default.
+//
+// Deletion is a write, and this sweep is the single biggest one in the runtime
+// (measured: 55 paths reclaimed in one SessionStart). It goes through fsjson's
+// guarded removePath, so a project whose use-plugin question is unanswered is
+// never reclaimed — the pending half of the product contract is byte-identity,
+// and this half of breaking it is the irreversible one. Planning is unaffected:
+// collectActions only reads, so a dry run still reports what WOULD go.
 
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { readJson } from './fsjson';
+import { readJson, removePath } from './fsjson';
 import { resolveProjectRoot } from './hook/paths';
 import { obj } from './obj';
 
@@ -312,8 +319,7 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
   if (!dryRun) {
     for (const action of actions) {
       try {
-        fs.rmSync(action.path, { recursive: true, force: true });
-        removed += 1;
+        if (removePath(action.path)) removed += 1;
       } catch {
         // best-effort; never abort cleanup because one path is busy
       }
@@ -360,8 +366,7 @@ export function pruneTrafficOneBackups(cwd: string, keepName?: string): number {
   for (const name of listDirs(root).sort(numericDesc).slice(keep)) {
     if (keepName && name === keepName) continue;
     try {
-      fs.rmSync(path.join(root, name), { recursive: true, force: true });
-      removed += 1;
+      if (removePath(path.join(root, name))) removed += 1;
     } catch {
       // best-effort; never abort a bootstrap because one path is busy
     }

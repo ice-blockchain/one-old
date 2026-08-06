@@ -7,6 +7,9 @@ import { obj } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { ensureDir } from '../../fsjson';
+import { type MutationResult, unavailable } from './mutation-result';
+
 interface OwnedDirLock {
   dir: string;
   ownerFile: string;
@@ -90,10 +93,23 @@ function acquireOwnedDirLock(
   const deadline = Date.now() + timeoutMs;
   const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const ownerFile = path.join(lockDir, `.owner-${token}.json`);
-  try { fs.mkdirSync(path.dirname(lockDir), { recursive: true }); } catch { return null; }
+  // The lock's PARENT (`.traffic-one/runs/<id>/`) is created through the consent
+  // fence; the lock dir itself, below, must not be. This function already treated
+  // an uncreatable parent as "not acquired", and a refused one means the same
+  // thing more strongly — nothing inside it could be written either — so it
+  // returns null here rather than falling into the retry loop, where a
+  // non-recursive mkdir of a lock dir whose parent does not exist would spin
+  // until the caller's whole timeout elapsed on a project that simply has not
+  // opted in.
+  try { if (!ensureDir(path.dirname(lockDir))) return null; } catch { return null; }
   while (true) {
     let madeDir = false;
     try {
+      // Deliberately raw and NON-recursive: this mkdir is the compare-and-swap
+      // that IS the lock (EEXIST = contended). A fenced, recursive equivalent
+      // would never report contention and every contender would believe it won.
+      // The fence above already refused the enclosing directory, so this line is
+      // unreachable while consent is withheld.
       fs.mkdirSync(lockDir);
       madeDir = true;
       fs.writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }), { flag: 'wx' });
@@ -121,6 +137,14 @@ function releaseOwnedDirLock(lease: OwnedDirLock): void {
   try { fs.rmdirSync(lease.dir); } catch { /* a foreign/malformed entry stays fail-closed */ }
 }
 
+/**
+ * Run `mutate` while holding `lockDir`. Returns whether the lock was held and the
+ * mutation therefore ran — false covers a contended lock, an uncreatable one, and
+ * a project whose consent fence refuses the lock's parent directory. Callers
+ * already treat false as "this did not happen" (ledger.ts turns it into a
+ * rejected transition), which is exactly right for the new case: a withheld
+ * consent means the file the mutation would have written is refused too.
+ */
 export function withOwnedDirLock(
   lockDir: string,
   timeoutMs: number,
@@ -134,6 +158,39 @@ export function withOwnedDirLock(
   try {
     mutate();
     return true;
+  } finally {
+    releaseOwnedDirLock(lease);
+  }
+}
+
+/**
+ * withOwnedDirLock, but reporting WHY nothing happened.
+ *
+ * The boolean above cannot: it returns false both when the lock was never
+ * acquired (nothing was read, nothing decided — `unavailable`) and, via callers
+ * that fold their own outcome into it, when the mutation ran and correctly
+ * declined (`precondition-failed`). Those two demand opposite handling from a
+ * claim mint or a ledger transition (see mutation-result.ts's split rule), so
+ * `mutate` returns its own verdict here and only the acquisition failure is
+ * turned into `unavailable`.
+ */
+export function withOwnedDirLockResult<T>(
+  lockDir: string,
+  timeoutMs: number,
+  staleMs: number,
+  retryMs: number,
+  waitArray: Int32Array,
+  mutate: () => MutationResult<T>,
+): MutationResult<T> {
+  const lease = acquireOwnedDirLock(lockDir, timeoutMs, staleMs, retryMs, waitArray);
+  // Indistinguishable from here, and deliberately reported as one thing: a
+  // contended lock, an uncreatable lock dir, and a consent fence that refused
+  // the lock's parent all mean "we did not get to find out". The gates that turn
+  // this into a deny retry first, which separates the transient case in the only
+  // way that is actually decisive — by trying again.
+  if (!lease) return unavailable<T>('lock-unavailable');
+  try {
+    return mutate();
   } finally {
     releaseOwnedDirLock(lease);
   }

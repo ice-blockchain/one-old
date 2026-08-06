@@ -52,6 +52,92 @@ export function readRunSimTranscript(ctx: AssertionContext): Rec | null {
   return readJsonFile(path.join(ctx.caseFolder, 'run-sim.json'));
 }
 
+// The consent sidecars the case runner persisted (core/consent.ts,
+// core/decline-sim.ts). Read from ctx.caseFolder, like the run-sim transcript, so
+// `--reassert` re-evaluates the same recorded facts instead of re-deriving them.
+export function readCaseConsent(ctx: AssertionContext): Rec | null {
+  return readJsonFile(path.join(ctx.caseFolder, 'consent.json'));
+}
+
+export function readDeclineProbe(ctx: AssertionContext): Rec | null {
+  return readJsonFile(path.join(ctx.caseFolder, 'decline-probe.json'));
+}
+
+/**
+ * The blocker text when a run stopped because a TOOLCHAIN was missing, or null
+ * when it stopped for any other reason.
+ *
+ * AGENTS.md has always said `test:env --strict` reports a missing toolchain as
+ * INCONCLUSIVE rather than passing, and the browser half never did: with no
+ * project-local Playwright the QA runner correctly published
+ * `status: "blocked-environment"`, the phase machine recorded that as a run
+ * failure, and 48 assertions reported a PRODUCT failure for a browser this
+ * machine does not have. The harness could not tell "the answer is no" from
+ * "I could not look".
+ *
+ * Keyed off `environmentBlock`, which the phase machine sets only from the
+ * product's OWN `blocked-environment` verdict — never from a heuristic on the
+ * failure text — so a real red check can never be laundered into a gap.
+ */
+export function runSimEnvironmentBlock(transcript: Rec | null): string | null {
+  if (!transcript || transcript.ok === true) return null;
+  const blocker = str(transcript.environmentBlock);
+  return blocker && blocker.trim() ? blocker : null;
+}
+
+/**
+ * The verdict for "the simulated run did not complete": INCONCLUSIVE when a
+ * missing toolchain stopped it, FAIL for every other cause.
+ *
+ * Called at the END of each run-sim assertion's own checks, never at the start,
+ * so a genuine product failure the assertion can still see — a false deny, a gate
+ * that went quiet — is reported as FAIL even in a toolchain-blocked run. Nothing
+ * is laundered: INCONCLUSIVE is not a pass, and result-policy keeps `--strict`
+ * failing the release verdict on it.
+ */
+export function runSimIncomplete(
+  ctx: AssertionContext,
+  transcript: Rec | null,
+  lead: string,
+): AssertionResult {
+  const blocker = runSimEnvironmentBlock(transcript);
+  const failure = str(transcript?.failure) || 'unknown failure';
+  if (blocker) {
+    return result(ctx, 'INCONCLUSIVE', `${lead}, because a required toolchain is unavailable on this machine: ${blocker}. This is an environment gap, not a product verdict — install the toolchain and re-run to get a real answer.`);
+  }
+  return result(ctx, 'FAIL', `${lead}: ${failure}`);
+}
+
+export function runSimPhaseDone(transcript: Rec | null, phase: string): boolean {
+  const phases = transcript && Array.isArray(transcript.phasesCompleted) ? transcript.phasesCompleted : [];
+  return phases.some((entry) => String(entry) === phase);
+}
+
+/**
+ * The early-exit verdict for an assertion whose run did not complete, or null
+ * when the assertion should carry on and judge its subject for real.
+ *
+ * `needs` names the phase this assertion's evidence comes from. A toolchain block
+ * in a LATER phase leaves that evidence complete and readable, and answering
+ * INCONCLUSIVE about something already on disk would be the same inversion in
+ * reverse — claiming "I could not look" at evidence that is right there. So the
+ * assertion continues in exactly that case, and only in it:
+ *   - failed for any non-environment reason  → FAIL, unchanged;
+ *   - toolchain-blocked, `needs` not reached → INCONCLUSIVE;
+ *   - toolchain-blocked, `needs` reached     → judge it.
+ */
+export function runSimStop(
+  ctx: AssertionContext,
+  transcript: Rec | null,
+  lead: string,
+  needs?: string,
+): AssertionResult | null {
+  if (transcript?.ok === true) return null;
+  const blocker = runSimEnvironmentBlock(transcript);
+  if (blocker && needs && runSimPhaseDone(transcript, needs)) return null;
+  return runSimIncomplete(ctx, transcript, lead);
+}
+
 // A case "produced work" if a host ran the agent, OR if a run-sim executed. The
 // run-sim arm matters because its target is 'pure-node' and its hostResult is
 // synthesized — without this, every hostProducedWork-gated assertion would SKIP,

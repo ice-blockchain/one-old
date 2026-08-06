@@ -158,8 +158,29 @@ export function computeOnboarding(
 // Attach the resolved subagent line-up (role → tier → host model) so the wizard's
 // team step can SHOW who will build, instead of asking for a blind approval.
 
-function patchSharedState(cwd: string, patch: Rec): void {
-  writeState(cwd, { ...readState(cwd), ...patch });
+// Returns whether the patch actually reached `.traffic-one/.one.json`.
+//
+// `void` here hid the same fabricated-success defect one indirection deeper than
+// the scanner looks: writeState's refusal died in this helper, and three of
+// applyAnswerStep's cases returned `{ ok: true }` over it. The wizard then
+// advanced past a step whose answer the state file never carried, so the step
+// re-opens on the next read with nothing anywhere naming the write that was
+// refused — and for `open-code` the field that goes missing is the durable
+// authorization the spawn gate cites, so delegation is later denied as "not
+// explicitly authorized" for a permission the user did grant.
+function patchSharedState(cwd: string, patch: Rec): boolean {
+  return writeState(cwd, { ...readState(cwd), ...patch });
+}
+
+// The wizard renders `error`. The fence's refusal is durable — a planted symlink
+// stays planted, an unanswered "use Traffic One here?" stays unanswered — so
+// there is nothing to retry silently; name the answer that was not recorded and
+// the path that refused it.
+function stateWriteRefused(subject: string): AnswerOutcome {
+  return {
+    ok: false,
+    error: `the project state write fence refused \`.traffic-one/.one.json\`, so ${subject} was not recorded`,
+  };
 }
 
 function mobileFromChoice(value: unknown): { enabled: boolean; framework: string } | null {
@@ -278,9 +299,11 @@ function applyAnswerStep(
       // user's authorization is visible at call time — this field is that
       // machine-readable record, cited by the spawn gate's deny message so
       // delegation never re-asks the user for approval.
-      patchSharedState(cwd, {
+      if (!patchSharedState(cwd, {
         openCodeDelegation: { approved: enabled, source: 'onboarding', decidedAt: stateTimestamp() },
-      });
+      })) {
+        return stateWriteRefused('your OpenCode delegation answer');
+      }
       return { ok: true };
     }
     case 'performance': {
@@ -395,16 +418,20 @@ function applyAnswerStep(
         || originalPrompt
         || String(answers.audience || '').trim()
         || 'MVP';
-      patchSharedState(cwd, {
+      if (!patchSharedState(cwd, {
         mode: 'new-project',
         projectContext: { source: 'prompted', originalPrompt, summary, answers, collectedAt: stateTimestamp() },
-      });
+      })) {
+        return stateWriteRefused('what you want built');
+      }
       return { ok: true };
     }
     case 'mobile': {
       const mobile = mobileFromChoice(value);
       if (!mobile) return { ok: false, error: 'invalid mobile choice' };
-      patchSharedState(cwd, { mode: 'new-project', mobile: { ...mobile, source: 'prompted' } });
+      if (!patchSharedState(cwd, { mode: 'new-project', mobile: { ...mobile, source: 'prompted' } })) {
+        return stateWriteRefused('your mobile choice');
+      }
       return { ok: true };
     }
     case 'finalize': {
@@ -440,7 +467,12 @@ function applyAnswerStep(
       const derived = hasStack ? {} : deriveStack(stackSeed, String(mobile.framework || 'none'));
       const next = { ...committed, mode: 'new-project', ...derived };
       reconcileStackFromArtifacts(cwd, next);
-      writeState(cwd, next);
+      // `finalize` is the wizard's commit: this write IS the stack decision, and
+      // `{ ok: true }` over a refused one told the user their project was set up
+      // while `.one.json` still carried no stack — after which every gate reads an
+      // unonboarded project and re-opens the wizard with no explanation. The step
+      // already has an error channel the wizard renders; use it.
+      if (!writeState(cwd, next)) return stateWriteRefused('the stack this wizard just committed');
       return { ok: true };
     }
     default:

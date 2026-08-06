@@ -14,7 +14,28 @@ import { stateTimestamp } from '../../shared/state/io';
 import { teamModeForLevel } from '../../shared/performance';
 import type { PreSeed } from './types';
 
-export function preseed(cwd: string, ps: PreSeed): void {
+/**
+ * Report whether `.one.json` now holds the seeded state.
+ *
+ * A harness that continues over a refused write measures something other than
+ * what it names — the reason compileVerificationContract throws and the reason
+ * replay-corpus's existingCodebaseUndetectable does — and this is the seed EVERY
+ * case's world is built from: without it the project has no onboarding state at
+ * all, so every assertion fails on that one missing step (104 red assertions for
+ * one cause, measured) and the case reports a defect it never exercised.
+ *
+ * A boolean and not a throw, for one measured reason: two callers seed
+ * DELIBERATELY through a closed consent fence and the refusal is their subject —
+ * case-runner.ts's `seedRefusal` (already written for the flow-sim seed three
+ * lines above its call, and this is its twin) and replay-corpus's
+ * preConsentOnboardingAttempt, whose whole claim is that nothing landed. A throw
+ * would delete the fixtures that prove the fence works.
+ *
+ * Scope: the shared-state half. The local-preference writers below
+ * (mergeProjectHostPrefs/mergeProjectPrefs/writeGlobalCodeGraphProvider) report
+ * by throwing and are outside the fence, so they are not folded into this answer.
+ */
+export function preseed(cwd: string, ps: PreSeed): boolean {
   const level = ps.performance ?? 'balanced';
   const teamMode = ps.team?.mode ?? teamModeForLevel(level);
   const teamApproved = ps.team?.approved ?? teamMode === 'subagents';
@@ -57,7 +78,7 @@ export function preseed(cwd: string, ps: PreSeed): void {
     };
   }
 
-  writeState(cwd, state);
+  const seeded = writeState(cwd, state);
 
   // 3) Performance/team are host-scoped local preferences. Generic top-level
   // fields are intentionally discarded by splitLocalPreferences so a stale
@@ -84,4 +105,6 @@ export function preseed(cwd: string, ps: PreSeed): void {
       },
     });
   }
+
+  return seeded;
 }

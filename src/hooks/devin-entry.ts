@@ -13,7 +13,7 @@ import { windsurfSetupReason } from '../shared/onboarding-server/windsurf-setup'
 import { resolveProjectRoot } from '../shared/hook/paths';
 import { isNonProjectRoot } from '../shared/authoring-root';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
-import { devinPreToolDeny, hasValidPreToolPayload, isGatePreToolSubcommand } from './fail-closed';
+import { devinPreToolDeny, hasValidPreToolPayload, isFailClosedRecoveryExemption, isGatePreToolSubcommand } from './fail-closed';
 import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { localFallbackSection } from '../shared/onboarding-server/wizard-links';
 import { onboardingSetTechCommandTemplate, onboardingSyncSessionId } from '../shared/onboarding-server/wait-command';
@@ -70,7 +70,9 @@ export async function runDevinHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: '', exitCode: 0 };
-  if (isGatePreToolSubcommand(subcommand) && !hasValidPreToolPayload(stdin, subcommand, 'nested')) {
+  if (isGatePreToolSubcommand(subcommand)
+    && !hasValidPreToolPayload(stdin, subcommand, 'nested')
+    && !isFailClosedRecoveryExemption(stdin, subcommand, 'nested')) {
     return { stdout: devinPreToolDeny(), exitCode: 0 };
   }
   try {
@@ -100,6 +102,7 @@ export async function runDevinHook(
       };
     }
     if (isGatePreToolSubcommand(subcommand)) {
+      if (isFailClosedRecoveryExemption(stdin, subcommand, 'nested')) return { stdout: '', exitCode: 0 };
       return { stdout: devinPreToolDeny(), exitCode: 0 };
     }
     return { stdout: '', exitCode: 0 };

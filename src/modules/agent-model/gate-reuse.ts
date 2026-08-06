@@ -95,7 +95,8 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
           AGENT_ID: codexValidation.entry.agentId,
           REASON: codexValidation.reason,
           MARKER: REPLACE_AGENT_MARKER,
-        }, `Agent-reuse gate: run ${runId} has a fresh Codex ${role} registry row for ${codexValidation.entry.agentId}, but Traffic One cannot verify that child's role from line-zero session metadata (${codexValidation.reason}). It will not route continuation to an unverified child or start a duplicate. Retry after the rollout is flushed, or use ${REPLACE_AGENT_MARKER} only when the child is genuinely unusable.`));
+        }, `Agent-reuse gate: run ${runId} has a fresh Codex ${role} registry row for ${codexValidation.entry.agentId}, but Traffic One cannot verify that child's role from line-zero session metadata (${codexValidation.reason}). It will not route continuation to an unverified child or start a duplicate. Retry: the reason above names what is being waited on — a child rollout that has not flushed yet, or a registry row another process held while this hook ran — and both clear without your intervention. Use ${REPLACE_AGENT_MARKER} only when the child is genuinely unusable.`),
+          { denyId: 'agent-reuse-await-codex-meta', denyTarget: role });
       };
       const concurrentCursorReplacementDeny = (): HookResult | null => {
         const concurrent = currentLive();
@@ -106,7 +107,7 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
             ROLE: role,
             RUN_ID: runId,
             MARKER: REPLACE_AGENT_MARKER,
-          }));
+          }), { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
         }
         const recipe = continuationRecipe('cursor', concurrentResume, role);
         return deny(block('agent-reuse-continue', {
@@ -116,7 +117,7 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
           MARKER: REPLACE_AGENT_MARKER,
           CONTINUE_CALL: recipe.call,
           CONTINUE_TOOL: recipe.tool,
-        }));
+        }), { denyId: 'agent-reuse-continue', denyTarget: role });
       };
       const explicitResumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
       const resumeToken = explicitResumeToken;
@@ -124,7 +125,8 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
       if (isResume) {
         const conflict = verdictAgentConflict(cwd, runId, role, resumeToken);
         if (conflict) {
-          return deny(`traffic-one — verifier independence gate: \`${role}\` cannot continue agent \`${String(resumeToken).trim()}\` because that id is already recorded for \`${conflict.role}\` in run \`${runId}\`. Spawn a fresh \`${role}\` verifier, or free a terminal implementer slot if the host active-agent cap is full. Same-role verifier continuation remains allowed.`);
+          return deny(`traffic-one — verifier independence gate: \`${role}\` cannot continue agent \`${String(resumeToken).trim()}\` because that id is already recorded for \`${conflict.role}\` in run \`${runId}\`. Spawn a fresh \`${role}\` verifier, or free a terminal implementer slot if the host active-agent cap is full. Same-role verifier continuation remains allowed.`,
+            { denyId: 'verifier-independence-gate', denyTarget: role });
         }
       }
       if (spawnPromptText.includes(REPLACE_AGENT_MARKER)) {
@@ -169,7 +171,8 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
           && !runLedgerAdmitsClaims(cwd, runId);
         if (cursorAwaitingResume
           && !cursorAgentPresumedDead(live, { corroborated: markerCorroborated })) {
-          return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
+          return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }),
+            { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
         }
         if (live && !cursorAwaitingResume && !markerJustified && !unbindableLive) {
           if (resumeTarget) {
@@ -177,9 +180,10 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
             return deny(block('agent-reuse-continue', {
               ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
               CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
-            }));
+            }), { denyId: 'agent-reuse-continue', denyTarget: role });
           }
-          return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
+          return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }),
+            { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
         }
         // API/usage-limit replacement: the retired agent's model is DEAD for this
         // session. When Cursor omits post-Task events, this pre-spawn backstop still
@@ -242,14 +246,15 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
                 if (raced) return raced;
               }
             } else {
-              return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
+              return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }),
+                { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
             }
           } else {
             const recipe = continuationRecipe(ctx.host, resumeTarget, role);
             return deny(block('agent-reuse-continue', {
               ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
               CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
-            }));
+            }), { denyId: 'agent-reuse-continue', denyTarget: role });
           }
         }
       }

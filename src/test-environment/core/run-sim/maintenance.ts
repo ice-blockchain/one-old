@@ -78,7 +78,13 @@ function startMaintenanceRun(
   transcript: RunSimTranscript,
 ): { failure: string } | { runId: string; architecture: CompiledArchitectureV1; verification: VerificationContractV2 } {
   const state = readEffectiveState(cwd) as Rec;
-  beginFreshMaintenanceRun(cwd, state, 'claude');
+  // A rotation whose state write was refused leaves the PREVIOUS run id in
+  // `state`, so the `!runId` check below cannot see it and every leg after this
+  // would be scripted against the wrong run. Named separately from the empty-id
+  // failure because the causes are unrelated (and only one is an environment).
+  if (!beginFreshMaintenanceRun(cwd, state, 'claude')) {
+    return { failure: `${label} the maintenance rotation was not persisted: the state write fence refused ${path.join('.traffic-one', '.one.json')}` };
+  }
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
   if (!runId) return { failure: `${label} the maintenance rotation minted no run id` };
 
@@ -151,9 +157,19 @@ async function verifyAndSettleMaintenanceRun(
     const buildDir = buildDirFor(run.architecture);
     writeBuildOutput(cwd, buildDir);
     const evidence = await runBrowserEvidence(cwd, runId, buildDir, run.verification);
+    // A missing toolchain stops the leg, but it is not a product failure: record
+    // it on the transcript so the assertions report INCONCLUSIVE, not FAIL.
+    if (evidence.blocked) {
+      transcript.environmentBlock = `${label} browser evidence: ${evidence.blocked}`;
+      return `${label} browser evidence blocked-environment: ${evidence.blocked}`;
+    }
     if (evidence.code !== 0) return `${label} browser evidence failed (exit ${evidence.code}): ${evidence.detail}`;
   } else {
     const evidence = await runStackEvidence(cwd, runId);
+    if (evidence.blocked) {
+      transcript.environmentBlock = `${label} stack evidence: ${evidence.blocked}`;
+      return `${label} stack evidence blocked-environment: ${evidence.blocked}`;
+    }
     if (evidence.code !== 0) return `${label} stack evidence failed (exit ${evidence.code}): ${evidence.detail}`;
   }
   // The newest run with published-and-validated QA evidence. Later legs

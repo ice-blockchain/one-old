@@ -37,6 +37,16 @@ Missing on disk: {{MISSING}}
 
 The architect must finish the required project-memory baseline, semantic \`.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json\`, and \`.traffic-one/digests/{{RUN_ID}}/architect.md\` containing \`PLAN_READY\`. Traffic One runtime—not the architect—then compiles and atomically publishes the architecture, verification, assignments, and child bootstraps. Only after those hash-valid contracts exist may you retry \`{{ROLE}}\` with the same task. Do not spawn other implementers or patch runtime-owned coordination artifacts yourself.`;
 
+// Verbatim mirror of the SKILL.md `spawn-claim-unavailable` block. This gate
+// exists precisely for the case where the project's state dir is not answering,
+// which is also a state a missing/unreadable SKILL.md correlates with — so it is
+// the last gate that can afford to render as `''`.
+export const SPAWN_CLAIM_UNAVAILABLE_FALLBACK = `Traffic One spawn gate: the role claim for \`{{ROLE}}\` in run \`{{RUN_ID}}\` could not be recorded, so the spawn was blocked before a child started ({{REASON}}). Nothing is wrong with the run — its ledger still admits claims and the role is free — and this is not a model, team, or plan problem. Traffic One already retried once.
+
+A child spawned without a claim binds no role: it writes as the main agent, is invisible to the duplicate-spawn gate, and cannot be released when the run settles. Blocking the spawn is the recoverable outcome.
+
+Retry the SAME spawn, unchanged, in your next message. A concurrent hook holding the run's claims or ledger lock clears in about two seconds. If the same deny repeats more than twice, another process is wedged on this run's state: run \`node ~/.traffic-one/bin/doctor.cjs --run "{{RUN_ID}}"\` and fix what it reports before spawning again. Do NOT change the role, the model, or the task to work around it, and do NOT build the project inline instead.`;
+
 export function isPlanBatchGatedRole(role: string): boolean {
   return PLAN_BATCH_GATED_ROLES.has(role);
 }

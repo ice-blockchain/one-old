@@ -54,7 +54,15 @@ test('none/nonvisual verification passes without a browser or screenshots', asyn
   });
 });
 
-test('axe-when-dom accepts a justified no-DOM N/A but otherwise still requires pass', async () => {
+// This case used to assert that `axe-when-dom` accepts a justified no-DOM
+// `not-applicable`, and it PROVED the tolerance by hand-writing the summary
+// itself — because nothing in the product could write one. No producer had an
+// arm for the id on any path, so the only reachable outcome for a real run was
+// an unjustified `not-applicable` and a `required-check-failed` rejection on
+// every nonvisual contract. Requiring an id nothing can pass is not
+// accessibility coverage; the id is required by nothing until a producer exists
+// (see requiredChecks), and the dimension says so instead of reporting `passed`.
+test('a nonvisual contract requires no accessibility check while nothing can produce one', async () => {
   await withProject((cwd) => {
     const contract = setup(cwd, {
       schemaVersion: 1,
@@ -63,27 +71,22 @@ test('axe-when-dom accepts a justified no-DOM N/A but otherwise still requires p
     }, { changedPaths: ['apps/web/src/lib/Mapper.ts'] }, {
       'apps/web/src/lib/Mapper.ts': 'export const map = (x:string) => x;\n',
     });
-    const noDom = reportFor(cwd, contract, []);
-    noDom.checks = noDom.checks.map((check) => check.id === 'axe-when-dom'
-      ? { ...check, status: 'not-applicable', summary: 'No DOM is rendered by this mapper-only change.' }
-      : check);
-    assert.equal(validateQaReportV2(noDom, cwd, 'R', contract).ok, true);
+    assert.equal(contract.uiImpact, 'nonvisual');
+    assert.equal(contract.requiredChecks.includes('axe-when-dom'), false);
 
+    const result = validateQaReportV2(reportFor(cwd, contract, []), cwd, 'R', contract);
+    assert.equal(result.ok, true);
+    assert.equal(result.dimensions.accessibilityStatus, 'not-required');
+
+    // And no hand-written prose can excuse a required check that did not pass:
+    // the no-DOM justification arm is gone with the id.
     const unjustified = reportFor(cwd, contract, []);
-    unjustified.checks = unjustified.checks.map((check) => check.id === 'axe-when-dom'
-      ? { ...check, status: 'not-applicable', summary: 'Accessibility was not run.' }
+    unjustified.checks = unjustified.checks.map((check) => check.id === 'stack-test'
+      ? { ...check, status: 'not-applicable', summary: 'No DOM is rendered by this mapper-only change.' }
       : check);
     const rejected = validateQaReportV2(unjustified, cwd, 'R', contract);
     assert.equal(rejected.ok, false);
     if (!rejected.ok) assert.equal(rejected.code, 'required-check-failed');
-
-    const domCase = reportFor(cwd, contract, []);
-    domCase.checks = domCase.checks.map((check) => check.id === 'axe-when-dom'
-      ? { ...check, status: 'not-applicable', summary: 'Axe was not run although DOM output exists.' }
-      : check);
-    const domRejected = validateQaReportV2(domCase, cwd, 'R', contract);
-    assert.equal(domRejected.ok, false);
-    if (!domRejected.ok) assert.equal(domRejected.code, 'required-check-failed');
   });
 });
 

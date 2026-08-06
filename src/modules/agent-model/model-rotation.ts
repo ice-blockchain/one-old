@@ -70,6 +70,7 @@ export function exhaustedModelRotationDeny(
     return deny(
       `traffic-one — model rotation blocked: immutable model-policy.json is missing for run ${runId}. `
       + 'Do not resolve a replacement from mutable machine-global models; start a repaired parent run first.',
+      { denyId: 'model-rotation-policy-missing', denyTarget: runId },
     );
   }
   const captured = ctx.host === 'cursor' ? [...(policy.cursorAvailableModels || [])] : [];
@@ -100,7 +101,7 @@ export function exhaustedModelRotationDeny(
         ROLE: role,
         RECOMMENDED: anchor,
         FALLBACK: floorSlug,
-      }, CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-composer-choice']));
+      }, CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-composer-choice']), { denyId: 'cursor-api-limit-composer-choice', denyTarget: role });
     }
     fallback = floorSlug; // user already accepted the fallback → prescribe the floor below
   }
@@ -113,7 +114,7 @@ export function exhaustedModelRotationDeny(
       return deny(block('cursor-api-limit-terminal', {
         ROLE: role,
         TRIED: exhausted.join(', '),
-      }, CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-terminal']));
+      }, CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-terminal']), { denyId: 'cursor-api-limit-terminal', denyTarget: role });
     }
     const missing = row.find((family) => !captured.some((slug) => modelMatchesAny(slug, [family]))
       && !modelIsExhausted(cwd, runId, role, family));
@@ -121,6 +122,9 @@ export function exhaustedModelRotationDeny(
       missing
         ? `traffic-one — ${role}'s API-limit retry has no exact captured candidate left in its original ${tier} tier. Model family "${missing}" is absent from Cursor's captured list, so use the model-availability flow (Settings → Models / re-capture); do not mark all models exhausted and do not change tiers.`
         : `traffic-one — ${role}'s API-limit retry has no eligible model left in its original ${tier} tier. Stop retrying until the user restores API budget or enables another exact tier model.`,
+      missing
+        ? { denyId: 'model-rotation-tier-missing-from-catalog', denyTarget: role }
+        : { denyId: 'model-rotation-tier-exhausted', denyTarget: role },
     );
   }
   const passedNote = passedModel
@@ -132,6 +136,7 @@ export function exhaustedModelRotationDeny(
   return deny(
     `traffic-one — model rotation: ${role}'s previous subagent stopped on an API/usage limit, so ${anchor} is exhausted for this session and must not be re-used. ${passedNote} ${fallbackNote} `
     + 'Resume from whatever the stopped agent already completed instead of restarting from scratch.',
+    { denyId: 'model-rotation-exhausted-model', denyTarget: role },
   );
 }
 
@@ -164,5 +169,6 @@ export function modelEnableRetryDeny(ctx: Ctx, role: string, level: string, pass
   const passedNote = passedModel
     ? `You passed model="${passedModel}".`
     : 'You passed no `model` parameter, so the subagent would inherit the parent model.';
-  return deny(block('model-choice-enable-required', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote }));
+  return deny(block('model-choice-enable-required', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote }),
+    { denyId: 'model-choice-enable-required', denyTarget: role });
 }

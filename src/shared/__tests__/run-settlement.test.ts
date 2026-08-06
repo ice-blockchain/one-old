@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { stableContractJson } from '../architecture-contract';
 import { isMaintenanceTerminal } from '../maintenance/terminal';
+import { mintOverride } from '../override';
 import { qaReportV2Path } from '../qa-report-v2';
 import {
   activateRunV2RollbackBarrier,
@@ -117,6 +118,56 @@ test('verified settlement fails closed while a claim or check remains active', (
     assert.equal(ledger.canonicalStatus, 'validating');
     assert.equal(effectiveLegacyRunStatus(ledger), 'active');
   });
+});
+
+// The operator-override abuse guard. Driven through a run that is otherwise
+// GENUINELY verifiable — full strict evidence, no active claims — so the
+// downgrade can only be coming from the override, and so removing the guard
+// turns this test red rather than leaving it green for another reason.
+test('a run somebody minted an operator override for can never settle verified or shipped', () => {
+  const savedXdg = process.env.XDG_STATE_HOME;
+  const machineBase = fs.mkdtempSync(path.join(os.tmpdir(), 't1-settlement-override-'));
+  process.env.XDG_STATE_HOME = machineBase;
+  try {
+    withProject((cwd) => {
+      writeStrictVerificationEvidence(cwd);
+      // The control: without an override this exact fixture settles verified.
+      // Without it, "validating" below proves nothing.
+      assert.equal(writeRunSettlement(cwd, 'R', { status: 'verified' })?.status, 'verified');
+    });
+
+    withProject((cwd) => {
+      writeStrictVerificationEvidence(cwd);
+      const minted = mintOverride({
+        projectRoot: cwd, runId: 'R', scope: 'gate', target: 'plan-guard', snapshot: {},
+        // Already expired: the guard is TTL-blind on purpose, or waiting out
+        // 30 minutes would launder the run.
+        ttlMs: 1_000, nowMs: Date.now() - 60_000,
+      });
+      assert.equal(minted.ok, true);
+
+      const settlement = writeRunSettlement(cwd, 'R', { status: 'verified' });
+      assert.equal(settlement?.status, 'validating');
+      assert.equal(settlement?.reason, 'operator-override-used');
+      assert.ok(settlement?.incompleteChecks.includes('operator-override-used'));
+      // `shipped` is only ever projected onto a verified settlement, so one
+      // refusal covers both halves of the plan's requirement.
+      const ledger = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'runs', 'R', 'run.json'), 'utf8'));
+      assert.notEqual(ledger.outcome, 'shipped');
+      assert.equal(ledger.canonicalStatus, 'validating');
+
+      // And it is permanent: re-asking does not eventually get a yes.
+      assert.equal(writeRunSettlement(cwd, 'R', { status: 'verified' })?.status, 'validating');
+      // A DIFFERENT run in the same project is untouched — the guard is
+      // run-scoped, not a project-wide kill switch.
+      fs.mkdirSync(path.join(cwd, '.traffic-one', 'runs', 'S'), { recursive: true });
+      writeStrictVerificationEvidence(cwd, 'S');
+      assert.equal(writeRunSettlement(cwd, 'S', { status: 'verified' })?.status, 'verified');
+    });
+  } finally {
+    if (savedXdg === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = savedXdg;
+    fs.rmSync(machineBase, { recursive: true, force: true });
+  }
 });
 
 test('claim scan truncation is explicit and cannot hide a late active claim', () => {

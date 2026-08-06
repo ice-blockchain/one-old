@@ -8,6 +8,12 @@ import { runWindsurfHook } from '../windsurf-entry';
 import { writeServerRecord } from '../../shared/onboarding-server/registry';
 import { recordPluginUseChoice } from '../../shared/state/plugin-use';
 
+// Several cases below characterize the ask-first question itself (the pending
+// pre_user_prompt, and the two pre_run_command denies it owns), so pin it on
+// rather than inheriting it — the suite preload defaults it off so a bare
+// mkdtemp fixture reads as a consented project.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+
 async function withEnv(fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-entry-'));
   const saved = {

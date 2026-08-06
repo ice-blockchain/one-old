@@ -187,7 +187,8 @@ export function cursorAgentTypeDeny(role: string, agentType: string): HookResult
     EXPECTED_AGENT: spawn.primary || role,
     FALLBACK_AGENT: spawn.fallback || 'generalPurpose',
     AGENT_PATH: spawn.contractPath || `.cursor/agents/${role}.md`,
-  }, cursorAgentTypeReason(role, agentType, spawn.primary || role, spawn.fallback || 'generalPurpose', spawn.contractPath || `.cursor/agents/${role}.md`)));
+  }, cursorAgentTypeReason(role, agentType, spawn.primary || role, spawn.fallback || 'generalPurpose', spawn.contractPath || `.cursor/agents/${role}.md`)),
+  { denyId: 'cursor-agent-type-required', denyTarget: role });
 }
 
 export function namedOpenCodeAgentDeny(cwd: string, role: string, agentType: string, expected: string): HookResult {
@@ -199,7 +200,7 @@ export function namedOpenCodeAgentDeny(cwd: string, role: string, agentType: str
     EXPECTED_AGENT: expectedAgent,
     AGENT_PATH: openCodeGlobalAgentPath(cwd, role),
     MODEL_NOTE: `Traffic One materialized this project-scoped global agent with \`model: ${expected}\`. OpenCode applies that per-role model only when Task uses \`${expectedAgent}\`; built-in agents inherit the parent session model.`,
-  }));
+  }), { denyId: 'opencode-named-agent-required', denyTarget: role });
 }
 
 export function kiloGeneralAgentDeny(role: string, agentType: string): HookResult {
@@ -207,6 +208,6 @@ export function kiloGeneralAgentDeny(role: string, agentType: string): HookResul
     ROLE: role,
     AGENT_TYPE: agentType || 'missing',
     AGENT_PATH: `.kilo/agents/${role}.md`,
-  }));
+  }), { denyId: 'kilo-general-agent-required', denyTarget: role });
 }
 

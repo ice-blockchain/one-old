@@ -8,6 +8,7 @@ import { canonicalHost, canonicalTier, resolveModel, tierModelTable } from './mo
 import { agentTierForPlan } from './performance-config';
 import { PERFORMANCE_CONFIG } from '../config/performance';
 import { detectHost } from './host';
+import { hostFlags } from './host/capability-flags';
 import { obj } from './obj';
 import { currentModelForTier, currentModelsForTier } from './current-model-tiers';
 
@@ -26,7 +27,7 @@ interface RoleModelSelection {
 // remains the canonical readiness gate for queueing, triage, and delegation flows.
 export function openCodeDelegationActive(state: unknown, host: unknown = detectHost()): boolean {
   const h = canonicalHost(host);
-  if (h === 'opencode' || h === 'kilo') return false;
+  if (hostFlags(h).opencodeSelfHosted) return false;
   const s = obj(state);
   if (!s) return false;
   if (obj(s.openCode)?.enabled !== true) return false;

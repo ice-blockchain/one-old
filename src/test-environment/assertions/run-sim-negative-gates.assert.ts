@@ -12,7 +12,7 @@
 // for the wrong reason, which is how a coverage gap hides in plain sight.
 
 import type { Assertion } from '../core/types';
-import { readRunSimTranscript, result, str } from './util';
+import { readRunSimTranscript, result, runSimStop, str } from './util';
 
 interface WriteRow {
   ordinal?: unknown;
@@ -34,6 +34,11 @@ export const assertion: Assertion = {
     const writes = Array.isArray(transcript.writes) ? transcript.writes as WriteRow[] : [];
     const rows = writes.filter((row) => row.expected === true);
     if (rows.length === 0) {
+      // The adversarial phase runs after settlement, so a toolchain block in QA
+      // stops the run before a single row exists. "Nothing was proven" is true
+      // either way, but only one of the two causes is the product's fault.
+      const stop = runSimStop(ctx, transcript, 'The run declares negativeGates but recorded no adversarial rows, so nothing was proven');
+      if (stop) return stop;
       return result(ctx, 'FAIL', 'The run declares negativeGates but recorded no adversarial rows, so nothing was proven.');
     }
 

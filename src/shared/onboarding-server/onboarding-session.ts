@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
+import { writeJson } from '../fsjson';
 
 const ONBOARDING_MAIN_SESSIONS_REL = path.join('.traffic-one', '.onboarding-main-sessions.json');
 
@@ -62,9 +63,20 @@ export function recordMainOnboardingSession(cwd: string, sessionId: string, nowM
       .filter(([, t]) => nowMs - t <= ONBOARDING_MAIN_TTL_MS)
       .sort((a, b) => b[1] - a[1])
       .slice(0, MAX_MAIN_SESSIONS);
-    const p = storePath(cwd);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, `${JSON.stringify({ sessions: Object.fromEntries(fresh) }, null, 2)}\n`, 'utf8');
+    // Through the declared IO chokepoint, NOT raw fs: this store lives under
+    // `<project>/.traffic-one/`, and the raw mkdir+write here was the last thing
+    // creating that directory before the user had answered "do you want to use
+    // Traffic One here?". Measured across 203 hook invocations per state, a
+    // PENDING pristine project came back with `.traffic-one/` and this file
+    // ADDED on 4 of 7 hosts (claude, cursor, copilot, devin) via subagent-start,
+    // showing as untracked in `git status` because the generated .gitignore
+    // block is correctly NOT written pre-consent. writeJson refuses the same
+    // path (shared/state/plugin-use.ts), so the guard is structural instead of
+    // one more call site that has to remember — the caller's own
+    // pluginUseDeclined check is exactly the pattern that missed pending. The
+    // degradation is the one this function's catch already accepts: no record,
+    // so a prematurely-spawned subagent may see the wizard.
+    writeJson(storePath(cwd), { sessions: Object.fromEntries(fresh) });
   } catch {
     // best-effort; a failed record only risks the pre-fix behavior (subagent may see the wizard)
   }

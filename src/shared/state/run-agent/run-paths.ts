@@ -80,11 +80,26 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
   // must ADOPT the persisted id, not mint a sibling.
   let runId = '';
   let minted = false;
+  // An id this function hands back is a promise that the NEXT disk read finds it:
+  // every consumer that does not call back through here reads `currentRunId`
+  // straight off `.one.json` (core/pipeline.ts's decision correlation,
+  // plan-write's compiled-architecture lookup, codex-child-model, the doctor and
+  // run-status runners, isSubagentSession). A refused persist breaks that promise
+  // silently, and the id keeps being re-derived from `runs/` only for as long as
+  // the run stays adoptable — after which the next call MINTS A SIBLING, which is
+  // the 11c/14c incident this whole function exists to prevent. So a refused
+  // persist clears the id and takes the documented fail-closed exit below
+  // (`return ''`), which agent-model/handler.ts turns into a spawn deny rather
+  // than letting a run proceed under an id nothing on disk carries.
   const mint = () => {
-    runId = runIdNow();
+    const candidate = runIdNow();
+    source.currentRunId = candidate;
+    if (!writeState(cwd, source)) {
+      delete source.currentRunId;
+      return;
+    }
+    runId = candidate;
     minted = true;
-    source.currentRunId = runId;
-    writeState(cwd, source);
   };
   try {
     withProjectStateLock(cwd, () => {
@@ -124,9 +139,16 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
       // it never reaches here anyway).
       const adoptable = recentAdoptableRunId(cwd);
       if (adoptable) {
-        runId = adoptable;
         source.currentRunId = adoptable;
-        writeState(cwd, source); // re-persist the blanked id (re-enters the held lock)
+        // Re-persist the blanked id (re-enters the held lock). Adoption without
+        // the re-persist is not adoption: `.one.json` still reads blank, so the
+        // adoption has to be re-derived on every later call and stops working the
+        // moment the run leaves recentAdoptableRunId's window. Fail closed instead.
+        if (!writeState(cwd, source)) {
+          delete source.currentRunId;
+          return;
+        }
+        runId = adoptable;
         return;
       }
       mint(); // writeState re-enters the already-held project-state lock

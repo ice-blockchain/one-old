@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -74,9 +74,22 @@ function writeCopilotAppStateDb(db: string, key: string, value: string): boolean
   } catch { return false; }
 }
 
+// Tracked here rather than at the 30 call sites, several of which pass the
+// result straight into an expression and never bind it. Nothing removed these:
+// one full suite run left 30 trees behind, and four concurrent runs took the
+// disk to 100%, which fails other suites in ways that look unrelated.
+const tmpHomes: string[] = [];
+
 function tmpHome(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 't1-plan-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-plan-'));
+  tmpHomes.push(dir);
+  return dir;
 }
+
+after(() => {
+  for (const dir of tmpHomes) fs.rmSync(dir, { recursive: true, force: true });
+  tmpHomes.length = 0;
+});
 
 function jwt(payload: unknown): string {
   const seg = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');

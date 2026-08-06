@@ -121,11 +121,31 @@ export function readState(cwd: string): Rec {
   return {};
 }
 
-export function writeState(cwd: string, state: unknown): void {
+/**
+ * Persist the shared project state, and report whether `.one.json` now holds it.
+ *
+ * The boolean is the channel this funnel did not have. 30-odd writers land here,
+ * every one of them through a `void` return, so the write fence's `false` (an
+ * unanswered consent question, a planted symlink, a path escaping the state dir)
+ * died one frame below every caller — and five of those callers went on to
+ * `return true`, telling a consumer that state which is not on disk is. The two
+ * NON-refusal no-ops below answer `false` for the same reason: from a caller's
+ * point of view "the plugin's own repo declines state" and "the fence refused" are
+ * the same fact — the state it asked to persist is not persisted.
+ *
+ * Scope: the SHARED state file. The local-preference half
+ * (`splitLocalPreferences`, which routes LOCAL_PREF_KEYS to the per-user store)
+ * is not covered — it reports by throwing, as it always has, and a caller whose
+ * subject IS a local preference must not use this function at all. That is not a
+ * hypothetical: `team` is a host preference, so a `writeState` of a state object
+ * carrying `team` strips it and persists nothing about it while answering `true`
+ * (see onboarding/team-mode-approval.ts, which used to do exactly that).
+ */
+export function writeState(cwd: string, state: unknown): boolean {
   // Contract: the plugin's own repo/install never gets a .one.json — a silent
   // no-op here covers every state writer (onboarding server, run claims, session
   // flows) in one place. See authoring-root.test.ts + normalize tests.
-  if (isNonProjectRoot(cwd)) return;
+  if (isNonProjectRoot(cwd)) return false;
   // Never CREATE state in a directory that belongs to an enclosing project. Same
   // single-funnel reasoning as above: 30+ writers land here, including ones the
   // resolver never sees (the onboarding-wait runners take their cwd from argv, and
@@ -138,7 +158,7 @@ export function writeState(cwd: string, state: unknown): void {
   const ownsState = fs.existsSync(statePath(cwd)) || fs.existsSync(legacyStatePath(cwd));
   if (!ownsState
     && !dirOwnsProject(cwd)
-    && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) return;
+    && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) return false;
   let source: Rec = obj(state) ? { ...(state as Rec) } : {};
   delete source.pluginVersion;
   if (source.stack) {
@@ -151,10 +171,12 @@ export function writeState(cwd: string, state: unknown): void {
   source = split.state;
   const filePath = statePath(cwd);
   const replacement = { ...source, version: stateVersion() };
+  let persisted = false;
   withProjectStateLock(cwd, () => {
     const current = readJson<Rec>(filePath, {});
-    writeJson(filePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)));
+    persisted = writeJson(filePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)));
   });
+  return persisted;
 }
 
 // Deterministic self-heal for machine-local preference fields that leaked into the
@@ -166,12 +188,13 @@ export function writeState(cwd: string, state: unknown): void {
 // which strips on read and would hide the leak); if any local-pref field is present it
 // rewrites through writeState — stripping them and merging them into preferences.json. No-op
 // when the file is absent, already clean, or in the plugin authoring repo (writeState guards
-// that). Returns true when it scrubbed.
+// that). Returns true when it scrubbed — i.e. when the rewritten file is on disk;
+// a refused rewrite leaves the leak in place and says so, because the caller's
+// next honest move (log it, re-run next session) differs from "already clean".
 export function scrubProjectStateLocalPrefs(cwd: string): boolean {
   const raw = readJson<Rec>(statePath(cwd), null as unknown as Rec);
   if (!raw || typeof raw !== 'object' || !hasLocalPreferenceFields(raw)) return false;
-  writeState(cwd, raw);
-  return true;
+  return writeState(cwd, raw);
 }
 
 export function normalizeState(state: unknown, defaultMode?: string): boolean {

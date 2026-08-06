@@ -6,7 +6,7 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import {    writeJson } from '../../fsjson';
+import { createJsonExclusive, writeJson } from '../../fsjson';
 import {
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
@@ -30,9 +30,18 @@ import {
 } from './run-paths';
 import {
   withOwnedDirLock,
+  withOwnedDirLockResult,
 } from './locks';
 import {
-  ensureRunLedger,
+  applied,
+  mutationApplied,
+  mutationValue,
+  preconditionFailed,
+  unavailable,
+  type MutationResult,
+} from './mutation-result';
+import {
+  ensureRunLedgerResult,
 } from './ledger';
 import {
   hookSessionIdentity,
@@ -52,7 +61,7 @@ import {
 import {
   tryFallbackClaim,
 } from './fallback-claims';
-import { withFallbackClaimsLock } from './fallback-claims';
+import { withFallbackClaimsLockResult } from './fallback-claims';
 
 function listClaimedAgentEntries(cwd: string, runId: string): Array<{ filePath: string; claim: Rec }> {
   try {
@@ -106,10 +115,16 @@ export function runRoleHasBoundClaim(cwd: string, runId: unknown, role: unknown)
 // identity records: once the run settles they can only go stale, so the sweep
 // DELETES them (observed 8c: 12 architect fallback claims lingered forever
 // after a verified settlement).
-export function releaseRunClaims(cwd: string, runId: string, reason: string): number {
-  if (typeof runId !== 'string' || !runId.trim() || isNonProjectRoot(cwd)) return 0;
+export function releaseRunClaimsResult(cwd: string, runId: string, reason: string): MutationResult<number> {
+  if (typeof runId !== 'string' || !runId.trim() || isNonProjectRoot(cwd)) return preconditionFailed('no-run-id');
   let released = 0;
-  withRunAgentClaimsLock(cwd, runId.trim(), () => {
+  // Fixes #2 and #3 of the eleven. Both lock results were discarded, so a
+  // contended lock returned the same `0` as an already-swept run — and this
+  // count is what run-settle.ts reports as the terminal sweep's work. Neither
+  // sweep is retried here: settlement calls this on the way to a terminal
+  // transition that has its own result, and the residue it leaves behind expires
+  // on SUBAGENT_STALE_MS. What matters is that the caller can TELL.
+  const claims = withRunAgentClaimsLockResult<void>(cwd, runId.trim(), () => {
     for (const { filePath } of listPendingClaims(cwd, runId)) {
       removePendingClaim(filePath);
       released += 1;
@@ -117,14 +132,18 @@ export function releaseRunClaims(cwd: string, runId: string, reason: string): nu
     for (const { filePath, claim } of listClaimedAgentEntries(cwd, runId)) {
       if (typeof claim.claimId !== 'string' || claim.status === 'released') continue;
       try {
-        writeJson(filePath, { ...claim, status: 'released', releasedAt: stateTimestamp(), releasedReason: reason });
-        released += 1;
+        // Counted only if it actually persisted: a refused write left the claim
+        // 'claimed' on disk while the sweep reported it released.
+        if (writeJson(filePath, { ...claim, status: 'released', releasedAt: stateTimestamp(), releasedReason: reason })) {
+          released += 1;
+        }
       } catch {
         // best-effort: an unreleased claim ages out via SUBAGENT_STALE_MS
       }
     }
+    return applied(undefined);
   });
-  withFallbackClaimsLock(cwd, runId.trim(), () => {
+  const fallback = withFallbackClaimsLockResult<void>(cwd, runId.trim(), () => {
     try {
       const dir = fallbackClaimsDir(cwd, runId.trim());
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -139,8 +158,18 @@ export function releaseRunClaims(cwd: string, runId: string, reason: string): nu
     } catch {
       // no fallback-claims dir — nothing to sweep
     }
+    return applied(undefined);
   });
-  return released;
+  // A sweep that could not take EITHER lock did not sweep. Reported as one
+  // `unavailable` carrying whichever half failed, so a caller cannot read a
+  // partial sweep as a complete one.
+  if (claims.outcome === 'unavailable') return unavailable(`claims-${claims.reason}`);
+  if (fallback.outcome === 'unavailable') return unavailable(`fallback-${fallback.reason}`);
+  return applied(released);
+}
+
+export function releaseRunClaims(cwd: string, runId: string, reason: string): number {
+  return releaseRunClaimsResult(cwd, runId, reason).value ?? 0;
 }
 
 export function releaseAllRunClaims(cwd: string, reason: string): number {
@@ -219,15 +248,104 @@ export function withRunAgentClaimsLock(cwd: string, runId: string, mutate: () =>
   );
 }
 
-export function ensureRunAgentClaim(
+export function withRunAgentClaimsLockResult<T>(
+  cwd: string,
+  runId: string,
+  mutate: () => MutationResult<T>,
+): MutationResult<T> {
+  return withOwnedDirLockResult(
+    runAgentClaimsLockDir(cwd, runId),
+    RUN_AGENT_CLAIMS_LOCK_TIMEOUT_MS,
+    RUN_AGENT_CLAIMS_LOCK_STALE_MS,
+    RUN_AGENT_CLAIMS_LOCK_RETRY_MS,
+    RUN_AGENT_CLAIMS_WAIT,
+    mutate,
+  );
+}
+
+/**
+ * The pending claim's slot: ONE file per role, not one per claim id.
+ *
+ * This filename IS the compare-and-swap. Under the old
+ * `pending/<claimId>.json` every writer minted a fresh random id, so no two
+ * writers ever addressed the same path and the exclusive create could not fail —
+ * rebind-journal-io.ts even calls that pair "the pending-claim CAS", but a
+ * compare-and-swap on a name nobody else writes compares nothing. Keyed by ROLE
+ * the name is contended by construction, which is what makes `O_CREAT|O_EXCL`
+ * mean something: exactly one of N concurrent minters for a role creates the
+ * file and the rest get EEXIST.
+ *
+ * The invariant it buys is the one the rest of the system already assumes and
+ * nothing enforced — at most one UNCONSUMED spawn handoff per role per run.
+ * `activeRunClaimCount` counts pending claims, and a role with two of them
+ * reports two live agents and vetoes settlement for as long as they take to
+ * expire.
+ *
+ * Nothing else may derive this path from a claim id: readers list the directory
+ * and match on the `claimId` INSIDE each file (listPendingClaims,
+ * removePendingClaimsByIdUnlocked), which is filename-agnostic and therefore
+ * still finds `<claimId>.json` files left by an older build.
+ */
+function pendingClaimFile(cwd: string, runId: string, role: string): string {
+  return path.join(pendingDir(cwd, runId), `${safePathSegment(role)}.json`);
+}
+
+/**
+ * The CAS lost — may this minter take the slot anyway?
+ *
+ * "Someone else won" has to mean someone ELSE. A parent that retries the same
+ * role after a failed attempt collides with its OWN earlier handoff, and the
+ * codebase already rules on that case: removeSiblingPendingClaims collapses a
+ * parent's same-role pending claims to the newest at bind time, and
+ * matchingPendingClaim prefers the newest. Deferring to the incumbent instead
+ * would bind the retried child to the ABANDONED attempt's claim — measured
+ * against `Cursor child bind prefers the matching exact-model pending claim`,
+ * where a family-slug spawn fails, the parent respawns with the exact model, and
+ * the child must carry the retry's claim and not the dead guess's.
+ *
+ * So: supersede when the incumbent is this parent's, defer when it is another
+ * parent's. Either way the slot holds exactly ONE claim, which is the invariant
+ * that keeps `activeRunClaimCount` honest — the two cases differ only in WHICH
+ * claim survives.
+ *
+ * An unknown parent on either side supersedes: some hosts omit the session id,
+ * two claims that cannot be told apart are more likely one parent retrying than
+ * two anonymous rivals, and newest-wins is what every reader here already
+ * prefers. An unreadable or unparseable incumbent supersedes too — it can never
+ * be matched to a child, so leaving it in place would strand the role.
+ */
+function supersedesPendingClaim(file: string, parentSessionId: string | null): boolean {
+  const incumbent = readClaimFile(file);
+  if (!incumbent) return true;
+  const held = firstString(incumbent.parentSessionId);
+  if (!held || !parentSessionId) return true;
+  return held === parentSessionId;
+}
+
+/**
+ * Mint this role's pending claim for the run, reporting WHY when it does not
+ * happen. CLAIM MINTING is the non-advisory half of mutation-result.ts's split
+ * rule: its `unavailable` must be retried and then denied, because a spawn
+ * allowed with no claim produces a child that binds no role, writes as the main
+ * agent, and cannot be swept when the run settles.
+ *
+ * `precondition-failed` is the opposite and must NOT deny:
+ *   - `role-pending-claim-held` — the CAS lost to a DIFFERENT parent session.
+ *     Its handoff for this role is already on disk and the child this spawn
+ *     starts will bind to THAT claim, so blocking the spawn adds nothing.
+ *   - `ledger-not-active` — the run is closed. Respawning cannot fix it; the
+ *     gates that care already have their own ledger-closed denies with the
+ *     resume remedy in them.
+ */
+export function ensureRunAgentClaimResult(
   cwd: string,
   state: unknown,
   role: string,
   rawInput: unknown,
   metadata: { toolName?: string; agentType?: string; model?: string; roleSource?: string } = {},
-): Rec | null {
-  if (!VALID_AGENT_ROLES.has(role)) return null;
-  if (isNonProjectRoot(cwd)) return null; // never claim runs in the plugin's own repo
+): MutationResult<Rec> {
+  if (!VALID_AGENT_ROLES.has(role)) return preconditionFailed('invalid-role');
+  if (isNonProjectRoot(cwd)) return preconditionFailed('authoring-root'); // never claim runs in the plugin's own repo
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   // Missing-id fallback flows through the serialized mint (adopting a
   // concurrently persisted id) — a bare runIdNow() here parented the claim
@@ -237,17 +355,25 @@ export function ensureRunAgentClaim(
     : ensureCurrentRunId(cwd, state);
   if (!source.currentRunId) source.currentRunId = runId;
   const identity = hookSessionIdentity(rawInput);
-  let claim: Rec | null = null;
-  const locked = withRunAgentClaimsLock(cwd, runId, () => {
-    const ledger = ensureRunLedger(cwd, runId, {
+  const minted = withRunAgentClaimsLockResult<Rec>(cwd, runId, () => {
+    const ledger = ensureRunLedgerResult(cwd, runId, {
       status: 'active',
       kind: 'agent-claim',
       ...stackFingerprintPatch(cwd, runId, source),
     });
-    if (ledger?.status !== 'active') return;
+    // A LEDGER TRANSITION that could not be recorded is not a closed run, and
+    // this is the join where the two halves of the split rule meet: the mint
+    // inherits the ledger's `unavailable` verbatim so the gate above retries and
+    // denies, instead of the old `ledger?.status !== 'active'` test that read an
+    // unwritable ledger and a blocked one as the same refusal.
+    if (ledger.outcome === 'unavailable') return unavailable<Rec>(`ledger-${ledger.reason}`);
+    if (ledger.value?.status !== 'active') return preconditionFailed<Rec>('ledger-not-active');
+    // Counts pending claims for the role, and listPendingClaims prunes expired
+    // ones as it goes — so a handoff abandoned by a spawn that never started
+    // frees the role's slot here rather than blocking it until it ages out.
     const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
     const claimId = `${role}-${spawnIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    claim = {
+    const claim: Rec = {
       version: 1,
       runId,
       claimId,
@@ -262,18 +388,50 @@ export function ensureRunAgentClaim(
       model: metadata.model || null,
       roleSource: metadata.roleSource || 'spawn-input',
     };
-    fs.mkdirSync(pendingDir(cwd, runId), { recursive: true });
-    writeJson(path.join(pendingDir(cwd, runId), `${safePathSegment(claimId)}.json`), claim);
+    // No raw mkdir first: createJsonExclusive creates the parent through the
+    // same fence it writes through, and the mkdirSync that used to be here ran
+    // ahead of it unfenced.
+    const file = pendingClaimFile(cwd, runId, role);
+    const created = createJsonExclusive(file, claim);
+    if (created === 'refused') return unavailable<Rec>('pending-claim-write-refused');
+    if (created === 'exists' && !supersedesPendingClaim(file, identity.sessionId)) {
+      return preconditionFailed<Rec>('role-pending-claim-held');
+    }
+    // Superseding its own earlier handoff, which is a REWRITE of the same slot,
+    // so it goes through writeJson (atomic replace) rather than the exclusive
+    // create that just told us the slot is taken.
+    if (created === 'exists' && !writeJson(file, claim)) {
+      return unavailable<Rec>('pending-claim-write-refused');
+    }
+    return applied(claim);
   });
-  const persistedClaim = claim as Rec | null;
-  if (!locked || !persistedClaim) return null;
+  if (minted.outcome !== 'applied' || !minted.value) return minted;
+  const persistedClaim = minted.value;
 
   source.currentRunId = runId;
   const existingSpawn = obj(source.spawnIndex);
   const claimedSpawnIndex = typeof persistedClaim.spawnIndex === 'number' ? persistedClaim.spawnIndex : 1;
   source.spawnIndex = existingSpawn ? { ...existingSpawn, [role]: claimedSpawnIndex } : { [role]: claimedSpawnIndex };
-  writeState(cwd, source);
+  // `applied` used to be returned over this write unconditionally, which minted a
+  // MutationResult claiming a mutation the fence had refused half of: the claim row
+  // is on disk under `runId` while `.one.json` still names a different current run,
+  // and every consumer then acts correctly on a lie. `unavailable` is the same
+  // outcome the two pending-claim refusals above report, and it is the one that is
+  // safe: gate-enforcement.ts's claimMintDeny retries and then DENIES the spawn on
+  // `unavailable`, while `precondition-failed` lets it proceed — a spawn allowed
+  // over an unrecorded run is exactly the child that binds no role.
+  if (!writeState(cwd, source)) return unavailable<Rec>('run-state-write-refused');
 
-  return persistedClaim;
+  return minted;
+}
+
+export function ensureRunAgentClaim(
+  cwd: string,
+  state: unknown,
+  role: string,
+  rawInput: unknown,
+  metadata: { toolName?: string; agentType?: string; model?: string; roleSource?: string } = {},
+): Rec | null {
+  return mutationValue(ensureRunAgentClaimResult(cwd, state, role, rawInput, metadata));
 }
 

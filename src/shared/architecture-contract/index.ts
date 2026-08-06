@@ -31,6 +31,9 @@ import {
   moduleOutputVariants,
 } from './naming';
 import {
+  plansWebUiWork,
+} from './scaffold';
+import {
   validateArchitectureInput,
 } from './validate';
 import {
@@ -58,7 +61,16 @@ function assignmentOutputs(
           ? [path.posix.dirname(module.outputBase)]
           : moduleOutputVariants(module)
       )),
-    ...(role === 'senior-frontend' ? architecture.entrypoints : []),
+    // The entrypoint is the frontend's WIRING edge — a new shell gets mounted
+    // there, new routes get registered there — so it belongs in scope exactly
+    // when the plan holds UI to wire. A service-only plan has nothing to wire,
+    // and the entrypoint is markup: `deriveUiImpact` reads a changed `.tsx` as
+    // `visual` (measured), the most expensive class there is. Handing it over
+    // unconditionally invited a nonvisual run to escalate itself into needing
+    // responsive screenshots, which a machine with no Chromium cannot produce.
+    ...(role === 'senior-frontend' && plansWebUiWork(architecture.modules)
+      ? architecture.entrypoints
+      : []),
     ...(architecture.scaffoldOutputs || [])
       .filter((output) => output.ownerRole === role)
       .map((output) => output.path),
@@ -394,7 +406,9 @@ export {
   webPackageRoot,
 } from './scaffold';
 export {
+  ensureProjectGitignore,
   ensureScaffoldContent,
+  projectOwnedGitignore,
   scaffoldFileContent,
   uiAstLintLayer,
 } from './scaffold-content';

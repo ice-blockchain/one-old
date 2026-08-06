@@ -14,6 +14,8 @@ import {
   type MaterializeOutcome,
   materializeProjectAssets,
   materializeProjectIfNeeded,
+  materializeRefusedOutcome,
+  stateWriteRefusedOutcome,
 } from '../../shared/materialize';
 import {
   isMaterialized,
@@ -40,6 +42,17 @@ function isMaterializableState(state: Rec): boolean {
   return !!(state && state.stack && STACK_IDS.has(state.stack as string) && state.onboardingComplete === true);
 }
 
+// Refusals that must produce NO system message on a tool-write convergence.
+// Both are "this directory is not ours to write to", not "something is broken":
+// the plugin's own repo must stay silent, and so must a project whose use-plugin
+// question is unanswered — the onboarding gate owns that conversation, and a
+// project that declined is entitled to hear nothing at all. Every other refusal
+// names a plugin root that still needs fixing and is worth reporting.
+// Exported for the test that pins the membership: which refusals are silent is a
+// product decision, not an implementation detail, and inferring it from an
+// end-to-end drive would prove only that some path was quiet.
+export const SILENT_MATERIALIZE_REFUSALS = new Set(['plugin-authoring-root', 'plugin-use-not-permitted']);
+
 function materializeProjectMemoryPath(
   projectRoot: string,
   state: Rec,
@@ -48,7 +61,14 @@ function materializeProjectMemoryPath(
   trigger: string,
 ): MaterializeOutcome | null {
   try {
-    if (normalizeState(state, detectMode(projectRoot))) writeState(projectRoot, state);
+    // Both writes here land on `.traffic-one/.one.json`, and a refusal of it is
+    // durable, so the first one already settles whether this convergence can be
+    // recorded at all — reported through converge.ts's single diagnostic for it
+    // rather than dropped and then contradicted by the `materialized` outcome
+    // below (see stateWriteRefusedOutcome for what an unstamped pass costs).
+    if (normalizeState(state, detectMode(projectRoot)) && !writeState(projectRoot, state)) {
+      return stateWriteRefusedOutcome();
+    }
     // A memory-doc write cannot change the stack fingerprint or the plugin
     // version, so an already-materialized project with its assets on disk needs
     // only the one-mcp report — not a full (skills-tree-touching) re-emit.
@@ -57,11 +77,20 @@ function materializeProjectMemoryPath(
       return null;
     }
     const materialized = materializeProjectAssets(projectRoot, state);
+    if (materialized.skipped && !SILENT_MATERIALIZE_REFUSALS.has(materialized.skipped)) {
+      // Do NOT stamp materializedStack/At/Version — nothing was actually
+      // materialized, so recording "current" would hide a plugin root (or a
+      // half-written plugin tree) that still needs fixing, and would stop every
+      // later hook from retrying. Report the same diagnostic converge.ts's
+      // materialize-project subcommand would, instead of the generic
+      // "nothing happened" null this function otherwise returns below.
+      return materializeRefusedOutcome(materialized);
+    }
     if (!materialized.skipped) {
       state.materializedStack = stackFingerprint(state);
       state.materializedAt = nowIsoNoMs();
       state.materializedVersion = stateVersion();
-      writeState(projectRoot, state);
+      if (!writeState(projectRoot, state)) return stateWriteRefusedOutcome(materialized);
     }
     reportOneMcp(projectRoot, state, trigger);
     if (!materialized || (materialized.written <= 0 && materialized.removed <= 0)) {

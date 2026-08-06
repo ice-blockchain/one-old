@@ -16,6 +16,7 @@ import { emitCursorRules } from './emit/cursor-rules';
 import { emitHooks } from './emit/hooks';
 import { emitManifests, emitMcp } from './emit/manifests';
 import { emitOneMcpOperatorArtifacts } from './emit/one-mcp-operator';
+import { emitBuildProvenance } from './emit/provenance';
 import { emitRules } from './emit/rules';
 import { emitSkills } from './emit/skills';
 import { emitStaticPluginFiles } from './emit/static';
@@ -65,8 +66,32 @@ export function runGen(opts: { check: boolean; root?: string; sourceRoot?: strin
   emitCursorRules(run);
   emitWindsurfRules(run);
   emitStaticPluginFiles(run);
+  emitBuildProvenance(run);
   run.sweepOrphans(MANAGED_OUTPUT_DIRS);
   return run;
+}
+
+/**
+ * The extra line to print for a drift set, or null when the drift speaks for
+ * itself.
+ *
+ * `gen --check` reads as a DETERMINISM gate — the same inputs twice must emit
+ * the same bytes — so "out of sync" invites the alarming diagnosis first. A
+ * lone `build-provenance.json` means something far duller: its `sourceHash`
+ * covers all of `src/**`, including runtime TypeScript that gen never emits as
+ * content, so ANY source edit after the last gen drifts that one file and
+ * nothing else. CI checks out clean and gens once, so there the bare message
+ * still means what it says.
+ *
+ * Deliberately silent when anything else drifted alongside it: those are real
+ * content moves, and calling the set "just a stale dist" would talk the reader
+ * out of the investigation they should be doing.
+ */
+export function driftDiagnosis(drift: readonly string[]): string | null {
+  const onlyProvenance = drift.length === 1 && (drift[0] as string).endsWith('build-provenance.json');
+  return onlyProvenance
+    ? 'Only build-provenance.json drifted: source changed after the last gen (a stale dist), not nondeterministic generation.'
+    : null;
 }
 
 export function main(argv: string[] = process.argv.slice(2)): void {
@@ -75,6 +100,8 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   if (check) {
     if (run.drift.length > 0) {
       process.stderr.write(`gen --check: ${run.drift.length} generated artifact(s) out of sync in dist:\n${run.drift.map((p) => `  - ${p}`).join('\n')}\n`);
+      const diagnosis = driftDiagnosis(run.drift);
+      if (diagnosis) process.stderr.write(`${diagnosis}\n`);
       process.stderr.write('Run `npm run gen` to refresh dist.\n');
       process.exitCode = 1;
       return;

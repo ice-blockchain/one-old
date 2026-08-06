@@ -64,6 +64,21 @@ export const assertion: Assertion = {
     }
 
     const report = readQaReportV2(ctx.cwd, runId);
+    // Fence 3, first arm — the runner's OWN blocked-environment verdict. Placed
+    // after fence 1 on purpose: a case that declares the wrong qa.mode still
+    // FAILS, because that is a product/contract disagreement and has nothing to
+    // do with this machine's toolchain.
+    //
+    // Before this branch existed, a machine with no project-local Playwright made
+    // this assertion report "The published QA report was rejected by its own
+    // validator (blocked-environment: Project-local Playwright is unavailable)"
+    // as a FAIL — 48 of them. The report was not fabricated and the product was
+    // not broken; there was no browser to look through. AGENTS.md always
+    // specified INCONCLUSIVE here, and `--strict` still fails the release verdict
+    // on it, so nothing is laundered.
+    if (!report.ok && report.code === 'blocked-environment') {
+      return result(ctx, 'INCONCLUSIVE', `The QA runner reported blocked-environment for uiImpact=${contract.uiImpact} (${expectedMode} mode): ${report.message}. A required toolchain is absent on this machine, so this run cannot say whether the product's evidence is good — it is not a pass and not a failure.`);
+    }
     if (!report.ok) {
       // Maintenance legs that ran AFTER this report legitimately moved the
       // tree — that is what the maintenance phase IS. Tolerate the validator's

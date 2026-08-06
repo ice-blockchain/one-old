@@ -3,7 +3,19 @@
 // The whole point of this file: feature code speaks ONLY these types and never
 // branches on host. Adapters translate each host's raw shape to/from here.
 
+import type { DenyId } from '../config/deny-ids';
+
 export type HostId = 'claude' | 'codex' | 'cursor' | 'opencode' | 'copilot' | 'windsurf' | 'kilo';
+
+// A deny whose handler declared no `denyId` still gets ONE, so it is
+// attributable rather than anonymous — synthesized by the pipeline from the
+// handler's own `id` (see core/pipeline.ts). Deliberately NOT a member of
+// DenyId: a fallback firing at all is a gap (a call site the completeness
+// test should have caught, or a genuinely new gate that has not been given a
+// real id yet), and keeping it out of the declared union is what makes that
+// gap visible to anything that iterates DENY_IDS instead of silently
+// counting toward it.
+export type FallbackDenyId = `unattributed-handler:${string}`;
 
 export type CanonicalEvent =
   | 'SessionStart'
@@ -84,14 +96,59 @@ export interface ResultMeta {
   // must carry every field, not a patch). Carried on an allow-path context
   // result; every other host/event serializer ignores it.
   readonly updatedToolInput?: Record<string, unknown>;
+  // A declared, stable, machine-readable identifier for the distinct REASON
+  // this call was refused — never derived from rendered prose. Prose is
+  // resolved from SKILL.md at runtime and interpolates paths/counts/ids, so a
+  // text key never repeats and an unresolvable block makes every deny render
+  // as `''`, collapsing all gates into one bucket; a declared id is the only
+  // thing that stays stable across a prose rewrite or a broken skill file. A
+  // handler that omits it gets a synthetic FallbackDenyId from the pipeline
+  // (see core/pipeline.ts) rather than being left anonymous. Consumers: a
+  // later deny budget and decision log key on `(runId, gateId, denyId,
+  // denyTarget)`.
+  //
+  // Deliberately `DenyId` ALONE, not `DenyId | FallbackDenyId`: this is the
+  // CALL-SITE contract (what deny()/context() accept), and with the fallback
+  // in the union a gate could hand-write `denyId:
+  // 'unattributed-handler:whatever'` — a string that compiles, satisfies the
+  // completeness test, and is indistinguishable in the log from the
+  // pipeline's own synthesized fallback, i.e. it could fake attribution.
+  // Only the pipeline may mint that shape; it widens on the way out through
+  // StampedDenyMeta below.
+  readonly denyId?: DenyId;
+  // The handler `id` that produced this deny. Only the pipeline can supply
+  // this (a handler does not know its own registration id), so the pipeline
+  // stamps it unconditionally on every deny it returns — never set this on a
+  // result you construct in a handler.
+  readonly gateId?: string;
+  // Optional discriminator for WHAT this refusal is about — a file path, an
+  // agent id, a role — whatever the gate is refusing about, when there is a
+  // single natural one. Deliberately separate from `denyId` (the CAUSE):
+  // `denySignature(filePath, violations)` in shared/state/deny-repeat.ts
+  // already keys its at-most-once check per-target for a reason, and a
+  // budget keyed on `(gateId, denyId)` alone would let a fifth write through
+  // to a file the agent does not own once earlier ones on other files used up
+  // the same bucket. Left unset where a gate has no single target (e.g. a
+  // pure policy/config denial).
+  readonly denyTarget?: string;
 }
+
+// ResultMeta as it exists on a deny that has LEFT the pipeline: identical in
+// every field except that `denyId` may also be the synthetic
+// `unattributed-handler:<gateId>` the pipeline mints for a handler that
+// declared none (see stampDeny in core/pipeline.ts). Splitting the two is what
+// keeps that shape un-writable at a call site while still being a legal value
+// on the result a consumer reads.
+export type StampedDenyMeta = Omit<ResultMeta, 'denyId'> & {
+  readonly denyId?: DenyId | FallbackDenyId;
+};
 
 // The canonical decision. The adapter serialises it to each host's wire shape;
 // e.g. a Cursor afterFileEdit (a post-event) downgrades `deny` to a warning.
 export type HookResult =
   | { readonly kind: 'noop' }
   | ({ readonly kind: 'context'; readonly context: string } & ResultMeta)
-  | ({ readonly kind: 'deny'; readonly reason: string; readonly context?: string } & ResultMeta);
+  | ({ readonly kind: 'deny'; readonly reason: string; readonly context?: string } & StampedDenyMeta);
 
 export type MaybeAsync<T> = T | Promise<T>;
 
@@ -153,7 +210,11 @@ export interface Logger {
 export interface FsJson {
   readText(filePath: string): string | null;
   readJson<T = unknown>(filePath: string, fallback: T): T;
-  writeJson(filePath: string, value: unknown): void;
+  /** Whether the write landed. `false` is a refusal (the consent or symlink
+   *  fence in shared/fsjson.ts declined the path), never a thrown failure — a
+   *  caller whose next step depends on the write having persisted must branch on
+   *  this rather than assume it. */
+  writeJson(filePath: string, value: unknown): boolean;
 }
 
 export interface ExecResult {

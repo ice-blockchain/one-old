@@ -36,7 +36,7 @@ export function absoluteTrafficOnePathDeny(paths: string[], cwd: string): HookRe
   return deny(block('absolute-traffic-one-path', {
     PROJECT_ROOT: cwd,
     BAD_PATHS: paths.join(', '),
-  }));
+  }), { denyId: 'absolute-traffic-one-path', denyTarget: cwd });
 }
 
 // OpenCode/Kilo do not emit SubagentStart, so the only pre-child signal is the

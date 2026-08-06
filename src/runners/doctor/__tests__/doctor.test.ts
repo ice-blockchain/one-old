@@ -49,10 +49,32 @@ function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `t1-doctor-${prefix}-`));
 }
 
-test('parseArgs reads --session', () => {
-  assert.deepEqual(parseArgs(['--session', 'abc']), { session: 'abc' });
-  assert.deepEqual(parseArgs([]), { session: null });
-  assert.deepEqual(parseArgs(['--session']), { session: null });
+// The assertions are exhaustive on the WHOLE parsed shape on purpose (a new
+// flag defaulting to something surprising is the failure mode), so `args()`
+// spells the defaults once and every case still pins every field.
+function args(over: Partial<ReturnType<typeof parseArgs>> = {}): ReturnType<typeof parseArgs> {
+  return { session: null, run: null, bundle: false, unblock: null, ttl: null, ...over };
+}
+
+test('parseArgs reads --session, --run, and --bundle', () => {
+  assert.deepEqual(parseArgs(['--session', 'abc']), args({ session: 'abc' }));
+  assert.deepEqual(parseArgs([]), args());
+  assert.deepEqual(parseArgs(['--session']), args());
+  assert.deepEqual(parseArgs(['--run', '1785169657252']), args({ run: '1785169657252' }));
+  assert.deepEqual(parseArgs(['--run']), args());
+  assert.deepEqual(parseArgs(['--bundle']), args({ bundle: true }));
+  // All three can combine (doctor never rejects an argument combination itself —
+  // that is isTrafficOneDoctorCommand's job at the gate boundary).
+  assert.deepEqual(
+    parseArgs(['--session', 'abc', '--run', '123', '--bundle']),
+    args({ session: 'abc', run: '123', bundle: true }),
+  );
+  // `--unblock`/`--ttl` parse here like any other flag; what keeps them out of
+  // an agent's hands is the gate grammar (tool-classify.ts) and the mint's TTY
+  // confirmation, never this parser.
+  assert.deepEqual(parseArgs(['--unblock', 'plan-guard']), args({ unblock: 'plan-guard' }));
+  assert.deepEqual(parseArgs(['--unblock']), args());
+  assert.deepEqual(parseArgs(['--ttl', '30m']), args({ ttl: '30m' }));
 });
 
 test('codexConfigPath supports Windows USERPROFILE when HOME is absent', () => {

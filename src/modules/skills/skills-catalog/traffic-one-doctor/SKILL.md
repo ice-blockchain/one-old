@@ -24,7 +24,13 @@ emits a report; never installs, never modifies, never deletes.
 
 ## What it does
 
-Runs `scripts/doctor.cjs` (read-only). The script probes:
+Runs `scripts/doctor.cjs`. Every invocation described here is read-only — it
+never writes to the project, never installs anything, never edits state. (The
+one exception is `--unblock`, the operator override: it is not yours to run, it
+is refused unless a human confirms it at a real terminal, and it is not one of
+the invocations the gates admit. See "Operator override" at the end.)
+
+The script probes:
 
 1. **Node** — running major version, the `node` binary on PATH, the GitNexus
    minimum (22).
@@ -43,6 +49,19 @@ Runs `scripts/doctor.cjs` (read-only). The script probes:
    and reports attributable Traffic One hook-output evidence, structured prompt
    and permission decisions, plus total and mutating tool calls. A missing-output
    finding is informational because applicable hooks may intentionally no-op.
+7. **Wedged run** — with `--run <id>`, reports every registered agent and held
+   claim against its liveness window, the run ledger's raw/effective/canonical
+   status, and the most repeated deny ids from that run's decision log. Stale
+   agents, expired claims and a non-terminal run with nothing alive to advance
+   it become `fix-needed` findings, so `summary` reflects the wedge instead of
+   reading `HEALTHY`. A human-readable version of the same report, ending in a
+   concrete next step, is printed to **stderr** — stdout stays pure JSON.
+8. **Bug-report bundle** — with `--bundle`, emits a redacted state-only bundle
+   instead of the plain report: probes, findings, the run diagnostic, and the
+   last 300 decision-log verdicts. Prompt text, onboarding answers,
+   credential-named values and decision-log `inputs`/`stateWrites` are removed;
+   absolute filesystem paths are NOT, so read its own `redaction.policy` before
+   pasting it anywhere public.
 
 It outputs a JSON report with one of three summaries:
 
@@ -67,18 +86,54 @@ For a specific Codex incident:
 node ~/.traffic-one/bin/doctor.cjs --session <session-id>
 ```
 
+For a wedged run (why is this run stuck?):
+
+```bash
+node ~/.traffic-one/bin/doctor.cjs --run <run-id>
+```
+
+The run id is `currentRunId` in `.traffic-one/.one.json`, or any directory name
+under `.traffic-one/runs/`. Parse stdout's `findings` for the `RUN_AGENT_STALE`,
+`RUN_CLAIM_EXPIRED`, `RUN_STALLED_NO_LIVE_AGENT` and `RUN_DIR_MISSING` codes;
+the stderr report is for the human.
+
+For a bug report:
+
+```bash
+node ~/.traffic-one/bin/doctor.cjs --bundle
+node ~/.traffic-one/bin/doctor.cjs --run <run-id> --bundle
+```
+
+`--bundle` alone bundles whichever run the project state currently points at;
+add `--run <id>` to pin a different one. Show the user what it contains (it
+includes absolute paths) and let them decide where it goes; never upload it.
+
+These are the exact invocations Traffic One's own gates admit while a project is
+mid-setup or mid-wedge — one `node`, one of these two paths, and at most one
+recognized flag (plus `--run <id> --bundle`). A wrapper (`npx …`, `sh -c "…"`),
+a redirect, a second chained command, or any other flag is treated as an
+ordinary shell command and may be blocked by whatever gate is currently
+holding the project.
+
 Incident mode uses the resolved transcript's cwd even when the command is run
 from the plugin root or another project. Without `--session`, run from the
 project root whose setup should be checked.
 
-In Codex, prefer `TRAFFIC_ONE_PLUGIN_ROOT` or `CODEX_PLUGIN_ROOT` when the
-host exposes one. If no plugin-root env var is available, use the absolute
-plugin root that contains this `SKILL.md`.
+`~/.traffic-one/bin/doctor.cjs` is the version-stable shim and the preferred
+spelling: its path survives plugin updates, so a host's stored approval for it
+keeps working. `<plugin-root>/scripts/doctor.cjs` also works when the shim has
+not been written yet.
 
 ## Codex hook-trust activation and remediation
 
-For Codex, a healthy installation has **15 trusted / 15 runnable** Traffic One
-hooks. If Doctor emits `CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED`, reports
+For Codex, a healthy installation currently has **16 trusted / 16 runnable**
+Traffic One hooks. Never hardcode 16: the expected count is a fixed constant
+compiled into the runner, not derived from `hooks/hooks.json`, so it changes
+only when the plugin changes. Read the authoritative number for the installed
+build out of Doctor's own JSON at
+`probes.codexHooks.hookTrust.expectedCount`, and compare it with
+`probes.codexHooks.hookTrust.counts`. If Doctor emits
+`CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED`, reports
 any other totals, or the review was only partially accepted, keep the summary at
 `ACTION_NEEDED`; there is no supported degraded Traffic One mode.
 
@@ -86,20 +141,20 @@ Give the user this primary recovery flow:
 
 1. Install or reinstall the current Traffic One build.
 2. In Codex Desktop, open **Plugins → Traffic One → Hooks → Review** and inspect
-   every displayed command. Compare all 15 hook keys and commands with the
+   every displayed command. Compare every hook key and command with the
    installed `hooks/hooks.json` fixture.
 3. Only if the count, keys, and commands match, ask the user to choose
    **Trust all**. If anything differs, do not trust the set; reinstall or update
    the current Traffic One build and review it again.
 4. Reload if Desktop offers it or fully restart Desktop, then open a new task in
    a trusted project and rerun Doctor. Completion requires `HEALTHY` and
-   **15 trusted / 15 runnable**.
+   `counts.trusted` = `counts.runnable` = `expectedCount`.
 
 If Desktop cannot complete that flow, give this CLI fallback:
 
 1. Fully quit Codex Desktop so it cannot write hook state concurrently.
-2. Start `codex` from a trusted project, run `/hooks`, inspect the 15 fixture
-   entries, and approve only Traffic One — never unrelated plugin hooks.
+2. Start `codex` from a trusted project, run `/hooks`, inspect every fixture
+   entry, and approve only Traffic One — never unrelated plugin hooks.
 3. Exit the CLI, restart Desktop, open a new task in the trusted project, and
    rerun Doctor.
 
@@ -152,8 +207,40 @@ finding without a `recommendedCommand` is not an invitation to propose a global
 `~/.traffic-one/toolchains/` itself, and a hand-run global install lands outside
 that root, where uninstall cannot reach it.
 
+## Operator override (`--unblock`) — not yours to run
+
+When a gate refuses a tool call and the refusal can legitimately be lifted, the
+deny text itself prints one command:
+
+```bash
+node ~/.traffic-one/bin/doctor.cjs --unblock <gate-id> --run <run-id>
+```
+
+That line is addressed to the **user**, not to you. Relay it if they are stuck
+and ask; never run it yourself, and never propose it as a way past a refusal you
+could instead fix. Four things are true about it and worth telling them plainly:
+
+- It is refused unless a human runs it at a real terminal and types back a code
+  it prints, so a tool call carrying it fails — that is the design, not a bug.
+  It is also the one doctor invocation the gates do not admit, for the same
+  reason.
+- It switches ONE gate off for ONE run, for 30 minutes by default. Add
+  `--ttl 90m` (or `2h`, `45s`) to pick another window, up to a 24h ceiling.
+- The run then becomes **permanently ineligible** for `verified`/`shipped`, even
+  after the override expires. It is the emergency exit, not a step in the loop.
+- The gate id and run id are the ones the refusal itself names; do not guess
+  them.
+
+If Doctor reports `OPERATOR_OVERRIDE_ACTIVE`, say so in your summary: the rest of
+the report describes a project with one gate switched off. If it reports
+`OVERRIDE_LEDGER_UNVERIFIED`, relay it verbatim — nothing is being let through by
+those lines, but somebody should know why they are there.
+
 ## Must-not-do
 
+- Never mint an operator override (`--unblock`), and never ask the user to mint
+  one, to get past a gate that is refusing your own work. Fix the cause the
+  deny names.
 - Never auto-run `npm install` / `nvm install` / `git init` without explicit
   user approval in this turn.
 - Never modify `.traffic-one/.one.json` directly from this skill; route field

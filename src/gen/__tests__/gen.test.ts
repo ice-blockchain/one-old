@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { distRoot, runGen, sourceRepoRoot } from '../index';
+import { distRoot, driftDiagnosis, runGen, sourceRepoRoot } from '../index';
 import { GenRun } from '../lib/run';
 import { emitManifests, emitMcp } from '../emit/manifests';
 import { emitStaticPluginFiles } from '../emit/static';
@@ -941,4 +941,27 @@ test('no generated doc prints a `go build` that can collide with its own package
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// Both directions matter. Naming the dull cause when it IS the cause saves a
+// hunt for nondeterminism that did not happen; naming it when something else
+// also moved would talk the reader out of the hunt they should be on.
+test('a lone build-provenance drift is explained as a stale dist, and any other drift is not', () => {
+  assert.match(
+    driftDiagnosis(['build-provenance.json']) ?? '',
+    /stale dist.*not nondeterministic/,
+  );
+  // The emitter writes it under the plugin root, so the real drift entry may
+  // carry a prefix; the diagnosis keys on the file, not on an exact string.
+  assert.ok(driftDiagnosis(['dist/build-provenance.json']));
+
+  assert.equal(driftDiagnosis([]), null, 'no drift, nothing to explain');
+  assert.equal(
+    driftDiagnosis(['build-provenance.json', 'rules/core.md']),
+    null,
+    'a real content move alongside it is exactly when the reader must NOT be reassured',
+  );
+  assert.equal(driftDiagnosis(['rules/core.md']), null);
+  // A file that merely CONTAINS the name is not that file.
+  assert.equal(driftDiagnosis(['build-provenance.json.bak']), null);
 });

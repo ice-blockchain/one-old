@@ -11,7 +11,7 @@
 import { readRunSettlement } from '../../shared/run-settlement';
 import { runVerificationState } from '../../shared/state/run-agent';
 import type { Assertion } from '../core/types';
-import { effState, latestRunId, readRunSimTranscript, rec, result, str } from './util';
+import { effState, latestRunId, readRunSimTranscript, rec, result, runSimIncomplete, str } from './util';
 
 export const assertion: Assertion = {
   id: 'run-sim-settlement',
@@ -21,7 +21,7 @@ export const assertion: Assertion = {
     const transcript = readRunSimTranscript(ctx);
     if (!transcript) return result(ctx, 'FAIL', 'No run-sim transcript was persisted.');
     if (transcript.ok !== true) {
-      return result(ctx, 'FAIL', `The simulated run did not complete, so settlement was never reached: ${str(transcript.failure) || 'unknown failure'}`);
+      return runSimIncomplete(ctx, transcript, 'The simulated run did not complete, so settlement was never reached');
     }
 
     const runId = str(transcript.runId) || latestRunId(ctx.cwd, effState(ctx));

@@ -359,7 +359,17 @@ export function refreshVerificationAfterImplementation(
         changed: false,
       };
     }
-    publishVerificationContract(projectRoot, verification);
+    // A refused publish (fsjson.ts's consent/symlink/containment fence) used to
+    // fall through to `changed: true`, so the IMPLEMENTED refresh reported a
+    // raised contract that was never on disk — and architectPhaseIncompleteReasons
+    // below then read verification-v2.json back and called the run incomplete,
+    // with nothing connecting the two. Refuse the refresh instead.
+    if (!publishVerificationContract(projectRoot, verification)) {
+      return {
+        error: 'the refreshed VerificationContractV2 could not be persisted',
+        changed: false,
+      };
+    }
     publishRuntimeAssignments(projectRoot, architecture, verification.contractHash);
     if (modelPolicy && !ensureRunPolicyBootstraps(projectRoot, modelPolicy, state)) {
       return {

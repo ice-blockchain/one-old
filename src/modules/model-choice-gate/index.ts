@@ -2,6 +2,7 @@ import { asString } from '../../adapters/coerce';
 import { deny, noop } from '../../core/result';
 import type { Ctx, Handler, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
+import { hostFlags } from '../../shared/host/capability-flags';
 import { projectRelativeHookPath } from '../../shared/hook/paths';
 import { formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { obj } from '../../shared/obj';
@@ -27,7 +28,7 @@ const block = (name: string, vars: Record<string, string | number | null | undef
   skillBlock('model-choice-gate', name, vars);
 
 export function modelChoiceGate(ctx: Ctx): HookResult {
-  if (ctx.host !== 'cursor') return noop();
+  if (!hostFlags(ctx.host).modelChoiceNeedsUserReply) return noop();
   const raw = obj(ctx.input.raw) || {};
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
@@ -66,11 +67,11 @@ export function modelChoiceGate(ctx: Ctx): HookResult {
       TABLE: table,
       PROJECT_ROOT: root,
       PATH: projectRelativeHookPath(ctx.cwd, root, filePath),
-    }));
+    }), { denyId: 'model-choice-stop-first', denyTarget: root });
   }
 
   if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
-  return deny(block('model-choice-stop-repeat', { PROJECT_ROOT: root }));
+  return deny(block('model-choice-stop-repeat', { PROJECT_ROOT: root }), { denyId: 'model-choice-stop-repeat', denyTarget: root });
 }
 
 export const handlers: Handler[] = [

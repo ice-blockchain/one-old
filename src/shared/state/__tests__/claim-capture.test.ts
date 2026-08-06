@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { captureClaimDebug, capturePlanGuardDebug } from '../claim-capture';
+import { drainStateWrites } from '../state-write-log';
 
 function withTmp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-capture-'));
@@ -73,5 +74,51 @@ test('capturePlanGuardDebug: appends plan-guard deny lines', () => {
     const line = JSON.parse(fs.readFileSync(file, 'utf8').trim());
     assert.equal(line.label, 'plan-guard-deny');
     assert.equal(line.filePath, '.traffic-one/coding.md');
+  });
+});
+
+// ── decision-log hand-off: both captures announce their write outcome ──────
+// so a decision record built while one of these ran can see it in
+// `stateWrites` (see state-write-log.ts / decision-log.ts).
+//
+// Announced by the CHOKEPOINT (fsjson.ts's appendTextFile) rather than from
+// inside these two functions. They each used to record it a second time under
+// their own op label, which after the chokepoint was instrumented produced two
+// records for one write — and the second one's errno came from a `catch` around
+// statSync and JSON.stringify as well as the write, so a non-write failure could
+// be reported as a failed write. The path already says which capture it was.
+
+test('captureClaimDebug reports its write to the state-write-log collector, success and failure', () => {
+  withTmp((cwd) => {
+    drainStateWrites(); // clear any leakage from an earlier test in this process
+    captureClaimDebug(cwd, 'run-1', 'runteam-write', { session_id: 's' });
+    const records = drainStateWrites();
+    assert.equal(records.length, 1, 'one write, one record');
+    assert.equal(records[0]?.op, 'append-text');
+    assert.equal(records[0]?.ok, true);
+    assert.equal(records[0]?.path, logFile(cwd, 'run-1'));
+
+    // Force a real failure: replace the debug dir with a file so mkdirSync underneath it fails.
+    const runDir = path.join(cwd, '.traffic-one', 'runs', 'run-2');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'debug'), 'not a directory', 'utf8');
+    captureClaimDebug(cwd, 'run-2', 'runteam-write', { session_id: 's' });
+    const [failed] = drainStateWrites();
+    assert.equal(failed?.op, 'append-text');
+    assert.equal(failed?.ok, false);
+    assert.equal(failed?.path, logFile(cwd, 'run-2'));
+    assert.ok(failed?.errno, 'a real fs failure must carry an errno code');
+  });
+});
+
+test('capturePlanGuardDebug reports its write to the state-write-log collector', () => {
+  withTmp((cwd) => {
+    drainStateWrites();
+    capturePlanGuardDebug(cwd, 'run-1', { filePath: 'x.ts' });
+    const records = drainStateWrites();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.op, 'append-text');
+    assert.equal(records[0]?.ok, true);
+    assert.match(records[0]?.path ?? '', /plan-guard-deny\.jsonl$/);
   });
 });

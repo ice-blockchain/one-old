@@ -28,7 +28,6 @@ import {
 } from './types';
 import {
   computeBrowserCheckStatuses,
-  wholesaleCheckStatuses,
   type CheckEvidenceInput,
 } from './report-publish';
 import { runStackChecks } from './stack';
@@ -96,13 +95,42 @@ export function qaDir(projectRoot: string, runId: string): string {
 // evidence actually lands, not only where a human happens to type. Publishing a
 // report can never manufacture `verified` here: strict evidence additionally
 // requires a reviewer/tester attestation NEWER than this report.
+// Returns whether report-v2.json is actually ON DISK. The write is fenced
+// (fsjson.ts: an unanswered consent question, a planted symlink at the sidecar,
+// a path escaping the state dir) and the refusal used to be dropped, so the
+// runner validated its own IN-MEMORY report — validateQaReportV2 never reads the
+// file — printed `ok: true` and exited 0, while every gate downstream calls
+// readQaReportV2 and gets `report-missing`. The run was then blocked by a
+// missing artifact the one process that knew it had not been written had already
+// certified.
+//
+// The settlement re-derivation is skipped on a refusal for the same reason it
+// exists: it re-derives from the evidence that just landed, and none did.
 export function publishQaReportV2(
   projectRoot: string,
   runId: string,
   report: QaReportV2,
-): void {
-  writeJson(qaReportV2Path(projectRoot, runId), report);
+): boolean {
+  if (!writeJson(qaReportV2Path(projectRoot, runId), report)) return false;
   reconcileRunSettlement(projectRoot, runId);
+  return true;
+}
+
+/**
+ * The rejection every publisher below reports when the sidecar could not be
+ * written. `report-missing` is the code the READERS already produce for the same
+ * on-disk state (see readQaReportV2), so a gate and the runner name one fact the
+ * same way instead of two.
+ */
+function notPublished(projectRoot: string, runId: string): { ok: false; code: string; message: string } {
+  return {
+    ok: false,
+    code: 'report-missing',
+    message: `the runtime could not persist ${qaReportV2Path(projectRoot, runId)}: the write was refused. `
+      + 'No QA evidence is on disk, so this run has produced none. Answer this project\'s '
+      + '"use Traffic One here?" question if it is still pending, and check that '
+      + `.traffic-one/reports/qa/${runId}/ contains no symbolic links.`,
+  };
 }
 
 export function outputPath(
@@ -154,19 +182,30 @@ export interface LoadedNativeRun {
 // roles each burned minutes on that, and neither ever identified the cause.
 export type LoadResult<T> = { ok: true; run: T } | { ok: false; reason: string };
 
-// `stack-format` is the one stack check every impact level carries, so the
-// BROWSER path must produce it too — and `computeBrowserCheckStatuses` has no
-// command channel (its ids are all evidence-derived). Run the project's own
-// declared format script here and substitute the real result. A project that
+// The stack-command checks a browser or native contract also carries have no
+// command channel in their own producer: `computeBrowserCheckStatuses` is
+// entirely evidence-derived, and a native adapter result attests only what it
+// actually ran (report-publish's NATIVE_ATTESTED_CHECK_IDS). Run the project's
+// own declared scripts here and substitute the REAL results. A project that
 // declares none reports `not-applicable` with its reason, which
-// `validateQaReportV2` accepts for non-build stack checks. Verifying the
-// formatter by CONFIGURATION alone is what let two runs ship with format:check
-// red from the first implementer turn to the last.
-function withExecutedStackFormat(args: RunnerArgs, checks: QaReportV2['checks']): QaReportV2['checks'] {
-  if (!checks.some((check) => check.id === 'stack-format')) return checks;
-  const [executed] = runStackChecks(args, ['stack-format']);
-  if (!executed) return checks;
-  return checks.map((check) => (check.id === 'stack-format' ? executed : check));
+// `validateQaReportV2` accepts for these ids — so substitution can never
+// deadlock a contract, only stop it reading as covered.
+//
+// `stack-format` was the first of these: verifying the formatter by
+// CONFIGURATION alone let two runs ship with format:check red from the first
+// implementer turn to the last. `stack-build` is deliberately NOT substituted —
+// the browser path already answers it from the served build-output manifest,
+// which is stronger evidence than re-running the build.
+export const SUBSTITUTED_STACK_CHECK_IDS = ['stack-format', 'stack-performance'] as const;
+
+export function withExecutedStackChecks(
+  args: RunnerArgs,
+  checks: QaReportV2['checks'],
+): QaReportV2['checks'] {
+  const wanted = SUBSTITUTED_STACK_CHECK_IDS.filter((id) => checks.some((check) => check.id === id));
+  if (wanted.length === 0) return checks;
+  const executed = new Map(runStackChecks(args, wanted).map((check) => [check.id, check]));
+  return checks.map((check) => executed.get(check.id) || check);
 }
 
 export function loadRun(args: RunnerArgs): LoadResult<LoadedRun> {
@@ -260,7 +299,9 @@ export function publishStackReport(
     checks,
     routes: [],
   };
-  publishQaReportV2(args.projectRoot, args.runId, report);
+  if (!publishQaReportV2(args.projectRoot, args.runId, report)) {
+    return { report, ...notPublished(args.projectRoot, args.runId) };
+  }
   const validation = validateQaReportV2(report, args.projectRoot, args.runId, loaded.contract);
   return validation.ok
     ? { report, ok: true }
@@ -305,9 +346,13 @@ export function publishAndValidateReport(
   machineEvidencePath: string,
   status: QaReportV2['status'],
   routes: QaReportV2['routes'],
-  blockerSummary?: string,
-  lighthouse?: QaReportV2['lighthouse'] | string,
-  checkInput?: CheckEvidenceInput,
+  blockerSummary: string | undefined,
+  lighthouse: QaReportV2['lighthouse'] | string | undefined,
+  // Required: the wholesale fallback that used to stand in for a missing
+  // `checkInput` stamped every id from the overall status, which is the same
+  // zero-evidence pass the native path carried. Both browser call sites always
+  // had the evidence — nothing was using it.
+  checkInput: CheckEvidenceInput,
 ): { report: QaReportV2; ok: boolean; code?: string; message?: string } {
   // Back-compat: a bare string is the evidence path (pre-1.0.37 call shape).
   const lighthouseField: QaReportV2['lighthouse'] | undefined = typeof lighthouse === 'string'
@@ -325,9 +370,10 @@ export function publishAndValidateReport(
     producer: 'parent-runner',
     status,
     sourceHash: loaded.sourceHash,
-    checks: withExecutedStackFormat(args, checkInput
-      ? computeBrowserCheckStatuses(loaded.contract.requiredChecks, checkInput)
-      : wholesaleCheckStatuses(loaded.contract.requiredChecks, status, blockerSummary)),
+    checks: withExecutedStackChecks(
+      args,
+      computeBrowserCheckStatuses(loaded.contract.requiredChecks, checkInput),
+    ),
     routes,
     machineEvidencePath,
     build: {
@@ -345,7 +391,9 @@ export function publishAndValidateReport(
     ...(lighthouseField ? { lighthouse: lighthouseField } : {}),
     ...(blockerSummary ? { blockerSummary } : {}),
   };
-  publishQaReportV2(args.projectRoot, args.runId, report);
+  if (!publishQaReportV2(args.projectRoot, args.runId, report)) {
+    return { report, ...notPublished(args.projectRoot, args.runId) };
+  }
   const validation = validateQaReportV2(report, args.projectRoot, args.runId, loaded.contract);
   return validation.ok
     ? { report, ok: true }

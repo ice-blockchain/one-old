@@ -20,7 +20,7 @@ import {
   type CapabilityProfileV1,
 } from '../capabilities';
 import { capabilityProfileForRun } from '../architecture-contract';
-import { isInPluginCache, pluginRoot } from '../paths';
+import { isInPluginCache, pluginRoot, pluginRootInfo } from '../paths';
 
 const SKILLS_TEMPLATES_DIR = 'skills-catalog';
 const SKILLS_ACTIVE_DIR = 'skills';
@@ -162,17 +162,41 @@ export function pruneSkillsDirective(
   return directive;
 }
 
-// The shipped agent doc for a role, across every layout: installed plugin
-// (`agents/<role>.md`), the source repo's built tree (`dist/agents/<role>.md`),
-// and the un-built source (`src/modules/<role>/agent.md`, used by tests). Empty
-// for a malformed role name.
+// The shipped agent doc for a role, across every layout. Authoring source
+// (`src/modules/<role>/agent.md`) is tried FIRST, same precedent as
+// makeSkillBlock preferring `<root>/src` over `<root>/scripts`: a generated
+// artifact must never outrank the truth it was generated from. Then the
+// installed-plugin layout (`agents/<role>.md`) — an install ships no `src/`,
+// so it falls through to here unchanged. Last, the source repo's own BUILT
+// tree (`dist/agents/<role>.md`), which can go stale between builds and is
+// only a fallback of last resort. Empty for a malformed role name.
+//
+// Deliberately NOT gated on pluginRootInfo().layout here (unlike
+// materializeProjectAssets, which refuses an 'unverified' root outright — see
+// materialize.ts): every caller of this candidate list (roleAgentBody,
+// roleDeclaredSkills, and roleKernel/roleSkillsDirective built on them) is a
+// pure read that already returns null when nothing resolves — there is no
+// cleanupPrevious-style "empty list ⇒ delete what's on disk" step downstream
+// of a prose lookup, so an unverified root costs nothing worse than the same
+// null a missing file already produces. That null IS the honest "I cannot
+// resolve this text" answer, and it is also exactly the signal the later
+// deny()-empty-guard work item keys off to substitute its own generated
+// fallback (naming the deny id + resolved root) — this function must keep
+// returning null/empty on a miss, not start throwing or faking content, for
+// that guard to compose cleanly on top. Hard-gating on layout would also be
+// wrong in practice: a caller may legitimately point one of the four
+// *_PLUGIN_ROOT env vars at a directory that carries only `agents/` or only
+// `src/modules/<role>/agent.md` (every fixture in this file's own test suite
+// does exactly that) — a shape the installed/source classifier calls
+// 'unverified' even though the requested content is genuinely present and
+// resolvable.
 function roleAgentDocCandidates(role: string): string[] {
   if (!/^[a-z0-9-]+$/.test(role)) return [];
   const root = pluginRoot();
   return [
+    path.join(root, 'src', 'modules', role, 'agent.md'),
     path.join(root, 'agents', `${role}.md`),
     path.join(root, 'dist', 'agents', `${role}.md`),
-    path.join(root, 'src', 'modules', role, 'agent.md'),
   ];
 }
 
@@ -286,8 +310,15 @@ function copyDirSync(src: string, dst: string): void {
   }
 }
 
+// Cache surgery is scoped to the plugin's OWN cache-managed active-skills
+// mirror (never a user project — isInPluginCache() gates on that first), and
+// is self-healing every SessionStart, unlike the project incident this work
+// item targets. Guarded on 'unverified' anyway: cleanActiveSkills always wipes
+// this dir before copyActiveSkills re-populates it from skills-catalog, so a
+// transiently unverified root (e.g. mid host cache update) would otherwise
+// wipe the mirror with nothing to re-copy from until the next successful run.
 export function cleanActiveSkills(): number {
-  if (!isInPluginCache()) return 0;
+  if (!isInPluginCache() || pluginRootInfo().layout === 'unverified') return 0;
   const skillsDir = path.join(pluginRoot(), SKILLS_ACTIVE_DIR);
   if (!fs.existsSync(skillsDir)) return 0;
   let removed = 0;
@@ -310,7 +341,7 @@ export function cleanActiveSkills(): number {
 }
 
 export function copyActiveSkills(stackOrState: unknown, host?: HostId): number {
-  if (!isInPluginCache()) return 0;
+  if (!isInPluginCache() || pluginRootInfo().layout === 'unverified') return 0;
   const templatesDir = path.join(pluginRoot(), SKILLS_TEMPLATES_DIR);
   const activeDir = path.join(pluginRoot(), SKILLS_ACTIVE_DIR);
   if (!fs.existsSync(templatesDir)) return 0;

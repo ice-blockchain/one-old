@@ -95,9 +95,27 @@ test('onboardingWaitCommand: OpenCode may prefix HOME when sandboxed (still allo
   process.env.HOME = '/sandbox/home';
   try {
     const cmd = onboardingWaitCommand(cwd, 'opencode');
-    if (cmd.includes('HOME=')) {
-      assert.match(cmd, /^HOME=/);
+    // startsWith, not includes: 'XDG_STATE_HOME=' CONTAINS 'HOME='. Once the
+    // suite pinned its own state root (src/build/test-preload.mjs) the emitted
+    // prefix became `XDG_STATE_HOME='' `, the substring guard fired on it, and
+    // the `/^HOME=/` inside asserted against the wrong prefix. Before that the
+    // guard was simply never true, so both of its assertions were dead.
+    //
+    // It stays a guard rather than becoming unconditional because the HOME=
+    // prefix is unreachable on POSIX: trafficOneEnvShellPrefix emits it only
+    // when process.env.HOME differs from the value
+    // normalizeElectronEnvForTrafficOne re-pins, which is os.homedir() — and
+    // os.homedir() READS $HOME, so the two can never differ.
+    if (cmd.startsWith('HOME=')) {
       assert.match(cmd, /'/, 'env prefix uses single-quoted shell escaping');
+    }
+    // The prefix that IS reachable, and the coverage the dead guard was hiding:
+    // opencode ships XDG_STATE_HOME pointing into its own Electron bundle, so
+    // the normalization STRIPS it and the command has to carry that decision to
+    // the spawned waiter. Asserted whenever the variable is set at all, which is
+    // routine on Linux and now true for every test run.
+    if (process.env.XDG_STATE_HOME) {
+      assert.ok(cmd.startsWith("XDG_STATE_HOME='' "), cmd);
     }
     assert.ok(cmd.includes("'--host=opencode'"));
     assert.equal(isOnboardingWaitCommand('Bash', { command: cmd }), true);

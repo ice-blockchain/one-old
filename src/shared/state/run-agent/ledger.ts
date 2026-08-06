@@ -6,7 +6,7 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import {  readJson,  writeJson } from '../../fsjson';
+import {  ensureDir, readJson,  writeJson } from '../../fsjson';
 import { stateTimestamp } from '../io';
 import {
   stackFingerprint,
@@ -30,7 +30,16 @@ import {
 } from './run-paths';
 import {
   withOwnedDirLock,
+  withOwnedDirLockResult,
 } from './locks';
+import {
+  applied,
+  mutationApplied,
+  mutationValue,
+  preconditionFailed,
+  unavailable,
+  type MutationResult,
+} from './mutation-result';
 import { runCompletionEvidenceAllows } from './terminal-verdict';
 
 const RUN_LEDGER_TRANSITION_HISTORY_LIMIT = 32;
@@ -158,12 +167,34 @@ export function withRunLedgerLock(cwd: string, runId: string, mutate: () => void
   );
 }
 
+export function withRunLedgerLockResult<T>(
+  cwd: string,
+  runId: string,
+  mutate: () => MutationResult<T>,
+): MutationResult<T> {
+  return withOwnedDirLockResult(
+    runLedgerLockDir(cwd, runId),
+    RUN_LEDGER_LOCK_TIMEOUT_MS,
+    RUN_LEDGER_LOCK_STALE_MS,
+    RUN_LEDGER_LOCK_RETRY_MS,
+    RUN_LEDGER_WAIT,
+    mutate,
+  );
+}
+
+/**
+ * The state machine's own verdict, three-valued. Its `null` used to mean four
+ * different things — an illegal transition, a disallowed outcome, missing
+ * completion evidence, and a refused/failed write — and only the first three are
+ * decisions. The fourth is "we could not record it", which is what a caller has
+ * to be able to retry or deny on.
+ */
 function writeRunLedgerTransition(
   cwd: string,
   id: string,
   patch: Rec,
   options: { requireValidTransition: boolean },
-): Rec | null {
+): MutationResult<Rec> {
   const now = stateTimestamp();
   const existing = obj(readJson(runLedgerFile(cwd, id), null)) || {};
   const isNew = Object.keys(existing).length === 0;
@@ -171,20 +202,28 @@ function writeRunLedgerTransition(
   const currentStatus = isRunLedgerStatus(effectiveStatus) ? effectiveStatus : 'planned';
   const requestedStatus = isRunLedgerStatus(patch.status) ? patch.status : currentStatus;
   const reason = typeof patch.reason === 'string' ? patch.reason : undefined;
-  if (options.requireValidTransition && !runLedgerTransitionAllowed(currentStatus, requestedStatus, reason)) return null;
+  if (options.requireValidTransition && !runLedgerTransitionAllowed(currentStatus, requestedStatus, reason)) {
+    return preconditionFailed(`illegal-transition-${currentStatus}-to-${requestedStatus}`);
+  }
 
   const effectiveOutcome = effectiveLegacyRunOutcome(existing);
   const priorOutcome = isRunLedgerOutcome(effectiveOutcome) ? effectiveOutcome : undefined;
   const requestedOutcome = isRunLedgerOutcome(patch.outcome)
     ? patch.outcome
     : (requestedStatus === currentStatus ? priorOutcome : undefined);
-  if (options.requireValidTransition && !outcomeAllowedForStatus(requestedStatus, requestedOutcome)) return null;
+  if (options.requireValidTransition && !outcomeAllowedForStatus(requestedStatus, requestedOutcome)) {
+    return preconditionFailed(`outcome-not-allowed-for-${requestedStatus}`);
+  }
   if (options.requireValidTransition
     && requestedStatus === currentStatus
-    && !terminalOutcomeTransitionAllowed(requestedStatus, priorOutcome, requestedOutcome)) return null;
+    && !terminalOutcomeTransitionAllowed(requestedStatus, priorOutcome, requestedOutcome)) {
+    return preconditionFailed('terminal-outcome-immutable');
+  }
   if (options.requireValidTransition && requestedStatus === 'completed') {
     const idempotentTerminal = currentStatus === 'completed' && requestedOutcome === priorOutcome;
-    if (!idempotentTerminal && !runCompletionEvidenceAllows(cwd, id, requestedOutcome)) return null;
+    if (!idempotentTerminal && !runCompletionEvidenceAllows(cwd, id, requestedOutcome)) {
+      return preconditionFailed('completion-evidence-missing');
+    }
   }
 
   const createdAt = typeof existing.createdAt === 'string' && existing.createdAt ? existing.createdAt : now;
@@ -286,13 +325,31 @@ function writeRunLedgerTransition(
       )
     : next;
   try {
-    fs.mkdirSync(runDir(cwd, id), { recursive: true });
-    writeJson(runLedgerFile(cwd, id), persisted);
+    // A refused run dir is not an error, but it IS a failed transition, and it
+    // must be reported as one: without this branch the function would return
+    // `next` — a state machine result no reader can ever load, which is how a
+    // run gets announced as active while its ledger does not exist.
+    if (!ensureDir(runDir(cwd, id))) {
+      invalidateRunLedgerFingerprint(cwd, id);
+      return unavailable('run-dir-refused');
+    }
+    // …and the same hazard one line lower, which the dir check does NOT cover.
+    // Its comment used to justify itself by saying writeJson "stands down
+    // silently (it returns void)" — true when written, false since writeJson
+    // started reporting. A refused FILE with a permitted dir is exactly what a
+    // symlink planted at `settlement-v2.json` produces (the consent fence
+    // refuses both together, but the symlink fence refuses only the file), and
+    // it returned a fully-formed ledger record for a file that was never
+    // written.
+    if (!writeJson(runLedgerFile(cwd, id), persisted)) {
+      invalidateRunLedgerFingerprint(cwd, id);
+      return unavailable('ledger-write-refused');
+    }
     invalidateRunLedgerFingerprint(cwd, id);
-    return next;
+    return applied(next);
   } catch {
     invalidateRunLedgerFingerprint(cwd, id);
-    return null;
+    return unavailable('ledger-write-failed');
   }
 }
 
@@ -316,66 +373,85 @@ const RUN_STACK_DRIFT_HISTORY_LIMIT = 8;
 // froze. Never rewrites `stackFingerprint` — the whole point is that the run
 // keeps the identity it was minted with. The entry is diagnostic and tells the
 // next run what to mint with.
-export function recordRunStackDrift(cwd: string, state: unknown, observed: string): boolean {
-  if (isNonProjectRoot(cwd)) return false;
+// ADVISORY (see mutation-result.ts's split rule): a lost drift entry costs the
+// NEXT run a hint about what to mint with, and nothing in this run reads it. Its
+// caller is a detection pass on the session path, which must never fail a
+// session over a diagnostic — so `unavailable` here is reported, never enforced.
+export function recordRunStackDriftResult(
+  cwd: string,
+  state: unknown,
+  observed: string,
+): MutationResult<void> {
+  if (isNonProjectRoot(cwd)) return preconditionFailed('authoring-root');
   const s = obj(state);
   const runId = s && typeof s.currentRunId === 'string' ? s.currentRunId.trim() : '';
-  if (!runId || !observed || observed === UNKNOWN_STACK_FINGERPRINT) return false;
+  if (!runId || !observed || observed === UNKNOWN_STACK_FINGERPRINT) return preconditionFailed('no-observed-identity');
   const frozen = runLedgerFingerprint(cwd, runId);
-  if (!frozen || frozen === observed) return false;
-  let wrote = false;
-  withRunLedgerLock(cwd, runId, () => {
+  if (!frozen) return preconditionFailed('no-frozen-identity');
+  if (frozen === observed) return preconditionFailed('no-drift');
+  // Fix #7 of the eleven: this lock result was discarded, so a contended ledger
+  // lock and an already-recorded drift both left `wrote` false.
+  return withRunLedgerLockResult<void>(cwd, runId, () => {
     const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
-    if (!ledger) return;
+    if (!ledger) return preconditionFailed('no-ledger');
     const history = Array.isArray(ledger.stackDriftHistory)
       ? ledger.stackDriftHistory.filter(obj)
       : [];
     const last = history[history.length - 1] as Rec | undefined;
-    if (last && last.observed === observed) return; // already recorded
+    if (last && last.observed === observed) return preconditionFailed('drift-already-recorded');
     history.push({ from: frozen, observed, at: stateTimestamp() });
     try {
-      writeJson(runLedgerFile(cwd, runId), {
+      // Was `wrote = true` regardless of what writeJson answered, so a refused
+      // ledger file reported a recorded drift that is not on disk.
+      const wrote = writeJson(runLedgerFile(cwd, runId), {
         ...ledger,
         stackDriftHistory: history.slice(-RUN_STACK_DRIFT_HISTORY_LIMIT),
       });
       invalidateRunLedgerFingerprint(cwd, runId);
-      wrote = true;
+      return wrote ? applied(undefined) : unavailable('drift-write-refused');
     } catch {
       // Diagnostic only — never fail a session on it.
+      return unavailable('drift-write-failed');
     }
   });
-  return wrote;
+}
+
+export function recordRunStackDrift(cwd: string, state: unknown, observed: string): boolean {
+  return mutationApplied(recordRunStackDriftResult(cwd, state, observed));
+}
+
+export function ensureRunLedgerResult(cwd: string, runId: unknown, patch: Rec = {}): MutationResult<Rec> {
+  if (isNonProjectRoot(cwd)) return preconditionFailed('authoring-root');
+  if (typeof runId !== 'string' || !runId.trim()) return preconditionFailed('no-run-id');
+  const id = runId.trim();
+  const result = withRunLedgerLockResult(cwd, id, () => (
+    writeRunLedgerTransition(cwd, id, patch, { requireValidTransition: true })
+  ));
+  if (result.outcome !== 'applied' || !result.value) return result;
+  syncCanonicalSettlementFromLedger(cwd, id, result.value, isRunLedgerStatus(patch.status));
+  return result;
 }
 
 export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): Rec | null {
-  if (isNonProjectRoot(cwd)) return null;
-  if (typeof runId !== 'string' || !runId.trim()) return null;
-  const id = runId.trim();
-  let result: Rec | null = null;
-  const locked = withRunLedgerLock(cwd, id, () => {
-    result = writeRunLedgerTransition(cwd, id, patch, { requireValidTransition: true });
-  });
-  if (!locked || !result) return null;
-  syncCanonicalSettlementFromLedger(cwd, id, result, isRunLedgerStatus(patch.status));
-  return result;
+  return mutationValue(ensureRunLedgerResult(cwd, runId, patch));
 }
 
 // The single status-mutation entry point for orchestration settlement. Replaying
 // the same terminal transition is idempotent; a blocked run may become active only
 // after the parent records the exact user-authorized resume reason.
-export function transitionRunStatus(
+export function transitionRunStatusResult(
   cwd: string,
   runId: unknown,
   options: RunLedgerTransitionOptions,
-): Rec | null {
-  if (isNonProjectRoot(cwd)) return null;
-  if (typeof runId !== 'string' || !runId.trim()) return null;
+): MutationResult<Rec> {
+  if (isNonProjectRoot(cwd)) return preconditionFailed('authoring-root');
+  if (typeof runId !== 'string' || !runId.trim()) return preconditionFailed('no-run-id');
   const id = runId.trim();
-  let result: Rec | null = null;
-  const locked = withRunLedgerLock(cwd, id, () => {
-    result = writeRunLedgerTransition(cwd, id, options as unknown as Rec, { requireValidTransition: true });
-  });
-  if (!locked || !result) return null;
+  const written = withRunLedgerLockResult(cwd, id, () => (
+    writeRunLedgerTransition(cwd, id, options as unknown as Rec, { requireValidTransition: true })
+  ));
+  if (written.outcome !== 'applied' || !written.value) return written;
+  const result = written.value;
   // Two independent conjuncts: the caller must ASK for the authorized resume,
   // and the persisted ledger must SHOW the state machine granted it. A stale
   // reconciliation pass satisfies neither.
@@ -388,9 +464,23 @@ export function transitionRunStatus(
   // did not advance: writeLegacyProjection has already re-projected run.json from
   // the settlement, so returning the ledger record hands the caller a success the
   // very next read contradicts (observed 10co on an authorized resume).
+  //
+  // `unavailable`, not `precondition-failed`: the ledger's own state machine
+  // ACCEPTED this transition and the ledger file now records it, so nothing here
+  // is a decision — the second of two files did not follow, and the run is left
+  // internally inconsistent. That is a retry-then-deny case, and reporting it as
+  // a precondition would tell a caller the run refused something it did not.
   const requested: CanonicalRunStatus = options.status === 'completed' ? 'verified' : options.status;
-  if (settlement !== requested) return null;
-  return result;
+  if (settlement !== requested) return unavailable(`settlement-not-${requested}`);
+  return applied(result);
+}
+
+export function transitionRunStatus(
+  cwd: string,
+  runId: unknown,
+  options: RunLedgerTransitionOptions,
+): Rec | null {
+  return mutationValue(transitionRunStatusResult(cwd, runId, options));
 }
 
 function syncCanonicalSettlementFromLedger(

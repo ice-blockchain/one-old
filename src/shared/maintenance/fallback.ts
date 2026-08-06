@@ -306,14 +306,20 @@ export function supersedeSkippedDelegationFallback(
         || (Array.isArray(marker.touched) && marker.touched.length > 0)) {
         return false;
       }
-      writeJson(markerPath, {
+      // `false` already means "not superseded" to every caller, and the fence
+      // (fsjson.ts) refusing this write is exactly that. Dropped, it inverted
+      // the function: the marker kept `fallback-pending` + `fallbackAllowed`
+      // while the re-derived settlement below dropped the pin, so the debt was
+      // erased from the canonical record and left owed in the marker — and
+      // `true` told the caller the two now agreed.
+      if (!writeJson(markerPath, {
         ...marker,
         overallOutcome: 'superseded',
         outcome: 'superseded',
         fallbackAllowed: false,
         supersededByArchitectureHash: architectureHash,
         supersededAt: new Date().toISOString(),
-      });
+      })) return false;
       // Re-derive the canonical settlement without the fallback pin: the
       // writer drops `fallback`/`reason`/hashes that the update omits, and
       // reconcile no longer re-pins once the marker is terminal 'skipped'.

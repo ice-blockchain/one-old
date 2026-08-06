@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { removePath, writeTextFile } from '../../shared/fsjson';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, codeGraphIndexIsStale, codeGraphIsEmpty } from '../../shared/codegraph';
 import { STACK_IDS } from '../../config/stacks';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
@@ -17,6 +18,8 @@ import { detectMode } from '../../shared/detection';
 import { exec } from '../../shared/exec';
 import { hasMaterializedProjectAssets, materializeProjectAssets, writeOpenCodeHostAssets } from '../../shared/materialize';
 import { detectHost } from '../../shared/host';
+import { isUncertifiedHost, uncertifiedHostSessionBanner } from '../../shared/host/tiers';
+import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { nowIsoNoMs } from '../../shared/text';
 import { managedNpmBin } from '../../shared/toolchain-paths';
@@ -30,6 +33,7 @@ import {
   stateVersion,
   writeState,
 } from '../../shared/state';
+import { projectWritesPermitted } from '../../shared/state/plugin-use';
 import { ensureInitialCommit } from '../../shared/git-init';
 import { obj } from '../../shared/obj';
 
@@ -83,6 +87,59 @@ export function ensureAgentTeamsEnv(cwd: string, host: string, env: NodeJS.Proce
     + 'restart Claude Code once to activate it, so agents reuse one worker per role instead of re-spawning each task.\n';
 }
 
+// An already-installed uncertified host's SessionStart reminder (item 3 of the
+// host-tier decision — see shared/host/tiers.ts). Visible, never a deny: once
+// installed and running, Traffic One still injects context here regardless of
+// tier, so there is no separate blocking gate to add.
+//
+// TWO throttles, because neither alone covers the product:
+//
+//  1. `firstEmitThisSession` — the durable once-per-(project, session) marker
+//     every other advisory nudge here uses (onboarding-deny, run-id-announce,
+//     model-choice-deny-tool, pagespeed-advisory, …). It lives under
+//     `.traffic-one/runs/.once/`, so the default-closed consent fence in
+//     shared/fsjson.ts refuses to write it until the use-plugin question is
+//     answered — and `firstEmitThisSession` correctly returns TRUE in that
+//     window rather than silencing the product.
+//
+//  2. `emittedInProcess` — an in-memory set, which is what actually covers the
+//     pre-consent window. Pre-consent is the DEFAULT state of every fresh
+//     project, i.e. exactly the first-contact window this banner exists for, so
+//     "no marker on disk" is the common case, not the edge case: the banner
+//     re-emitted on every single SessionStart there. On OpenCode and Kilo, whose
+//     long-lived wrappers invoke the SessionStart-compatible transform more than
+//     once per chat IN ONE PROCESS (see session-start.ts), that was a
+//     four-paragraph banner per prompt. It also fixes the post-consent payload
+//     that carries no session id, which `firstEmitThisSession` throttles on a
+//     30-minute TTL rather than per session.
+//
+// A process-scoped set is the right shape and not a workaround: hooks are one
+// process per event on Claude/Codex/Cursor/Copilot, so there it IS once per
+// SessionStart, and it writes nothing to a project that has not consented.
+const emittedInProcess = new Set<string>();
+
+/** Forget this process's banner emissions. Exported for tests, which drive many
+ *  projects/sessions through one process. */
+export function resetUncertifiedHostBannerThrottle(): void {
+  emittedInProcess.clear();
+}
+
+export function uncertifiedHostBanner(cwd: string, host: string, sessionId: string | null | undefined): string {
+  if (!isUncertifiedHost(host)) return '';
+  const banner = uncertifiedHostSessionBanner(host) || '';
+  if (!banner) return '';
+  const processKey = `${path.resolve(cwd)}\u0000${host}\u0000${sessionId || ''}`;
+  if (emittedInProcess.has(processKey)) return '';
+  // Pre-consent: the project must stay byte-identical, so no marker may be
+  // written. The banner still emits ONCE — an uncertified host is material to
+  // the very decision the user is being asked to make, so withholding it until
+  // after consent would hide it exactly when it matters.
+  if (projectWritesPermitted(cwd)
+    && !firstEmitThisSession(cwd, `uncertified-host-banner-${host}`, sessionId)) return '';
+  emittedInProcess.add(processKey);
+  return banner;
+}
+
 // Keep the newest `keepCount` orchestrator digest runs; remove older ones.
 export function sweepOldDigests(cwd: string, keepCount = 5): number {
   const digestsRoot = path.join(cwd, '.traffic-one', 'digests');
@@ -100,8 +157,9 @@ export function sweepOldDigests(cwd: string, keepCount = 5): number {
   let removed = 0;
   for (const name of entries.slice(keepCount)) {
     try {
-      fs.rmSync(path.join(digestsRoot, name), { recursive: true, force: true });
-      removed += 1;
+      // Guarded: a project that has not answered the use-plugin question keeps
+      // every digest it has, however old.
+      if (removePath(path.join(digestsRoot, name))) removed += 1;
     } catch {
       // best-effort; never block SessionStart on retention sweep
     }
@@ -176,8 +234,10 @@ export function ensureCodeGraphForExistingProject(cwd: string, state: Rec): bool
     const entry = path.join(pluginRoot(), 'scripts', runner);
     if (!fs.existsSync(entry)) return false;
     const lock = path.join(cwd, '.traffic-one', CODE_GRAPH_BUILD_LOCK);
-    fs.mkdirSync(path.dirname(lock), { recursive: true });
-    fs.writeFileSync(lock, nowIsoNoMs(), 'utf8');
+    // Refused → the use-plugin question is unanswered. Do not spawn: a detached
+    // graph build would write the whole artefact tree into a project that has
+    // not consented, and it would do it after this hook has already returned.
+    if (!writeTextFile(lock, nowIsoNoMs())) return false;
     const child = spawn(process.execPath, [entry], { cwd, detached: true, stdio: 'ignore' });
     child.unref();
     return true;
@@ -243,7 +303,17 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
       const record = { approved: true, source: 'backfilled-from-enabled-pref', decidedAt: nowIsoNoMs() };
       state.openCodeDelegation = record;
       try {
-        writeState(cwd, { ...readState(cwd), openCodeDelegation: record });
+        // The whole point of this write is that the field is MACHINE-READABLE at
+        // call time — the spawn gate cites it to prove the user authorized
+        // delegation. A refusal leaves the authorization invisible, so
+        // opencode_delegate keeps being rejected as unauthorized, and the caller's
+        // own writeState(cwd, state) lands on the same refused path. Say so in the
+        // notice this function exists to return, next to the heal notices; there is
+        // no silent recovery to fall back on.
+        if (!writeState(cwd, { ...readState(cwd), openCodeDelegation: record })) {
+          notice += '[opencode] delegation authorization could not be recorded — the state write fence refused '
+            + '`.traffic-one/.one.json`, so `opencode_delegate` may still be rejected as not explicitly authorized.\n';
+        }
       } catch { /* best-effort */ }
     }
     // Cheap presence check only (existsSync + PATH lookup) — a version probe can
@@ -264,9 +334,9 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
       const lock = path.join(cwd, '.traffic-one', OPENCODE_HEAL_LOCK);
       if (!diskLockMs(lock) || (Date.now() - diskLockMs(lock)) >= OPENCODE_HEAL_COOLDOWN_MS) {
         const entry = path.join(pluginRoot(), 'scripts', 'onboarding-toolchain-runner.cjs');
-        if (fs.existsSync(entry)) {
-          fs.mkdirSync(path.dirname(lock), { recursive: true });
-          fs.writeFileSync(lock, nowIsoNoMs(), 'utf8');
+        // Same reasoning as the code-graph self-heal: a refused lock means no
+        // consent, so the detached installer must not be spawned either.
+        if (fs.existsSync(entry) && writeTextFile(lock, nowIsoNoMs())) {
           const child = spawn(process.execPath, [entry, '--opencode-only'], { cwd, detached: true, stdio: 'ignore' });
           child.unref();
           // Only a MISSING CLI warrants a user-facing "installing" notice; a
@@ -363,13 +433,24 @@ export function tokenEconomyBanner(cwd: string, probe?: ToolchainProbe | null): 
 }
 
 // Converge session-time materialization for an onboarded project. Returns true
-// when it (re)materialized. The one-mcp reporter is injected (default no-op).
+// when it (re)materialized AND recorded that in the project state. The one-mcp
+// reporter is injected (default no-op).
 export function ensureSessionMaterialization(
   cwd: string,
   state: Rec,
   reportOneMcp: (cwd: string, state: Rec, trigger: string) => void = () => {},
 ): boolean {
   if (isPluginAuthoringRoot(cwd)) return false;
+  // Sits beside the authoring-root refusal because it is the same KIND of
+  // refusal: not "this project is not ready", but "this project is not ours to
+  // write to yet". materializeProjectAssets creates ~50 skill directories with
+  // raw fs.mkdirSync and writes AGENTS.md/CLAUDE.md at the project root, none of
+  // which the path-addressed fence in shared/fsjson.ts can see (it guards file
+  // content under `<project>/.traffic-one/`, and mkdirSync/root files are
+  // neither). SessionStart already returns before reaching here when consent is
+  // pending, so this is the second lock on the same door — the one that holds
+  // when a future caller is added without reading that comment.
+  if (!projectWritesPermitted(cwd)) return false;
   if (!state || typeof state !== 'object') return false;
   if (state.onboardingComplete !== true) return false;
   if (!state.stack || !STACK_IDS.has(state.stack as string)) return false;
@@ -396,7 +477,18 @@ export function ensureSessionMaterialization(
   state.materializedStack = stackFingerprint(state);
   state.materializedAt = nowIsoNoMs();
   state.materializedVersion = stateVersion();
-  writeState(cwd, state);
+  // The three stamps are the whole record that this convergence happened:
+  // `isMaterialized` reads them next session, and `materializedVersion` is what
+  // the version-drift heal compares. A refused write loses all three, so the
+  // answer to "is the session's materialization recorded" is no — and the
+  // reporter must not announce a state change that is not in the state. The
+  // ARTIFACTS survive either way (materializeProjectAssets already wrote them
+  // with raw fs), which is why an unrecorded pass is convergent rather than
+  // broken: the next session simply re-materializes.
+  if (!writeState(cwd, state)) {
+    reportOneMcp(cwd, state, 'session materialization not recorded');
+    return false;
+  }
   reportOneMcp(cwd, state, 'session materialization');
   return true;
 }

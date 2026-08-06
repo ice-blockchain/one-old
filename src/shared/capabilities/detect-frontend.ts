@@ -19,6 +19,18 @@ interface FrontendFrameworkDetectionV1 {
   hasWebUi: boolean;
   evidence: string[];
   webRoot?: string;
+  /**
+   * True when an application was FOUND ON DISK — a manifest declaring a
+   * framework, a framework artifact, a Laravel UI module/entrypoint. False when
+   * the only thing that says there is a web surface is `state.frontend`, i.e.
+   * DECLARED intent with nothing built yet.
+   *
+   * Recorded as a field rather than re-derived from the `state:` prefixes in
+   * `evidence` because callers use it to decide whether they may overrule the
+   * disk (see `plannedWebWorkspace` in profile.ts), and a new evidence string
+   * must not be able to flip that silently.
+   */
+  onDisk: boolean;
 }
 
 function laravelBladeUiPresent(cwd: string): boolean {
@@ -179,9 +191,10 @@ export function detectFrontendFramework(
     ].some((root) => exists(cwd, root))) evidence.push('laravel:ui-modules');
     if (laravelBladeUiPresent(cwd)) evidence.push('laravel:blade-views');
     if (laravelJavascriptUiPresent(cwd)) evidence.push('laravel:ui-entrypoint');
+    const onDisk = evidence.length > 0;
     if (configured === 'laravel-ui') evidence.push('state:laravel-ui');
     if (evidence.length > 0) {
-      return { frontend: 'laravel-ui', hasWebUi: true, evidence, webRoot: '.' };
+      return { frontend: 'laravel-ui', hasWebUi: true, evidence, webRoot: '.', onDisk };
     }
     // New project with a configured web frontend: nothing is on disk yet, so the
     // configured intent IS the truth — the laravel-reachable mirror of the tail
@@ -197,11 +210,17 @@ export function detectFrontendFramework(
         hasWebUi: true,
         evidence: [`state:${configured}`],
         webRoot: '.',
+        onDisk: false,
       };
     }
     // `app/`, welcome.blade.php, resources/js/bootstrap.js/app.js and the
     // laravel-vite-plugin/vite dependency are ordinary Laravel scaffolding.
-    return { frontend: 'none', hasWebUi: false, evidence: ['laravel:api-or-default-scaffold'] };
+    return {
+      frontend: 'none',
+      hasWebUi: false,
+      evidence: ['laravel:api-or-default-scaffold'],
+      onDisk: false,
+    };
   }
 
   // Prefer specific application frameworks over generic React/Vite evidence
@@ -220,6 +239,7 @@ export function detectFrontendFramework(
         // framework profile choose a concrete marked child root in that case;
         // a package-local manifest remains authoritative for its own root.
         ...(match.root === '.' ? {} : { webRoot: match.root }),
+        onDisk: true,
       };
     }
   }
@@ -237,6 +257,7 @@ export function detectFrontendFramework(
       hasWebUi: true,
       evidence: [`path:${prefixed(artifact.root, artifact.evidence.marker)}`],
       webRoot: artifact.root,
+      onDisk: true,
     };
   }
 
@@ -247,11 +268,18 @@ export function detectFrontendFramework(
       hasWebUi: true,
       evidence: [`${vite.root}/package.json:vite`],
       webRoot: vite.root,
+      onDisk: true,
     };
   }
   if (configured !== 'none' && state.stack !== 'custom-backend') {
-    return { frontend: configured, hasWebUi: true, evidence: [`state:${configured}`], webRoot: '.' };
+    return {
+      frontend: configured,
+      hasWebUi: true,
+      evidence: [`state:${configured}`],
+      webRoot: '.',
+      onDisk: false,
+    };
   }
-  return { frontend: 'none', hasWebUi: false, evidence: [] };
+  return { frontend: 'none', hasWebUi: false, evidence: [], onDisk: false };
 }
 

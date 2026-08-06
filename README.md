@@ -58,6 +58,74 @@ hook because the hook never starts. Traffic One onboarding is itself started by
 those hooks, so onboarding cannot recover inactive or withheld hooks. Traffic
 One never auto-approves Codex hook trust.
 
+### Getting and supplying your Traffic One API key
+
+Traffic One enforces authentication by default; a tester who installs the plugin
+correctly still cannot use it until a valid API key is stored locally.
+
+**Where the wizard appears.** The first coding prompt in an opted-in project
+makes the onboarding hook open the setup wizard and post its link in chat: a
+hosted page at `https://traffic.io/onboarding/agent#p=<port>&t=<token>`, with a
+local fallback (`http://127.0.0.1:<port>/local?t=<token>`) if the hosted page is
+unreachable or 404s. Both `<port>` values are the same number — the loopback
+onboarding server's port. It and the token ride in the URL *fragment*, so they
+are never sent to traffic.io's servers or logs.
+
+**How to get a key.**
+
+1. Go to `https://traffic.io` and log in, creating an account first if you
+   don't already have one.
+2. Once signed in, copy the API key from your account.
+3. Paste it into the wizard's text field (see "How to supply it" below).
+4. Confirm it took effect with Doctor (see "Verifying it took effect" below).
+
+**How to supply it.** The wizard's first (and, if this machine is not yet
+authenticated, only) step is a plain text field: paste the key and continue.
+The wizard validates it with an authenticated MCP `tools/list` request before
+storing anything — a rejected or unreachable key is never written. There is no
+other supported intake path: Traffic One never asks for the key on the command
+line or in a host chat prompt, and the stored auth state must not be edited by
+hand.
+
+Once validated, the key lives under `auth.apiKey` in the consolidated user
+settings file (`$TRAFFIC_ONE_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/one.json`,
+or `~/.traffic-one/one.json`), mode `0600` — see the JSON example above.
+
+**`TRAFFIC_ONE_AUTH` is not a way to supply a key.** It is a per-process
+override of enforcement itself: `1`/`true`/`on`/`yes` pins enforcement on,
+`0`/`false`/`off`/`no` bypasses it entirely. It exists for tests and operational
+opt-outs, not as a substitute for a real key in a tester's environment.
+
+**Verifying it took effect.** Run Doctor from the installed plugin — for a local
+checkout install that is:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/doctor.cjs
+```
+
+Its `probes.auth` field reports `present`, `valid`, and `updatedAt` for the
+stored key without ever printing the key itself. A `valid: true` auth probe
+(alongside an overall `HEALTHY`/`INFO_ONLY` summary) means the key is stored and
+was accepted.
+
+Traffic One also writes version-stable shims to `~/.traffic-one/bin/` so
+approved commands survive plugin upgrades, and once one exists
+`node ~/.traffic-one/bin/doctor.cjs` is the shorter equivalent. Use the plugin
+path above while verifying a key: the shims are written by an *authenticated*
+session, so a machine that has never authenticated does not have them yet.
+
+**What a missing key looks like.** The pre-tool-use hook blocks mutating tool
+calls until authentication succeeds. Session start and prompt submit do not
+block: they attach the setup link as agent context plus a short host banner, so
+an ordinary non-coding question still works. The one exception is Windsurf /
+Cascade, where an unauthenticated prompt is refused at the prompt itself —
+Cascade's own lifecycle otherwise never reaches the point where Traffic One
+could open setup. If a hook cannot run at all, the fallback still refuses, with:
+"Traffic One authentication is required before this plugin can be used. Open the
+Traffic One onboarding wizard and enter the Traffic One API key." The
+`materialize-project` command is not a hook; run unauthenticated it does nothing
+and waits for the key.
+
 ### Codex Desktop hook-trust activation
 
 On the first Traffic One installation, activate its hook fixture before starting
@@ -65,14 +133,16 @@ Traffic One work:
 
 1. In Codex Desktop, open **Plugins → Traffic One → Hooks → Review**.
 2. Inspect every displayed command. The installed plugin must show exactly the
-   15 Traffic One hook keys and commands shipped in its `hooks/hooks.json`
+   16 Traffic One hook keys and commands shipped in its `hooks/hooks.json`
    fixture. Only when both the count and the keys/commands match, choose
    **Trust all**.
 3. If Desktop offers **Reload**, use it; otherwise fully restart Desktop. Open a
    new task in a trusted project so the newly trusted session hooks can run.
-4. Run `node ~/.traffic-one/bin/doctor.cjs` from that project. Do not proceed
-   until Doctor reports `HEALTHY` with **15 trusted / 15 runnable** Traffic One
-   hooks and confirms that the workspace is covered by a trusted project root.
+4. Run `node /absolute/path/to/traffic-one/dist/scripts/doctor.cjs` from that
+   project (the `~/.traffic-one/bin/` shims do not exist until an authenticated
+   session has run). Do not proceed until Doctor reports `HEALTHY` with
+   **16 trusted / 16 runnable** Traffic One hooks and confirms that the
+   workspace is covered by a trusted project root.
 
 If the review shows any other count, hook key, or command, do **not** choose
 **Trust all**. Reinstall or update Traffic One, reopen the review, and compare
@@ -84,25 +154,33 @@ If Desktop cannot complete the review, use the CLI fallback without running
 Desktop and the CLI concurrently:
 
 1. Fully quit Codex Desktop.
-2. From a trusted project, start `codex`, run `/hooks`, inspect the 15 fixture
+2. From a trusted project, start `codex`, run `/hooks`, inspect the 16 fixture
    entries, and approve only Traffic One. Do not approve unrelated plugin hooks.
 3. Exit the CLI, restart Desktop, open a new task in that trusted project, and
-   rerun Doctor until it reports **15 trusted / 15 runnable**.
+   rerun Doctor until it reports **16 trusted / 16 runnable**.
 
-Run `node scripts/doctor.cjs` from an installed plugin root, or
-`node dist/scripts/doctor.cjs` from this source checkout after
-`npm run plugin:build`, to verify the Codex plugin is enabled, Traffic One hook
-trust records are present, and the current `cwd` is covered by a trusted project
-root. Trust the generated-project parent or create projects under Codex's
-trusted default project root before starting Traffic One work.
+Run `node /absolute/path/to/traffic-one/dist/scripts/doctor.cjs` — or
+`node ~/.traffic-one/bin/doctor.cjs` once an authenticated session has written
+the shims — to verify the Codex plugin is enabled, Traffic One hook trust
+records are present, and the current `cwd` is covered by a trusted project root.
+Trust the generated-project parent or create projects under Codex's trusted
+default project root before starting Traffic One work.
+
+Spell the path in full, in one of those two forms. Traffic One's own gates let
+Doctor through by matching the absolute path of the runner that is executing, or
+a `~/.traffic-one/bin/` shim; a relative spelling — `scripts/doctor.cjs` or
+`dist/scripts/doctor.cjs`, run from a plugin root or from a source checkout — is
+not recognised as Doctor and is gated like any other command, so the recovery
+command would be blocked by the gate it is meant to diagnose. Relative forms are
+fine in a plain shell outside a Traffic One session.
 
 If Traffic One skills are visible but hooks did not run, or an opted-in project
 was not materialized with its root instructions, do not treat that as a safe
 inactive state. Run
-`node dist/scripts/doctor.cjs --session <session-id>` from this source checkout
+`node /absolute/path/to/traffic-one/dist/scripts/doctor.cjs --session <session-id>`
 to inspect the Codex transcript. Incident mode anchors project preferences,
 hook trust, and project-state probes to the cwd recorded in that session rather
-than to this source checkout.
+than to the plugin install the command names.
 Traffic One implementation remains gated until the project has `pluginUse`
 enabled and the canonical API-key record is valid. If the user declines the
 plugin, ordinary work continues without Traffic One features.
@@ -171,10 +249,9 @@ installer.
 ## How it works — no slash commands needed
 
 ### Skills auto-trigger
-Every skill has a `description:` frontmatter with explicit trigger phrases.
-Claude/Codex/Cursor/OpenCode/Kilo/Windsurf reads the descriptions at session start (cheap
-metadata only) and automatically invokes the full skill body when your prompt
-matches:
+Every skill has a `description:` frontmatter with explicit trigger phrases. The
+host reads those descriptions at session start (cheap metadata only) and
+automatically invokes the full skill body when your prompt matches:
 
 Traffic One also includes a broad set of development skills under `skills/`.
 Those skills keep runtime instructions focused on behavior and include a Traffic One
@@ -333,6 +410,51 @@ If Homebrew is missing, Traffic One asks the user to install Homebrew first.
 
 ---
 
+## Host tiers: certified vs. uncertified
+
+Traffic One's gates run identically on all seven supported hosts, but its
+ability to *prove* they run — and therefore to guarantee they will keep
+running — is not identical everywhere. (Seven hosts, eight products: Copilot
+CLI and VS Code Copilot are the same host to Traffic One.) Each host in
+`HOST_CAPABILITIES` (`src/shared/host/capability-schema.ts`) carries a `tier`:
+
+- **Certified:** `claude` (Claude Code), `codex` (Codex CLI), `cursor`
+  (Cursor). Every release exercises these hosts' enforcement points against
+  real host behaviour before shipping — either through an automated,
+  scriptable install→run→verify→settle sequence, or, for Cursor specifically
+  (which has no scriptable install of its own and auto-imports Claude Code's
+  user-scope bundle instead), through a dated manual certification record
+  reproduced against the same enforcement contract.
+- **Uncertified:** `opencode` (OpenCode), `kilo` (Kilo), `copilot` (GitHub
+  Copilot), `windsurf` (Windsurf / Devin Desktop Cascade). Traffic One's gates
+  still run on these hosts, but nothing yet proves they keep running there on
+  every release — their evidence is a manual, dated certification record, not
+  an automated live run repeated on every version.
+
+Installing Traffic One for an uncertified host refuses by default, naming the
+host and explaining why. To proceed anyway — accepting that Traffic One
+cannot guarantee enforcement on that host — re-run with
+`TRAFFIC_ONE_ALLOW_UNCERTIFIED_HOST=1` set. GitHub Copilot installs through its
+own native `copilot plugin install` marketplace command, which Traffic One
+does not control, so the refusal cannot run before that install; an
+already-installed uncertified host instead gets a banner when a session starts,
+stating plainly what is and is not enforced there.
+
+The banner blocks nothing and never claims you agreed to anything — a Copilot
+user is never asked. It is throttled per session, twice over. Once the
+use-plugin question above has been answered, a marker under the project's
+`.traffic-one/` keeps it to at most once per session. Before it is answered
+Traffic One may not write anything into the project, not even a marker, so the
+throttle is held in memory instead, keyed by project, host and session id — at
+most one banner per session, per host process. On Claude Code, Codex, Cursor and
+Copilot that is once per session start, because those hosts run one process per
+hook event. On OpenCode and Kilo, whose wrapper stays resident and can run the
+session-start path repeatedly, it is still once per session and not once per
+wrapper: the same wrapper serving a second session emits a second banner, which
+is the intended behaviour — the banner is about the session you are starting.
+A host string Traffic One does not recognise counts as uncertified, so a typo in
+`TRAFFIC_ONE_HOST` cannot silence either surface.
+
 ## Installation
 
 Until Traffic One is published to the public plugin marketplace, install it from
@@ -395,6 +517,11 @@ silent — setup/deploy gates simply stop running).
 
 ### GitHub Copilot (CLI + VS Code)
 
+Copilot is an uncertified host (see "Host tiers" above): `copilot plugin
+install` is Copilot's own native command, so Traffic One cannot refuse it
+before install runs; the SessionStart banner in the host chat is where the
+uncertified-host notice actually surfaces.
+
 Build the plugin (`npm run plugin:build`), then install the generated `dist/` folder:
 
 ```
@@ -406,6 +533,11 @@ Re-run `copilot plugin install` after hook changes — Copilot caches plugin com
 **VS Code:** Chat gear → Customizations → Plugins → Install from folder → select the same `dist/` path.
 
 ### OpenCode
+
+OpenCode is an uncertified host (see "Host tiers" above): `install` refuses by
+default, naming OpenCode and pointing at `TRAFFIC_ONE_ALLOW_UNCERTIFIED_HOST=1`
+as the opt-out. Add that variable to the environment before the command below
+to proceed anyway.
 
 The OpenCode host wrapper is a user-level mutation at
 `~/.config/opencode/plugins/traffic-one.js`, so install it only with explicit
@@ -452,6 +584,11 @@ disabled/deny defaults.
 
 ### Kilo
 
+Kilo is an uncertified host (see "Host tiers" above): `install` refuses by
+default, naming Kilo and pointing at `TRAFFIC_ONE_ALLOW_UNCERTIFIED_HOST=1` as
+the opt-out. Add that variable to the environment before the command below to
+proceed anyway.
+
 The Kilo host wrapper is a user-level plugin at
 `~/.config/kilo/plugin/traffic-one.js`, so install it only with explicit
 consent:
@@ -493,6 +630,11 @@ permissions remain intentionally, avoiding destructive edits to a shared user
 config; remove them manually only after verifying their exact values.
 
 ### Windsurf / Devin Desktop Cascade
+
+Windsurf is an uncertified host (see "Host tiers" above): `install` refuses by
+default, naming Windsurf and pointing at `TRAFFIC_ONE_ALLOW_UNCERTIFIED_HOST=1`
+as the opt-out. Add that variable to the environment before the command below
+to proceed anyway.
 
 The Windsurf integration mutates user-level Cascade config at
 `~/.codeium/windsurf/hooks.json` and

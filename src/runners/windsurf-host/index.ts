@@ -25,6 +25,7 @@ import {
   matchesWindsurfUserHookCommand,
   windsurfUserHookCommand,
 } from '../../shared/windsurf-hook-command';
+import { uncertifiedHostInstallRefusal } from '../../shared/host/tiers';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
@@ -307,6 +308,8 @@ function removeGlobalRules(file: string): boolean {
 }
 
 export function installWrapper(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = process.argv.slice(2)): RunnerOutput {
+  const refusal = uncertifiedHostInstallRefusal('windsurf', env);
+  if (refusal) return { code: 1, stdout: `${refusal}\n` };
   if (!args.includes('--yes')) {
     return { code: 2, stdout: 'Traffic One Windsurf install mutates user-level Windsurf config. Re-run with --yes to confirm.\n' };
   }

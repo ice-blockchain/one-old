@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { context, deny, followup, mergeResults, noop } from '../result';
+import { askUser, context, deny, followup, mergeResults, noop } from '../result';
 import { makeClaudeAdapter } from '../../adapters/claude';
 import { makeCursorAdapter } from '../../adapters/cursor';
 import type { HookInput } from '../types';
@@ -20,6 +20,23 @@ test('context + deny carry systemMessage + promptRequest', () => {
   if (d.kind === 'deny') {
     assert.equal(d.context, 'ctx');
     assert.equal(d.systemMessage, 'sys');
+  }
+});
+
+// The builder itself declares the id, not the call site: there is nothing
+// per-site to choose (any askUser IS an approval request), and leaving it unset
+// did not make the prompt identity-free — it made the pipeline label a routine
+// approval question `unattributed-handler:<gateId>`, the one shape reserved for
+// a genuine attribution gap. A deny budget must skip these records.
+test('askUser declares its own denyId and keeps the askUser/agentMessage discriminators', () => {
+  const asked = askUser('Approve the fallback model?', 'on approve proceed; on reject stop');
+  assert.equal(asked.kind, 'deny');
+  if (asked.kind === 'deny') {
+    assert.equal(asked.reason, 'Approve the fallback model?');
+    assert.equal(asked.denyId, 'user-approval-request');
+    assert.equal(asked.askUser, true);
+    assert.equal(asked.agentMessage, 'on approve proceed; on reject stop');
+    assert.equal(asked.gateId, undefined, 'only the pipeline stamps gateId');
   }
 });
 

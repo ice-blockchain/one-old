@@ -8,6 +8,12 @@
 // then rejects `required-check-failed`, and settlement refuses to close — so
 // every api-only run (Go, Python, Rust, Java, Laravel API) was unfinishable.
 //
+// That fix was not generalized, and the class survived in the neighbouring
+// branch: `nonvisual` — the base impact of every project with a web surface —
+// required `unit-or-component-tests` and `axe-when-dom`, neither of which any
+// producer had an arm for. STACK_COMMAND_CHECK_IDS below is now the exported
+// registry the contract is checked against, so the two lists cannot drift again.
+//
 // The rule here is: NEVER invent a command. Either the project declares it (a
 // manifest script) or the language has exactly one canonical form and its
 // manifest is present. Anything else is `not-applicable` WITH the reason
@@ -24,7 +30,22 @@ import { emitProgress } from './report-publish';
 import { type LoadedStackRun } from './run-context';
 import { type RunnerArgs } from './types';
 
-export type StackCheckId = 'stack-build' | 'stack-test' | 'stack-lint' | 'stack-format' | 'stack-performance';
+/**
+ * The ids this file can resolve to a real command, i.e. the whole producible set
+ * for a contract with no browser and no native surface.
+ *
+ * Exported because the required-check list and this registry are two
+ * independent authorities that nobody used to cross-check, which produced both
+ * failure directions at once — an id missing here deadlocks the run, an id here
+ * with no arm is unfailable. The invariant test PROBES every entry for a path to
+ * `passed` instead of retyping the list, so neither a missing arm nor a stale
+ * entry can survive.
+ */
+export const STACK_COMMAND_CHECK_IDS = [
+  'stack-build', 'stack-test', 'stack-lint', 'stack-format', 'stack-performance',
+] as const;
+
+export type StackCheckId = typeof STACK_COMMAND_CHECK_IDS[number];
 
 interface ResolvedCommand {
   command: string;
@@ -36,7 +57,8 @@ interface ResolvedCommand {
 
 type Resolution = ResolvedCommand | { unavailable: string };
 
-const NODE_SCRIPT_BY_CHECK: Record<string, string[]> = {
+/** Exported so the invariant test can declare every name a probe project needs. */
+export const NODE_SCRIPT_BY_CHECK: Record<StackCheckId, string[]> = {
   'stack-build': ['build'],
   'stack-test': ['test'],
   'stack-lint': ['lint'],
@@ -47,6 +69,17 @@ const NODE_SCRIPT_BY_CHECK: Record<string, string[]> = {
   // A declared script is the project's own answer, so running it is not an
   // invented command.
   'stack-format': ['format:check', 'format-check'],
+  // `stack-performance` is only required when the architect declared a
+  // performanceRisk — and it had no arm here at all, so it always resolved
+  // unavailable, and it is on JUSTIFIED_NO_STACK_COMMAND_CHECK_IDS, so that
+  // not-applicable was always excused. A required check whose only reachable
+  // outcome is an exemption can never fail, and it was decorating exactly the
+  // runs where someone had said performance mattered. No language has ONE
+  // canonical benchmark form the never-invent rule would admit (`go test -bench`
+  // exits 0 vacuously when a package declares no benchmarks, `cargo bench` needs
+  // nightly or criterion, pytest needs a plugin), so the project's own declared
+  // script is the only honest producer.
+  'stack-performance': ['bench', 'benchmark'],
 };
 
 function readManifest(file: string): Record<string, unknown> | null {

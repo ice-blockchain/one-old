@@ -346,7 +346,7 @@ export function correlatedCursorFailureGate(
   if (modelExhaustionTerminalForRole(cwd, runId, role)) {
     const tried = exhaustedModelsForRole(cwd, runId, role).join(', ') || 'recorded tier candidates';
     return deny(block('cursor-api-limit-terminal', { ROLE: role, TRIED: tried },
-      CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-terminal']));
+      CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-terminal']), { denyId: 'cursor-api-limit-terminal', denyTarget: role });
   }
   const parentIds = rawParentSessionIds(ctx.input.raw);
   const parentSessionId = parentIds.size === 1
@@ -371,26 +371,32 @@ export function correlatedCursorFailureGate(
   if (choice === 'enable-retry') {
     const policy = readRunModelPolicy(cwd, runId);
     if (!policy || policy.host !== 'cursor') {
-      return deny(`traffic-one — immutable model-policy.json is missing or corrupt for run ${runId}; start a repaired parent run before retrying ${role}.`);
+      return deny(`traffic-one — immutable model-policy.json is missing or corrupt for run ${runId}; start a repaired parent run before retrying ${role}.`,
+        { denyId: 'cursor-failure-policy-missing', denyTarget: runId });
     }
     const recommended = exactRecommendedModel(policy, pending);
     return sameExactSlug(passedModel, recommended) ? null : deny(
       `traffic-one — ${role} is waiting for the user's enable/retry choice. Re-send the same role on the recommended model="${recommended}" after completing the selected budget/Settings remedy; do not use a fallback.`,
+      { denyId: 'cursor-failure-enable-retry-mismatch', denyTarget: role },
     );
   }
 
   if (pending.outcome === 'api-limit' && pending.prescribedModel
     && /^composer/i.test(pending.prescribedModel) && pending.tier !== 'cheapest'
     && choice !== 'use-fallback') {
-    return deny(pending.directive || 'traffic-one — choose enable or fallback before using the Composer floor.');
+    return deny(pending.directive || 'traffic-one — choose enable or fallback before using the Composer floor.',
+      { denyId: 'cursor-failure-composer-floor-choice-pending', denyTarget: role });
   }
   if (pending.outcome === 'model-unavailable' && choice !== 'use-fallback') {
-    return deny(pending.directive || 'traffic-one — choose enable or fallback before retrying an unavailable model.');
+    return deny(pending.directive || 'traffic-one — choose enable or fallback before retrying an unavailable model.',
+      { denyId: 'cursor-failure-model-unavailable-choice-pending', denyTarget: role });
   }
-  if (!pending.prescribedModel) return deny(pending.directive || 'traffic-one — no exact next model is currently available.');
+  if (!pending.prescribedModel) return deny(pending.directive || 'traffic-one — no exact next model is currently available.',
+    { denyId: 'cursor-failure-no-model-available', denyTarget: role });
   return sameExactSlug(passedModel, pending.prescribedModel)
     ? null
-    : deny(pending.directive || `traffic-one — retry ${role} on model="${pending.prescribedModel}".`);
+    : deny(pending.directive || `traffic-one — retry ${role} on model="${pending.prescribedModel}".`,
+      { denyId: 'cursor-failure-retry-model-mismatch', denyTarget: role });
 }
 
 // Called only after a real SubagentStart, which is the proof that a prescribed

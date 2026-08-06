@@ -27,6 +27,15 @@ export interface HostCapabilityContractV1 {
   primaryBlockingPoint: string;
   requiredBlockingPoints: string[];
   prevention: 'pre-tool' | 'completion-only';
+  /**
+   * Release-harness E2E methodology: whether the primary blocking point is
+   * proven by an unattended, scriptable install→run→verify→settle sequence
+   * (`contract+live-auto`) or only by a dated manual certification record
+   * (`contract+manual-e2e`, see manual-host-certification.ts). Orthogonal to
+   * `tier` below — Cursor is `tier: 'certified'` but `contract+manual-e2e`,
+   * because it is certified for END-USER enforcement while having no
+   * scriptable install for release CI to drive automatically.
+   */
   certification: 'contract+live-auto' | 'contract+manual-e2e';
   typedSubagents: boolean;
   /**
@@ -35,6 +44,26 @@ export interface HostCapabilityContractV1 {
    * that actually executed the child's first tool.
    */
   modelObservation: HostModelObservation;
+  /**
+   * Product decision (not derived): can Traffic One reliably enforce its
+   * guarantees on this host? `certified` hosts (claude, codex, cursor) get no
+   * install friction. An `uncertified` host refuses to install (opt-out via
+   * TRAFFIC_ONE_ALLOW_UNCERTIFIED_HOST, see shared/host/tiers.ts) and, once
+   * running, carries a SessionStart banner. Independent of `certification`
+   * above — that axis is about release-harness proof methodology, this one is
+   * about the guarantee a user gets.
+   */
+  tier: 'certified' | 'uncertified';
+  /**
+   * True when this host's native PreToolUse hook event, by itself, already
+   * identifies `primaryBlockingPoint` (claude/codex/copilot: one native
+   * blocking PreToolUse invocation, event name redundant). False when the
+   * host is a wrapper/event adapter that must name its concrete enforcement
+   * point explicitly via `hostHookPoint` (cursor/opencode/kilo/windsurf, each
+   * of which multiplexes several distinct hook points onto canonical
+   * PreToolUse). See capabilities.ts `hookPoint()`.
+   */
+  primaryBlockingPointIsImplicit: boolean;
 }
 
 export interface HostCapabilityEvidenceV1 {
@@ -78,6 +107,8 @@ export const HOST_CAPABILITIES = {
     certification: 'contract+live-auto',
     typedSubagents: true,
     modelObservation: 'spawn-request-only',
+    tier: 'certified',
+    primaryBlockingPointIsImplicit: true,
   },
   codex: {
     schemaVersion: 1,
@@ -89,6 +120,8 @@ export const HOST_CAPABILITIES = {
     certification: 'contract+live-auto',
     typedSubagents: false,
     modelObservation: 'first-tool-authoritative',
+    tier: 'certified',
+    primaryBlockingPointIsImplicit: true,
   },
   cursor: {
     schemaVersion: 1,
@@ -108,9 +141,17 @@ export const HOST_CAPABILITIES = {
       'beforeMCPExecution',
     ],
     prevention: 'pre-tool',
-    certification: 'contract+live-auto',
+    // Certified for end-user enforcement (tier below), but release CI cannot
+    // drive Cursor's install→run→verify→settle sequence unattended: there is
+    // no scriptable install (it auto-imports Claude's user-scope bundle via
+    // an editor-only `/add-plugin` pointer), so its release evidence is a
+    // dated manual certification record — the same slot opencode/kilo/copilot/
+    // windsurf use — not a live-auto run.
+    certification: 'contract+manual-e2e',
     typedSubagents: true,
     modelObservation: 'spawn-request-only',
+    tier: 'certified',
+    primaryBlockingPointIsImplicit: false,
   },
   opencode: {
     schemaVersion: 1,
@@ -122,6 +163,8 @@ export const HOST_CAPABILITIES = {
     certification: 'contract+manual-e2e',
     typedSubagents: true,
     modelObservation: 'spawn-request-only',
+    tier: 'uncertified',
+    primaryBlockingPointIsImplicit: false,
   },
   kilo: {
     schemaVersion: 1,
@@ -133,6 +176,8 @@ export const HOST_CAPABILITIES = {
     certification: 'contract+manual-e2e',
     typedSubagents: false,
     modelObservation: 'spawn-request-only',
+    tier: 'uncertified',
+    primaryBlockingPointIsImplicit: false,
   },
   copilot: {
     schemaVersion: 1,
@@ -144,6 +189,8 @@ export const HOST_CAPABILITIES = {
     certification: 'contract+manual-e2e',
     typedSubagents: false,
     modelObservation: 'spawn-request-only',
+    tier: 'uncertified',
+    primaryBlockingPointIsImplicit: true,
   },
   windsurf: {
     schemaVersion: 1,
@@ -155,6 +202,8 @@ export const HOST_CAPABILITIES = {
     certification: 'contract+manual-e2e',
     typedSubagents: false,
     modelObservation: 'spawn-request-only',
+    tier: 'uncertified',
+    primaryBlockingPointIsImplicit: false,
   },
 } satisfies Readonly<Record<TrafficOneHost, HostCapabilityContractV1>>;
 
@@ -249,6 +298,8 @@ export function stableCapabilityContractHash(
     certification: contract.certification,
     typedSubagents: contract.typedSubagents,
     modelObservation: contract.modelObservation,
+    tier: contract.tier,
+    primaryBlockingPointIsImplicit: contract.primaryBlockingPointIsImplicit,
     runId,
   });
 }

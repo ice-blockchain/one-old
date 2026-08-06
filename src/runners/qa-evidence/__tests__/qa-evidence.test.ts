@@ -1058,6 +1058,97 @@ test('an api-only run reaches a valid settled report', async () => {
   });
 });
 
+// Regression: the same class as the api-only run above, one impact level over.
+// `nonvisual` is the BASE impact of every project with a web surface, so it is
+// the outcome of the commonest change shape there is — a web project editing
+// types, utils, config, schemas or data. It required `unit-or-component-tests`
+// and `axe-when-dom`; `resolveStackCommand` has an arm for neither, so both came
+// back `not-applicable` and neither had a justification the runner could write.
+// Every such run was rejected `required-check-failed` and could never settle.
+// Driven end to end here — real contract, real `stack` runner, real
+// validateQaReportV2 re-read from disk — because that is the only thing the
+// unit-level invariant test cannot prove.
+test('a nonvisual web run reaches a valid settled report', async () => {
+  await withProject(async (cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/lib'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      name: 'web',
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+      scripts: { build: 'node -e ""', test: 'node -e ""', 'format:check': 'node -e ""' },
+    }));
+    const architecture = compileArchitecture(cwd, 'R', STATE, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'mapper', name: 'Mapper', kind: 'service' }],
+    });
+    fs.writeFileSync(
+      path.join(cwd, 'apps/web/src/lib/Mapper.ts'),
+      'export const map = (value: string): string => value;\n',
+    );
+    const contract = compileVerificationContract(cwd, 'R', STATE, architecture, {
+      changedPaths: ['apps/web/src/lib/Mapper.ts'],
+    });
+    assert.equal(contract.uiImpact, 'nonvisual', 'fixture guard: a web project, non-visual change');
+    assert.equal(contract.browserRequired, false);
+
+    const code = await main(['stack', '--project-root', cwd, '--run-id', 'R']);
+    const validated = readQaReportV2(cwd, 'R');
+    assert.notEqual(
+      validated.ok === false ? validated.code : '',
+      'required-check-failed',
+      'the deadlock this test exists for',
+    );
+    assert.equal(validated.ok, true, validated.ok ? '' : `${validated.code}: ${validated.message}`);
+    assert.equal(code, 0);
+    if (!validated.ok) return;
+    assert.deepEqual(
+      validated.report.checks.map((check) => `${check.id}=${check.status}`),
+      ['stack-build=passed', 'stack-format=passed', 'stack-test=passed'],
+    );
+    // The accessibility dimension is wired to `axe-when-dom`, which no contract
+    // requires while nothing can produce it — `not-required` is the truth, and a
+    // never-run audit must never report `passed`.
+    assert.equal(validated.dimensions.accessibilityStatus, 'not-required');
+    assert.equal(validated.dimensions.functionalQaStatus, 'passed');
+  });
+});
+
+// The other half of the same contract: making a check producible must not make
+// an ABSENT command read as covered. A project that declares no test script gets
+// `not-applicable` with its reason — never `passed` — and still settles, because
+// `stack-test` is on JUSTIFIED_NO_STACK_COMMAND_CHECK_IDS.
+test('a nonvisual run with no declared test command reports it, and is not laundered into passed', async () => {
+  await withProject(async (cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/lib'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      name: 'web',
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+      scripts: { build: 'node -e ""' },
+    }));
+    const architecture = compileArchitecture(cwd, 'R', STATE, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'mapper', name: 'Mapper', kind: 'service' }],
+    });
+    fs.writeFileSync(
+      path.join(cwd, 'apps/web/src/lib/Mapper.ts'),
+      'export const map = (value: string): string => value;\n',
+    );
+    const contract = compileVerificationContract(cwd, 'R', STATE, architecture, {
+      changedPaths: ['apps/web/src/lib/Mapper.ts'],
+    });
+    assert.equal(contract.uiImpact, 'nonvisual');
+
+    assert.equal(await main(['stack', '--project-root', cwd, '--run-id', 'R']), 0);
+    const validated = readQaReportV2(cwd, 'R');
+    assert.equal(validated.ok, true, validated.ok ? '' : `${validated.code}: ${validated.message}`);
+    if (!validated.ok) return;
+    const test = validated.report.checks.find((check) => check.id === 'stack-test');
+    assert.equal(test?.status, 'not-applicable', 'an undeclared command is never a pass');
+    assert.match(String(test?.summary), /not run: the project declares no test command/);
+  });
+});
+
 // Regression: validateQaReportV2 deliberately refuses a justified
 // `not-applicable` for stack-build — "a backend that does not build is broken,
 // and every supported backend has a build form" — but no Python build form was
@@ -1218,4 +1309,178 @@ test('a project with no Python markers still declares no build command', () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// REGRESSION: publishQaReportV2 dropped writeJson's refusal, so the runner
+// certified a sidecar that is not on disk. validateQaReportV2 judges the
+// IN-MEMORY object it was just handed — it never re-reads the file — so the stack
+// runner printed `ok: true`, exited 0, and told the role its QA evidence was
+// published, while every gate downstream calls readQaReportV2 and gets
+// `report-missing`. The run was then blocked for missing evidence by the one
+// process that already knew it had not been written.
+//
+// The fence used here is the SYMLINK half of fsjson.ts's write guard, not the
+// consent half: it is the only one that can refuse this single path while the
+// rest of the run's state stays writable, so nothing else in the fixture moves.
+test('a refused report-v2 write fails the stack run instead of certifying it', async () => {
+  await withProject(async (cwd) => {
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/lib'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+      name: 'web',
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+      scripts: { build: 'node -e ""', test: 'node -e ""', 'format:check': 'node -e ""' },
+    }));
+    const architecture = compileArchitecture(cwd, 'R', STATE, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'mapper', name: 'Mapper', kind: 'service' }],
+    });
+    fs.writeFileSync(
+      path.join(cwd, 'apps/web/src/lib/Mapper.ts'),
+      'export const map = (value: string): string => value;\n',
+    );
+    const contract = compileVerificationContract(cwd, 'R', STATE, architecture, {
+      changedPaths: ['apps/web/src/lib/Mapper.ts'],
+    });
+    assert.equal(contract.browserRequired, false, 'fixture guard: a stack-only run');
+
+    // Fence exactly the sidecar: a dangling link inside the run's own report dir.
+    const reportPath = qaReportV2Path(cwd, 'R');
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    fs.symlinkSync(path.join(path.dirname(reportPath), 'absent.json'), reportPath);
+
+    const code = await main(['stack', '--project-root', cwd, '--run-id', 'R']);
+    assert.equal(code, 1, 'a run that published no evidence must not exit 0');
+
+    // The runner's verdict and the gate's verdict must be the same fact. Before
+    // the fix the runner said `ok` and this read said `report-missing`.
+    const read = readQaReportV2(cwd, 'R');
+    assert.equal(read.ok, false, 'fixture guard: nothing is readable from disk');
+    assert.equal(read.ok === false ? read.code : '', 'report-missing');
+  });
+});
+
+// ── the machine-evidence write refusal, at both browser publication sites ────
+// REGRESSION: browser.ts discarded writeJson's boolean at both evidence writes,
+// so the runner advertised `machineEvidencePath` for a file that is not on disk.
+// That is worse than a missing artifact: a consumer that FOLLOWS the path gets
+// ENOENT, and the consumers are Traffic One's own gates.
+//
+// The same symlink half of fsjson.ts's write guard the stack-runner regression
+// above uses, for the same reason: it refuses this ONE named file while every
+// other write in the run stays permitted, so nothing else in the fixture moves.
+// A DANGLING link is what reaches the fence at all — `outputPath` rejects a
+// resolvable link outright (exit 2, before any write), while `fs.existsSync`
+// follows a dangling one and reports false, so the path passes preflight and is
+// then refused by `writeJson`'s own O_NOFOLLOW check.
+//
+// Each case asserts its writable BASELINE first: a fixture that silently stopped
+// fencing would otherwise pass both of these vacuously.
+const MACHINE_EVIDENCE = 'machine-evidence-v1.json';
+
+function machineEvidenceAt(cwd: string): string {
+  return path.join(cwd, '.traffic-one/reports/qa/R', MACHINE_EVIDENCE);
+}
+
+function fenceMachineEvidence(cwd: string): void {
+  const target = machineEvidenceAt(cwd);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.symlinkSync(path.join(path.dirname(target), 'absent.json'), target);
+}
+
+/**
+ * stdout is the runner's whole interface: ONE terminal JSON line (progress goes
+ * to stderr). Everything is forwarded to the real stdout — node:test's own
+ * reporter protocol shares this stream, and swallowing it corrupts the run — so
+ * the verdict is picked out by its `{"ok":` prefix rather than by being alone.
+ */
+async function browserVerdict(cwd: string): Promise<{ code: number; verdict: Record<string, unknown> }> {
+  const lines: string[] = [];
+  const stdout = process.stdout as unknown as { write: (...args: unknown[]) => boolean };
+  const original = stdout.write.bind(process.stdout);
+  stdout.write = (...args: unknown[]): boolean => {
+    const text = String(args[0]);
+    if (text.startsWith('{"ok":')) lines.push(text);
+    return original(...args);
+  };
+  let code: number;
+  try {
+    code = await main([
+      'browser', '--run-id', 'R', '--build-dir', 'apps/web/dist', '--scenario-json', scenario(),
+    ], cwd);
+  } finally {
+    stdout.write = original;
+  }
+  assert.equal(lines.length, 1, `the runner must write exactly one verdict line, saw ${lines.length}`);
+  return { code, verdict: JSON.parse(lines[0]!) as Record<string, unknown> };
+}
+
+test('a refused machine-evidence write is reported as a refusal, never as an advertised path', async () => {
+  await withProject(async (cwd) => {
+    setupProject(cwd);
+    installFakePlaywright(cwd);
+    const { code, verdict } = await browserVerdict(cwd);
+    assert.equal(code, 0, 'writable baseline: an unfenced green run exits 0');
+    assert.equal(verdict.ok, true, 'writable baseline: an unfenced green run certifies');
+    assert.equal(verdict.machineEvidencePath, MACHINE_EVIDENCE);
+    assert.equal(fs.existsSync(machineEvidenceAt(cwd)), true, 'writable baseline: the evidence IS on disk');
+  });
+
+  await withProject(async (cwd) => {
+    setupProject(cwd);
+    installFakePlaywright(cwd);
+    fenceMachineEvidence(cwd);
+    const { code, verdict } = await browserVerdict(cwd);
+    assert.equal(fs.existsSync(machineEvidenceAt(cwd)), false, 'fixture guard: the fence refused this one path');
+    // The scenario itself PASSED — this is the shape that used to hand a role a
+    // green status beside a path to nothing.
+    assert.equal(verdict.status, 'passed');
+    assert.equal(verdict.ok, false, 'a run whose evidence is not on disk has produced none');
+    assert.equal(code, 1);
+    assert.equal(
+      verdict.machineEvidencePath,
+      undefined,
+      'the path must not be advertised: a consumer following it gets ENOENT',
+    );
+    // The runner names the fence and the exact refused path, rather than leaving
+    // the reader with the validator's three guesses ("missing, outside the run
+    // QA directory, or hash-invalid") — none of which is the cause.
+    assert.match(
+      String(verdict.machineEvidenceRefused),
+      /write fence refused machine-evidence-v1\.json/,
+    );
+    assert.match(String(verdict.machineEvidenceRefused), /use Traffic One here\?|symbolic links/);
+  });
+});
+
+test('a blocked-environment run keeps its primary cause and still reports a refused evidence write', async () => {
+  await withProject(async (cwd) => {
+    // No project-local Playwright: the blocked-environment publication.
+    setupProject(cwd);
+    const { code, verdict } = await browserVerdict(cwd);
+    assert.equal(code, 2, 'writable baseline: a blocked environment exits 2');
+    assert.equal(verdict.machineEvidencePath, MACHINE_EVIDENCE);
+    assert.equal(fs.existsSync(machineEvidenceAt(cwd)), true, 'writable baseline: the blocker record IS on disk');
+  });
+
+  await withProject(async (cwd) => {
+    setupProject(cwd);
+    fenceMachineEvidence(cwd);
+    const { code, verdict } = await browserVerdict(cwd);
+    assert.equal(fs.existsSync(machineEvidenceAt(cwd)), false, 'fixture guard: the fence refused this one path');
+    // Nothing about the verdict moves: this path was already a refusal, and
+    // installing Playwright is still the first thing the reader must do.
+    assert.equal(code, 2, 'the primary cause is unchanged');
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.reason, 'playwright-missing', 'the primary cause stays primary');
+    // Only the path changes hands. Validation short-circuits on
+    // `blocked-environment` before it reads the sidecar, so nothing ANYWHERE
+    // else notices this refusal — here the advertised path was the whole lie.
+    assert.equal(
+      verdict.machineEvidencePath,
+      undefined,
+      'the blocker record was refused, so there is no path to point a reader at',
+    );
+    assert.match(String(verdict.machineEvidenceRefused), /write fence refused machine-evidence-v1\.json/);
+  });
 });

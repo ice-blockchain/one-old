@@ -45,6 +45,15 @@ export const BRIEF_BROCHURE_MAINTENANCE =
 export const BRIEF_EXISTING_WEB =
   'add a reviews section with a customer reviews listing to my app';
 
+// The commonest change shape in the product, and the one this tier never
+// produced: a project WITH a web surface whose change touches no UI at all.
+// Deliberately free of any page/section/screen vocabulary — the moment a plan
+// declares a new page, component or app-shell, plannedUiImpactFloor raises the
+// contract to `visual` and the shape stops being the one under test.
+export const BRIEF_NONVISUAL_EXISTING_WEB =
+  'the catalogue slugs are inconsistent — add a slug normaliser and a currency '
+  + 'formatter for the item data, no UI changes';
+
 // The learning-platform architecture, reused by every full-stack web shape. The
 // COMPILED paths differ per framework — that is the point — but the semantics
 // the architect declares do not.
@@ -229,6 +238,23 @@ const EXISTING_WEB_SMALL_TIER_PANEL = [
   '}',
   '',
 ].join('\n');
+
+// The nonvisual delta on a repo that HAS a web surface: two data-shaping
+// modules and nothing that renders.
+//
+// Every kind is deliberate. `service`/`store` are the only module kinds
+// plannedUiImpactFloor does not raise for — `app-shell`/`page`/`component` force
+// `visual` and `feature` forces `behavioral` the moment they are new — so this is
+// the only architecture shape that can hold a web-surface profile at `nonvisual`.
+// No routes, for the same reason: a route needs a page module to bind to.
+const NONVISUAL_ARCHITECTURE = {
+  schemaVersion: 1 as const,
+  routes: [],
+  modules: [
+    { id: 'slug-normalizer', name: 'Slug Normalizer', kind: 'service' as const },
+    { id: 'money-formatter', name: 'Money Formatter', kind: 'service' as const },
+  ],
+};
 
 // The api maintenance delta: one new endpoint alongside what exists.
 const API_MAINTENANCE_ARCHITECTURE = {
@@ -977,5 +1003,63 @@ export const RUN_SIM_CASES: Case[] = [
       { id: 'run-sim-settlement' },
     ],
     notes: 'Shape 7: Go API only. Requires `go` on PATH; the qa-evidence assertion reports INCONCLUSIVE rather than passing if the toolchain is missing.',
+  },
+  {
+    id: 'sim-nonvisual-existing-web',
+    category: 'run-sim',
+    layer: 'run-sim',
+    // A Go binary that already serves its own browser bundle. The profile has a
+    // WEB SURFACE — which is the whole point — and a root toolchain that really
+    // executes here.
+    fixture: 'existing-go-web',
+    preSeed: {
+      mode: 'existing-codebase',
+      // Frontend AND backend, both chosen: `custom-stack` is the only STACK_IDS
+      // member that means that. An id outside that set is rejected by state
+      // validation, which makes materialization incomplete and the run
+      // unfinishable for a reason unrelated to the shape.
+      stack: 'custom-stack',
+      // Vanilla ES modules under `web/`, not a framework Traffic One models.
+      // `other` is the escape hatch onboarding offers and compiles to
+      // generic-web, which profileHasWebUi answers true for — the fact that
+      // makes baseImpact `nonvisual` instead of `none`.
+      frontend: 'other',
+      backend: 'go',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+    },
+    runSim: {
+      brief: BRIEF_NONVISUAL_EXISTING_WEB,
+      architecture: NONVISUAL_ARCHITECTURE,
+      // requiredChecks('nonvisual') is ['stack-build', 'stack-format',
+      // 'stack-test'] — no browser, so this settles on a machine with no
+      // Chromium. `stack-build`/`stack-test` come from go.mod, the toolchain
+      // AGENTS.md already requires. `stack-format` is not-applicable WITH its
+      // reason: this repo declares no formatter, and JUSTIFIED_NO_STACK_COMMAND
+      // _CHECK_IDS accepts that for every stack check except the build.
+      qa: {
+        mode: 'stack',
+        expectChecks: {
+          'stack-build': 'passed',
+          'stack-test': 'passed',
+          'stack-format': 'not-applicable',
+        },
+      },
+      expectUiImpact: 'nonvisual',
+    },
+    assertions: [
+      { id: 'state-matches-selection' },
+      { id: 'onboarding-complete' },
+      { id: 'run-sim-clean' },
+      { id: 'run-sim-plan-ready-artifacts' },
+      { id: 'run-sim-ui-impact' },
+      { id: 'run-sim-qa-evidence' },
+      { id: 'run-sim-settlement' },
+      { id: 'run-sim-existing-mode' },
+    ],
+    notes: 'Shape 9: the nonvisual impact — a project WITH a web surface whose change touches no UI. Requires `go` on PATH; a missing toolchain is INCONCLUSIVE, never a pass.',
   },
 ];

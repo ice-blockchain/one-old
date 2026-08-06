@@ -9,6 +9,18 @@ import { dispatch } from '../../core/dispatch';
 import { context, deny, noop } from '../../core/result';
 import type { Handler, HookInput } from '../../core/types';
 
+// These are adapter SERIALIZATION tests: they pin the wire shape each host
+// receives, and nothing here is about the decision log. But core/pipeline.ts
+// appends a `(traffic-one ref: …)` suffix to deny text whenever a record will
+// actually be written, and several payloads below carry a project-shaped `cwd`
+// (`/tmp/p`) — so whether that suffix appears would otherwise depend on ambient
+// state (TRAFFIC_ONE_ASK_USE_PLUGIN, any recorded use-plugin answer). Pinned off
+// so the reason text asserted below is the handler's own, deterministically, in
+// any environment. Read at call time, so setting it here (after the imports,
+// like the other test files that pin TRAFFIC_ONE_ASK_USE_PLUGIN) is in time.
+// The suffix itself is covered where it belongs: core/__tests__/pipeline.test.ts.
+process.env.T1_DECISION_LOG = 'off';
+
 const claude = makeClaudeAdapter('claude');
 
 const PATCH = '*** Begin Patch\n*** Add File: src/x.ts\n+x\n*** End Patch';
@@ -40,6 +52,7 @@ test('claude: PreToolUse Bash deny → nested permissionDecision JSON', async ()
   });
   const parsed = JSON.parse(await dispatch(claude, handlers, { stdin, argv: [] }));
   assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+  // The handler's own text, verbatim — see the T1_DECISION_LOG pin above.
   assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'no rm -rf');
 });
 
@@ -195,7 +208,8 @@ test('claude: Stop deny → {"decision":"block","reason"} (no PreToolUse permiss
   ];
   const stdin = JSON.stringify({ hook_event_name: 'Stop', cwd: '/tmp/p', session_id: 's' });
   const out = JSON.parse(await dispatch(claude, handlers, { stdin, argv: [] }));
-  assert.deepEqual(out, { decision: 'block', reason: 'post the setup link' });
+  assert.equal(out.decision, 'block');
+  assert.equal(out.reason, 'post the setup link');
 });
 
 test('codex: Stop deny carries the block AND the marked additionalContext evidence channel', async () => {

@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import { BOOTSTRAP_SKILLS } from '../../../config/skill-filters';
 import {
@@ -182,4 +185,93 @@ test('every senior role doc carries a compact T1KERNEL contract kernel', () => {
     assert.ok(kernel!.includes('ONE file per Read/shell command'), `${role} kernel keeps the anti-truncation discipline`);
   }
   assert.equal(roleKernel('definitely-not-a-shipped-role'), null);
+});
+
+// ── roleAgentDocCandidates ordering (defect regression) ─────────────────────
+// Every test above exercises only the authoring-repo layout, where
+// `src/modules/<role>/agent.md` is the SOLE candidate that exists — none of
+// them would notice a future edit putting `agents/` or `dist/agents/` back
+// in front. `roleAgentBody`/`roleKernel`/`roleDeclaredSkills` read straight
+// off disk on every call (no per-process cache, unlike `makeSkillBlock`'s
+// per-moduleId Map in `shared/skill-block.ts`), so repointing `pluginRoot()`
+// mid-test is safe: there is no warmed cache from an earlier test in this
+// file to defeat.
+const REORDER_ROLE = 'reorder-fixture-role';
+
+function agentDoc(marker: string): string {
+  return `---\nname: ${REORDER_ROLE}\n---\n${marker}\n`;
+}
+
+// Repoints TRAFFIC_ONE_PLUGIN_ROOT at a fresh temp fixture for the duration of
+// `fn`, restoring the prior value (the repo root pinned by test-preload.mjs)
+// afterward so no state leaks into other test files — same idiom as
+// materialize/__tests__/kilo-agents.test.ts.
+function withFixturePluginRoot(build: (root: string) => void, fn: () => void): void {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 't1-skill-filters-agent-root-'));
+  build(root);
+  const prevRoot = process.env.TRAFFIC_ONE_PLUGIN_ROOT;
+  process.env.TRAFFIC_ONE_PLUGIN_ROOT = root;
+  try {
+    fn();
+  } finally {
+    if (prevRoot === undefined) delete process.env.TRAFFIC_ONE_PLUGIN_ROOT;
+    else process.env.TRAFFIC_ONE_PLUGIN_ROOT = prevRoot;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('roleAgentDocCandidates: src/modules/<role>/agent.md outranks a conflicting dist/agents/<role>.md — the precise defect', () => {
+  withFixturePluginRoot((root) => {
+    fs.mkdirSync(path.join(root, 'src', 'modules', REORDER_ROLE), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'src', 'modules', REORDER_ROLE, 'agent.md'),
+      agentDoc('SRC-BODY-MARKER'),
+      'utf8',
+    );
+    fs.mkdirSync(path.join(root, 'dist', 'agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'dist', 'agents', `${REORDER_ROLE}.md`),
+      agentDoc('STALE-DIST-BODY-MARKER'),
+      'utf8',
+    );
+  }, () => {
+    const body = roleAgentBody(REORDER_ROLE);
+    assert.ok(body?.includes('SRC-BODY-MARKER'), 'authoring source wins over the source repo\'s own built tree');
+    assert.ok(!body?.includes('STALE-DIST-BODY-MARKER'), 'a stale built copy must never outrank the source it was built from');
+  });
+});
+
+test('roleAgentDocCandidates: src/modules/<role>/agent.md outranks a conflicting agents/<role>.md', () => {
+  withFixturePluginRoot((root) => {
+    fs.mkdirSync(path.join(root, 'src', 'modules', REORDER_ROLE), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'src', 'modules', REORDER_ROLE, 'agent.md'),
+      agentDoc('SRC-BODY-MARKER'),
+      'utf8',
+    );
+    fs.mkdirSync(path.join(root, 'agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'agents', `${REORDER_ROLE}.md`),
+      agentDoc('INSTALLED-AGENTS-BODY-MARKER'),
+      'utf8',
+    );
+  }, () => {
+    const body = roleAgentBody(REORDER_ROLE);
+    assert.ok(body?.includes('SRC-BODY-MARKER'), 'authoring source wins over the installed-plugin layout');
+    assert.ok(!body?.includes('INSTALLED-AGENTS-BODY-MARKER'));
+  });
+});
+
+test('roleAgentDocCandidates: with no src/ present (installed-plugin layout), agents/<role>.md is used', () => {
+  withFixturePluginRoot((root) => {
+    fs.mkdirSync(path.join(root, 'agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'agents', `${REORDER_ROLE}.md`),
+      agentDoc('INSTALLED-AGENTS-BODY-MARKER'),
+      'utf8',
+    );
+  }, () => {
+    const body = roleAgentBody(REORDER_ROLE);
+    assert.ok(body?.includes('INSTALLED-AGENTS-BODY-MARKER'), 'an install ships no src/, so agents/ must still resolve');
+  });
 });

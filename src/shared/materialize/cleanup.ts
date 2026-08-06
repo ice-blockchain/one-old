@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { readText } from '../fsjson';
+import { movePath, readText, removePath, writeTextFile } from '../fsjson';
 import { templatePath } from '../stacks';
 import { removeGeneratedFile, removeGeneratedManifest, removeGeneratedSkillDir, removeGeneratedTree } from './generated';
 
@@ -32,13 +32,10 @@ function migrateLegacyMemoryFile(cwd: string, fileName: string): boolean {
   const targetPath = path.join(cwd, '.traffic-one', fileName);
   if (!fs.existsSync(legacyPath) || fs.lstatSync(legacyPath).isDirectory()) return false;
   if (!fs.existsSync(targetPath)) {
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.renameSync(legacyPath, targetPath);
-    return true;
+    return movePath(legacyPath, targetPath);
   }
   if (readText(legacyPath) === readText(targetPath)) {
-    fs.rmSync(legacyPath, { force: true });
-    return true;
+    return removePath(legacyPath);
   }
   return false;
 }
@@ -64,61 +61,101 @@ function compactLegacyRootContent(content: string): string {
   return lines.join('\n').trim();
 }
 
-function migratedRootDocBlock(fileName: string, content: string): string {
+// What a migrated block actually EMBEDS — one authority, so the "did the carry
+// land" check below cannot drift from the text the block carries. The heading is
+// dropped because the target owns its own (`# Security Memory` + `## Migrated
+// From Root security.md` reads correctly; two H1s do not), and a heading-only
+// file falls back to the whole thing rather than being reduced to a placeholder
+// that carries none of its bytes.
+function migratedBody(content: string): string {
+  const normalized = normalizeMarkdown(content);
+  return compactLegacyRootContent(normalized) || normalized || '_Empty legacy file._';
+}
+
+function rootDocMarker(fileName: string): string {
+  return `## Migrated From Root \`${fileName}\``;
+}
+
+// The heading is the marker and repeats on every block; the guidance sentence
+// does not. A root file the owner rewrites can be carried here more than once,
+// and project memory rides in an agent's context — the same paragraph twice is
+// tokens spent saying nothing new.
+function migratedRootDocBlock(fileName: string, content: string, withGuidance: boolean): string {
   return [
-    `## Migrated From Root \`${fileName}\``,
+    rootDocMarker(fileName),
     '',
-    `The notes below were moved from legacy root \`${fileName}\`. Keep future edits in \`.traffic-one/${fileName}\` so Traffic One project context stays compact.`,
-    '',
-    compactLegacyRootContent(content) || '_Empty legacy file._',
+    ...(withGuidance
+      ? [`The notes below were copied from legacy root \`${fileName}\`. Keep future edits in \`.traffic-one/${fileName}\` so Traffic One project context stays compact.`, '']
+      : []),
+    migratedBody(content),
   ].join('\n');
 }
 
-function migrateLegacyRootDocumentationFile(cwd: string, fileName: string): boolean {
-  const legacyPath = path.join(cwd, fileName);
+/**
+ * COPY a legacy root documentation file's content into `.traffic-one/`.
+ *
+ * It used to MOVE it, unconditionally, for every consenting project — no mode
+ * gate, no evidence of any kind. `api.md`, `database.md`, `deployment.md`,
+ * `environment-setup.md` and `security.md` are ordinary filenames that a huge
+ * number of repositories use for their own purposes, so a documentation
+ * repository simply lost all five from its root on the first materialization
+ * (measured: `D api.md | D database.md | D deployment.md | D environment-setup.md
+ * | D security.md`, on a repo with committed history that Traffic One had never
+ * written a byte into).
+ *
+ * The move was never defensible, because Traffic One CANNOT PROVE it wrote these
+ * files. They are the old project-memory convention, authored by agents
+ * following prose — they carry no generated marker, and no on-disk signal
+ * distinguishes "Traffic One's legacy output" from "the user's own API
+ * reference". A previous-manifest gate would only delay the deletion by one run,
+ * since every consenting project acquires a manifest on its first
+ * materialization. With ownership unprovable, the only branch that stays honest
+ * is the one that never deletes: the canonical copy under `.traffic-one/` — the
+ * one the rules, the architect's readiness check and the work-unit contract
+ * actually read — is still created, which is the whole functional point of the
+ * migration, and the file at the project root stays where its owner put it. The
+ * auto-documentation skill still tells the AGENT to consolidate and remove root
+ * copies; that is a visible action a user can see and stop, which a hook's
+ * silent `rename()` is not.
+ *
+ * `readText`/`writeTextFile` rather than `movePath`: this is a copy, so the
+ * fenced text writer is the right primitive, and the UTF-8 round trip it costs
+ * is recoverable in a way the byte-preserving MOVE it replaces was not — the
+ * source is still there.
+ */
+function adoptLegacyRootDocumentationFile(cwd: string, fileName: string): void {
+  const rootPath = path.join(cwd, fileName);
   const targetPath = path.join(cwd, '.traffic-one', fileName);
-  if (!fs.existsSync(legacyPath) || fs.lstatSync(legacyPath).isDirectory()) return false;
+  if (!fs.existsSync(rootPath) || fs.lstatSync(rootPath).isDirectory()) return;
 
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  if (!fs.existsSync(targetPath)) {
-    fs.renameSync(legacyPath, targetPath);
-    return true;
-  }
+  const rootText = readText(rootPath) ?? '';
+  const rootNorm = normalizeMarkdown(rootText);
+  if (!rootNorm) return;
 
-  const legacyText = readText(legacyPath) ?? '';
-  const targetText = readText(targetPath) ?? '';
-  const legacyNorm = normalizeMarkdown(legacyText);
+  // No bare mkdir for `.traffic-one/`: writeTextFile creates its own parent, and
+  // only once it has decided to write at all.
+  const targetText = fs.existsSync(targetPath) ? (readText(targetPath) ?? '') : '';
   const targetNorm = normalizeMarkdown(targetText);
-
-  if (!legacyNorm || targetNorm === legacyNorm || targetNorm.includes(legacyNorm)) {
-    fs.rmSync(legacyPath, { force: true });
-    return true;
-  }
-
   if (!targetNorm) {
-    fs.writeFileSync(targetPath, `${legacyText.trimEnd()}\n`, 'utf8');
-    fs.rmSync(legacyPath, { force: true });
-    return true;
+    writeTextFile(targetPath, `${rootText.trimEnd()}\n`);
+    return;
   }
-
-  const marker = `## Migrated From Root \`${fileName}\``;
-  if (!targetText.includes(marker)) {
-    fs.writeFileSync(
-      targetPath,
-      `${targetText.trimEnd()}\n\n${migratedRootDocBlock(fileName, legacyText)}\n`,
-      'utf8',
-    );
-  }
-  fs.rmSync(legacyPath, { force: true });
-  return true;
+  // Already carried, either whole or as a previously appended block. Checking
+  // the CONTENT and not the `## Migrated From Root` marker is the difference
+  // between an idempotent no-op and skipping the carry for a root file the user
+  // has since rewritten — the `&&` short-circuit this replaces did the latter,
+  // and then deleted the source anyway.
+  if (targetNorm.includes(rootNorm) || targetNorm.includes(migratedBody(rootNorm))) return;
+  const block = migratedRootDocBlock(fileName, rootNorm, !targetText.includes(rootDocMarker(fileName)));
+  writeTextFile(targetPath, `${targetText.trimEnd()}\n\n${block}\n`);
 }
 
-function migrateLegacyRootDocumentation(cwd: string): number {
-  let migrated = 0;
+// Returns nothing to count: adoption COPIES, so it removes no path and must not
+// inflate cleanupPrevious's removal total.
+function adoptLegacyRootDocumentation(cwd: string): void {
   for (const fileName of LEGACY_ROOT_DOCUMENTATION_FILES) {
-    if (migrateLegacyRootDocumentationFile(cwd, fileName)) migrated += 1;
+    adoptLegacyRootDocumentationFile(cwd, fileName);
   }
-  return migrated;
 }
 
 export function cleanupPrevious(cwd: string, previous: Rec, nextRulePaths: Set<string>, nextSkillNames: Set<string>): number {
@@ -139,7 +176,7 @@ export function cleanupPrevious(cwd: string, previous: Rec, nextRulePaths: Set<s
   if (removeGeneratedManifest(path.join(cwd, '.traffic-one', 'rules', 'manifest.json'))) removed += 1;
   if (migrateLegacyMemoryFile(cwd, 'coding.md')) removed += 1;
   if (migrateLegacyMemoryFile(cwd, 'security.md')) removed += 1;
-  removed += migrateLegacyRootDocumentation(cwd);
+  adoptLegacyRootDocumentation(cwd);
 
   const prevSkills = Array.isArray(previous.skills) ? (previous.skills as string[]) : [];
   for (const name of prevSkills) {
@@ -223,6 +260,10 @@ export function modeRulesForState(root: string, state: Rec, profileId?: string):
   if (!mode) return [];
   const relPath = `rules/modes/${mode}.md`;
   if (!fs.existsSync(path.join(root, templatePath(relPath)))) return [];
+  // The mode guess selects GUIDANCE here, and every path it selects is copied
+  // inside `.traffic-one/` — Traffic One's own space, re-derived on the next
+  // converge. A wrong guess costs the agent the wrong rule doc to read, which is
+  // what a guess is allowed to cost; no evidence veto belongs on this one.
   if (mode === 'new-project') {
     const profileRule = profileRuleFor(profileId);
     return [
