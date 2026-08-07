@@ -13,6 +13,13 @@ export interface MintedReportId {
   id: string;
   created: boolean;
   invalid?: boolean;
+  /**
+   * The id was minted in memory and is NOT on disk: `.one.json` could not be
+   * read, so there was no base to patch it onto and the write was refused.
+   * Distinct from `created: false` alone, which means somebody else's id is
+   * already registered — here nothing is registered and nothing was destroyed.
+   */
+  unpersisted?: boolean;
 }
 
 export function createReportId(cwd: string): MintedReportId {
@@ -24,7 +31,9 @@ export function createReportId(cwd: string): MintedReportId {
     state[ONE_UID_FIELD] = id;
     // Atomic write + fsync completes before the sole winner receives
     // `created: true`, which is the authorization to spawn the report worker.
-    writeProjectState(cwd, state);
+    // A refused write must not carry that authorization: the id is nowhere, so
+    // the worker it would spawn reads no id and the next hook mints again.
+    if (!writeProjectState(cwd, state)) return { id, created: false, unpersisted: true };
     return { id, created: true };
   });
 }

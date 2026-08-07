@@ -28,3 +28,14 @@ __pycache__/
 node_modules/
 dist/
 *.tsbuildinfo
+
+# Scratch space for tooling that must not write outside the workspace:
+# probe scripts, mutation-test copies, measurement drivers, progress logs.
+#
+# Anchored with a leading slash ON PURPOSE. Unanchored, `.tmp/` matches at every
+# depth, so a scratch tree at src/.tmp would be invisible to `git status` while
+# still being swept into the test glob and tsconfig's include — the lane would
+# debug its own fixtures with nothing pointing at them. Anchoring keeps a
+# misplaced scratch dir untracked-but-visible, which is the same principle the
+# rest of this file follows: never hide something the reader needs to see.
+/.tmp/

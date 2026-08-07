@@ -17,6 +17,7 @@ import {
   SKIP_FILES,
 } from '../../config/reporting';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
+import { readJsonResult } from '../../shared/fsjson';
 import { stripLocalPreferenceFields } from '../../shared/state/local-prefs';
 import {
   preserveCurrentRunId,
@@ -51,6 +52,24 @@ export function readJson(filePath: string, fallback: unknown = null): unknown {
   }
 }
 
+/**
+ * RAW writer — `fs` directly, deliberately outside `shared/fsjson.ts`, so none
+ * of that chokepoint's guarantees apply: no consent fence, no symlink refusal,
+ * no containment check against the resolved project root.
+ *
+ * That matters more than it looks, because `writeProjectState` below publishes
+ * the CANONICAL COMMITTED `.one.json` through it. What keeps that safe today is
+ * not this function: `prepareReport` asks `pluginUseEnabled(root)` before it
+ * reaches `createReportId`, one frame up, and `createReportId` is the only
+ * non-test caller of `writeProjectState`. So the consent guarantee is the
+ * CALLER'S, and a second caller added here would inherit none of it.
+ *
+ * Containment is genuinely uncovered rather than covered elsewhere: a planted
+ * directory symlink at `.traffic-one` would let the rename land outside the
+ * project. A final-component link is harmless (rename replaces the link itself),
+ * and an actor able to plant either could write the file directly anyway, so
+ * what is lost is defence in depth rather than a new capability.
+ */
 export function writeJson(filePath: string, value: unknown): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
@@ -96,18 +115,60 @@ export function readProjectState(cwd: string): Rec {
   return legacyState && typeof legacyState === 'object' ? (legacyState as Rec) : {};
 }
 
-export function writeProjectState(cwd: string, state: unknown): void {
-  // RAW writer (NOT the stripping writeState). It runs during onboarding to mint one-uid, so
-  // without stripping it re-persists machine-local preference fields (team / toolchain with an
-  // absolute binPath / performance / …) into the COMMITTED .one.json — the Codex
-  // onboarding-complete leak, where this write lands while the effective state is still merged.
-  // Those fields live in the per-user preferences.json; strip them from project state on write.
+/**
+ * Persist the shared project state through the RAW writer, and report whether
+ * `.one.json` now holds it.
+ *
+ * NOT the stripping writeState. It runs during onboarding to mint one-uid, so
+ * without stripping it re-persists machine-local preference fields (team / toolchain with an
+ * absolute binPath / performance / …) into the COMMITTED .one.json — the Codex
+ * onboarding-complete leak, where this write lands while the effective state is still merged.
+ * Those fields live in the per-user preferences.json; strip them from project state on write.
+ *
+ * ── An illegible base REFUSES, and does not quarantine-then-heal ─────────────
+ * `readJson(filePath, {})` used to stand in for the current file here, which
+ * made a corrupt `.one.json` indistinguishable from an absent one — and the
+ * consequence was total, not partial. `current` is what preserveCurrentRunId and
+ * preserveOneMcpReportId read, so the two rescues that exist to stop exactly
+ * this both saw `{}` and preserved nothing, while the caller's base (report-id-
+ * mint.ts, through readProjectState) had ALREADY collapsed to `{}` from a second
+ * illegible read of the same file. Measured on an 18-key post-onboarding state:
+ * 868 bytes in, 46 bytes out — stack, mode, frontend/backend, the onboarding
+ * answers, the live currentRunId and the durable one-uid all replaced by a
+ * freshly minted id. A chmod-000 file gave the identical 46 bytes, silently,
+ * and kept mode 000 so the wreckage could not even be read back.
+ *
+ * state/normalize.ts writeState answers `corrupt` by preserving the bytes beside
+ * the file and proceeding, and that ruling does NOT transfer here — it is
+ * conditioned on something this function does not have. Quarantining is only
+ * worth its cost to a caller that meant to REPLACE the whole file and therefore
+ * has something to put there. This function's sole caller is a one-field patch
+ * (`state[ONE_UID_FIELD] = id` over a base it believed it read), so proceeding
+ * would publish a file asserting the project is un-onboarded; because that file
+ * PARSES, the canonical healer would never see a corrupt `.one.json` again and
+ * the project would look freshly reset rather than broken. Refusing leaves the
+ * bytes untouched under their own name and leaves the heal to writeState, which
+ * quarantines the same bytes AND publishes a complete state. That is patchState's
+ * ruling ("a base we cannot see leaves nothing honest to publish"), which is the
+ * precedent this caller's shape actually matches.
+ *
+ * `unreadable` therefore gets the SAME answer as `corrupt` here rather than the
+ * opposite one, because the argument that separates them upstream — that
+ * `corrupt` can be copied aside and `unreadable` cannot — only decides whether
+ * quarantine is possible, and nothing is being quarantined either way.
+ */
+export function writeProjectState(cwd: string, state: unknown): boolean {
   const filePath = statePath(cwd);
   const replacement = stripLocalPreferenceFields(state && typeof state === 'object' ? state : {});
+  let persisted = false;
   withProjectStateLock(cwd, () => {
-    const current = readJson(filePath, {});
+    const read = readJsonResult<Rec>(filePath);
+    if (read.kind === 'corrupt' || read.kind === 'unreadable') return;
+    const current = read.kind === 'ok' ? read.value : {};
     writeJson(filePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)));
+    persisted = true;
   });
+  return persisted;
 }
 
 function shouldSkipFile(relPath: string, fileName: string): boolean {

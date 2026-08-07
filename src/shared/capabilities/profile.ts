@@ -58,6 +58,13 @@ function webAppHoldsSource(
   // total — so a truncated zero means "could not tell", never "nothing here".
   // Reading it as nothing relocates the app out from under the source this veto
   // exists to protect, so ignorance has to answer the same as evidence.
+  //
+  // "Any source" means any the scan COUNTS, and it no longer counts dependency
+  // trees, build output or caches — which lowers the count, i.e. weakens this
+  // veto, at the same time as it pushes `state.mode` toward `new-project`. Both
+  // terms of the `&&` below move together on one number, so the exclusion set is
+  // narrower than the scan authority it derives from; the reasoning is at
+  // `SOURCE_SCAN_SKIP_DIRS`.
   const scan = scanSourceFiles(path.join(cwd, detection.webRoot || '.'), { stopAfter: 0 });
   return scan.count > 0 || scan.truncated;
 }

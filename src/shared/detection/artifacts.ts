@@ -3,6 +3,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { SKIP_DIRS } from '../../config/reporting';
 import { readJson } from '../fsjson';
 
 type Rec = Record<string, unknown>;
@@ -85,6 +86,65 @@ export interface SourceFileScan {
   directoriesOpened: number;
 }
 
+// Which directories are not the project's own source. Only `node_modules` and
+// `.git` were excluded before, so a `.venv`, a `vendor/`, a `dist/` or a
+// `.gradle` all counted as the project's own code.
+//
+// `SKIP_DIRS` (config/reporting) is the authority, reused rather than restated:
+// it calls itself the SINGLE skip authority, the code graph and the baseline
+// capture already read it, and it carries the curation this question needs —
+// its own comment records `bin` and bare `lib` as names it REFUSED because they
+// are ordinary source directories in too many ecosystems to be worth the trade.
+//
+// `generated`/`__generated__` are dropped BY THAT SAME PRINCIPLE, applied to a
+// stricter cost function. SKIP_DIRS pays for over-skipping in diff noise; this
+// count pays for it in a relocation that orphans code. Committed codegen —
+// protobuf, GraphQL, OpenAPI clients — is the project's own language, in the
+// project's own tree, tracked by git, unlike an installed dependency tree or an
+// ignored build output; a real repo on this machine keeps 21 such files under
+// `generated/`. Everything else SKIP_DIRS names is reproducible from something
+// else present in the tree, which is the test that matters here.
+//
+// The exclusion set is a strict superset of the old pair, so it only ever
+// LOWERS a count — and the consumers do NOT agree on what a lower count means:
+//
+//   build-complete's `<=15` floor — lower means fewer builds flip to
+//     maintenance, which is that gate's conservative side: the flip is a
+//     one-way door out of the orchestrated build.
+//
+//   detectMode's `<=5` bar and webAppHoldsSource's `>0` veto — lower moves BOTH
+//     the wrong way, and they are not independent. `capabilityProfileForProject`
+//     ANDs them (`state.mode === 'new-project' && !webAppHoldsSource(...)`), and
+//     the veto exists precisely because a false `new-project` is uncorrectable:
+//     the wizard's new-project branch only opens when the mode ALREADY says
+//     new-project, then re-stamps it. A lower count makes the first term more
+//     often true AND the second term less likely to fire, so a single number
+//     pushes both halves of a two-factor check toward the same relocation. That
+//     coupling — not the raw count — is why the set here is narrower than
+//     SKIP_DIRS, and why the veto keeps its `truncated` arm.
+//
+// Measured before shipping: across 974 real trees (962 post-onboarding project
+// trees plus 12 checked-out repositories) the counts moved on 392 of them and
+// NOT ONE crossed any of the three thresholds. The gap is real, but on real
+// input it is not reachable through these gates; the shapes that do cross are
+// constructed, and the narrowing above is what keeps the reachable ones safe.
+//
+// The counting/proving ruling: a name excluded from the count is also excluded
+// from the veto — there is no third tier where a skipped tree still PROVES the
+// project holds source. The alternative was measured and is strictly worse: a
+// skipped tree almost always contains SOURCE_EXTS files (`node_modules` does, in
+// every JS project), so a "skipped something with source in it" signal would
+// fire unconditionally and turn the veto into a constant, which answers no
+// question at all.
+//
+// Residual risk, accepted and NOT fixed here: a project that vendors a
+// dependency it has PATCHED holds something unreproducible under an excluded
+// name. No name-based rule can see that — only git can — so it stays out of
+// scope rather than being papered over with a name.
+export const SOURCE_SCAN_SKIP_DIRS: ReadonlySet<string> = new Set(
+  [...SKIP_DIRS].filter((name) => name !== 'generated' && name !== '__generated__'),
+);
+
 /**
  * Bounded source-file walk. `countSourceFiles` below still hands back a bare
  * number because every caller today compares it against a small threshold — but
@@ -134,7 +194,7 @@ export function scanSourceFiles(cwd: string, options: SourceScanOptions = {}): S
         break;
       }
       if (entry.isDirectory()) {
-        if (entry.name === 'node_modules' || entry.name === '.git') continue;
+        if (SOURCE_SCAN_SKIP_DIRS.has(entry.name)) continue;
         subdirectories.push(path.join(currentDir, entry.name));
         continue;
       }
@@ -298,6 +358,14 @@ const FRONTEND_SUBSUMES: Record<string, readonly string[]> = {
   astro: ['vue', 'svelte', 'solid', 'preact', 'lit', 'react-vite'],
 };
 
+// Accumulates rather than assigns: the native and frontend chains each detect
+// their own disagreements, and a project can have both. Deduplicated so a caller
+// that names the same framework twice cannot inflate the list.
+function recordAmbiguity(out: StackDetection, frameworks: readonly string[], evidence: string): void {
+  out.ambiguous = [...new Set([...(out.ambiguous || []), ...frameworks])];
+  out.evidence.push(evidence);
+}
+
 export function detectStackFromCodebase(cwd: string): StackDetection {
   const out: StackDetection = { stack: null, backend: null, frontend: null, realtime: null, evidence: [] };
 
@@ -314,37 +382,70 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
     out.evidence.push('Go backend artifacts detected → apply Go backend skills');
   }
 
-  if (fs.existsSync(path.join(cwd, 'pubspec.yaml'))) {
+  // Native/mobile toolchains claiming the project ROOT. Collected rather than
+  // chained: an `if/else` made the first arm that matched the winner, so a root
+  // holding `pubspec.yaml` + `Package.swift` + `settings.gradle` resolved to
+  // `flutter` and dropped the other two in silence — verified by construction,
+  // with only 'Flutter pubspec detected' left in the evidence to show for it.
+  //
+  // Deliberately NOT the frontend chain's subsumption table, because the
+  // relationship is different in kind. Subsumption there is real: an Astro app
+  // depends on the UI library it renders, so the inner match is evidence FOR the
+  // outer one. Here the containment that would justify a table is invisible to
+  // this probe by construction — every marker below is read at the ROOT (only
+  // `app/build.gradle` looks one level down), while a real Flutter or React
+  // Native project keeps its Gradle and Xcode projects under `android/` and
+  // `ios/`, which this function never opens. Measured: a full Flutter layout
+  // (pubspec + android/settings.gradle + ios/Runner.xcodeproj) resolves to
+  // `flutter` with no competitor at all, and a full React Native layout to
+  // `react-native-expo`. So two markers AT THE ROOT are never an outer framework
+  // carrying its inner one; they are two toolchains claiming the same directory.
+  // That is genuine ambiguity, so it takes the answer the frontend chain already
+  // gives genuine ambiguity: name them, assert nothing, let the caller ask.
+  const rootNativeContenders = [
+    {
+      framework: 'flutter',
+      matches: fs.existsSync(path.join(cwd, 'pubspec.yaml')),
+      evidence: 'Flutter pubspec detected',
+    },
+    {
+      framework: 'swift-native',
+      matches: fs.existsSync(path.join(cwd, 'Package.swift'))
+        || (() => {
+          try {
+            return fs.readdirSync(cwd, { withFileTypes: true }).some((entry) => (
+              entry.name.endsWith('.xcodeproj') || entry.name.endsWith('.xcworkspace')
+            ));
+          } catch {
+            return false;
+          }
+        })(),
+      evidence: 'Swift/Xcode project detected',
+    },
+    {
+      framework: 'kotlin-android',
+      matches: fs.existsSync(path.join(cwd, 'settings.gradle'))
+        || fs.existsSync(path.join(cwd, 'settings.gradle.kts'))
+        || fs.existsSync(path.join(cwd, 'app', 'build.gradle'))
+        || fs.existsSync(path.join(cwd, 'app', 'build.gradle.kts')),
+      evidence: 'Android/Gradle project detected',
+    },
+  ].filter((candidate) => candidate.matches);
+  const rootNativeFrameworks = rootNativeContenders.map((candidate) => candidate.framework);
+
+  // Resolved HERE rather than after the manifest chains below, so the order in
+  // which this and the Laravel block write `stack`/`frontend` is unchanged.
+  if (rootNativeContenders.length === 1) {
     out.stack = 'custom-frontend';
     out.frontend = 'none';
-    out.mobile = { enabled: true, framework: 'flutter', source: 'explicit' };
-    out.evidence.push('Flutter pubspec detected');
-  } else if (
-    fs.existsSync(path.join(cwd, 'Package.swift'))
-    || (() => {
-      try {
-        return fs.readdirSync(cwd, { withFileTypes: true }).some((entry) => (
-          entry.name.endsWith('.xcodeproj') || entry.name.endsWith('.xcworkspace')
-        ));
-      } catch {
-        return false;
-      }
-    })()
-  ) {
-    out.stack = 'custom-frontend';
-    out.frontend = 'none';
-    out.mobile = { enabled: true, framework: 'swift-native', source: 'explicit' };
-    out.evidence.push('Swift/Xcode project detected');
-  } else if (
-    fs.existsSync(path.join(cwd, 'settings.gradle'))
-    || fs.existsSync(path.join(cwd, 'settings.gradle.kts'))
-    || fs.existsSync(path.join(cwd, 'app', 'build.gradle'))
-    || fs.existsSync(path.join(cwd, 'app', 'build.gradle.kts'))
-  ) {
-    out.stack = 'custom-frontend';
-    out.frontend = 'none';
-    out.mobile = { enabled: true, framework: 'kotlin-android', source: 'explicit' };
-    out.evidence.push('Android/Gradle project detected');
+    out.mobile = { enabled: true, framework: rootNativeFrameworks[0]!, source: 'explicit' };
+    out.evidence.push(rootNativeContenders[0]!.evidence);
+  } else if (rootNativeContenders.length > 1) {
+    recordAmbiguity(
+      out,
+      rootNativeFrameworks,
+      `competing native toolchains at the project root (${rootNativeFrameworks.join(', ')}) → no stack derived; ask instead of guessing`,
+    );
   }
 
   if (composerDeps['laravel/framework']) {
@@ -400,20 +501,41 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
   const detected = contenders.length === 1 ? contenders[0] : undefined;
 
   if (contenders.length > 1) {
-    out.ambiguous = contenders.map((candidate) => candidate.frontend);
+    const competing = contenders.map((candidate) => candidate.frontend);
     out.frontend = null;
-    out.evidence.push(
-      `competing frontend frameworks in the manifests (${out.ambiguous.join(', ')}) → no stack derived; ask instead of guessing`,
+    recordAmbiguity(
+      out,
+      competing,
+      `competing frontend frameworks in the manifests (${competing.join(', ')}) → no stack derived; ask instead of guessing`,
     );
   } else if (detected) {
     out.stack = 'custom-frontend';
     out.frontend = detected.frontend;
     out.evidence.push(detected.evidence);
   } else if (isNative) {
-    out.stack = 'custom-frontend';
-    out.frontend = 'none';
-    out.mobile = { enabled: true, framework: 'react-native-expo', source: 'explicit' };
-    out.evidence.push('react-native/expo in deps');
+    // The root manifests and the package manifest are two independent probes of
+    // the SAME surface, and this arm used to overwrite whatever the root chain
+    // had already resolved without comparing them: `pubspec.yaml` + a
+    // `react-native` dependency reported `react-native-expo` while the evidence
+    // array still read 'Flutter pubspec detected', so the answer and its own
+    // stated reason disagreed. A real React Native project has no root
+    // `pubspec.yaml` and a real Flutter project has no `react-native`
+    // dependency, so this is disagreement rather than containment — the same
+    // ambiguity the root chain reports, reached through a second probe.
+    const contested = rootNativeFrameworks.filter((framework) => framework !== 'react-native-expo');
+    if (contested.length === 0) {
+      out.stack = 'custom-frontend';
+      out.frontend = 'none';
+      out.mobile = { enabled: true, framework: 'react-native-expo', source: 'explicit' };
+      out.evidence.push('react-native/expo in deps');
+    } else {
+      delete out.mobile;
+      recordAmbiguity(
+        out,
+        [...contested, 'react-native-expo'],
+        `the package manifest names react-native/expo while the project root holds ${contested.join(', ')} → no stack derived; ask instead of guessing`,
+      );
+    }
   } else if (isReact) {
     out.stack = deps['@supabase/supabase-js'] || deps['@supabase/ssr'] ? 'default' : 'custom-backend';
     out.frontend = 'react-vite';

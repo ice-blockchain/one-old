@@ -52,6 +52,11 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
   // observe that id and return without spawning.
   const idState = createReportId(root);
   if (idState.invalid) return { started: false, reason: 'invalid-report-id' };
+  // Ahead of the `!created` branch: an unpersisted mint is not "somebody else
+  // already registered one", it is "nothing is registered and we declined to
+  // overwrite a state file we could not read". Backfilling a debug payload for
+  // an id that is nowhere on disk would be the wrong next move.
+  if (idState.unpersisted) return { started: false, reason: 'unreadable-project-state' };
   if (!idState.created) {
     const debugPayloadSaved = backfillDebugPayload(root, idState.id, options);
     return { started: false, reason: 'already-registered', reportId: idState.id, ...(debugPayloadSaved ? { debugPayloadSaved: true } : {}) };

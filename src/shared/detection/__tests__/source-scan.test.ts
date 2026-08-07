@@ -7,10 +7,12 @@ import * as path from 'path';
 import {
   SOURCE_SCAN_DIRECTORY_BUDGET,
   SOURCE_SCAN_ENTRY_BUDGET,
+  SOURCE_SCAN_SKIP_DIRS,
   countSourceFiles,
   detectMode,
   scanSourceFiles,
 } from '../artifacts';
+import { SKIP_DIRS } from '../../../config/reporting';
 
 // The walk runs in the hook path against a 150ms budget. Measured unbounded on
 // this checkout (macOS/APFS, warm, node 26.5, median of 5): 300,000 source files
@@ -156,6 +158,104 @@ test('node_modules and .git are skipped at any depth', () => {
     writeFiles(dir, path.join('.git', 'objects'), 40, '.js');
   }, (dir) => {
     assert.equal(countSourceFiles(dir), 3, 'only the project\'s own sources count');
+  });
+});
+
+// `node_modules` and `.git` were the ENTIRE exclusion list, so every other
+// ecosystem's dependency tree counted as the project's own code. A `.venv` is
+// Python's `node_modules`.
+test('dependency, build-output and cache directories are not the project\'s own source', () => {
+  const planted = ['.venv', 'venv', 'vendor', 'dist', 'build', 'target', '__pycache__', '.next', '.svelte-kit', '.gradle', 'Pods', '.tox'];
+  withTree((dir) => {
+    writeFiles(dir, 'src', 3, '.ts');
+    for (const name of planted) writeFiles(dir, path.join(name, 'inner'), 20, '.py');
+    // At depth too: a monorepo package's own `.venv` is no more the project's
+    // source than the root's is.
+    writeFiles(dir, path.join('packages', 'api', '.venv', 'lib'), 20, '.py');
+  }, (dir) => {
+    for (const name of planted) {
+      assert.ok(SOURCE_SCAN_SKIP_DIRS.has(name), `${name} must be excluded — it is a dependency tree or a build output, not source`);
+    }
+    assert.equal(
+      countSourceFiles(dir),
+      3,
+      'only the project\'s own sources count; 243 here would mean a `.venv` feeds the new-project bar and the orphaning veto',
+    );
+  });
+});
+
+// Not "a list that happens to agree with SKIP_DIRS" — the same set object,
+// minus one documented name. A restated copy drifts the moment either side
+// gains an ecosystem, and this repo already carries two such lists.
+test('the skip set is DERIVED from the SKIP_DIRS authority, not restated beside it', () => {
+  assert.ok(
+    SKIP_DIRS.size > 30,
+    `non-vacuity: SKIP_DIRS must be the broad authority this derives from (size ${SKIP_DIRS.size})`,
+  );
+  const missing = [...SKIP_DIRS].filter((name) => (
+    !SOURCE_SCAN_SKIP_DIRS.has(name) && name !== 'generated' && name !== '__generated__'
+  ));
+  assert.deepEqual(missing, [], 'every SKIP_DIRS name except the documented codegen carve-out must be excluded from the count');
+  const extra = [...SOURCE_SCAN_SKIP_DIRS].filter((name) => !SKIP_DIRS.has(name));
+  assert.deepEqual(extra, [], 'nothing may be excluded that the authority does not name — that is how a third parallel list starts');
+});
+
+// The carve-out, and the reason it is a carve-out rather than an oversight.
+// SKIP_DIRS pays for over-skipping in verification-diff noise; this count pays
+// for it in a relocation that orphans code, so the name that is committed source
+// in the project's own language stays visible.
+test('committed codegen still counts as the project\'s own source', () => {
+  withTree((dir) => {
+    writeFiles(dir, 'generated', 30, '.ts');
+    writeFiles(dir, '__generated__', 4, '.ts');
+  }, (dir) => {
+    assert.equal(countSourceFiles(dir), 34, 'generated/ is tracked, in the project\'s language, and not reproducible from anything else in the tree');
+    assert.equal(
+      detectMode(dir),
+      'existing-codebase',
+      'excluding it would read this project as greenfield AND tell the orphaning veto there is nothing here — both halves of the relocation check at once',
+    );
+  });
+});
+
+// `capabilityProfileForProject` ANDs `mode === 'new-project'` with
+// `!webAppHoldsSource(...)`, so one count decides both. Widening the exclusions
+// moves the mode toward `new-project`, which is the uncorrectable direction —
+// the veto is the only thing left standing, and it has to hold on the shape that
+// caused the misread.
+test('a project whose own source sits beside a dependency tree still fires the orphaning veto', () => {
+  withTree((dir) => {
+    writeFiles(dir, path.join('.venv', 'lib', 'site-packages'), 400, '.py');
+    fs.writeFileSync(path.join(dir, 'main.py'), 'x', 'utf8');
+  }, (dir) => {
+    assert.equal(
+      detectMode(dir),
+      'new-project',
+      'the premise: with the `.venv` discounted this one-file project reads greenfield, and nothing downstream reopens that',
+    );
+    // What webAppHoldsSource asks, with its own stopAfter.
+    const veto = scanSourceFiles(dir, { stopAfter: 0 });
+    assert.equal(veto.count > 0 || veto.truncated, true, 'so the veto is the only guard left, and one real file must still trip it');
+  });
+});
+
+// A truncated count is a floor, and exclusions change what is counted BEFORE the
+// budget trips — so they also change WHICH trees truncate. The direction is the
+// safe one (less work reached the budget), but it is worth pinning: a tree that
+// stops truncating starts answering the veto from its count alone.
+test('excluding dependency trees makes truncation LESS likely, never more', () => {
+  withTree((dir) => {
+    for (let i = 0; i < 60; i += 1) writeFiles(dir, path.join('node_modules', `dep${i}`), 5, '.js');
+    for (let i = 0; i < 60; i += 1) writeFiles(dir, path.join('.venv', 'lib', `pkg${i}`), 5, '.py');
+    writeFiles(dir, 'src', 2, '.ts');
+  }, (dir) => {
+    const scan = scanSourceFiles(dir);
+    assert.equal(scan.count, 2, 'the premise: both planted trees are excluded');
+    assert.equal(scan.truncated, false, 'and neither consumed the budget');
+    assert.ok(
+      scan.directoriesOpened < 10,
+      `an excluded subtree costs one entry, not a walk (opened ${scan.directoriesOpened} directories)`,
+    );
   });
 });
 

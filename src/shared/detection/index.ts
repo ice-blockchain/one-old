@@ -285,6 +285,7 @@ export {
   SOURCE_EXTS,
   SOURCE_SCAN_DIRECTORY_BUDGET,
   SOURCE_SCAN_ENTRY_BUDGET,
+  SOURCE_SCAN_SKIP_DIRS,
   classifyDetectedSurfaces,
   countSourceFiles,
   scanSourceFiles,
