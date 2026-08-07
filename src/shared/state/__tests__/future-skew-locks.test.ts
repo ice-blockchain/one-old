@@ -89,6 +89,43 @@ test('a LIVE owner is never reclaimed, however old its stamp', () => {
   assert.equal(ran, false, 'the mutation must not run when the lock was never held');
 });
 
+// The cell where the two rules MEET, and the one the pair above leaves open: a
+// live owner whose stamp is the untrustworthy kind. Both halves of this file are
+// satisfied without it — a dead owner is reclaimed on an unusable age (above), a
+// live owner is respected on a usable one (above) — so nothing pinned which of
+// the two wins when a LIVE holder's stamp is also unusable.
+//
+// clock-skew.ts states the answer as a promise: an age no clock could have
+// produced "does not force [a reclaim] either: the pid check below is still the
+// thing that decides, so a LIVE owner keeps its lock regardless of what its stamp
+// says". That promise is one operator-precedence edit away from being false, and
+// MEASURED, the edit is invisible: regrouping locks.ts's guard from
+// `(age !== null && age <= staleMs) || !dead` to
+// `age !== null && (age <= staleMs || !dead)` steals this lease and leaves 45
+// tests across future-skew-locks, live-holder-lock-theft, lock-staleness-clock-skew
+// and clock-skew all green. The equivalent cell IS covered for the cache, prefs
+// and qa-evidence locks (lock-staleness-clock-skew.test.ts, "a LIVE owner keeps
+// its lock regardless of stamp direction"); this is the same row for the
+// owned-dir primitive behind the four run-scoped stores.
+//
+// In-process on purpose: the holder is THIS process, so the pid is alive by
+// construction and cannot flake, and a second process could not make the input
+// any more real — every process on one machine reads the same clock, so skew has
+// to be injected as a STAMP either way.
+test('a LIVE owner whose stamp no clock could have produced still keeps its lock', () => {
+  const lockDir = path.join(tmpRoot(), 'held.lock');
+  fs.mkdirSync(lockDir, { recursive: true });
+  const ownerFile = path.join(lockDir, '.owner-planted.json');
+  fs.writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, acquiredAt: Date.now() + 10 * 60 * 1000 }));
+
+  const { held, ran } = tryAcquire(lockDir);
+  assert.equal(held, false,
+    'an unusable age must not FORCE a reclaim: the pid check decides, and this owner is running');
+  assert.equal(ran, false, 'the mutation must not run when the lock was never held');
+  assert.ok(fs.existsSync(ownerFile),
+    'the live owner\'s sentinel must survive — a reclaim unlinks it and rmdirs the lease');
+});
+
 // The same mirror on the legacy, sentinel-less path: an EMPTY lock directory
 // left by an older build is reclaimed on its mtime alone, so a directory whose
 // mtime sits ahead of now was equally immortal.
