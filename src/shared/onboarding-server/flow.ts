@@ -12,6 +12,7 @@ import {
   projectContextOriginalPrompt,
 } from '../onboarding/project-context';
 import { detectHost } from '../host';
+import { hostFlags } from '../host/capability-flags';
 import { readPluginUseChoice } from '../state/plugin-use';
 import { currentModelsForTier } from '../current-model-tiers';
 import {   teamModeForLevel, type PlanCtx } from '../performance';
@@ -250,7 +251,12 @@ function toolchainInstallPending(state: Rec, host: string): boolean {
     const entry = tc ? obj(tc[tool]) : null;
     return typeof entry?.installedVersion === 'string' && entry.installedVersion.length > 0;
   };
-  if (host !== 'opencode' && host !== 'kilo' && obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
+  // Same predicate the toolchain runner already spells with the flag
+  // (runners/onboarding-toolchain/index.ts: `!hostFlags(host).opencodeSelfHosted
+  // && openCode?.enabled === true`). An OpenCode-compatible host never installs
+  // the OpenCode toolchain for itself, so it must not fire the install task here
+  // either, or the flow prescribes work the runner will decline.
+  if (!hostFlags(host).opencodeSelfHosted && obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
   const provider = state.codeGraphProvider;
   if ((provider === 'gitnexus' || provider === 'graphify') && !stamped(provider)) return true;
   return false;

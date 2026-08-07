@@ -11,6 +11,7 @@ import { patchTextFromToolInput } from '../shared/apply-patch';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
+import { stripFileUri } from './workspace-root';
 
 const SUB_TO_EVENT: Readonly<Record<string, { event: CanonicalEvent; tool?: ToolClass }>> = {
   pre_user_prompt: { event: 'UserPromptSubmit' },
@@ -33,10 +34,6 @@ function actionName(data: Record<string, unknown>, argv: readonly string[]): str
   const explicit = firstString(data.agent_action_name, data.action, data.event);
   if (explicit) return explicit;
   return argv.find((arg) => Object.prototype.hasOwnProperty.call(SUB_TO_EVENT, arg) || MANUAL_ACTIONS.has(arg)) || '';
-}
-
-function stripFileUri(p: string): string {
-  return p.startsWith('file://') ? decodeURIComponent(p.slice('file://'.length)) : p;
 }
 
 function editsContent(...values: readonly unknown[]): string {

@@ -13,6 +13,7 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
+import { hostFlags } from '../../shared/host/capability-flags';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
@@ -67,7 +68,12 @@ export function recordPendingModelChoiceReply(cwd: string, promptText: string): 
 }
 
 export function modelChoiceReplySweep(ctx: Ctx): HookResult {
-  if (ctx.host !== 'cursor') return noop();
+  // The sweep exists only because the choice has to be answered in CHAT: this is
+  // the reader for the reply that modelChoiceGate (modules/model-choice-gate,
+  // already keyed on the same flag) is blocking the build to wait for. A host
+  // that can report the child's model never asks the question, so there is no
+  // reply to sweep.
+  if (!hostFlags(ctx.host).modelChoiceNeedsUserReply) return noop();
   if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
   if (isNonProjectRoot(cwd) || pluginUseDeclined(cwd)) return noop();

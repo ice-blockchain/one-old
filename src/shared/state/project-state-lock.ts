@@ -75,6 +75,35 @@ function runIdValue(raw: unknown): string {
 // DOES carry an id (including a freshly-minted rotation id) is returned
 // untouched, so legitimate run rotation still flips the pointer. Applied only
 // after the writer holds the shared lock and re-read the on-disk `current`.
+//
+// ── WHEN THIS CAN GO, measured rather than assumed ──────────────────────────
+// Three production call sites, and only ONE of them can ever do anything. What
+// decides it is not the site, it is where the REPLACEMENT's base read happened:
+// this function is a one-field patch applied inside the lock, so it is a no-op
+// whenever the replacement's own base was also read inside the lock.
+//
+//   state/normalize.ts writeState        LOAD-BEARING. The replacement is the
+//     caller's whole-object snapshot, and every caller spells it
+//     `writeState(cwd, { ...readState(cwd), ...patch })` — read OUTSIDE the
+//     lock. Mutation-proven: dropping the call turns
+//     state-merge-and-durability.test.ts "writeState never blanks a live
+//     currentRunId (F1 lost-update)" red.
+//   runners/security-check/report.ts     NO-OP. `current` is `{ ...state }`
+//     where `state` is the in-lock read that is then mutated in place, so the
+//     replacement always already carries the on-disk id. Dropping the call
+//     leaves the suite green, which agrees with the static argument.
+//   runners/one-mcp-report/lib.ts        NO-OP THROUGH ITS ONLY CALLER.
+//     `writeProjectState` is exported, but report-id-mint.ts `createReportId`
+//     is the sole caller and takes its base from `readProjectState(cwd)` inside
+//     the same re-entrant lock hold. Defensive against a future caller that
+//     does not; dead against today's.
+//
+// So removal is gated on ONE thing: the last whole-object writer of
+// `.one.json` whose base read happens outside the lock. That is patchState's
+// job (see its doc in normalize.ts) — not, as it is sometimes framed, on moving
+// currentRunId into a separate runtime file. Moving the field WOULD also retire
+// this function, but it is the more expensive of the two routes and it buys a
+// second artifact that can land alone.
 export function preserveCurrentRunId(current: unknown, replacement: unknown): Rec {
   const next = record(replacement) ? { ...(replacement as Rec) } : {};
   if (runIdValue(next.currentRunId)) return next; // replacement carries an id (possibly a legit new one)

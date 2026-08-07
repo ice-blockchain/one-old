@@ -1,52 +1,33 @@
-// The workspace-root selector exists TWICE — src/adapters/cursor.ts and
+// The workspace-root selector used to exist TWICE — src/adapters/cursor.ts and
 // src/adapters/copilot.ts — because both hosts read the same `workspace_roots`
-// list from their own flat payload. Nothing in the language makes the two copies
-// agree, so this file is what does, on the pattern
-// src/shared/__tests__/launcher-state-root.test.ts established for the two
-// `node -e` copies of the machine-state-root expression: pin the copies
-// TEXTUALLY (so a fix applied to one is applied to both) and BEHAVIOURALLY (so a
-// textual match that somehow diverges in effect still fails).
+// list from their own flat payload. This file pinned the two copies TEXTUALLY
+// (so a fix applied to one was applied to both) and BEHAVIOURALLY (so a textual
+// match that somehow diverged in effect still failed), and its header named the
+// exit: the duplication was provisional, and once the block was extracted the
+// textual half should go and the behavioural half should stay.
 //
-// Unlike those launchers, these two CAN import a shared helper — every adapter
-// already imports ./coerce — so the duplication here is provisional, not
-// principled. If the block is ever extracted, delete the textual half of this
-// file and keep the behavioural half.
+// The block now lives in src/adapters/workspace-root.ts, so the textual half is
+// gone. What remains is NOT tautological, and that is the point — the cases below
+// assert each adapter's real parse() against LITERAL expected values, never
+// against the other adapter's answer. So they still fail on all three ways this
+// can break:
+//   - the shared selector itself regresses (both adapters fail);
+//   - one adapter stops WIRING the selector into parse(), or wires it to the
+//     wrong field (that adapter alone fails);
+//   - the cwd fold diverges from the selected root.
+// A test that only compared cursor to copilot would have survived the extraction
+// by becoming a comparison of one function with itself. This one does not.
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeCursorAdapter } from '../cursor';
 import { makeCopilotAdapter } from '../copilot';
 
-const ADAPTERS = path.join(__dirname, '..');
-const BEGIN = '// T1SHARED:workspace-root — byte-identical';
-const END = '// T1SHARED:workspace-root END';
-
-function sharedBlock(file: string): string {
-  const source = fs.readFileSync(path.join(ADAPTERS, file), 'utf8');
-  const start = source.indexOf(BEGIN);
-  const stop = source.indexOf(END);
-  assert.notEqual(start, -1, `${file} must carry the ${BEGIN.trim()} marker`);
-  assert.notEqual(stop, -1, `${file} must carry the ${END} marker`);
-  assert.ok(stop > start, `${file} markers must be in order`);
-  return source.slice(start, stop);
-}
-
-test('workspace-root selector: the two copies are byte-identical', () => {
-  const cursor = sharedBlock('cursor.ts');
-  const copilot = sharedBlock('copilot.ts');
-  // Non-vacuity: the block must actually contain the selector, not just markers.
-  assert.match(cursor, /function activeWorkspaceRoot\(/);
-  assert.match(cursor, /function workspaceRootList\(/);
-  assert.equal(cursor, copilot,
-    'cursor.ts and copilot.ts must carry the SAME workspace-root selector — fix both or extract it');
-});
-
 // Behavioural parity, driven through each adapter's real parse() on the one
 // subcommand both hosts spell identically. `cwd` is echoed too because the
-// selected root feeds cursorCwd/copilotCwd, which are themselves copies.
+// selected root feeds workspaceScopedCwd, whose fold-back is the other half of
+// the contract.
 const CASES: Array<{ name: string; payload: Record<string, unknown>; root: string | undefined; cwd: string }> = [
   {
     name: 'single root, cwd inside it',

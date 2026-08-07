@@ -29,7 +29,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { countSourceFiles } from '../../shared/detection';
+import { scanSourceFiles } from '../../shared/detection';
 import { sweepAfterTerminalSettlement } from '../../shared/retention';
 import {
   hasActiveRunClaims,
@@ -178,7 +178,11 @@ export function maybeFlipToMaintenance(root: string, state: unknown, opts: { atP
     const settlement = buildSettlement(root, state, !!opts.atPromptBoundary);
     if (!settlement.settled) return false;
     if (!opts.atPromptBoundary && hasActiveRunClaims(root, state)) return false;
-    if (countSourceFiles(root) <= MAINTENANCE_FILE_THRESHOLD) return false;
+    // Only the `<=` comparison is used, so the walk stops one file past the
+    // threshold. Truncation needs no arm here: the count is a floor, so a
+    // truncated count above the threshold is still above it, and a truncated
+    // count below it leaves the build in `new-project` — the conservative side.
+    if (scanSourceFiles(root, { stopAfter: MAINTENANCE_FILE_THRESHOLD }).count <= MAINTENANCE_FILE_THRESHOLD) return false;
     if (settlement.terminal && !settleTerminalRunLedger(root, settlement.runId)) return false;
     const flipped = markMaintenance(root, opts.atPromptBoundary ? 'prompt-boundary' : 'heuristic');
     if (flipped) pruneExpiredPendingClaims(root);

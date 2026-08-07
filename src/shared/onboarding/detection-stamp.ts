@@ -202,7 +202,18 @@ export interface AgentTechSubmission {
 }
 
 export type AgentTechClassificationResult =
-  | { ok: true; stack: string; alreadyClassified: boolean }
+  | {
+    ok: true;
+    stack: string;
+    alreadyClassified: boolean;
+    /**
+     * Set only when a submission was DROPPED for disagreeing with the stack on
+     * record: the stack it would have set. Absent when the submission agreed,
+     * so "already covered" and "overruled" stay distinguishable — the caller
+     * has to be able to tell the user which happened.
+     */
+    discardedStack?: string;
+  }
   | { ok: false; reason: DetectionStampSkip | 'invalid-submission'; issues?: string[] };
 
 export interface AgentTechClassificationOptions {
@@ -216,6 +227,20 @@ export interface AgentTechClassificationOptions {
   requireRecordedConsent?: boolean;
   /** Stamp into THIS state object instead of a fresh read (tests/sim). */
   state?: Rec;
+  /**
+   * Apply the submission over a stack already on record. Without this the
+   * committed stack always wins, and since a manifest PROBE is what usually
+   * commits it, a misdetection is unreachable: `detectStackFromCodebase` writes
+   * `confirmed: true` with no user in the loop, the wizard's existing-codebase
+   * branch never asks about the stack again, and `finalize` preserves whatever
+   * is already there. `--force` is the only way back.
+   *
+   * Still not a blank cheque: `applyDetectionStamp` leaves the stack fields
+   * alone while a run holds the project's identity, so a forced correction
+   * mid-run is recorded as drift and minted by the next run rather than
+   * invalidating live role claims.
+   */
+  force?: boolean;
 }
 
 // The agent's manual classification: validate the submitted SURFACES against the
@@ -239,13 +264,6 @@ export function applyAgentTechClassification(
   if (!dirOwnsProject(cwd) && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) {
     return { ok: false, reason: 'belongs-to-enclosing-project' };
   }
-  // Never overwrite a committed identity: detection may have succeeded between
-  // the directive and the submission, or a second submission may race. The
-  // committed stack wins (mirrors the wizard finalize rule).
-  if (typeof state.stack === 'string' && state.stack) {
-    return { ok: true, stack: state.stack, alreadyClassified: true };
-  }
-
   // Defense in depth: the gate's command classifier already membership-checks the
   // argv, but this writer is also callable directly (sim/tests), so re-validate.
   const issues: string[] = [];
@@ -278,6 +296,26 @@ export function applyAgentTechClassification(
       ok: false,
       reason: 'invalid-submission',
       issues: ['at least one surface is required — frontend, backend, or mobile must not all be none'],
+    };
+  }
+
+  // A committed identity wins over a submission that merely raced it: detection
+  // may have succeeded between the directive and the submission, or a second
+  // submission may arrive. Unless the caller is explicitly CORRECTING it —
+  // without that door the first writer is the last, and the first writer is
+  // normally a probe rather than anyone who was asked.
+  //
+  // Checked HERE, after the submission has been validated and its stack
+  // derived, so a discarded submission can be reported as what it was. It used
+  // to return before either, which made "you agree with the record" and "you
+  // disagree and I am ignoring you" the same `ok: true`.
+  const committed = typeof state.stack === 'string' ? state.stack : '';
+  if (committed && !options.force) {
+    return {
+      ok: true,
+      stack: committed,
+      alreadyClassified: true,
+      ...(detected.stack === committed ? {} : { discardedStack: detected.stack }),
     };
   }
 

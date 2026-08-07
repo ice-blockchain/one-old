@@ -94,6 +94,41 @@ function normalizeLegacyStack(state: Rec): boolean {
   return true;
 }
 
+/**
+ * Coerce `currentRunId` to the canonical trimmed-string form, in place.
+ *
+ * Extracted verbatim from normalizeState below, which applies it BEFORE its own
+ * `if (!s.stack) return changed` early return — deliberately, because the run
+ * pointer has nothing to do with the stack. writeState never gave it that
+ * chance: it only reaches normalizeState when `source.stack` is a string, so
+ * the funnel every state writer goes through was the one publish path that
+ * skipped the coercion.
+ *
+ * What that costs is not cosmetic. `readEffectiveState` coerces on read
+ * (local-prefs/index.ts `normalizeRuntimeIds`), so the effective-state readers
+ * were always covered; the RAW readers were not, and they all spell the test as
+ * `typeof state.currentRunId === 'string'`. A legacy numeric id therefore reads
+ * as NO current run to shared/retention.ts `readCurrentRunId` — which is what
+ * puts the live run in the retention keep set — so the run being worked in
+ * becomes reclaimable by the sweep it is supposed to be immune to.
+ *
+ * An all-whitespace id is deliberately left alone rather than trimmed to '':
+ * `preserveCurrentRunId` treats it as absent and rescues the on-disk id, which
+ * is the better answer than publishing a blank pointer.
+ */
+function canonicalizeRunPointer(state: Rec): boolean {
+  const raw = state.currentRunId;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    state.currentRunId = String(Math.trunc(raw));
+    return true;
+  }
+  if (typeof raw === 'string' && raw.trim() && raw !== raw.trim()) {
+    state.currentRunId = raw.trim();
+    return true;
+  }
+  return false;
+}
+
 export function statePath(cwd: string): string {
   return path.join(cwd, STATE_FILE);
 }
@@ -168,6 +203,10 @@ export function writeState(cwd: string, state: unknown): boolean {
     && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) return false;
   let source: Rec = obj(state) ? { ...(state as Rec) } : {};
   delete source.pluginVersion;
+  // Unconditional, and before the stack-gated normalization below: see
+  // canonicalizeRunPointer. Idempotent, so normalizeState re-applying it on a
+  // stack-bearing publish costs nothing.
+  canonicalizeRunPointer(source);
   if (source.stack) {
     canonicalizeStateShape(source);
     if (typeof source.stack === 'string') {
@@ -282,13 +321,10 @@ export function normalizeState(state: unknown, defaultMode?: string): boolean {
   if (!s) return false;
 
   let changed = canonicalizeStateShape(s);
-  if (typeof s.currentRunId === 'number' && Number.isFinite(s.currentRunId)) {
-    s.currentRunId = String(Math.trunc(s.currentRunId));
-    changed = true;
-  } else if (typeof s.currentRunId === 'string' && s.currentRunId.trim() && s.currentRunId !== s.currentRunId.trim()) {
-    s.currentRunId = s.currentRunId.trim();
-    changed = true;
-  }
+  // Ahead of the stack early-return on purpose — the run pointer is not a stack
+  // fact. writeState now applies the same helper on every publish, because it
+  // reaches this function only for a stack-bearing state.
+  changed = canonicalizeRunPointer(s) || changed;
   if (!s.stack) return changed;
 
   changed = normalizeLegacyStack(s) || changed;

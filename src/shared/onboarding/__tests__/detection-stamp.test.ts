@@ -155,6 +155,58 @@ test('agent classification rejects unknown ids, all-none, and never overwrites a
   }, { files: sparseFiles(), consent: true });
 });
 
+// The correction path. Without it the FIRST writer is the last, and the first
+// writer is normally `detectStackFromCodebase` — which stamps `confirmed: true`
+// with nobody asked, the wizard's existing-codebase branch never revisits the
+// stack, and `finalize` preserves whatever is already committed. So a
+// misdetection was durable and indistinguishable from a user's own answer.
+test('--force lets an explicit submission CORRECT a stack a probe committed', () => {
+  withProject((cwd) => {
+    // The probe gets there first, exactly as the runner does on every call.
+    assert.equal(stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true }).stamped, true);
+    assert.equal(readState(cwd).backend, 'laravel');
+    assert.equal(readState(cwd).autoDetected, true, 'the premise: this identity came from a probe, not from anyone being asked');
+
+    const refused = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'go' });
+    assert.equal(refused.ok, true);
+    if (refused.ok) {
+      assert.equal(refused.alreadyClassified, true, 'without --force the committed stack still wins — the race guard is unchanged');
+      assert.equal(
+        refused.discardedStack,
+        'custom-backend',
+        'a submission DROPPED for disagreeing must report the stack it would have set — "you agree" and "you are overruled" cannot both be a bare ok:true',
+      );
+    }
+    assert.equal(readState(cwd).backend, 'laravel', 'and nothing was written');
+
+    const forced = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'go', evidence: 'go.mod at the root' }, { force: true });
+    assert.equal(forced.ok, true);
+    if (forced.ok) {
+      assert.equal(forced.stack, 'custom-backend', '--force applies the submission');
+      assert.equal(forced.alreadyClassified, false);
+      assert.equal(forced.discardedStack, undefined, 'nothing was discarded — the submission won');
+    }
+    const state = readState(cwd);
+    assert.equal(state.backend, 'go', 'the correction reached .one.json');
+    assert.equal(state.frontend, 'none');
+    assert.equal(state.autoDetected, false, 'the corrected identity is no longer a probe guess');
+    assert.match(String((state.evidence as string[])[0]), /agent-classified: .*go\.mod at the root/);
+  }, { files: laravelFiles(), consent: true });
+});
+
+test('a resubmission that AGREES with the record is not reported as a discarded correction', () => {
+  withProject((cwd) => {
+    const first = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'go' });
+    assert.equal(first.ok && first.stack, 'custom-backend');
+    const again = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'go' });
+    assert.equal(again.ok, true);
+    if (again.ok) {
+      assert.equal(again.alreadyClassified, true);
+      assert.equal(again.discardedStack, undefined, 'agreement must stay distinguishable from being overruled');
+    }
+  }, { files: sparseFiles(), consent: true });
+});
+
 test('agent classification enforces the same consent/decline/mode guards as the stamp', () => {
   withProject((cwd) => {
     const pending = applyAgentTechClassification(cwd, { frontend: 'none', backend: 'node' }, { requireRecordedConsent: true });

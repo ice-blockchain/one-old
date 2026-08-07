@@ -3,7 +3,7 @@
 
 import * as path from 'path';
 
-import { countSourceFiles } from '../detection';
+import { scanSourceFiles } from '../detection';
 import { obj } from '../obj';
 
 import {
@@ -53,7 +53,13 @@ function webAppHoldsSource(
   detection: { onDisk: boolean; webRoot?: string },
 ): boolean {
   if (!detection.onDisk) return false;
-  return countSourceFiles(path.join(cwd, detection.webRoot || '.')) > 0;
+  // `stopAfter: 0` answers "is there any" on the first source file instead of
+  // walking the whole tree, and a budget-truncated count is a FLOOR rather than a
+  // total — so a truncated zero means "could not tell", never "nothing here".
+  // Reading it as nothing relocates the app out from under the source this veto
+  // exists to protect, so ignorance has to answer the same as evidence.
+  const scan = scanSourceFiles(path.join(cwd, detection.webRoot || '.'), { stopAfter: 0 });
+  return scan.count > 0 || scan.truncated;
 }
 
 export function capabilityProfileForProject(cwd: string, input: unknown): CapabilityProfileV1 {

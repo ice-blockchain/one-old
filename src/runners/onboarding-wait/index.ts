@@ -92,8 +92,19 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   // on `!alreadyDone`: that is what repairs a project already stuck in the seed state.
   // An undetectable repo is left untouched; its partial evidence feeds the
   // agent-classification hints below.
-  const stampResult = stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
-  if (argv.includes('--set-tech')) {
+  //
+  // Skipped on a `--set-tech` invocation. Detection re-runs on EVERY call, so
+  // on the one command carrying an explicit answer the probe used to stamp
+  // first and `applyAgentTechClassification` then found a committed stack and
+  // dropped the submission — reporting success. The agent was asked to classify
+  // the repo and its answer lost to a guess made microseconds earlier, inside
+  // the same process. A submission owns the classification; the auto-stamp is
+  // the fallback for invocations that carry none.
+  const isSetTech = argv.includes('--set-tech');
+  const stampResult = isSetTech
+    ? { stamped: false as const, detected: undefined }
+    : stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true });
+  if (isSetTech) {
     runSetTech(cwd, host, argv);
   }
   if (reconsider) {
@@ -315,7 +326,10 @@ function runSetTech(cwd: string, host: HostId, argv: readonly string[]): never {
     mobile: flag('mobile'),
     realtime: flag('realtime'),
     evidence: flag('evidence'),
-  }, { requireRecordedConsent: askUsePluginFirst(process.env) });
+  }, {
+    requireRecordedConsent: askUsePluginFirst(process.env),
+    force: argv.includes('--force'),
+  });
 
   if (!result.ok) {
     if (result.reason === 'declined') {
@@ -351,9 +365,16 @@ function runSetTech(cwd: string, host: HostId, argv: readonly string[]): never {
   } catch {
     // best-effort; the PreToolUse gate's materialize-then-retry remains the backstop
   }
-  const note = result.alreadyClassified
-    ? ' (a committed stack already existed — your submission was not needed and did not overwrite it)'
-    : '';
+  // A dropped submission that DISAGREED has to say so and name the way back.
+  // Reported as agreement, it left the project on a stack nobody chose with
+  // every surface insisting setup had gone fine.
+  let note = '';
+  if (result.discardedStack) {
+    note = `\nNOT APPLIED: your submission derives ${result.discardedStack}, but ${result.stack} is already on record and a committed stack is not overwritten by default.`
+      + `\nIf ${result.stack} is wrong — it may have come from a manifest probe rather than from anyone being asked — re-run the same command with --force appended to replace it.`;
+  } else if (result.alreadyClassified) {
+    note = ' (a committed stack already existed and matches your submission — nothing to change)';
+  }
   process.stdout.write(`${TECH_RECORDED_TOKEN}\nstack=${result.stack}${note}\n`);
   bootstrapAndEmitReady(cwd, host);
 }

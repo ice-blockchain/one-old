@@ -11,6 +11,7 @@ import { asString } from '../../adapters/coerce';
 import { context, noop } from '../../core/result';
 import { askUser } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { hostFlags } from '../../shared/host/capability-flags';
 import { obj } from '../../shared/obj';
 import { cursorPickedModelUnavailableNotice, cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { resolveProjectRoot } from '../../shared/hook/paths';
@@ -31,8 +32,13 @@ function shellExitFailed(raw: Record<string, unknown>): boolean {
   return /traffic-one model-gate:\s*STOP/i.test(`${stdout}\n${stderr}`);
 }
 
+// Both halves gate the model-gate COMMAND, which exists only on a host whose
+// subagent model ids have to be captured from the UI before a run's policy can be
+// frozen (runners/onboarding-wait/pre-spawn-directives.ts already keys the
+// capture requirement itself on the same flag). Where the ids are enumerable
+// there is no capture step, no command, and nothing for these hooks to watch.
 export function modelGateShell(ctx: Ctx): HookResult {
-  if (ctx.host !== 'cursor') return noop();
+  if (!hostFlags(ctx.host).availableModelsMustBeCaptured) return noop();
   const raw = obj(ctx.input.raw) || {};
   // Cursor fixed shell hooks arrive as rawName="before-shell-execution", not "Bash".
   // Normalize via the canonical ToolInput class before feeding the shell allow-list.
@@ -64,7 +70,7 @@ export function modelGateShell(ctx: Ctx): HookResult {
 }
 
 export function modelGateAfterShell(ctx: Ctx): HookResult {
-  if (ctx.host !== 'cursor') return noop();
+  if (!hostFlags(ctx.host).availableModelsMustBeCaptured) return noop();
   const raw = obj(ctx.input.raw) || {};
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};

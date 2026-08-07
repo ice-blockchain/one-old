@@ -392,6 +392,10 @@ interface OnboardingRunnerInvocation {
   // The agent's manual tech classification for an undetectable existing repo
   // (`--set-tech` + surface flags). Exit-fast like bootstrap/decline.
   setTech: boolean;
+  // `--set-tech --force`: the submission CORRECTS a stack already on record
+  // instead of only filling an empty one. Without it a probe's guess is
+  // permanent, because every writer refuses to overwrite a committed stack.
+  force: boolean;
 }
 
 function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): OnboardingRunnerInvocation | null {
@@ -429,6 +433,7 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
 
   const seen = new Set<string>();
   let host = '';
+  let force = false;
   while (args.length > 0) {
     const arg = args.shift() as string;
     if (/^--host=(?:claude|codex|cursor|opencode|copilot|windsurf|kilo)$/.test(arg)) {
@@ -478,6 +483,15 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       seen.add('realtime');
       continue;
     }
+    // Correcting a stack already on record. Valid only on `--set-tech`, and
+    // still membership-checked through the same surface flags — `--force`
+    // widens WHEN a submission applies, never WHAT it may say.
+    if (arg === '--force') {
+      if (!setTech || seen.has(arg)) return null;
+      seen.add(arg);
+      force = true;
+      continue;
+    }
     // Short free-text proof; an inert quoted word by construction (like
     // --seed-prompt), bounded so a command cannot smuggle a document.
     if (arg.startsWith('--evidence=')) {
@@ -510,7 +524,7 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       if (value !== expectedValue) return null;
     }
   }
-  return { bootstrap, decline, reconsider, setTech };
+  return { bootstrap, decline, reconsider, setTech, force };
 }
 
 // The blocking "wait for setup" command is allow-listed only when it invokes

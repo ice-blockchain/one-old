@@ -30,32 +30,135 @@ export const SOURCE_EXTS = new Set([
   '.swift', '.dart', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp',
 ]);
 
-export function countSourceFiles(cwd: string): number {
+// Unbounded, measured on this checkout (macOS/APFS, warm cache, node 26.5,
+// median of 5–7 runs) against a 150ms hook budget:
+//
+//   this repo, 1,541 source files / 521 dirs .............   9.2 ms
+//   20,000 source files ..................................  19.3 ms
+//   300,000 source files ................................. 290.4 ms
+//   200,000 NON-source files, returning 0 ................ 164.0 ms
+//   24,000 empty directories, returning 0 ................ 465.6 ms
+//   5,000 files under node_modules .......................   0.1 ms (skipped)
+//   a symlink cycle ......................................   0.1 ms
+//
+// Three things follow, and the first two rule out the obvious bound.
+//
+// The cost does not track the RESULT: the 200k-file tree and the 24k-directory
+// tree are the two slowest shapes and both return 0, so a cap on the count
+// never fires on the trees that are actually slow.
+//
+// It does not track entries alone either. Opening a directory measured 16–19µs
+// against 0.4µs per entry — ~45x — so 24,000 empty directories cost 465ms while
+// visiting only 24,000 entries. An entry budget on its own leaves that case
+// unbounded, which is how the first cut of this bound was wrong. Both are
+// charged.
+//
+// 2,048 directories measured at 51ms worst case across those trees — a third of
+// the budget, and 4x this repo's 521. 25,000 entries adds ~10ms. The pairing is
+// what bounds the walk; either alone does not. (2,048 is also what the claim
+// scan settled on, for the same reason: it is where a directory walk stops
+// being free.)
+//
+// Neither is a substitute for `stopAfter`, which is what keeps the common case
+// cheap: `detectMode` over this repo went 9.2ms → 0.1ms by stopping at the
+// sixth source file. The budgets only decide what a pathological tree costs.
+export const SOURCE_SCAN_ENTRY_BUDGET = 25_000;
+export const SOURCE_SCAN_DIRECTORY_BUDGET = 2_048;
+
+export interface SourceScanOptions {
+  entryBudget?: number;
+  directoryBudget?: number;
+  /**
+   * Stop as soon as the count EXCEEDS this. Every caller compares the result
+   * against a small threshold rather than using the total, and a scan that
+   * stops at `threshold + 1` answers those questions identically for a fraction
+   * of the walk. Not a bound: the answer is complete, just not the arithmetic.
+   */
+  stopAfter?: number;
+}
+
+export interface SourceFileScan {
+  /** When `truncated`, this is a FLOOR on the real total, never the total. */
+  count: number;
+  truncated: boolean;
+  entriesVisited: number;
+  directoriesOpened: number;
+}
+
+/**
+ * Bounded source-file walk. `countSourceFiles` below still hands back a bare
+ * number because every caller today compares it against a small threshold — but
+ * a budget can stop the walk early, and a partial count returned as if it were
+ * a total is exactly the failure a bound introduces, so `truncated` says which
+ * one this is and callers that care can ask.
+ *
+ * Symlinks are not followed, and were not before this bound either:
+ * `Dirent.isDirectory()` reports the LINK's type, not its target's, so a cycle
+ * costs one entry instead of hanging. Measured (0.1ms) and pinned by a test —
+ * the hang this bound is often assumed to prevent was never reachable.
+ */
+export function scanSourceFiles(cwd: string, options: SourceScanOptions = {}): SourceFileScan {
+  const entryBudget = options.entryBudget ?? SOURCE_SCAN_ENTRY_BUDGET;
+  const directoryBudget = options.directoryBudget ?? SOURCE_SCAN_DIRECTORY_BUDGET;
+  const stopAfter = options.stopAfter ?? Infinity;
   let count = 0;
-  function walk(currentDir: string): void {
+  let entriesVisited = 0;
+  let directoriesOpened = 0;
+  let truncated = false;
+  // Level by level, counting every file at the current depth before opening any
+  // directory below it. Depth-first recursion made truncation arbitrary: which
+  // files survived the budget depended on readdir order, so a project whose own
+  // sources sit beside a vendored tree could truncate to 0 and tell
+  // `webAppHoldsSource` there is nothing here to orphan. Breadth-first makes the
+  // partial count a floor that fills from the top of the tree down, which is
+  // where a project's own code is.
+  const queue: string[] = [cwd];
+  while (queue.length > 0 && !truncated) {
+    if (directoriesOpened >= directoryBudget) {
+      truncated = true;
+      break;
+    }
+    const currentDir = queue.shift() as string;
     let entries: fs.Dirent[];
+    directoriesOpened += 1;
     try {
       entries = fs.readdirSync(currentDir, { withFileTypes: true });
     } catch {
-      return;
+      continue;
     }
+    const subdirectories: string[] = [];
     for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
+      entriesVisited += 1;
+      if (entriesVisited > entryBudget) {
+        truncated = true;
+        break;
+      }
       if (entry.isDirectory()) {
         if (entry.name === 'node_modules' || entry.name === '.git') continue;
-        walk(fullPath);
+        subdirectories.push(path.join(currentDir, entry.name));
         continue;
       }
-      if (entry.isFile() && SOURCE_EXTS.has(path.extname(entry.name))) count += 1;
+      if (entry.isFile() && SOURCE_EXTS.has(path.extname(entry.name))) {
+        count += 1;
+        // The answer is already decided; anything further is unpaid-for work.
+        // NOT a truncation: `count` has passed the caller's threshold, which is
+        // the whole of what it asked.
+        if (count > stopAfter) return { count, truncated, entriesVisited, directoriesOpened };
+      }
     }
+    queue.push(...subdirectories);
   }
-  walk(cwd);
-  return count;
+  return { count, truncated, entriesVisited, directoriesOpened };
+}
+
+export function countSourceFiles(cwd: string): number {
+  return scanSourceFiles(cwd).count;
 }
 
 export function detectMode(cwd: string): string {
   const deps = dependenciesFromPackage(loadPackageJson(cwd));
-  const fileCount = countSourceFiles(cwd);
+  // Only the ≤5 comparison is used, so the walk stops at the sixth source file.
+  const fileCount = scanSourceFiles(cwd, { stopAfter: 5 }).count;
   if (fileCount <= 5) return 'new-project';
   if (deps['@supabase/supabase-js'] || deps['@supabase/ssr']) return 'existing-with-supabase';
   return 'existing-codebase';
@@ -144,6 +247,12 @@ export interface StackDetection {
   realtime: string | null;
   evidence: string[];
   mobile?: { enabled: boolean; framework: string; source: string };
+  /**
+   * Frameworks the manifests name that this probe cannot choose between. A
+   * non-empty list forces `stack` to null: "two of these and I cannot tell" is
+   * not a stack, and every downstream gate reads a stack id as settled fact.
+   */
+  ambiguous?: string[];
 }
 
 // Exported for the agent-classification path: the agent submits SURFACES
@@ -151,6 +260,15 @@ export interface StackDetection {
 // the agent never picks a stack id directly, so both classification paths share
 // one derivation.
 export function classifyDetectedSurfaces(out: StackDetection): void {
+  // An unresolved disagreement is not a stack. Deriving one anyway would pick a
+  // winner by array order and hand it downstream as a settled id — and a stack
+  // id is indistinguishable from one the user chose, so nothing later reopens
+  // it. Null routes the project to the agent-classification step that already
+  // exists for "the tables saw nothing", which is the same honest answer.
+  if (out.ambiguous && out.ambiguous.length > 0) {
+    out.stack = null;
+    return;
+  }
   const hasWebUi = Boolean(out.frontend && out.frontend !== 'none');
   const hasNativeUi = Boolean(out.mobile?.enabled && out.mobile.framework !== 'none');
   const hasBackend = Boolean(out.backend && out.backend !== 'none');
@@ -164,6 +282,21 @@ export function classifyDetectedSurfaces(out: StackDetection): void {
     out.stack = 'custom-backend';
   }
 }
+
+// Which frameworks a match RULES OUT as competitors, because depending on them
+// is how the outer framework works rather than a sign of a second app. Only
+// relationships that hold by construction belong here: a Nuxt app always pulls
+// vue, an Astro app pulls whichever UI library its integrations render, a
+// Remix/Gatsby app pulls react. Two frameworks that merely often appear
+// together are NOT subsumption — they are the disagreement this table exists to
+// leave visible.
+const FRONTEND_SUBSUMES: Record<string, readonly string[]> = {
+  nextjs: ['react-vite'],
+  nuxt: ['vue'],
+  remix: ['react-vite'],
+  gatsby: ['react-vite'],
+  astro: ['vue', 'svelte', 'solid', 'preact', 'lit', 'react-vite'],
+};
 
 export function detectStackFromCodebase(cwd: string): StackDetection {
   const out: StackDetection = { stack: null, backend: null, frontend: null, realtime: null, evidence: [] };
@@ -249,9 +382,30 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
     { frontend: 'stencil', matches: Boolean(deps['@stencil/core']), evidence: 'stencil in deps → apply custom-frontend stack + Stencil-native patterns' },
     { frontend: 'marko', matches: Boolean(deps.marko), evidence: 'marko in deps → apply custom-frontend stack + Marko-native patterns' },
   ];
-  const detected = frameworkDetections.find((candidate) => candidate.matches);
+  // `.find()` used to answer this, which meant the array's own order silently
+  // decided every multi-framework repo. Measured before the subsumption table
+  // below existed: `astro` + `@astrojs/vue` + `vue` detected `vue`, and
+  // `astro` + `@astrojs/svelte` + `svelte` detected `svelte`, while
+  // `astro` + `react` and `astro` + `solid-js` correctly detected `astro` — the
+  // difference was nothing but each candidate's index. Embedding another
+  // framework's components is Astro's headline feature, so those are ordinary
+  // Astro projects that were being classified as the framework they embed.
+  //
+  // A meta-framework's own dependency on the UI library it renders is evidence
+  // FOR it, not a competitor. Anything left over after subsumption is a real
+  // disagreement.
+  const matched = frameworkDetections.filter((candidate) => candidate.matches);
+  const subsumed = new Set(matched.flatMap((candidate) => FRONTEND_SUBSUMES[candidate.frontend] || []));
+  const contenders = matched.filter((candidate) => !subsumed.has(candidate.frontend));
+  const detected = contenders.length === 1 ? contenders[0] : undefined;
 
-  if (detected) {
+  if (contenders.length > 1) {
+    out.ambiguous = contenders.map((candidate) => candidate.frontend);
+    out.frontend = null;
+    out.evidence.push(
+      `competing frontend frameworks in the manifests (${out.ambiguous.join(', ')}) → no stack derived; ask instead of guessing`,
+    );
+  } else if (detected) {
     out.stack = 'custom-frontend';
     out.frontend = detected.frontend;
     out.evidence.push(detected.evidence);

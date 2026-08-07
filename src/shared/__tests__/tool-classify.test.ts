@@ -278,6 +278,28 @@ test('set-tech rejects unknown ids, duplicates, oversized evidence, and cross-mo
   assert.equal(isOnboardingWaitCommand('Bash', { command: `${decline} '--backend=node'` }), false);
 });
 
+// `--force` is how a user gets back from a misdetection: every writer refuses to
+// overwrite a committed stack, and the thing that normally commits one is a
+// manifest probe. It widens WHEN a submission applies, never WHAT it may say —
+// so it stays allow-listed on set-tech only, once, alongside the same
+// membership-checked surface flags.
+test('set-tech admits --force, once, and never on another mode', () => {
+  const base = onboardingSetTechCommandTemplate('/proj', 'claude');
+  const surfaces = "'--frontend=none' '--backend=go'";
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} ${surfaces} '--force'` }), true);
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${base} ${surfaces} '--force'` }), true);
+  // Still not a bootstrap, and the required surfaces are still required.
+  assert.equal(isOnboardingBootstrapCommand('Bash', { command: `${base} ${surfaces} '--force'` }), false);
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} '--backend=go' '--force'` }), false);
+  // Duplicated, exactly like every other flag in this grammar.
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} ${surfaces} '--force' '--force'` }), false);
+  // And it must not become a general escape hatch on the other runner modes.
+  const wait = onboardingWaitCommand('/proj', 'claude');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${wait} '--force'` }), false);
+  const decline = onboardingDeclineCommand('/proj', 'claude');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${decline} '--force'` }), false);
+});
+
 // ── isTrafficOneDoctorCommand: bounded exact argv grammar ────────────────────
 // Every documented invocation, in both shipped path spellings, then an
 // adversarial table of every bypass shape the work item enumerates. Each MUST

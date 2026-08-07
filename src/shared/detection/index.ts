@@ -283,8 +283,13 @@ export function isLikelyEditRequest(prompt: unknown): boolean {
 }
 export {
   SOURCE_EXTS,
+  SOURCE_SCAN_DIRECTORY_BUDGET,
+  SOURCE_SCAN_ENTRY_BUDGET,
   classifyDetectedSurfaces,
   countSourceFiles,
+  scanSourceFiles,
+  type SourceFileScan,
+  type SourceScanOptions,
   dependenciesFromPackage,
   detectBackendFromText,
   detectFrontendFromText,

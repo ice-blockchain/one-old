@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { asString } from '../../adapters/coerce';
+import { isInsideOrEqual, stripFileUri } from '../../adapters/workspace-root';
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj, type Rec } from '../../shared/obj';
@@ -49,15 +50,6 @@ const ARRAY_PATH_FIELDS = [
   'allowedFiles',
   'allowed_files',
 ] as const;
-
-function stripFileUri(value: string): string {
-  return value.startsWith('file://') ? decodeURIComponent(value.slice('file://'.length)) : value;
-}
-
-function isInsideOrEqual(candidate: string, boundary: string): boolean {
-  const rel = path.relative(path.resolve(boundary), path.resolve(candidate));
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-}
 
 function realpathClosest(absPath: string): string {
   const suffix: string[] = [];
