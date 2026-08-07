@@ -23,10 +23,12 @@ import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
 import { openCodeGlobalAgentName } from '../../shared/materialize/opencode-assets';
 import { acceptableSpawnTypes } from '../../shared/host/spawn-types';
 import {
+  AGENT_MATERIALIZATION_MISSING_FALLBACK,
   ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
   SPAWN_CLAIM_UNAVAILABLE_FALLBACK,
   block,
   isPlanBatchGatedRole,
+  materializationStampRefusedCause,
 } from './handler-prose';
 import {
   cursorAgentTypeDeny,
@@ -122,9 +124,20 @@ export function modelEnforcementGates(g: GateContext): HookResult {
     // denyTarget — the refused path itself — because that is the channel the
     // per-target deny budget and the decision record already read, and neither
     // deny's prose can name a cause it cannot see.
+    //
+    // `CAUSE` is the HUMAN-readable half of that same fact, rendered from the
+    // same boolean so the two cannot disagree. `denyTarget` is a field: the
+    // budget and the decision record read it, nothing says it aloud, so the
+    // operator still faced a deny that recurs on every spawn with no reason
+    // anywhere in the text. Only THIS arm carries it — the re-issue deny above
+    // does not repeat, because its read-back says the project is materialized,
+    // so the next spawn's `state` clears the check at the top of this branch and
+    // never reaches here.
     const stamped = materializeIfNeeded(cwd);
     if (isCompletedTrafficOneMaterialization(cwd, readEffectiveState(cwd))) return deny(block('agent-materialization-deny'), { denyId: 'agent-materialization-deny' });
-    return deny(block('agent-materialization-missing'), {
+    return deny(block('agent-materialization-missing', {
+      CAUSE: stamped ? '' : materializationStampRefusedCause(statePath(cwd)),
+    }, AGENT_MATERIALIZATION_MISSING_FALLBACK), {
       denyId: 'agent-materialization-missing',
       ...(stamped ? {} : { denyTarget: statePath(cwd) }),
     });

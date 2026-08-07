@@ -7,6 +7,7 @@ import { obj } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { trustworthyAgeSince } from '../../clock-skew';
 import { ensureDir } from '../../fsjson';
 import { type MutationResult, unavailable } from './mutation-result';
 
@@ -47,7 +48,17 @@ function reclaimStaleOwnedDirLock(lockDir: string, staleMs: number): boolean {
   if (owners.length === 1) {
     const ownerFile = path.join(lockDir, owners[0]!);
     const owner = readOwnedLock(ownerFile);
-    if (!owner || Date.now() - owner.acquiredAt <= staleMs || !processDefinitelyDead(owner.pid)) return false;
+    if (!owner) return false;
+    // A staleness window fails in the MIRROR direction of a freshness window: a
+    // sentinel stamped ahead of now makes `Date.now() - acquiredAt` negative,
+    // which is `<= staleMs` no matter how long the lock sits there, so the
+    // reaper refuses forever and every later acquirer burns its whole timeout on
+    // a lock whose owner is provably gone. An age no clock could have produced
+    // therefore does not veto the reclaim — and it does not force one either:
+    // the pid check below is still the thing that decides, so a LIVE owner keeps
+    // its lock regardless of what its stamp says.
+    const ownerAgeMs = trustworthyAgeSince(owner.acquiredAt, Date.now());
+    if ((ownerAgeMs !== null && ownerAgeMs <= staleMs) || !processDefinitelyDead(owner.pid)) return false;
     try {
       fs.unlinkSync(ownerFile);
       fs.rmdirSync(lockDir);
@@ -63,7 +74,11 @@ function reclaimStaleOwnedDirLock(lockDir: string, staleMs: number): boolean {
   // malformed/non-empty directories are conservatively left to time out.
   let stat: fs.Stats;
   try { stat = fs.statSync(lockDir); } catch { return false; }
-  if (Date.now() - stat.mtimeMs <= staleMs || entries.length !== 0) return false;
+  // Same mirror, on an mtime this time. There is no owner sentinel to consult on
+  // this legacy path, so the guard that keeps it safe is the emptiness check
+  // below plus the `.reaper` CAS — neither of which a bad clock can weaken.
+  const dirAgeMs = trustworthyAgeSince(stat.mtimeMs, Date.now());
+  if ((dirAgeMs !== null && dirAgeMs <= staleMs) || entries.length !== 0) return false;
   const reaper = path.join(lockDir, '.reaper');
   let fd: number | undefined;
   try {

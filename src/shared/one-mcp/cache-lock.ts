@@ -8,6 +8,7 @@ import {
   ONE_MCP_CACHE_LOCK_STALE_MS,
   ONE_MCP_CACHE_LOCK_TIMEOUT_MS,
 } from '../../config/one-mcp';
+import { trustworthyAgeSince } from '../clock-skew';
 import {
   type Rec,
 } from './cache-schema';
@@ -73,6 +74,13 @@ function reapObservedLock(lockPath: string, owner: CacheLockOwner): boolean {
 function reapAbandonedEmptyLock(lockPath: string, now: number): boolean {
   try {
     if (fs.readdirSync(lockPath).length !== 0) return false;
+    // Deliberately NOT folded through trustworthyAgeSince, unlike every other
+    // staleness test in this file. Measured: `rename(dir, EMPTY dir)` succeeds,
+    // so an empty canonical lock never contends — the acquisition simply
+    // overwrites it and this reap is not on that path. The only way here is a
+    // directory that was non-empty when rename failed and empty by this readdir,
+    // and the next iteration's rename succeeds on its own. A negative age costs
+    // one retry, not a wedge, so there is no defect to fix.
     if (now - fs.statSync(lockPath).mtimeMs <= ONE_MCP_CACHE_LOCK_STALE_MS) return false;
     fs.rmdirSync(lockPath);
     return true;
@@ -116,7 +124,15 @@ export function acquireCacheLock(filePath: string): CacheLock {
         if (!contended) throw error;
         const now = Date.now();
         const owner = observedLockOwner(lockPath);
-        if (owner && now - owner.createdAt > ONE_MCP_CACHE_LOCK_STALE_MS
+        // A sentinel stamped ahead of `now` makes this age negative, which never
+        // exceeds the stale window, so a lock whose owner is PROVABLY dead could
+        // never be reaped and every acquirer burned its whole timeout instead
+        // (measured: 1002ms and a throw, against 0.49ms for the past-stamped
+        // control). An unusable age therefore does not veto the reap — and does
+        // not force one: `processAlive` below still governs, so a live owner
+        // keeps its lock whatever its stamp says.
+        const ownerAgeMs = owner ? trustworthyAgeSince(owner.createdAt, now) : null;
+        if (owner && (ownerAgeMs === null || ownerAgeMs > ONE_MCP_CACHE_LOCK_STALE_MS)
           && !processAlive(owner.pid) && reapObservedLock(lockPath, owner)) continue;
         if (!owner && reapAbandonedEmptyLock(lockPath, now)) continue;
         if (now >= deadline) {

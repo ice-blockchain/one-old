@@ -9,13 +9,23 @@
 // never reclaimed — the pending half of the product contract is byte-identity,
 // and this half of breaking it is the irreversible one. Planning is unaffected:
 // collectActions only reads, so a dry run still reports what WOULD go.
+//
+// The keep set is RECENCY plus LIVENESS. Recency alone deleted runs that agents
+// were still working inside, because the newest-N window is blind to whether a
+// run is alive: measured on a realistic 9-run tree, 5 runs were reclaimed and 2
+// of those 5 still held live claims. See runIsLive — and note that liveness is
+// deliberately built out of protections that EXPIRE, so the sweep can never
+// decay into a no-op that grows `.traffic-one` without bound.
 
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { SUBAGENT_STALE_MS } from '../config/state';
 import { readJson, removePath } from './fsjson';
 import { resolveProjectRoot } from './hook/paths';
 import { obj } from './obj';
+import { runLiveClaimEvidence } from './run-settlement';
+import { runLedgerStatusRecord } from './state/run-agent/terminal-verdict';
 
 interface RetentionPolicy {
   keepRuns: number;
@@ -36,6 +46,14 @@ interface RetentionResult {
   dryRun: boolean;
   policy: RetentionPolicy;
   keepRunIds: string[];
+  /**
+   * The subset of `keepRunIds` retained because the run is still ALIVE (live
+   * claims, or a non-terminal ledger inside the mint window) rather than merely
+   * recent. Reported so a dry run can say WHY a run survived — without it the
+   * newest-N reason string is the only explanation on offer, and it is the wrong
+   * one for these ids.
+   */
+  liveRunIds: string[];
   actions: RetentionAction[];
   removed: number;
 }
@@ -158,7 +176,135 @@ function collectRunIds(cwd: string): string[] {
   return [...ids].sort(numericDesc);
 }
 
-function keepRunIds(cwd: string, policy: RetentionPolicy, protectRunIds: readonly string[] = []): Set<string> {
+// How old a run is, measured from the id itself: the runtime mints run ids as
+// epoch-ms stamps (run-paths.ts only ever adopts /^\d{13}$/), which is an
+// IMMUTABLE birth time. A directory mtime is not — every child write moves it,
+// including this sweep's own per-run debug deletions below — so mtime would let
+// a run refresh its own protection. It stays as the fallback only so a foreign
+// or legacy id shape is never denied protection it would otherwise earn.
+function runAgeMs(cwd: string, runId: string, nowMs: number): number {
+  if (/^\d{13}$/.test(runId)) {
+    const minted = Number(runId);
+    if (Number.isFinite(minted)) return nowMs - minted;
+  }
+  // `currentRunId` is attacker-controllable JSON, so a separator-bearing id must
+  // not be able to steer this stat at some unrelated directory's mtime and buy
+  // itself protection. Unaged is the safe answer: it protects nothing.
+  if (/[\\/]/.test(runId) || runId === '.' || runId === '..') return Number.POSITIVE_INFINITY;
+  try {
+    return nowMs - fs.statSync(path.join(cwd, '.traffic-one', 'runs', runId)).mtimeMs;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+// The question this sweep never asked. Deleting a run is not just untidy while
+// an agent is still inside it: claim resolution walks EVERY run on disk
+// (runIdsForLookup, claims-pending.ts) to find the record that grants an agent
+// its write authority, so reclaiming a live run's directory demotes a working
+// agent to `no-claim` and the gates start refusing its writes.
+//
+// Both protection sources are deliberately SELF-LIMITING, because a keep-set
+// that only ever grows is a worse bug than the one this fixes:
+//
+//   - Live claims decay on their own. The claim walk (run-settlement/io.ts)
+//     already ignores any claim untouched for longer than SUBAGENT_STALE_MS, so
+//     this borrows an expiry instead of inventing one.
+//
+//     It reads that walk through runLiveClaimEvidence and NOT through
+//     activeRunClaimCount, and the difference is the whole reason the
+//     three-valued reader exists. activeRunClaimCount folds a scan that could
+//     not FINISH — the 2,048-entry bound, or one unreadable subdirectory — into
+//     `Math.max(1, count)`: "at least one live claim". That sentinel is right
+//     for the callers it was written for, which are settlement VETOES, and it
+//     is wrong here, because the two directions only LOOK like the same
+//     direction.
+//
+//     For a veto, ignorance-as-keep is SELF-LIMITING: the refusal lifts the
+//     moment the scan succeeds. For a DELETER it is SELF-DEFEATING, because the
+//     only thing that would remove the records the scan choked on is the sweep
+//     the sentinel suppresses, so the condition never clears on its own.
+//     MEASURED on a run holding 2,100 claims every one of which was 30 days
+//     stale: the sentinel reported 1, the sweep filed the run under liveRunIds
+//     — RESERVED outside the newest-N budget, see keepRunIds — and it held that
+//     slot permanently while two NEWER runs were reclaimed around it.
+//
+//     So the ignorance is read as ignorance and answered on its own terms; the
+//     `unknown` arm in runIsLive says how, and what bounds it.
+//
+//   - A non-terminal LEDGER decays not at all: the abandoned run described in
+//     the orphan rule below sat at `status: active` indefinitely. Protecting
+//     every non-terminal ledger would make that exact run immortal and re-open
+//     the 8cl defect this file already closed, so the ledger alone only
+//     protects a run still inside the mint window — long enough to cover a run
+//     minted seconds ago that has not yet written its first claim, which is the
+//     window in which it is most fragile and least provably alive.
+//
+// A TERMINAL ledger does not override a live claim. Settlement records a verdict
+// about the PAST; a fresh claim is evidence about the PRESENT, and the two
+// disagreeing means a claim outlived its settlement, not that the holder is
+// gone. run-settle.ts and runCompletionEvidenceAllows both refuse to reach
+// terminal at all while claims are live, so the combination is already an
+// anomaly — and in an anomaly the reversible choice is to keep.
+//
+// Neither use of `runAgeMs` below is skew-guarded, and that is the deliberate
+// choice rather than an oversight. A run id minted while the clock ran ahead
+// gives `runAgeMs` a negative age, which is inside every window forever, so
+// such a run is never reclaimed through either arm — an unbounded-disk bug, and
+// a real one. Refusing to protect it would trade that for an IRREVERSIBLE one,
+// and the trade is one-sided rather than balanced: `runAgeMs` is consumed in
+// exactly two places, both spelled `age < WINDOW -> KEEP`, so a guard here can
+// only ever ADD deletions and can never prevent one.
+//
+// It would also arrive at the worst possible moment. The claim walk USED to
+// read a future stamp as maximally fresh exactly as this does; since
+// `ageAttestsLiveness` landed in run-settlement/io.ts it no longer does, so a
+// future-stamped claim has ALREADY lost its claim-side protection. MEASURED
+// with a skew guard fitted here: a run whose ledger still says `active` and
+// whose claims are future-stamped goes from protected to reclaimable — both
+// protections gone at the same instant, for a run an agent may be working
+// inside. The asymmetry decides it: keeping a dead run costs disk, deleting a
+// live one demotes a working agent to `no-claim` and the gates start refusing
+// its writes.
+//
+// So the cost is what it is, and it is named here rather than left to be
+// rediscovered: a future-minted id is protected INDEFINITELY through both arms,
+// the ledger one and the ignorance one. Accepted — it is the conservative
+// direction, and the ignorance half is a strictly narrower shape than the
+// status quo it replaces, which protected EVERY run with an unfinishable scan
+// forever regardless of age. Both halves are pinned by name in
+// __tests__/retention.test.ts ("the skew trade, made visible" and "the accepted
+// cost") so a guard fitted here can never land looking free.
+//
+// The half of the exposure that is NOT ours, stated so the ledger above is not
+// mistaken for full cover: a future-minted run whose ledger is terminal and
+// whose claims are future-stamped is protected by nothing at all. That is
+// decided in run-settlement/io.ts, not here.
+function runIsLive(cwd: string, runId: string, nowMs: number): boolean {
+  // Ledger first: one file read, and it settles the fresh-mint case without
+  // paying for a recursive claim walk.
+  const status = runLedgerStatusRecord(cwd, runId).status;
+  if ((status === 'planned' || status === 'active') && runAgeMs(cwd, runId, nowMs) < SUBAGENT_STALE_MS) return true;
+  const claims = runLiveClaimEvidence(cwd, runId);
+  if (claims === 'live') return true;
+  if (claims === 'none') return false;
+  // A scan that could not finish is ignorance, not evidence. Keeping on it is
+  // right while the run could still be in use and self-defeating past that, so
+  // it is answered with the one thing still legible about the run — its own
+  // birth stamp — under a BORROWED window, never an invented one.
+  // SUBAGENT_STALE_MS is already spent twice over on this exact question: by
+  // the ledger arm above, and by the claim walk itself when it decides a claim
+  // still attests liveness. Ignorance therefore protects for as long as the
+  // live claim it stands in for could have, and no longer.
+  return runAgeMs(cwd, runId, nowMs) < SUBAGENT_STALE_MS;
+}
+
+function keepRunIds(
+  cwd: string,
+  policy: RetentionPolicy,
+  nowMs: number,
+  protectRunIds: readonly string[] = [],
+): { keep: Set<string>; live: Set<string> } {
   const current = readCurrentRunId(cwd);
   const ids = collectRunIds(cwd);
   const keep = new Set<string>();
@@ -166,12 +312,24 @@ function keepRunIds(cwd: string, policy: RetentionPolicy, protectRunIds: readonl
   // Caller-protected ids (the run being settled) are unconditional: a settle
   // of an OLDER run must never reclaim the ledger it wrote milliseconds ago.
   for (const id of protectRunIds) if (id) keep.add(id);
+  // Live runs are RESERVED outside the newest-N budget, exactly as the
+  // caller-protected ids above are, and for the same reason: liveness is a
+  // correctness requirement, not a retention preference. Charging it to the
+  // budget would let a live OLD run evict a recent one — trading a wrong
+  // deletion for a different wrong deletion — and would make how much history
+  // a project retains depend on how many agents happen to be running right now.
+  const live = new Set<string>();
+  for (const id of ids) {
+    if (!runIsLive(cwd, id, nowMs)) continue;
+    live.add(id);
+    keep.add(id);
+  }
   const reserved = keep.size;
   for (const id of ids) {
     if (keep.size >= policy.keepRuns + reserved) break;
     keep.add(id);
   }
-  return keep;
+  return { keep, live };
 }
 
 function maybeAction(actions: RetentionAction[], filePath: string, reason: string): void {
@@ -186,9 +344,9 @@ function isOlderThan(filePath: string, ttlMs: number, nowMs: number): boolean {
   }
 }
 
-function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number, protectRunIds: readonly string[] = []): { keep: Set<string>; actions: RetentionAction[] } {
+function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number, protectRunIds: readonly string[] = []): { keep: Set<string>; live: Set<string>; actions: RetentionAction[] } {
   const t1 = path.join(cwd, '.traffic-one');
-  const keep = keepRunIds(cwd, policy, protectRunIds);
+  const { keep, live } = keepRunIds(cwd, policy, nowMs, protectRunIds);
   const actions: RetentionAction[] = [];
 
   for (const rel of ['runs', 'digests', 'fix-cycles', path.join('reports', 'qa')]) {
@@ -205,10 +363,16 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number, pro
   // baseline, still `status: active`, while `currentRunId` stayed on the earlier
   // run. Nothing reclaimed it because the keep-set counts it as one of the five
   // most recent. The TTL keeps an in-flight pre-PLAN_READY run untouched.
+  //
+  // This rule deletes runs the keep set RETAINED, so it needs the liveness
+  // question asked separately — being inside `keep` is not what protects a run
+  // here. A pre-PLAN_READY run that is still holding live claims is the very
+  // shape the TTL was meant to spare, and the TTL alone does not spare it: a
+  // long-lived or resumed run passes 3 days while an agent is working in it.
   const ttl = policy.orphanTtlDays * 24 * 60 * 60 * 1000;
   const currentRunId = readCurrentRunId(cwd);
   for (const id of listDirs(path.join(t1, 'runs'))) {
-    if (id === '.once' || id === currentRunId || protectRunIds.includes(id)) continue;
+    if (id === '.once' || id === currentRunId || protectRunIds.includes(id) || live.has(id)) continue;
     const runDir = path.join(t1, 'runs', id);
     if (actions.some((action) => action.path === runDir)) continue;
     if (fs.existsSync(path.join(runDir, 'architecture-v1.json'))) continue;
@@ -308,13 +472,13 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number, pro
     maybeAction(actions, nested, 'leaked nested Traffic One state root inside ancestor workspace');
   }
 
-  return { keep, actions };
+  return { keep, live, actions };
 }
 
 export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; nowMs?: number; protectRunIds?: readonly string[] } = {}): RetentionResult {
   const dryRun = opts.dryRun !== false;
   const policy = readPolicy(cwd);
-  const { keep, actions } = collectActions(cwd, policy, opts.nowMs ?? Date.now(), opts.protectRunIds ?? []);
+  const { keep, live, actions } = collectActions(cwd, policy, opts.nowMs ?? Date.now(), opts.protectRunIds ?? []);
   let removed = 0;
   if (!dryRun) {
     for (const action of actions) {
@@ -330,6 +494,7 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
     dryRun,
     policy,
     keepRunIds: [...keep].sort(numericDesc),
+    liveRunIds: [...live].sort(numericDesc),
     actions,
     removed,
   };

@@ -18,9 +18,14 @@ import {
 import {
   firstString,
   pendingDir,
+  runDir,
   runLedgerFingerprint,
   runsRoot,
 } from './run-paths';
+import {
+  agentRegistryFile,
+  idsForRunAgent,
+} from './registry-identity';
 import {
   isFreshTimestamp,
 } from './session-identity';
@@ -30,6 +35,7 @@ export type RunAgentUnresolvedReason =
   | 'run-id-mismatch'
   | 'not-materialized'
   | 'fingerprint-mismatch'
+  | 'claim-superseded'
   | 'claim-stale';
 
 function stateAllowsRunContext(state: unknown, runId: unknown): RunAgentUnresolvedReason | null {
@@ -45,6 +51,83 @@ function stateAllowsRunContext(state: unknown, runId: unknown): RunAgentUnresolv
   return null;
 }
 
+// Same-role agent claims filed directly in the run's directory. Subdirectories
+// (`superseded/`, `pending/`) are archives and handoffs, never resolution
+// records — the same boundary listClaimedAgentEntries draws, redrawn here
+// because claims-store.ts cannot be imported from this module.
+function sameRoleClaimFiles(cwd: string, runId: string, role: string): Rec[] {
+  const out: Rec[] = [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(runDir(cwd, runId), { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const candidate = readClaimFile(path.join(runDir(cwd, runId), entry.name));
+    // `claimId` is what separates a real agent claim from a role-bearing sidecar
+    // such as maintenance.json, which must never count as an owner.
+    if (!candidate || candidate.role !== role || !firstString(candidate.claimId)) continue;
+    if (firstString(candidate.runId) !== runId) continue;
+    out.push(candidate);
+  }
+  return out;
+}
+
+/**
+ * Does ANOTHER agent hold this claim's role right now?
+ *
+ * Asked only of a RELEASED claim, and answered only from POSITIVE evidence that
+ * a successor exists — never from the absence of evidence about this claim.
+ * `status === 'released'` on its own must keep resolving identity: the terminal
+ * sweep releases every claim of a settled run, and claims-store.ts says why
+ * those claims still have to name their agent afterwards ("Released claims keep
+ * resolving identity (see releaseRunClaims), so this only corrects liveness
+ * accounting, never resolution"). That holds exactly while no other agent has
+ * taken the role, which is the condition checked here and nowhere else.
+ *
+ * Two witnesses, both requiring the successor to be PRESENT on disk:
+ *   - a live same-role claim belonging to a different thread — what a
+ *     replacement's bind leaves behind, since claimThreadRole and the
+ *     pending-correlation path both write their own claim and release the older
+ *     one through releaseSupersededRoleClaimsLocked; and
+ *   - a LIVE registry row for the role whose ids are not this claim's and do
+ *     name a same-role claim in this run.
+ *
+ * The presence requirement on the registry witness is load-bearing. A row
+ * legitimately names ids no claim carries (Cursor records `tool_*` at spawn and
+ * only later upgrades the row to the child's conversation id), so "the row does
+ * not name me" alone would report the role's OWN agent as superseded. After the
+ * terminal sweep — every claim released, the row untouched and still live —
+ * that would strip a working child of its role and deny its in-scope writes,
+ * which is the deadlock this reason must not create.
+ */
+export function releasedClaimRoleTakenOver(cwd: string, claim: Rec): boolean {
+  const runId = firstString(claim.runId);
+  const role = typeof claim.role === 'string' ? claim.role : '';
+  const claimId = firstString(claim.claimId);
+  if (!runId || !role || !claimId) return false;
+  const sessionId = firstString(claim.sessionId);
+  const others = sameRoleClaimFiles(cwd, runId, role).filter((candidate) => (
+    firstString(candidate.claimId) !== claimId
+    && (!sessionId || firstString(candidate.sessionId) !== sessionId)
+  ));
+  if (!others.length) return false;
+  if (others.some((candidate) => (
+    candidate.status !== 'released' && isFreshTimestamp(candidate.createdAt, SUBAGENT_STALE_MS)
+  ))) return true;
+  const registry = obj(readJson(agentRegistryFile(cwd, runId), null));
+  const entry = obj(obj(registry?.agents)?.[role]);
+  if (!entry || entry.replaced === true) return false;
+  const owned = idsForRunAgent(entry);
+  if (!owned.length || (sessionId && owned.includes(sessionId))) return false;
+  return others.some((candidate) => {
+    const candidateSession = firstString(candidate.sessionId);
+    return candidateSession !== null && owned.includes(candidateSession);
+  });
+}
+
 export function claimRejectReason(cwd: string, state: unknown, claim: unknown): RunAgentUnresolvedReason | null {
   const c = obj(claim);
   if (!c) return 'no-claim';
@@ -57,6 +140,12 @@ export function claimRejectReason(cwd: string, state: unknown, claim: unknown): 
   // claim to one project root.
   const frozen = runLedgerFingerprint(cwd, c.runId);
   if (c.stackFingerprint && frozen && c.stackFingerprint !== frozen) return 'fingerprint-mismatch';
+  // The one status this function reads, and it reads it only to ask a question
+  // ABOUT ANOTHER AGENT. Retirement releases the holder's claim
+  // (registry-refresh.ts) while the ghost may still be executing, so a released
+  // claim that keeps resolving is write authority held at the same time as the
+  // replacement's. Gated on `status` first so a live claim pays no extra read.
+  if (c.status === 'released' && releasedClaimRoleTakenOver(cwd, c)) return 'claim-superseded';
   if (!isFreshTimestamp(c.createdAt, SUBAGENT_STALE_MS)) return 'claim-stale';
   return null;
 }

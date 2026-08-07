@@ -536,9 +536,13 @@ test('declining a NEVER-onboarded project removes the whole state dir', async ()
 
 test('the fence is addressed by path, and never fences per-user or ordinary paths', () => {
   const home = path.join(os.tmpdir(), 't1-fence-home');
-  const saved = { home: process.env.HOME, xdg: process.env.XDG_STATE_HOME };
+  const saved = { home: process.env.HOME, xdg: process.env.XDG_STATE_HOME, ask: process.env.TRAFFIC_ONE_ASK_USE_PLUGIN };
   process.env.HOME = home;
   delete process.env.XDG_STATE_HOME;
+  // Pinned, not inherited: the machine-owned assertions below turn on the $HOME
+  // project's question being PENDING, and the bundled default plus whatever an
+  // earlier test in this process left behind are two different answers.
+  process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
   resetPluginUseCache();
   try {
     assert.equal(projectRootForStatePath('/repo/.traffic-one/runs/1/debug/x.json'), '/repo');
@@ -553,9 +557,43 @@ test('the fence is addressed by path, and never fences per-user or ordinary path
     assert.equal(projectRootForStatePath(path.join(home, '.traffic-one/projects/abc/preferences.json')), null);
     assert.equal(projectStateWriteAllowed(path.join(home, '.traffic-one/one.json')), true);
     assert.equal(projectStateWriteAllowed('/repo/src/index.ts'), true);
+
+    // The machine-owned allowlist carries two SHAPES and only one of them needs
+    // the `<entry>.<suffix>` sidecar wildcard.
+    //
+    // FILES need it, and fencing their sidecars is the deadlock this carve-out
+    // exists to prevent: `one.json.lock/` guards the machine-wide settings
+    // file, so on the default $HOME layout — where the machine dir IS the $HOME
+    // project's state dir — a fenced lock means that file can never be written
+    // while the $HOME project's use-plugin question is pending.
+    const md = (entry: string): string => path.join(home, '.traffic-one', entry);
+    for (const owned of ['one.json.lock', 'one.json.lock/owner-ab.json', 'one.json.1234.tmp',
+      'one-mcp.json.1.2.ff.tmp', 'secret.env.lock', 'windsurf-plugin-root.tmp']) {
+      assert.equal(projectStateWriteAllowed(md(owned)), true, `${owned} is a machine-owned file's sidecar`);
+    }
+
+    // DIRECTORIES do not: the first segment under the machine dir is what is
+    // matched, so an exact match already covers everything inside them —
+    // including the lock and temp files prefs-store.ts writes BESIDE
+    // `projects/<hash>/preferences.json`, which still resolve to `projects`.
+    for (const owned of ['projects', 'projects/abc/preferences.json',
+      'projects/abc/preferences.json.lock', 'projects/abc/preferences.json.9.tmp',
+      'bin', 'bin/doctor.cjs', 'toolchains', 'overrides', 'overrides/ledger.jsonl']) {
+      assert.equal(projectStateWriteAllowed(md(owned)), true, `${owned} is machine-owned`);
+    }
+    // …so a sibling of a directory entry is NOT machine state, and while it was
+    // one the fence did not apply to it at all (measured: `root=null,
+    // allowed=true` for `bin.evil` on a $HOME project whose question was
+    // PENDING). No writer produces these, which is exactly why an over-broad
+    // allowlist entry here goes unnoticed.
+    for (const stray of ['projects.evil', 'bin.evil', 'toolchains.evil', 'overrides.evil']) {
+      assert.equal(projectRootForStatePath(md(stray)), home, `${stray} is not machine-owned`);
+      assert.equal(projectStateWriteAllowed(md(stray)), false, `${stray} is fenced while pending`);
+    }
   } finally {
     if (saved.home === undefined) delete process.env.HOME; else process.env.HOME = saved.home;
     if (saved.xdg === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = saved.xdg;
+    if (saved.ask === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN; else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = saved.ask;
     resetPluginUseCache();
   }
 });

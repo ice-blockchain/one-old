@@ -11,6 +11,7 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import type { DenyId } from '../../config/deny-ids';
 import { computeProjectFingerprint } from '../../runners/security-check';
+import { trustworthyAgeSince } from '../../shared/clock-skew';
 import { readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { resolveToolScope } from '../../shared/tool-scope';
@@ -39,7 +40,15 @@ type StampCheck =
 function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
   const status = state.lastSecurityCheckStatus;
   const checkedAt = typeof state.lastSecurityCheckAt === 'string' ? Date.parse(state.lastSecurityCheckAt) : 0;
-  const fresh = checkedAt > 0 && (Date.now() - checkedAt) < SECURITY_CHECK_WINDOW_MS;
+  // Both windows in this file are PERMISSION granted by freshness, so an age no
+  // clock could have produced has to read as expired. `.one.json` is ordinary
+  // project JSON: a stamp dated ahead of now makes `now - stamp` negative, which
+  // passes `< WINDOW` by a wider margin the further ahead it is, and the deploy
+  // gate then waves a production publish through forever on a security check
+  // that may never have run. `trustworthyAgeMs` returns null there; null is not
+  // fresh.
+  const checkedAgeMs = checkedAt > 0 ? trustworthyAgeSince(checkedAt, Date.now()) : null;
+  const fresh = checkedAgeMs !== null && checkedAgeMs < SECURITY_CHECK_WINDOW_MS;
   if (status !== 'passed' || !fresh) {
     return {
       ok: false,
@@ -81,7 +90,8 @@ export function deployGate(ctx: Ctx): HookResult {
 
   const state = readEffectiveState(projectRoot);
   const approvedAt = typeof state.lastShipperApprovalAt === 'string' ? Date.parse(state.lastShipperApprovalAt) : 0;
-  const fresh = approvedAt > 0 && (Date.now() - approvedAt) < SHIPPER_APPROVAL_WINDOW_MS;
+  const approvedAgeMs = approvedAt > 0 ? trustworthyAgeSince(approvedAt, Date.now()) : null;
+  const fresh = approvedAgeMs !== null && approvedAgeMs < SHIPPER_APPROVAL_WINDOW_MS;
   if (!fresh) {
     return deny('Deploy gate: this command publishes to production. Run '
       + 'the `senior-shipper` subagent first; it stamps `lastShipperApprovalAt` '

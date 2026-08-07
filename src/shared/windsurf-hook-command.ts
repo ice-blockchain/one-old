@@ -132,7 +132,10 @@ export function windsurfWorkspaceHookCommand(event: WindsurfHookEvent): string {
     // rather than only this machine. Its tail is that base verbatim, nested
     // inside a mirror of stableBinDir()'s precedence — toolchain knob first (bin
     // sits beside the toolchains wherever they were moved), then the base. A
-    // precedence step added at EITHER is owed here by hand.
+    // precedence step added at EITHER is owed here by hand, and
+    // __tests__/launcher-state-root.test.ts holds that debt: it calls the real
+    // stableBinDir() under one cell per env key either source reads, then runs
+    // THIS command and checks which shim it loaded.
     "const s=e.TRAFFIC_ONE_TOOLCHAIN_ROOT ? p.dirname(p.resolve(e.TRAFFIC_ONE_TOOLCHAIN_ROOT)) : (e.XDG_STATE_HOME ? p.join(e.XDG_STATE_HOME,'traffic-one') : p.join(h,'.traffic-one'));",
     "const d=p.join(h,'.traffic-one','bin');",
     'let t=d;',

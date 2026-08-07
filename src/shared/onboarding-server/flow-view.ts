@@ -252,8 +252,16 @@ export function lacksDurableOnboardingState(
   }
   const prefs = readProjectPrefs(cwd, env);
   if (!prefsFileExists && Object.keys(prefs).length === 0) return true;
+  // `state` and `effective` cannot disagree about `openCode`, so nothing
+  // compensates for it here any more. This function's only caller
+  // (onboarding-server/flow.ts) hands it readEffectiveState's output, and
+  // readEffectiveState takes every PROJECT_PREF_KEY from the per-user store —
+  // the same store `prefs` above was just read from. The one channel that could
+  // make the two differ was extractProjectPrefs rescuing a leaked `openCode`
+  // out of `.traffic-one/.one.json`; that consent is now UNROUTED
+  // (state/local-prefs/prefs-split.ts), so a state-file copy reaches neither
+  // side. __tests__/durable-state-opencode.test.ts pins both shapes.
   const effective = applyGlobalCodeGraphProvider(effectiveState(state, prefs, host), env, cwd);
-  if (!effective.openCode && state.openCode) effective.openCode = state.openCode;
   if (isNewProjectOnboardingIncomplete(effective, host)) return true;
   if (nextLocalPreferenceStep(effective, host, target) != null) return true;
   const provider = readGlobalCodeGraphProvider(env)

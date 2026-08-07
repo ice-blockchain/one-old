@@ -10,6 +10,7 @@ import {
 import type {  TierId } from '../config/model-tiers';
 import {  VALID_AGENT_ROLES } from '../config/state';
 import { isNonProjectRoot } from './authoring-root';
+import { trustworthyAgeSince } from './clock-skew';
 import {
   capabilityProfileForRun,
   readCompiledArchitecture,
@@ -51,29 +52,148 @@ function sleepSync(ms: number): void {
   try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* bounded retry */ }
 }
 
-function acquirePolicyLock(filePath: string): string | null {
+// Canonical definition: state/run-agent/locks.ts. Deliberately copied rather
+// than shared — folding this repo's liveness predicates into one helper is the
+// host-capability-consolidation wave, and doing it from here would touch far
+// more files than the defect being fixed. What every copy MUST keep is the EPERM
+// direction: `kill(pid, 0)` raising EPERM means the process EXISTS and belongs
+// to another uid, so it is not dead and its lease may not be taken. Only ESRCH
+// is proof of death. Pinned across every copy by
+// shared/__tests__/process-liveness-eperm.test.ts.
+function processDefinitelyDead(pid: unknown): boolean {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+interface PolicyLock {
+  readonly lockPath: string;
+  readonly ownerPath: string;
+  readonly token: string;
+}
+
+/**
+ * Reclaim a policy lock ONLY from an owner that is provably gone.
+ *
+ * This used to reclaim on `owner.at` alone — with the owner's pid sitting
+ * unread in the very record it was parsing — and then `rmSync(recursive,
+ * force)` the whole directory, so a publication slower than
+ * POLICY_LOCK_STALE_MS had its lease deleted out from under it.
+ *
+ * Both removals below are their own compare-and-swap, which is what keeps two
+ * reapers from handing two writers the same lease:
+ *   - unlinking THIS EXACT owner record: only the reaper whose unlink succeeds
+ *     goes on to rmdir, so a rival that decided the same lock was stale cannot
+ *     delete the replacement lease the winner has already published;
+ *   - `rmdirSync`, never `rmSync(recursive)`: a non-recursive rmdir fails with
+ *     ENOTEMPTY the instant a new owner has published its record, so the aged
+ *     empty-directory path cannot take a live lease either.
+ */
+function reclaimStalePolicyLock(lockPath: string, ownerPath: string): boolean {
+  let entries: string[];
+  try { entries = fs.readdirSync(lockPath); } catch { return false; }
+  if (entries.length === 0) {
+    // A holder publishes owner.json immediately after mkdir, so an empty
+    // directory is either an acquisition in flight or the residue of one that
+    // died between the two. Age decides, and rmdir is the CAS.
+    try {
+      // A negative age (mtime ahead of now) is `<= STALE` forever, so this
+      // residue would wedge the policy path permanently. An unusable age does
+      // not veto the reclaim; the emptiness check above and rmdir are the CAS.
+      const dirAgeMs = trustworthyAgeSince(fs.statSync(lockPath).mtimeMs, Date.now());
+      if (dirAgeMs !== null && dirAgeMs <= POLICY_LOCK_STALE_MS) return false;
+      fs.rmdirSync(lockPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (entries.length !== 1 || entries[0] !== path.basename(ownerPath)) return false;
+  let owner: Rec;
+  try { owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Rec; } catch { return false; }
+  const at = typeof owner.at === 'number' ? owner.at : 0;
+  // A record with no stamp at all is a different question from a stamp no clock
+  // could have produced, and this file's answer to it stays fail-closed. What
+  // that costs, measured: the acquirer burns the full POLICY_LOCK_TIMEOUT_MS
+  // (1015-1041ms) and publishes nothing, so this run's policy is never frozen
+  // and SessionStart blocks every parent tool call behind
+  // TRAFFIC_ONE_MODEL_POLICY_BLOCKED. Bounded by the RUN ID: this lock is
+  // `runs/<runId>/model-policy.json.lock`, and the next parent run publishes in
+  // ~60ms — which is why the same input folds the OTHER way in
+  // onboarding-server/ensure.ts, whose lock is per project+host in the HOME
+  // state root with no rotation and no reaper.
+  //
+  // Reclaiming instead would fix nothing reachable and break something that is:
+  // no writer here can leave a parseable record without a stamp (a killed writer
+  // leaves a byte prefix of one writeFileSync, which never parses), while an
+  // UNPARSEABLE record — refused by the catch above for the same reason — is
+  // exactly what a LIVE acquisition looks like inside its mkdir→owner-file gap,
+  // so treating "no usable stamp" as evidence of death would hand out two
+  // leases. Pinned by shared/__tests__/lock-absent-stamp.test.ts.
+  if (!at) return false;
+  // The mirror of a freshness window: `Date.now() - at` goes negative for a
+  // future stamp, which is never `> STALE`, so a policy lock whose owner is
+  // provably dead could never be reclaimed and every publisher timed out behind
+  // it. An unusable age does not veto the reclaim; `processDefinitelyDead` is
+  // still the thing that decides, so a live publisher keeps its lease.
+  const ownerAgeMs = trustworthyAgeSince(at, Date.now());
+  if ((ownerAgeMs !== null && ownerAgeMs <= POLICY_LOCK_STALE_MS) || !processDefinitelyDead(owner.pid)) return false;
+  try {
+    fs.unlinkSync(ownerPath);
+    fs.rmdirSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquirePolicyLock(filePath: string): PolicyLock | null {
   const lockPath = `${filePath}.lock`;
+  const ownerPath = path.join(lockPath, 'owner.json');
+  const token = `${process.pid.toString(16)}${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
   const deadline = Date.now() + POLICY_LOCK_TIMEOUT_MS;
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   while (true) {
+    let madeDir = false;
     try {
+      // Non-recursive on purpose: this mkdir is the compare-and-swap that IS
+      // the lock, and EEXIST is how contention is reported.
       fs.mkdirSync(lockPath, { mode: 0o700 });
-      fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: process.pid, at: Date.now() }), { mode: 0o600 });
-      return lockPath;
+      madeDir = true;
+      fs.writeFileSync(ownerPath, JSON.stringify({ pid: process.pid, at: Date.now(), token }), { mode: 0o600, flag: 'wx' });
+      return { lockPath, ownerPath, token };
     } catch (error) {
+      if (madeDir) {
+        // We own the directory but could not publish ownership. Leaving it would
+        // wedge the path for a full stale window with nobody inside it.
+        try { fs.unlinkSync(ownerPath); } catch { /* best-effort */ }
+        try { fs.rmdirSync(lockPath); } catch { /* best-effort */ }
+        return null;
+      }
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
-      try {
-        const owner = JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8')) as Rec;
-        const at = typeof owner.at === 'number' ? owner.at : 0;
-        if (at && Date.now() - at > POLICY_LOCK_STALE_MS) {
-          fs.rmSync(lockPath, { recursive: true, force: true });
-          continue;
-        }
-      } catch { /* another process may still be publishing the owner */ }
+      if (reclaimStalePolicyLock(lockPath, ownerPath)) continue;
       if (Date.now() >= deadline) return null;
       sleepSync(10);
     }
   }
+}
+
+// Never remove a lease this process cannot prove it still holds: the token in
+// the owner record is the proof. A blind recursive rm here would delete the
+// directory of whoever acquired it next.
+function releasePolicyLock(lock: PolicyLock): void {
+  try {
+    const owner = JSON.parse(fs.readFileSync(lock.ownerPath, 'utf8')) as Rec;
+    if (owner.token !== lock.token) return;
+    fs.unlinkSync(lock.ownerPath);
+  } catch {
+    return;
+  }
+  try { fs.rmdirSync(lock.lockPath); } catch { /* a foreign entry stays fail-closed */ }
 }
 
 function writePolicyAtomic(filePath: string, policy: RunModelPolicyV1): void {
@@ -228,8 +348,8 @@ export function ensureRunModelPolicy(
   if (fs.existsSync(filePath)) return null;
   const candidate = buildRunModelPolicy(cwd, runId, host, state, env);
   if (!candidate) return null;
-  const lockPath = acquirePolicyLock(filePath);
-  if (!lockPath) {
+  const lock = acquirePolicyLock(filePath);
+  if (!lock) {
     const raced = readRunModelPolicy(cwd, runId);
     return raced && ensureRunPolicyBootstraps(cwd, raced, state) ? raced : null;
   }
@@ -241,7 +361,7 @@ export function ensureRunModelPolicy(
     const published = readRunModelPolicy(cwd, runId);
     return published && ensureRunPolicyBootstraps(cwd, published, state) ? published : null;
   } finally {
-    try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best-effort */ }
+    releasePolicyLock(lock);
   }
 }
 

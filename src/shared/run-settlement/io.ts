@@ -6,11 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SUBAGENT_STALE_MS } from '../../config/state';
-import { timestampAgeMs } from '../state/run-agent/session-identity';
+import { ageAttestsLiveness, timestampAgeMs } from '../state/run-agent/session-identity';
 import { isMaintenanceTerminal, maintenanceOutcome } from '../maintenance/terminal';
 import { paidFallbackCompletionFromMaintenance } from '../maintenance/fallback-proof';
 import { pluginVersion } from '../../config/plugin-identity';
-import { readJson, writeJson } from '../fsjson';
+import { readJson, readJsonResult, writeJson } from '../fsjson';
 import { runUsedOperatorOverride } from '../override';
 import { withProjectStateLock } from '../state/project-state-lock';
 import { strictRunVerificationEvidence } from '../strict-verification-evidence';
@@ -128,7 +128,23 @@ export function activeRunClaimScan(projectRoot: string, runId: string): ActiveRu
         // assuming either liveness or staleness.
         try { ageMs = Date.now() - fs.statSync(absolute).mtimeMs; } catch { ageMs = 0; }
       }
-      if (Number.isFinite(ageMs) && ageMs > SUBAGENT_STALE_MS) continue;
+      // `ageMs > SUBAGENT_STALE_MS` had no lower bound, and the age it tests is
+      // a subtraction: a record stamped AHEAD of now yields a NEGATIVE age,
+      // which is not merely fresh but maximally fresh, and it kept vetoing
+      // until wall-clock time caught up with the stamp. `writeRunSettlement`
+      // downgrades `verified` back to `validating` on `activeClaims > 0`, so a
+      // clock that stepped backwards (NTP, a manual change) or one out-of-band
+      // edit holds an otherwise-certifiable run at `validating` for the whole
+      // size of the step. The mtime fallback above has the same shape.
+      //
+      // ageAttestsLiveness is the predicate this repo already wrote for exactly
+      // this asymmetry (session-identity.ts): a stamp is evidence of a LIVE
+      // agent only inside [-STATE_TIMESTAMP_FUTURE_SKEW_MS, maxAge]. Reusing it
+      // rather than open-coding a bound keeps the five-minute tolerance in the
+      // one place config/state.ts already documents it, and it also drops the
+      // `Number.isFinite` special case — an unusable age is not evidence
+      // either, and the mtime fallback already guarantees a finite number here.
+      if (!ageAttestsLiveness(ageMs, SUBAGENT_STALE_MS)) continue;
       count += 1;
     }
   };
@@ -138,10 +154,66 @@ export function activeRunClaimScan(projectRoot: string, runId: string): ActiveRu
 
 export function activeRunClaimCount(projectRoot: string, runId: string): number {
   const scan = activeRunClaimScan(projectRoot, runId);
-  // Existing callers use a positive value as a terminal-settlement veto. A
-  // truncated/unreadable scan therefore returns a conservative sentinel even
-  // when no active record occurred in the inspected prefix.
+  // A truncated/unreadable scan returns a conservative sentinel even when no
+  // active record occurred in the inspected prefix. That is right for the
+  // settlement vetoes below, and NOT unconditionally right for every caller —
+  // see the consumer table on `runLiveClaimEvidence`.
   return scan.complete ? scan.count : Math.max(1, scan.count);
+}
+
+/**
+ * The same scan, three-valued — and the distinction `activeRunClaimCount`
+ * structurally cannot make.
+ *
+ * That sentinel is right for the callers it was written FOR, but they are not
+ * every caller. Counted by AST parse rather than by grep (the name also appears
+ * as imports, a re-export and in prose), `activeRunClaimCount` has five
+ * non-test call sites in three classes:
+ *
+ *   - VETO (3): run-settle.ts's terminal settle and runCompletionEvidenceAllows,
+ *     terminal-verdict.ts. A veto that cannot read the evidence must keep
+ *     refusing, so the sentinel is exactly right here. (writeRunSettlement's
+ *     `activeClaims` is a fourth veto, but it calls `activeRunClaimScan`
+ *     directly and does not read this sentinel.)
+ *   - DELETER (1, now migrated off): retention.ts's `runIsLive`, whose `true`
+ *     means KEEP THIS RUN FOREVER. The measurement below is why it reads
+ *     `runLiveClaimEvidence` instead.
+ *   - RUN SELECTION (2): run-paths.ts's `recentAdoptableRunId` and
+ *     identity-drift.ts's `reconcileRunIdentityDrift`. Neither is a veto.
+ *     run-paths documents its own reason to want the sentinel (a truncated scan
+ *     biases toward ADOPTING the run we are already in). identity-drift is the
+ *     one site where "conservative" does not hold: the sentinel enrols a run as
+ *     a drift CANDIDATE, `live.length < 2` is what otherwise makes that pass a
+ *     no-op, and every loser is released and transitioned to `failed`. So one
+ *     unreadable claim subdirectory can activate a destructive reconciliation
+ *     that would not otherwise have run. Left as found — it needs its own
+ *     reasoning, not a fold of this sentinel.
+ *
+ * MEASURED, on a run holding 2,100 claim records every one of which was 30 days
+ * stale: the scan stops at `scanned: 2048` with `count: 0`, the sentinel reports
+ * 1, and the sweep files the run under `liveRunIds` — outside the newest-N
+ * budget, so it holds a reserved slot permanently while NEWER runs are reclaimed
+ * around it. Nothing clears the condition, because the only thing that would
+ * remove those 2,048 files is the sweep the sentinel is refusing. The bound is
+ * not the only trigger either: a single unreadable SUBDIRECTORY under the run
+ * returns `complete: false` with `scanned: 0`, so one EACCES is enough.
+ *
+ * So the ignorance is reported as ignorance and each class answers for itself:
+ *   - `live`    — an active record was actually SEEN. Complete or not, this is
+ *                 positive evidence and outranks the truncation.
+ *   - `none`    — the scan finished and found nothing. Positive evidence too.
+ *   - `unknown` — we could not look, or could not finish looking. Not a verdict.
+ *
+ * Deliberately NOT folded into `activeRunClaimCount`: flipping that sentinel
+ * would hand `unknown` to the three vetoes as `0`, which is the one direction a
+ * veto must never move.
+ */
+export type RunLiveClaimEvidence = 'live' | 'none' | 'unknown';
+
+export function runLiveClaimEvidence(projectRoot: string, runId: string): RunLiveClaimEvidence {
+  const scan = activeRunClaimScan(projectRoot, runId);
+  if (scan.count > 0) return 'live';
+  return scan.complete ? 'none' : 'unknown';
 }
 
 export function writeRunSettlement(
@@ -185,10 +257,50 @@ export function writeRunSettlement(
       let status = update.status;
       let reason = update.reason;
       let fallback = update.fallback;
-      const maintenance = readJson<Rec | null>(
+      // The paid-fallback evidence, and the ONE thing it is consulted for: may
+      // this run be CERTIFIED. `readJson(…, null)` answered an ABSENT marker and
+      // an ILLEGIBLE one (unparseable, empty, or unreadable) identically, and
+      // that was triaged as erring conservatively — a corrupt marker reads as
+      // "no marker", which for a run whose settlement already TRACKS a pending
+      // fallback does hold it at `validating`.
+      //
+      // MEASURED, and the triage is wrong for the case where nothing is tracked
+      // yet. A marker recording a valid `fallback-paid` completion with no
+      // `previous.fallback` gives `recordsPaidFallback` true and
+      // `fallbackCompletionMatch(undefined, marker) === 'marker-missing'`, so a
+      // LEGIBLE marker downgrades the run to `validating`. Read as `null` the
+      // same run comes out `verified` — both for a torn marker and a mode-000
+      // one. The illegible read does not err conservatively there; it turns a
+      // HOLD into a CERTIFICATE.
+      //
+      // So the refusal is scoped to exactly that: certification. `verified` is
+      // the only status this file derives from the marker, and a certificate is
+      // a claim about evidence — an unreadable ledger of paid work is not
+      // evidence that none is owed. Every other status still publishes
+      // normally, which is what keeps this from stranding anything: the run
+      // stays non-terminal and drivable, the ledger can still settle it `failed`
+      // or `blocked`, and `activateRunV2RollbackBarrier`/`writeLegacyProjection`
+      // are untouched.
+      //
+      // It does NOT create the known wedge (a `fallback:pending` debt whose only
+      // discharge is a completion record in a file nothing can read, holding the
+      // run at `validating` forever) — that wedge already fires today on every
+      // run whose settlement tracks the debt, measured. This only extends the
+      // same hold to the untracked case, under a name that says which of the two
+      // it is: `fallback-marker-missing` means a marker we CAN read cites paid
+      // work the settlement never pinned; `fallback-marker-unreadable` means we
+      // could not look.
+      const maintenanceRead = readJsonResult<Rec>(
         path.join(runDir(projectRoot, runId), 'maintenance.json'),
-        null,
       );
+      const maintenance = maintenanceRead.kind === 'ok' ? maintenanceRead.value : null;
+      if (status === 'verified'
+        && (maintenanceRead.kind === 'corrupt' || maintenanceRead.kind === 'unreadable')) {
+        status = 'validating';
+        if (previous?.fallback) fallback = previous.fallback;
+        reason = 'fallback-marker-unreadable';
+        incompleteChecks.push('fallback-marker-unreadable');
+      }
       if (status === 'verified') {
         const trackedFallback = previous?.fallback;
         if (trackedFallback || recordsPaidFallback(maintenance)) {

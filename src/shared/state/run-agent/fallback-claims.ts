@@ -5,7 +5,7 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import {  readJson,  writeJson } from '../../fsjson';
+import {  readJson, readJsonResult,  writeJson } from '../../fsjson';
 import { normalizeRelPath } from '../../scope';
 import {
   SUBAGENT_STALE_MS,
@@ -106,6 +106,39 @@ export function releaseFallbackClaimsForHolderUnlocked(
   return { ok: true, removed };
 }
 
+// What the deny names when a claim file holds the path and cannot say who holds
+// it. The prose it lands in ("already being written by `…` in this run") is
+// authored in plan-guard/plan-runteam.ts and reads the holder verbatim, so this
+// has to be a phrase rather than a token.
+const UNIDENTIFIED_CLAIM_HOLDER = 'another writer (unreadable claim record)';
+
+/**
+ * A claim file whose bytes could not be PARSED (`corrupt`) or read at all
+ * (`unreadable`) still OCCUPIES the path — and the lease it represents still
+ * ages. `createdAt` is stamped by the write that created the file, so the file's
+ * own mtime is the same clock read from outside the bytes: fresh by it means
+ * somebody staked this path recently and we cannot see who; older than the same
+ * SUBAGENT_STALE_MS bound the parsed branch applies means the lease expired
+ * exactly as a readable one would have, and the next writer may take the path
+ * (and, by writing, repair the file).
+ *
+ * `corrupt` and `unreadable` get the SAME answer here, unlike normalize.ts's
+ * quarantine rule where they are opposites. The discriminator there is "can the
+ * bytes be preserved before they are replaced", and a claim has no content worth
+ * preserving — it is a lease, not a record. The only question this site asks is
+ * whether the lease is live, and mtime answers it identically for both.
+ */
+function unreadableClaimStillHolds(file: string): boolean {
+  try {
+    return isFreshTimestamp(fs.statSync(file).mtime.toISOString(), SUBAGENT_STALE_MS);
+  } catch {
+    // Nothing stattable at the path any more (it was removed between the read
+    // and here, or it is a dangling link): no evidence of a holder, so this
+    // falls through to the ordinary claim write, which is itself fenced.
+    return false;
+  }
+}
+
 export function tryFallbackClaim(
   cwd: string,
   ctx: RunAgentContext,
@@ -118,12 +151,25 @@ export function tryFallbackClaim(
   const file = fallbackClaimFile(cwd, runId, normalizeRelPath(target));
   let result: { blocked: boolean; holder?: string } = { blocked: false };
   const locked = withFallbackClaimsLock(cwd, runId, () => {
-    const existing = obj(readJson(file, null));
+    const read = readJsonResult<Rec>(file);
+    const existing = read.kind === 'ok' ? obj(read.value) : null;
     if (existing
       && isFreshTimestamp(existing.createdAt, SUBAGENT_STALE_MS)
       && typeof existing.holder === 'string' && existing.holder
       && existing.holder !== myKey) {
       result = { blocked: true, holder: existing.holder };
+      return;
+    }
+    // The `null` fallback this used to read through collapsed "nobody holds
+    // this path" into "I cannot tell who holds this path", and only the first
+    // of those licenses a claim. A corrupt or unreadable claim file made
+    // `existing` falsy, so the holder check above was SKIPPED entirely and the
+    // caller overwrote a lease it never inspected: the thief was allowed to
+    // write, and the original holder — still writing, never told — was denied on
+    // its own path the next time it asked. Two roles on one file, with the deny
+    // pointing at the wrong one.
+    if (read.kind !== 'ok' && read.kind !== 'absent' && unreadableClaimStillHolds(file)) {
+      result = { blocked: true, holder: UNIDENTIFIED_CLAIM_HOLDER };
       return;
     }
     const claim: Rec = {

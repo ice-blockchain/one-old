@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { NODE_FLOOR_MAJOR } from '../../../shared/node-floor';
 import { HOST_IDS } from '../../../config/model-tiers';
 import {
   DEFAULT_PUBLIC_ENDPOINT,
@@ -27,6 +28,7 @@ import {
   analyzeCodexSessionFile,
   probeCanonicalAuth,
   probeCodexHooks,
+  probeNode,
   probeOneMcp,
   probeProject,
   probeSessionDiagnostics,
@@ -605,7 +607,7 @@ function baseProject(over: Partial<ProjectProbe> = {}): ProjectProbe {
     ...over,
   };
 }
-const node = (over: Partial<NodeProbe> = {}): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, ...over });
+const node = (over: Partial<NodeProbe> = {}): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, pluginRequiredMajor: NODE_FLOOR_MAJOR, ...over });
 const nvm = (over: Partial<NvmProbe> = {}): NvmProbe => ({ installed: false, ...over });
 const gn = (over: Partial<GitnexusProbe> = {}): GitnexusProbe => ({ onPath: null, absoluteV22: null, crashRiskInOldNvm: false, ...over });
 type VerifiedHookTrust = Extract<CodexHookTrustProbe, { evaluation: 'verified' }>;
@@ -841,6 +843,57 @@ test('buildFindings: gitnexus crash-risk + node-too-old-no-nvm', () => {
   });
   assert.ok(f.some((x) => x.code === 'GITNEXUS_IN_OLD_NVM_NODE'));
   assert.ok(f.some((x) => x.code === 'NO_NVM_NO_V22'));
+});
+
+// The plugin's own runtime floor, which is a DIFFERENT question from the three
+// gitnexus findings above: those ask whether a Node 22 exists somewhere for the
+// code-graph provider (and only when gitnexus is the provider), this asks
+// whether the process running the hooks is a supported runtime at all. The case
+// below is on graphify precisely so a pass cannot be borrowed from the
+// provider-scoped block.
+test('buildFindings: a hook runtime below the declared engine floor is reported on any provider', () => {
+  const probe = node({ runningMajor: NODE_FLOOR_MAJOR - 4, runningVersion: `${NODE_FLOOR_MAJOR - 4}.20.4` });
+  assert.ok(probe.runningMajor !== null && probe.runningMajor < probe.pluginRequiredMajor,
+    'the fixture is not below the floor, so the assertions below mean nothing');
+
+  const f = buildFindings({
+    node: probe,
+    nvm: nvm({ installed: true, hasV22: true }),
+    gitnexus: gn(),
+    project: baseProject({ state: { mode: 'new-project', stack: 'default', codeGraphProvider: 'graphify' } }),
+  });
+  const hit = f.find((x) => x.code === 'HOOK_RUNTIME_NODE_BELOW_FLOOR');
+  assert.ok(hit, 'an unsupported hook runtime produced no finding');
+  assert.equal(hit?.severity, 'fix-needed');
+  assert.match(hit?.message || '', new RegExp(`Node ${NODE_FLOOR_MAJOR - 4}\\.20\\.4`));
+  assert.match(hit?.message || '', new RegExp(`floor of Node ${NODE_FLOOR_MAJOR}`));
+  assert.match(hit?.message || '', /engines\.node/, 'the message must say where the floor is declared');
+  assert.match(hit?.message || '', /\/usr\/bin\/node/, 'the message must name the PATH node doctor actually saw');
+  assert.match(hit?.message || '', /launched from the desktop does not inherit/, 'the message must name the GUI-PATH cause');
+  // On graphify none of the provider-scoped node findings may fire, or this case
+  // would be indistinguishable from the gitnexus block firing.
+  for (const code of ['NODE_LT22_BUT_V22_AVAILABLE', 'NVM_INSTALLED_NO_V22', 'NO_NVM_NO_V22']) {
+    assert.equal(f.some((x) => x.code === code), false, `${code} must be provider-scoped`);
+  }
+
+  // At the floor: silent. Same fixture otherwise, so the discriminator is the
+  // version and nothing else.
+  const supported = buildFindings({
+    node: node({ runningMajor: NODE_FLOOR_MAJOR }),
+    nvm: nvm({ installed: true, hasV22: true }),
+    gitnexus: gn(),
+    project: baseProject({ state: { mode: 'new-project', stack: 'default', codeGraphProvider: 'graphify' } }),
+  });
+  assert.equal(supported.some((x) => x.code === 'HOOK_RUNTIME_NODE_BELOW_FLOOR'), false);
+});
+
+// One probe, not two. probeNode() already reported the running version for the
+// gitnexus questions; the floor finding reads the same fields off the same probe.
+test('probeNode reports the plugin floor from the shared declaration, on the same reading', () => {
+  const probe = probeNode();
+  assert.equal(probe.pluginRequiredMajor, NODE_FLOOR_MAJOR);
+  assert.equal(probe.runningVersion, process.versions.node, 'the probe must report THIS process, not a second reading');
+  assert.equal(probe.runningMajor, Number(process.versions.node.split('.')[0]));
 });
 
 test('buildFindings: opencode enabled + CLI missing → fix-needed (self-heal messaging)', () => {

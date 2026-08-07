@@ -409,6 +409,24 @@ export function buildFindings({
     });
   }
 
+  // The plugin's OWN runtime floor, asked before the GitNexus toolchain
+  // questions below and independently of them: those ask whether a Node 22
+  // exists somewhere for the code-graph provider (and the gitnexus hook can go
+  // get one), this asks whether the process running the hooks is supported at
+  // all. Unconditional on provider, because a machine below the floor is
+  // unsupported whichever provider it chose — and reported rather than enforced,
+  // because doctor is report-only and the launchers only warn (node-floor.ts).
+  if (node.runningMajor !== null && node.runningMajor < node.pluginRequiredMajor) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'HOOK_RUNTIME_NODE_BELOW_FLOOR',
+      message: `The process running Traffic One is on Node ${node.runningVersion}, below the supported floor of Node ${node.pluginRequiredMajor} (\`engines.node\` in the plugin's package.json)`
+        + `${node.onPath ? `; \`node\` resolves on this PATH to ${node.onPath}` : ' and no `node` was found on this PATH at all'}. `
+        + `A host application launched from the desktop does not inherit a shell's PATH, so a terminal with Node ${node.pluginRequiredMajor} does not mean the hooks got it — an nvm-managed Node is invisible to a GUI launch. `
+        + `Quit the host and relaunch it from a terminal, or install Node ${node.pluginRequiredMajor}+ on the system PATH; \`nvm alias default\` alone does not fix a GUI launch.`,
+    });
+  }
+
   if (node.runningMajor !== null && node.runningMajor < node.requiredMajor && provider === 'gitnexus') {
     if (nvm.installed && nvm.hasV22) {
       findings.push({

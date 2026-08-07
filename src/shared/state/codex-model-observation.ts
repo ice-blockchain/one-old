@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { RUNS_REL_DIR, VALID_AGENT_ROLES } from '../../config/state';
+import { trustworthyAgeSince } from '../clock-skew';
 import { obj, type Rec } from '../obj';
 import { readRunModelPolicy } from '../run-model-policy';
 
@@ -106,25 +107,99 @@ function sleepSync(ms: number): void {
   try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* bounded retry */ }
 }
 
+// Canonical definition: state/run-agent/locks.ts. Copied rather than shared for
+// the reason given at the identical copy in shared/run-model-policy.ts: EPERM
+// from `kill(pid, 0)` means the process EXISTS under another uid and is
+// therefore NOT dead, so only ESRCH may authorize a reclaim. The direction is
+// pinned across every copy by shared/__tests__/process-liveness-eperm.test.ts.
+function processDefinitelyDead(pid: unknown): boolean {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+// Same reclaim contract as the policy lock next door, and it replaces the same
+// defect: this loop parsed owner.json for its timestamp, ignored the pid sitting
+// right beside it, and answered "stale" for any observation slower than
+// LOCK_STALE_MS — then removed the lease with a recursive, forced rm. The
+// unlink of this exact owner record, and the non-recursive rmdir, are each a
+// compare-and-swap, so no reaper can delete a lease a rival has already
+// replaced.
+function reclaimStaleStoreLock(lockPath: string, ownerPath: string): boolean {
+  let entries: string[];
+  try { entries = fs.readdirSync(lockPath); } catch { return false; }
+  if (entries.length === 0) {
+    try {
+      // A future-stamped mtime makes this age negative and therefore eternally
+      // fresh. An unusable age does not veto the reclaim; emptiness and the
+      // non-recursive rmdir are the CAS that keeps it safe.
+      const dirAgeMs = trustworthyAgeSince(fs.statSync(lockPath).mtimeMs, Date.now());
+      if (dirAgeMs !== null && dirAgeMs <= LOCK_STALE_MS) return false;
+      fs.rmdirSync(lockPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (entries.length !== 1 || entries[0] !== path.basename(ownerPath)) return false;
+  let owner: Rec;
+  try { owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Rec; } catch { return false; }
+  const at = typeof owner.at === 'number' ? owner.at : 0;
+  // An absent stamp is the neighbouring question and keeps its fail-closed
+  // answer, for the reason spelled out at the identical fold in
+  // shared/run-model-policy.ts: no writer here can leave a record that PARSES
+  // without a stamp, while an unparseable one is what a live acquisition looks
+  // like inside its mkdir→owner-file gap, so reclaiming on a missing stamp would
+  // fix nothing reachable and could hand out two leases. Measured cost if a
+  // foreign writer does leave one: the observer burns the full LOCK_TIMEOUT_MS
+  // (1008ms) and returns null, which codex-child-model.ts renders as
+  // `codex-child-model-observation-persist-failed` on EVERY tool call of EVERY
+  // Codex child in this run — its prescribed replacement child included, since
+  // the lock is per run. Bounded by the RUN ID: the next run observes in ~ms.
+  // Pinned by shared/__tests__/lock-absent-stamp.test.ts.
+  if (!at) return false;
+  // Negative age = maximally fresh, so a future-stamped owner record made this
+  // store lock unreclaimable even with a provably dead owner, and every observer
+  // returned null at the timeout. An unusable age does not veto the reclaim;
+  // `processDefinitelyDead` still governs, so a live observer keeps its lease.
+  const ownerAgeMs = trustworthyAgeSince(at, Date.now());
+  if ((ownerAgeMs !== null && ownerAgeMs <= LOCK_STALE_MS) || !processDefinitelyDead(owner.pid)) return false;
+  try {
+    fs.unlinkSync(ownerPath);
+    fs.rmdirSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function withStoreLock<T>(cwd: string, runId: string, body: () => T): T | null {
   const filePath = storePath(cwd, runId);
   const lockPath = `${filePath}.lock`;
+  const ownerPath = path.join(lockPath, 'owner.json');
+  const token = `${process.pid.toString(16)}${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   while (true) {
+    let madeDir = false;
     try {
+      // Non-recursive: this mkdir is the compare-and-swap that IS the lock.
       fs.mkdirSync(lockPath, { mode: 0o700 });
-      fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: process.pid, at: Date.now() }), { mode: 0o600 });
+      madeDir = true;
+      fs.writeFileSync(ownerPath, JSON.stringify({ pid: process.pid, at: Date.now(), token }), { mode: 0o600, flag: 'wx' });
       break;
     } catch (error) {
+      if (madeDir) {
+        try { fs.unlinkSync(ownerPath); } catch { /* best-effort */ }
+        try { fs.rmdirSync(lockPath); } catch { /* best-effort */ }
+        return null;
+      }
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
-      try {
-        const owner = JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8')) as Rec;
-        if (typeof owner.at === 'number' && Date.now() - owner.at > LOCK_STALE_MS) {
-          fs.rmSync(lockPath, { recursive: true, force: true });
-          continue;
-        }
-      } catch { /* writer may still be publishing owner */ }
+      if (reclaimStaleStoreLock(lockPath, ownerPath)) continue;
       if (Date.now() >= deadline) return null;
       sleepSync(10);
     }
@@ -132,7 +207,15 @@ function withStoreLock<T>(cwd: string, runId: string, body: () => T): T | null {
   try {
     return body();
   } finally {
-    try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best-effort */ }
+    // The token proves the lease is still ours. Without that check the release
+    // deletes whichever directory is at the path, including a successor's.
+    try {
+      const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Rec;
+      if (owner.token === token) {
+        fs.unlinkSync(ownerPath);
+        try { fs.rmdirSync(lockPath); } catch { /* a foreign entry stays fail-closed */ }
+      }
+    } catch { /* already reclaimed or replaced: never remove what we cannot claim */ }
   }
 }
 

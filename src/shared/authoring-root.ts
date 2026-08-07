@@ -70,9 +70,12 @@ const MAX_AUTHORING_WALK = 40;
 // process and each guard probes ~3 paths per level — memoize per start dir.
 const authoringRootMemo = new Map<string, string | null>();
 
-// Test helper: forget memoized lookups (tmp fixtures reuse paths).
+// Test helper: forget memoized lookups (tmp fixtures reuse paths). The machine
+// roots below are environment-keyed and self-invalidate, so clearing them here is
+// belt-and-braces rather than the mechanism they rely on.
 export function resetAuthoringRootCache(): void {
   authoringRootMemo.clear();
+  machineRootsCache = null;
 }
 
 // Nearest ancestor (or `start` itself; file or dir path) that is the plugin
@@ -161,24 +164,64 @@ function homeStateRoots(home: string): string[] {
   return roots;
 }
 
-function isInsideOrEqualRoot(resolved: string, root: string): boolean {
-  const real = realResolve(root);
+function isInsideOrEqualRoot(resolved: string, real: string): boolean {
   return resolved === real || resolved.startsWith(real + path.sep);
+}
+
+// isMachineConfigRoot runs at every level of every bounded walk in hook/paths.ts,
+// and it used to realpath each of the ~14 home-state roots per base on every
+// call: 192 of the 206 fs syscalls one resolveProjectRoot() makes, ~93% of its
+// 2.8 ms. The set is a pure function of the process environment, so resolve once.
+//
+// KEYED on that environment rather than memoized outright. In production the key
+// never changes, but 43 test files reassign HOME or an XDG var and only 11 call
+// resetAuthoringRootCache() — an unconditional memo would answer the other 32
+// from a previous test's home. Keying makes a reassignment a cache MISS instead
+// of a stale hit, so correctness never rests on a caller remembering to reset.
+type MachineRoots = { home: string; envHome: string; roots: string[]; tmps: string[]; globalDir: string };
+let machineRootsCache: { key: string; value: MachineRoots } | null = null;
+
+function machineRootsEnvKey(): string {
+  let rawHome = '';
+  try { rawHome = os.homedir(); } catch { /* no home */ }
+  return [
+    rawHome,
+    process.env.HOME ?? '',
+    process.env.XDG_CONFIG_HOME ?? '',
+    process.env.XDG_STATE_HOME ?? '',
+    process.env.XDG_DATA_HOME ?? '',
+    safeTmpDir(),
+  ].join('\u0000');
+}
+
+function machineRoots(): MachineRoots {
+  const key = machineRootsEnvKey();
+  if (machineRootsCache && machineRootsCache.key === key) return machineRootsCache.value;
+  let home = '';
+  try { home = realResolve(os.homedir()); } catch { /* no home */ }
+  const envHome = process.env.HOME ? realResolve(process.env.HOME) : '';
+  const roots: string[] = [];
+  for (const base of [home, envHome]) {
+    if (!base) continue;
+    for (const root of homeStateRoots(base)) roots.push(realResolve(root));
+  }
+  const tmps: string[] = [];
+  for (const tmp of [safeTmpDir(), '/tmp', '/private/tmp', '/var/tmp']) {
+    if (tmp) tmps.push(realResolve(tmp));
+  }
+  const value: MachineRoots = { home, envHome, roots, tmps, globalDir: realResolve(globalTrafficOneDir()) };
+  machineRootsCache = { key, value };
+  return value;
 }
 
 export function isMachineConfigRoot(p: string): boolean {
   const resolved = realResolve(p);
   if (resolved === path.parse(resolved).root) return true; // filesystem root
-  let home = '';
-  try { home = realResolve(os.homedir()); } catch { /* no home */ }
+  const { home, envHome, roots, tmps, globalDir } = machineRoots();
   if (home && resolved === home) return true;
-  const envHome = process.env.HOME ? realResolve(process.env.HOME) : '';
   if (envHome && resolved === envHome) return true;
-  for (const base of [home, envHome]) {
-    if (!base) continue;
-    for (const root of homeStateRoots(base)) {
-      if (isInsideOrEqualRoot(resolved, root)) return true;
-    }
+  for (const root of roots) {
+    if (isInsideOrEqualRoot(resolved, root)) return true;
   }
   // System temp ROOTS are shared scratch space, never a project root themselves:
   // a stray `.traffic-one` minted into a /tmp-family dir (a scratch write with a
@@ -187,10 +230,9 @@ export function isMachineConfigRoot(p: string): boolean {
   // task-output files re-served the use-plugin question from that root).
   // EXACT roots only — a real (or test) project in a temp SUBDIRECTORY stays
   // fully eligible.
-  for (const tmp of [safeTmpDir(), '/tmp', '/private/tmp', '/var/tmp']) {
-    if (tmp && resolved === realResolve(tmp)) return true;
+  for (const tmp of tmps) {
+    if (resolved === tmp) return true;
   }
-  const globalDir = realResolve(globalTrafficOneDir());
   return resolved === globalDir || resolved.startsWith(globalDir + path.sep);
 }
 

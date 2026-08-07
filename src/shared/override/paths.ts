@@ -47,6 +47,12 @@ export function overrideKeyPath(env: NodeJS.ProcessEnv = process.env): string {
  * project reachable by two spellings has one override ledger, exactly as it has
  * one consent answer. Re-deriving the hash here would let the two disagree on a
  * symlinked checkout.
+ *
+ * It inherits that function's documented CASE asymmetry too, and this is the
+ * consumer that makes the asymmetry expensive to repair: an override token
+ * carries the bucket name as its `projectKey` (token.ts), so relocating buckets
+ * invalidates tokens already in operators' hands. Read projectRootHash's note
+ * before changing how the name is derived.
  */
 export function overrideProjectDir(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string {
   return path.join(overrideRoot(env), projectRootHash(projectRoot));

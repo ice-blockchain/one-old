@@ -36,3 +36,30 @@ test('Codex E2E isolates its model sidecar through the standard state home', () 
   const env = buildCaseEnv(defaultConfig(), caseFolder, '', 'codex');
   assert.equal(env.XDG_STATE_HOME, path.join(caseFolder, 'xdg-state'));
 });
+
+// The qa-evidence stack runner spawns `pytest`/`ruff` by bare name, so the
+// runs-root venv is only reachable if it leads PATH. Prepended, never appended:
+// an ambient interpreter of the wrong version must not win over the toolchain
+// the runs root pins.
+test('the runs-root venv leads PATH so bare-name check commands resolve to it', () => {
+  const ambientPath = process.env.PATH;
+  process.env.PATH = '/ambient/bin';
+
+  try {
+    const config = defaultConfig();
+    config.runsRoot = path.join(os.tmpdir(), 't1-env-runs');
+    const env = buildCaseEnv(config, path.join(os.tmpdir(), 't1-env-venv'), '', 'pure-node');
+
+    assert.equal(
+      env.PATH,
+      [path.join(config.runsRoot, '.venv', 'bin'), '/ambient/bin'].join(path.delimiter),
+    );
+    withCaseEnv(env, () => {
+      assert.equal(process.env.PATH, env.PATH);
+    });
+    assert.equal(process.env.PATH, '/ambient/bin', 'the ambient PATH is restored after the case');
+  } finally {
+    if (ambientPath === undefined) delete process.env.PATH;
+    else process.env.PATH = ambientPath;
+  }
+});

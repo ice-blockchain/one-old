@@ -28,6 +28,7 @@ import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
 import { maintenanceTriageFallbackDirective } from '../session/triage-directive';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
+import { claimLaunchTimeoutRetry } from '../../shared/onboarding-server/launch-timeout';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import { claudeWaitBackgroundDeniedReason, claudeWaitLinkFirstReason } from '../../shared/onboarding-server/claude-setup';
@@ -55,7 +56,7 @@ import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/w
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
-import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, isTrafficOneDoctorCommand, parsedToolInput } from '../../shared/tool-classify';
+import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyWritePatch, isStateFilePath, isTrafficOneDoctorCommand, parsedToolInput } from '../../shared/tool-classify';
 import { browserOpenDeniedReason } from '../../shared/onboarding-server/browser-open';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
@@ -72,6 +73,21 @@ import { resolveToolScope } from '../../shared/tool-scope';
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
+
+// A tool that can only LOOK. Deliberately the read-tool half of
+// isReadOnlyOrientationToolUse without its shell half: this predicate guards the
+// infrastructure-failure carve-out below, where "the launcher is broken" must
+// never cost the user the ability to read their own code, and where admitting
+// arbitrary non-mutating shell would also admit arbitrary code execution.
+// `toolName` is the adapter-canonical name (canonicalToolName), so Cursor's
+// coarse `before-read-file`/`before-grep` subcommands arrive here already mapped
+// to Read/Grep by their tool CLASS.
+const READ_ONLY_INSPECTION_TOOL = /^(Read|Glob|Grep|LS|NotebookRead)$/i;
+
+function isReadOnlyInspectionTool(toolName: string): boolean {
+  const name = toolName.includes('.') ? (toolName.split('.').pop() as string) : toolName;
+  return READ_ONLY_INSPECTION_TOOL.test(name);
+}
 
 // Read-only orientation is deliberately NOT denied while setup is pending — but a
 // bare noop() meant a session that only reads produced no user-visible surface at
@@ -211,8 +227,26 @@ export function onboardingGate(ctx: Ctx): HookResult {
     return deny(block('team-mode-downgrade-guard'), { denyId: 'team-mode-downgrade-guard' });
   }
 
-  // The model is allowed to write the canonical state file itself.
-  if (isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput)) return noop();
+  // The model is allowed to write the canonical state file itself — the state
+  // gate's own deny prose tells it to ("Write the Traffic One state file with
+  // mode, stack, backend, realtime, confirmed, onboardingComplete …"), so this
+  // exemption is load-bearing and removing it would deny the command the
+  // product prescribes.
+  //
+  // WRITE, though, not "touch by any means". The patch half used to admit a
+  // `*** Delete File: .traffic-one/.one.json` patch, because it asked only
+  // which files the operations NAME and never which operations they are:
+  // measured on an onboarding-incomplete project, that patch returned `noop`
+  // from this gate while the same project denied an ordinary `src/app.ts`
+  // write. isStateFileOnlyWritePatch asks for add/update only.
+  //
+  // Deliberately NOT also anchored to `root`. The obvious second narrowing —
+  // "and it must be THIS project's state file" — is vacuous here: for a
+  // foreign state path, absolute or via `../`, resolveToolScope re-anchors
+  // `root` onto that project before this line runs (measured both spellings),
+  // so the anchored predicate would compare the target against the very root
+  // the target selected and pass every time.
+  if (isStateFilePath(filePath) || isStateFileOnlyWritePatch(toolName, toolInput)) return noop();
 
   const onboarding = computeOnboarding(root);
   const onboardingComplete = onboarding.done;
@@ -417,12 +451,41 @@ export function onboardingGate(ctx: Ctx): HookResult {
       // this handler — it was unreachable from the ask-first fence above and
       // from the Cursor branches below, which is precisely the states a stuck
       // user runs doctor from.)
-      // Windsurf renders a denied read as a failed tool card. Its prompt hook
-      // already carries this bootstrap recipe, so preserve harmless orientation
-      // and repeat the actionable block on the first mutation. Other hosts need
-      // the first tool denial because that is their most reliable visible channel.
+      //
+      // INFRASTRUCTURE FAILURE NEVER BLOCKS READING. Measured before this
+      // existed: on every host but Windsurf, a launcher failure denied Read,
+      // Grep, Glob and LS as well as writes, so a user whose setup server could
+      // not start could not inspect their own code — and the agent could not
+      // gather the evidence the diagnostic asks it to report. Windsurf already
+      // carved this out for its own rendering reasons; the principle is
+      // host-independent and the carve-out is now unconditional.
+      //
+      // Deliberately NARROWER than the Windsurf line it replaces:
+      // isReadOnlyOrientationToolUse also admits every non-mutating SHELL
+      // command, and `node some-script.cjs` is arbitrary execution, not a read.
+      // Widening that to all hosts would, among other things, wave through the
+      // near-collision doctor copies the exact-argv doctor grammar above exists
+      // to refuse. Reads are reads.
+      if (isReadOnlyInspectionTool(toolName)) return noop();
       if (ctx.host === 'windsurf' && isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
-      return deny(prepared.reason, { denyId: 'onboarding-server-not-ready' });
+      if (prepared.kind === 'start-timeout') {
+        // Bounded-then-terminal. The retry is prescribed at most ONCE per
+        // (project, host) per ten minutes, by the runtime rather than by the
+        // prose — an agent can ignore "retry once", it cannot ignore being
+        // handed the terminal message instead. The claim is taken HERE, at the
+        // only surface that BLOCKS: prompt-submit and SessionStart also observe
+        // this timeout and render the same retryable text, but they release the
+        // turn, so letting one of them spend the budget would hand this gate
+        // the terminal message on the very first tool call.
+        return claimLaunchTimeoutRetry(root, process.env, ctx.host)
+          ? deny(prepared.reason, { denyId: 'onboarding-server-start-timeout' })
+          : deny(prepared.terminalReason, { denyId: 'onboarding-server-start-timeout-exhausted' });
+      }
+      return deny(prepared.reason, {
+        denyId: prepared.kind === 'start-failed'
+          ? 'onboarding-server-start-failed'
+          : 'onboarding-server-not-ready',
+      });
     }
     const { server, waitCommand } = prepared;
     // Every deny below prescribes the wait command; make sure the host's

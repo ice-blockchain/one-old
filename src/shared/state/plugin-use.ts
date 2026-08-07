@@ -204,31 +204,51 @@ export function pathWithin(parent: string, child: string): boolean {
 // default-closed guarantee this fence exists to provide simply did not hold
 // (measured: `allowed (pending!) = true`, and both writeJson and writeTextFile
 // landed on a project whose question was unanswered).
-const MACHINE_OWNED_ENTRIES = [
-  'one.json', 'one-mcp.json', 'projects', 'bin', 'toolchains',
-  'secret.env', 'windsurf-plugin-root',
-  // The operator-override store (shared/override/paths.ts): the per-install
-  // HMAC key, the audit ledger and the pre-override snapshots. Machine-owned
-  // for the same reason `projects` is — it is keyed BY project but is not that
-  // project's state, and it must remain writable for a session rooted at $HOME
-  // (where the machine dir and the project's state dir are the same directory).
-  // Without this entry a home-rooted mint is refused by that project's own
-  // pending use-plugin question, which is the deadlock the carve-out exists for.
-  'overrides',
-] as const;
+// Split by SHAPE, because only one of the two shapes needs the sidecar wildcard
+// and granting it to the other is carve-out nobody asked for. `first` below is
+// the whole first segment under the machine dir, so an exact match on a
+// DIRECTORY entry already covers everything inside it (`projects/<hash>/
+// preferences.json`, and the lock and temp files prefs-store.ts writes BESIDE
+// that file — all of them still resolve `first` to `projects`). A directory
+// therefore never needs `<entry>.<suffix>` to reach its own contents, and while
+// it had one, `projects.anything`, `bin.anything`, `toolchains.anything` and
+// `overrides.anything` were exempt from the fence (measured: `root=null,
+// allowed=true` for `bin.evil` and `projects.evil` on a $HOME-rooted project
+// whose question was PENDING). No writer produces those paths today, so this
+// was latent rather than live — but this list is the whole reason the fence is
+// default-CLOSED, and every path it hands out is a path the pending-project
+// byte-identity contract does not cover.
+const MACHINE_OWNED_ENTRIES = {
+  // Files, whose own sidecars count as owned: `one.json.lock/` (and the
+  // `one.json.lock.<token>.pending` it is renamed from, one-settings.ts), and
+  // the `<file>.<pid>.tmp` / `<file>.<pid>.<time>.<rand>.tmp` temps every
+  // atomic writer in this codebase places next to its destination. Fencing the
+  // lock that guards the machine-wide settings file would deadlock writing it
+  // for a session rooted at $HOME, which is the deadlock this carve-out exists
+  // to prevent in the first place.
+  files: ['one.json', 'one-mcp.json', 'secret.env', 'windsurf-plugin-root'],
+  // Directories: exact match only.
+  //
+  // `overrides` is the operator-override store (shared/override/paths.ts): the
+  // per-install HMAC key, the audit ledger and the pre-override snapshots.
+  // Machine-owned for the same reason `projects` is — it is keyed BY project
+  // but is not that project's state, and it must remain writable for a session
+  // rooted at $HOME (where the machine dir and the project's state dir are the
+  // same directory). Without this entry a home-rooted mint is refused by that
+  // project's own pending use-plugin question.
+  dirs: ['projects', 'bin', 'toolchains', 'overrides'],
+} as const;
 
 // True when `abs` is one of the machine-owned entries above, or lives under one.
 // The machine dir ITSELF is deliberately excluded: `$HOME/.traffic-one` is both
 // the machine dir and the $HOME project's state dir, and refusing to remove it
 // while that project's question is unanswered is the second line of defence
-// behind removeDeclinedProjectArtifacts. A file's own sidecars count as owned
-// (`one.json.lock/`, `one.json.<pid>.tmp`) — fencing the lock that guards the
-// consent answer would deadlock recording the answer, which is the deadlock the
-// carve-out exists to prevent in the first place.
+// behind removeDeclinedProjectArtifacts.
 function machineOwnedStatePath(abs: string, machineDir: string): boolean {
   if (!pathWithin(machineDir, abs)) return false;
   const first = (abs.split(path.sep)[machineDir.split(path.sep).length] || '').toLowerCase();
-  return MACHINE_OWNED_ENTRIES.some((entry) => first === entry || first.startsWith(`${entry}.`));
+  if (MACHINE_OWNED_ENTRIES.dirs.some((entry) => first === entry)) return true;
+  return MACHINE_OWNED_ENTRIES.files.some((entry) => first === entry || first.startsWith(`${entry}.`));
 }
 
 /**

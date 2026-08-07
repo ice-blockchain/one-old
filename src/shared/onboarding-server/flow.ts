@@ -21,6 +21,7 @@ import {
   clearProjectHostPrefs,
   mergeProjectHostPrefs,
   mergeProjectPrefs,
+  patchState,
   readEffectiveState,
   readState,
   writeGlobalCodeGraphProvider,
@@ -168,18 +169,41 @@ export function computeOnboarding(
 // refused — and for `open-code` the field that goes missing is the durable
 // authorization the spawn gate cites, so delegation is later denied as "not
 // explicitly authorized" for a permission the user did grant.
+//
+// `patchState`, not `writeState(cwd, { ...readState(cwd), ...patch })`. Three
+// things change, and all three are what a wizard answer wants:
+//
+//   - the base is re-read INSIDE the state lock, so a SessionStart backfill or
+//     another wizard tab landing between this step's read and its write is no
+//     longer erased. Every caller here declares one or two fields and means
+//     exactly those; the old spelling published a whole-object snapshot taken
+//     before the lock and dropped whatever arrived in between.
+//   - an ILLEGIBLE base now REFUSES instead of healing. That is the important
+//     half: `readState` answers a torn `.one.json` with `{}`, so the old
+//     spelling replaced the user's whole project state with this one answer
+//     plus a version — stack, mode and onboardingComplete gone — and reported
+//     success. The bytes went to `.one.json.corrupt`, where nothing reads them.
+//     A refusal keeps the file, and the three steps below already have the
+//     channel to say so.
+//   - `finalize` deliberately keeps `writeState`: it is the wizard's COMMIT, it
+//     means to replace the file, and it is the repair path a corrupt state has
+//     to heal through. Refusing there would wedge a hand-broken `.one.json`
+//     with no in-product way out.
 function patchSharedState(cwd: string, patch: Rec): boolean {
-  return writeState(cwd, { ...readState(cwd), ...patch });
+  return patchState(cwd, patch);
 }
 
-// The wizard renders `error`. The fence's refusal is durable — a planted symlink
-// stays planted, an unanswered "use Traffic One here?" stays unanswered — so
-// there is nothing to retry silently; name the answer that was not recorded and
-// the path that refused it.
+// The wizard renders `error` (routes.ts answers 400 `{ ok:false, error }`;
+// wizard.html rethrows it into showError), and the step does not advance. Both
+// reasons a wizard answer fails to reach disk are durable — a planted symlink
+// stays planted, an unanswered "use Traffic One here?" stays unanswered, and a
+// torn `.one.json` stays torn — so there is nothing to retry silently; name the
+// answer that was not recorded and the file that did not take it.
 function stateWriteRefused(subject: string): AnswerOutcome {
   return {
     ok: false,
-    error: `the project state write fence refused \`.traffic-one/.one.json\`, so ${subject} was not recorded`,
+    error: `\`.traffic-one/.one.json\` did not accept the write (the project state write fence refused it, `
+      + `or its current contents could not be read), so ${subject} was not recorded`,
   };
 }
 

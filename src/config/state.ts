@@ -102,6 +102,20 @@ export const KNOWN_ADDONS = new Set([
 // Subagent freshness windows.
 export const SUBAGENT_STALE_MS = 30 * 60 * 1000;
 export const PENDING_AGENT_CLAIM_STALE_MS = 5 * 60 * 1000;
+// How far into the future a state timestamp may sit before the clock that wrote
+// it is treated as untrustworthy rather than merely fast. Every stamp in the run
+// stores is written by a hook process on THIS machine through stateTimestamp(),
+// so a future stamp is not skew between peers: it is a clock that stepped
+// backwards (NTP, a manual change) or a file edited out of band. Neither is
+// evidence about an agent, and a negative age is exactly the input that reads as
+// MAXIMALLY fresh — see attestsLiveness, which classifies it instead.
+//
+// Five minutes matches the tolerance this repo already applies to the same
+// question elsewhere: DEFAULT_FUTURE_SKEW_MS (qa-report/schema.ts, rejecting a
+// report generated in the future), CURSOR_MODELS_MAX_FUTURE_SKEW_MS and
+// AVAILABLE_MODELS_MAX_FUTURE_SKEW_MS (both dropping a capture stamped ahead of
+// now). Kept as one shared number rather than a fourth private one.
+export const STATE_TIMESTAMP_FUTURE_SKEW_MS = 5 * 60 * 1000;
 // How long the reuse gate waits for a Cursor subagent to expose its Task `resume`
 // UUID (harvested from the transcript cache) before presuming it DEAD. A healthy
 // Cursor subagent surfaces one within seconds; a null resume id past this window

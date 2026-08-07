@@ -11,7 +11,8 @@ import { hostModelSnapshot, modelTierSnapshot, resolveModel } from '../../model-
 
 // Derived, never hardcoded: which model anchors a tier is editable policy.
 const CLAUDE_HIGHEST = resolveModel('highest', 'claude') as string;
-import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
+import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, statePath, writeGlobalCodeGraphProvider, writeState } from '../../state';
+import { readJsonResult } from '../../fsjson';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { writeRuntimeModelSnapshot } from '../../__tests__/support/one-mcp-runtime';
 
@@ -1349,6 +1350,9 @@ test('computeOnboarding: canonical hashed user preferences complete onboarding',
         collectedAt: '2026-01-01T00:00:00Z',
       },
       technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+      // The wizard writes this durable authorization record AND the per-user
+      // `openCode` preference below; the consent is read from the per-user store
+      // only, because the committed state file is agent-writable and shared.
       openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
       confirmed: true,
       onboardingComplete: true,
@@ -1357,6 +1361,7 @@ test('computeOnboarding: canonical hashed user preferences complete onboarding',
     const hashedPrefs = path.join(home, '.traffic-one', 'projects', projectRootHash(cwd), 'preferences.json');
     fs.mkdirSync(path.dirname(hashedPrefs), { recursive: true });
     fs.writeFileSync(hashedPrefs, JSON.stringify({
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
       hosts: {
         claude: {
           performance: {
@@ -1425,11 +1430,14 @@ test('computeOnboarding: an unstamped team never leaks the raw "team" step (kind
     stack: 'custom-backend',
     frontend: 'react-vite',
     backend: 'go',
-    openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
     performance: { level: 'high', source: 'prompted' },
     // no `team` key → hasValidTeamState false
   };
   withProject(committed, (cwd) => {
+    // The consent lives in the per-user store, never in the committed state
+    // file — an answered open-code step is a precondition of this test, not its
+    // subject, so it is seeded where the wizard's own answer handler puts it.
+    mergeProjectPrefs(cwd, { openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' } });
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'performance');
     assert.equal(view.meta.kind, 'single_select');
@@ -1511,4 +1519,109 @@ test('new-project: an unwritable user home never falls back to project-local pre
     if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN; else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── applyAnswer over an ILLEGIBLE `.one.json` ───────────────────────────────
+// The three `patchSharedState` steps are field merges; `finalize` is the
+// wizard's commit. That difference is the whole reason they now answer an
+// illegible base differently, and these two tests pin both halves — the second
+// is what makes the first safe to ship, because it is the in-product way out.
+//
+// The base the old spelling wrote from is asserted directly rather than argued:
+// `readState` answers a torn file with `{}`, so `writeState(cwd, { ...readState(cwd),
+// ...patch })` replaced the user's whole project state with one wizard answer and
+// a version, quarantined the bytes where nothing reads them, and returned `{ ok: true }`.
+//
+// CORRUPT is the discriminating kind here. `unreadable` is a CONTROL and is
+// labelled as one: `writeState` already refused it (statePreservedBeforeReplace
+// returns false for bytes it cannot copy), so both spellings answer false — it
+// is included to pin that the refusal survived the change, not to prove it.
+
+const ILLEGIBLE_STEPS: Array<{ step: string; value: unknown; field: string }> = [
+  { step: 'open-code', value: true, field: 'openCodeDelegation' },
+  { step: 'project-context', value: { originalPrompt: 'build a saas', answers: { audience: 'small teams' } }, field: 'projectContext' },
+  { step: 'mobile', value: 'web_only', field: 'mobile' },
+];
+
+test('a wizard answer is refused over a `.one.json` that cannot be read, and the file is left alone', () => {
+  for (const { step, value, field } of ILLEGIBLE_STEPS) {
+    // Writable, LEGIBLE baseline: the same answer over a readable base lands and
+    // leaves everything it did not declare in place. Without it a fixture that
+    // stopped reaching the write would satisfy the refusals below identically.
+    withProject({ mode: 'new-project', stack: 'default' }, (cwd) => {
+      recordPluginUseChoice(cwd, true, 'command');
+      assert.deepEqual(applyAnswer(cwd, step, value), { ok: true },
+        `legible baseline: ${step} is accepted`);
+      const after = readState(cwd);
+      assert.notEqual(after[field], undefined,
+        `legible baseline: ${step} really records ${field}`);
+      assert.equal(after.stack, 'default',
+        'legible baseline: and a field this step never declared is untouched — the merge is a merge');
+    });
+
+    // CORRUPT — a torn write, or a bad hand-edit.
+    withProject(null, (cwd) => {
+      recordPluginUseChoice(cwd, true, 'command');
+      const torn = '{"mode":"new-project","stack":"defa';
+      fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+      fs.writeFileSync(statePath(cwd), torn, 'utf8');
+      assert.equal(readJsonResult(statePath(cwd)).kind, 'corrupt', 'fixture guard: the base is unparseable');
+      assert.deepEqual(readState(cwd), {},
+        'the base the old spelling merged onto: a torn file reads as an EMPTY project, so the '
+        + "answer below used to become the file's entire contents");
+
+      const outcome = applyAnswer(cwd, step, value);
+      assert.equal(outcome.ok, false,
+        `${step} must not report an answer as accepted when it could not read what it was patching`);
+      assert.match(String(outcome.error), /\.one\.json/, `and ${step}'s error names the file that did not take it`);
+      assert.match(String(outcome.error), /could not be read/,
+        'and says WHY, because a torn file needs a different repair from a planted symlink');
+      assert.equal(fs.readFileSync(statePath(cwd), 'utf8'), torn,
+        "the user's state is byte-identical — a patch it could not read the base of destroys nothing");
+      assert.equal(fs.existsSync(`${statePath(cwd)}.corrupt`), false,
+        'and nothing was quarantined, because nothing was replaced');
+    });
+
+    // UNREADABLE — control, per the note above. EACCES rather than a directory at
+    // the path: `writeState`'s refusal is silent, so a shape that THREW would let
+    // applyAnswer's own error handling produce the same visible failure for a
+    // different reason. A root uid reads mode-000 straight through, hence the guard.
+    withProject(null, (cwd) => {
+      recordPluginUseChoice(cwd, true, 'command');
+      const bytes = JSON.stringify({ mode: 'new-project', stack: 'default' });
+      fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+      fs.writeFileSync(statePath(cwd), bytes, 'utf8');
+      fs.chmodSync(statePath(cwd), 0o000);
+      const guard = readJsonResult(statePath(cwd)).kind;
+      const outcome = applyAnswer(cwd, step, value);
+      fs.chmodSync(statePath(cwd), 0o644);
+
+      assert.equal(guard, 'unreadable',
+        'fixture guard: this environment must actually produce an unreadable read (a root uid ignores '
+        + 'the mode bits, and an `ok` read here would measure nothing)');
+      assert.equal(outcome.ok, false, `${step} refuses bytes that exist and cannot be copied`);
+      assert.equal(fs.readFileSync(statePath(cwd), 'utf8'), bytes, 'and they survive');
+    });
+  }
+});
+
+test('`finalize` still HEALS the same torn `.one.json`, which is why refusing the merge steps wedges nothing', () => {
+  withProject(null, (cwd) => {
+    recordPluginUseChoice(cwd, true, 'command');
+    const torn = '{"mode":"new-project","projectContext":{"originalPrompt":"build a sa';
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(statePath(cwd), torn, 'utf8');
+    assert.equal(readJsonResult(statePath(cwd)).kind, 'corrupt', 'fixture guard: the base is unparseable');
+    assert.equal(applyAnswer(cwd, 'mobile', 'web_only').ok, false,
+      'fixture guard: the merge steps really are refused on this exact file');
+
+    // `finalize` deliberately keeps `writeState`: it MEANS to replace the file,
+    // and it is the repair path a corrupt state has to heal through. So the user
+    // whose merge answers were just refused is not stuck — the commit still works.
+    assert.deepEqual(applyAnswer(cwd, 'finalize', true), { ok: true },
+      'the wizard commit is a whole-file replacement and still lands over an unreadable base');
+    assert.equal(typeof readState(cwd).stack, 'string', 'the project is onboarded again');
+    assert.equal(fs.readFileSync(`${statePath(cwd)}.corrupt`, 'utf8'), torn,
+      'and the bytes it replaced were preserved beside it, byte for byte');
+  });
 });

@@ -19,6 +19,9 @@ import {
 import {
   liveRunAgent,
   REPLACE_AGENT_MARKER,
+  type RunAgentEntry,
+  runLedgerAdmitsClaims,
+  runRoleHasBoundClaim,
 } from '../../shared/state';
 import {
   CURSOR_FAILURE_BLOCK_FALLBACKS,
@@ -140,18 +143,117 @@ export function exhaustedModelRotationDeny(
   );
 }
 
+/**
+ * The STRUCTURAL grounds on which `[t1-replace-agent]` is honoured against a
+ * live registry row: facts the RUNTIME recorded about the agent and the run,
+ * never vocabulary the orchestrator wrote about itself. `replacementJustified`
+ * below decides from the caller's own prose, which makes the authority to retire
+ * an agent a function of word choice; everything here is disk state written by
+ * the recorder, the claim store, or the ledger.
+ */
+export type StructuralReplacementGround = 'unbindable-agent' | 'condemned-model';
+
+export function structuralReplacementGround(
+  cwd: string,
+  runId: string,
+  role: string,
+  live: RunAgentEntry | null,
+): StructuralReplacementGround | null {
+  if (!live || !runId || !role) return null;
+  // The registry records an agent when it is SPAWNED, not when it binds a role,
+  // so a live row can name a child that never resolved its role and never will —
+  // every write it attempts is denied as the main agent. BOTH conditions are
+  // required: a claimless agent in a run that still admits claims may simply be
+  // mid-startup, and a PENDING claim already counts as bound, so a child that is
+  // binding right now is never replaced out from under itself.
+  if (!runRoleHasBoundClaim(cwd, runId, role) && !runLedgerAdmitsClaims(cwd, runId)) {
+    return 'unbindable-agent';
+  }
+  // The role's exhaustion ledger condemns the exact model this agent is running.
+  // Continuing it re-issues work on a model already known to be out of budget,
+  // which is the loop the rotation deny exists to break. Model-SPECIFIC on
+  // purpose: another model condemned for the same role says nothing about the
+  // child now running.
+  //
+  // Do NOT read this ledger as runtime-only evidence. Most writers are durable
+  // results (record-agent's stop event, Cursor child-transcript reconciliation),
+  // but exhaustedModelRotationDeny ALSO writes it from `isApiUsageLimitText` on
+  // the spawn prompt whenever its `requireDurableEvidence` is false — which its
+  // single caller sets to `cursorAwaitingResume`, so the prose path is live on
+  // every other route. That is deliberate product behaviour, not a leak: Cursor
+  // can omit post-Task events entirely, leaving the prompt the only channel
+  // carrying an api-limit. The consequence to keep in view is that this ground
+  // is reachable from orchestrator prose across two invocations (one to write
+  // the ledger, one to read it). It stays sound anyway, because the same prose
+  // already grants the same authority directly through the dead-agent escape's
+  // own `isApiUsageLimitText` disjunct, and because the verdict it produces —
+  // do not keep talking to an agent whose model the run recorded as exhausted —
+  // is the correct one whichever channel reported the limit.
+  const model = typeof live.model === 'string' ? live.model.trim() : '';
+  if (model && modelIsExhausted(cwd, runId, role, model)) return 'condemned-model';
+  return null;
+}
+
+// Context exhaustion has NO structural signal: the agent is alive, holds its
+// claim, and only the orchestrator's reading of its replies reveals that the
+// window is full. No ledger, registry row, or transcript records it, so
+// structuralReplacementGround cannot cover it and refusing the marker for it
+// strands the run with no exit. These patterns are therefore the backstop for
+// the failures the runtime cannot observe for itself — deliberately permissive,
+// because a refused legitimate replacement costs the whole build while a
+// believed illegitimate one costs a re-loaded context.
+//
+// The old vocabulary accepted `context exhausted` but not `context exhaustion`,
+// the exact phrase the gate's own SKILL.md prose prescribes — so an orchestrator
+// following the shipped instruction verbatim was refused.
+const CONTEXT_EXHAUSTION_RE = new RegExp(
+  String.raw`\bcontext\s+(?:exhaust(?:ed|ion)|limit|window\s+(?:full|exceeded))\b`
+  + '|' + String.raw`\bexhausted\s+(?:its\s+|the\s+)?context\b`
+  + '|' + String.raw`\bout\s+of\s+context\b`,
+  'i',
+);
+
+// A continuation call that errored. The old vocabulary matched only the
+// idealised phrase "agent not found" quoted in SKILL.md, so every realistic
+// rendering with an id interpolated ("Agent <uuid> not found") missed it.
+const CONTINUATION_FAILURE_RE = new RegExp(
+  String.raw`\b(?:resume|resuming|continuation|follow[- ]?up|send[- ]?message)\s+(?:has\s+)?(?:failed|errored)\b`
+  + '|' + String.raw`\b(?:couldn'?t|could\s+not|cannot|can'?t|unable\s+to)\s+(?:continue|resume)\b`
+  + '|' + String.raw`\bno\s+(?:such\s+)?agent\s+(?:found|exists)\b`
+  + '|' + String.raw`\b(?:couldn'?t|could\s+not|unable\s+to)\s+find\s+[^.;\n]{0,20}?\bagent\b`
+  + '|' + String.raw`\b(?:sub)?agent\b[^.;\n]{0,60}?\b(?:not\s+found|does\s+not\s+exist|no\s+longer\s+(?:exists|available)|unavailable|unknown)\b`,
+  'i',
+);
+
+// The agent itself is gone. This arm used to be a list of BARE words — `dead`,
+// `stale`, `closed`, `stopped`, `aborted`, `interrupted` — which made
+// "Remove the dead code in utils.ts" and "The GitHub issue was closed" both
+// sufficient to retire a healthy agent (measured, not inferred). A death word
+// with no subject is evidence in neither direction, so require it to be
+// predicated of the AGENT; the few words that never occur benignly in build
+// prose still stand alone.
+const AGENT_DEATH_RE = new RegExp(
+  String.raw`\b(?:the\s+|its\s+|that\s+|previous\s+|existing\s+|current\s+|old\s+)*`
+  + String.raw`(?:sub)?(?:agent|child|worker|task|thread|it)\s+`
+  + String.raw`(?:has\s+|had\s+|is\s+|was\s+|went\s+|gone\s+|already\s+|never\s+)*`
+  + String.raw`(?:dead|stale|closed|stopped|aborted|interrupted|unresponsive|hung|frozen|crashed|gone|silent)\b`
+  + '|' + String.raw`\b(?:unresponsive|hung|frozen|(?:no\s+longer|stopped)\s+responding)\b`,
+  'i',
+);
+
 export function replacementJustified(prompt: string, host = ''): boolean {
   if ((host === 'opencode' || host === 'kilo' || host === 'windsurf')
     && /\b(previous|existing|current)\s+(opencode\s+)?(agent|task|subagent)\s+(completed|finished|returned|ended)\b|\bfix[- ]cycle\b|\bfollow[- ]up\b|\bno\s+resum(?:e|able|able\s+task)\b|\bcontinuation\s+(unavailable|unsupported)\b/i.test(prompt)) {
     return true;
   }
-  if (isApiUsageLimitText(prompt)) return true;
   // api/usage-limit vocabulary: a subagent stopped mid-run by provider limits is
   // dead for this session — continuation would re-hit the same limit. The
   // PostToolUse recorder also retires such agents proactively; this keeps the
   // replace path open when the result carried no classifiable text.
-  return /\b(context exhausted|context limit|agent not found|resume failed|continuation failed|couldn'?t continue|could not continue|unresponsive|dead|stale|closed|stopped|aborted|interrupted)\b/i
-    .test(prompt);
+  if (isApiUsageLimitText(prompt)) return true;
+  return CONTEXT_EXHAUSTION_RE.test(prompt)
+    || CONTINUATION_FAILURE_RE.test(prompt)
+    || AGENT_DEATH_RE.test(prompt);
 }
 
 // On Cursor a tier's `expected` is a bare model FAMILY (e.g. claude-fable-5). Map it to the

@@ -181,6 +181,11 @@ inactive state. Run
 to inspect the Codex transcript. Incident mode anchors project preferences,
 hook trust, and project-state probes to the cwd recorded in that session rather
 than to the plugin install the command names.
+Check the Node version the hooks actually got, too: a `HOOK_RUNTIME_NODE_BELOW_FLOOR`
+finding means the host is running Traffic One on a Node below the supported floor,
+which is what a GUI-launched host does on a machine whose Node 22 comes from
+`nvm` — see the Node requirement under "Installation" below for why and for the
+two fixes.
 Traffic One implementation remains gated until the project has `pluginUse`
 enabled and the canonical API-key record is valid. If the user declines the
 plugin, ordinary work continues without Traffic One features.
@@ -465,6 +470,23 @@ example `/Users/John/Projects/traffic-one/dist`.
 Traffic One requires Node.js 22 or newer on `PATH`; its generated runtime package
 also declares this requirement so host and CI installations can reject an
 incompatible Node version early.
+
+**A terminal with Node 22 is not the same as a host with Node 22.** Hooks run in
+a process the host application spawns, so they get the host's `PATH` — and a host
+started from the desktop (Dock, Start menu, Spotlight, a `.desktop` entry) never
+runs your shell's startup files. `nvm` lives entirely in those startup files: it
+is a shell function that prepends a version directory to `PATH`, so a
+GUI-launched host sees the old system `node` instead, no matter what `node -v`
+prints in your terminal and no matter what `nvm alias default` is set to. The
+symptom is not an error message about Node — it is hooks that fail in ways that
+name something else, or produce nothing at all. Every generated launcher now
+writes one line to stderr when it starts on an unsupported Node, naming the
+version, the floor, and this cause; it then continues rather than refusing, so
+this warns you without turning a degraded install into a blocked session. Two
+fixes work: quit the host and relaunch it from a terminal that already has Node
+22+ (`cursor .`, `claude`, `codex`), or install Node 22+ somewhere on the system
+`PATH` that a GUI launch can see. `node ~/.traffic-one/bin/doctor.cjs` reports
+this as `HOOK_RUNTIME_NODE_BELOW_FLOOR`, with the `node` it found on `PATH`.
 
 ### Claude Code
 

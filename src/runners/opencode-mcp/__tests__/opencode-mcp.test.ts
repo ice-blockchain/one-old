@@ -708,32 +708,95 @@ test('an unpolled background delegation is cancelled by the watchdog (action: ab
   }
 });
 
-test('active polling keeps a slow delegation alive past the abandon threshold', async () => {
+/**
+ * The keep-alive env below is what makes this claim testable AT ALL, and its
+ * absence is what made this test vacuous for as long as it existed. At the
+ * production default (`true`) `refreshChildKeepAlive` stamps `lastPolledAt` on
+ * EVERY watchdog tick for as long as a child is alive, so the watchdog refreshes
+ * the very timestamp it then tests and the abandon is unreachable while the
+ * worker lives: the old form passed with ZERO polls and asserted nothing about
+ * polling. Both sibling abandon tests already pin it off for the same reason.
+ *
+ * Pinning it off turns the test into a race, so the numbers are MEASURED. The
+ * abandon is decided from WALL CLOCK (`Date.now() - run.lastPolledAt`), while
+ * the poll that refreshes it and the watchdog that reads it are timers on the
+ * SAME event loop — so a descheduled process wakes the watchdog onto a stale
+ * timestamp, and no in-process poller can out-run that. The failure needs a GAP
+ * between consecutive refreshes wider than the threshold, so that gap, at this
+ * 150 ms cadence, is the thing to size against. Measured on this repo's suite
+ * machine (10 cores):
+ *
+ *     idle                          p50 151 ms   max  156 ms   (n=40)
+ *     full `npm test`               p50 152 ms   max  247 ms   (n=492)
+ *     96 concurrent spawn workers   p50 158 ms   max  996 ms   (n=1067)
+ *
+ * 2000 ms is 8.1x the worst gap the real suite produced and 2.0x the worst under
+ * a deliberately adversarial ~10x core oversubscription. Past that the loop
+ * misses its own cadence (192 workers: max 1735 ms) and a reap is then the
+ * CONTRACT rather than a defect — so the assertion is gated on the cadence the
+ * loop actually achieved, INCONCLUSIVE rather than a claim whose premise broke.
+ */
+test('active polling keeps a slow delegation alive past the abandon threshold', async (t) => {
+  const ABANDON_MS = 2000;
+  const POLL_MS = 150;
+  // Outlives both phases with >2x to spare. Costs nothing: phase 2's abandon
+  // kills the child, so the unused remainder is never waited on.
+  const SLOW_POLLED_STUB = [
+    'setTimeout(() => { console.log(JSON.stringify({ ok: true, action: "delegated", digest: null, touched: [] })); }, 12000);',
+  ].join('\n');
   const savedAbandon = process.env.T1_OC_ABANDON_MS;
   const savedTick = process.env.T1_OC_WATCHDOG_TICK_MS;
-  process.env.T1_OC_ABANDON_MS = '400';
+  const savedKeepAlive = process.env.T1_OC_CHILD_KEEPALIVE;
+  process.env.T1_OC_ABANDON_MS = String(ABANDON_MS);
   process.env.T1_OC_WATCHDOG_TICK_MS = '100';
+  process.env.T1_OC_CHILD_KEEPALIVE = 'false';
   try {
-    await withStubRunner(SLOW_STUB, async (projectRoot) => { // stub finishes after 1200ms > abandon 400ms
+    await withStubRunner(SLOW_POLLED_STUB, async (projectRoot) => {
       const args = { role: 'senior-backend', task: 'slow but polled', runId: 'alive-1', allowedFiles: 'services/api/src/**', projectRoot };
-      // Poll repeatedly (each poll refreshes the keep-alive) until terminal.
-      // Bounded by a DEADLINE rather than an iteration count: 20 polls of
-      // 150 ms is a 3 s budget for a 1200 ms stub, i.e. the same boot race one
-      // notch further out. The 150 ms cadence itself stays put — it is the
-      // poll interval the abandon threshold is being tested against.
-      const deadline = Date.now() + TERMINAL_WAIT_CEILING_MS;
-      let res = (await delegateResumable(args, 150)) as Any;
-      while (res.running && Date.now() < deadline) {
-        res = (await delegateResumable(args, 150)) as Any;
+      const startedAt = Date.now();
+      let lastPollAt = startedAt;
+      let maxGapMs = 0;
+      // Each re-entry stamps `lastPolledAt` synchronously, so the interval
+      // between these calls IS the interval the watchdog measures against.
+      const poll = async (): Promise<Any> => {
+        const now = Date.now();
+        maxGapMs = Math.max(maxGapMs, now - lastPollAt);
+        lastPollAt = now;
+        return (await delegateResumable(args, POLL_MS)) as Any;
+      };
+
+      let res = await poll();
+      while (res.running && Date.now() - startedAt < ABANDON_MS + 1000) res = await poll();
+      maxGapMs = Math.max(maxGapMs, Date.now() - lastPollAt);
+
+      if (maxGapMs > ABANDON_MS) {
+        await delegateStatus({ projectRoot, runId: 'alive-1', role: 'senior-backend', cancel: true });
+        t.diagnostic(`poll-liveness INCONCLUSIVE · max refresh gap ${maxGapMs}ms exceeded the ${ABANDON_MS}ms threshold`);
+        t.skip(`INCONCLUSIVE (poll-liveness NOT checked) · this loop missed its own ${POLL_MS}ms cadence by ${maxGapMs}ms, which makes a reap correct`);
+        return;
       }
-      assert.equal(res.ok, true, 'polled run must complete, not be abandoned');
-      assert.equal(res.action, 'delegated');
+      assert.equal(res.running, true, 'a polled run must still be running past the abandon threshold');
+      assert.ok(Date.now() - startedAt > ABANDON_MS, 'the polled window must actually exceed the threshold');
+
+      // Reachability at THESE numbers, and the guard against this test going
+      // vacuous the other way: a threshold that drifted above the stub's
+      // duration would keep phase 1 green while proving nothing. The wait only
+      // has to outlast threshold + one tick — node fires expired timers in
+      // due-time order, so the abandoning tick is delivered before this timer
+      // however far load stretches both.
+      await new Promise((r) => setTimeout(r, ABANDON_MS + 600));
+      const reaped = (await delegateStatus({ projectRoot, runId: 'alive-1', role: 'senior-backend' })) as Any;
+      assert.equal(reaped.status, 'done', 'the same run must be reaped once the polls stop');
+      assert.equal(reaped.result?.action, 'abandoned');
+      assert.match(String(reaped.result?.error), /stopped polling/);
     });
   } finally {
     if (savedAbandon === undefined) delete process.env.T1_OC_ABANDON_MS;
     else process.env.T1_OC_ABANDON_MS = savedAbandon;
     if (savedTick === undefined) delete process.env.T1_OC_WATCHDOG_TICK_MS;
     else process.env.T1_OC_WATCHDOG_TICK_MS = savedTick;
+    if (savedKeepAlive === undefined) delete process.env.T1_OC_CHILD_KEEPALIVE;
+    else process.env.T1_OC_CHILD_KEEPALIVE = savedKeepAlive;
   }
 });
 

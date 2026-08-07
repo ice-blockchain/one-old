@@ -21,6 +21,11 @@ import { profileHasWebUi, type CapabilityProfileV1 } from '../capabilities';
 import { O_NOFOLLOW, isSymlink, nofollowEnforcedByKernel, writeAll } from '../fs-nofollow';
 import { greenfieldEvidence, hasCommittedHistory } from '../greenfield-evidence';
 import { seedI18nCatalogKeys } from '../i18n-seed';
+import {
+  CONVENTION_SLOT_BY_BASENAME,
+  slotAcceptsScaffold,
+  type ConventionSlot,
+} from './convention-evidence';
 import { profileUsesReactI18n } from './i18n';
 import { moduleSkeleton, type ModuleSkeletonReferenceV1 } from './skeletons';
 import type { CompiledArchitectureV1 } from './types';
@@ -1016,21 +1021,50 @@ export function scaffoldFileContent(
  *     particular OUTRANKS a project's `pyproject.toml [tool.ruff]` section.
  *
  * They reach a project only under compile.ts's `isNewProject`, which is
- * `state.mode === 'new-project'` — the guess. Matched by BASENAME because the
- * node tooling root and a server-rendered backend's app root are not always `.`;
- * `.gitignore` is only ever compiled at the project root.
+ * `state.mode === 'new-project'` — the guess. Which of them a given project may
+ * receive is decided per toolchain SLOT by convention-evidence.ts, from facts on
+ * disk; `.gitignore` is not one of them, because its own two-armed authority
+ * lives in greenfield-evidence.ts.
  */
-const PROJECT_CONVENTION_BASENAMES = new Set<string>([
-  '.gitignore',
-  'eslint.config.js',
-  '.prettierrc',
-  '.prettierignore',
-  '.stylelintrc.json',
-  'ruff.toml',
-  '.golangci.yml',
-  'pint.json',
-  'rustfmt.toml',
-]);
+const CONVENTION_BASENAMES = new Set<string>(Object.keys(CONVENTION_SLOT_BY_BASENAME));
+
+/**
+ * The node tooling cluster and the manifest that makes it run. All of them come
+ * out of one `nodeToolingScaffoldOutputs` call rooted at that manifest, and the
+ * manifest is the only place their devDependencies and `lint`/`format` scripts
+ * live — so the two sides seed together or not at all. Seeding the manifest alone
+ * installs a toolchain for a config that is not there; seeding a config alone
+ * leaves an `eslint.config.js` importing plugins nobody installed, and
+ * rules/common/quality-tooling.md says it plainly: "a config with no installed
+ * tool and no script is inert".
+ *
+ * This cluster ALSO keeps the committed-history arm, where the toolchain-quality
+ * configs below have given it up. Not an oversight — the hazard here is the one
+ * intrinsic evidence cannot see. `packageJsonBody` adds `format: prettier --write
+ * .`, and prettier has a parser for `.md`, `.yml`, `.json`, `.html` and `.css`,
+ * so the first `npm run format` rewrites files in EVERY language, including a
+ * repository that holds not one line of JavaScript. A per-slot source arm is
+ * language-scoped by construction and reads the `main.tf`-plus-a-commit shape
+ * that greenfield-evidence.ts was written for — a Terraform stack, a dbt project,
+ * a docs site — as empty. `ruff check .` cannot rewrite a file and cannot see a
+ * language it does not parse, which is what makes the intrinsic arms sufficient
+ * there and insufficient here.
+ */
+const NODE_TOOLING_SLOTS = new Set<ConventionSlot>(['js-lint', 'js-format', 'css-lint']);
+
+function conventionSlotOf(rel: string): ConventionSlot | null {
+  return CONVENTION_SLOT_BY_BASENAME[rel.split('/').pop() || ''] ?? null;
+}
+
+// `seedIfBlank`'s own precondition, asked WITHOUT writing: a file that is absent
+// or blank is one this function may fill.
+function blankOrMissing(projectRoot: string, rel: string): boolean {
+  try {
+    return fs.readFileSync(path.join(projectRoot, rel), 'utf8').trim().length === 0;
+  } catch {
+    return true;
+  }
+}
 
 export interface ScaffoldContentOptions {
   /**
@@ -1073,35 +1107,105 @@ export function ensureScaffoldContent(
     ? null
     : toolingRoot === '.' ? 'package.json' : `${toolingRoot}/package.json`;
   const written: string[] = [];
-  // One walk up the filesystem for the whole loop, and only when a convention
-  // body is actually up for seeding — the answer cannot change mid-call.
+  // `.gitignore` keeps this arm because `greenfieldEvidence`'s two arms are
+  // exactly `seedIfBlank` (no project-owned content) plus this one — git never
+  // untracks what is already committed, so a commit is the thing an ignore rule
+  // can silently shadow. The node tooling cluster keeps it for the repo-wide
+  // formatter reason in NODE_TOOLING_SLOTS.
   let history: boolean | null = null;
   const projectAlreadyHasHistory = (): boolean => {
     if (history === null) history = hasCommittedHistory(projectRoot);
     return history;
   };
+  // No node slot's verdict can change the outcome once the cluster is out (its
+  // gate below starts with this same question), and each one costs a source-tree
+  // walk of the whole project — the dominant cost of this function on a large
+  // repository, and this runs inside the PLAN_READY transaction. On a 3,001-file
+  // non-JS repository with history the skip is ~16x on the median and ~24x on
+  // the minimums, where scheduler noise is lowest.
+  //
+  // Skipping them leaves the outputs byte-identical: `nodeSlotsAccept` folds an
+  // empty list to `true` and is ANDed with this flag anyway, and the loop's own
+  // lookup misses, reads `false`, and withholds exactly what the cluster gate
+  // would have. Verified as tree hashes over every covered project shape, not
+  // just as an argument.
+  const nodeClusterPossible = !projectAlreadyHasHistory();
+  // EVERY verdict is resolved BEFORE the first write, and that ordering is the
+  // correctness of this function, not a convenience — arm A of the slot rule
+  // reads the filesystem, and the filesystem is what this loop is about to
+  // change.
+  //
+  // The load-bearing case is the CLUSTER GATE below, and it is a starvation
+  // rather than a poisoning: `nodeSlotsAccept` folds over every node slot's
+  // verdict to decide the tooling manifest, and that manifest is scaffold output
+  // 0 while the configs it folds are outputs 50 (`.prettierrc`), 51
+  // (`.prettierignore`), 53 (`eslint.config.js`) and 54 (`.stylelintrc.json`).
+  // Resolve at the point of use instead and the fold runs over an empty map,
+  // `every` is vacuously true, and the manifest is seeded for a cluster the loop
+  // then withholds one config at a time. Measured on a react compile over a tree
+  // that already holds `.js` source: 9 files written eagerly, 11 lazily — a
+  // `package.json` installing eslint and prettier plus a `.stylelintrc.json`
+  // beside it, for configs that never arrive.
+  //
+  // A second route is closed in convention-evidence.ts, and this guard
+  // deliberately does not depend on that staying so: `packageJsonBody` seeds
+  // `prettier`, `stylelint` and `eslint` as devDependencies, so any manifest
+  // pattern loose enough to match a NESTED key reads our own output 0 back as
+  // the project declaring three slots. `topLevelManifestKey` anchors on the
+  // indent so it does not; against the pattern that preceded it, lazy resolution
+  // also dropped `.prettierrc`, `.prettierignore` and `.stylelintrc.json` from a
+  // clean greenfield compile (14 written, 11).
+  //
+  // NOT a route, though it reads like one: a slot-mate. `.prettierrc` and
+  // `.prettierignore` are both js-format, but this memo is keyed by (slot,
+  // directory), so the second reuses the first's verdict whether resolution is
+  // eager or lazy. Only the two routes above turn on the ordering.
+  //
+  // All of it fails silently — the seed is never written, or it is written
+  // without the toolchain that makes it run.
+  const slotVerdicts = new Map<string, boolean>();
   for (const output of scaffoldOutputs) {
-    const isToolingManifest = normalized(output.path) === toolingManifest;
+    const rel = normalized(output.path);
+    const slot = conventionSlotOf(rel);
+    if (!slot) continue;
+    if (NODE_TOOLING_SLOTS.has(slot) && !nodeClusterPossible) continue;
+    const dir = path.posix.dirname(rel);
+    const key = `${slot}\n${dir}`;
+    if (!slotVerdicts.has(key)) {
+      slotVerdicts.set(
+        key,
+        slotAcceptsScaffold(projectRoot, path.resolve(projectRoot, dir), slot),
+      );
+    }
+  }
+  // The coupling, in both directions (see NODE_TOOLING_SLOTS): the cluster lands
+  // only when its manifest can be filled too, and the manifest lands only when
+  // every config it installs a tool for is landing with it. A compiled cluster
+  // always has a manifest; when there is none in the outputs at all there is no
+  // toolchain to be out of step with, so the coupling has nothing to say.
+  const nodeSlotsAccept = nodeClusterPossible
+    && [...slotVerdicts]
+      .filter(([key]) => NODE_TOOLING_SLOTS.has(key.split('\n')[0] as ConventionSlot))
+      .every(([, accepts]) => accepts);
+  const nodeClusterSeeds = nodeSlotsAccept
+    && (toolingManifest === null || blankOrMissing(projectRoot, toolingManifest));
+  for (const output of scaffoldOutputs) {
+    const rel = normalized(output.path);
+    const isToolingManifest = rel === toolingManifest;
     const body = isToolingManifest
       ? packageJsonBody(profile)
       : scaffoldFileContent(output.path, profile);
     if (!body) continue;
-    // These bodies are opinions about someone else's repository (see
-    // PROJECT_CONVENTION_BASENAMES) and they arrive here on the same
-    // `state.mode` guess `ensureProjectGitignore` may no longer trust.
-    // `seedIfBlank` already supplies the "no existing content" arm of
-    // `greenfieldEvidence`; a commit in the owning repository supplies the
-    // other, and a project with history has conventions of its own whether or
-    // not it happens to spell them in the file we were about to create — an
-    // `.eslintrc.json`, a `[tool.ruff]` block in `pyproject.toml`, or a
-    // `biome.json` are all invisible to a missing-or-blank test on OUR path.
-    // The tooling `package.json` rides along: its whole content is the
-    // devDependencies and `lint`/`format` scripts for the eslint config being
-    // withheld, so seeding it alone would install a toolchain for a config that
-    // is not there.
-    const convention = isToolingManifest
-      || PROJECT_CONVENTION_BASENAMES.has(normalized(output.path).split('/').pop() || '');
-    if (convention && projectAlreadyHasHistory()) continue;
+    if (rel.split('/').pop() === '.gitignore') {
+      if (projectAlreadyHasHistory()) continue;
+    } else if (isToolingManifest) {
+      if (!nodeSlotsAccept) continue;
+    } else if (CONVENTION_BASENAMES.has(rel.split('/').pop() || '')) {
+      const slot = conventionSlotOf(rel) as ConventionSlot;
+      const accepts = slotVerdicts.get(`${slot}\n${path.posix.dirname(rel)}`) === true;
+      if (!accepts) continue;
+      if (NODE_TOOLING_SLOTS.has(slot) && !nodeClusterSeeds) continue;
+    }
     if (seedIfBlank(projectRoot, output.path, body)) written.push(output.path);
   }
   if (options?.newProject && options.compiled) {

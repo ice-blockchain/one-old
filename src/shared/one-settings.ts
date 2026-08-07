@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { ONE_SETTINGS_VERSION } from '../config/one-settings';
+import { trustworthyAgeSince } from './clock-skew';
 import { readJson } from './fsjson';
 import { globalTrafficOneDir } from './state-root';
 
@@ -231,6 +232,10 @@ function reapObservedLock(lockPath: string, owner: SettingsLockOwner): boolean {
 function reapAbandonedEmptyLock(lockPath: string, now: number): boolean {
   try {
     if (fs.readdirSync(lockPath).length !== 0) return false;
+    // Left as a raw subtraction on purpose; see the same note in
+    // one-mcp/cache-lock.ts. `rename(dir, EMPTY dir)` succeeds, so an empty
+    // canonical lock is overwritten rather than contended and this reap is not
+    // on the acquisition path. A negative age here costs a retry, not a wedge.
     if (now - fs.statSync(lockPath).mtimeMs <= ONE_SETTINGS_LOCK_STALE_MS) return false;
     fs.rmdirSync(lockPath);
     return true;
@@ -286,7 +291,12 @@ function acquireSettingsLock(filePath: string): SettingsLock {
         if (!contended) throw error;
         const now = Date.now();
         const owner = observedLockOwner(lockPath);
-        if (owner && now - owner.createdAt > ONE_SETTINGS_LOCK_STALE_MS
+        // A stamp ahead of now makes this age negative, and a negative age is
+        // never `> STALE`, so a dead owner's lock would block every settings
+        // write until the timeout, permanently. An unusable age does not veto
+        // the reap; `processAlive` below still decides, so a live owner holds.
+        const ownerAgeMs = owner ? trustworthyAgeSince(owner.createdAt, now) : null;
+        if (owner && (ownerAgeMs === null || ownerAgeMs > ONE_SETTINGS_LOCK_STALE_MS)
           && !processAlive(owner.pid) && reapObservedLock(lockPath, owner)) {
           continue;
         }

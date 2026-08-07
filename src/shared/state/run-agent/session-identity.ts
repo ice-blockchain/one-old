@@ -3,6 +3,7 @@
 
 import { obj, type Rec } from '../../obj';
 import { parseJson } from '../../fsjson';
+import { trustworthyAgeMs } from '../../clock-skew';
 
 import {
   firstString,
@@ -153,6 +154,37 @@ export function timestampAgeMs(value: unknown): number {
 }
 export function isFreshTimestamp(value: unknown, maxAgeMs: number): boolean {
   return timestampAgeMs(value) <= maxAgeMs;
+}
+
+/**
+ * The same window question asked the other way round: does this age ATTEST that
+ * its subject was alive recently, rather than merely fail to prove it was not?
+ *
+ * `isFreshTimestamp` above answers the first question and must keep answering
+ * it, because most of its callers read freshness as a REASON TO BLOCK — a
+ * fallback lock that still shuts a rival out (fallback-claims.ts), a successor
+ * whose live claim supersedes a ghost (claims-pending.ts), a target row whose
+ * occupancy refuses a rebind (rebind-journal.ts). There, an unusable stamp must
+ * keep the block: dropping it hands a second writer into files the first one
+ * still holds. Liveness sites want the opposite default, and the two cannot be
+ * one predicate.
+ *
+ * Two ages are unusable, and both currently read as ALIVE:
+ *   - Infinity, from an absent or unparseable stamp. `age <= maxAgeMs` is false,
+ *     so this predicate already fails closed and callers must stop hand-rolling
+ *     the inverse.
+ *   - a NEGATIVE age, from a stamp in the future, which passes `<= maxAgeMs` and
+ *     so reads as maximally fresh forever. Clamping it to zero would change
+ *     nothing (zero age is maximally fresh); a future stamp has to be
+ *     CLASSIFIED as an untrustworthy clock, which is what the skew bound does.
+ */
+export function ageAttestsLiveness(ageMs: number, maxAgeMs: number): boolean {
+  const age = trustworthyAgeMs(ageMs);
+  return age !== null && age <= maxAgeMs;
+}
+
+export function attestsLiveness(value: unknown, maxAgeMs: number): boolean {
+  return ageAttestsLiveness(timestampAgeMs(value), maxAgeMs);
 }
 
 // Why a claim did not bind. Recorded verbatim in the run's debug capture so an

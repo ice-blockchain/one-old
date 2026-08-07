@@ -19,6 +19,10 @@ import {
   type ArchitectureInputV1,
 } from '../architecture-contract';
 import {
+  projectDeclaresSlot,
+  slotAcceptsScaffold,
+} from '../architecture-contract/convention-evidence';
+import {
   GITIGNORE_BLOCK_END,
   GITIGNORE_BLOCK_START,
   siteUrlEnvVarForFramework,
@@ -1045,17 +1049,28 @@ test('a greenfield project ends up with the full body in BOTH writer orders', ()
 // distribution or consent is unsettled — so this path is independently reachable
 // on a misclassified repo and needs the same evidence gate.
 //
-// CHANGED (was 'ensureScaffoldContent does not seed the full .gitignore body
-// into a repository with history', which asserted `written.includes(
-// '.prettierignore')` under the message "only .gitignore is gated"). That
-// assertion pinned the defect: every config below is discovered automatically by
-// its tool, so seeding one into a repository that already has linting or
-// formatting conventions silently changes how the project's own `lint`/`format`
-// commands behave — `eslint.config.js` REPLACES an `.eslintrc*` outright under
-// ESLint 9, and `ruff.toml` outranks a `pyproject.toml [tool.ruff]` section. The
-// still-valid half of it (the veto is not a blanket stand-down) is kept below
-// against `.env.example`, which is about the toolchain this run compiles.
-test('ensureScaffoldContent seeds no repository convention into a repo with history', () => {
+// RENAMED (was 'ensureScaffoldContent seeds no repository convention into a repo
+// with history'). That title claimed the whole convention family, and the family
+// no longer answers to one predicate: `hasCommittedHistory` was a proxy, and
+// `capabilities/profile.ts:98-104` had already rejected it at this exact point in
+// the lifecycle — "a greenfield project routinely HAS a commit at this point (a
+// user who ran `git init && git commit` first, and every run-sim case)". Held
+// against the toolchain-quality configs it withheld them from every run there
+// has ever been: no simulated Python run received a `ruff.toml`, and `stack-lint`
+// (qa-evidence/stack.ts:214 gates on the FILE, not the binary) reported "the
+// project declares no lint command" forever. Those four now answer to intrinsic
+// evidence instead — see the tests below.
+//
+// What this test still pins, and why it is not the same question: this fixture is
+// a `main.tf` plus a commit, the shape greenfield-evidence.ts exists for, and the
+// node cluster's own hazard is repo-WIDE — `packageJsonBody` adds `format:
+// prettier --write .`, and prettier rewrites `.md`, `.yml` and `.json` in a
+// repository holding no JavaScript at all. No language-scoped arm can see that,
+// so the cluster and `.gitignore` keep the history arm. Every assertion below is
+// the original one; only `conventions` narrowed, and the premise is now exact
+// rather than `>= 4` so the day a toolchain-quality config appears in this list
+// the test says so instead of quietly widening.
+test('ensureScaffoldContent withholds the node tooling cluster and .gitignore from a repo with history', () => {
   withTempDir((cwd) => {
     writeFileAt(cwd, 'main.tf', 'resource "null_resource" "a" {}\n');
     initAndCommit(cwd);
@@ -1063,14 +1078,18 @@ test('ensureScaffoldContent seeds no repository convention into a repo with hist
     const outputs = compiled.scaffoldOutputs || [];
     const conventions = [
       '.gitignore', 'eslint.config.js', '.prettierrc', '.prettierignore',
-      '.stylelintrc.json', 'ruff.toml', '.golangci.yml', 'pint.json', 'rustfmt.toml',
+      '.stylelintrc.json',
     ];
     // Premise: a greenfield compile really does declare these, so the assertions
     // below cannot pass just because nothing was up for seeding.
     const declared = outputs
       .map((output) => output.path)
       .filter((rel) => conventions.includes(rel.split('/').pop() || ''));
-    assert.ok(declared.length >= 4, `premise: greenfield declares conventions (got ${declared.join(', ') || 'none'})`);
+    assert.deepEqual(
+      [...declared].sort(),
+      ['.gitignore', '.prettierignore', '.prettierrc', '.stylelintrc.json', 'eslint.config.js'],
+      'premise: a greenfield react compile declares exactly this cluster',
+    );
 
     const written = ensureScaffoldContent(cwd, outputs, compiled.profile, {
       compiled,
@@ -1087,6 +1106,385 @@ test('ensureScaffoldContent seeds no repository convention into a repo with hist
     // Not a blanket stand-down: a body about the toolchain THIS run compiles,
     // rather than about someone else's repository, must still be seeded.
     assert.ok(written.includes('.env.example'), 'toolchain bodies are not gated');
+  });
+});
+
+// --- toolchain-quality configs answer to intrinsic evidence -----------------
+
+const PYTHON_STATE = {
+  mode: 'new-project',
+  stack: 'custom-backend',
+  frontend: 'none',
+  backend: 'python',
+  mobile: { framework: 'none' },
+};
+
+const API_INPUT: ArchitectureInputV1 = {
+  schemaVersion: 1,
+  routes: [],
+  modules: [{ id: 'store', name: 'Store', kind: 'store' }],
+};
+
+/** The greenfield Python compile these four tests all start from. */
+function pythonScaffold(cwd: string): {
+  outputs: Array<{ path: string }>;
+  written: string[];
+} {
+  const compiled = compileArchitecture(cwd, 'R', PYTHON_STATE, API_INPUT);
+  const outputs = compiled.scaffoldOutputs || [];
+  assert.ok(
+    outputs.some((output) => output.path === 'ruff.toml'),
+    'premise: a greenfield python compile declares ruff.toml',
+  );
+  return { outputs, written: ensureScaffoldContent(cwd, outputs, compiled.profile, { compiled, newProject: true }) };
+}
+
+// THE DEFECT THAT CLOSED. A commit is not evidence that a project has opinions
+// about ruff: run-sim's `initRepo` commits before the run id is minted and a user
+// who ran `git init && git commit` first is still greenfield, so the history proxy
+// withheld `ruff.toml` from every Python run that has ever executed — and
+// `stack-lint` gates on the FILE (qa-evidence/stack.ts:214), so the check that
+// shape pins as `passed` could only ever report not-applicable.
+test('ensureScaffoldContent seeds ruff.toml into an otherwise empty repo that has a commit', () => {
+  withTempDir((cwd) => {
+    initAndCommit(cwd);
+    const { written } = pythonScaffold(cwd);
+    assert.ok(written.includes('ruff.toml'), 'a bare commit is not a python opinion');
+    assert.match(fs.readFileSync(path.join(cwd, 'ruff.toml'), 'utf8'), /^\[lint\]$/m);
+  });
+});
+
+// Arm A, and the only marginal protection the veto ever had over `seedIfBlank`:
+// our path is ABSENT while an equivalent lives under a name a missing-or-blank
+// test cannot see. `ruff.toml` OUTRANKS a `pyproject.toml [tool.ruff]` section, so
+// seeding it here would silently demote the config the project chose.
+test('ensureScaffoldContent withholds ruff.toml when pyproject.toml already configures ruff', () => {
+  withTempDir((cwd) => {
+    writeFileAt(cwd, 'pyproject.toml', '[project]\nname = "api"\n\n[tool.ruff]\nline-length = 88\n');
+    const { written } = pythonScaffold(cwd);
+    assert.ok(!written.includes('ruff.toml'), 'a [tool.ruff] section is the project speaking');
+    assert.equal(fs.existsSync(path.join(cwd, 'ruff.toml')), false, 'ruff.toml must not reach disk');
+    // Not a blanket stand-down, and no history in this fixture at all: the arm is
+    // the DECLARATION, not the repository.
+    assert.ok(written.includes('.env.example'), 'toolchain bodies are not gated');
+  });
+});
+
+// Same arm, a competing linter rather than a different spelling of the same one:
+// rules/common/quality-tooling.md tells agents "do not add a second linter beside
+// the one it uses", and a seeded `ruff.toml` is exactly that second linter.
+test('ensureScaffoldContent withholds ruff.toml from a project that already lints with flake8', () => {
+  withTempDir((cwd) => {
+    writeFileAt(cwd, '.flake8', '[flake8]\nmax-line-length = 88\n');
+    const { written } = pythonScaffold(cwd);
+    assert.ok(!written.includes('ruff.toml'), 'flake8 owns this slot already');
+  });
+});
+
+// Arm B, generalising `webAppHoldsSource` in capabilities/profile.ts: `detectMode`
+// calls anything with five or fewer SOURCE_EXTS files `new-project`, so a small
+// REAL Python project arrives here on the same guess. It never asked for our bar,
+// and handing it one makes our own `stack-lint` enforce that bar against code no
+// agent in the run wrote — which can fail QA on legacy source and block
+// settlement. Zero is the threshold for profile.ts's reason: a tree that thin
+// already reads new-project, so a higher one would only withhold from projects
+// with nothing to lose.
+test('ensureScaffoldContent withholds ruff.toml from a project that already holds python source', () => {
+  withTempDir((cwd) => {
+    writeFileAt(cwd, 'app/legacy.py', 'import os\nx=1\n');
+    const { written } = pythonScaffold(cwd);
+    assert.ok(!written.includes('ruff.toml'), 'existing python source is not ours to grade');
+    assert.equal(fs.existsSync(path.join(cwd, 'ruff.toml')), false, 'ruff.toml must not reach disk');
+    assert.ok(written.includes('.env.example'), 'toolchain bodies are not gated');
+  });
+});
+
+// Our OWN scaffold must not become the evidence that vetoes the next run's seed,
+// which is what makes the arm above safe to apply at every PLAN_READY rather than
+// only the first. `.traffic-one` holds module skeletons and run artefacts.
+test('ensureScaffoldContent does not read its own .traffic-one skeletons as project source', () => {
+  withTempDir((cwd) => {
+    writeFileAt(cwd, '.traffic-one/runs/1/skeleton.py', 'x = 1\n');
+    const { written } = pythonScaffold(cwd);
+    assert.ok(written.includes('ruff.toml'), 'our own state is not the project holding source');
+  });
+});
+
+// The coupling, in the direction the old comment stated: the tooling manifest is
+// nothing but devDependencies and `lint`/`format` scripts for the configs beside
+// it, so it must not land when they do not.
+test('ensureScaffoldContent withholds the tooling manifest whenever its cluster is withheld', () => {
+  withTempDir((cwd) => {
+    // No history, so only the slot arms can veto: an .eslintrc.json is the flat
+    // config's predecessor and ESLint 9 would REPLACE it with ours.
+    writeFileAt(cwd, '.eslintrc.json', '{ "rules": {} }\n');
+    const compiled = compileArchitecture(cwd, 'R', REACT_STATE, SKELETON_INPUT);
+    const outputs = compiled.scaffoldOutputs || [];
+    assert.ok(
+      outputs.some((output) => output.path === 'eslint.config.js')
+      && outputs.some((output) => output.path === 'package.json'),
+      'premise: this compile declares both halves of the coupling',
+    );
+    const written = ensureScaffoldContent(cwd, outputs, compiled.profile, { compiled, newProject: true });
+    assert.ok(!written.includes('eslint.config.js'), 'an .eslintrc.json is the project speaking');
+    assert.ok(!written.includes('package.json'), 'no toolchain for a config that is not there');
+    assert.ok(!written.includes('.prettierrc'), 'the cluster is one unit');
+  });
+});
+
+// And in the direction the old predicate left open: with no commits the veto was
+// silent, so a project that had run `npm init` received an `eslint.config.js`
+// importing @eslint/js and typescript-eslint while its own non-blank
+// `package.json` — the only place those devDependencies could have gone — was
+// refused by `seedIfBlank`. A flat config whose plugins nobody installed is not a
+// quality bar, it is a crash on the first `eslint .`.
+test('ensureScaffoldContent withholds the cluster when the tooling manifest cannot be filled', () => {
+  withTempDir((cwd) => {
+    writeFileAt(cwd, 'package.json', `${JSON.stringify({ name: 'mine', version: '1.0.0' })}\n`);
+    const compiled = compileArchitecture(cwd, 'R', REACT_STATE, SKELETON_INPUT);
+    const outputs = compiled.scaffoldOutputs || [];
+    const written = ensureScaffoldContent(cwd, outputs, compiled.profile, { compiled, newProject: true });
+    for (const rel of ['eslint.config.js', '.prettierrc', '.prettierignore', '.stylelintrc.json']) {
+      assert.ok(!written.includes(rel), `${rel} needs the devDependencies it cannot get`);
+      assert.equal(fs.existsSync(path.join(cwd, rel)), false, `${rel} must not reach disk`);
+    }
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')).name,
+      'mine',
+      'the project manifest is untouched either way',
+    );
+  });
+});
+
+// --- the pre-pass: verdicts are resolved before the first write -------------
+
+// VACUOUS-COVERAGE GUARD, and the one that is red under the mutation. Moving the
+// slot lookup back to its point of use is the obvious simplification — the loop
+// already knows the slot and the directory — and nothing in this file objected to
+// it.
+//
+// What it breaks is the CLUSTER GATE, not any single config. `nodeSlotsAccept`
+// folds over every node slot's verdict to decide the tooling manifest, and that
+// manifest is scaffold output 0 while the configs it folds are outputs 50, 51, 53
+// and 54. Lazily, the fold runs over an empty map and `every` is vacuously true,
+// so the manifest lands and the loop then withholds the configs it installs tools
+// for, one at a time. This fixture is the shape that shows it: `legacy/old.js`
+// makes js-lint and js-format REJECT, so the correct answer is that nothing in
+// the cluster lands — and lazily a `package.json` naming eslint and prettier
+// appears anyway, with a `.stylelintrc.json` beside it (9 files written, 11).
+//
+// Not the slot-mate route, which reads like the hazard and is not one: the verdict
+// memo is keyed by (slot, directory), so `.prettierignore` reuses `.prettierrc`'s
+// answer under either ordering.
+test('ensureScaffoldContent resolves every node slot before writing the manifest at output 0', () => {
+  withTempDir((cwd) => {
+    writeFileAt(cwd, 'legacy/old.js', 'var a = 1\n');
+    const compiled = compileArchitecture(cwd, 'R', REACT_STATE, SKELETON_INPUT);
+    const outputs = (compiled.scaffoldOutputs || []).map((output) => output.path);
+    // The ordering the guard exists for, as exact indices: the manifest is
+    // decided FIRST and every verdict that decides it is compiled much later, so
+    // a compiler reshuffle that removes the hazard says so here rather than
+    // leaving a guard nobody can justify.
+    assert.equal(outputs.indexOf('package.json'), 0, 'the tooling manifest is written first');
+    for (const rel of ['.prettierrc', '.prettierignore', 'eslint.config.js', '.stylelintrc.json']) {
+      assert.ok(outputs.indexOf(rel) > 40, `premise: ${rel} is compiled long after the manifest (got ${outputs.indexOf(rel)})`);
+    }
+    // Premise: this tree really does split the cluster's slots, so the manifest's
+    // gate cannot be answered without a verdict resolved 50-odd outputs later.
+    assert.equal(slotAcceptsScaffold(cwd, cwd, 'js-lint'), false, 'premise: existing .js source rejects js-lint');
+    assert.equal(slotAcceptsScaffold(cwd, cwd, 'css-lint'), true, 'premise: css-lint would accept on its own');
+
+    const written = ensureScaffoldContent(cwd, compiled.scaffoldOutputs || [], compiled.profile, {
+      compiled,
+      newProject: true,
+    });
+    assert.ok(!written.includes('package.json'), 'no toolchain for configs the slots reject');
+    assert.equal(fs.existsSync(path.join(cwd, 'package.json')), false, 'package.json must not reach disk');
+    // The accepting slot is the tell. `.stylelintrc.json` passes its own arms and
+    // is withheld only because the cluster it belongs to is out — a decision the
+    // manifest's gate already made, before output 0.
+    assert.ok(!written.includes('.stylelintrc.json'), 'an accepting slot still rides the cluster');
+    assert.equal(fs.existsSync(path.join(cwd, '.stylelintrc.json')), false, '.stylelintrc.json must not reach disk');
+    assert.ok(written.includes('.env.example'), 'toolchain bodies are not gated');
+  });
+});
+
+// The other route, and the reason the guard does not lean on arm A's pattern
+// staying correct: `packageJsonBody` seeds prettier, stylelint and eslint as
+// devDependencies at output 0, so a manifest pattern loose enough to match a
+// NESTED key would read our own seed back as the project declaring three slots.
+// `topLevelManifestKey` anchors on the indent, so today this route is closed at
+// both ends. Against the pattern that preceded it, lazy resolution dropped
+// `.prettierrc`, `.prettierignore` and `.stylelintrc.json` from a clean greenfield
+// compile (14 written, 11) — this test is red under that combination and green
+// under either protection alone, which is exactly why both are kept.
+test('ensureScaffoldContent seeds both js-format configs, though its own earlier writes would veto them', () => {
+  withTempDir((cwd) => {
+    const compiled = compileArchitecture(cwd, 'R', REACT_STATE, SKELETON_INPUT);
+    const outputs = (compiled.scaffoldOutputs || []).map((output) => output.path);
+    // Premise: the manifest whose seeded devDependencies name prettier is written
+    // LONG before either config's turn.
+    assert.equal(outputs.indexOf('package.json'), 0, 'the tooling manifest is written first');
+    assert.ok(
+      outputs.indexOf('package.json') < outputs.indexOf('.prettierrc')
+      && outputs.indexOf('.prettierrc') < outputs.indexOf('.prettierignore'),
+      `premise: manifest then .prettierrc then .prettierignore (got ${outputs.indexOf('package.json')}, ${outputs.indexOf('.prettierrc')}, ${outputs.indexOf('.prettierignore')})`,
+    );
+
+    const written = ensureScaffoldContent(cwd, compiled.scaffoldOutputs || [], compiled.profile, {
+      compiled,
+      newProject: true,
+    });
+    for (const rel of ['.prettierrc', '.prettierignore']) {
+      assert.ok(written.includes(rel), `${rel} was resolved after a write that vetoes it`);
+      assert.ok(
+        fs.readFileSync(path.join(cwd, rel), 'utf8').trim().length > 0,
+        `${rel} must reach disk with its canonical body`,
+      );
+    }
+    // By the time the call returns the project genuinely DOES declare js-format,
+    // which is what makes the assertions above a statement about when the
+    // question was asked rather than a second greenfield smoke test.
+    assert.ok(
+      projectDeclaresSlot(cwd, cwd, 'js-format'),
+      'after the call the project really does declare js-format — the pre-pass asked before that was true',
+    );
+  });
+});
+
+// The same guard from the other side, and the premise the node-slot cost skip in
+// `ensureScaffoldContent` rests on: with history the cluster is withheld no
+// matter what the slots would have said. This fixture is the case that makes it
+// non-trivial — a completely clean tree, so every node slot would ACCEPT, and
+// only the history arm withholds. If this ever goes green for the cluster, the
+// skip is resolving fewer verdicts than the answer depends on.
+test('ensureScaffoldContent withholds the node cluster from a repo with history even when every slot would accept', () => {
+  withTempDir((cwd) => {
+    initAndCommit(cwd);
+    const compiled = compileArchitecture(cwd, 'R', REACT_STATE, SKELETON_INPUT);
+    const outputs = compiled.scaffoldOutputs || [];
+    for (const slot of ['js-lint', 'js-format', 'css-lint'] as const) {
+      assert.ok(
+        slotAcceptsScaffold(cwd, cwd, slot),
+        `premise: ${slot} would accept on this tree, so only history can withhold`,
+      );
+    }
+    const written = ensureScaffoldContent(cwd, outputs, compiled.profile, { compiled, newProject: true });
+    for (const rel of ['package.json', 'eslint.config.js', '.prettierrc', '.prettierignore', '.stylelintrc.json']) {
+      assert.ok(!written.includes(rel), `${rel} rides the cluster's history arm`);
+      assert.equal(fs.existsSync(path.join(cwd, rel)), false, `${rel} must not reach disk`);
+    }
+    // Not a blanket stand-down: the toolchain bodies and the language-scoped
+    // slots are unaffected by the cluster's arm.
+    assert.ok(written.includes('.env.example'), 'toolchain bodies are not gated');
+  });
+});
+
+// --- arm A reads TOP-LEVEL manifest keys only -------------------------------
+
+// A `package.json` key is a declaration only where it sits at the top level. One
+// level down, inside `devDependencies`, the same name is the project INSTALLING
+// the tool — and the manifest this module's own caller seeds carries prettier,
+// stylelint and eslint exactly there, so a pattern that ignored indentation read
+// our own scaffold back as three declarations by the project.
+//
+// The trap in the obvious fix: prettier's key may legitimately be a STRING path
+// as well as an object, so the widening cannot be closed by constraining the
+// value. Only the indent separates the two, and both spellings below must keep
+// their current answers.
+test('projectDeclaresSlot reads a manifest key as a declaration only at the top level', () => {
+  const cases: Array<{ slot: 'js-lint' | 'js-format' | 'css-lint'; label: string; body: string; declares: boolean }> = [
+    { slot: 'js-format', label: 'top-level object', declares: true, body: '{\n  "prettier": {\n    "semi": false\n  }\n}\n' },
+    // The trap: a real spelling that a value-based narrowing would have lost.
+    { slot: 'js-format', label: 'top-level string path', declares: true, body: '{\n  "prettier": "./cfg.json"\n}\n' },
+    { slot: 'js-format', label: 'top-level, tab indented', declares: true, body: '{\n\t"prettier": "./cfg.json"\n}\n' },
+    { slot: 'js-format', label: 'nested devDependency', declares: false, body: '{\n  "devDependencies": {\n    "prettier": "^3.6.0"\n  }\n}\n' },
+    { slot: 'js-format', label: 'nested devDependency, tab indented', declares: false, body: '{\n\t"devDependencies": {\n\t\t"prettier": "^3.6.0"\n\t}\n}\n' },
+    { slot: 'css-lint', label: 'top-level object', declares: true, body: '{\n  "stylelint": {\n    "rules": {}\n  }\n}\n' },
+    { slot: 'css-lint', label: 'nested devDependency', declares: false, body: '{\n  "devDependencies": {\n    "stylelint": "^16.21.0"\n  }\n}\n' },
+    { slot: 'js-lint', label: 'top-level object', declares: true, body: '{\n  "eslintConfig": {\n    "root": true\n  }\n}\n' },
+    // js-lint escaped the widening only by luck of key naming — nobody depends on
+    // a package called `eslintConfig`. Pinned so the luck is not the guarantee.
+    { slot: 'js-lint', label: 'nested dependency of that exact name', declares: false, body: '{\n  "devDependencies": {\n    "eslintConfig": "^1.0.0"\n  }\n}\n' },
+  ];
+  for (const scenario of cases) {
+    withTempDir((cwd) => {
+      writeFileAt(cwd, 'package.json', scenario.body);
+      assert.equal(
+        projectDeclaresSlot(cwd, cwd, scenario.slot),
+        scenario.declares,
+        `${scenario.slot}: ${scenario.label}`,
+      );
+    });
+  }
+});
+
+// The regression this closes, stated as the caller sees it: the manifest
+// `ensureScaffoldContent` seeds is not a declaration by the project about any of
+// the three slots it installs tools for. This is the first of the two routes in
+// the pre-pass comment above, and the only one a pattern can close.
+test('the seeded tooling manifest is not itself a declaration in any node slot', () => {
+  withTempDir((cwd) => {
+    const compiled = compileArchitecture(cwd, 'R', REACT_STATE, SKELETON_INPUT);
+    ensureScaffoldContent(cwd, compiled.scaffoldOutputs || [], compiled.profile, {
+      compiled,
+      newProject: true,
+    });
+    const manifest = fs.readFileSync(path.join(cwd, 'package.json'), 'utf8');
+    assert.match(manifest, /"prettier": "\^/, 'premise: the seed really does name prettier');
+    assert.match(manifest, /"stylelint": "\^/, 'premise: the seed really does name stylelint');
+
+    withTempDir((bare) => {
+      writeFileAt(bare, 'package.json', manifest);
+      for (const slot of ['js-lint', 'js-format', 'css-lint'] as const) {
+        assert.equal(
+          projectDeclaresSlot(bare, bare, slot),
+          false,
+          `our own seeded manifest must not read as a ${slot} declaration`,
+        );
+      }
+    });
+  });
+});
+
+// THE OUTPUT THE NARROWING CHANGES, named rather than buried. Everywhere else the
+// widening was masked: arm A reads `package.json`, and where the tooling manifest
+// IS that file, `blankOrMissing` has already established it is empty, so there is
+// no nested key to mis-read. The exception is a NESTED tooling root (`web/`,
+// `apps/*` — scaffold.ts's `webPackageRoot`), because arm A also searches the
+// project root, every one of these tools searching upward too. There the manifest
+// it reads is the MONOREPO ROOT's, which nothing cleared.
+//
+// A root that installs prettier and stylelint as devDependencies is the shape
+// every pnpm/turbo repo has, and under the old pattern it withheld the ENTIRE
+// cluster from the nested package — 0 of 5 files, silently. Installing a tool is
+// not configuring it, and the nested package has no config of its own.
+test('a monorepo root that only installs prettier does not withhold the nested package cluster', () => {
+  withTempDir((cwd) => {
+    writeFileAt(cwd, 'package.json', '{\n  "name": "monorepo-root",\n  "private": true,\n  "devDependencies": {\n    "prettier": "^3.6.0",\n    "stylelint": "^16.21.0"\n  }\n}\n');
+    const compiled = compileArchitecture(cwd, 'R', REACT_STATE, SKELETON_INPUT);
+    // Asked before the call, while the root manifest is the only one on disk.
+    for (const slot of ['js-format', 'css-lint'] as const) {
+      assert.equal(
+        projectDeclaresSlot(cwd, path.join(cwd, 'web'), slot),
+        false,
+        `a root that INSTALLS the ${slot} tool has not configured it`,
+      );
+    }
+
+    const cluster = [
+      'web/package.json', 'web/eslint.config.js',
+      'web/.prettierrc', 'web/.prettierignore', 'web/.stylelintrc.json',
+    ];
+    const written = ensureScaffoldContent(cwd, cluster.map((rel) => ({ path: rel })), compiled.profile, {
+      newProject: true,
+    });
+    assert.deepEqual([...written].sort(), [...cluster].sort(), 'the nested cluster lands whole');
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')).name,
+      'monorepo-root',
+      'the root manifest is never the one we fill',
+    );
   });
 });
 

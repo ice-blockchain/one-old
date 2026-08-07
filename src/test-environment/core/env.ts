@@ -56,6 +56,20 @@ export function buildCaseEnv(
     }
   }
 
+  // `pytest` and `ruff` are spawned by BARE NAME from the qa-evidence stack
+  // runner (runners/qa-evidence/stack.ts), so they are resolved from the check
+  // process's PATH — which is this process's, since run-sim calls the runner
+  // in-process. macOS ships neither, and its system `python3` is 3.9, too old
+  // for the annotations the compiled Python shape emits. The toolchain therefore
+  // installs once at the runs root, exactly like the Playwright Chromium, and
+  // its `bin` is prepended here so the suite needs no PATH prefix at the command
+  // line. A runs root with no venv contributes a directory that does not exist,
+  // which PATH resolution skips.
+  env.PATH = [
+    path.join(config.runsRoot, '.venv', 'bin'),
+    process.env.PATH || '',
+  ].join(path.delimiter);
+
   if (config.isolateStateHome) {
     // Redirects ~/.traffic-one (machine settings incl. codeGraphProvider, one-uid)
     // to a per-case dir so global state never bleeds between cases or pollutes

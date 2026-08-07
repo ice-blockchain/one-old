@@ -67,24 +67,68 @@ function stripFileUri(p: string): string {
 // hook's process.cwd() is event-dependent: currently the plugin directory for
 // most events, but the workspace for Stop/SubagentStop. It therefore cannot be
 // the project identity contract. Accept string or object elements, strip file://.
-function firstWorkspaceRoot(data: Record<string, unknown>): string | undefined {
+//
+// T1SHARED:workspace-root — byte-identical to the block of the same name in
+// adapters/copilot.ts; adapters/__tests__/workspace-root-parity.test.ts holds the
+// two copies in agreement textually AND behaviourally.
+function workspaceRootList(data: Record<string, unknown>): string[] {
   const roots = data.workspace_roots ?? data.workspaceRoots ?? data.workspace_root ?? data.workspaceFolders;
   const list = Array.isArray(roots) ? roots : (roots != null ? [roots] : []);
+  const out: string[] = [];
   for (const r of list) {
-    if (typeof r === 'string' && r) return stripFileUri(r);
+    if (typeof r === 'string' && r) { out.push(stripFileUri(r)); continue; }
     if (r && typeof r === 'object') {
       const rec = r as Record<string, unknown>;
       const p = firstString(rec.path, rec.uri, rec.fsPath);
-      if (p) return stripFileUri(p);
+      if (p) out.push(stripFileUri(p));
     }
   }
-  return undefined;
+  return out;
 }
 
 function isInsideOrEqual(candidate: string, boundary: string): boolean {
   const rel = path.relative(path.resolve(boundary), path.resolve(candidate));
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
+
+// A window can hold SEVERAL folders, so `workspace_roots` is a list. Taking its
+// FIRST element made the ceiling name a different project whenever the hook was
+// working in any folder but the first: every bounded walk in resolveProjectRoot
+// breaks immediately and it returns the ceiling itself, the cwd fold below
+// replaces the real cwd with that foreign root, and workspaceBoundaryGuard then
+// denies every read/search/write in the folder actually being worked in. Pick the
+// root that CONTAINS the cwd instead.
+//
+// OUTERMOST containing root, not the innermost. The ceiling is an upper BOUND,
+// not a selection — resolveProjectRoot already picks the nearest onboarded (or
+// workspace) root at or below it. When a user opens both a monorepo and one of
+// its own packages, an innermost ceiling pins resolution to the sub-package and
+// mints a stray .traffic-one there: the packages/ui incident, reintroduced
+// through the ceiling. (Contrast hooks/auth-fallback.ts, which picks the LONGEST
+// match from the same list — correct there because that value is used as a
+// starting cwd, where nearest wins.)
+//
+// Matched against the cwd, never the tool's target file: a ceiling derived from
+// the target would by construction contain that target, which is precisely the
+// question workspaceBoundaryGuard exists to ask.
+//
+// Nothing contains the cwd — Cursor's internal terminals metadata dir, a relative
+// cwd, or no cwd at all — falls back to the first element, unchanged.
+function activeWorkspaceRoot(data: Record<string, unknown>): string | undefined {
+  const roots = workspaceRootList(data);
+  if (roots.length === 0) return undefined;
+  const cwd = stripFileUri(firstString(data.cwd));
+  if (cwd && path.isAbsolute(cwd)) {
+    let outermost = '';
+    for (const root of roots) {
+      if (!path.isAbsolute(root) || !isInsideOrEqual(cwd, root)) continue;
+      if (!outermost || root.length < outermost.length) outermost = root;
+    }
+    if (outermost) return outermost;
+  }
+  return roots[0];
+}
+// T1SHARED:workspace-root END
 
 function cursorCwd(data: Record<string, unknown>, wsRoot: string | undefined): string {
   const explicit = firstString(data.cwd);
@@ -185,7 +229,7 @@ export function makeCursorAdapter(): HostAdapter {
       // The opened workspace is the authoritative project boundary; surface it RAW
       // (not the cwd fold below, which a deeper shell `cwd` could override) so the
       // project-root resolver can use it as a ceiling and never re-root above it.
-      const wsRoot = firstWorkspaceRoot(data);
+      const wsRoot = activeWorkspaceRoot(data);
       // Only an ABSOLUTE workspace root is a usable ceiling: a relative value would
       // path.resolve() against Cursor's event-dependent hook process.cwd(), yielding
       // a bogus boundary. Cursor always sends absolute paths, so this just

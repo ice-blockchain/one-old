@@ -5,7 +5,7 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import {  readJson,  writeJson } from '../../fsjson';
+import { readJsonResult,  writeJson } from '../../fsjson';
 import {
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
@@ -163,7 +163,23 @@ export function authoritativeRebindThreadRole(
       if (current && expectedClaim.claimId && current.claimId !== expectedClaim.claimId) return;
       if (current && current.role !== oldRole && current.role !== targetRole) return;
 
-      const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+      // SETTLED, and reachable by two different routes rather than one. With
+      // `agents` fabricated empty: an `expectedRegistryRole` CAS bails (the row
+      // it must match cannot be found), but a correction that carries no
+      // expected role does NOT — `!current && !oldEntryMatches` is satisfied by
+      // the CLAIM alone, and from there `targetEntry` is undefined, so
+      // `occupiedTarget` is false and the target role reads as FREE however many
+      // live agents the real file records. Both exits then republish the
+      // registry from `{}`: the conflict branch writes `{...registry}` with one
+      // conflict row and nothing else, and the success path hands the same empty
+      // base to `completeAuthoritativeRebindJournalUnlocked`.
+      //
+      // Same verdict and same reason as that function's own read: this is a CAS
+      // against a base, refusing writes nothing, and the caller's `null` is the
+      // answer every other failed correction here already returns.
+      const registryRead = readJsonResult<Rec>(agentRegistryFile(cwd, runId));
+      if (registryRead.kind === 'corrupt' || registryRead.kind === 'unreadable') return;
+      const registry = (registryRead.kind === 'ok' ? obj(registryRead.value) : null) || {};
       const agents = obj(registry.agents) || {};
       const history = Array.isArray(registry.history)
         ? registry.history.filter((item) => item && typeof item === 'object')

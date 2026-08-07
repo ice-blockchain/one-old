@@ -144,6 +144,58 @@ test('cursor: workspaceRoot is surfaced from workspace_roots as the authoritativ
   assert.equal(cursor.parse(inv('session-start', { workspace_roots: ['relative/proj'] })).workspaceRoot, undefined);
 });
 
+test('cursor: a MULTI-root window uses the folder the hook is in, not the first in the list', () => {
+  // Cursor supports several folders in one window. Returning workspace_roots[0]
+  // named a DIFFERENT project whenever work happened anywhere but the first
+  // folder: resolveProjectRoot's bounded walks all break on the foreign ceiling
+  // and it returns the ceiling itself, and the cwd fold below then replaces the
+  // genuine cwd with that foreign root too.
+  const second = cursor.parse(inv('before-read-file', {
+    workspace_roots: ['/w/alpha', '/w/beta'],
+    cwd: '/w/beta',
+    file_path: '/w/beta/src/x.ts',
+  }));
+  assert.equal(second.workspaceRoot, '/w/beta', 'the ceiling must name the folder being worked in');
+  assert.equal(second.cwd, '/w/beta', 'the genuine cwd must survive');
+
+  // …including when the cwd is DEEPER than the root it belongs to.
+  const deep = cursor.parse(inv('before-shell-execution', {
+    workspace_roots: ['/w/alpha', '/w/beta'],
+    cwd: '/w/beta/src',
+    command: 'ls',
+  }));
+  assert.equal(deep.workspaceRoot, '/w/beta');
+  assert.equal(deep.cwd, '/w/beta/src');
+
+  // The first folder still wins when the cwd is actually in it.
+  assert.equal(cursor.parse(inv('before-shell-execution', {
+    workspace_roots: ['/w/alpha', '/w/beta'], cwd: '/w/alpha/src', command: 'ls',
+  })).workspaceRoot, '/w/alpha');
+
+  // NESTED roots (a monorepo and one of its packages both opened) resolve to the
+  // OUTERMOST containing root. The ceiling is an upper BOUND, not a selection —
+  // an innermost ceiling would pin resolution to the sub-package and mint a stray
+  // .traffic-one there (the packages/ui incident, reintroduced via the ceiling).
+  assert.equal(cursor.parse(inv('before-read-file', {
+    workspace_roots: ['/w/mono/packages/ui', '/w/mono'],
+    cwd: '/w/mono/packages/ui',
+    file_path: '/w/mono/packages/ui/src/x.ts',
+  })).workspaceRoot, '/w/mono');
+
+  // Segment-aware containment: /w/alpha must not claim a cwd in /w/alpha2.
+  assert.equal(cursor.parse(inv('before-shell-execution', {
+    workspace_roots: ['/w/alpha', '/w/alpha2'], cwd: '/w/alpha2/src', command: 'ls',
+  })).workspaceRoot, '/w/alpha2');
+
+  // No root contains the cwd (Cursor's internal terminals metadata dir) → the
+  // first element, exactly as before, so the out-of-tree fallback is unchanged.
+  assert.equal(cursor.parse(inv('before-shell-execution', {
+    workspace_roots: ['/w/alpha', '/w/beta'],
+    cwd: '/Users/u/.cursor/projects/Users-u-Projects-x/terminals',
+    command: 'ls',
+  })).workspaceRoot, '/w/alpha');
+});
+
 test('cursor: generic preToolUse derives tool class from tool_name (pre-write/search/spawn now reachable)', () => {
   const w = cursor.parse(inv('before-tool-use', { tool_name: 'Write', tool_input: { file_path: '/a.ts', content: 'hi' } }));
   assert.equal(w.event, 'PreToolUse');

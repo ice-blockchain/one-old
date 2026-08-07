@@ -29,9 +29,23 @@ compiler change an N-case edit.
 
 **Requirements.** `dist` must be built (materialization resolves rules and
 skills from the plugin root with no `src/` fallback — the runner builds it for
-you), plus `go`, `pytest`, `ruff`, and `@playwright/test` + Chromium installed
-once at the runs root, where `createRequire` resolves it from every case
-project. A missing toolchain is reported INCONCLUSIVE, never PASS.
+you), plus `go` on PATH and two toolchains installed once at the runs root:
+`@playwright/test` + Chromium, which `createRequire` resolves from every case
+project, and a Python venv at `<runs-dir>/.venv`, whose `bin` `buildCaseEnv`
+prepends to PATH so the stack runner's bare `pytest`/`ruff` resolve with no
+prefix at the command line. A missing toolchain is reported INCONCLUSIVE, never
+PASS.
+
+The venv needs Python ≥ 3.11. macOS's system `python3` is 3.9, which cannot
+evaluate the PEP 604 (`X | None`) annotations the compiled Python shape emits,
+so `pytest` would error during collection rather than report a gap — while
+`stack-build` (`python3 -m compileall`) still passes, because byte-compiling
+never evaluates an annotation.
+
+```bash
+python3.12 -m venv ~/traffic-one-test-runs/.venv
+~/traffic-one-test-runs/.venv/bin/pip install pytest ruff
+```
 
 **What it does not prove.** Whether a real agent understands a deny, installs
 what a gate asks for, or writes compliant code — that is model behaviour and

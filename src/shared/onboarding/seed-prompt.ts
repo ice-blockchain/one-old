@@ -9,8 +9,9 @@
 
 import { isLikelyCodingPrompt, promptHasStackSignal } from '../detection';
 import { uiLibraryFromPrompt } from '../capabilities/ui-system';
+import { readJsonResult } from '../fsjson';
 import { projectContextOriginalPrompt } from './project-context';
-import { readState, writeState } from '../state';
+import { readState, statePath, writeState } from '../state';
 
 // Ceiling for a prompt embedded as a `--seed-prompt=` argv value. Stack
 // classification and triage routing only need the leading keywords; an
@@ -39,7 +40,10 @@ export function truncateSeedPrompt(prompt: string): string {
 }
 
 /**
- * VERDICT on the dropped write below: acceptable as-is, and deliberately so.
+ * TWO ways this seed can fail to land, and they get OPPOSITE verdicts. Reading
+ * the second onto the first is what left this function replacing state files.
+ *
+ * ── A REFUSED WRITE: acceptable as-is, and deliberately so ───────────────────
  *
  * `writeState` answers `false` for a refused seed and that answer is discarded —
  * but the outcome it reports is the one the adjacent `catch` already accepts in
@@ -57,11 +61,37 @@ export function truncateSeedPrompt(prompt: string): string {
  * function never ran at all), and it floors to the default build stack rather
  * than deriving an empty one. A seed refused by the fence and a seed that never
  * existed are the same fact to that code path, and it is correct for both.
+ *
+ * ── AN ILLEGIBLE BASE: not the same fact, and not acceptable ─────────────────
+ *
+ * Everything above was measured on a REFUSED WRITE and is true of exactly that
+ * input. It says nothing about the READ one line below it, where what is at
+ * stake is not the seed but the file: `readState` answers a torn or unreadable
+ * `.one.json` with the same `{}` it gives an absent one, so both idempotency
+ * guards decide "no seed yet" from bytes nobody managed to read, and the spread
+ * then publishes a two-field object over everything the wizard had recorded. A
+ * file that was merely UNPARSEABLE is genuinely gone at that point — its bytes
+ * moved to `.one.json.corrupt`, which nothing reads.
+ *
+ * So the read is checked first and an illegible base RETURNS, the same answer
+ * `patchState` gives for the same reason: a seed derived from a prompt has
+ * nothing honest to put in a file it could not read, and putting it there anyway
+ * is the damage rather than the repair. Refusing costs exactly what the verdict
+ * above already accepts — prompt-tailored defaults — and wedges nothing:
+ * flow.ts's `finalize` keeps `writeState` deliberately, because it MEANS to
+ * replace the file, so it still quarantines and heals the moment the user
+ * completes the wizard. The one behavioural consequence, stated rather than
+ * left to be discovered: a genuinely torn state gets no seed until then.
  */
 export function seedOriginalPrompt(cwd: string, prompt: string): void {
   const text = (prompt || '').trim();
   if (!text) return;
   if (!qualifiesAsSeedPrompt(text)) return;
+  // Ahead of the guards below, which are the things a `{}` fallback turns into
+  // "no seed yet". `absent` deliberately proceeds: a project with no `.one.json`
+  // is the brand-new one this function exists for.
+  const read = readJsonResult(statePath(cwd));
+  if (read.kind === 'corrupt' || read.kind === 'unreadable') return;
   const state = readState(cwd);
   // Seed for EVERY mode (was new-project-only): the onboarding-wait runner reads
   // `originalPrompt` after SETUP_COMPLETE to emit the maintenance-triage routing

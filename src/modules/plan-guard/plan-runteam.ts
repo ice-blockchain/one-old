@@ -34,7 +34,7 @@ import {
   type RunManifest,
   readRunAssignmentsResilient,
   resolveRunAgentContext,
-  runLedgerAdmitsClaims,
+  runLedgerClaimAdmission,
   runLedgerStatusRecord,
   tryFallbackClaim,
   type RunAgentContext,
@@ -280,12 +280,47 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
       return deny(block('run-team-maintenance-contract',
         'Run-team enforcement gate: maintenance writes fail closed when the hook cannot resolve a spawned worker with a valid parent-published WorkUnitContract. No unattributed write was made; bind the bounded quick-fix claim and exact allowlist before retrying.'));
     }
-    // An identity-rejected claim is NOT a spawn problem: the child is genuine and
-    // respawning lands the replacement in the same wedge. Say so, and name the
-    // drift, instead of sending the parent around the loop again.
+    // An identity-rejected claim is a fact about the CLAIM FILE, not about the
+    // spawn, and this clause used to draw the opposite conclusion from it. It
+    // asserted "Respawning will NOT fix this" and prescribed two remedies in its
+    // place; all three statements are false, measured against the population the
+    // `foreign-run-claim` demotion leaves behind (residue is diagnosed as
+    // `foreign-run-claim` and never reaches this arm, so what is left is a claim
+    // that really is THIS run's):
+    //   - A REPLACEMENT BINDS. A claim is stamped from the run's own frozen
+    //     identity, never from live state, so a fresh spawn for the same role is
+    //     stamped with exactly what the ledger froze. Measured ALLOW in all three
+    //     constructible drift shapes — a claim drifted away from an agreeing
+    //     ledger, a stray `runId` inside a claim filed in this run's directory,
+    //     and the shape the old sentence literally described (claim equal to the
+    //     LIVE fingerprint while the ledger froze another) — and
+    //     `refuseOccupiedRole` does not see a rejected claim as a live rival, so
+    //     the Codex spawn path binds the replacement too.
+    //   - `reconcileRunIdentityDrift` CANNOT repair either drift shape. Its
+    //     backfill only fills a MISSING ledger fingerprint, and a ledger with no
+    //     fingerprint produces no mismatch to diagnose in the first place; its
+    //     other half needs TWO runs holding live claims, which a single drifted
+    //     run never satisfies. Measured: a no-op that leaves the ledger exactly
+    //     as it found it.
+    //   - When that other half DOES fire it is destructive rather than idle. It
+    //     sorts by `runEvidenceScore` with recency only breaking ties, so an
+    //     OLDER run can win outright; `currentRunId` is re-pointed to it and every
+    //     loser is released and transitioned to `failed`. Measured: the run the
+    //     write came from settled `failed`/`agent-failed` while a stale sibling
+    //     became current. Prescribing it as the FIRST remedy for a drifted claim
+    //     pointed at that outcome.
+    // So the clause is now pure DIAGNOSIS — the fingerprints, which were always
+    // its real value, and the two things that are not the remedy — and it carries
+    // no remedy of its own. It also LEADS the paragraph instead of trailing it,
+    // because the arm below is the only thing that knows whether the reader is
+    // the child or the orchestrator and whether the run can be written in at all;
+    // putting the diagnosis first is what lets every render still END in an
+    // action. A remedy here could not be right on more than one arm: "a fresh
+    // spawn binds" is true on the open arm and false on the closed one, which is
+    // the same adjacent-contradiction defect the old clause had, reversed.
     const driftReason = unresolvedDiagnosis
       && (unresolvedDiagnosis.reason === 'fingerprint-mismatch' || unresolvedDiagnosis.reason === 'run-id-mismatch')
-      ? ` DIAGNOSIS: a role claim for \`${unresolvedDiagnosis.role || 'this role'}\` exists under run \`${unresolvedDiagnosis.runId || '<unknown>'}\` but was rejected (${unresolvedDiagnosis.reason}; claim \`${unresolvedDiagnosis.claimFingerprint || 'none'}\` vs run \`${unresolvedDiagnosis.ledgerFingerprint || 'none'}\`, live \`${unresolvedDiagnosis.liveFingerprint || 'none'}\`). Respawning will NOT fix this and switching to main-agent mode is not the remedy: the run's identity drifted away from its claims. Let the next SessionStart reconcile it, or settle this run so a fresh one mints with the current identity.`
+      ? `DIAGNOSIS: a role claim for \`${unresolvedDiagnosis.role || 'this role'}\` exists under run \`${unresolvedDiagnosis.runId || '<unknown>'}\` but was rejected (${unresolvedDiagnosis.reason}; claim \`${unresolvedDiagnosis.claimFingerprint || 'none'}\` vs run \`${unresolvedDiagnosis.ledgerFingerprint || 'none'}\`, live \`${unresolvedDiagnosis.liveFingerprint || 'none'}\`). That claim was stamped with a different identity than this run froze, so THIS thread can never bind it. Switching to main-agent mode is not the remedy, and neither is waiting for a later SessionStart: that pass cannot repair a drifted claim, and in the one shape where it does act it re-points \`currentRunId\` at whichever run carries more orchestration evidence — not the newest — and settles every other live run as \`failed\`, this one included. Do the following instead. `
       : '';
     // The child branch used to prescribe ONE remedy — destroy the child — for
     // every cause that lands here, and resolution collapses at least three into
@@ -304,55 +339,99 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     // as an open one and ordered a spawn into the same wedge — the 10co respawn
     // loop, surviving on the parent side. Both arms consult it now, so the probe
     // below is never computed and dropped.
-    const closedLedger = stateRunId && !runLedgerAdmitsClaims(projectRoot, stateRunId)
+    //
+    // THREE-VALUED, because the boolean it used to ask cannot say the third
+    // thing. `runLedgerAdmitsClaims` answers `true` for a ledger it merely could
+    // not READ — deliberately, since its other consumer is a gate over a child's
+    // life — so an illegible ledger fell past this probe and rendered the OPEN
+    // arm. Measured over this deny's whole branching space (child|parent ×
+    // open|closed|illegible × drift|no-drift): 12 combinations collapsed to 8
+    // distinct renders, and all four illegible cells were byte-identical to their
+    // OPEN twins. A run whose ledger is a truncated file was therefore told to
+    // retry in two seconds, or to spawn the owning role — while every claim mint,
+    // every resume and every settlement against it returns `ledger-corrupt`.
+    const ledgerAdmission = stateRunId
+      ? runLedgerClaimAdmission(projectRoot, stateRunId)
+      : 'admits';
+    const closedLedger = stateRunId && ledgerAdmission === 'closed'
       ? runLedgerStatusRecord(projectRoot, stateRunId)
       : null;
+    const illegibleLedger = ledgerAdmission === 'unknown';
     // Stated once, consumed by both closed arms: the two used to be able to
     // disagree about a fact neither of them owns.
     const closedRunClause = closedLedger
       ? `the run ledger for \`${stateRunId}\` is \`${closedLedger.status || 'unreadable'}\`${closedLedger.outcome ? ` (${closedLedger.outcome})` : ''}, which admits NO claim from any child`
       : '';
-    // `driftReason` is not a footnote. Its "respawning will NOT fix this" ANSWERS
-    // the same question the recovery paragraph answers, so appending it to an arm
-    // that ENDS in a respawn rendered both orders in adjacent sentences: "must
-    // stop or replace this child" immediately followed by "Respawning will NOT fix
-    // this", and on the parent arm "Spawn the owning role" followed by the same
-    // refusal. So the two COMPOSE instead of concatenating. Where an arm ends in a
-    // respawn, drift REPLACES that ending — these two tails are selected only when
-    // there is no drift — and where the arm already counsels against a respawn (the
-    // closed-ledger arm, whose settle-and-remint the diagnosis merely adds
-    // fingerprints to) drift stays purely additive and the arm is untouched.
-    // Dropping a tail drops its spawn contract with it, for the reason
-    // CHILD_SPAWN_CONTRACT already records: naming the contract reads as an
-    // instruction to take it. Nothing is left dangling either — the diagnosis
-    // carries the two remedies that DO terminate here (let the next SessionStart
-    // reconcile the identity, or settle this run and mint a fresh one), so a
-    // suppressed arm still names an action the addressee can take.
+    // The illegible twin, on the same footing. `runLedgerStatusRecord` is not
+    // consulted: it reads the same unreadable file and answers `null`, which is
+    // what "unreadable" already says.
+    const illegibleRunClause = illegibleLedger
+      ? `the run ledger for \`${stateRunId}\` (\`.traffic-one/runs/${stateRunId}/run.json\`) cannot be read or parsed, so this run admits no claim, no resume and no settlement`
+      : '';
+    // `driftReason` is now purely ADDITIVE on every arm, which is what it always
+    // was on the closed arm. It used to REPLACE the two respawn tails below, on
+    // the ground that appending "Respawning will NOT fix this" to "must stop or
+    // replace this child" rendered two contradictory orders in adjacent
+    // sentences. The contradiction was real; the half that was wrong was the
+    // diagnosis, not the tail. With the false assertion gone (see the measurement
+    // on `driftReason` above — a replacement binds in every drift shape) there is
+    // nothing left for the tails to contradict, and suppressing them cost the
+    // drifted population the ONLY remedy that works: dropping a tail drops its
+    // spawn contract with it, and the contract is exactly what makes a
+    // replacement bind. So the two tails are unconditional on the OPEN arms.
     //
-    // `closedLedger` is the SECOND thing that can silence a respawn order, and it
-    // composes with drift rather than duplicating it: it selects the ARM, while
-    // drift selects whether the arm it selected carries its tail. So the two
-    // tails keep exactly the meaning they have above — they belong to the OPEN
-    // arms only — and neither closed arm reaches for one, because each already
-    // ends in the remedy its addressee can take. That ordering is also why a
-    // closed arm is not simply a third tail suppressor: suppressing the parent
-    // tail on a closed ledger would leave the paragraph naming no action at all.
-    const childRespawnTail = driftReason
-      ? ''
-      : ` If the same deny repeats, the claim is genuinely absent and the PARENT/orchestrator must stop or replace this child and retry the same role. ${CHILD_SPAWN_CONTRACT}`;
-    const parentSpawnTail = driftReason
-      ? ''
-      : ' Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.';
-    const childRecovery = closedLedger
-      ? `This appears to be a spawned child, and its per-run role claim did not resolve because ${closedRunClause}. No write was made. Do not retry the edit, and do not stop or replace this child — the replacement cannot bind a claim either, and looping on respawns is what this deny used to cause. The PARENT/orchestrator resumes the RUN first (only if the user authorized another cycle), or settles it and mints a fresh one; nothing can write in this run until then.`
-      : `This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Retry this exact write ONCE before anything else: while another hook holds this run's claims or model-observation lock the claim cannot be minted and this hook resolves NO role at all, and that clears in about two seconds. Do not self-assert a role in assistant prose — prose cannot create a claim.${childRespawnTail}`;
+    // The ledger still selects the ARM, and neither non-admitting arm carries a
+    // tail — not because drift silenced it, but because a role spawned into a
+    // closed or unreadable run cannot bind a claim either. Each of those arms
+    // ends in the remedy its own addressee can take, so no paragraph here names
+    // a prohibition and no action.
+    // Only the CAUSE clause varies with drift, and it must: an unconditional tail
+    // may not tell a drifted child that its claim is "genuinely absent" when the
+    // diagnosis two sentences later prints the claim's own fingerprint. The
+    // ACTION is identical either way, which is the whole finding.
+    const childRespawnTail = ` If the same deny repeats, ${driftReason ? 'this thread cannot bind the claim already on disk' : 'the claim is genuinely absent'} and the PARENT/orchestrator must stop or replace this child and retry the same role. ${CHILD_SPAWN_CONTRACT}`;
+    const parentSpawnTail = ' Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract (`quick_fix`, `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`), the exact role model from the immutable run policy, and `fork_turns: "none"`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity while live hooks verify the actual model. On other hosts use the canonical Traffic One agent/type and substitute the actual role in the `[t1-role: <role>]` marker anywhere in a recognized task message.';
+    // Resume legality, stated once and consumed by both closed arms.
+    // `runLedgerTransitionAllowed` permits `blocked -> active` ONLY with the
+    // recorded resume authorization and permits NOTHING out of `completed` or
+    // `failed`. Measured on all four terminal shapes: `blocked`/test-cycle-cap
+    // resumes, while `completed`/verified, `completed`/shipped and
+    // `failed`/agent-failed are each refused `illegal-transition-<status>-to-
+    // active`. The arms hedged the resume and always offered the mint, so nobody
+    // was stranded — but for two of the three statuses the hedge was the whole
+    // sentence, and the reader had no way to know which. Deliberately NOT a
+    // status discriminator: the arms already PRINT the status one clause earlier,
+    // so one sentence that is true for all three costs nothing, while branching
+    // on status would multiply this deny's render space by three for a fact the
+    // reader can already see.
+    // Ordered so the ACTION is last. The "nothing can write until then" clause is
+    // a consequence, and trailing it left all four closed cells ending on a
+    // prohibition with their remedy a sentence back.
+    const CLOSED_RUN_REMEDY = 'can resume the RUN only when the status above is `blocked` AND the user authorized another cycle, and nothing can write in this run until that happens. `completed` and `failed` runs cannot be reopened at all, so for those the only remedy is to mint a FRESH run and re-spawn this role there.';
+    // The unreadable arm's remedy is not the closed one with a different noun.
+    // Measured on a truncated `run.json`: the claim mint, a resume and a
+    // settlement all return `unavailable('ledger-corrupt')`, so every action the
+    // closed arm offers is unavailable here — and the file itself is a
+    // runtime-owned run sidecar, which `runtime-sidecar-owner-gate` refuses to
+    // let any agent create, edit, delete, replace or repair. Naming an agent-side
+    // repair would therefore name a remedy this product denies. What IS available
+    // is a USER action, and it works: removing the unreadable file restored the
+    // run to `admits` and the next claim bound.
+    const illegibleRunRemedy = `No agent may repair that file — every agent write to a run sidecar is refused — so the only thing that clears this is a USER restoring it from version control or deleting it, after which a fresh run can be minted. Report it and stop; \`node ~/.traffic-one/bin/doctor.cjs --run "${stateRunId}"\` captures the diagnosis to hand over.`;
+    const childRecovery = illegibleLedger
+      ? `This appears to be a spawned child, and its per-run role claim did not resolve because ${illegibleRunClause}. No write was made. Do not retry the edit, and do not stop or replace this child — a replacement cannot bind a claim either, and resuming or settling this run fails on the same unreadable file. ${illegibleRunRemedy}`
+      : closedLedger
+        ? `This appears to be a spawned child, and its per-run role claim did not resolve because ${closedRunClause}. No write was made. Do not retry the edit, and do not stop or replace this child — the replacement cannot bind a claim either, and looping on respawns is what this deny used to cause. The PARENT/orchestrator ${CLOSED_RUN_REMEDY}`
+        : `This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Retry this exact write ONCE before anything else: while another hook holds this run's claims or model-observation lock the claim cannot be minted and this hook resolves NO role at all, and that clears in about two seconds. Do not self-assert a role in assistant prose — prose cannot create a claim.${childRespawnTail}`;
     // Same taxonomy as the closed child arm, re-addressed: here the reader IS the
     // orchestrator, so the remedy is second-person rather than a report of what
     // some third party does.
-    const parentRecovery = closedLedger
-      ? `You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawning the owning role will not help here, because ${closedRunClause}. No write was made, and the role you spawn would land in this same deny — looping on respawns is what this deny used to cause. Resume the RUN first (only if the user authorized another cycle), or settle it and mint a fresh one; nothing can write in this run until then.`
-      : `You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself.${parentSpawnTail}`;
-    const recovery = (unresolvedChild ? childRecovery : parentRecovery) + driftReason;
+    const parentRecovery = illegibleLedger
+      ? `You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawning the owning role will not help here, because ${illegibleRunClause}. No write was made, and the role you spawn would land in this same deny. ${illegibleRunRemedy}`
+      : closedLedger
+        ? `You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawning the owning role will not help here, because ${closedRunClause}. No write was made, and the role you spawn would land in this same deny — looping on respawns is what this deny used to cause. You ${CLOSED_RUN_REMEDY}`
+        : `You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself.${parentSpawnTail}`;
+    const recovery = driftReason + (unresolvedChild ? childRecovery : parentRecovery);
     return deny(block('run-team-not-subagent',
       `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. ${recovery} Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role, RECOVERY: recovery }));

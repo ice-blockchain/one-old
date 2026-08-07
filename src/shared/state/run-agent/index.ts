@@ -98,8 +98,10 @@ export {
   recordRunStackDriftResult,
   runIdentityFrozen,
   runLedgerAdmitsClaims,
+  runLedgerClaimAdmission,
   transitionRunStatus,
   transitionRunStatusResult,
+  type RunLedgerClaimAdmission,
   type RunLedgerOutcome,
   type RunLedgerStatus,
 } from './ledger';
@@ -146,6 +148,8 @@ export {
   settleTerminalRunLedger,
 } from './run-settle';
 export {
+  ageAttestsLiveness,
+  attestsLiveness,
   hookSessionIdentity,
   isSubagentThread,
 } from './session-identity';

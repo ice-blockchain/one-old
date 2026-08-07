@@ -17,6 +17,7 @@ import {
   isValidOneMcpReportId,
 } from '../../config/reporting';
 import { STATE_FILE } from '../../config/paths';
+import { trustworthyAgeSince } from '../clock-skew';
 import { ensureDir } from '../fsjson';
 
 interface ProjectStateLock {
@@ -138,6 +139,13 @@ function reapObservedLock(lockPath: string, owner: ProjectStateLockOwner): boole
 function reapAbandonedEmptyLock(lockPath: string, now: number): boolean {
   try {
     if (fs.readdirSync(lockPath).length !== 0) return false;
+    // Left as a raw subtraction on purpose; see the same note in
+    // one-mcp/cache-lock.ts. `rename(dir, EMPTY dir)` succeeds, so an empty
+    // canonical lock is overwritten rather than contended and this reap is not
+    // on the acquisition path — not even on the transient-EPERM route above,
+    // whose retry renames over the empty directory. A negative age costs a
+    // retry, not a wedge. The `.pending` reaper below is a different story: it
+    // has no rename to fall back on, so it IS folded.
     if (now - fs.statSync(lockPath).mtimeMs <= ONE_MCP_REPORT_ID_LOCK_STALE_MS) return false;
     fs.rmdirSync(lockPath);
     return true;
@@ -178,14 +186,23 @@ function reapAbandonedPendingDirs(lockPath: string, now: number): void {
   for (const name of names) {
     if (!name.startsWith(prefix) || !name.endsWith('.pending')) continue;
     const pendingPath = path.join(dir, name);
+    let pendingAgeMs: number | null;
     try {
-      if (now - fs.statSync(pendingPath).mtimeMs <= ONE_MCP_REPORT_ID_LOCK_STALE_MS) continue;
+      // A negative age reads as brand new forever, so the orphans this function
+      // exists to remove would accumulate untouched — the 16co litter, back.
+      pendingAgeMs = trustworthyAgeSince(fs.statSync(pendingPath).mtimeMs, now);
     } catch {
       continue;
     }
+    if (pendingAgeMs !== null && pendingAgeMs <= ONE_MCP_REPORT_ID_LOCK_STALE_MS) continue;
     const owner = observedLockOwner(pendingPath);
     // No readable owner => nothing proves it is in flight; a live pid does.
-    if (owner && processAlive(owner.pid)) continue;
+    // This is the one site here where an unusable age must NOT stand in for the
+    // age floor: an owner-less staging dir is exactly the mkdir→owner-file gap
+    // of a live acquisition, and removing it makes that acquirer's own rename
+    // fail ENOENT, which is not in its contended set and throws out of a hook.
+    // With a readable owner the pid is proof, so death alone authorizes the reap.
+    if (owner ? processAlive(owner.pid) : pendingAgeMs === null) continue;
     try {
       if (owner) fs.unlinkSync(owner.ownerPath);
       fs.rmdirSync(pendingPath);
@@ -257,7 +274,12 @@ function acquireProjectStateLock(cwd: string): ProjectStateLock | null {
         if (!contended) throw error;
         const now = Date.now();
         const owner = observedLockOwner(lockPath);
-        if (owner && now - owner.createdAt > ONE_MCP_REPORT_ID_LOCK_STALE_MS
+        // A future-stamped sentinel makes this age negative, hence never stale,
+        // so a dead owner's lock made every `.one.json` transaction throw at the
+        // timeout — including the run-id mint. An unusable age does not veto the
+        // reap; `processAlive` below still governs, so a live writer holds on.
+        const ownerAgeMs = owner ? trustworthyAgeSince(owner.createdAt, now) : null;
+        if (owner && (ownerAgeMs === null || ownerAgeMs > ONE_MCP_REPORT_ID_LOCK_STALE_MS)
           && !processAlive(owner.pid) && reapObservedLock(lockPath, owner)) continue;
         if (!owner && reapAbandonedEmptyLock(lockPath, now)) continue;
         if (now >= deadline) {

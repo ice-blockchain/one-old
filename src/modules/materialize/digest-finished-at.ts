@@ -18,6 +18,18 @@ const ISO_UTC_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 const FINISHED_AT_LINE_RE = /^finished_at:[ \t]*(.*)$/m;
 const VERDICT_LINE_RE = /^verdict:.*$/m;
 // Tolerate a little clock skew before calling a future timestamp a fabrication.
+//
+// Deliberately NOT the five minutes that STATE_TIMESTAMP_FUTURE_SKEW_MS,
+// DEFAULT_FUTURE_SKEW_MS, CURSOR_MODELS_MAX_FUTURE_SKEW_MS and
+// AVAILABLE_MODELS_MAX_FUTURE_SKEW_MS all share, and it must not be folded into
+// them: those four bound a stamp a HOST PROCESS wrote through Date.now(), where
+// a future value can only mean this machine's clock stepped, and five minutes is
+// the generosity that question deserves. This one bounds a value an AGENT
+// HAND-TYPED into a digest, where a future value usually means the agent
+// guessed. It is a fabrication detector, not a clock allowance, so widening it
+// to match the convention would let three more minutes of invention through the
+// gate this module exists to be — and the same constant is reused below as the
+// symmetric tolerance around `runStartMs`, which would widen with it.
 const FUTURE_SKEW_MS = 2 * 60 * 1000;
 // Stale-past bound: `finished_at` is stamped at digest-write time, so compliant
 // agents land within seconds of the write (observed 8c: −3s…−7s). A value many

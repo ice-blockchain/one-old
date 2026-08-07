@@ -108,7 +108,7 @@ function bundleInput(over: Partial<BuildDoctorBundleInput> = {}): BuildDoctorBun
       host: null,
       hostEvidence: { present: [], absent: ['--host=', 'CLAUDE_PLUGIN_ROOT'] },
     },
-    node: { runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22 },
+    node: { runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, pluginRequiredMajor: 22 },
     nvm: { installed: false },
     gitnexus: { onPath: null, absoluteV22: null, crashRiskInOldNvm: false },
     project: project(),

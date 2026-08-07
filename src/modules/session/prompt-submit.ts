@@ -33,7 +33,7 @@ import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isUninstallTrafficOneIntent, uninstallDirective } from '../../shared/uninstall-intent';
-import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, patchState, readEffectiveState, readState, statePath } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { uiLibraryFromPrompt } from '../../shared/capabilities';
 import { firstEmitThisSession } from '../../shared/once';
@@ -65,11 +65,24 @@ function opencodeSetupDirective(url: string, localFallback: LocalFallback, waitC
 }
 
 // The prompt is the only source of `uiLibrary` — there is no wizard step for it —
-// so a refused write is the loss of an explicit user instruction, not a cache miss.
-// Said once, in both places that record it.
+// so a write that did not land is the loss of an explicit user instruction, not a
+// cache miss. Said once, in both places that record it.
+//
+// Both places use `patchState`, not `writeState(cwd, { ...readState(cwd),
+// uiLibrary })`. `uiLibrary` is a SHARED project field — it is in none of
+// LOCAL_PREF_KEYS' three sets (PROJECT_PREF_KEYS, HOST_PREF_KEYS,
+// RETIRED_LOCAL_PREF_KEYS) and is not `hosts` — so `splitLocalPreferences`
+// leaves it on the state object and it really is `.one.json`'s to carry. (That
+// check is not ceremony: `team` IS a host preference, and writing it through
+// this same funnel reported success while persisting nothing.) What the old
+// spelling did get wrong is the base: a torn `.one.json` reads as `{}`, so the
+// merge replaced the project's whole state with a single `uiLibrary` field and
+// answered true. A patch refuses that base instead, and this notice is what
+// says so.
 function uiLibraryNotRecorded(library: string): string {
-  return `[traffic-one] the UI library you named (\`${library}\`) could not be recorded: the state write fence refused `
-    + '`.traffic-one/.one.json`. It will not be applied to this project until that file is writable and you name it again.';
+  return `[traffic-one] the UI library you named (\`${library}\`) could not be recorded: \`.traffic-one/.one.json\` `
+    + 'did not accept the write (the state write fence refused it, or its current contents could not be read). '
+    + 'It will not be applied to this project until that file is writable and readable and you name it again.';
 }
 
 // `originalPrompt` seeding lives in shared/onboarding/seed-prompt (also used by
@@ -177,11 +190,11 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       const explicitUiLibrary = uiLibraryFromPrompt(promptText);
       if (explicitUiLibrary && fs.existsSync(statePath(cwd))) {
         // The prompt is the ONLY source of `uiLibrary` — the wizard has no step
-        // for it — so a refused write loses the user's explicit request outright
-        // unless they happen to name the library again in a later prompt. Merged
-        // onto the bootstrap result rather than dropped; a deny short-circuits the
-        // merge, so this never dilutes a refusal.
-        if (!writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary })) {
+        // for it — so a write that did not land loses the user's explicit request
+        // outright unless they happen to name the library again in a later prompt.
+        // Merged onto the bootstrap result rather than dropped; a deny
+        // short-circuits the merge, so this never dilutes a refusal.
+        if (!patchState(cwd, { uiLibrary: explicitUiLibrary })) {
           return mergeResults([bootstrapped, context(uiLibraryNotRecorded(explicitUiLibrary))]);
         }
       }
@@ -197,7 +210,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // below this point reads `state`, and carrying a `uiLibrary` that `.one.json`
     // does not have is how the rest of the session behaves correctly on a value
     // no later hook can read back.
-    if (writeState(cwd, { ...readState(cwd), uiLibrary: explicitUiLibrary })) {
+    if (patchState(cwd, { uiLibrary: explicitUiLibrary })) {
       state = { ...state, uiLibrary: explicitUiLibrary };
     } else {
       uiLibraryRefused = uiLibraryNotRecorded(explicitUiLibrary);
@@ -264,10 +277,14 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     }
     const prepared = prepareOnboardingServer(cwd, ctx.host, { syncSession });
     if (prepared.kind !== 'ready') {
+      // One label per kind. `start-timeout` is retryable and must not be
+      // labelled a failure: the body already renders the retryable text, and a
+      // banner asserting the launcher FAILED contradicts the paragraph under it.
+      const setupLabel = prepared.kind === 'bootstrap-required'
+        ? 'setup permission required'
+        : (prepared.kind === 'start-timeout' ? 'setup launcher timed out' : 'setup launcher failed');
       return context(`[ACTIVE STACK: ${stack}]\n\n${prepared.reason}`, {
-        systemMessage: prepared.kind === 'bootstrap-required'
-          ? 'traffic-one [setup permission required]'
-          : 'traffic-one [setup launcher failed]',
+        systemMessage: `traffic-one [${setupLabel}]`,
       });
     }
     const { server, waitCommand } = prepared;

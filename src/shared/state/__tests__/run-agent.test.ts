@@ -37,6 +37,7 @@ import {
   refreshCursorRunAgentFromTranscriptCache,
   recordCursorSpawnObservation,
   recordRunAgent,
+  recordRunAgentResult,
   explainUnresolvedRunAgent,
   reconcileRunIdentityDrift,
   releaseRunClaims,
@@ -52,6 +53,7 @@ import {
   suppressCursorFollowupsBatch,
   transcriptThreadId,
   transitionRunStatus,
+  transitionRunStatusResult,
   tryFallbackClaim,
   updateCursorSpawnObservation,
   validateCodexLiveRunAgent,
@@ -71,6 +73,12 @@ import { claimRejectReason } from '../run-agent/claims-pending';
 // what they assert is which STATUS a refused write produces.
 import { authoritativeRebindThreadRole, replayAuthoritativeRebindJournal } from '../run-agent/rebind-journal';
 import { holdRunLock } from './owned-lock-fixture';
+// The reader, not the mutations: the degraded-read rows at the bottom assert the
+// KIND their fixture planted, so a fixture that stopped producing `unreadable`
+// (a chmod a root runner walks through, a directory some future Node reads as
+// empty) fails there rather than passing for the parsed reason it excludes.
+import { readJsonResult } from '../../fsjson';
+import { SUBAGENT_STALE_MS } from '../../../config/state';
 import { resetAuthoringRootCache } from '../../authoring-root';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { ensureRunModelPolicy } from '../../run-model-policy';
@@ -284,6 +292,17 @@ test('a parent-browser replacement needs a later tester digest re-attestation', 
     writeDigest(dir, runId, 'tester.md', 'TESTS_GREEN');
 
     const activatedAtMs = Date.parse(ledger!.qaContractActivatedAt as string);
+    // The freshness floor maxes the frontend digest's mtime (terminal-verdict.ts),
+    // so leaving it at its natural write time makes this test load-dependent: under
+    // load the three digest writes plus the report take longer than the 20ms the
+    // report is pinned at, the floor rises above it, and the report is correctly
+    // rejected as stale. Pinning it also makes the tester digest the only thing
+    // this test's assertions can be answering, which is its subject.
+    fs.utimesSync(
+      path.join(dir, '.traffic-one', 'digests', runId, 'frontend.md'),
+      new Date(activatedAtMs),
+      new Date(activatedAtMs),
+    );
     const reportGeneratedAtMs = activatedAtMs + 10;
     const reportMtimeMs = activatedAtMs + 20;
     const reportFile = writePassingQaReport(dir, runId, {
@@ -1638,18 +1657,22 @@ test('a verified replacement supersedes only the explicitly retired same-role cl
     // starting a NEW thread. Its fresh claim must no longer block that verified
     // SubagentStart bind.
     markRunAgentReplaced(dir, runId, 'senior-reviewer');
+    const deadFile = path.join(dir, '.traffic-one', 'runs', runId, 'reviewer-thread-dead.json');
+    // Retirement is now the release, and it happens HERE rather than at the
+    // replacement's bind: the row and everything the retired agent holds go
+    // together, so nothing depends on a replacement arriving to correct the
+    // liveness accounting.
+    assert.equal(JSON.parse(fs.readFileSync(deadFile, 'utf8')).status, 'released',
+      'the retired thread stops counting as live when its row dies, not when a successor binds');
     const second = claimThreadRole(dir, state, 'reviewer-thread-live', 'senior-reviewer', {
       model: 'sonnet',
       refuseOccupiedRole: true,
     });
     assert.ok(second, 'replacement reviewer claim binds');
 
-    const dead = JSON.parse(fs.readFileSync(
-      path.join(dir, '.traffic-one', 'runs', runId, 'reviewer-thread-dead.json'),
-      'utf8',
-    ));
+    const dead = JSON.parse(fs.readFileSync(deadFile, 'utf8'));
     assert.equal(dead.status, 'released', 'dead sibling claim is superseded');
-    assert.match(String(dead.releasedReason), /^superseded-by-/);
+    assert.match(String(dead.releasedReason), /^retired-/);
     const live = JSON.parse(fs.readFileSync(
       path.join(dir, '.traffic-one', 'runs', runId, 'reviewer-thread-live.json'),
       'utf8',
@@ -4964,5 +4987,266 @@ test('a claim in an earlier run directory that names THIS run keeps its rank', (
     assert.equal(diagnosis.reason, 'fingerprint-mismatch',
       'a claim whose body names this run is this run\'s, wherever the file happens to sit');
     assert.equal(diagnosis.claimFingerprint, 'drifted|none|none|none');
+  });
+});
+
+// ── run state that cannot be READ is not run state that says "no" ────────────
+// Every row below plants a `.traffic-one` file that is present and unreadable —
+// `corrupt` (bytes that do not parse) or `unreadable` (bytes that cannot be
+// fetched at all) — and asserts that the mutation over it stops inventing the
+// answer the caller wanted. The two kinds are separated because they are not the
+// same fact: corrupt bytes are useless to every reader, while unreadable ones may
+// be perfectly good to whoever owns them.
+//
+// The `unreadable` fixtures are a DIRECTORY at the file's path, never a chmod:
+// EISDIR is produced for every user including root, whereas a 000 mode is read
+// straight through by a root test runner and the row would then pass for the
+// PARSED reason it is trying to exclude. Each one asserts the kind it planted.
+
+test('a fallback claim file that cannot be read is a HELD path, not a free one', () => {
+  withPrefs((dir) => {
+    const runId = 'run-fallback-degraded';
+    const target = 'apps/web/src/shared.ts';
+    const owner = fallbackTestContext(runId, 'senior-frontend', 'thread-owner-0001');
+    const rival = fallbackTestContext(runId, 'senior-backend', 'thread-rival-0002');
+    const file = path.join(dir, T1_DIR, 'runs', runId, 'claims', 'apps_web_src_shared.ts.json');
+
+    // The baseline IS the discrimination: while the claim parses, the rival is
+    // blocked and told who holds it. A fixture that stopped staking a claim at
+    // all would fail here instead of passing vacuously below.
+    assert.equal(tryFallbackClaim(dir, owner, target).blocked, false);
+    assert.deepEqual(
+      tryFallbackClaim(dir, rival, target),
+      { blocked: true, holder: 'thread-owner-0001' },
+      'fixture: a readable, fresh claim shuts the rival out',
+    );
+
+    // Truncated mid-record — the shape a killed writer leaves. `readJson(file,
+    // null)` answered this with the same `null` it answers an absent file with,
+    // so the holder check was SKIPPED and the rival took a lease it never read.
+    const torn = '{"version":1,"runId":"run-fallback-degraded","holder":"thread-owner-000';
+    fs.writeFileSync(file, torn, 'utf8');
+    const overCorrupt = tryFallbackClaim(dir, rival, target);
+    assert.equal(overCorrupt.blocked, true, 'a claim we cannot parse is not a claim we may take');
+    assert.match(String(overCorrupt.holder), /unreadable claim record/);
+    assert.equal(fs.readFileSync(file, 'utf8'), torn, 'and the lease was not overwritten');
+
+    // …and it EXPIRES on the same SUBAGENT_STALE_MS bound the parsed branch
+    // applies, so an unreadable claim can never wedge a path permanently. The
+    // takeover repairs the file, which is the only healing this site does.
+    const stale = new Date(Date.now() - SUBAGENT_STALE_MS - 60_000);
+    fs.utimesSync(file, stale, stale);
+    assert.equal(tryFallbackClaim(dir, rival, target).blocked, false, 'an expired lease is takeable');
+    assert.equal(
+      JSON.parse(fs.readFileSync(file, 'utf8')).holder,
+      'thread-rival-0002',
+      'and taking it replaces the unparseable bytes with a real claim',
+    );
+    // The far end of the theft, measured rather than argued: once the rival's
+    // write lands, the ORIGINAL holder is the one this gate denies, and the
+    // prose names the thief as the rightful writer. Above, that outcome is
+    // legitimate — the lease had expired. Over a FRESH unreadable claim it is
+    // the whole cost of the defect, and the row above is what prevents it.
+    assert.deepEqual(
+      tryFallbackClaim(dir, owner, target),
+      { blocked: true, holder: 'thread-rival-0002' },
+      'whoever writes the claim owns the deny, so a stolen lease denies its owner and names the thief',
+    );
+  });
+});
+
+test('a fallback claim path that cannot be read AT ALL holds the path too', () => {
+  withPrefs((dir) => {
+    const runId = 'run-fallback-unreadable';
+    const target = 'apps/web/src/held.ts';
+    const owner = fallbackTestContext(runId, 'senior-frontend', 'thread-owner-0003');
+    const rival = fallbackTestContext(runId, 'senior-backend', 'thread-rival-0004');
+    const file = path.join(dir, T1_DIR, 'runs', runId, 'claims', 'apps_web_src_held.ts.json');
+
+    assert.equal(tryFallbackClaim(dir, owner, target).blocked, false, 'baseline: the path is claimable');
+    fs.rmSync(file);
+    fs.mkdirSync(file);
+    assert.equal(readJsonResult(file).kind, 'unreadable', 'fixture guard: the planted state really is `unreadable`');
+
+    assert.equal(tryFallbackClaim(dir, rival, target).blocked, true);
+    assert.equal(fs.statSync(file).isDirectory(), true, 'nothing was written over it');
+  });
+});
+
+test('a run ledger that cannot be read refuses transitions instead of reading as `planned`', () => {
+  withPrefs((dir) => {
+    const runId = 'run-ledger-degraded';
+    const file = path.join(dir, T1_DIR, 'runs', runId, 'run.json');
+    assert.ok(transitionRunStatus(dir, runId, { status: 'active' }));
+    assert.ok(transitionRunStatus(dir, runId, { status: 'failed', outcome: 'agent-failed' }));
+
+    // The guard being protected, measured on the readable file first: nothing
+    // comes out of `failed`. Without this the rows below cannot tell a refusal
+    // from a run that was never terminal.
+    assert.equal(
+      transitionRunStatusResult(dir, runId, { status: 'active' }).reason,
+      'illegal-transition-failed-to-active',
+      'fixture: the run really is terminal',
+    );
+
+    const torn = fs.readFileSync(file, 'utf8').slice(0, 40);
+    fs.writeFileSync(file, torn, 'utf8');
+    const corrupt = transitionRunStatusResult(dir, runId, { status: 'active' });
+    // `|| {}` made this `isNew` with a fabricated `planned` status — the one
+    // status everything is legal out of — so a terminal run reopened, its
+    // history and outcome were dropped, and a V2 run was downgraded to the V1
+    // QA contract on the way through.
+    assert.equal(corrupt.outcome, 'unavailable', 'an unreadable ledger is "I could not find out", not "planned"');
+    assert.equal(corrupt.reason, 'ledger-corrupt');
+    assert.equal(fs.readFileSync(file, 'utf8'), torn, 'and a refusal writes nothing');
+
+    fs.rmSync(file);
+    fs.mkdirSync(file);
+    assert.equal(readJsonResult(file).kind, 'unreadable', 'fixture guard');
+    const unreadable = transitionRunStatusResult(dir, runId, { status: 'active' });
+    assert.equal(unreadable.outcome, 'unavailable');
+    assert.equal(unreadable.reason, 'ledger-unreadable');
+  });
+});
+
+test('a corrupt agent registry is quarantined and healed; an unreadable one is refused', () => {
+  withPrefs((dir) => {
+    const runId = 'run-registry-degraded';
+    const file = path.join(dir, T1_DIR, 'runs', runId, 'agents.json');
+    recordRunAgent(dir, runId, 'senior-frontend', { agentId: 'frontend-aaaaaaaa', parentSessionId: 'parent-1' });
+    recordRunAgent(dir, runId, 'senior-backend', { agentId: 'backend-bbbbbbbb', parentSessionId: 'parent-1' });
+    assert.deepEqual(
+      Object.keys(readRunAgentRegistry(dir, runId)).sort(),
+      ['senior-backend', 'senior-frontend'],
+      'fixture: two live rows, so an erasure has something to erase',
+    );
+
+    const torn = fs.readFileSync(file, 'utf8').slice(0, 60);
+    fs.writeFileSync(file, torn, 'utf8');
+    const healed = recordRunAgentResult(dir, runId, 'senior-architect', {
+      agentId: 'architect-cccccccc', parentSessionId: 'parent-1',
+    });
+    assert.equal(healed.outcome, 'applied', 'the one whole-file republisher is the one writer that may heal');
+    assert.equal(
+      fs.readFileSync(`${file}.corrupt`, 'utf8'),
+      torn,
+      'the bytes nobody could parse are preserved beside the file, so healing destroys nothing',
+    );
+    // The other two rows are gone, and that is not what the write cost: every
+    // consumer reads this file through readRunAgentRegistry, which already
+    // answered `{}` for it the moment it stopped parsing.
+    assert.deepEqual(Object.keys(readRunAgentRegistry(dir, runId)), ['senior-architect']);
+
+    fs.rmSync(file);
+    fs.rmSync(`${file}.corrupt`);
+    fs.mkdirSync(file);
+    assert.equal(readJsonResult(file).kind, 'unreadable', 'fixture guard');
+    const refused = recordRunAgentResult(dir, runId, 'senior-tester', { agentId: 'tester-dddddddd' });
+    assert.equal(refused.outcome, 'unavailable');
+    assert.equal(refused.reason, 'registry-unreadable', 'bytes we cannot even copy are not bytes we may replace');
+    assert.equal(fs.existsSync(`${file}.corrupt`), false, 'and nothing was quarantined, because nothing could be read');
+  });
+});
+
+test('a rebind replay against an unreadable agent registry is blocked, not republished from `{}`', () => {
+  withPrefs((dir) => {
+    const runId = 'run-rebind-registry-readable';
+    const fixture = writeRebindCrashFixture(dir, runId, 'prepared');
+    const replay = replayAuthoritativeRebindJournal(dir, fixture.state, runId, CODEX_V2_CHILD_THREAD);
+    assert.equal(replay.status, 'complete', 'baseline: a readable registry lets the same transaction finish');
+  });
+
+  withPrefs((dir) => {
+    const runId = 'run-rebind-registry-corrupt';
+    const fixture = writeRebindCrashFixture(dir, runId, 'prepared');
+    const torn = fs.readFileSync(fixture.files.registryFile, 'utf8').slice(0, 30);
+    fs.writeFileSync(fixture.files.registryFile, torn, 'utf8');
+
+    // `|| {}` emptied `agents`, so `targetMatches`/`oldMatches` were both false
+    // and the CAS read the target role as FREE; the claim match alone then
+    // carried the transaction through and it republished the whole registry
+    // from `{}`.
+    const replay = replayAuthoritativeRebindJournal(dir, fixture.state, runId, CODEX_V2_CHILD_THREAD);
+    assert.equal(replay.status, 'blocked', 'a compare-and-swap against a base we cannot see is not a repair');
+    assert.equal(fs.readFileSync(fixture.files.registryFile, 'utf8'), torn, 'the registry was not republished');
+    assert.equal(
+      JSON.parse(fs.readFileSync(fixture.files.claimFile, 'utf8')).role,
+      'senior-frontend',
+      'and the claim half never ran either',
+    );
+    assert.equal(fs.existsSync(fixture.journalFile), true, 'the journal is retained, so a later replay can still finish');
+  });
+});
+
+test('an authoritative rebind against an unreadable agent registry never starts', () => {
+  const evidence = {
+    role: 'senior-architect',
+    source: 'codex-session-meta-agent-path',
+    authority: 'authoritative' as const,
+  };
+  const rebind = (dir: string, state: Record<string, unknown>, runId: string, claim: Record<string, unknown>) =>
+    authoritativeRebindThreadRole(dir, state, runId, CODEX_V2_CHILD_THREAD, claim, evidence, {
+      parentSessionId: CODEX_V2_PARENT_THREAD,
+      model: CODEX_V2_MODEL,
+    });
+
+  withPrefs((dir) => {
+    const runId = 'run-rebind-entry-readable';
+    const state = { ...materializedState(), currentRunId: runId };
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+    const claim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8')) as Record<string, unknown>;
+    assert.equal(rebind(dir, state, runId, claim)?.role, 'senior-architect', 'baseline: the correction runs');
+  });
+
+  withPrefs((dir) => {
+    const runId = 'run-rebind-entry-corrupt';
+    const state = { ...materializedState(), currentRunId: runId };
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+    const claim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8')) as Record<string, unknown>;
+    const torn = fs.readFileSync(files.registryFile, 'utf8').slice(0, 25);
+    fs.writeFileSync(files.registryFile, torn, 'utf8');
+
+    assert.equal(rebind(dir, state, runId, claim), null, 'no correction is made against a registry we cannot read');
+    assert.equal(fs.readFileSync(files.registryFile, 'utf8'), torn, 'not even the conflict diagnostic republishes it');
+    assert.equal(JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).role, 'senior-frontend');
+    assert.equal(
+      fs.existsSync(path.join(files.runDir, 'transactions', `rebind-${CODEX_V2_CHILD_THREAD}.json`)),
+      false,
+      'and no journal, so no transaction was started',
+    );
+  });
+});
+
+test('run-identity drift repair leaves the losers alone when `.one.json` cannot be read', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runsDir = path.join(dir, T1_DIR, 'runs');
+    const evidenced = ensureCurrentRunId(dir, state);
+    claimThreadRole(dir, state, 'agent-a', 'senior-backend', { parentSessionId: 'orchestrator' });
+    fs.writeFileSync(path.join(runsDir, evidenced, 'assignments.json'), '{}', 'utf8');
+    fs.writeFileSync(path.join(runsDir, evidenced, 'architecture-v1.json'), '{}', 'utf8');
+
+    const sibling = String(Number(evidenced) + 1000);
+    const siblingState = { ...state, currentRunId: sibling };
+    ensureRunLedger(dir, sibling, { status: 'active', kind: 'agent-claim' });
+    claimThreadRole(dir, siblingState, 'agent-b', 'senior-frontend', { parentSessionId: 'orchestrator' });
+
+    // The re-point is the PRECONDITION for dismantling the losers, and it now
+    // runs through patchState — which refuses on a base it cannot read instead
+    // of publishing `{ currentRunId }` over the whole state file.
+    const stateFile = path.join(dir, T1_DIR, '.one.json');
+    const torn = '{ "stack": "default", "currentRunId": "';
+    fs.writeFileSync(stateFile, torn, 'utf8');
+
+    const drifted: Record<string, unknown> = { ...state, currentRunId: sibling };
+    assert.equal(reconcileRunIdentityDrift(dir, drifted), false, 'nothing was repaired, and it says so');
+    assert.equal(drifted.currentRunId, sibling, 'the in-memory pointer is not moved either');
+    assert.equal(fs.readFileSync(stateFile, 'utf8'), torn, 'the state file keeps its bytes');
+    const loser = JSON.parse(fs.readFileSync(path.join(runsDir, sibling, 'run.json'), 'utf8')) as Record<string, unknown>;
+    assert.notEqual(
+      effectiveLegacyRunStatus(loser), 'failed',
+      'the loser is NOT settled: releasing and failing it is only correct once currentRunId names the survivor',
+    );
+    assert.equal(hasActiveRunClaims(dir, sibling), true, 'and its claims are still held');
   });
 });

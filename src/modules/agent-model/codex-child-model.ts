@@ -23,7 +23,7 @@ import {
   readRunAgentActivity,
   readRunAgentRegistry,
   resolveRunAgentContext,
-  runLedgerAdmitsClaims,
+  runLedgerClaimAdmission,
   runLedgerStatusRecord,
   transcriptThreadId,
 } from '../../shared/state';
@@ -411,16 +411,45 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     // and the parent replaced it in a loop, each new thread hitting the same wall.
     // Probe in remedy order — closed ledger first, because it is the only cause
     // no respawn can fix.
-    if (!runLedgerAdmitsClaims(cwd, runId)) {
+    //
+    // THREE-VALUED. `runLedgerAdmitsClaims` answers `true` for a ledger it merely
+    // could not READ (deliberately — its other consumer is a gate that would
+    // otherwise destroy a healthy child over an unreadable file), so a truncated
+    // `run.json` fell past this probe, past the rival probe, and landed on
+    // `codex-child-model-claim-persist-failed` — whose prose asserts "The run
+    // ledger for X still admits claims", which is measurably false here, and
+    // prescribes a retry for a condition no retry clears.
+    const admission = runLedgerClaimAdmission(cwd, runId);
+    if (admission === 'unknown') {
+      // Measured on a truncated ledger: the claim mint, a resume and a settlement
+      // all return `unavailable('ledger-corrupt')`, so every remedy the closed arm
+      // offers is unavailable here too. The file is a runtime-owned run sidecar
+      // and `runtime-sidecar-owner-gate` refuses every agent write to it, so the
+      // only remedy that exists is a USER one — and it works: with the file gone
+      // the run reads as `planned` again and the next claim binds.
+      return deny(`traffic-one — Codex child blocked: the run ledger for \`${runId}\` `
+        + `(\`.traffic-one/runs/${runId}/run.json\`) cannot be read or parsed, so NO child can bind a role in it and `
+        + 'every tool call from this thread stays denied. This is NOT a lock and NOT a transient failure: the claim '
+        + 'mint, a resume and a settlement all refuse this run with `ledger-corrupt`, so retrying, respawning and '
+        + 'settling fail identically. No agent may repair that file — every agent write to a run sidecar is refused. '
+        + `ROOT orchestrator: capture the diagnosis with \`node ~/.traffic-one/bin/doctor.cjs --run "${runId}"\`, then `
+        + 'ask the USER to restore that one file from version control or delete it; a fresh run can be minted once it '
+        + 'is legible or gone. Do not spawn another child into this run in the meantime.',
+        { denyId: 'codex-child-model-ledger-illegible', denyTarget: runId });
+    }
+    if (admission === 'closed') {
       const ledger = runLedgerStatusRecord(cwd, runId);
       return deny(`traffic-one — Codex child blocked: the run ledger for \`${runId}\` is \`${ledger.status || 'unreadable'}\``
         + `${ledger.outcome ? ` (${ledger.outcome})` : ''}, so NO child can bind a role in it and every tool call from `
-        + 'this thread stays denied. Respawning does not fix this — the run itself is closed. ROOT orchestrator: if the '
-        + 'user has authorized another cycle, resume the RUN first with '
+        + 'this thread stays denied. Respawning does not fix this — the run itself is closed. ROOT orchestrator: a '
+        + 'resume is legal ONLY out of `blocked`; `completed` and `failed` runs cannot be reopened at all, and the '
+        + 'command below is refused for them. If the status above is `blocked` and the user has authorized another '
+        + 'cycle, resume the RUN first with '
         + `\`node ~/.traffic-one/bin/run-status.cjs --run-id "${runId}" --status active --reason user-authorized-extra-cycle\`, `
         + `then confirm \`.traffic-one/runs/${runId}/settlement-v2.json\` reads \`"status": "active"\` before respawning `
         + 'this child. If it still reads `"status": "blocked"`, the resume did NOT take effect — do not spawn into this '
-        + 'run; settle it and mint a new one.', { denyId: 'codex-child-model-ledger-closed', denyTarget: runId });
+        + 'run; settle it and mint a new one. For any other status, minting a new run is the only remedy.',
+        { denyId: 'codex-child-model-ledger-closed', denyTarget: runId });
     }
     const rival = obj(activeClaimForOtherThread(cwd, state, runId, role, childId));
     if (rival) {

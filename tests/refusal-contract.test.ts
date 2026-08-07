@@ -318,6 +318,25 @@
 // own. Count the caller set before converting, not after. This matters now
 // rather than later, because widening `MutationResult` across the rest of
 // shared/state/** is this operation at scale.
+//
+// RULE 4 HAS THE SAME PROPERTY FROM THE OTHER DIRECTION, and it is about to be
+// hit repeatedly. Adding a SECOND fenced write to a function that already drops
+// one crosses this rule's threshold — the pair is what it counts, not the
+// individual drop — so a fix can turn the ratchet red in the file it is fixing.
+// The shape doing it is the one state/normalize.ts established and the
+// fsjson-triage lanes are copying: preserve the unparseable bytes beside a file
+// before replacing it. That quarantine IS a fenced write, and beside an existing
+// dropped write it is a new divergent pair.
+//
+// Measured, not predicted: run-settlement/projection.ts#writeLegacyProjection —
+// this rule's own archetype, fixed and removed from the baseline below — gained a
+// `writeTextFile` quarantine for a corrupt `run.json`. With the quarantine's
+// boolean DROPPED, the function reappeared here by name as a new entry, the
+// archetype returning through a fix. With it CONSUMED (`if (corrupt &&
+// !writeTextFile(…)) return;`) the ratchet stays green, and the two are not a
+// choice: a base we could not preserve must not be replaced, so the boolean has
+// somewhere real to go. Consume the preservation write, and rule 4 stays a report
+// about divergence rather than about repairs in progress.
 
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -980,7 +999,30 @@ const FSJSON_WRITERS: readonly string[] = [
   'movePath',
   'removePath',
   'writeJson',
+  'writeJsonDurable',
   'writeTextFile',
+];
+
+/**
+ * Every other function fsjson.ts exports, with the reason it carries no refusal.
+ * Pinned so the two lists TOGETHER account for the module's whole exported
+ * surface — see the completeness test at the bottom of this file.
+ *
+ * Without that test the name-pinning above fails SILENTLY and in the worst
+ * direction. `writeJsonDurable` arrived and `writeState` stopped being
+ * recognised as a writer, because a wrapper is found by the writer name its
+ * body mentions: the discard count fell 98 -> 73 and thirty call sites left the
+ * scanner's view. Only the `> 80` floor caught it, and only because that
+ * wrapper happened to have thirty callers — a writer wrapped by a function with
+ * five would have shrunk the denominator quietly and stayed green.
+ */
+const FSJSON_NON_WRITERS: readonly string[] = [
+  'parseJson',            // pure
+  'projectStateWritable', // a question; mutates nothing
+  'readJson',             // read
+  'readJsonResult',       // read
+  'readText',             // read
+  'stateWritePermitted',  // a question; mutates nothing
 ];
 
 interface WriteSite {
@@ -2745,4 +2787,36 @@ test('rule 2 does not fire on a writer lookalike, or on a question about writing
     + '  stateWritePermitted(p);\n  return c;\n}\n',
   )));
   assert.deepEqual(question.scanFile(WRITE_FIXTURE).writes, [], 'a permission question is not a write');
+});
+
+test('every function fsjson.ts exports is classified as a writer or as a non-writer', () => {
+  const source = ts.createSourceFile(
+    FSJSON_MODULE,
+    fs.readFileSync(FSJSON_MODULE, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const exported = source.statements
+    .filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement)
+      && (ts.getCombinedModifierFlags(statement) & ts.ModifierFlags.Export) !== 0)
+    .map((statement) => statement.name?.text ?? '')
+    .filter((name) => name !== '')
+    .sort();
+  assert.ok(exported.length > 0, 'the parse found fsjson.ts — an empty set would make this vacuous');
+
+  const classified = [...FSJSON_WRITERS, ...FSJSON_NON_WRITERS].sort();
+  assert.deepEqual(
+    exported,
+    classified,
+    'fsjson.ts exports a function neither list names. Add it to FSJSON_WRITERS if its'
+    + ' false (or its union) can mean REFUSED, or to FSJSON_NON_WRITERS with the reason it'
+    + ' cannot. Leaving it out does not fail loudly: it makes every wrapper that forwards'
+    + ' only to the new primitive stop being a writer, so those call sites vanish from'
+    + ' rules 2-4 and the ratchets go green over a hole.',
+  );
+
+  // The two lists must stay DISJOINT: a name in both would let a real writer be
+  // excused by its own exculpation, and the union check above cannot see it.
+  const overlap = FSJSON_WRITERS.filter((name) => FSJSON_NON_WRITERS.includes(name));
+  assert.deepEqual(overlap, [], 'a name cannot be both a writer and a non-writer');
 });

@@ -11,7 +11,7 @@ import * as path from 'path';
 import { LEGACY_STACK_ALIASES, STACK_IDS } from '../../config/stacks';
 import { LEGACY_LOCK_FILE, LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { isNonProjectRoot } from '../authoring-root';
-import { readJson, readText, writeJson } from '../fsjson';
+import { type JsonRead, readJson, readJsonResult, readText, writeJsonDurable, writeTextFile } from '../fsjson';
 import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import {
   canonicalizeStateShape,
@@ -140,6 +140,13 @@ export function readState(cwd: string): Rec {
  * hypothetical: `team` is a host preference, so a `writeState` of a state object
  * carrying `team` strips it and persists nothing about it while answering `true`
  * (see onboarding/team-mode-approval.ts, which used to do exactly that).
+ *
+ * REPLACEMENT, not merge: the object handed in BECOMES the file, minus the two
+ * fields preserveCurrentRunId/preserveOneMcpReportId pin. A caller whose subject
+ * is one FIELD wants `patchState` below instead — `writeState(cwd, {
+ * ...readState(cwd), ...patch })` performs its read OUTSIDE this lock, so it
+ * publishes a snapshot that is already stale and drops whatever another process
+ * wrote in between.
  */
 export function writeState(cwd: string, state: unknown): boolean {
   // Contract: the plugin's own repo/install never gets a .one.json — a silent
@@ -173,10 +180,83 @@ export function writeState(cwd: string, state: unknown): boolean {
   const replacement = { ...source, version: stateVersion() };
   let persisted = false;
   withProjectStateLock(cwd, () => {
-    const current = readJson<Rec>(filePath, {});
-    persisted = writeJson(filePath, preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)));
+    const read = readJsonResult<Rec>(filePath);
+    if (!statePreservedBeforeReplace(filePath, read)) return;
+    const current = read.kind === 'ok' ? read.value : {};
+    persisted = writeJsonDurable(
+      filePath,
+      preserveCurrentRunId(current, preserveOneMcpReportId(current, replacement)),
+    );
   });
   return persisted;
+}
+
+/**
+ * Merge `fields` into the CURRENT on-disk state and publish the result, with the
+ * read and the write inside one hold of the project state lock.
+ *
+ * This is the shape `writeState(cwd, { ...readState(cwd), ...patch })` was
+ * reaching for and does not have. That spelling reads the file, and only then
+ * asks for the lock: two hooks that each set a DIFFERENT field both publish a
+ * whole-object snapshot taken before either of them started, so the lock
+ * serializes the writes perfectly and the second one still erases the first's
+ * field. The lock was never the missing piece — the re-read was. Only `oneUid`
+ * and `currentRunId` survive that today, because they are the two fields
+ * project-state-lock.ts had to special-case one at a time after each was lost in
+ * production; a patch generalizes the rescue instead of extending the list.
+ *
+ * Declaring the fields is what makes the merge possible at all: an absent key in
+ * `fields` means "not mine, leave it", which a whole-object write cannot express
+ * — an absent key there is indistinguishable from a deliberate deletion.
+ * A caller that genuinely means to REPLACE the file (onboarding committing a
+ * stack, a repair rewriting it) still wants writeState.
+ *
+ * Refuses — without writing anything — when the current file cannot be read.
+ * A patch is defined against a base, so a base we cannot see leaves nothing
+ * honest to publish, and the caller already has a `false` channel for it. Only
+ * writeState's replacement path quarantines and heals, because only a caller
+ * that meant to replace the whole file has something to put there.
+ *
+ * The nested writeState re-enters the same lock in-process (project-state-lock.ts
+ * `heldLocks`), so this is one lock hold and one cross-process critical section,
+ * not two — and every guard, normalization and local-preference split writeState
+ * performs applies unchanged, rather than being restated here where the two
+ * could drift.
+ */
+export function patchState(cwd: string, fields: Rec): boolean {
+  return withProjectStateLock(cwd, () => {
+    const read = readJsonResult<Rec>(statePath(cwd));
+    if (read.kind === 'corrupt' || read.kind === 'unreadable') return false;
+    const current = read.kind === 'ok' ? obj(read.value) : null;
+    return writeState(cwd, { ...(current ?? readState(cwd)), ...fields });
+  });
+}
+
+// A replaced file whose previous bytes we could not parse is preserved beside
+// it, never dropped. `readJson`'s `{}` fallback used to make the two
+// indistinguishable here, and the consequence was specific rather than
+// theoretical: `current` is what preserveOneMcpReportId and preserveCurrentRunId
+// read, so an unparseable `.one.json` silently took the durable report id and
+// the live run pointer with it — the exact erasure those two functions exist to
+// prevent, arriving through the one input they never checked.
+//
+// `unreadable` (EACCES, EISDIR, EIO) gets the opposite answer to `corrupt` for
+// the reason it is a separate kind: there are bytes there and we cannot copy
+// them, so replacing the file would destroy content that was never even seen.
+// Refusing leaves a project whose state dir is mis-permissioned reporting
+// state-write-refused, which is true, instead of quietly resetting it.
+//
+// Proceeding after a successful quarantine rather than refusing is a product
+// choice: onboarding/repair.ts and the session-start scrub both heal through
+// writeState, so a permanent refusal would wedge a hand-broken `.one.json` with
+// no in-product way out. Nothing is lost either way — the bytes are on disk
+// beside the file — so the tie is broken towards self-healing.
+const CORRUPT_STATE_SUFFIX = '.corrupt';
+
+function statePreservedBeforeReplace(filePath: string, read: JsonRead<Rec>): boolean {
+  if (read.kind === 'ok' || read.kind === 'absent') return true;
+  if (read.kind === 'unreadable') return false;
+  return writeTextFile(`${filePath}${CORRUPT_STATE_SUFFIX}`, read.text);
 }
 
 // Deterministic self-heal for machine-local preference fields that leaked into the

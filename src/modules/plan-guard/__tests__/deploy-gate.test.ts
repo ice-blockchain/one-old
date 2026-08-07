@@ -54,6 +54,54 @@ test('deploy gate denies a deploy with no shipper approval', () => {
   });
 });
 
+// ── Future-stamped approvals ─────────────────────────────────────────────────
+// `.one.json` is ordinary project JSON and both windows here are spelled
+// `Date.now() - stamp < WINDOW`. A stamp dated ahead of now makes that
+// difference negative, so it passes the window by a margin that only GROWS with
+// the lie — a permanent deploy authorization from a check that may never have
+// run. `futureIso` is well beyond STATE_TIMESTAMP_FUTURE_SKEW_MS, which is the
+// allowance real clock jitter is expected to fit inside.
+const futureIso = (): string => new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+
+test('deploy gate denies a future-dated shipper approval', () => {
+  withProject({ lastShipperApprovalAt: futureIso() }, (cwd) => {
+    const r = deployGate(ctxFor(cwd, 'vercel deploy'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.equal(r.denyId, 'deploy-gate-shipper-approval-required');
+  });
+});
+
+test('deploy gate denies a future-dated security check even with a fresh shipper approval', () => {
+  withProject({ lastShipperApprovalAt: nowIso(), lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: futureIso() }, (cwd) => {
+    // The fingerprint is stamped MATCHING, so the only thing left to refuse the
+    // deploy is the security stamp's own date. Without that, this deploy is
+    // allowed — which is the defect.
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.lastSecurityCheckFingerprint = computeProjectFingerprint(cwd).fingerprint;
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+    const r = deployGate(ctxFor(cwd, 'npm publish'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.equal(r.denyId, 'deploy-gate-security-check-stale');
+  });
+});
+
+// Non-vacuity: the two denials above must come from the DATE, not from the
+// harness failing to produce a deployable project. The same state with present
+// dates is allowed, and the same state one skew-allowance ahead is still
+// allowed — so the refusal is the future bound, not a general distrust of any
+// stamp that is not exactly `now`.
+test('a stamp inside the skew allowance is still an approval', () => {
+  const nearFuture = new Date(Date.now() + 60_000).toISOString();
+  withProject({ lastShipperApprovalAt: nearFuture, lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: nearFuture }, (cwd) => {
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.lastSecurityCheckFingerprint = computeProjectFingerprint(cwd).fingerprint;
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+    assert.equal(deployGate(ctxFor(cwd, 'npm publish')).kind, 'noop', 'ordinary clock jitter must not block a deploy');
+  });
+});
+
 test('deploy gate denies when shipper is fresh but the security check is missing', () => {
   withProject({ lastShipperApprovalAt: nowIso() }, (cwd) => {
     const r = deployGate(ctxFor(cwd, 'vercel deploy'));

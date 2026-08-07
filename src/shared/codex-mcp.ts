@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { trustworthyAgeSince } from './clock-skew';
 import { detectHost } from './host';
 import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../config/opencode-mcp';
 import {
@@ -286,6 +287,10 @@ function reapObservedCodexMcpLock(lock: CodexMcpLockOwner): boolean {
 function reapAbandonedEmptyCodexMcpLock(lockPath: string, now: number): boolean {
   try {
     if (fs.readdirSync(lockPath).length !== 0) return false;
+    // Left as a raw subtraction on purpose; see the same note in
+    // one-mcp/cache-lock.ts. `rename(dir, EMPTY dir)` succeeds, so an empty
+    // canonical lock is overwritten rather than contended and this reap is not
+    // on the acquisition path. A negative age here costs a retry, not a wedge.
     if (now - fs.statSync(lockPath).mtimeMs <= ONE_MCP_CODEX_REGISTRATION_LOCK_STALE_MS) return false;
     fs.rmdirSync(lockPath);
     return true;
@@ -328,7 +333,12 @@ function acquireCodexMcpLock(configPath: string): CodexMcpLock {
         if (!contended) throw error;
         const now = Date.now();
         const owner = observedCodexMcpLock(lockPath);
-        if (owner && now - owner.createdAt > ONE_MCP_CODEX_REGISTRATION_LOCK_STALE_MS
+        // Negative age = maximally fresh, so a future-stamped sentinel makes a
+        // dead owner's lock unreclaimable and every registration attempt throws
+        // at the timeout instead. An unusable age does not veto the reap;
+        // `processAlive` below still governs, so a live owner keeps its lock.
+        const ownerAgeMs = owner ? trustworthyAgeSince(owner.createdAt, now) : null;
+        if (owner && (ownerAgeMs === null || ownerAgeMs > ONE_MCP_CODEX_REGISTRATION_LOCK_STALE_MS)
           && !processAlive(owner.pid) && reapObservedCodexMcpLock(owner)) continue;
         if (!owner && reapAbandonedEmptyCodexMcpLock(lockPath, now)) continue;
         if (now >= deadline) throw new Error('Traffic One Codex MCP registration lock timed out.');

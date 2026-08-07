@@ -41,6 +41,7 @@ import * as path from 'path';
 import { cleanupReplayTempTrees, onboardedNotMaterialized } from './fixtures';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from '../../src/modules/agent-model/converge';
 import { modelEnforcementGates } from '../../src/modules/agent-model/gate-enforcement';
+import { AGENT_MATERIALIZATION_MISSING_FALLBACK } from '../../src/modules/agent-model/handler-prose';
 import { readEffectiveState, statePath } from '../../src/shared/state';
 import type { GateContext } from '../../src/modules/agent-model/gate-context';
 import type { Ctx, HookInput, ToolClass } from '../../src/core/types';
@@ -113,6 +114,8 @@ test('the spawn gate carries the refused state path on the deny it could not oth
       'writable baseline: having converged, the gate asks for the call to be re-issued');
     assert.equal(converged.denyTarget, undefined,
       'writable baseline: and names no refused path, because nothing was refused');
+    assert.ok(!converged.reason.includes('WHY THIS REPEATS'),
+      'writable baseline: and says nothing about a refusal — this deny is re-issued once and then passes, so a cause clause here would be a lie');
   }
 
   const fenced = onboardedNotMaterialized('claude');
@@ -128,5 +131,23 @@ test('the spawn gate carries the refused state path on the deny it could not oth
       'the read-back remains authoritative for which deny fires');
     assert.equal(refused.denyTarget, statePath(fenced),
       'and the deny now names the refused path — otherwise this exact deny repeats on every spawn with nothing recording its cause');
+    // The human-readable half of the same fact. `denyTarget` is read by the
+    // per-target budget and the decision record; nothing reads it ALOUD, so the
+    // operator still saw a deny with no cause on a loop that never ends.
+    assert.ok(refused.reason.includes('WHY THIS REPEATS'),
+      'the operator-facing half: without it this deny recurs on every spawn with its reason recorded only in a field nobody renders');
+    assert.ok(refused.reason.includes(statePath(fenced)),
+      'and it names the same path the machine-readable half carries, so the two cannot drift apart');
+    assert.ok(refused.reason.includes('this same deny will be re-issued on the next spawn'),
+      'it must say the prescribed command will NOT clear it, or the operator runs it forever');
+    assert.ok(/Answer the consent question, or clear whatever occupies that path, then retry the spawn\./.test(refused.reason),
+      'and it must still end in an action — naming a cause without one turns a deny into a dead end');
+    // The clause is rendered from the same boolean that sets `denyTarget`, and
+    // the fallback must carry it too: this deny had NO verbatim fallback at all,
+    // so a missing SKILL.md block rendered the whole refusal as empty text.
+    assert.ok(AGENT_MATERIALIZATION_MISSING_FALLBACK.includes('materialize-project'),
+      'the fallback must carry the remedy command');
+    assert.ok(AGENT_MATERIALIZATION_MISSING_FALLBACK.includes('{{CAUSE}}'),
+      'and the cause slot, or the fallback path silently drops the clause the SKILL.md path renders');
   }
 });

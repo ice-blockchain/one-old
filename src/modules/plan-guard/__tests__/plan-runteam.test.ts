@@ -11,6 +11,7 @@ import {
   ensureRunAgentClaim,
   readRunAssignments,
   runLedgerAdmitsClaims,
+  runLedgerClaimAdmission,
   transitionRunStatus,
   type RunAgentContext,
 } from '../../../shared/state';
@@ -29,6 +30,12 @@ import { compileVerificationContract } from '../../../shared/verification-contra
 const STACK = 'default|react-vite|supabase|none';
 const RUN = 'run-1';
 const THREAD = '019e7390-ca45-7e03-84d3-284bda1ba905';
+// Replacement children. These must be well-formed thread ids: `transcriptThreadId`
+// parses the id out of the rollout filename, so a `<uuid>-2` suffix leaves the
+// payload with no child signal at all and the row silently measures the PARENT
+// arm instead of a respawned child.
+const THREAD_REPLACEMENT = '019e7390-ca45-7e03-84d3-284bda1bb111';
+const THREAD_REPLACEMENT_2 = '019e7390-ca45-7e03-84d3-284bda1bb222';
 
 // A BUILDING-phase subagents project — the context run-team enforcement is for
 // (parallel implementers coordinated by the architect's assignments manifest).
@@ -696,7 +703,16 @@ test('a closed run ledger names the run, and forbids both the retry and the resp
     const denied = gate(dir, state, 'src/app/(public)/news/page.tsx', raw);
     assert.ok(denied, 'a closed run still refuses the write');
     assert.match(denied!, /run ledger for `run-1` is `blocked` \(test-cycle-cap\), which admits NO claim from any child/);
-    assert.match(denied!, /resumes the RUN first/);
+    // The resume is offered under the condition that actually governs it.
+    // `runLedgerTransitionAllowed` permits `blocked -> active` only with recorded
+    // resume authorization and permits NOTHING out of `completed` or `failed`;
+    // measured, all three of `completed`/verified, `completed`/shipped and
+    // `failed`/agent-failed refuse with `illegal-transition-<status>-to-active`.
+    // The old wording hedged the resume ("only if the user authorized another
+    // cycle") without saying that for two of the three statuses it is not on the
+    // table at all.
+    assert.match(denied!, /can resume the RUN only when the status above is `blocked` AND the user authorized another cycle/);
+    assert.match(denied!, /`completed` and `failed` runs cannot be reopened at all, so for those the only remedy is to mint a FRESH run and re-spawn this role there/);
     assert.match(denied!, /do not stop or replace this child/);
     assert.doesNotMatch(denied!, /must stop or replace this child/,
       'a replacement binds no claim in a closed run either — ordering one is the respawn loop');
@@ -748,11 +764,12 @@ test('a closed run ledger stops the parent arm ordering a spawn into it', () => 
       'naming the spawn contract reads as an instruction to take it (CHILD_SPAWN_CONTRACT says so itself)');
     // The reader must never be left with a paragraph that names no action — the
     // failure mode of suppressing the spawn tail without replacing it.
-    assert.match(closed!, /Resume the RUN first \(only if the user authorized another cycle\), or settle it and mint a fresh one/,
+    assert.match(closed!, /You can resume the RUN only when the status above is `blocked` AND the user authorized another cycle/,
       'the orchestrator is the actor here, so the remedy is addressed to them directly');
+    assert.match(closed!, /`completed` and `failed` runs cannot be reopened at all, so for those the only remedy is to mint a FRESH run and re-spawn this role there/);
     // The taxonomy is the child arm's, but the addressee is not: nothing here may
     // report what some third party does, or talk about a child that is not present.
-    assert.doesNotMatch(closed!, /The PARENT\/orchestrator resumes the RUN/,
+    assert.doesNotMatch(closed!, /The PARENT\/orchestrator can resume the RUN/,
       'the reader IS the orchestrator on this arm');
     assert.doesNotMatch(closed!, /This appears to be a spawned child/);
   });
@@ -775,16 +792,37 @@ test('a child that never claimed a role still gets the firm parent instruction',
   });
 });
 
-// --- run-team-not-subagent: the drift DIAGNOSIS and the recovery paragraph are
-// two answers to the SAME question, so they compose instead of concatenating. ---
+// --- run-team-not-subagent: the drift DIAGNOSIS is a diagnosis, not a remedy. ---
 //
-// The diagnosis was appended to whichever recovery arm was chosen, and two of the
-// three arms END in a respawn order. Those two renders told the operator to
-// replace a child (or to spawn a role) and then, in the next sentence, that
-// respawning will NOT fix it. Measured over the full 3-arm x drift/no-drift render
-// space: exactly two of the six renders carried both orders, and they are the two
-// pinned below. The remaining four are byte-identical to their pre-fix bytes,
-// which is what the two no-drift rows and the closed-ledger row here defend.
+// It used to carry a remedy, and the remedy was wrong in all three of its parts.
+// It asserted "Respawning will NOT fix this" and prescribed "Let the next
+// SessionStart reconcile it" ahead of settling the run. Measured against the
+// population the `foreign-run-claim` demotion leaves behind:
+//
+//   - A CONTRACTED RESPAWN BINDS, in every drift shape that can be constructed:
+//     a claim drifted away from an agreeing ledger, a stray `runId` inside a
+//     claim filed in this run's own directory, and the shape the sentence
+//     literally described (the claim equal to the LIVE fingerprint while the
+//     ledger froze another). Claims are stamped from the run's FROZEN identity,
+//     never from live state, so a replacement is stamped with exactly what the
+//     ledger expects. `claimThreadRole` with `refuseOccupiedRole` does not see a
+//     rejected claim as a live rival either, so the Codex spawn path binds it too.
+//     The rows below pin that directly rather than trusting the argument.
+//   - `reconcileRunIdentityDrift` cannot repair a drifted claim at all: its
+//     backfill only fills a MISSING ledger fingerprint, and a ledger with no
+//     fingerprint yields no mismatch to diagnose. Measured: a no-op.
+//   - Its other half needs two runs holding live claims, sorts by orchestration
+//     evidence with recency only breaking ties, and releases and settles every
+//     loser as `failed`. Measured: an OLDER sibling became `currentRunId` while
+//     the run the write came from settled `failed`/`agent-failed`. That was the
+//     FIRST remedy this clause prescribed.
+//
+// So the clause keeps its fingerprints, drops its remedy, and now LEADS the
+// paragraph — the arm below is the only thing that knows the addressee and
+// whether the run can be written in at all, and putting the diagnosis first is
+// what lets every render still end in an action. Measured over the full
+// 2-arm x 3-ledger x drift/no-drift space (12 cells): 10 renders moved, and the
+// two that did not are the healthy open/no-drift child and parent renders.
 
 // A claim that EXISTS under `key` and is rejected on IDENTITY, which is the only
 // thing the drift arm reacts to. Minted for real first — that is what freezes the
@@ -802,12 +840,13 @@ function seedIdentityDriftedClaim(dir: string, state: Record<string, unknown>, k
   fs.writeFileSync(file, JSON.stringify(claim), 'utf8');
 }
 
-// The core contradiction: a child whose claim was REJECTED on identity was told
-// the claim is "genuinely absent" and that the parent "must stop or replace this
-// child" — immediately followed by "Respawning will NOT fix this". A claim that
-// exists is not absent, and the replacement is rejected the same way, so the
-// order goes and the diagnosis keeps the remedy.
-test('an identity-rejected claim suppresses the respawn order it used to contradict', () => {
+// The remedy the drift clause used to withhold, and the row that shows it works.
+// A child whose claim was REJECTED on identity was told "Respawning will NOT fix
+// this", and that assertion suppressed the respawn order and its spawn contract —
+// taking away the one action that recovers this child. The second half here is
+// the proof, not an illustration: the replacement is made against the same run,
+// with the same role, and the gate ALLOWS its write.
+test('an identity-rejected claim keeps the respawn order, and the replacement really binds', () => {
   withDir((dir) => {
     const state = baseState();
     writeManifest(dir, FE_BE_MANIFEST);
@@ -817,25 +856,67 @@ test('an identity-rejected claim suppresses the respawn order it used to contrad
     assert.ok(denied, 'an unbindable claim still fails closed — the write is refused either way');
     assert.match(denied!, /DIAGNOSIS: a role claim for `senior-frontend` exists under run `run-1` but was rejected \(fingerprint-mismatch/,
       'without the diagnosis this row is measuring the no-drift arm and proves nothing');
-    assert.doesNotMatch(denied!, /must stop or replace this child/,
-      'the same deny already says respawning will not fix this');
-    assert.doesNotMatch(denied!, /task_name/,
-      'naming the spawn contract reads as an instruction to take it (CHILD_SPAWN_CONTRACT says so itself)');
-    // What survives: the cheapest recovery, which is respawn-free and still
-    // possible (a held claims lock can coexist with a drifted claim elsewhere on
-    // disk), plus the two remedies that actually terminate here.
+    assert.match(denied!, /must stop or replace this child/,
+      'the replacement is the remedy that works here — withholding it strands the child');
+    assert.match(denied!, /task_name/,
+      'and the spawn contract goes with it: the contract is what makes the replacement bind');
+    // The cheapest recovery survives too — a held claims lock can coexist with a
+    // drifted claim elsewhere on disk — and nothing in the diagnosis contradicts it.
     assert.match(denied!, /Retry this exact write ONCE before anything else/);
-    assert.match(denied!, /settle this run so a fresh one mints with the current identity/);
+    // The two remedies the clause used to prescribe are gone, and each is named
+    // so a revert cannot quietly restore it.
+    assert.doesNotMatch(denied!, /Respawning will NOT fix this/);
+    assert.doesNotMatch(denied!, /Let the next SessionStart reconcile it/,
+      'measured: that pass cannot repair a drifted claim, and where it acts it settles live runs as `failed`');
+
+    // THE MEASUREMENT. The parent does what the deny now says: spawns a fresh
+    // child for the same role, carrying the role marker the contract prescribes.
+    const replacement = writeTranscript(dir, THREAD_REPLACEMENT, '[t1-role: senior-frontend]\nImplement the news page.');
+    assert.equal(gate(dir, state, 'src/app/(public)/news/page.tsx', { session_id: 'orchestrator', transcript_path: replacement }), null,
+      'the replacement binds: a claim is stamped from the run\'s FROZEN identity, so the drifted one on disk is no obstacle');
+    assert.ok(fs.existsSync(path.join(dir, '.traffic-one', 'runs', RUN, `${THREAD_REPLACEMENT}.json`)),
+      'and it really staked its own claim — an allow with no claim would prove nothing');
   });
 });
 
-// The parent arm had the same defect, and it is REACHABLE: `unresolvedChild` reads
-// the payload's own child signals, while the diagnosis keys its claim lookup on
-// [agentId, threadId, sessionId] — session id included. So a claim under the
-// session id the payload carries, with no child signal on that payload, renders
-// "Spawn the owning role" and "Respawning will NOT fix this" together. The
-// no-drift half is the mutation guard: the suppression must be conditional.
-test('an identity-rejected claim suppresses the parent arm\'s spawn order, and keeps it without drift', () => {
+// The same fact, reached the way the drifted incumbent is: a claim minted
+// against a run whose FROZEN identity is not the live one. This is the shape the
+// old sentence literally described ("the run's identity drifted away from its
+// claims"), and it is the strongest case for the old wording — so if a
+// replacement binds even here, it binds everywhere this clause renders.
+test('a replacement binds even when the run froze an identity the project no longer has', () => {
+  withDir((dir) => {
+    const state = baseState();
+    writeManifest(dir, FE_BE_MANIFEST);
+    assert.ok(transitionRunStatus(dir, RUN, { status: 'active' }), 'fixture: freezes identity A on the ledger');
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    // The claim now carries the LIVE identity while the ledger still holds A.
+    const file = path.join(dir, '.traffic-one', 'runs', RUN, `${THREAD}.json`);
+    const claim = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    claim.stackFingerprint = 'default|nextjs|supabase|none';
+    fs.writeFileSync(file, JSON.stringify(claim), 'utf8');
+    const moved = baseState({ frontend: 'nextjs', materializedStack: 'default|nextjs|supabase|none' });
+
+    const denied = gate(dir, moved, 'src/app/(public)/news/page.tsx', rawFor(THREAD));
+    assert.ok(denied);
+    assert.match(denied!, /claim `default\|nextjs\|supabase\|none` vs run `default\|react-vite\|supabase\|none`, live `default\|nextjs\|supabase\|none`/,
+      'fixture: the LEDGER must be the odd value out, or this row is the previous one again');
+    assert.match(denied!, /must stop or replace this child/);
+
+    const replacement = writeTranscript(dir, THREAD_REPLACEMENT_2, '[t1-role: senior-frontend]\nImplement the news page.');
+    assert.equal(gate(dir, moved, 'src/app/(public)/news/page.tsx', { session_id: 'orchestrator', transcript_path: replacement }), null,
+      'still binds: the replacement is stamped from the ledger, not from live state');
+  });
+});
+
+// The parent arm carried the same suppression, and it is REACHABLE:
+// `unresolvedChild` reads the payload's own child signals, while the diagnosis
+// keys its claim lookup on [agentId, threadId, sessionId] — session id included.
+// So a claim under the session id the payload carries, with no child signal on
+// that payload, used to render "Respawning will NOT fix this" INSTEAD of "Spawn
+// the owning role". The no-drift half is the mutation guard the other way round
+// now: this render must be the OPEN parent arm plus a diagnosis, and nothing else.
+test('an identity-rejected claim leaves the parent arm\'s spawn order intact', () => {
   withDir((dir) => {
     const state = baseState();
     writeManifest(dir, FE_BE_MANIFEST);
@@ -851,12 +932,15 @@ test('an identity-rejected claim suppresses the parent arm\'s spawn order, and k
     const drifted = gate(dir, state, 'src/app/(public)/news/page.tsx', raw);
     assert.ok(drifted);
     assert.match(drifted!, /DIAGNOSIS: a role claim for `senior-frontend` exists under run `run-1` but was rejected \(fingerprint-mismatch/);
-    assert.doesNotMatch(drifted!, /Spawn the owning role/,
-      'the next sentence says respawning will not fix this');
-    assert.doesNotMatch(drifted!, /task_name/);
-    // The refusal itself and a terminating remedy both survive the suppression.
+    assert.match(drifted!, /Spawn the owning role, or message its already-live agent/,
+      'the spawned role binds a fresh claim — this is the action, not a contradiction of one');
+    assert.match(drifted!, /task_name/);
     assert.match(drifted!, /do not edit owned implementation artifacts yourself/);
-    assert.match(drifted!, /Let the next SessionStart reconcile it, or settle this run/);
+    assert.doesNotMatch(drifted!, /Let the next SessionStart reconcile it/);
+    // Purely additive: the drifted render is the clean one with a diagnosis in
+    // front of it, and nothing else moved.
+    assert.equal(drifted!.replace(/DIAGNOSIS: [\s\S]*?Do the following instead\. /, ''), clean,
+      'the diagnosis must ADD to the arm, not rewrite it');
   });
 });
 
@@ -867,8 +951,9 @@ test('an identity-rejected claim suppresses the parent arm\'s spawn order, and k
 // the diagnosis looks up. Once attribution stops (here the recorded main session
 // ages past its 15-minute TTL, so nothing is foreign any more; a missing manifest
 // or a scope-spanning patch do it too) the same child gets the parent arm. This is
-// the construction that makes the parent-arm contradiction a live render rather
-// than a theoretical one.
+// the construction that makes the parent-arm render a live one rather than a
+// theoretical one — and the reason its spawn order has to survive: the actor being
+// addressed here is a real worker whose only recovery is a replacement.
 test('the parent arm renders for a real child whose own staked claim drifted', () => {
   withDir((dir) => {
     const state = baseState();
@@ -893,15 +978,18 @@ test('the parent arm renders for a real child whose own staked claim drifted', (
     assert.match(denied!, /You are the PARENT\/orchestrator/,
       'this is the render the parent arm hands a child the gate could not attribute');
     assert.match(denied!, /DIAGNOSIS: a role claim for `senior-frontend` exists under run `run-1` but was rejected \(fingerprint-mismatch/);
-    assert.doesNotMatch(denied!, /Spawn the owning role/);
+    assert.match(denied!, /Spawn the owning role/,
+      'this reader is a real child with no live context to preserve — the replacement is its whole recovery');
   });
 });
 
-// The constraint that makes this a composition and not a deletion: on the
-// closed-ledger arm the diagnosis is purely ADDITIVE. That arm already forbids the
-// respawn and already offers settle-and-remint, so the diagnosis only adds the
-// fingerprints — a blanket "stop appending the diagnosis" fix would delete a
-// useful reading of a run nobody can write in.
+// The constraint that keeps this a composition rather than a deletion: on the
+// closed-ledger arm the diagnosis is purely ADDITIVE, and it must stay a
+// DIAGNOSIS. A remedy in the clause could not be right on both arms at once —
+// "a replacement binds" is true on the open arm and false here, where no child of
+// any generation can bind — which is the same adjacent-contradiction the old
+// wording had, reversed. So the clause carries fingerprints and the arm carries
+// the action, and this row pins both in one render.
 test('a closed run ledger keeps the drift diagnosis alongside its own remedy', () => {
   withDir((dir) => {
     const state = baseState();
@@ -913,19 +1001,22 @@ test('a closed run ledger keeps the drift diagnosis alongside its own remedy', (
     assert.ok(denied);
     // Both halves, in one render: the closed-ledger prescription…
     assert.match(denied!, /which admits NO claim from any child/);
-    assert.match(denied!, /resumes the RUN first/);
+    assert.match(denied!, /can resume the RUN only when the status above is `blocked`/);
     assert.match(denied!, /do not stop or replace this child/);
     // …and the fingerprints, which are the whole value of the diagnosis here.
     assert.match(denied!, /claim `drifted\|none\|none\|none` vs run `default\|react-vite\|supabase\|none`/);
-    assert.match(denied!, /Respawning will NOT fix this/);
+    // The diagnosis must NOT import the open arm's remedy onto this arm.
+    assert.doesNotMatch(denied!, /must stop or replace this child/,
+      'no child binds in a closed run, so the replacement claim belongs to the arm, not the diagnosis');
+    assert.doesNotMatch(denied!, /task_name/);
   });
 });
 
 // The same additivity on the PARENT side, and it is the row that keeps the two
-// suppressors composing instead of one swallowing the other: a closed ledger
-// selects the arm, drift decides whether the OPEN arm keeps its tail. Neither may
-// silence the other, and both halves of this render answer the same question the
-// same way — spawn nothing, settle or resume the run.
+// facts composing instead of one swallowing the other: a closed ledger selects
+// the ARM, drift adds the diagnosis in front of it. Neither may silence the
+// other, and both halves of this render answer the same question the same way —
+// spawn nothing, resume or replace the run.
 test('a closed run ledger keeps the drift diagnosis on the parent arm too', () => {
   withDir((dir) => {
     const state = baseState();
@@ -934,7 +1025,7 @@ test('a closed run ledger keeps the drift diagnosis on the parent arm too', () =
     // looks up, and the reason the parent arm sees drift at all.
     seedIdentityDriftedClaim(dir, state, 'orchestrator');
     assert.ok(transitionRunStatus(dir, RUN, { status: 'blocked', outcome: 'test-cycle-cap' }));
-    assert.equal(runLedgerAdmitsClaims(dir, RUN), false,
+    assert.equal(runLedgerClaimAdmission(dir, RUN), 'closed',
       'fixture: without a genuinely closed run this row measures the open parent arm');
 
     const denied = gate(dir, state, 'src/app/(public)/news/page.tsx', { session_id: 'orchestrator', tool_name: 'Write' });
@@ -942,11 +1033,109 @@ test('a closed run ledger keeps the drift diagnosis on the parent arm too', () =
     assert.match(denied!, /You are the PARENT\/orchestrator/);
     // The closed-run arm, whole…
     assert.match(denied!, /which admits NO claim from any child/);
-    assert.match(denied!, /Resume the RUN first \(only if the user authorized another cycle\), or settle it and mint a fresh one/);
+    assert.match(denied!, /You can resume the RUN only when the status above is `blocked` AND the user authorized another cycle/);
     // …and the fingerprints, which are the whole value of the diagnosis here.
     assert.match(denied!, /claim `drifted\|none\|none\|none` vs run `default\|react-vite\|supabase\|none`/);
-    assert.match(denied!, /Respawning will NOT fix this/);
     assert.doesNotMatch(denied!, /Spawn the owning role/);
+  });
+});
+
+// ── The third ledger answer: one nobody could READ ───────────────────────────
+//
+// `runLedgerAdmitsClaims` collapses "this run is closed" and "I could not read
+// this run's ledger" — it answers `true` for both an active run and a truncated
+// `run.json`, deliberately, because its other consumer is a gate that would
+// otherwise destroy a healthy child over a file it merely could not parse. This
+// gate is a DIAGNOSIS, not a gate over a child's life, so it asks the tri-state.
+//
+// Measured before the change, over the full 2-arm x 3-ledger x drift/no-drift
+// space: 12 combinations rendered as 8 distinct texts, and all four illegible
+// cells were byte-identical to their OPEN twins. A run whose ledger is a
+// truncated file was told to retry in about two seconds, or to spawn the owning
+// role. Measured on that same file: the claim mint, a resume and a settlement all
+// refuse with `ledger-corrupt`, so every action either render named is impossible.
+function corruptLedger(dir: string, runId = RUN): void {
+  fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'run.json'), '{"status": "acti');
+}
+
+test('an unreadable run ledger renders neither the open arm nor the closed one', () => {
+  withDir((dir) => {
+    const state = baseState();
+    writeManifest(dir, FE_BE_MANIFEST);
+    assert.ok(transitionRunStatus(dir, RUN, { status: 'active' }));
+
+    // The control half. Without it the illegible row below could pass against an
+    // arm that never differed from the open one in the first place.
+    const open = gate(dir, state, 'src/app/(public)/news/page.tsx', rawFor(THREAD));
+    assert.ok(open);
+    assert.match(open!, /Retry this exact write ONCE/, 'baseline: an open run prescribes the bounded retry');
+
+    corruptLedger(dir);
+    assert.equal(runLedgerClaimAdmission(dir, RUN), 'unknown',
+      'fixture: the ledger must actually read as illegible — that is the whole input');
+    assert.equal(runLedgerAdmitsClaims(dir, RUN), true,
+      'fixture: and the boolean must still say `true`, or this row is measuring the closed arm');
+
+    const denied = gate(dir, state, 'src/app/(public)/news/page.tsx', rawFor(THREAD));
+    assert.ok(denied, 'an unreadable ledger still refuses the write');
+    assert.notEqual(denied, open,
+      'the whole defect was that these two renders were byte-identical');
+    assert.match(denied!, /cannot be read or parsed, so this run admits no claim, no resume and no settlement/);
+    assert.match(denied!, /\.traffic-one\/runs\/run-1\/run\.json/,
+      'the deny must name the file, because the remedy is about that file');
+    // None of the three actions the other two arms offer are available here.
+    assert.doesNotMatch(denied!, /Retry this exact write ONCE/,
+      'retrying returns `ledger-corrupt` every time — the two-second lock story is the wrong one');
+    assert.doesNotMatch(denied!, /must stop or replace this child/);
+    assert.doesNotMatch(denied!, /task_name/);
+    assert.doesNotMatch(denied!, /can resume the RUN only when/,
+      'a resume is refused with `ledger-corrupt` too, so the closed arm\'s remedy is not this arm\'s');
+    // And it ends in one that IS — a user action, because no agent may write a
+    // run sidecar. `runtime-sidecar-owner-gate` refuses exactly that.
+    assert.match(denied!, /a USER restoring it from version control or deleting it/);
+    assert.match(denied!, /doctor\.cjs --run "run-1"/);
+  });
+});
+
+test('the parent arm gets its own unreadable-ledger render, not the open one', () => {
+  withDir((dir) => {
+    const state = baseState();
+    writeManifest(dir, FE_BE_MANIFEST);
+    const raw = { session_id: 'orchestrator', tool_name: 'Write' };
+    assert.ok(transitionRunStatus(dir, RUN, { status: 'active' }));
+
+    const open = gate(dir, state, 'src/app/(public)/news/page.tsx', raw);
+    assert.ok(open);
+    assert.match(open!, /Spawn the owning role/, 'baseline: an open run tells the parent to spawn the owner');
+
+    corruptLedger(dir);
+    const denied = gate(dir, state, 'src/app/(public)/news/page.tsx', raw);
+    assert.ok(denied);
+    assert.notEqual(denied, open, 'these two were byte-identical before the tri-state');
+    assert.match(denied!, /You are the PARENT\/orchestrator/);
+    assert.match(denied!, /cannot be read or parsed, so this run admits no claim, no resume and no settlement/);
+    assert.doesNotMatch(denied!, /Spawn the owning role/,
+      'the role you spawn cannot bind a claim against a ledger nothing can read');
+    assert.doesNotMatch(denied!, /task_name/);
+    assert.match(denied!, /a USER restoring it from version control or deleting it/);
+  });
+});
+
+// The remedy the illegible arm prescribes, executed. Without this the arm is an
+// assertion about the world rather than a measurement of it.
+test('the unreadable-ledger remedy works: with the file gone the run binds again', () => {
+  withDir((dir) => {
+    const state = baseState();
+    writeManifest(dir, FE_BE_MANIFEST);
+    assert.ok(transitionRunStatus(dir, RUN, { status: 'active' }));
+    corruptLedger(dir);
+    assert.equal(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }), null,
+      'nothing binds while the ledger is illegible');
+
+    fs.rmSync(path.join(dir, '.traffic-one', 'runs', RUN, 'run.json'));
+    assert.equal(runLedgerClaimAdmission(dir, RUN), 'admits');
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }),
+      'and the claim binds once the unreadable file is gone — which is what the deny asks the user to do');
   });
 });
 
@@ -984,4 +1173,82 @@ test('residue from an earlier run renders no drift clause and keeps the respawn 
       'the respawn order is restored: a child that never claimed has no live context to preserve');
     assert.match(denied!, /task_name/, 'and the spawn contract comes back with it');
   });
+});
+
+// ── The whole render space of this deny, in one table ────────────────────────
+//
+// The branching inputs are arm (child | parent) x ledger (open | closed |
+// illegible) x drift (no | yes), so 12 cells. The rows above each pin ONE cell;
+// this pins the SHAPE of the space, which is where the defects on this surface
+// have actually lived. Measured before the tri-state landed: these 12 cells
+// produced 8 distinct texts, because all four illegible cells were byte-
+// identical to their OPEN twins — a run whose ledger nothing can parse was told
+// to retry in two seconds, or to spawn the owning role.
+//
+// Two properties are asserted, and they are the two a prose edit can silently
+// break:
+//   1. all 12 renders are distinct, so no input the gate branches on is invisible
+//      to the reader;
+//   2. every recovery paragraph ENDS in an action its own addressee can take,
+//      rather than in a prohibition. A composition that suppresses a tail can
+//      leave a paragraph that only forbids things, and that is not visible from
+//      any single-cell row.
+test('the deny\'s full render space: 12 inputs, 12 distinct texts, each ending in an action', () => {
+  const RECOVERY_RE = /not main agent\. (.*?) Do NOT fall back/s;
+  // Each arm's terminating action, as the addressee can act on it.
+  const ACTIONS = [
+    /substitute the actual role in the `\[t1-role: <role>\]` marker anywhere in a recognized task message\.$/,
+    /mint a FRESH run and re-spawn this role there\.$/,
+    /captures the diagnosis to hand over\.$/,
+  ];
+  const seen = new Map<string, string>();
+
+  for (const arm of ['child', 'parent'] as const) {
+    for (const ledger of ['open', 'closed', 'illegible'] as const) {
+      for (const drift of ['nodrift', 'drift'] as const) {
+        const cell = `${arm}/${ledger}/${drift}`;
+        withDir((dir) => {
+          const state = baseState();
+          writeManifest(dir, FE_BE_MANIFEST);
+          // The key the diagnosis looks up differs by arm: a child payload
+          // carries a transcript thread id, the parent's carries only a session.
+          const key = arm === 'child' ? THREAD : 'orchestrator';
+          const raw = arm === 'child' ? rawFor(THREAD) : { session_id: 'orchestrator', tool_name: 'Write' };
+          assert.ok(transitionRunStatus(dir, RUN, { status: 'active' }));
+          if (drift === 'drift') seedIdentityDriftedClaim(dir, state, key);
+          if (ledger === 'closed') {
+            assert.ok(transitionRunStatus(dir, RUN, { status: 'blocked', outcome: 'test-cycle-cap' }));
+          } else if (ledger === 'illegible') corruptLedger(dir);
+
+          // Fixture guard: a cell that did not reach the ledger state it is named
+          // for measures a neighbour and reports a false distinctness.
+          const expected = ledger === 'open' ? 'admits' : ledger === 'closed' ? 'closed' : 'unknown';
+          assert.equal(runLedgerClaimAdmission(dir, RUN), expected, `fixture ${cell}: wrong ledger state`);
+
+          const denied = gate(dir, state, 'src/app/(public)/news/page.tsx', raw);
+          assert.ok(denied, `${cell}: the write must be refused`);
+          const previous = seen.get(denied!);
+          assert.equal(previous, undefined,
+            `${cell} renders BYTE-IDENTICALLY to ${previous} — an input this gate branches on is invisible to the reader`);
+          seen.set(denied!, cell);
+
+          const recovery = RECOVERY_RE.exec(denied!)?.[1]?.trim();
+          assert.ok(recovery, `${cell}: could not isolate the recovery paragraph`);
+          assert.ok(ACTIONS.some((re) => re.test(recovery!)),
+            `${cell} ends in "${recovery!.slice(-90)}" — a deny must end in an action, not in a prohibition`);
+          // Drift is DIAGNOSIS only. It may add fingerprints to any arm, but it
+          // may not change which action that arm terminates in: the measurement
+          // that motivated this file found a contracted respawn binding in every
+          // constructible drift shape, so an arm whose remedy is a respawn keeps
+          // it under drift.
+          if (drift === 'drift') {
+            assert.match(denied!, /DIAGNOSIS: a role claim/, `${cell}: the drifted claim must be named`);
+          } else {
+            assert.doesNotMatch(denied!, /DIAGNOSIS: a role claim/, `${cell}: no drift, no diagnosis`);
+          }
+        });
+      }
+    }
+  }
+  assert.equal(seen.size, 12, 'all 12 cells must render distinctly');
 });

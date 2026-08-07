@@ -78,9 +78,23 @@ export function hasFreshTeamModeChangeApproval(state: unknown, nowMs = Date.now(
  * authorization sits beside the setting it authorizes, and the prefs schema
  * already expects it there: `normalizeTeam` keeps `modeChangeApproval` while
  * mode is `subagents` and drops it otherwise — which also retires the marker for
- * free once the downgrade it authorized has landed. Being outside the project
- * tree, it is also not forgeable through the state-file write that
- * teamModeMarkerWriteViolation exists to deny.
+ * free once the downgrade it authorized has landed.
+ *
+ * What the placement does NOT buy on its own is unforgeability, and the earlier
+ * version of this note claimed it did. Being outside the project tree is not a
+ * fence: writeState routes local-preference fields FROM the agent-writable,
+ * committed state file INTO this store, so what actually keeps a hand-typed
+ * marker out is that state/local-prefs/prefs-split.ts refuses to carry it. For a
+ * generic top-level `team` that refusal was already there ("cannot be attributed
+ * to whichever host happens to scrub the shared file first"), and it is what
+ * makes teamModeMarkerWriteViolation's top-level check sufficient. The
+ * `hosts.<host>.team.modeChangeApproval` spelling was not covered by either:
+ * `hosts` is rescued wholesale, so — measured on an agent-authored
+ * `.one.json` — the SessionStart scrub routed a hand-typed marker into this
+ * store, `hasFreshTeamModeChangeApproval(readEffectiveState(cwd))` answered
+ * true, and teamModeDowngradeViolation then ALLOWED the downgrade it exists to
+ * deny. extractProjectPrefs now drops `modeChangeApproval` out of any rescued
+ * host bucket (state/__tests__/state-file-authorization-forgery.test.ts).
  */
 function persistTeamModeApproval(cwd: string, team: Rec, approval: Rec | null): boolean {
   const nextTeam: Rec = { ...team };
@@ -212,10 +226,33 @@ function proposedTeamModeFromStateWrite(cwd: string, toolName: unknown, toolInpu
   return null;
 }
 
+// Every `team` object a state file can carry that some reader will look at —
+// which is the whole vocabulary of spellings the marker HAS. Top-level `team` is
+// what the legacy generic scrub used to route; `hosts.<host>.team` is the bucket
+// extractProjectPrefs rescues wholesale, and the one an agent-authored
+// `.one.json` used to smuggle a marker through (prefs-split.ts's
+// hostsWithoutForgedApprovals). A `modeChangeApproval` key anywhere ELSE in the
+// state file is not this predicate's business: no reader resolves it.
+function proposedTeamObjects(proposed: Rec): Rec[] {
+  const teams: Rec[] = [];
+  const top = obj(proposed.team);
+  if (top) teams.push(top);
+  const hosts = obj(proposed.hosts);
+  if (hosts) {
+    for (const bucket of Object.values(hosts)) {
+      const team = obj(obj(bucket)?.team);
+      if (team) teams.push(team);
+    }
+  }
+  return teams;
+}
+
 function proposedStateWritesModeChangeApproval(cwd: string, toolName: unknown, toolInput: unknown): boolean {
   const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
-  const team = proposed && obj(proposed.team);
-  if (team) return Object.prototype.hasOwnProperty.call(team, 'modeChangeApproval');
+  if (proposed) {
+    return proposedTeamObjects(proposed)
+      .some((team) => Object.prototype.hasOwnProperty.call(team, 'modeChangeApproval'));
+  }
   if (/^apply_patch$/i.test(normalizedToolName(toolName))) {
     return /^\+.*"modeChangeApproval"\s*:/m.test(patchTextFromToolInput(toolInput));
   }
@@ -224,6 +261,34 @@ function proposedStateWritesModeChangeApproval(cwd: string, toolName: unknown, t
 
 // The state-file write proposes adding/refreshing the internal modeChangeApproval
 // marker by hand → violation (only the UserPromptSubmit hook may write it).
+//
+// REACH, stated exactly, because the two arms below still do not agree and it is
+// worth knowing where. The split is by TOOL, not by input: for apply_patch,
+// proposedStateTextFromToolInput has no case at all, so the parsed state is
+// ALWAYS null and the text arm ALWAYS runs — the structured arm's early return
+// can never short-circuit it. Measured on a state-file patch carrying both a
+// top-level `team` line and a nested marker line: denied.
+//
+// So the structured arm owns Write/Edit/MultiEdit and the text arm owns
+// apply_patch, and what remains between them is a difference of KIND rather
+// than of coverage. The structured arm now asks about both spellings a reader
+// resolves (top-level `team`, and every `hosts.<host>.team` — see
+// proposedTeamObjects); the text arm matches the key name on any added line, so
+// it also denies a `modeChangeApproval` buried somewhere no reader looks. That
+// residual over-reach is left alone deliberately: narrowing a deny to close a
+// cosmetic disagreement trades a false positive nobody has hit for a hole.
+//
+// This predicate is a SECOND LINE and must not be read as the fence around the
+// marker. The first line is the prefs split: extractProjectPrefs drops
+// modeChangeApproval out of any rescued host bucket, so the nested write already
+// reaches nothing (see persistTeamModeApproval's header for the measurement).
+// The nested arm is here for the same reason the top-level arm is — that one is
+// also redundant with a prefs-layer refusal, and it is kept because an agent
+// hand-writing the marker should be TOLD, not silently ignored. The cost was
+// measured before it shipped: `hosts` is a LOCAL_PREF_KEY, so
+// splitLocalPreferences deletes it on the way into `.one.json` and no product
+// write can propose a state carrying a host bucket at all
+// (__tests__/team-mode-marker-spellings.test.ts).
 export function teamModeMarkerWriteViolation(cwd: string, toolName: unknown, toolInput: unknown): boolean {
   if (!writeLikeStateFileTarget(toolName, toolInput)) return false;
   return proposedStateWritesModeChangeApproval(cwd, toolName, toolInput);

@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { pruneTrafficOneBackups, sweepAfterTerminalSettlement, sweepTrafficOneRetention } from '../retention';
+import { runLiveClaimEvidence } from '../run-settlement';
 import { reportBaseName } from '../../runners/lighthouse/lib';
 
 function withProject(fn: (dir: string) => void): void {
@@ -269,6 +270,376 @@ test('lighthouse reports are capped per ROUTE, keeping the newest pairs', () => 
     for (const stamp of homeStamps.slice(0, 4)) {
       assert.ok(!left.includes(`home-${stamp}.report.json`), `superseded home ${stamp} must go`);
     }
+  });
+});
+
+// ── liveness ────────────────────────────────────────────────────────────────
+// The keep set used to be pure RECENCY: `keepRunIds` built its set from
+// currentRunId, protectRunIds and the newest N, and nothing anywhere in the
+// sweep asked whether a run was still ALIVE. Measured on the realistic 9-run
+// fixture these tests are cut down from, that reclaimed 5 runs of which 2 still
+// held live claims — and because claim resolution walks every run on disk
+// (runIdsForLookup), deleting a live run's directory demotes a working agent to
+// `no-claim` and the gates begin refusing its writes.
+//
+// Every test below asserts a BASELINE first — "this run IS reclaimable before I
+// make it live" — so a fixture that silently stopped reaching the sweep fails
+// instead of passing vacuously.
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+// Run ids ARE epoch-ms mint stamps in the runtime, and the keep set now reads
+// them as a birth time, so these fixtures cannot use the short synthetic ids the
+// tests above use. `Date.now()` rather than an injected clock because the claim
+// scan being consumed (run-settlement/io.ts -> timestampAgeMs) reads the real
+// wall clock and cannot be steered by the sweep's `nowMs`.
+const NOW = Date.now();
+function runIdAged(ageMs: number): string {
+  return String(NOW - ageMs);
+}
+
+function seedRun(
+  dir: string,
+  id: string,
+  opts: { ledger?: Record<string, unknown>; claims?: number; claimAgeMs?: number; architecture?: boolean } = {},
+): void {
+  const t1 = '.traffic' + '-one';
+  const runDir = path.join(dir, t1, 'runs', id);
+  fs.mkdirSync(path.join(runDir, 'pending'), { recursive: true });
+  fs.mkdirSync(path.join(dir, t1, 'digests', id), { recursive: true });
+  if (opts.ledger) fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify(opts.ledger), 'utf8');
+  if (opts.architecture !== false) fs.writeFileSync(path.join(runDir, 'architecture-v1.json'), '{}', 'utf8');
+  // A claim only counts as active while it is fresh (SUBAGENT_STALE_MS), which
+  // is what makes `claimAgeMs` the whole experiment in the expiry test below.
+  for (let index = 0; index < (opts.claims || 0); index += 1) {
+    fs.writeFileSync(
+      path.join(runDir, 'pending', `claim-${index}.json`),
+      JSON.stringify({
+        role: 'frontend',
+        runId: id,
+        status: 'claimed',
+        updatedAt: new Date(Date.now() - (opts.claimAgeMs ?? 30 * 1000)).toISOString(),
+      }),
+      'utf8',
+    );
+  }
+}
+
+function project(dir: string, currentRunId: string, policy: Record<string, unknown>): void {
+  const t1 = '.traffic' + '-one';
+  fs.writeFileSync(path.join(dir, t1, '.one.json'), JSON.stringify({ mode: 'existing-codebase', currentRunId }), 'utf8');
+  fs.writeFileSync(path.join(dir, t1, 'retention.json'), JSON.stringify(policy), 'utf8');
+}
+
+function reclaims(dir: string, id: string): boolean {
+  const target = path.join(dir, '.traffic' + '-one', 'runs', id);
+  return sweepTrafficOneRetention(dir, { dryRun: true, nowMs: NOW })
+    .actions.some((action) => action.path === target);
+}
+
+function reportsLive(dir: string, id: string): boolean {
+  return sweepTrafficOneRetention(dir, { dryRun: true, nowMs: NOW }).liveRunIds.includes(id);
+}
+
+test('a run holding live claims is never reclaimed, even far outside the newest-N window', () => {
+  withProject((dir) => {
+    const current = runIdAged(1 * MINUTE);
+    const old = runIdAged(6 * HOUR);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    seedRun(dir, runIdAged(2 * HOUR), { ledger: { status: 'active' } });
+    // Non-terminal but far past the mint window, so ONLY a live claim can save
+    // it: this isolates the claim rule from the ledger rule.
+    seedRun(dir, old, { ledger: { status: 'active' } });
+
+    assert.equal(reclaims(dir, old), true, 'baseline: the old run must be reclaimable before it is made live');
+    assert.equal(reportsLive(dir, old), false, 'baseline: the old run is not live yet');
+
+    seedRun(dir, old, { ledger: { status: 'active' }, claims: 2 });
+    assert.equal(reclaims(dir, old), false, 'a run holding live claims must never be reclaimed');
+    assert.equal(reportsLive(dir, old), true, 'the sweep must report WHY the run survived');
+  });
+});
+
+// The design point: liveness is RESERVED outside `policy.keepRuns`, exactly as
+// protectRunIds is, so a live run cannot crowd out the newest-N. Charging it to
+// the budget would trade one wrong deletion for a different one.
+test('a live run is reserved outside the keepRuns budget, never charged to it', () => {
+  withProject((dir) => {
+    const current = runIdAged(1 * MINUTE);
+    const recent = runIdAged(20 * MINUTE);
+    const older = runIdAged(90 * MINUTE);
+    const live = runIdAged(8 * HOUR);
+    project(dir, current, { keepRuns: 2, orphanTtlDays: 3650 });
+    for (const id of [current, recent, older, live]) {
+      seedRun(dir, id, { ledger: { status: 'completed', outcome: 'verified' } });
+    }
+
+    assert.equal(reclaims(dir, older), false, 'baseline: the second-newest run is inside the keepRuns window');
+    assert.equal(reclaims(dir, live), true, 'baseline: the oldest run is outside it');
+
+    seedRun(dir, live, { ledger: { status: 'completed', outcome: 'verified' }, claims: 1 });
+    assert.equal(reclaims(dir, live), false, 'the live run is retained');
+    // The discriminating assertion. If liveness CONSUMED the budget, keepRuns:2
+    // would now be spent on {current, live} and this run would be evicted.
+    assert.equal(reclaims(dir, older), false, 'a live run must not evict a run the newest-N budget already kept');
+    assert.equal(reclaims(dir, recent), false, 'nor the newest non-current run');
+  });
+});
+
+// Ambiguous cell 1: live claims + a TERMINAL ledger. The ledger records a
+// verdict about the PAST; a fresh claim is evidence about the PRESENT. Both
+// run-settle.ts and runCompletionEvidenceAllows refuse to reach terminal while
+// claims are live, so this combination is already an anomaly — and the
+// reversible choice in an anomaly is to keep.
+test('live claims outrank a TERMINAL ledger: settlement does not license deletion', () => {
+  withProject((dir) => {
+    const current = runIdAged(1 * MINUTE);
+    const settled = runIdAged(5 * HOUR);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    seedRun(dir, runIdAged(2 * HOUR), { ledger: { status: 'completed', outcome: 'verified' } });
+    seedRun(dir, settled, { ledger: { status: 'completed', outcome: 'verified' } });
+
+    assert.equal(reclaims(dir, settled), true, 'baseline: a settled run with no claims is reclaimable');
+
+    seedRun(dir, settled, { ledger: { status: 'completed', outcome: 'verified' }, claims: 1 });
+    assert.equal(reclaims(dir, settled), false, 'a terminal ledger must not license deleting a run with live claims');
+    assert.equal(reportsLive(dir, settled), true, 'and it is reported as live, not merely recent');
+  });
+});
+
+// Ambiguous cell 2: a non-terminal ledger with NO claims. Protected only inside
+// the mint window — a run minted seconds ago has not written its first claim yet
+// and is at its most fragile. Past that window this is the ABANDONED run the
+// orphan rule was written for (observed 8cl: `status: active` forever), and
+// protecting it unconditionally would make it immortal.
+test('a non-terminal ledger protects a freshly minted run but never an abandoned one', () => {
+  withProject((dir) => {
+    // currentRunId deliberately points at an OLDER run: the 8cl shape, where a
+    // sibling run is minted while `.one.json` stays behind. Two runs NEWER than
+    // the subject push it out of the newest-N window under keepRuns:1, so the
+    // ledger is the only thing that can save it.
+    const current = runIdAged(3 * HOUR);
+    const minted = runIdAged(90 * 1000);
+    const newer = runIdAged(20 * 1000);
+    const newest = runIdAged(10 * 1000);
+    const abandoned = runIdAged(4 * DAY);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    for (const id of [newest, newer]) {
+      seedRun(dir, id, { ledger: { status: 'completed', outcome: 'verified' } });
+    }
+    // Baseline via a TERMINAL ledger: fresh, but nothing claims it is in flight.
+    seedRun(dir, minted, { ledger: { status: 'completed', outcome: 'verified' } });
+    seedRun(dir, abandoned, { ledger: { status: 'active' } });
+
+    assert.equal(reclaims(dir, minted), true, 'baseline: keepRuns:1 evicts this run while its ledger is terminal');
+
+    // Same run, same age, same absence of claims — only the ledger changes.
+    seedRun(dir, minted, { ledger: { status: 'planned' } });
+    assert.equal(reclaims(dir, minted), false, 'a non-terminal ledger inside the mint window protects the run');
+
+    // The other half, and the reason the window exists at all.
+    assert.equal(reclaims(dir, abandoned), true, 'an abandoned non-terminal run must stay reclaimable');
+    assert.equal(reportsLive(dir, abandoned), false, 'an abandoned run is not live');
+  });
+});
+
+// The guard rail, as a permanent test rather than a one-off measurement: if
+// liveness never expired, a project that once looked busy could never be swept
+// again and `.traffic-one` would grow without bound. Protection is borrowed from
+// SUBAGENT_STALE_MS, so it lapses on its own with no action from anyone.
+test('liveness protection EXPIRES, so the sweep can never decay into a no-op', () => {
+  withProject((dir) => {
+    const current = runIdAged(1 * MINUTE);
+    const busy = runIdAged(7 * HOUR);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    seedRun(dir, runIdAged(2 * HOUR), { ledger: { status: 'active' } });
+    seedRun(dir, busy, { ledger: { status: 'active' }, claims: 3 });
+
+    assert.equal(reclaims(dir, busy), false, 'baseline: a run with fresh claims is protected');
+
+    // The agents stopped. Nothing else about the tree changes — same run, same
+    // claim files, same count — only the age of the claims.
+    fs.rmSync(path.join(dir, '.traffic' + '-one', 'runs', busy, 'pending'), { recursive: true, force: true });
+    seedRun(dir, busy, { ledger: { status: 'active' }, claims: 3, claimAgeMs: 31 * MINUTE });
+    assert.equal(reclaims(dir, busy), true, 'once its claims go stale the run is reclaimable again');
+    assert.equal(reportsLive(dir, busy), false, 'and it is no longer reported live');
+  });
+});
+
+// ── ignorance is not liveness ────────────────────────────────────────────────
+// The sweep reads the claim walk through runLiveClaimEvidence, not through
+// activeRunClaimCount, because the count folds a scan it could not FINISH into
+// "at least one live claim". For the settlement vetoes that sentinel was
+// written for, ignorance-as-keep lifts as soon as the scan succeeds; for this
+// DELETER it never lifts, because the sweep it suppresses is the only thing
+// that would remove the records the scan choked on.
+//
+// Every test below plants the cheapest trigger the walk actually has — more
+// than its 2,048-entry bound — rather than an unreadable-file fixture. A
+// `chmod 000` file is read straight through by root and an EISDIR fixture
+// throws through the write path; the entry bound trips identically for every
+// user and needs no errno at all. Each test still asserts the fixture reached
+// the intended arm (`runLiveClaimEvidence === 'unknown'`), so a scan that
+// quietly started completing fails these instead of passing them vacuously.
+const UNFINISHABLE_CLAIMS = 2_050; // > the walk's 2,048-entry bound
+
+function floodClaims(dir: string, id: string, count: number, claimAgeMs: number, extra: Record<string, unknown> = {}): void {
+  const pending = path.join(dir, '.traffic' + '-one', 'runs', id, 'pending');
+  fs.mkdirSync(pending, { recursive: true });
+  for (const [name, record] of Object.entries(extra)) {
+    fs.writeFileSync(path.join(pending, name), JSON.stringify(record), 'utf8');
+  }
+  const updatedAt = new Date(Date.now() - claimAgeMs).toISOString();
+  for (let index = 0; index < count; index += 1) {
+    fs.writeFileSync(
+      path.join(pending, `flood-${String(index).padStart(5, '0')}.json`),
+      JSON.stringify({ role: 'frontend', runId: id, status: 'claimed', updatedAt }),
+      'utf8',
+    );
+  }
+}
+
+test('an unfinishable claim scan is not evidence of life once the run is past the window', () => {
+  withProject((dir) => {
+    const current = runIdAged(1 * MINUTE);
+    const hoarder = runIdAged(40 * DAY);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    seedRun(dir, runIdAged(2 * HOUR), { ledger: { status: 'completed', outcome: 'verified' } });
+    seedRun(dir, hoarder, { ledger: { status: 'completed', outcome: 'verified' } });
+
+    assert.equal(reclaims(dir, hoarder), true, 'baseline: with a finishable, empty scan the run is reclaimable');
+
+    // Every one of these claims is 30 days stale, so a scan that COULD finish
+    // would count zero of them. Only the truncation makes the run look alive.
+    floodClaims(dir, hoarder, UNFINISHABLE_CLAIMS, 30 * DAY);
+    assert.equal(runLiveClaimEvidence(dir, hoarder), 'unknown', 'fixture: the scan really cannot finish');
+
+    assert.equal(reportsLive(dir, hoarder), false, 'a scan that could not finish is not a live claim');
+    assert.equal(reclaims(dir, hoarder), true, 'so the run does not hold a reserved slot forever');
+  });
+});
+
+test('an unfinishable claim scan still protects a freshly minted run', () => {
+  withProject((dir) => {
+    const current = runIdAged(10 * 1000);
+    const minted = runIdAged(3 * MINUTE);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    seedRun(dir, runIdAged(1 * MINUTE), { ledger: { status: 'completed', outcome: 'verified' } });
+    // TERMINAL ledger deliberately: the mint-window arm above must not be what
+    // saves this run, or the test would not be about the claim walk at all.
+    seedRun(dir, minted, { ledger: { status: 'completed', outcome: 'verified' } });
+
+    assert.equal(reclaims(dir, minted), true, 'baseline: keepRuns:1 evicts this run while its scan finishes');
+
+    floodClaims(dir, minted, UNFINISHABLE_CLAIMS, 30 * DAY);
+    assert.equal(runLiveClaimEvidence(dir, minted), 'unknown', 'fixture: the scan really cannot finish');
+
+    assert.equal(reportsLive(dir, minted), true, 'inside the window, ignorance still protects');
+    assert.equal(reclaims(dir, minted), false, 'a run that could still be in use is never reclaimed on a scan we could not finish');
+  });
+});
+
+test('a claim actually SEEN outranks an unfinishable scan, however old the run', () => {
+  withProject((dir) => {
+    const current = runIdAged(1 * MINUTE);
+    const busy = runIdAged(40 * DAY);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    seedRun(dir, runIdAged(2 * HOUR), { ledger: { status: 'completed', outcome: 'verified' } });
+    seedRun(dir, busy, { ledger: { status: 'completed', outcome: 'verified' } });
+
+    // The walk visits a directory in name order, so `a-live.json` is seen well
+    // before the bound is reached: positive evidence, from an incomplete scan.
+    floodClaims(dir, busy, UNFINISHABLE_CLAIMS, 30 * DAY, {
+      'a-live.json': { role: 'frontend', runId: busy, status: 'claimed', updatedAt: new Date(Date.now() - 30 * 1000).toISOString() },
+    });
+    assert.equal(runLiveClaimEvidence(dir, busy), 'live', 'fixture: seen beats unfinished');
+
+    assert.equal(reportsLive(dir, busy), true, 'an active record that was actually read outranks the truncation');
+    assert.equal(reclaims(dir, busy), false, 'and the run is retained');
+  });
+});
+
+// The two halves of leaving `runAgeMs` un-skew-guarded (see the comment above
+// runIsLive), pinned rather than left to be rediscovered. A skew guard fitted
+// to runAgeMs turns BOTH of these red, which is the point: the cost of the
+// guard is a deletion, and it should never be able to land looking free.
+//
+// Half one, the one the ruling turns on: this run's ledger says an agent is
+// inside it, and since `ageAttestsLiveness` landed in run-settlement/io.ts a
+// future-stamped claim no longer protects it either — so the mint stamp is the
+// last protection standing.
+test('a future-minted id with a non-terminal ledger stays protected — the skew trade, made visible', () => {
+  withProject((dir) => {
+    const current = runIdAged(1 * MINUTE);
+    const skewed = String(NOW + 1 * HOUR);
+    const abandoned = runIdAged(4 * DAY);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    seedRun(dir, skewed, { ledger: { status: 'active' } });
+    // Control: the same non-terminal ledger on an ordinary id is NOT protected,
+    // so what saves the run above is the future stamp and nothing else.
+    seedRun(dir, abandoned, { ledger: { status: 'active' } });
+
+    assert.equal(reportsLive(dir, abandoned), false, 'control: the mint window closes normally on an ordinary id');
+    assert.equal(reportsLive(dir, skewed), true, 'a stamp ahead of now keeps the mint window open forever');
+  });
+});
+
+// Half two: the ignorance arm, bounded by the same mint stamp. A disk-only,
+// conservative-direction leak, and a far narrower shape than the status quo it
+// replaces — which held EVERY run with an unfinishable scan forever, at any
+// age, as the test above shows.
+test('a future-minted id keeps the ignorance arm open indefinitely — the accepted cost', () => {
+  withProject((dir) => {
+    const current = runIdAged(1 * MINUTE);
+    const skewed = String(NOW + 1 * HOUR);
+    project(dir, current, { keepRuns: 1, orphanTtlDays: 3650 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    seedRun(dir, skewed, { ledger: { status: 'completed', outcome: 'verified' } });
+
+    floodClaims(dir, skewed, UNFINISHABLE_CLAIMS, 30 * DAY);
+    assert.equal(runLiveClaimEvidence(dir, skewed), 'unknown', 'fixture: the scan really cannot finish');
+
+    assert.equal(reportsLive(dir, skewed), true, 'a stamp ahead of now is inside the borrowed window forever');
+  });
+});
+
+// The orphan rule deletes runs the keep set RETAINED, so it cannot inherit the
+// keep set's liveness — it has to ask separately. keepRuns is set high enough
+// that the newest-N rule cannot be what schedules this run, so the reason string
+// identifies which rule is under test.
+test('the abandoned-run TTL rule also asks the liveness question', () => {
+  withProject((dir) => {
+    const t1 = '.traffic' + '-one';
+    const current = runIdAged(1 * MINUTE);
+    const preplan = runIdAged(6 * DAY);
+    project(dir, current, { keepRuns: 20, orphanTtlDays: 3 });
+    seedRun(dir, current, { ledger: { status: 'active' } });
+    // Never reached architecture compilation, and its directory is old: exactly
+    // the orphan shape — but a resumed long-running run can hold live claims in
+    // it, which the 3-day TTL alone cannot distinguish.
+    seedRun(dir, preplan, { ledger: { status: 'active' }, architecture: false });
+    const runDir = path.join(dir, t1, 'runs', preplan);
+    const stale = (Date.now() - 30 * DAY) / 1000;
+    fs.utimesSync(runDir, stale, stale);
+
+    const baseline = sweepTrafficOneRetention(dir, { dryRun: true, nowMs: NOW })
+      .actions.find((action) => action.path === runDir);
+    assert.ok(baseline, 'baseline: the pre-architecture run is a candidate');
+    assert.match(baseline.reason, /abandoned before architecture compilation/, 'baseline: scheduled by the orphan rule, not the newest-N rule');
+
+    // Claims first, then restore the old mtime the writes just bumped.
+    seedRun(dir, preplan, { ledger: { status: 'active' }, architecture: false, claims: 2 });
+    fs.utimesSync(runDir, stale, stale);
+    assert.equal(reclaims(dir, preplan), false, 'the orphan TTL must not reclaim a run that still holds live claims');
   });
 });
 

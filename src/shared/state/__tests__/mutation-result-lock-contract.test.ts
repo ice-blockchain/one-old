@@ -111,6 +111,16 @@ function seedFingerprintedClaim(cwd: string): void {
   }), 'utf8');
 }
 
+/** A live registry row for the retirement rows below: without one the
+ * transaction refuses at `no-registry-row` and never reaches the locks its two
+ * later halves take. */
+function seedRegistryRow(cwd: string): void {
+  fs.writeFileSync(runFile(cwd, 'agents.json'), JSON.stringify({
+    version: 1,
+    agents: { [ROLE]: { ...codexEntry, role: ROLE } },
+  }), 'utf8');
+}
+
 const ANNOTATED_CLAIM_KEY = 'annotated-thread';
 const ANNOTATED_CLAIM_ID = `${ROLE}-1-annotated`;
 const ANNOTATED_EVIDENCE = {
@@ -215,6 +225,32 @@ const ROWS: readonly Row[] = [
     uncontended: 'precondition-failed',
   },
   {
+    // Retirement became one transaction over three stores, so #10 now takes
+    // three locks and, like the sweep, has to name WHICH one it lost: a caller
+    // that cannot tell them apart cannot tell how much of the transaction ran.
+    // The claims lock is the OUTERMOST one (the canonical order in
+    // rebind-journal.ts is identity claims -> role registry -> fallback path
+    // claims), so losing it means nothing at all happened.
+    site: '#10 markRunAgentReplacedIfMatchesResult (claims lock, outermost)',
+    lock: 'claims',
+    setup: seedRegistryRow,
+    invoke: (cwd) => markRunAgentReplacedIfMatchesResult(cwd, RUN_ID, ROLE, codexEntry.agentId),
+    reason: 'claims-lock-unavailable',
+    uncontended: 'applied',
+  },
+  {
+    // The release half: the row is retired but the retired agent's per-file
+    // locks are still its own. Reported as `unavailable` because the retry is
+    // what finishes the transaction — a `precondition-failed` here would leave
+    // the replacement locked out for the full SUBAGENT_STALE_MS.
+    site: '#10 markRunAgentReplacedIfMatchesResult (fallback-claims lock)',
+    lock: 'fallbackClaims',
+    setup: seedRegistryRow,
+    invoke: (cwd) => markRunAgentReplacedIfMatchesResult(cwd, RUN_ID, ROLE, codexEntry.agentId),
+    reason: 'fallback-lock-unavailable',
+    uncontended: 'applied',
+  },
+  {
     site: '#11 recordRunAgentResult (registry lock)',
     lock: 'registry',
     invoke: (cwd) => recordRunAgentResult(cwd, RUN_ID, ROLE, { agentId: codexEntry.agentId }),
@@ -278,7 +314,7 @@ test('every lock-taking run-agent mutation reports a contended lock as unavailab
 // This test exists so that stays true by assertion rather than by memory: if
 // either function ever grows a three-valued public face, it belongs in ROWS.
 test('the table covers every lock-taking mutation that exposes a three-valued result', () => {
-  assert.equal(ROWS.length, 9);
+  assert.equal(ROWS.length, 11);
   assert.deepEqual(
     ROWS.map((row) => row.lock).filter((lock, index, all) => all.indexOf(lock) === index).sort(),
     ['claims', 'fallbackClaims', 'ledger', 'registry'],

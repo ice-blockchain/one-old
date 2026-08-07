@@ -5,6 +5,7 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
+import { trustworthyAgeSince } from '../../clock-skew';
 import { readJson } from '../../fsjson';
 import { dirOwnsProject, projectMembershipRoot } from '../../project-membership';
 import { sha256 } from '../../text';
@@ -24,6 +25,28 @@ import {
   normalizeHostPrefs,
 } from './pref-schema';
 
+// THE project bucket name. Three things key off it and they must agree:
+// per-project prefs (which is where the use-plugin CONSENT answer lives), the
+// operator override ledger (shared/override/paths.ts), and the OpenCode project
+// agent-name prefix (shared/materialize/opencode-assets.ts).
+//
+// KNOWN ASYMMETRY, deliberately left in place: `fs.realpathSync` resolves
+// symlinks but does NOT case-fold, while `fs.realpathSync.native` DOES (measured
+// on APFS — `.../MyProj` given as `.../myproj` comes back `myproj` from the JS
+// implementation and `MyProj` from the native one). So on a case-insensitive
+// volume `/Users/u/Proj` and `/Users/u/proj` are ONE directory that hashes to
+// TWO buckets: two consent records, two prefs files, two override ledgers for
+// one project. Symlink spellings are already folded together; only CASE splits.
+//
+// Do NOT "fix" this by switching to `.native`. That is not a canonicalization
+// improvement, it is a RELOCATION of every bucket on every machine: consent
+// reverts to unanswered and the user is asked "use Traffic One here?" again,
+// wizard answers and host prefs vanish, and every already-issued override token
+// stops matching (shared/override/token.ts checks `projectKey` against this
+// hash). A real fix has to READ BOTH SPELLINGS AND MIGRATE, under a lock, once.
+// Until that exists the asymmetry is the cheaper defect, and
+// shared/__tests__/path-spelling-contract.test.ts pins it so the swap cannot be
+// made silently.
 export function projectRootHash(cwd: string): string {
   let root: string;
   try {
@@ -106,6 +129,10 @@ function reapObservedProjectPrefsLock(lockPath: string, owner: ProjectPrefsLockO
 function reapAbandonedEmptyProjectPrefsLock(lockPath: string, now: number): boolean {
   try {
     if (fs.readdirSync(lockPath).length !== 0) return false;
+    // Left as a raw subtraction on purpose; see the same note in
+    // one-mcp/cache-lock.ts. `rename(dir, EMPTY dir)` succeeds, so an empty
+    // canonical lock is overwritten rather than contended and this reap is not
+    // on the acquisition path. A negative age here costs a retry, not a wedge.
     if (now - fs.statSync(lockPath).mtimeMs <= PROJECT_PREFS_LOCK_STALE_MS) return false;
     fs.rmdirSync(lockPath);
     return true;
@@ -160,7 +187,13 @@ function acquireProjectPrefsLock(filePath: string): ProjectPrefsLock {
         if (!contended) throw error;
         const now = Date.now();
         const owner = observedProjectPrefsLockOwner(lockPath);
-        if (owner && now - owner.createdAt > PROJECT_PREFS_LOCK_STALE_MS
+        // A future-stamped sentinel makes this age negative, i.e. never stale,
+        // so a dead owner's lock wedged every prefs write for the full timeout
+        // (measured: 1002ms and a throw, against 0.93ms past-stamped). An age no
+        // clock could produce does not veto the reap; `processAlive` still does,
+        // so a live owner is never evicted on the strength of its stamp.
+        const ownerAgeMs = owner ? trustworthyAgeSince(owner.createdAt, now) : null;
+        if (owner && (ownerAgeMs === null || ownerAgeMs > PROJECT_PREFS_LOCK_STALE_MS)
           && !processAlive(owner.pid) && reapObservedProjectPrefsLock(lockPath, owner)) continue;
         if (!owner && reapAbandonedEmptyProjectPrefsLock(lockPath, now)) continue;
         if (now >= deadline) {

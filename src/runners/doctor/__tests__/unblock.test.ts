@@ -273,7 +273,7 @@ test('a mutating runner is not on the recovery allowlist, however it is spelled'
 // ── probe fixtures ───────────────────────────────────────────────────────────
 
 function nodeProbe(): NodeProbe {
-  return { runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22 };
+  return { runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, pluginRequiredMajor: 22 };
 }
 
 function nvmProbe(): NvmProbe {

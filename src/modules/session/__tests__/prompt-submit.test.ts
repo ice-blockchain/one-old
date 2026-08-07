@@ -17,6 +17,7 @@ import { markModelChoicePrompted, readModelChoice } from '../../agent-model/mode
 import { exhaustedModelsForRole, recordExhaustedModel } from '../../agent-model/exhausted-models';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { readJsonResult } from '../../../shared/fsjson';
 import { writeMaterializedContent } from '../../../shared/materialize/__tests__/fixtures/materialized-content';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
@@ -619,6 +620,78 @@ test('a UI library choice the fence refused is not recorded silently', () => {
       assert.match(result.context, /\.one\.json/, 'and which path refused it');
     }
   });
+});
+
+// The kind of failure the fence test above cannot reach: not a refused write, an
+// ILLEGIBLE BASE. This path used to REPLACE a torn `.one.json` with a couple of
+// prompt-derived fields plus a version and answer true, sending everything the
+// wizard had recorded to `.one.json.corrupt` where nothing reads it. TWO writers
+// did it, which is what this test is about:
+//
+//   - the UI-library write, `writeState(cwd, { ...readState(cwd), uiLibrary })`,
+//     now `patchState`, which re-reads inside the state lock and refuses;
+//   - `seedOriginalPrompt` (shared/onboarding/seed-prompt.ts), the same
+//     whole-object spelling onto the same `{}`, now refusing at the read.
+//
+// It used to assert the file WAS replaced, because on ONE prompt the two are
+// indistinguishable: a torn base necessarily makes computeOnboarding incomplete,
+// that branch calls the seed, and the seed derives the same `uiLibrary` from the
+// same words — so "Use MUI for this frontend" produced a file carrying both
+// fields whichever writer was at fault. That masking is why the sibling
+// conversion could not be proven, and SPLITTING THE PROMPT is what separates
+// them: `switch to mui` names a library but is not a project description, so
+// only the UI-library site can write; `build a marketplace for freelancers` is a
+// project description that names no library, so only the seed can. Each case
+// below therefore fails in ONE writer's name.
+//
+// Every case asserts its writable, legible baseline first, on the same handler
+// and the same prompt: an untouched file afterwards is then the READ's decision
+// and not a handler that never reached the writer.
+test('a torn `.one.json` is left exactly as it was on this path — neither writer merges onto a base it could not read', () => {
+  const statePathOf = (cwd: string): string => path.join(cwd, '.traffic-one', '.one.json');
+  const SEED_ONLY = 'build a marketplace for freelancers';
+  const UI_ONLY = 'switch to mui';
+  const torn = '{"mode":"new-project","stack":"default","onboardingComplete":tr';
+
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    assert.equal(readJsonResult(statePathOf(cwd)).kind, 'ok', 'baseline guard: the base is legible');
+    assert.equal(runUserPromptSubmit(ctx(cwd, SEED_ONLY)).kind, 'context');
+    const after = JSON.parse(fs.readFileSync(statePathOf(cwd), 'utf8'));
+    assert.equal(after.originalPrompt, SEED_ONLY, 'baseline: the seed reaches its write and a legible base takes it');
+    assert.equal(after.uiLibrary, undefined, 'baseline: and this prompt names no library, so nothing else wrote');
+    assert.equal(after.mode, 'new-project', 'baseline: onto the base, not over it');
+  });
+
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    assert.equal(runUserPromptSubmit(ctx(cwd, UI_ONLY)).kind, 'context');
+    const after = JSON.parse(fs.readFileSync(statePathOf(cwd), 'utf8'));
+    assert.equal(after.uiLibrary, 'mui', 'baseline: the UI-library write reaches its site and a legible base takes it');
+    assert.equal(after.originalPrompt, undefined,
+      'baseline: and this prompt is not a project description, so the seed declined it and nothing else wrote');
+    assert.equal(after.mode, 'new-project', 'baseline: onto the base, not over it');
+  });
+
+  const tornStaysTorn = (prompt: string, writer: string): void => {
+    withAuthedProject({ mode: 'new-project' }, (cwd) => {
+      fs.writeFileSync(statePathOf(cwd), torn, 'utf8');
+      assert.equal(readJsonResult(statePathOf(cwd)).kind, 'corrupt', 'fixture guard: the base is unparseable');
+
+      const result = runUserPromptSubmit(ctx(cwd, prompt));
+      assert.equal(result.kind, 'context', 'the handler still answers — an illegible base never fails a prompt');
+
+      assert.equal(fs.readFileSync(statePathOf(cwd), 'utf8'), torn,
+        `${writer} merged onto a base it could not read: the file is no longer the bytes that were there`);
+      // The sidecar is the second half of the same fact. `writeState` moves an
+      // unparseable file aside BEFORE replacing it, so one appearing here means
+      // the write ran — and the user's real state is now somewhere nothing reads.
+      assert.equal(fs.existsSync(`${statePathOf(cwd)}.corrupt`), false,
+        `${writer} quarantined it: only a writer that MEANS to replace the file does that, which on this path is `
+        + 'the wizard\'s finalize and not this one');
+    });
+  };
+
+  tornStaysTorn(SEED_ONLY, 'seedOriginalPrompt');
+  tornStaysTorn(UI_ONLY, 'the UI-library write');
 });
 
 test('records a pending Cursor model-choice reply before normal prompt handling', () => {

@@ -53,7 +53,7 @@ test.after(cleanupReplayTempTrees);
 //     the real handler set on purpose, so it has none.
 //
 // Everything else is fair game and the number below is the floor, not the goal.
-// Reach today: 67 of 195 declared ids (34%), which is 67 of the ~140 that are
+// Reach today: 67 of 199 declared ids (34%), which is 67 of the ~140 that are
 // reachable at all by the definition above (~48%). Every remaining group is
 // named in the printed report's `unreached:` lines and pinned by
 // UNREACHED_DENY_IDS below.
@@ -218,6 +218,7 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'codex-child-model-claim-persist-failed',
   'codex-child-model-identity-conflict',
   'codex-child-model-ledger-closed',
+  'codex-child-model-ledger-illegible',
   'codex-child-model-no-child-id',
   'codex-child-model-observation-persist-failed',
   'codex-child-model-policy-missing',
@@ -273,6 +274,14 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'onboarding-run-bootstrap-unavailable',
   'onboarding-server-deny-links-shown',
   'onboarding-server-not-ready',
+  // All three sit behind a launcher that could not start, which the corpus has
+  // no fixture for — the same reason their predecessor above is pinned. A real
+  // case would be better than a pin: it needs a project whose `~/.traffic-one`
+  // path is occupied by a regular file, which is how the onboarding-gate suite
+  // makes the failure deterministic.
+  'onboarding-server-start-failed',
+  'onboarding-server-start-timeout',
+  'onboarding-server-start-timeout-exhausted',
   'onboarding-stop-link-posted',
   'onboarding-stop-links-shown',
   'onboarding-stop-required',

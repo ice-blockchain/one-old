@@ -14,6 +14,7 @@ import {
   isReadOnlyOrientationToolUse,
   isShellToolName,
   isStateFileOnlyPatch,
+  isStateFileOnlyWritePatch,
   isStateFilePath,
   isTrafficOneDoctorCommand,
   isWriteLikeToolName,
@@ -170,6 +171,30 @@ test('isStateFileOnlyPatch detects an apply_patch touching only the state file',
     output: { args: { patch: `*** Begin Patch\n*** Add File: .traffic-one/.one.json\n+x\n*** Add File: src/app.ts\n+y\n*** End Patch` } },
   }), false);
   assert.equal(isStateFileOnlyPatch('Bash', { command: 'ls' }), false);
+});
+
+// The exemption-side predicate. It answers a NARROWER question than the one
+// above, and the pair must stay a pair: isStateFileOnlyPatch is also what
+// SELECTS the writes the team-mode guards inspect, so it deliberately keeps
+// admitting the destructive shapes this one refuses.
+test('isStateFileOnlyWritePatch admits add/update of the state file and refuses delete/move', () => {
+  const add = '*** Begin Patch\n*** Add File: .traffic-one/.one.json\n+{}\n*** End Patch';
+  const update = '*** Begin Patch\n*** Update File: .traffic-one/.one.json\n@@\n-{}\n+{"stack":"default"}\n*** End Patch';
+  const remove = '*** Begin Patch\n*** Delete File: .traffic-one/.one.json\n*** End Patch';
+  const move = '*** Begin Patch\n*** Update File: .traffic-one/.one.json\n'
+    + '*** Move to: nested/.traffic-one/.one.json\n@@\n-{}\n+{"stack":"default"}\n*** End Patch';
+
+  assert.equal(isStateFileOnlyWritePatch('apply_patch', { patch: add }), true);
+  assert.equal(isStateFileOnlyWritePatch('apply_patch', { patch: update }), true);
+  assert.equal(isStateFileOnlyWritePatch('apply_patch', { patch: remove }), false, 'deleting the state file is not writing it');
+  assert.equal(isStateFileOnlyWritePatch('apply_patch', { patch: move }), false, 'a move is a delete at the source');
+  assert.equal(isStateFileOnlyWritePatch('apply_patch', { patch: '*** Begin Patch\n*** Add File: src/app.ts\n+x\n*** End Patch' }), false);
+  assert.equal(isStateFileOnlyWritePatch('Bash', { command: 'ls' }), false);
+
+  // The wider predicate keeps its own answer: narrowing it in place would stop
+  // the team-mode downgrade guard inspecting a move-with-hunks patch.
+  assert.equal(isStateFileOnlyPatch('apply_patch', { patch: remove }), true);
+  assert.equal(isStateFileOnlyPatch('apply_patch', { patch: move }), true);
 });
 
 // Cursor parses tool events into a canonical ToolInput whose rawName is a COARSE

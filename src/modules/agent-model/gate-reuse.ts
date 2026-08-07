@@ -17,8 +17,6 @@ import {
   refreshCursorRunAgentFromTranscriptCache,
   REPLACE_AGENT_MARKER,
   retireUnverifiedCodexRunAgent,
-  runLedgerAdmitsClaims,
-  runRoleHasBoundClaim,
   subagentContinuationAvailable,
   validateCodexLiveRunAgent,
   verdictAgentConflict,
@@ -36,6 +34,7 @@ import {
 import {
   exhaustedModelRotationDeny,
   replacementJustified,
+  structuralReplacementGround,
 } from './model-rotation';
 import type { GateContext } from './gate-context';
 
@@ -135,6 +134,11 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
         const markerJustified = replacementJustified(spawnPromptText, ctx.host);
         const currentCodexValidation = codexValidation as CodexLiveAgentValidation | null;
         if (ctx.host === 'codex' && currentCodexValidation?.status === 'unverified') {
+          // Deliberately NOT widened to structuralReplacementGround. That
+          // predicate keys on `role` — the run's claim slot and this row's
+          // recorded model — but `unverified` means Traffic One could not
+          // confirm this child IS that role. Admitting it on role-keyed evidence
+          // would let one role's closed ledger retire another role's child.
           if (!markerJustified || !retireUnverifiedCodexRunAgent(cwd, runId, role, currentCodexValidation.entry)) {
             const validationDeny = codexValidationDeny();
             if (validationDeny) return validationDeny;
@@ -156,25 +160,21 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
         const durableLiveModelExhaustion = cursorAwaitingResume
           && Boolean(liveModel)
           && modelIsExhausted(cwd, runId, role, liveModel);
-        const markerCorroborated = markerJustified || durableLiveModelExhaustion;
-        // The registry records an agent when it is SPAWNED, not when it binds a
-        // role, so "live" can name a child that never resolved its role and
-        // never will — every write it attempts is denied as the main agent.
-        // When that child holds no claim AND the run itself can no longer admit
-        // one, replacement is the only move left, and the orchestrator has no
-        // failure vocabulary for it: `replacementJustified` looks for exhausted
-        // context or API limits, so the marker was refused forever and the
-        // build had no exit. BOTH conditions are required — a claimless agent in
-        // a healthy run may simply be mid-startup and stays protected.
-        const unbindableLive = Boolean(live)
-          && !runRoleHasBoundClaim(cwd, runId, role)
-          && !runLedgerAdmitsClaims(cwd, runId);
+        // Facts the RUNTIME recorded about this agent and this run — a claim it
+        // can never bind, or a durably condemned model — as opposed to the
+        // orchestrator's own prose about itself. This is the authority the
+        // marker should rest on; `markerJustified` survives only as the backstop
+        // for context exhaustion, which nothing on disk can witness.
+        const structuralGround = structuralReplacementGround(cwd, runId, role, live);
+        const markerCorroborated = markerJustified
+          || durableLiveModelExhaustion
+          || structuralGround !== null;
         if (cursorAwaitingResume
           && !cursorAgentPresumedDead(live, { corroborated: markerCorroborated })) {
           return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }),
             { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
         }
-        if (live && !cursorAwaitingResume && !markerJustified && !unbindableLive) {
+        if (live && !cursorAwaitingResume && !markerJustified && structuralGround === null) {
           if (resumeTarget) {
             const recipe = continuationRecipe(ctx.host, resumeTarget, role);
             return deny(block('agent-reuse-continue', {
@@ -232,8 +232,7 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
             // waits for the hard window before the agent is presumed dead.
             const corroborated = replacementJustified(spawnPromptText, ctx.host)
               || isApiUsageLimitText(spawnPromptText)
-              || (typeof live.model === 'string' && live.model.trim().length > 0
-                && modelIsExhausted(cwd, runId, role, live.model.trim()));
+              || structuralReplacementGround(cwd, runId, role, live) !== null;
             if (cursorAgentPresumedDead(live, { corroborated })) {
               const retired = markRunAgentReplacedIfMatches(
                 cwd,

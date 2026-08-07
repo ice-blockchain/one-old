@@ -5,7 +5,7 @@ import type { AuthoritativeRebindJournal, AuthoritativeRebindReplay } from './re
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import {  readJson,  writeJson } from '../../fsjson';
+import {  readJson, readJsonResult,  writeJson } from '../../fsjson';
 import {
   VALID_AGENT_ROLES,
 } from '../../../config/state';
@@ -202,7 +202,26 @@ export function completeAuthoritativeRebindJournalUnlocked(
     && (currentClaim || journal.sourceClaimWasPresent)) return { status: 'blocked' };
 
   const registryFile = agentRegistryFile(cwd, journal.runId);
-  const registry = obj(readJson(registryFile, null)) || {};
+  // SETTLED (it was filed as conditional because the write below depends on a
+  // claim match sourced in another module): reachable, and destructive when it
+  // is reached. `|| {}` on an unreadable registry left `agents` empty, so
+  // `targetMatches` and `oldMatches` are both false — and the guard on those two
+  // is satisfied by a CLAIM match alone, which a rebind whose claim write already
+  // landed (or replay of its journal) supplies. The transaction then reads its
+  // own CAS as "the target role is FREE" from a file that may say the opposite,
+  // and republishes the whole registry from `{}`, deleting every other role's
+  // row for real this time.
+  //
+  // Refuse both kinds. A compare-and-swap is defined against a base, exactly as
+  // a patch is (normalize.ts's patchState), and refusing writes nothing.
+  // `blocked` is what a malformed journal already produces here and all three
+  // consumers refuse conservatively on it, so this costs a retry and never a
+  // wrong role. It is not a wedge either: `recordRunAgentUnlocked` quarantines
+  // and heals a corrupt registry on the next PostToolUse observation, after
+  // which this retries against a base it can see.
+  const read = readJsonResult<Rec>(registryFile);
+  if (read.kind === 'corrupt' || read.kind === 'unreadable') return { status: 'blocked' };
+  const registry = (read.kind === 'ok' ? obj(read.value) : null) || {};
   const agents = obj(registry.agents) || {};
   const targetEntry = obj(agents[journal.targetRole]);
   const targetMatches = Boolean(targetEntry && idsForRunAgent(targetEntry).includes(journal.threadId));

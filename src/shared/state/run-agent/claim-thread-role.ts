@@ -35,6 +35,7 @@ import {
 import {
   claimAllowsState,
   claimModel,
+  claimRejectReason,
   listPendingClaims,
   matchingPendingClaim,
   readClaimFile,
@@ -139,6 +140,14 @@ export function claimThreadRole(
   if (replay.status === 'blocked') return null;
   const locked = withRunAgentClaimsLock(cwd, runId, () => {
     const existing = readClaimFile(runAgentFile(cwd, runId, id));
+    // A SUPERSEDED thread must not re-enter through the fresh-bind path below.
+    // Its claim is released and another agent demonstrably owns the role, so
+    // claimAllowsState now says no — and the released-claim refusal inside the
+    // branch below is only reached for claims it says yes to. Falling through
+    // would mint this thread a new claim and then have
+    // releaseSupersededRoleClaimsLocked release the replacement that owns the
+    // role, handing it straight back to the agent the parent just retired.
+    if (existing && claimRejectReason(cwd, state, existing) === 'claim-superseded') return;
     if (existing && claimAllowsState(cwd, state, existing)) {
       if (existing.role !== role) {
         if (isCorrectionGradeEvidence(evidence, existing.roleSource)) rebindExpected = existing;
@@ -281,6 +290,13 @@ export function claimThreadRole(
       model: boundClaim.model as string | null,
       roleSource: boundClaim.roleSource as string | null,
       transcriptPath: boundClaim.transcriptPath as string | null,
+      // A bind is the CHILD acting: this thread claimed the role for itself, so
+      // it was alive just now. That is the one thing allowed to advance the
+      // registry row's liveness clock — without it a child that re-binds after
+      // its claim aged out would get a fresh 30-minute claim window over a row
+      // that stays presumed-dead, and the reuse gate would offer its role to a
+      // replacement while it still held write authority.
+      childObserved: true,
     });
   }
   // Deliberately NOT writeState() here. Parallel subagents self-heal their claims

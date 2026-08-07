@@ -238,7 +238,7 @@ test('the report surfaces the V2 rollback barrier instead of letting run.json li
 
 // ── findings: the machine-readable half ──────────────────────────────────────
 
-const node = (): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22 });
+const node = (): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, pluginRequiredMajor: 22 });
 const nvm = (): NvmProbe => ({ installed: false });
 const gitnexus = (): GitnexusProbe => ({ onPath: null, absoluteV22: null, crashRiskInOldNvm: false });
 function baseProject(): ProjectProbe {

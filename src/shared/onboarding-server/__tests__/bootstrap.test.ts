@@ -5,6 +5,7 @@ import * as path from 'path';
 import { HOST_IDS } from '../../../config/model-tiers';
 import type { HostId } from '../../../core/types';
 import { onboardingStartFailureReason, prepareOnboardingServer } from '../bootstrap';
+import { ONBOARDING_START_TIMEOUT_CODE } from '../ensure';
 import {
   onboardingBootstrapCommand,
   onboardingWaitCommand,
@@ -147,5 +148,62 @@ test('prepareOnboardingServer: non-permission launcher failures are terminal and
     assert.match(compact, /plugin\/runtime failure/);
     assert.match(compact, /doctor|reinstall\/update/);
     assert.doesNotMatch(compact, /Do NOT|TRAFFIC_ONE_SETUP_READY|--bootstrap-only/);
+  }
+});
+
+function timeout(): NodeJS.ErrnoException {
+  return Object.assign(
+    new Error('traffic-one onboarding server did not become ready (another launcher holds the lock)'),
+    { code: ONBOARDING_START_TIMEOUT_CODE },
+  );
+}
+
+test('prepareOnboardingServer: a launcher TIMEOUT is retryable, and says so instead of prescribing a reinstall', () => {
+  // The whole point of the split. A timeout used to land in the terminal
+  // packaging branch, so routine lock contention — which ensure.ts documents as
+  // normal — told the user their plugin was broken and to reinstall it.
+  for (const host of HOST_IDS) {
+    const result = prepareOnboardingServer(CWD, host, { ensure: () => { throw timeout(); } });
+    assert.equal(result.kind, 'start-timeout', `${host}: a timeout is its own classification`);
+    if (result.kind !== 'start-timeout') continue;
+    assert.equal(result.errorCode, ONBOARDING_START_TIMEOUT_CODE);
+
+    // The retryable half prescribes exactly one retry and rules out the wrong diagnosis.
+    assert.match(result.reason, /did not finish starting in time/, `${host}: names the timeout`);
+    assert.match(result.reason, /[Rr]etry this exact tool call/, `${host}: prescribes the retry`);
+    assert.match(result.reason, /\bonce\b/i, `${host}: bounds it at one`);
+    // The compact hosts state it by omission, the rest say it outright; either
+    // way the text must never ASSERT a plugin failure the way the terminal one does.
+    assert.doesNotMatch(result.reason, /(?<!not a )plugin\/runtime failure/, `${host}: a timeout is not a plugin failure`);
+    assert.doesNotMatch(result.reason, /Reinstall\/update/, `${host}: never prescribes a reinstall for a clock`);
+    assert.match(result.reason, /will not help|do not reinstall/i, `${host}: says reinstalling is the wrong move`);
+    assert.doesNotMatch(result.reason, /Stop and report this error/, `${host}: not terminal`);
+    assert.ok(!result.reason.includes(onboardingBootstrapCommand(CWD, host)), `${host}: never re-prescribes bootstrap`);
+
+    // The terminal half is carried alongside, for the surface that BLOCKS to use
+    // once the one retry is spent — and it is a different message, not the
+    // packaging one, because nothing here says the installation is broken.
+    assert.match(result.terminalReason, /timed out again/, `${host}: names what changed`);
+    assert.match(result.terminalReason, /[Ss]top/, `${host}: terminal half says stop`);
+    assert.match(result.terminalReason, /doctor/, `${host}: keeps the recovery route`);
+    assert.doesNotMatch(result.terminalReason, /Retry this exact tool call/, `${host}: terminal half prescribes no retry`);
+    assert.notEqual(result.reason, result.terminalReason, `${host}: the two halves are different messages`);
+  }
+});
+
+test('prepareOnboardingServer: permission and packaging failures are UNAFFECTED by the timeout split', () => {
+  // The split must move exactly one population. A sandbox permission error still
+  // gets the approved bootstrap recipe, and a broken install is still terminal.
+  const permission = prepareOnboardingServer(CWD, 'claude', { ensure: () => { throw errno('EPERM'); } });
+  assert.equal(permission.kind, 'bootstrap-required');
+
+  for (const code of ['ENOENT', 'ENOTDIR', 'START_FAILED']) {
+    const result = prepareOnboardingServer(CWD, 'claude', {
+      ensure: () => { throw Object.assign(new Error(`${code}: broken installed runner`), { code }); },
+    });
+    assert.equal(result.kind, 'start-failed', `${code} stays terminal`);
+    if (result.kind !== 'start-failed') continue;
+    assert.match(result.reason, /plugin\/runtime failure/);
+    assert.doesNotMatch(result.reason, /Retry this exact tool call/);
   }
 });

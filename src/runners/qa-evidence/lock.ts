@@ -11,6 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { trustworthyAgeSince } from '../../shared/clock-skew';
 import { qaDir } from './run-context';
 
 // A full visual run (screenshots x widths x routes + Lighthouse) legitimately
@@ -52,9 +53,16 @@ function readHolder(lockPath: string): QaRunLockHolder | null {
 function lockStale(lockPath: string, holder: QaRunLockHolder | null): boolean {
   if (holder && processAlive(holder.pid)) return false;
   if (holder && !processAlive(holder.pid)) return true;
-  // Unreadable payload: age decides.
+  // Unreadable payload: age decides, and there is no pid here to govern it.
   try {
-    return Date.now() - fs.statSync(lockPath).mtimeMs > QA_RUN_LOCK_STALE_MS;
+    // An mtime ahead of now makes this difference negative, which is never
+    // `> STALE`, so the run directory would be wedged permanently — every later
+    // runner exiting `already-running` against a holder that no longer exists.
+    // An age no clock could have produced is exactly as much evidence as no
+    // mtime at all, and the catch below already folds THAT to reclaimable, so
+    // this folds the same way rather than contradicting its own sibling branch.
+    const ageMs = trustworthyAgeSince(fs.statSync(lockPath).mtimeMs, Date.now());
+    return ageMs === null || ageMs > QA_RUN_LOCK_STALE_MS;
   } catch {
     // Vanished between existsSync and statSync — treat as reclaimable.
     return true;

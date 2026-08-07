@@ -9,6 +9,7 @@ import { legacyCustomBackendMigration } from '../../shared/architecture-contract
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { OPENCODE_MCP_SERVER_KEY } from '../../config/opencode-mcp';
 import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
+import { NODE_FLOOR_MAJOR } from '../../shared/node-floor';
 import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
   GITNEXUS_MIN_NODE_MAJOR,
@@ -32,13 +33,24 @@ import {
 } from './codex-hook-trust';
 type Rec = Record<string, unknown>;
 
-export interface NodeProbe { runningMajor: number | null; runningVersion: string; onPath: string | null; requiredMajor: number; }
+// `requiredMajor` and `pluginRequiredMajor` answer DIFFERENT questions and are
+// deliberately separate fields even while both happen to be 22 today.
+// `requiredMajor` (GITNEXUS_MIN_NODE_MAJOR) asks whether a Node 22 exists
+// SOMEWHERE for the GitNexus code-graph toolchain — a provider-scoped need the
+// gitnexus hook can satisfy on its own by preparing an nvm or managed Node.
+// `pluginRequiredMajor` (NODE_FLOOR_MAJOR, i.e. package.json "engines") asks
+// whether THIS process — the one running Traffic One's own hooks — is a
+// supported runtime at all. Nothing can prepare a different Node for it: it is
+// already running. No second probe is added for it; both read the same
+// process.versions.node below.
+export interface NodeProbe { runningMajor: number | null; runningVersion: string; onPath: string | null; requiredMajor: number; pluginRequiredMajor: number; }
 export function probeNode(): NodeProbe {
   return {
     runningMajor: currentNodeMajor(),
     runningVersion: process.versions.node,
     onPath: which('node'),
     requiredMajor: GITNEXUS_MIN_NODE_MAJOR,
+    pluginRequiredMajor: NODE_FLOOR_MAJOR,
   };
 }
 

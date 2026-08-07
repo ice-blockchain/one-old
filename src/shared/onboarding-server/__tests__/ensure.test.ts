@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { ensureOnboardingServer, formatWizardBanner } from '../ensure';
+import { ensureOnboardingServer, formatWizardBanner, ONBOARDING_START_TIMEOUT_CODE } from '../ensure';
 import { NO_LOCAL_FALLBACK, type LocalFallback } from '../wizard-links';
 import {
   clearServerRecord,
@@ -287,6 +287,201 @@ test('ensure: steals a stale (dead-holder) launch lock and relaunches', () => {
     assert.equal(launched, true);
     assert.equal(r.port, 53000);
     assert.equal(fs.existsSync(serverLockPath(cwd, env)), false);
+  });
+});
+
+// ── the two budgets ─────────────────────────────────────────────────────────
+// These four tests are TIMED, so they assert LOWER bounds only: load can make an
+// elapsed number bigger, never smaller, so nothing here flakes under a busy
+// machine. Every one also carries a witness that the thing being timed actually
+// HAPPENED (a spawn tally, a wait-loop iteration count, the measured moment
+// launch() was called), because a timing assertion that a slow machine satisfies
+// for the wrong reason is worse than no assertion at all.
+
+const HOLDER_PID = 999_991;
+
+// Seed a launch lock owned by a concurrent launcher that has published nothing.
+function seedHeldLock(cwd: string, env: NodeJS.ProcessEnv): void {
+  const lockPath = serverLockPath(cwd, env);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: HOLDER_PID, at: Date.now() }));
+}
+
+test('ensure: a fully consumed contention wait still leaves the readiness poll its OWN full budget', () => {
+  // The defect: one deadline was computed before the lock-acquisition loop and
+  // reused by the post-launch readiness poll, so contention — which ensure.ts
+  // documents as NORMAL — spent the readiness budget and the first post-launch
+  // check fired immediately. The budgets are independent now, and the way to
+  // show it is to measure the READINESS half directly in two runs whose
+  // CONTENTION halves differ, and find it unchanged.
+  const LOCK_WAIT_MS = 400;
+  const READY_MS = 700;
+
+  interface Timing { toLaunchMs: number; readyMs: number; launches: number; aliveCalls: number }
+
+  const run = (contended: boolean): Timing => {
+    let out: Timing = { toLaunchMs: -1, readyMs: -1, launches: 0, aliveCalls: 0 };
+    withProject((cwd, env) => {
+      if (contended) seedHeldLock(cwd, env);
+      const t0 = Date.now();
+      let launches = 0;
+      let launchAt = 0;
+      let aliveCalls = 0;
+      // The holder looks alive until the contention window is nearly gone, then
+      // dies — so the lock is STOLEN late and we reach launch() having spent
+      // essentially the whole wait window. Our own child is never alive, so the
+      // readiness poll can only end at its deadline.
+      const isAlive = (pid: number): boolean => {
+        if (pid !== HOLDER_PID) return false;
+        aliveCalls += 1;
+        return Date.now() - t0 < LOCK_WAIT_MS - 60;
+      };
+      assert.throws(() => ensureOnboardingServer(cwd, {
+        env,
+        isAlive,
+        lockWaitTimeoutMs: LOCK_WAIT_MS,
+        readyTimeoutMs: READY_MS,
+        launch: () => { launches += 1; launchAt = Date.now(); return 4242; },
+      }));
+      out = {
+        toLaunchMs: launchAt - t0,
+        readyMs: Date.now() - launchAt,
+        launches,
+        aliveCalls,
+      };
+    });
+    return out;
+  };
+
+  const solo = run(false);
+  const contended = run(true);
+
+  // Witnesses first: without these, "readiness took 700ms" could be satisfied by
+  // a machine that was merely slow somewhere else entirely.
+  assert.equal(solo.launches, 1, 'uncontended run must spawn exactly once');
+  assert.equal(contended.launches, 1, 'contended run must spawn exactly once — never a second server');
+  assert.ok(contended.aliveCalls >= 3,
+    `the wait loop must actually have iterated against the live holder (isAlive calls: ${contended.aliveCalls})`);
+  assert.ok(solo.toLaunchMs < LOCK_WAIT_MS / 2,
+    `uncontended run must reach launch() promptly, took ${solo.toLaunchMs}ms`);
+  assert.ok(contended.toLaunchMs >= LOCK_WAIT_MS - 60,
+    `contended run must spend the contention window before launching, spent only ${contended.toLaunchMs}ms`);
+
+  // The claim itself: the readiness half is the same in both, because it is a
+  // budget of its own. With one shared deadline the contended run's readiness
+  // poll gets ~0ms and throws on its first check.
+  assert.ok(solo.readyMs >= READY_MS * 0.9,
+    `uncontended readiness budget was ${solo.readyMs}ms, expected ~${READY_MS}ms`);
+  assert.ok(contended.readyMs >= READY_MS * 0.9,
+    `contention consumed the readiness budget: the post-launch poll got only ${contended.readyMs}ms of ${READY_MS}ms`);
+  // Hang ceiling, not a timing assertion: a poll that never terminates must fail
+  // rather than run out the test runner's clock.
+  assert.ok(contended.readyMs < 20_000, 'readiness poll did not terminate');
+});
+
+test('ensure: a launcher that runs out of time throws a TIMEOUT, never an unclassified failure', () => {
+  // Both timeout exits, because both used to raise a plain Error that
+  // bootstrap.ts classified as START_FAILED — "reinstall the plugin" — for what
+  // is a fact about the clock.
+  withProject((cwd, env) => {
+    // (a) a live concurrent holder kept the lock for the whole window.
+    seedHeldLock(cwd, env);
+    let launches = 0;
+    assert.throws(
+      () => ensureOnboardingServer(cwd, {
+        env,
+        isAlive: (pid) => pid === HOLDER_PID,
+        lockWaitTimeoutMs: 150,
+        readyTimeoutMs: 150,
+        launch: () => { launches += 1; return 1; },
+      }),
+      (error: NodeJS.ErrnoException) => {
+        assert.equal(error.code, ONBOARDING_START_TIMEOUT_CODE, 'lock contention is a TIMEOUT');
+        assert.match(error.message, /another launcher holds the lock/);
+        return true;
+      },
+    );
+    assert.equal(launches, 0, 'never double-launch behind a live holder');
+  });
+
+  withProject((cwd, env) => {
+    // (b) our own child never published.
+    let launches = 0;
+    assert.throws(
+      () => ensureOnboardingServer(cwd, {
+        env,
+        isAlive: () => false,
+        lockWaitTimeoutMs: 150,
+        readyTimeoutMs: 150,
+        launch: () => { launches += 1; return 4242; },
+      }),
+      (error: NodeJS.ErrnoException) => {
+        assert.equal(error.code, ONBOARDING_START_TIMEOUT_CODE, 'a silent child is a TIMEOUT');
+        return true;
+      },
+    );
+    assert.equal(launches, 1, 'the readiness timeout must be reached through a real spawn');
+  });
+});
+
+test('ensure: a contention timeout never hands back a DEAD launcher\'s URL', () => {
+  // The `if (rec) return …` guard on the lock-contention exit ran only after
+  // reuseIfLive() had already proved that record's pid dead, so the one thing it
+  // reliably did was return a link to a corpse stamped `started: true` — which
+  // the agent then posts to the user.
+  withProject((cwd, env) => {
+    seedHeldLock(cwd, env);
+    writeServerRecord(cwd, rec({ pid: 999_992, port: 55001, token: 'dead', url: 'http://127.0.0.1:55001/?t=dead' }), env);
+    assert.throws(
+      () => ensureOnboardingServer(cwd, {
+        env,
+        // The holder is alive (so the lock is never stolen); the RECORD's pid is not.
+        isAlive: (pid) => pid === HOLDER_PID,
+        lockWaitTimeoutMs: 150,
+        readyTimeoutMs: 150,
+        launch: () => { throw new Error('must not spawn behind a live holder'); },
+      }),
+      (error: NodeJS.ErrnoException) => error.code === ONBOARDING_START_TIMEOUT_CODE,
+    );
+  });
+
+  // …and the microsecond race the guard actually exists for still works: a LIVE
+  // record published by the holder is handed back rather than thrown away.
+  withProject((cwd, env) => {
+    seedHeldLock(cwd, env);
+    writeServerRecord(cwd, rec({ pid: HOLDER_PID, port: 55002, token: 'live', url: 'http://127.0.0.1:55002/?t=live' }), env);
+    const result = ensureOnboardingServer(cwd, {
+      env,
+      isAlive: (pid) => pid === HOLDER_PID,
+      lockWaitTimeoutMs: 150,
+      readyTimeoutMs: 150,
+      launch: () => { throw new Error('must not spawn behind a live holder'); },
+    });
+    assert.equal(result.port, 55002);
+  });
+});
+
+test('ensure: a MISSING runner stays a terminal ENOENT and is never mistaken for a timeout', () => {
+  // `node <absent file>` spawns fine and dies asynchronously, so the only
+  // symptom of a broken install used to be the readiness timeout. Now that a
+  // timeout is retryable, retrying a missing runner would be pointless — so the
+  // one check that separates the two runs before the spawn.
+  withProject((cwd, env) => {
+    const missing = path.join(cwd, 'no-such-onboarding-server.cjs');
+    assert.throws(
+      () => ensureOnboardingServer(cwd, {
+        env: { ...env, TRAFFIC_ONE_ONBOARDING_SERVER_ENTRY: missing },
+        isAlive: () => false,
+        lockWaitTimeoutMs: 100,
+        readyTimeoutMs: 100,
+      }),
+      (error: NodeJS.ErrnoException) => {
+        assert.equal(error.code, 'ENOENT', 'a missing runner is a packaging failure, not a clock');
+        assert.notEqual(error.code, ONBOARDING_START_TIMEOUT_CODE);
+        assert.match(error.message, /runner is missing/);
+        return true;
+      },
+    );
   });
 });
 

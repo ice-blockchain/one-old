@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { trustworthyAgeSince } from '../../shared/clock-skew';
 import { removePath, writeTextFile } from '../../shared/fsjson';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, codeGraphIndexIsStale, codeGraphIsEmpty } from '../../shared/codegraph';
 import { STACK_IDS } from '../../config/stacks';
@@ -27,8 +28,8 @@ import {
   isMaintenancePhase,
   isMaterialized,
   normalizeState,
+  patchState,
   readEffectiveState,
-  readState,
   stackFingerprint,
   stateVersion,
   writeState,
@@ -216,7 +217,15 @@ export function shouldBuildCodeGraph(cwd: string, state: Rec, nowMs: number): bo
   const hasGraph = artefactExists && !codeGraphIsEmpty(cwd, provider);
   if (hasGraph && !codeGraphIndexIsStale(cwd, artefactMtime)) return false;
   const lockMs = codeGraphBuildLockMs(cwd);
-  if (lockMs && (nowMs - lockMs) < CODE_GRAPH_SELF_HEAL_COOLDOWN_MS) return false;
+  // The cooldown is a BLOCK, and it used to be permanent whenever the lock's
+  // stamp sat ahead of `nowMs`: the lock stores an ISO string this process
+  // wrote, so a clock that stepped backwards (or a hand-edited lock) makes
+  // `nowMs - lockMs` negative, which is below the cooldown by a margin that only
+  // grows — and the self-heal this function exists to trigger never runs again.
+  // An age no clock could have produced ends the cooldown; the spawn re-stamps
+  // the lock with the current time, so the cooldown starts working again.
+  const cooldownAgeMs = lockMs ? trustworthyAgeSince(lockMs, nowMs) : null;
+  if (cooldownAgeMs !== null && cooldownAgeMs < CODE_GRAPH_SELF_HEAL_COOLDOWN_MS) return false;
   return true;
 }
 
@@ -305,14 +314,27 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
       try {
         // The whole point of this write is that the field is MACHINE-READABLE at
         // call time — the spawn gate cites it to prove the user authorized
-        // delegation. A refusal leaves the authorization invisible, so
-        // opencode_delegate keeps being rejected as unauthorized, and the caller's
-        // own writeState(cwd, state) lands on the same refused path. Say so in the
-        // notice this function exists to return, next to the heal notices; there is
-        // no silent recovery to fall back on.
-        if (!writeState(cwd, { ...readState(cwd), openCodeDelegation: record })) {
-          notice += '[opencode] delegation authorization could not be recorded — the state write fence refused '
-            + '`.traffic-one/.one.json`, so `opencode_delegate` may still be rejected as not explicitly authorized.\n';
+        // delegation. A write that does not land leaves the authorization
+        // invisible, so opencode_delegate keeps being rejected as unauthorized,
+        // and the caller's own writeState(cwd, state) lands on the same path. Say
+        // so in the notice this function exists to return, next to the heal
+        // notices; there is no silent recovery to fall back on.
+        //
+        // `patchState`, because this is a BACKFILL of one field onto a file this
+        // function does not own the rest of, and it runs on the SessionStart /
+        // UserPromptSubmit path where other hooks are writing the same file. The
+        // old `writeState(cwd, { ...readState(cwd), … })` took its base outside
+        // the state lock, so a concurrent scrub or wizard answer landing in
+        // between was erased; and it read a torn `.one.json` as `{}`, replacing
+        // the project's whole state with this one authorization record while
+        // answering true. Refusing an illegible base is right HERE specifically:
+        // the caller's own `writeState(cwd, state)` still runs afterwards and
+        // still heals through the quarantine path, so this refusal wedges
+        // nothing — it only declines to be the writer that guesses.
+        if (!patchState(cwd, { openCodeDelegation: record })) {
+          notice += '[opencode] delegation authorization could not be recorded — `.traffic-one/.one.json` did not '
+            + 'accept the write (the state write fence refused it, or its current contents could not be read), '
+            + 'so `opencode_delegate` may still be rejected as not explicitly authorized.\n';
         }
       } catch { /* best-effort */ }
     }
@@ -332,7 +354,11 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
     const stamped = typeof ocStamp?.installedVersion === 'string' && (ocStamp.installedVersion as string).length > 0;
     if (!installed || !stamped) {
       const lock = path.join(cwd, '.traffic-one', OPENCODE_HEAL_LOCK);
-      if (!diskLockMs(lock) || (Date.now() - diskLockMs(lock)) >= OPENCODE_HEAL_COOLDOWN_MS) {
+      const lockMs = diskLockMs(lock);
+      // Same cooldown-is-a-block reasoning as shouldBuildCodeGraph above: a lock
+      // stamped ahead of now made this heal unreachable forever.
+      const healAgeMs = lockMs ? trustworthyAgeSince(lockMs, Date.now()) : null;
+      if (healAgeMs === null || healAgeMs >= OPENCODE_HEAL_COOLDOWN_MS) {
         const entry = path.join(pluginRoot(), 'scripts', 'onboarding-toolchain-runner.cjs');
         // Same reasoning as the code-graph self-heal: a refused lock means no
         // consent, so the detached installer must not be spawned either.

@@ -57,7 +57,14 @@ import * as path from 'path';
 
 import { STATE_DIR } from '../config/paths';
 import type { FsJson } from '../core/types';
-import { createFileNoFollow, isSymlink, realPathWithMissingTail, writeFileNoFollow } from './fs-nofollow';
+import {
+  O_NOFOLLOW,
+  createFileNoFollow,
+  isSymlink,
+  realPathWithMissingTail,
+  writeAll,
+  writeFileNoFollow,
+} from './fs-nofollow';
 // A pure leaf (no imports of its own), so unlike plugin-use below this one
 // cannot close a cycle and needs no lazy require.
 import { errnoOf, recordStateWrite } from './state/state-write-log';
@@ -99,9 +106,66 @@ export function readText(filePath: string): string | null {
   }
 }
 
+/**
+ * What a JSON read actually FOUND — the one thing `readJson` below structurally
+ * cannot say.
+ *
+ * `readJson` answers an absent file and an unparseable one with the same
+ * caller-supplied fallback, so "I could not read it" arrives as a confident
+ * "here is the answer". That is harmless for a consumer that only asks a
+ * question of the value, and destructive for a read-modify-write one: it reads a
+ * torn `.one.json`, gets `{}`, merges its one field into `{}`, writes the
+ * result, and a file that was merely UNPARSEABLE is now genuinely gone.
+ *
+ * Four kinds, not the obvious three, because `readText`'s catch-all collapses a
+ * distinction that matters at exactly the moment it is load-bearing: ENOENT
+ * means nothing is there and writing is safe, while EACCES/EISDIR/EIO mean
+ * something IS there and we cannot see it — the one case where overwriting is
+ * least defensible and today's fallback is least distinguishable from `absent`.
+ *
+ * `corrupt` carries the bytes so a caller can preserve them before it replaces
+ * the file; `unreadable` cannot and says so with the errno instead.
+ *
+ * A file whose JSON value is `null` — including an EMPTY file, the literal
+ * signature of an `O_TRUNC` open that never got its write — is `corrupt`, not
+ * `ok`. That is the same verdict `parseJson` already reaches (it returns the
+ * fallback for a null value), so the wrapper below stays behaviour-identical.
+ */
+export type JsonRead<T> =
+  | { readonly kind: 'ok'; readonly value: T }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'corrupt'; readonly text: string }
+  | { readonly kind: 'unreadable'; readonly errno: string };
+
+export function readJsonResult<T = unknown>(filePath: string): JsonRead<T> {
+  let text: string;
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    const errno = errnoOf(error);
+    return errno === 'ENOENT' ? { kind: 'absent' } : { kind: 'unreadable', errno: errno ?? 'unknown' };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(String(text ?? '').trim() || 'null');
+  } catch {
+    return { kind: 'corrupt', text };
+  }
+  return value == null ? { kind: 'corrupt', text } : { kind: 'ok', value: value as T };
+}
+
+/**
+ * Unchanged, deliberately: 102 non-test call sites bind to this signature and a
+ * mechanical rewrite of them is what has twice made a site invisible rather than
+ * fixed. It is now expressed as the convenience wrapper over the reader above —
+ * every non-`ok` kind maps to the fallback, which is precisely the three
+ * outcomes `readText`+`parseJson` already folded together. Behaviour-identical
+ * by construction, and pinned that way by the differential test in
+ * __tests__/read-json-result.test.ts rather than by this claim.
+ */
 export function readJson<T = unknown>(filePath: string, fallback: T): T {
-  const text = readText(filePath);
-  return text == null ? fallback : parseJson<T>(text, fallback);
+  const read = readJsonResult<T>(filePath);
+  return read.kind === 'ok' ? read.value : fallback;
 }
 
 // ── The guard every mutation below passes through ────────────────────────────
@@ -240,6 +304,81 @@ export function writeJson(filePath: string, value: unknown): boolean {
     try {
       writeFileNoFollow(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'truncate');
       fs.renameSync(tmpPath, filePath);
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+    }
+  });
+}
+
+/**
+ * writeJson's DURABLE sibling: the same fence, the same symlink refusal, the
+ * same boolean, plus an `fsync` before the rename.
+ *
+ * ── why a sibling and not durability in writeJson ────────────────────────────
+ * Measured on this machine (APFS, 400 writes after 50 warm, payload size made no
+ * difference across 120B/900B/8000B — the cost is the journal barrier, not the
+ * data): tmp+rename 0.13-0.33 ms; +fsync(file) 4.0 ms; +fsync(dir) 8.0 ms. A
+ * directory fsync with nothing pending is 0.02 ms, so the ~4 ms it adds here IS
+ * the pending rename's transaction.
+ *
+ * Then the denominator, measured over 133 real `runPipeline` invocations (the
+ * replay corpus plus the materializing session/converge suites): a PreToolUse
+ * invocation performs a median of 5 `writeJson` calls and 12 at p95. Durability
+ * in writeJson for every caller therefore costs 38 ms median and 92 ms p95 — 62%
+ * of the product's 150 ms pre-tool hook budget, most of it spent on run-ledger
+ * and agent-registry churn that is rebuilt from scratch on the next hook anyway.
+ * That is not affordable, so the property goes where it is load-bearing instead:
+ * the canonical `.one.json` publish (state/normalize.ts), 3 writes median / 4 at
+ * p95 per PreToolUse, i.e. 23 ms / 31 ms.
+ *
+ * ── why the recipe is lifted, not designed ───────────────────────────────────
+ * Body taken from runners/one-mcp-report/lib.ts's private writeJson, which
+ * already had it: exclusive temp open, write, fsync the fd, close, rename, then
+ * fsync the DIRECTORY inside a try/catch. That writer is unfenced and returns
+ * `void`; this one is the same recipe behind the chokepoint, so "fenced" and
+ * "durable" stop being two different functions neither of which has both.
+ *
+ * ONE deliberate deviation: the lifted version creates a new file 0o600. Here a
+ * new file gets whatever `writeJson` would have given it, and only an EXISTING
+ * destination's mode is preserved — `.one.json` is a committed, shared file and
+ * 30-odd writeState callers must not silently start narrowing its permissions.
+ *
+ * The temp name carries pid+time+random like the lifted original rather than
+ * writeJson's pid-only name: the open is O_EXCL (which is also what refuses a
+ * planted link at the temp path on every platform, O_NOFOLLOW or not), so a
+ * stale temp from a recycled pid would be an EEXIST — and act() rethrows
+ * everything but ELOOP, which would surface as a fail-closed
+ * `pipeline-handler-crashed` deny.
+ */
+export function writeJsonDurable(filePath: string, value: unknown): boolean {
+  const guard = stateWriteGuard(filePath, 'write-json-durable');
+  const dir = path.dirname(filePath);
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  return act(filePath, 'write-json-durable', guard, () => {
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      let mode: number | undefined;
+      try { mode = fs.statSync(filePath).mode & 0o777; } catch { /* new file: writeJson's default */ }
+      const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW;
+      const fd = mode === undefined ? fs.openSync(tmpPath, flags) : fs.openSync(tmpPath, flags, mode);
+      try {
+        writeAll(fd, Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'));
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmpPath, filePath);
+      // The file is durable before rename; persist the directory entry when the
+      // platform supports directory fsync as well.
+      let dirFd: number | null = null;
+      try {
+        dirFd = fs.openSync(dir, 'r');
+        fs.fsyncSync(dirFd);
+      } catch {
+        // Some filesystems reject directory fsync. Atomic rename still applies.
+      } finally {
+        if (dirFd !== null) try { fs.closeSync(dirFd); } catch { /* best-effort */ }
+      }
     } finally {
       try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
     }

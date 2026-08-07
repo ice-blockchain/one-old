@@ -6,7 +6,7 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import {  ensureDir, readJson,  writeJson } from '../../fsjson';
+import {  ensureDir, readJson, readJsonResult,  writeJson } from '../../fsjson';
 import { stateTimestamp } from '../io';
 import {
   stackFingerprint,
@@ -112,19 +112,55 @@ function ledgerRecordsAuthorizedResume(ledger: Rec): boolean {
     && last?.reason === RUN_RESUME_AUTHORIZATION;
 }
 
-// Can a worker claim be staked in this run RIGHT NOW? Mirrors exactly what
-// ensureRunAgentClaim/claimThreadRole attempt — `ensureRunLedger({status:
-// 'active'})` with no resume reason — so callers can tell "this agent is
-// unusable because the run itself is closed" from "this agent is healthy".
-// A missing ledger reads as `planned`, which admits claims.
-export function runLedgerAdmitsClaims(cwd: string, runId: unknown): boolean {
-  if (typeof runId !== 'string' || !runId.trim()) return false;
-  const ledger = obj(readJson(runLedgerFile(cwd, runId.trim()), null));
-  // Read through the V2 rollback projection: a barrier-protected run is
-  // physically `failed` on disk while canonically still active.
+/**
+ * Can a worker claim be staked in this run RIGHT NOW? Mirrors exactly what
+ * ensureRunAgentClaim/claimThreadRole attempt — `ensureRunLedger({status:
+ * 'active'})` with no resume reason — so callers can tell "this agent is
+ * unusable because the run itself is closed" from "this agent is healthy".
+ * A missing ledger reads as `planned`, which admits claims.
+ *
+ * Three-valued, because the boolean below cannot say the third thing and the
+ * mirror it claims is BROKEN for exactly that case. `readJson(…, null)` gave a
+ * corrupt or unreadable ledger the same `null` an absent one gets, so the
+ * predicate answered `admits` — while the attempt it mirrors returns
+ * `unavailable('ledger-corrupt')` from writeRunLedgerTransition's own illegible
+ * read. Measured: predicate `true`, attempt `unavailable`, on the same file.
+ *
+ * The consequence is misrouted DIAGNOSIS, not a stakeable claim. Both prose
+ * consumers (codex-child-model.ts, plan-runteam.ts/plan-readiness) probe
+ * "closed ledger" FIRST precisely because it is the one cause no respawn can
+ * fix; an illegible ledger answers `admits`, falls past that probe, and inherits
+ * a RETRY prescription for a condition retrying cannot clear.
+ *
+ * Both invariants this function has always had are preserved deliberately:
+ *   - NO LOCK anywhere in its body, so it can never itself be blocked and can
+ *     never convert one answer into the other. `readJsonResult` is a bare
+ *     `readFileSync`, exactly as `readJson` was.
+ *   - it still reads through `effectiveLegacyRunStatus`, so a barrier-protected
+ *     run that is physically `failed` on disk but canonically active is not
+ *     misreported as closed.
+ */
+export type RunLedgerClaimAdmission = 'admits' | 'closed' | 'unknown';
+
+export function runLedgerClaimAdmission(cwd: string, runId: unknown): RunLedgerClaimAdmission {
+  if (typeof runId !== 'string' || !runId.trim()) return 'closed';
+  const read = readJsonResult<Rec>(runLedgerFile(cwd, runId.trim()));
+  if (read.kind === 'corrupt' || read.kind === 'unreadable') return 'unknown';
+  const ledger = read.kind === 'ok' ? obj(read.value) : null;
   const effective = effectiveLegacyRunStatus(ledger);
   const status = isRunLedgerStatus(effective) ? effective : 'planned';
-  return runLedgerTransitionAllowed(status, 'active', undefined);
+  return runLedgerTransitionAllowed(status, 'active', undefined) ? 'admits' : 'closed';
+}
+
+// `unknown` keeps admitting, and that is the deliberate half. This boolean's
+// consumers are GATES over a child's life — model-rotation.ts condemns a
+// claimless agent in a non-admitting run as `unbindable-agent` and replaces it —
+// and a gate that strands or destroys a HEALTHY child on a file it merely could
+// not read fails in the one direction that is not recoverable. Behaviour is
+// therefore byte-identical to the `readJson(…, null)` form this replaced; the
+// ignorance is now merely NAMEABLE by a caller in the other class.
+export function runLedgerAdmitsClaims(cwd: string, runId: unknown): boolean {
+  return runLedgerClaimAdmission(cwd, runId) !== 'closed';
 }
 
 function outcomeAllowedForStatus(status: RunLedgerStatus, outcome: RunLedgerOutcome | undefined): boolean {
@@ -196,7 +232,28 @@ function writeRunLedgerTransition(
   options: { requireValidTransition: boolean },
 ): MutationResult<Rec> {
   const now = stateTimestamp();
-  const existing = obj(readJson(runLedgerFile(cwd, id), null)) || {};
+  // The `|| {}` this replaces is the load-bearing one: it made a ledger file we
+  // could not READ indistinguishable from one that does not EXIST, and the two
+  // license opposite things. An absent ledger is genuinely new, so `isNew` and a
+  // `planned` current status are true statements about it. For a file that is
+  // there and unreadable they are FABRICATIONS, and every guard below is then
+  // evaluated against the fabrication: `planned` is the one status
+  // `runLedgerTransitionAllowed` lets everything out of, so `completed` and
+  // `failed` — the two it lets NOTHING out of — become resumable; `isNew` forces
+  // `qaContractVersion: 1`, silently downgrading a V2 run's QA contract; and
+  // `{...existing}` then republishes the record with `createdAt`,
+  // `transitionHistory`, `outcome` and `finishedAt` gone.
+  //
+  // Neither kind heals here, and refusing destroys nothing. `unavailable`, not
+  // `precondition-failed`: nothing was decided and nothing was written, we
+  // simply could not find out — which is the retry-then-deny contract
+  // mutation-result.ts prescribes for ledger transitions. The cost is that a run
+  // with an unreadable ledger admits no transition until the file is repaired or
+  // removed, and a fresh run can always be minted; the cost of the fabrication
+  // was a terminal run quietly reopening with its own evidence erased.
+  const read = readJsonResult<Rec>(runLedgerFile(cwd, id));
+  if (read.kind === 'corrupt' || read.kind === 'unreadable') return unavailable(`ledger-${read.kind}`);
+  const existing = (read.kind === 'ok' ? obj(read.value) : null) || {};
   const isNew = Object.keys(existing).length === 0;
   const effectiveStatus = effectiveLegacyRunStatus(existing);
   const currentStatus = isRunLedgerStatus(effectiveStatus) ? effectiveStatus : 'planned';
@@ -361,7 +418,26 @@ export function runIdentityFrozen(cwd: string, state: unknown): boolean {
   const s = obj(state);
   const runId = s && typeof s.currentRunId === 'string' ? s.currentRunId.trim() : '';
   if (!runId) return false;
-  const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+  const read = readJsonResult<Rec>(runLedgerFile(cwd, runId));
+  // The SAME ignorance runLedgerClaimAdmission reports, answered the OPPOSITE
+  // way, because this caller spends its `false` on permission rather than on a
+  // gate. `readJson(…, null)` collapsed corrupt/unreadable into the absent
+  // ledger's `null`, so an illegible ledger returned `false` — and the sole
+  // consumer (onboarding/detection-stamp.ts) reads `false` as licence to
+  // overwrite `stack`/`backend`/`frontend` with a live re-detection, which is
+  // precisely the re-stamp the comment above exists to prevent. It also skips
+  // `recordRunStackDrift`, so the overwrite leaves no record either.
+  //
+  // Measured: a run driven to `active`, its `run.json` then truncated mid-write,
+  // went from frozen to NOT frozen while the team was still inside it.
+  //
+  // Refusing costs a re-stamp that can always happen on the next run, and the
+  // drift record it would have written is unavailable anyway (recordRunStackDrift
+  // reads the same file for the frozen fingerprint and bails with
+  // `no-frozen-identity`). An ABSENT ledger is untouched and still reads as not
+  // frozen: nothing is on disk to be in flight, which is a true statement.
+  if (read.kind === 'corrupt' || read.kind === 'unreadable') return true;
+  const ledger = read.kind === 'ok' ? obj(read.value) : null;
   if (!ledger) return false;
   const status = effectiveLegacyRunStatus(ledger);
   return status === 'planned' || status === 'active';

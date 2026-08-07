@@ -7,7 +7,7 @@ import * as path from 'path';
 import { onboardingGate } from '../handler';
 import { onboardingStopGate } from '../stop';
 import { recordMainOnboardingSession } from '../../../shared/onboarding-server/onboarding-session';
-import { writeServerRecord } from '../../../shared/onboarding-server/registry';
+import { serverLockPath, writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { onboardingBootstrapCommand, onboardingDeclineCommand, onboardingUseBootstrapCommand, onboardingUseCommand, onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 import type { Ctx, HookInput, HookResult, HostId, ToolClass } from '../../../core/types';
@@ -349,6 +349,143 @@ test('every host fails closed terminally when the canonical user-state root is m
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'preferences.json')), false);
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'machine.json')), false);
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'onboarding')), false);
+  });
+});
+
+// ── infrastructure failure never blocks reading ─────────────────────────────
+
+// Read-only INSPECTION tools, in the shapes each host delivers them. The Cursor
+// rows carry a coarse host subcommand as rawName and the truth in the tool
+// CLASS, which is the path that made this carve-out easy to get wrong.
+const READ_ONLY_TOOLS: ReadonlyArray<{ label: string; rawName: string; cls: ToolClass; input: Record<string, unknown> }> = [
+  { label: 'Read', rawName: 'Read', cls: 'file-read', input: { file_path: 'src/app.ts' } },
+  { label: 'Grep', rawName: 'Grep', cls: 'search', input: { pattern: 'export' } },
+  { label: 'Glob', rawName: 'Glob', cls: 'search', input: { pattern: '**/*.ts' } },
+  { label: 'LS', rawName: 'LS', cls: 'file-read', input: { path: '.' } },
+  { label: 'NotebookRead', rawName: 'NotebookRead', cls: 'file-read', input: { notebook_path: 'a.ipynb' } },
+  { label: 'cursor before-read-file', rawName: 'before-read-file', cls: 'file-read', input: { file_path: 'src/app.ts' } },
+  { label: 'cursor before-grep', rawName: 'before-grep', cls: 'search', input: { pattern: 'export' } },
+];
+
+test('a failed setup launcher never blocks a read — on any host', () => {
+  // Measured before this existed: on every host but Windsurf a launcher failure
+  // denied Read/Grep/Glob/LS as well as writes, so a user whose setup server
+  // could not start could not inspect their own code, and the agent could not
+  // gather the evidence the diagnostic itself asks it to report.
+  withBlockedCanonicalRuntime((cwd) => {
+    const hosts: HostId[] = ['claude', 'codex', 'cursor', 'opencode', 'copilot', 'windsurf', 'kilo'];
+    for (const host of hosts) {
+      // WITNESS, first and per host: the launcher really did fail here. Without
+      // it every assertion below would be satisfied by a project that simply
+      // finished onboarding, which is the vacuous pass this whole fixture exists
+      // to avoid.
+      const witness = onboardingGate(ctxHost(host, cwd, host === 'codex' ? 'exec_command' : 'Write', 'file-write', {
+        file_path: 'src/app.ts',
+        content: 'export const x = 1;',
+      }));
+      assert.equal(witness.kind, 'deny', `${host}: the mutating write must still be refused`);
+      if (witness.kind !== 'deny') continue;
+      assert.match(witness.reason, /plugin\/runtime failure/, `${host}: and refused for the launcher failure`);
+      assert.equal(witness.denyId, 'onboarding-server-start-failed', `${host}: under the packaging-failure id`);
+
+      for (const tool of READ_ONLY_TOOLS) {
+        const result = onboardingGate(ctxHost(host, cwd, tool.rawName, tool.cls, tool.input));
+        assert.equal(result.kind, 'noop', `${host}/${tool.label}: infrastructure failure must never block a read`);
+      }
+
+      // …and the carve-out stops at reads. isReadOnlyOrientationToolUse also
+      // admits every non-mutating SHELL command, and `node some-script.cjs` is
+      // arbitrary execution, not a read — widening this to shell would wave
+      // through the near-collision doctor copies the exact-argv doctor grammar
+      // refuses by design. Windsurf keeps its own broader, rendering-driven
+      // carve-out.
+      const rawShell = host === 'codex' ? 'exec_command' : (host === 'cursor' ? 'before-shell-execution' : 'Bash');
+      const shell = onboardingGate(ctxHost(host, cwd, rawShell, 'shell', { command: 'node ./some-script.cjs' }));
+      assert.equal(
+        shell.kind,
+        host === 'windsurf' ? 'noop' : 'deny',
+        `${host}: a non-mutating shell command is not a read`,
+      );
+    }
+  });
+});
+
+// A LIVE concurrent launcher holding the launch lock with nothing published —
+// the contention ensure.ts documents as NORMAL (each hook is its own process, so
+// UserPromptSubmit and the first PreToolUse can both try to launch). Everything
+// else about the project is healthy: the state root is writable and no record is
+// seeded, so the ONLY thing the gate can hit is the contention timeout.
+function withContendedLaunchLock(fn: (cwd: string) => void): void {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbdl-gate-')));
+  const cwd = path.join(base, 'project');
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'new-project' }), 'utf8');
+
+  const env = process.env;
+  const saved = {
+    prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
+    state: env.TRAFFIC_ONE_STATE_PATH,
+    noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
+    plan: env.TRAFFIC_ONE_USER_PLAN,
+  };
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(base, 'prefs.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(base, 'one.json');
+  delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  // process.pid is guaranteed alive, so the lock is never stolen and no server
+  // is ever spawned by this fixture.
+  const lockPath = serverLockPath(cwd, env, 'claude');
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at: Date.now() }), 'utf8');
+  try {
+    fn(cwd);
+  } finally {
+    if (saved.prefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = saved.prefs;
+    if (saved.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = saved.state;
+    if (saved.noSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = saved.noSpawn;
+    if (saved.plan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = saved.plan;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+}
+
+test('routine launch contention prescribes ONE retry and then goes terminal — never a reinstall, never a loop', () => {
+  withContendedLaunchLock((cwd) => {
+    const write = (): HookResult => onboardingGate(ctx(cwd, 'Write', 'file-write', {
+      file_path: 'src/app.ts',
+      content: 'export const x = 1;',
+    }));
+
+    const first = write();
+    assert.equal(first.kind, 'deny');
+    if (first.kind !== 'deny') return;
+    // Witness that this really is the contention timeout and not some other
+    // refusal that happens to arrive here.
+    assert.match(first.reason, /START_TIMEOUT/, 'the deny carries the timeout classification');
+    assert.match(first.reason, /another launcher holds the lock/, 'and it is the contention exit specifically');
+    assert.equal(first.denyId, 'onboarding-server-start-timeout');
+    assert.match(first.reason, /Retry this exact tool call ONCE/);
+    assert.doesNotMatch(first.reason, /Reinstall\/update/, 'contention is not a broken installation');
+    assert.doesNotMatch(first.reason, /Stop and report this error/);
+
+    // The BOUND, enforced by the runtime rather than by that sentence: the
+    // second attempt is handed the terminal message instead. An agent can ignore
+    // "retry once"; it cannot ignore being told something different.
+    const second = write();
+    assert.equal(second.kind, 'deny');
+    if (second.kind !== 'deny') return;
+    assert.equal(second.denyId, 'onboarding-server-start-timeout-exhausted');
+    assert.match(second.reason, /timed out again/);
+    assert.doesNotMatch(second.reason, /Retry this exact tool call/, 'no second retry is prescribed');
+
+    // …and it does not re-arm on the next attempt either, so "retry" can never
+    // be issued twice in a row for the same stuck launcher.
+    const third = write();
+    assert.equal(third.kind, 'deny');
+    if (third.kind !== 'deny') return;
+    assert.equal(third.denyId, 'onboarding-server-start-timeout-exhausted');
+
+    // A read stays free the whole time — a stuck launcher is infrastructure.
+    assert.equal(onboardingGate(ctx(cwd, 'Read', 'file-read', { file_path: 'src/app.ts' })).kind, 'noop');
   });
 });
 
@@ -892,6 +1029,49 @@ test('writing the canonical state file is allowed through camelCase host aliases
   withProject({ mode: 'new-project' }, (cwd) => {
     const tool = { filePath: '.traffic-one/.one.json', content: JSON.stringify({ mode: 'new-project', stack: 'default' }) };
     assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', tool)).kind, 'noop');
+  });
+});
+
+// The state-file exemption is for WRITING the canonical state file, which is
+// what the state gate's own deny prose instructs. It used to admit any patch
+// whose operations merely NAMED state files, so a `*** Delete File:` patch was
+// exempt too — the one file this gate exists to protect was the one file an
+// agent could remove while setup was still pending, and the removal came back
+// as `noop` rather than as any refusal a reader could see.
+test('the state-file exemption covers writing it, never deleting it', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    // Baseline: this project's gate is ACTIVE, so a `noop` below would mean the
+    // exemption fired and not that the gate had nothing to say. Without this the
+    // deny assertion passes for the wrong reason on any project shape change.
+    assert.equal(
+      onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' })).kind,
+      'deny',
+      'fixture guard: the onboarding gate must be denying ordinary writes here',
+    );
+
+    // The legitimate shapes stay exempt.
+    assert.equal(
+      onboardingGate(ctx(cwd, 'Write', 'file-write', {
+        file_path: '.traffic-one/.one.json', content: '{"mode":"new-project"}',
+      })).kind,
+      'noop',
+      'writing the state file stays allowed',
+    );
+    const update = '*** Begin Patch\n*** Update File: .traffic-one/.one.json\n'
+      + '@@\n-{"mode":"new-project"}\n+{"mode":"new-project","stack":"default"}\n*** End Patch\n';
+    assert.equal(
+      onboardingGate(ctx(cwd, 'apply_patch', 'file-edit', { patchText: update })).kind,
+      'noop',
+      'patching the state file stays allowed',
+    );
+
+    // …and the destructive one does not.
+    const remove = '*** Begin Patch\n*** Delete File: .traffic-one/.one.json\n*** End Patch\n';
+    assert.equal(
+      onboardingGate(ctx(cwd, 'apply_patch', 'file-edit', { patchText: remove })).kind,
+      'deny',
+      'a patch that DELETES the state file is not a state-file write',
+    );
   });
 });
 

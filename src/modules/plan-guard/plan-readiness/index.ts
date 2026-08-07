@@ -60,7 +60,7 @@ import {
   legacyStatePath,
   readRunAssignmentsResilient,
   resolveRunAgentContext,
-  runLedgerAdmitsClaims,
+  runLedgerClaimAdmission,
   stackFingerprint,
   statePath,
 } from '../../../shared/state';
@@ -203,12 +203,23 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       // Name WHY the role is unresolved. `Active role is unresolved` alone sent
       // orchestrators into respawn loops chasing a spawn-ordering race, when the
       // real cause was a closed run ledger that no respawn could fix.
-      const ledgerClosed = !runLedgerAdmitsClaims(projectRoot, currentRunId);
+      //
+      // Three-valued, because the boolean this used to ask cannot distinguish a
+      // closed ledger from one it could not READ: `runLedgerAdmitsClaims` answers
+      // `true` for both an active run and a truncated `run.json`, so an illegible
+      // ledger produced NO note at all — the deny then said only "Active role is
+      // `unresolved`", which is the bare wording this note exists to replace. The
+      // `closed` arm is left exactly as it was, including its answer for an empty
+      // `currentRunId` (`runLedgerClaimAdmission` reports `closed` for a blank id,
+      // as the boolean did), so only the previously-silent case moves.
+      const admission = runLedgerClaimAdmission(projectRoot, currentRunId);
       const unresolvedNote = writerRole
         ? ''
-        : ledgerClosed
+        : admission === 'closed'
           ? ` The run ledger for \`${currentRunId}\` is settled, so NO child can bind a role in it — respawning cannot fix this; the run must be replaced.`
-          : '';
+          : admission === 'unknown'
+            ? ` The run ledger for \`${currentRunId}\` (\`.traffic-one/runs/${currentRunId}/run.json\`) cannot be read or parsed, so NO child can bind a role in it and neither resuming nor settling the run will work — every one of those returns \`ledger-corrupt\`. Respawning cannot fix this and no agent may repair that file; ask the user to restore it from version control or delete it, then mint a fresh run.`
+            : '';
       violations.push(block('run-artifact-work-unit-gate',
         `Run artifact gate: \`${filePath}\` may be written only by the parent-bound \`${childArtifact.role}\` child whose current, hash-valid WorkUnitContract names this exact output. Active role is \`${writerRole || 'unresolved'}\`; no digest, QA report, or deployment claim may self-authorize or borrow another run's bootstrap.${unresolvedNote}`,
         {

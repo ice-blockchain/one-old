@@ -348,6 +348,49 @@ test('nextHookSeq never re-mints a number when its counter write was refused', (
   });
 });
 
+// ── …and neither is a counter it cannot READ ─────────────────────────────────
+// The same incident from the other side. `readJson(file, {})` answered a counter
+// file that is present and unreadable with the `{}` it answers an absent one
+// with, so `base` fell to 0 and `seq` restarted at 1 — and, because the persist
+// then SUCCEEDED, the file was healed to `{"seq":1}` and the whole earlier
+// sequence was replayed number for number, not just one value duplicated.
+
+test('nextHookSeq never restarts its sequence over a counter file it cannot read', () => {
+  withProject((cwd) => {
+    const dir = path.join(cwd, '.traffic-one', 'runs', 'degraded-run', 'debug');
+    const file = path.join(dir, 'decisions.seq.json');
+    assert.deepEqual(
+      [nextHookSeq(cwd, 'degraded-run'), nextHookSeq(cwd, 'degraded-run'), nextHookSeq(cwd, 'degraded-run')],
+      [1, 2, 3],
+      'fixture: the persisted path really ran, so 1..3 are ids an operator has already seen',
+    );
+
+    const torn = '{"seq":';
+    fs.writeFileSync(file, torn, 'utf8');
+    const afterCorrupt = nextHookSeq(cwd, 'degraded-run');
+    assert.ok(
+      afterCorrupt > 3,
+      `expected a number no earlier invocation minted, got ${afterCorrupt} — the sequence restarted`,
+    );
+    // Magnitude is what separates the two channels, exactly as the pending-project
+    // row above uses it: an ordinal counts calls, the documented fallback is epoch
+    // milliseconds.
+    assert.ok(afterCorrupt > 1_000_000_000_000, 'and it is the documented fallback, not a fresh small counter');
+    assert.equal(fs.readFileSync(file, 'utf8'), torn, 'the unparseable bytes are left in place, not replaced by a `1`');
+
+    // A directory, not a chmod: EISDIR is `unreadable` for every user including
+    // root, while a 000 mode is read straight through by a root test runner.
+    fs.rmSync(file);
+    fs.mkdirSync(file);
+    const afterUnreadable = nextHookSeq(cwd, 'degraded-run');
+    assert.ok(afterUnreadable > 1_000_000_000_000, `expected the fallback, got ${afterUnreadable}`);
+    assert.notEqual(afterUnreadable, afterCorrupt);
+
+    // The healthy path in the same project still counts from its own base.
+    assert.deepEqual([nextHookSeq(cwd, 'ok-run'), nextHookSeq(cwd, 'ok-run')], [1, 2]);
+  });
+});
+
 // ── the trim is a write and a delete, so it obeys the same fences ────────────
 
 test('an oversized decisions.jsonl that is a SYMLINK is never trimmed or appended through', () => {

@@ -23,6 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../../shared/authoring-root';
+import { trustworthyAgeSince } from '../../shared/clock-skew';
 import { writeJson } from '../../shared/fsjson';
 import { modelMatchesExpected } from '../../shared/model-tiers';
 
@@ -72,13 +73,54 @@ function sleepSync(ms: number): void {
   if (ms > 0) Atomics.wait(WAIT_BUFFER, 0, 0, ms);
 }
 
+// Canonical definition: shared/state/run-agent/locks.ts. Copied rather than
+// shared because consolidating this repo's liveness predicates is its own wave.
+// The direction that must never be flipped: `kill(pid, 0)` raising EPERM means
+// the process EXISTS but is owned by another uid — alive, and its lease may not
+// be taken. Only ESRCH proves death. Pinned across every copy by
+// shared/__tests__/process-liveness-eperm.test.ts.
+function processDefinitelyDead(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+// The lock file's single line, `<pid> <acquiredAtMs> [token]`. It was already
+// being WRITTEN in this shape and never read back: the stale check below used to
+// consult only the file's mtime, so a hook holding the lock for longer than
+// STORE_LOCK_STALE_MS had it unlinked and a second writer walked in. The
+// trailing token is new and absent from files written by earlier builds, which
+// parse fine without it.
+function readLockHolder(lockPath: string): { pid: number; at: number; token: string } | null {
+  let parts: string[];
+  try {
+    parts = fs.readFileSync(lockPath, 'utf8').trim().split(/\s+/);
+  } catch {
+    return null;
+  }
+  const pid = Number(parts[0]);
+  const at = Number(parts[1]);
+  if (!Number.isInteger(pid) || pid <= 0 || !Number.isFinite(at) || at <= 0) return null;
+  return { pid, at, token: parts[2] ?? '' };
+}
+
 // Read-modify-write operations can run in parallel hook processes (for example,
 // architect and backend failing together). Serialize them with a short, stale-
 // recoverable lock; writeJson then publishes the complete JSON atomically.
+//
+// Reclaim demands BOTH an aged acquisition and a holder that is provably gone.
+// The unlink is safe to race: whichever reaper wins it, every contender then
+// goes back to the O_EXCL create, which is the real compare-and-swap and admits
+// exactly one of them.
 function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () => T): T {
   const filePath = exhaustedPath(cwd, runId);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const lockPath = `${filePath}.lock`;
+  const token = `${process.pid.toString(16)}${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
   const deadline = Date.now() + STORE_LOCK_TIMEOUT_MS;
   let acquired = false;
 
@@ -86,7 +128,7 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
     try {
       const fd = fs.openSync(lockPath, 'wx');
       try {
-        fs.writeFileSync(fd, `${process.pid} ${Date.now()}\n`, 'utf8');
+        fs.writeFileSync(fd, `${process.pid} ${Date.now()} ${token}\n`, 'utf8');
       } finally {
         fs.closeSync(fd);
       }
@@ -94,11 +136,29 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') {
-        try { fs.unlinkSync(lockPath); } catch { /* best-effort */ }
+        // Not contention — the path is unusable (no directory, read-only, …).
+        // Deliberately NOT unlinking here any more: the old code removed a lock
+        // it had just failed to create, which on a transient error destroyed a
+        // healthy holder's lease as a side effect of our own failure.
         return busyFallback;
       }
+      const holder = readLockHolder(lockPath);
       try {
-        if (Date.now() - fs.statSync(lockPath).mtimeMs > STORE_LOCK_STALE_MS) {
+        const ageMs = holder
+          ? trustworthyAgeSince(holder.at, Date.now())
+          // No parseable holder line at all: an empty or truncated file from a
+          // writer that died between create and write. Nothing claims it, so
+          // age alone is the only evidence available and is enough.
+          : trustworthyAgeSince(fs.statSync(lockPath).mtimeMs, Date.now());
+        // A stamp ahead of now makes `Date.now() - at` negative, and a negative
+        // age is never `> STALE`, so a lock whose holder is provably dead could
+        // never be reclaimed and every recorder silently returned busyFallback
+        // for the rest of the run — the model ledger stops accepting writes. An
+        // age no clock could have produced therefore counts as aged; the pid
+        // check on the next line is still what refuses a LIVE holder's lease,
+        // and for the holder-less branch the O_EXCL create below remains the CAS.
+        const aged = ageMs === null || ageMs > STORE_LOCK_STALE_MS;
+        if (aged && (!holder || processDefinitelyDead(holder.pid))) {
           fs.unlinkSync(lockPath);
           continue;
         }
@@ -114,7 +174,13 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
   try {
     return body();
   } finally {
-    try { fs.unlinkSync(lockPath); } catch { /* best-effort */ }
+    // Only remove a lease we can still prove is ours: a reaper may have taken it
+    // and handed it on while we worked, and unlinking blindly would release a
+    // lock some other process is holding.
+    const held = readLockHolder(lockPath);
+    if (held && held.token === token) {
+      try { fs.unlinkSync(lockPath); } catch { /* best-effort */ }
+    }
   }
 }
 
@@ -133,7 +199,16 @@ function entryFresh(entry: ExhaustedEntry, nowMs: number): boolean {
   if (!entry.at) return true; // legacy/no-timestamp → never expires within the run
   const t = Date.parse(entry.at);
   if (!Number.isFinite(t)) return true;
-  return nowMs - t <= EXHAUSTED_MODEL_TTL_MS;
+  // The MIRROR of the lock sites in this file, and it folds the opposite way.
+  // Here freshness BLOCKS: a fresh entry keeps the model condemned. A stamp
+  // ahead of now makes the age negative, which satisfies `<= TTL` forever, so a
+  // single future-stamped record condemns that model for the whole run and can
+  // drive the role to terminal exhaustion with no way back. An age no clock
+  // could have produced therefore does NOT preserve the condemnation — it
+  // expires it, and a model whose budget is genuinely gone re-trips the limit
+  // and is re-recorded, which is the one-failed-spawn trade this TTL exists for.
+  const ageMs = trustworthyAgeSince(t, nowMs);
+  return ageMs !== null && ageMs <= EXHAUSTED_MODEL_TTL_MS;
 }
 
 function normalizeTerminal(value: unknown, fallbackAt?: unknown): ExhaustionTerminalMarker | undefined {

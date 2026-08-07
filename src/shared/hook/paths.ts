@@ -211,6 +211,27 @@ export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
 // from re-rooting Traffic One to the parent (the Cursor double-onboarding incident).
 // Hosts that declare no workspace boundary (Claude/Codex) leave it unset, so the
 // monorepo sub-package climb is unchanged.
+//
+// SPELLING-PRESERVING, and that is a CONTRACT, not an omission. There is no
+// `realpathSync` anywhere in this file: every exit — the onboarded walk, the
+// workspace anchor, all three ceiling exits below, the membership fallback and
+// the legacy cwd fallback — returns an `path.resolve`d value in the caller's own
+// spelling. `/tmp/proj` comes back `/tmp/proj`; shared/paths.ts's projectRoot()
+// canonicalizes and would answer `/private/tmp/proj` for the same directory.
+//
+// Do not "align" the two. The result of THIS function is compared BY STRING
+// against its own input: shared/retention.ts isLeakedNestedRoot deletes a nested
+// `.traffic-one/` when `resolveProjectRoot(dir) !== dir`. Canonicalize any exit
+// and every genuine, independently onboarded project reached through a
+// non-canonical cwd (a symlinked checkout, a `/tmp` path on macOS, an
+// `/etc/auto_home` home) stops equalling its own directory and becomes a
+// DELETION candidate. The ceiling exits are the same rule: `opts.ceiling` is the
+// host's own spelling of the workspace root and is handed straight back.
+//
+// The residual cost is in-process cache misses when one process reaches one
+// project by two spellings — see the long note above projectRoot() in
+// shared/paths.ts for why that is bounded, and
+// shared/__tests__/path-spelling-contract.test.ts for the pins.
 export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceiling?: string } = {}): string {
   const ceiling = opts.ceiling ? path.resolve(opts.ceiling) : '';
   // Relative targets still resolve against the REAL cwd; only the walk anchors

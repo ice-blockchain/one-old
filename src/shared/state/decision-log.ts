@@ -84,7 +84,7 @@ import type { CanonicalEvent, HostId } from '../../core/types';
 import { isNonProjectRoot } from '../authoring-root';
 import { projectWritesPermitted } from './plugin-use';
 import {
-  appendTextFile, ensureDir, movePath, readJson, readText, removePath,
+  appendTextFile, ensureDir, movePath, readJsonResult, readText, removePath,
   stateWritePermitted, writeJson, writeTextFile,
 } from '../fsjson';
 import { shrink } from './claim-capture';
@@ -273,7 +273,19 @@ export function nextHookSeq(projectRoot: string, runId: string | null): number {
       HOOK_SEQ_WAIT,
       () => {
         const file = hookSeqFile(dir);
-        const current = readJson<{ seq?: number }>(file, {});
+        // The SAME incident as the refused write above, arriving through the
+        // read: `readJson(file, {})` answered a counter file that is there and
+        // unreadable with the same `{}` it answers an absent one with, so `base`
+        // fell to 0, `seq` restarted at 1, and the persist HEALED the file to
+        // `{"seq":1}` — so the whole earlier sequence was then replayed, number
+        // for number, in the log an operator is reading precisely to tell two
+        // invocations apart. A counter we cannot READ is no more a sequence than
+        // one we could not WRITE, so it takes the identical fallback, and the
+        // unparseable bytes are left in place rather than replaced by a `1`
+        // that lies about how far the run has got.
+        const read = readJsonResult<{ seq?: number }>(file);
+        if (read.kind === 'corrupt' || read.kind === 'unreadable') return;
+        const current = read.kind === 'ok' ? read.value : {};
         const base = typeof current.seq === 'number' && Number.isFinite(current.seq) && current.seq >= 0
           ? Math.floor(current.seq)
           : 0;

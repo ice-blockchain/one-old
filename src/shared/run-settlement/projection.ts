@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { pluginVersion } from '../../config/plugin-identity';
-import { readJson, writeJson } from '../fsjson';
+import { readJsonResult, writeJson, writeTextFile } from '../fsjson';
 import { withProjectStateLock } from '../state/project-state-lock';
 
 import {
@@ -115,7 +115,33 @@ export function activateRunV2RollbackBarrier(
   try {
     withProjectStateLock(projectRoot, () => {
       const file = path.join(runDir(projectRoot, runId), 'run.json');
-      const existing = readJson<Rec>(file, {});
+      // The terminal-status check below is this function's ENTIRE safety
+      // property, and it is decided from these bytes. `readJson(file, {})`
+      // answered a corrupt, an EMPTY (the signature of an O_TRUNC open whose
+      // write never landed) and an UNREADABLE ledger with the same `{}` — whose
+      // effective status is '' and therefore not terminal — so the one check
+      // that exists to refuse a finished run was bypassed, and the record was
+      // then rebuilt from nothing: a fresh `createdAt`, a fabricated
+      // `kind: 'orchestration'`, an emptied `transitionHistory`, no `finishedAt`
+      // and `canonicalStatus: 'active'`. A settled run came back resumable to
+      // `runLedgerAdmitsClaims`, to `writeRunLedgerTransition`'s legality check
+      // and to `recentAdoptableRunId` — which only skips a terminal run, and
+      // whose `qaContractVersion !== 2` guard this write satisfies on its way
+      // past. Measured on all three inputs; under mode-000 the previous bytes
+      // were destroyed with no throw, because a temp+rename never opens the
+      // destination for reading.
+      //
+      // REFUSING, not healing. The status this function must preserve lives in
+      // the bytes it cannot read, so unlike writeState's whole-file replacement
+      // there is nothing honest to put in their place — the same reason
+      // patchState refuses a base it cannot see. It needs no new channel: `|
+      // null` already carries the fence's refusal and plan-readiness, the only
+      // production caller, already blocks the run on it. And it destroys
+      // nothing, which is why the bytes are left where they are rather than
+      // quarantined: they are still the only copy of the run's history.
+      const read = readJsonResult<Rec>(file);
+      if (read.kind === 'corrupt' || read.kind === 'unreadable') return;
+      const existing = read.kind === 'ok' ? read.value : {};
       const effectiveStatus = effectiveLegacyRunStatus(existing);
       if (['completed', 'failed', 'blocked'].includes(effectiveStatus)) return;
       const now = new Date().toISOString();
@@ -206,6 +232,13 @@ const TERMINAL_LEGACY_STATUS: Partial<Record<CanonicalRunStatus, string>> = {
 };
 const PROJECTED_TRANSITION_HISTORY_LIMIT = 32;
 
+// Deliberately the same spelling state/normalize.ts preserves a torn `.one.json`
+// under, so an operator finding one of these beside a run directory does not have
+// to learn a second convention. Not imported from there: that suffix is private
+// to the state writer, and a shared constant would couple two files that only
+// happen to agree.
+const CORRUPT_LEDGER_SUFFIX = '.corrupt';
+
 // `writeLegacyProjection` is the only writer of run.json that does NOT go
 // through the run-ledger state machine, and `reconcileRunSettlement` can derive
 // a terminal canonical status the ledger never transitioned to (a terminal
@@ -264,10 +297,47 @@ function recordProjectedTerminalTransition(
  * settlement. `run.json` is the primary, so its refusal now stops the pass.
  */
 export function writeLegacyProjection(projectRoot: string, settlement: RunSettlementV2): void {
-  const file = path.join(runDir(projectRoot, settlement.runId), 'run.json');
-  const existing = readJson<Rec>(file, {});
-  const rollbackProtected = existing.qaContractVersion === 2
-    || fs.existsSync(path.join(runDir(projectRoot, settlement.runId), 'verification-v2.json'));
+  const dir = runDir(projectRoot, settlement.runId);
+  const file = path.join(dir, 'run.json');
+  const read = readJsonResult<Rec>(file);
+  // `unreadable` (EACCES/EISDIR/EIO) gets the OPPOSITE answer to `corrupt`, for
+  // the reason it is a separate kind: there are bytes there we cannot copy, so
+  // replacing the file would destroy content nothing ever saw. Measured — a
+  // mode-000 run.json was overwritten here with no throw.
+  if (read.kind === 'unreadable') return;
+  // A corrupt base is preserved beside the file BEFORE it is replaced, and a
+  // failed preservation refuses the whole pass — the same order and the same
+  // `.corrupt` convention state/normalize.ts uses for `.one.json`. Everything
+  // the `...existing` spread below carries and the settlement does not is
+  // forensic and unrecoverable: `createdAt`, `kind`, `transitionHistory`,
+  // `finishedAt`, `qaContractVersion`.
+  if (read.kind === 'corrupt' && !writeTextFile(`${file}${CORRUPT_LEDGER_SUFFIX}`, read.text)) return;
+  const existing = read.kind === 'ok' ? read.value : {};
+  // …and then it HEALS, where activateRunV2RollbackBarrier refuses. The
+  // asymmetry is the whole judgement: the docblock above is only honest about
+  // `void` because a refused mirror "leaves legacy readers on the previous
+  // consistent projection", and a corrupt run.json is not one — every reader
+  // going through `effectiveLegacyRunStatus` already gets '' from it, which
+  // ledger.ts reads as `planned` and therefore as claimable. The authoritative
+  // content here comes from `settlement-v2.json`, which io.ts has already put on
+  // disk, so this is a whole-file REPLACEMENT of a derived file (writeState's
+  // case) and not a patch against a base (patchState's, and the barrier's).
+  //
+  // What must NOT collapse with the base is the PROTECTION. `qaContractVersion`
+  // is unreadable exactly when the file is, so an illegible base used to fall
+  // through to the unprotected branch and strip the rollback guard outright:
+  // measured, a blocked settlement over a corrupt base published a bare
+  // `status: 'blocked'`, which runtime 1.0.19 permits reopening after a resume
+  // reason — the one thing the barrier exists to prevent. So an illegible base
+  // is treated as protected. That is sound rather than merely conservative: this
+  // function is only ever reached from io.ts with a settlement that is on disk,
+  // and reconcile.ts already counts that settlement's existence as the run
+  // having activated the V2 lifecycle. For `verified` and `failed` the two
+  // branches project identically anyway.
+  const legibleBase = read.kind === 'ok' || read.kind === 'absent';
+  const rollbackProtected = !legibleBase
+    || existing.qaContractVersion === 2
+    || fs.existsSync(path.join(dir, 'verification-v2.json'));
   const effectiveExistingOutcome = effectiveLegacyRunOutcome(existing);
   // `settlement-v2.json` is the canonical, hash-protected record; `run.json` is
   // only its projection. So the settlement's own `reason` outranks anything
@@ -278,6 +348,17 @@ export function writeLegacyProjection(projectRoot: string, settlement: RunSettle
   // `projectRunLedgerForV2Rollback` defaults it to `environment-blocked` —
   // silently rewriting a `review-cycle-cap` run as an environment failure
   // (observed 10co).
+  //
+  // An ILLEGIBLE base reaches this clause by the same route — '' out of
+  // `effectiveLegacyRunOutcome`, measured — so the settlement's reason already
+  // covers it whenever a cap was what blocked the run, which is the case that
+  // matters. The residue, stated rather than papered over: a blocked settlement
+  // whose `reason` is free text over a base we could not read still projects
+  // `environment-blocked`, because the legacy vocabulary has no "unknown" —
+  // `outcomeAllowedForStatus` (ledger.ts) requires blocked to carry one of the
+  // three. The real prior outcome is in the `.corrupt` copy preserved above and
+  // the real reason is in `settlement-v2.json`; the projection is the only thing
+  // that gets coarser.
   const settlementBlockedOutcome = settlement.status === 'blocked'
     && BLOCKED_OUTCOMES.includes(String(settlement.reason || ''))
     ? settlement.reason
@@ -323,11 +404,30 @@ export function writeLegacyProjection(projectRoot: string, settlement: RunSettle
   recordProjectedTerminalTransition(existing, next, settlement);
   if (!writeJson(file, next)) return;
 
-  const maintenanceFile = path.join(runDir(projectRoot, settlement.runId), 'maintenance.json');
+  const maintenanceFile = path.join(dir, 'maintenance.json');
   if (fs.existsSync(maintenanceFile)) {
-    const maintenance = readJson<Rec>(maintenanceFile, {});
+    // The sidecar mirror is a FIELD MERGE, not a projection: two settlement
+    // fields onto a record whose real content — the per-unit delegation ledger,
+    // `overallOutcome`, the WorkUnit/allowlist hashes a pending paid fallback is
+    // pinned by — this function cannot derive from anything. `readJson(…, {})`
+    // made a corrupt or unreadable sidecar merge into `{}`, and the write then
+    // replaced the whole ledger with those two fields alone: measured, a
+    // `fallback-pending` debt and its hashes were annihilated, and the
+    // unparseable bytes that recorded them went with it. `fallbackCompletionMatch`
+    // then reads back a file with no marker at all and holds the run at
+    // `validating`.
+    //
+    // So this half refuses, where the run.json half heals — a patch against a
+    // base that is not there has nothing honest to publish (patchState's answer),
+    // and the settlement carries no `units` to rebuild it from. `existsSync` was
+    // just true, so `absent` here is a concurrent delete and refusing is right
+    // for that too. run.json is already correct at this point; what is lost is
+    // only the convenience stamp on the sidecar, and nothing derives a run's
+    // status from it (`effectiveLegacyRunStatus` reads run.json).
+    const maintenance = readJsonResult<Rec>(maintenanceFile);
+    if (maintenance.kind !== 'ok') return;
     writeJson(maintenanceFile, {
-      ...maintenance,
+      ...maintenance.value,
       canonicalStatus: settlement.status,
       settlementHash: settlement.settlementHash,
     });

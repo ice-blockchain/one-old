@@ -17,6 +17,7 @@ import * as path from 'path';
 
 import { copyModuleDescriptors } from './copy-module-assets';
 import { buildProvenance } from '../gen/lib/build-provenance';
+import { nodeFloorGuardSource } from '../shared/node-floor';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -54,11 +55,21 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'one-mcp-sync.cjs': './runners/one-mcp-sync/index.js',
 };
 
+// This shim is the FIRST plugin code every host-launched hook executes: the
+// hook command (gen/sources/hooks.ts) requires scripts/<name>.cjs, which is this
+// file, which then requires the compiled tree. tsc emits that tree at ES2022, so
+// a runtime that cannot parse it dies with a SyntaxError naming a line in a
+// generated file — which is exactly the "fails however it fails" case. The node
+// floor guard goes here, above that require and written in ES5, so the cause is
+// named first. It warns and continues (see shared/node-floor.ts): exiting early
+// would produce no stdout, which hosts read as "no verdict" — fail-open with
+// every gate silently off.
 function shimSource(target: string): string {
   return [
     "'use strict';",
     '// GENERATED cutover shim — preserves the legacy CLI path; the compiled runtime',
     '// lives in the nested tree. Regenerate via src/build/build-runtime.ts.',
+    nodeFloorGuardSource(),
     `const m = require('${target}');`,
     "const r = typeof m.main === 'function' ? m.main() : undefined;",
     "if (typeof r === 'number') process.exitCode = r;",

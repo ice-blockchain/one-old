@@ -79,7 +79,10 @@ export function openCodeMcpServerEntry(pluginRootEnvKeys: readonly string[]): Mc
     // — outside the plugin, before any plugin path is known, which is the entire
     // reason the stable-shim fallback below exists. Every other resolver in the
     // codebase goes through the shared base; a precedence step added there is
-    // owed here too, by hand, and nothing but this comment will say so.
+    // owed here too, by hand. shared/__tests__/launcher-state-root.test.ts is
+    // what makes that an obligation rather than a hope: it discovers the base's
+    // env keys from the base's own source and EXECUTES this string per key, so a
+    // step added there fails here until it is carried across.
     "const state=e.XDG_STATE_HOME?p.join(e.XDG_STATE_HOME,'traffic-one'):p.join(e.HOME||os.homedir(),'.traffic-one');",
     "const fallback=p.join(state,'bin','opencode-mcp.cjs');",
     "const target=direct||(fs.existsSync(fallback)?fallback:'');",

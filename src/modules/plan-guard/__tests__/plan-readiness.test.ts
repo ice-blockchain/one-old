@@ -2040,6 +2040,67 @@ test('digests and QA reports require the exact active child WorkUnitContract', (
   });
 });
 
+// The run-artifact gate's "why is the role unresolved" note, rendered across all
+// three answers the ledger can give. It used to ask a BOOLEAN, and the boolean
+// cannot separate a closed ledger from one it could not read: an illegible
+// `run.json` answered `admits`, fell past the closed probe, and produced NO note
+// — leaving exactly the bare `Active role is unresolved` wording this note was
+// added to replace, on the one shape where no respawn and no settle can help.
+//
+// All three renders are pinned, not just the new one: the value of the note is
+// that the three are DISTINGUISHABLE, so a mutation that renders one arm
+// unconditionally has to break a row here.
+test('the unresolved-role note separates a closed ledger from one it could not read', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      currentRunId: 'R',
+      team: { mode: 'subagents' },
+    };
+    const ledger = path.join(dir, '.traffic-one', 'runs', 'R', 'run.json');
+    fs.mkdirSync(path.dirname(ledger), { recursive: true });
+    const prose = (_name: string, message: string): string => message;
+    const render = (): string => {
+      const out = planReadinessViolations({
+        filePath: '.traffic-one/digests/R/frontend.md',
+        content: 'IMPLEMENTED',
+        projectRoot: dir,
+        state,
+        writingFeatureSource: false,
+        block: prose,
+      });
+      const hit = out.find((v) => v.startsWith('Run artifact gate:'));
+      assert.ok(hit, 'fixture guard: the run-artifact arm must fire, or the note under test is never reached');
+      return hit;
+    };
+
+    fs.writeFileSync(ledger, JSON.stringify({ status: 'active' }), 'utf8');
+    const open = render();
+    assert.match(open, /Active role is `unresolved`/);
+    assert.doesNotMatch(open, /The run ledger for/,
+      'a live run owes no ledger note at all: the role is unresolved for an ordinary spawn-ordering reason, and a note here would send the orchestrator after the wrong cause');
+
+    fs.writeFileSync(ledger, JSON.stringify({ status: 'completed', outcome: 'verified' }), 'utf8');
+    const closed = render();
+    assert.match(closed, /The run ledger for `R` is settled, so NO child can bind a role in it/);
+    assert.match(closed, /the run must be replaced/, 'and it ends in the action');
+
+    // Truncated mid-write: the file exists, is unparseable, and every transition
+    // out of it answers `ledger-corrupt`.
+    fs.writeFileSync(ledger, '{"status":"act', 'utf8');
+    const illegible = render();
+    assert.notEqual(illegible, open,
+      'measured before this change: an illegible ledger rendered BYTE-IDENTICALLY to a healthy open run');
+    assert.notEqual(illegible, closed,
+      'and it is not the settled arm either — settling is exactly what does not work here');
+    assert.match(illegible, /cannot be read or parsed/);
+    assert.match(illegible, /neither resuming nor settling the run will work/,
+      'names the two remedies the closed arm would have prescribed, and says they do not apply');
+    assert.match(illegible, /ask the user to restore it from version control or delete it, then mint a fresh run/,
+      'and ends in the only action that terminates: no agent may repair a run sidecar, so this has to leave the agent');
+  });
+});
+
 test('architect records new ADRs freely, but prior decisions stay append-only', () => {
   withProject((dir) => {
     const state = {

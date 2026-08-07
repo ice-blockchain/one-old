@@ -170,6 +170,40 @@ export function isStateFileOnlyPatch(toolName: unknown, toolInput: unknown): boo
   return files.length > 0 && files.every((f) => isStateFilePath(f));
 }
 
+/**
+ * The same question asked by a caller that is about to EXEMPT the call rather
+ * than police it: does this patch do nothing but ADD or UPDATE state files?
+ *
+ * Separate from isStateFileOnlyPatch rather than a narrowing of it, because that
+ * predicate has two callers with OPPOSITE intent (measured from a TypeScript
+ * AST, not a grep: 2 non-test call sites). onboarding-gate/handler.ts exempts on
+ * it; onboarding/team-mode-approval.ts uses it to SELECT the writes its two
+ * team-mode guards inspect. Narrowing it in place would therefore stop the
+ * downgrade guard looking at a `*** Move to:` patch whose hunks add
+ * `"mode": "main-agent"` — closing a hole at one site by opening one at the
+ * other.
+ *
+ * `delete` and `move` are the shapes excluded, and they are excluded because
+ * the exemption's own comment is "the model is allowed to write the canonical
+ * state file itself". Deleting it is not writing it: measured on an
+ * onboarding-incomplete project, a `*** Delete File: .traffic-one/.one.json`
+ * patch came back `noop` from the gate while the identical project denied an
+ * ordinary `src/app.ts` write — so the one file the gate exists to protect was
+ * the one file an agent could remove. `move` is excluded for the same reason
+ * (it is a delete at the source) and because its destination is what makes a
+ * two-project patch pass `every` above. Nothing legitimate is lost: an agent
+ * repairing a torn state file overwrites it (Write truncates, `*** Update
+ * File:` rewrites), and both stay exempt.
+ */
+export function isStateFileOnlyWritePatch(toolName: unknown, toolInput: unknown): boolean {
+  if (!/^apply_patch$/i.test(normalizedToolName(toolName))) return false;
+  const parsed = parseApplyPatch(patchTextFromToolInput(toolInput));
+  if (!parsed.ok || parsed.operations.length === 0) return false;
+  return parsed.operations.every((operation) => (
+    (operation.kind === 'add' || operation.kind === 'update') && isStateFilePath(operation.path)
+  ));
+}
+
 // Mutating-command vocabulary for shell tool calls. Anchored to a line start, a
 // shell separator (;, &, |), or a nesting opener (backtick, `(`) so it reads as a
 // command, not a substring. Biased toward flagging: a denied read-only command

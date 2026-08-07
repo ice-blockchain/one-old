@@ -13,7 +13,6 @@ import { STATE_DIR } from '../../config/paths';
 import { removePath } from '../fsjson';
 import { detectHost } from '../host';
 import { globalTrafficOneDir } from '../state-root';
-import { sha256 } from '../text';
 
 // Re-exported, not redefined: this module is the historical home of the name and
 // six callers import it from here, but the resolver itself now lives in the leaf
@@ -87,9 +86,10 @@ const STRAY_PROJECT_ARTIFACTS = [
 ] as const;
 
 // Self-heal for machines the pre-guard bug already touched. Also drops the
-// per-project prefs bucket the bogus "$HOME project" acquired (its hash is the
-// sha256 of the home dir), which carries the stale onboarding server record —
-// but ONLY while that bucket holds no recorded use-plugin ANSWER.
+// per-project prefs bucket the bogus "$HOME project" acquired (named by
+// local-prefs/prefs-store.ts's projectRootHash — realpath, THEN sha256), which
+// carries the stale onboarding server record — but ONLY while that bucket holds
+// no recorded use-plugin ANSWER.
 //
 // The bucket is where a `$HOME` session's yes/no is stored, and this function
 // runs unconditionally at the top of EVERY SessionStart in EVERY project, so the
@@ -123,7 +123,22 @@ export function removeStrayProjectArtifactsFromGlobalDir(env: NodeJS.ProcessEnv 
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { readPluginUseChoice } = require('./plugin-use') as typeof import('./plugin-use');
     if (readPluginUseChoice(home, env)) return;
-    fs.rmSync(path.join(dir, 'projects', sha256(home)), { recursive: true, force: true });
+    // The bucket NAME must come from the function that CREATES it, not from a
+    // second derivation of the same idea. This line used to compute
+    // `sha256(path.resolve(home))` while the bucket was created — and read, two
+    // lines up, by readPluginUseChoice → readProjectPrefs → projectRootHash — as
+    // `sha256(fs.realpathSync(path.resolve(home)))`. Under a SYMLINKED $HOME the
+    // two names differ (measured), so the guard consulted one bucket and the
+    // delete named a path nothing had ever written: the self-heal silently
+    // no-opped on exactly the machines whose $HOME is a symlink. Deleting BOTH
+    // spellings would only add a name no writer produces; deriving the one name
+    // through the creator is what keeps them from drifting apart again.
+    // Lazy require for the same documented reason as plugin-use above —
+    // prefs-store resolves the machine dir through THIS module, so a static
+    // import would close a cycle.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { projectRootHash } = require('./local-prefs/prefs-store') as typeof import('./local-prefs/prefs-store');
+    fs.rmSync(path.join(dir, 'projects', projectRootHash(home)), { recursive: true, force: true });
   } catch {
     // best-effort
   }

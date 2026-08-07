@@ -20,7 +20,7 @@ import {
   workUnitAllowlistHash,
 } from '../../shared/maintenance/fallback';
 import { projectMaintenanceMarker } from '../../shared/maintenance/fallback-proof';
-import { readJson, writeJson } from '../../shared/fsjson';
+import { readJsonResult, writeJson } from '../../shared/fsjson';
 import { isMaintenanceTerminal } from '../../shared/maintenance/terminal';
 import { writeRunSettlement } from '../../shared/run-settlement';
 
@@ -261,7 +261,31 @@ export function recordMaintenanceDelegationOutcome(
     // have exactly one delegation per role, which is the legacy single-slot
     // shape. Records for OTHER units survive this write; the debt erasure and
     // the disarm window both lived in the wholesale overwrite this replaces.
-    const previous = readJson<Rec | null>(file, null);
+    // …and it can only survive this write if it can be READ. `readJson(file,
+    // null)` answered a corrupt, an empty or an unreadable marker with the same
+    // `null` an ABSENT one gets, so the merge below started from `{}` and every
+    // prior unit's row — including a still-owed `fallback-pending` debt and the
+    // two hashes that identify it — was dropped, then overwritten. Measured: a
+    // two-unit batch whose first unit owed a paid fallback came back holding only
+    // the second, and the projection went from `fallback-pending` to that unit's
+    // own outcome. The debt is not merely untracked, it is DISCHARGEABLE: the
+    // settlement below follows the projection, so the erasure lets a sibling
+    // unit's success settle the run `code-delivered` over an obligation nothing
+    // can find any more — the exact laundering this per-unit ledger exists to
+    // prevent, arriving through the read instead of the wholesale overwrite.
+    //
+    // REFUSING, both kinds. This is a merge into a base, so an unreadable base
+    // leaves nothing honest to publish; and unlike run.json there is no canonical
+    // record to rebuild from — `settlement-v2.json` carries no `units`, so
+    // "heal" here could only mean publishing one unit's outcome as the batch's.
+    // The refusal deliberately precedes the settlement write for the same reason
+    // the ledger write's own refusal does: pinning a `fallback-pending` debt whose
+    // only discharge is a completion record in a file we just refused holds the
+    // run at `validating` forever. Nothing is destroyed — the bytes that record
+    // the debt stay on disk for a repair to read.
+    const read = readJsonResult<Rec>(file);
+    if (read.kind === 'corrupt' || read.kind === 'unreadable') return;
+    const previous = read.kind === 'ok' ? read.value : null;
     const units: Record<string, MaintenanceUnitRecord> = {
       ...(previous && previous.units && typeof previous.units === 'object'
         ? previous.units as Record<string, MaintenanceUnitRecord>

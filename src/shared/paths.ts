@@ -276,6 +276,36 @@ function projectWalkCeiling(input: HookInput, cwd: string): string {
   return hostBoundary(cwd);
 }
 
+// CANONICALIZING resolver — the deliberate opposite of hook/paths.ts's
+// resolveProjectRoot, and the two are NOT interchangeable:
+//
+//   projectRoot()        every exit is realpath'd (safeRealpath, which falls
+//                        back to path.resolve for a path that cannot be
+//                        stat'ed). `/tmp/proj` comes back `/private/tmp/proj`.
+//   resolveProjectRoot() no realpath anywhere; the caller's own spelling is
+//                        returned verbatim. `/tmp/proj` comes back `/tmp/proj`.
+//
+// Both contracts are load-bearing where they are used, so neither may be
+// "aligned" with the other:
+//   - This one feeds core/context.ts's ctx.projectRoot and hook/trace.ts, which
+//     compare and record roots across processes that reach one project by
+//     different spellings.
+//   - The other one's result is compared BY STRING against its own input —
+//     shared/retention.ts isLeakedNestedRoot deletes a nested `.traffic-one`
+//     when `resolveProjectRoot(dir) !== dir`, so canonicalizing it would judge
+//     every genuine project reached by a non-canonical cwd a leak and delete it.
+//
+// The cost of the divergence is bounded to in-process CACHE MISSES on
+// string-keyed maps (authoringRootMemo here, heldLocks in
+// state/project-state-lock.ts, the run-ledger fingerprint cache). It is NOT a
+// mutual-exclusion defect: every lock in that family is a DIRECTORY, created by
+// a non-recursive mkdirSync or by renameSync onto a directory path, so two
+// spellings contend on one inode. A heldLocks re-entrancy miss WOULD be worse
+// than a wasted lookup — the process would spin on a lock it already owns until
+// the acquisition deadline and then throw — and that is unreachable by
+// construction: neither resolver is in the import closure of any
+// withProjectStateLock body, so no nested acquisition can be handed a second
+// spelling. __tests__/path-spelling-contract.test.ts pins all of this.
 export function projectRoot(input: HookInput): string {
   const cwd = path.resolve(input.cwd || process.cwd());
   const ceiling = projectWalkCeiling(input, cwd);

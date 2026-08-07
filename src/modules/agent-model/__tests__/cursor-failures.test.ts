@@ -6,6 +6,7 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 
 import type { Ctx, HookInput } from '../../../core/types';
+import { SUBAGENT_STALE_MS } from '../../../config/state';
 import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import {
   listCursorSpawnObservations,
@@ -1252,6 +1253,65 @@ test('a compatible role transcript upgrades an unterminated start to a durable r
     assert.equal(live?.resumeId, childId);
     assert.equal(live?.toolCallId, 'tool_ffffffff-ffff-4fff-8fff-ffffffffffff');
     assert.equal(live?.replaced, false);
+  });
+});
+
+// …but not forever. A resume UUID is a precondition for CONTINUING an agent, not
+// evidence that the agent is running, and nothing revokes it — so its mere
+// presence used to make the row immortal with no time bound at all. This is the
+// one caller that can reach that branch with an id in hand, and the cost was
+// permanent: the role's finalized failure stayed masked and its retry follow-up
+// was never emitted, so the orchestrator was never told anything had gone wrong.
+test('a resume UUID bounds the wait differently, it does not remove the bound', () => {
+  withCursorFixture((fixture) => {
+    startSubagent(fixture.cwd, 'senior-backend', 'tool_12121212-1212-4121-8121-121212121212');
+    writeRoleTerminalError(fixture, 'child-immortal-old-failure', 'senior-backend', API_LIMIT_ERROR);
+    reconcileCursorSubagentFailures(ctxFor(fixture.cwd, 'UserPromptSubmit', { session_id: PARENT_ID }));
+
+    startSubagent(
+      fixture.cwd,
+      'senior-backend',
+      'tool_34343434-3434-4343-8343-343434343434',
+      'claude-sonnet-5-thinking-high',
+    );
+    const childId = '223e4567-e89b-42d3-a456-426614174111';
+    writeJsonl(path.join(fixture.subagentsDir, `${childId}.jsonl`), [
+      { role: 'user', message: { content: '[t1-role: senior-backend] Continue implementation.' } },
+      { role: 'assistant', message: { content: 'Working.' } },
+    ]);
+    const preflight = (): ReturnType<typeof correlatedCursorFailureGate> => correlatedCursorFailureGate(
+      ctxFor(fixture.cwd, 'PreToolUse', { session_id: PARENT_ID, workspace_roots: [fixture.cwd] }),
+      fixture.cwd,
+      RUN_ID,
+      'senior-backend',
+      REQUESTED_MODEL,
+    );
+
+    // PRECONDITIONS: the row really does carry a resume UUID, and it is already
+    // older than the no-resume-id hard window — otherwise this measures the
+    // ordinary 270-second timer instead of the continuation-id branch.
+    ageRunAgent(fixture.cwd, RUN_ID, 'senior-backend', 271 * 1000);
+    preflight();
+    assert.equal(readRunAgentRegistry(fixture.cwd, RUN_ID)['senior-backend']?.resumeId, childId);
+    assert.equal(
+      readRunAgentRegistry(fixture.cwd, RUN_ID)['senior-backend']?.replaced,
+      false,
+      'a resume-capable child is still protected well past the 270-second window',
+    );
+
+    // Past the staleness window every other reader of this row already applies,
+    // the masking start is finally allowed to expire and its row is retired.
+    ageRunAgent(fixture.cwd, RUN_ID, 'senior-backend', SUBAGENT_STALE_MS + 60_000);
+    preflight();
+    assert.equal(
+      readRunAgentRegistry(fixture.cwd, RUN_ID)['senior-backend']?.replaced,
+      true,
+      'a resume id must not protect a row past the staleness window: '
+      + JSON.stringify({
+        registry: readRunAgentRegistry(fixture.cwd, RUN_ID)['senior-backend'],
+        observations: listCursorSpawnObservations(fixture.cwd, RUN_ID),
+      }),
+    );
   });
 });
 

@@ -211,7 +211,18 @@ export function releaseSupersededRoleClaimsLocked(
         releasedReason: newClaimId ? `superseded-by-${newClaimId}` : 'superseded',
       });
     } catch {
-      // best-effort: an unreleased sibling ages out via SUBAGENT_STALE_MS
+      // Best-effort, and the floor is load-bearing rather than a consolation:
+      // it is what keeps a ghost from writing beside its replacement when this
+      // release does NOT land. Note writeJson also answers false without
+      // throwing when the fence refuses, so this catch is not the only way to
+      // miss — the floor covers both. It holds because claimRejectReason ages a
+      // claim out at SUBAGENT_STALE_MS, the SAME constant liveRunAgent uses to
+      // decay a registry row, and both are advanced only by the child binding.
+      // So a row stale enough for the reuse gate to offer the role to a
+      // replacement implies this claim is stale enough to stop resolving
+      // (claim-stale) even with no claim-superseded to fire. Change one of those
+      // two windows without the other and an unreleased ghost holds write
+      // authority for the difference.
     }
   }
 }

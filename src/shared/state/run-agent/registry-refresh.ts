@@ -2,7 +2,7 @@
 // Cursor transcript-cache refresh and the replaced-marker family.
 
 import type { RunAgentEntry } from './registry';
-import { obj } from '../../obj';
+import { obj, type Rec } from '../../obj';
 import { isNonProjectRoot } from '../../authoring-root';
 import {  readJson,  writeJson } from '../../fsjson';
 import {
@@ -27,6 +27,8 @@ import {
   claimThreadRole,
 } from './claim-thread-role';
 import { agentRegistryFile, continuationAgentId, idsForRunAgent, readRunAgentRegistry, recordRunAgentUnlocked, withAgentRegistryLockResult } from './registry';
+import { withRunAgentClaimsLockResult } from './claims-store';
+import { releaseRetiredRunAgentUnlocked } from './retire-release';
 import {
   applied,
   mutationApplied,
@@ -136,15 +138,80 @@ export function refreshCursorRunAgentFromTranscriptCache(
   }
   return null;
 }
-// ADVISORY (mutation-result.ts's split rule), and named as such by the plan.
-// Retiring a registry row is a liveness HINT: the caller is about to spawn a
-// replacement for the role either way, and the cost of a lost marker is that the
-// dead row lingers until the grace/hard timers that already exist as the
-// deadlock backstop retire it. Fix #9 of the eleven — the lock result was
-// discarded, so `void` covered a marker that was never written.
+/**
+ * Retirement, as ONE transaction over the three stores that record an agent.
+ *
+ * `replaced = true` on its own retires a row in the reuse registry and nothing
+ * else, while the agent it names keeps its identity claim, its per-file
+ * fallback locks and its unconsumed spawn handoff — all on a 30-minute clock,
+ * against a row that dies in 270 seconds (see retire-release.ts). So the marker
+ * and the release are one operation here, in the canonical lock order
+ * rebind-journal.ts sets out for multi-store mutations (identity claims -> role
+ * registry -> fallback path claims). Taking the registry lock first and the
+ * claims lock inside it would be the reverse of every other such mutation, and
+ * two processes doing both orders is the deadlock that ordering exists to
+ * prevent.
+ *
+ * Still ADVISORY overall (mutation-result.ts's split rule): the caller is about
+ * to spawn a replacement either way. `unavailable` now also means the release
+ * half did not happen, and retrying it is what completes the transaction.
+ */
+type RetirementVerdict = MutationResult<void> | 'retire' | 'release-only';
+
+function retireRunAgentRow(
+  cwd: string,
+  runId: string,
+  role: string,
+  reason: string,
+  cas: (entry: Rec) => RetirementVerdict,
+): MutationResult<void> {
+  let reachedRegistry = false;
+  const outcome = withRunAgentClaimsLockResult<void>(cwd, runId, () => {
+    reachedRegistry = true;
+    return withAgentRegistryLockResult<void>(cwd, runId, () => {
+      const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+      const agents = obj(registry.agents) || {};
+      const entry = obj(agents[role]);
+      if (!entry) return preconditionFailed<void>('no-registry-row');
+      const verdict = cas(entry);
+      if (verdict !== 'retire' && verdict !== 'release-only') return verdict;
+      if (verdict === 'retire') {
+        entry.replaced = true;
+        entry.replacedAt = stateTimestamp();
+        entry.replacementReason = reason;
+        try {
+          // `replaced = true` used to be unconditional here, so a refused registry
+          // file reported a retired agent that is still live on disk.
+          if (!writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents })) {
+            return unavailable<void>('registry-write-refused');
+          }
+        } catch {
+          // best-effort; existing grace/hard timers remain the deadlock backstop
+          return unavailable<void>('registry-write-failed');
+        }
+      }
+      const released = releaseRetiredRunAgentUnlocked(cwd, runId, role, entry, reason);
+      if (released.outcome !== 'applied') return released;
+      // The release half is all a `release-only` pass owed; the CAS's verdict on
+      // the row is still the answer to what the caller asked.
+      return verdict === 'release-only' ? preconditionFailed<void>('already-replaced') : applied(undefined);
+    });
+  });
+  // Which lock was lost has to be legible, and both wrappers answer
+  // `lock-unavailable`. The registry half keeps that reason (it is the one the
+  // lock contract test names); the claims half is renamed by the only fact that
+  // separates them — whether the inner block ran at all.
+  if (!reachedRegistry && outcome.outcome === 'unavailable') {
+    return unavailable<void>('claims-lock-unavailable');
+  }
+  return outcome;
+}
+
+// Fix #9 of the eleven — the lock result was discarded, so `void` covered a
+// marker that was never written.
 export function markRunAgentReplacedResult(cwd: string, runId: string, role: string): MutationResult<void> {
   if (isNonProjectRoot(cwd)) return preconditionFailed('authoring-root');
-  return withAgentRegistryLockResult<void>(cwd, runId, () => markRunAgentReplacedUnlocked(cwd, runId, role));
+  return retireRunAgentRow(cwd, runId, role, 'explicit-replace-agent-marker', () => 'retire');
 }
 export function markRunAgentReplaced(cwd: string, runId: string, role: string): void {
   markRunAgentReplacedResult(cwd, runId, role);
@@ -160,27 +227,17 @@ export function markRunAgentReplacedIfMatchesResult(
   expectedId: string,
 ): MutationResult<void> {
   if (!expectedId || isNonProjectRoot(cwd)) return preconditionFailed('no-expected-id');
-  return withAgentRegistryLockResult<void>(cwd, runId, () => {
-    const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
-    const agents = obj(registry.agents) || {};
-    const entry = obj(agents[role]);
-    if (!entry) return preconditionFailed('no-registry-row');
-    if (entry.replaced === true) return preconditionFailed('already-replaced');
-    if (!idsForRunAgent(entry).includes(expectedId)) return preconditionFailed('expected-id-mismatch');
-    entry.replaced = true;
-    entry.replacedAt = stateTimestamp();
-    entry.replacementReason = 'correlated-cursor-transcript-failure';
-    try {
-      // `replaced = true` used to be unconditional here, so a refused registry
-      // file reported a retired agent that is still live on disk.
-      if (!writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents })) {
-        return unavailable('registry-write-refused');
-      }
-      return applied(undefined);
-    } catch {
-      // best-effort; existing grace/hard timers remain the deadlock backstop
-      return unavailable('registry-write-failed');
-    }
+  return retireRunAgentRow(cwd, runId, role, 'correlated-cursor-transcript-failure', (entry) => {
+    // The id CAS runs BEFORE the already-replaced check, which is the order the
+    // transaction needs: an earlier attempt at THIS retirement can have
+    // persisted `replaced` and then lost the release half to a refused write,
+    // and a retry that stopped at `already-replaced` would leave the ghost
+    // holding its locks for the full 30 minutes. Answering the ownership
+    // question first lets the retry finish its own half, while a row retired
+    // for a DIFFERENT agent is refused as before — and now says which way it is
+    // not ours.
+    if (!idsForRunAgent(entry).includes(expectedId)) return preconditionFailed<void>('expected-id-mismatch');
+    return entry.replaced === true ? 'release-only' : 'retire';
   });
 }
 export function markRunAgentReplacedIfMatches(
@@ -190,22 +247,4 @@ export function markRunAgentReplacedIfMatches(
   expectedId: string,
 ): boolean {
   return mutationApplied(markRunAgentReplacedIfMatchesResult(cwd, runId, role, expectedId));
-}
-function markRunAgentReplacedUnlocked(cwd: string, runId: string, role: string): MutationResult<void> {
-  const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
-  const agents = obj(registry.agents) || {};
-  const entry = obj(agents[role]);
-  if (!entry) return preconditionFailed('no-registry-row');
-  entry.replaced = true;
-  entry.replacedAt = stateTimestamp();
-  entry.replacementReason = 'explicit-replace-agent-marker';
-  try {
-    if (!writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents })) {
-      return unavailable('registry-write-refused');
-    }
-    return applied(undefined);
-  } catch {
-    // best-effort
-    return unavailable('registry-write-failed');
-  }
 }

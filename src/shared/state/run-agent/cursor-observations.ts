@@ -13,6 +13,7 @@ import {
 } from '../../../config/state';
 import { TIER_IDS, type TierId } from '../../../config/model-tiers';
 
+import { withOwnedDirLock } from './locks';
 import {
   firstString,
   normalizeHostCallId,
@@ -309,33 +310,48 @@ export function writeCursorSpawnObservationStore(cwd: string, runId: string, obs
   writeJson(cursorSpawnObservationFile(cwd, runId), store);
 }
 
+/**
+ * Run `mutate` holding this run's spawn-observation lock, or return null.
+ *
+ * `.cursor-spawns.lock` is the fifth run-scoped owned-dir lock under
+ * `.traffic-one/runs/<id>/` and was the only one not taking its lease from
+ * locks.ts. Its own acquire loop wrote NO owner record, so the only thing it
+ * could ask about a held lock was the directory's mtime — which is stamped at
+ * mkdir and does not advance while the holder works. A mutation slower than
+ * CURSOR_SPAWN_LOCK_STALE_MS therefore read as abandoned, and the reclaim was a
+ * RECURSIVE, FORCED rm: it deleted a live holder's lease outright and the
+ * contender walked into the same critical section. Measured with a second real
+ * process still inside `mutate()` (live-holder-lock-theft.test.ts). The release
+ * had the mirror of the same flaw — a forced recursive rm of whatever directory
+ * happened to be at the path, including a successor's.
+ *
+ * withOwnedDirLock decides staleness from the owner sentinel's own acquisition
+ * time AND refuses unless the owner pid is definitely dead (ESRCH), and makes
+ * the unlink of that exact sentinel the compare-and-swap, so neither a returning
+ * holder nor a competing reaper can remove a new owner's lease. It also still
+ * reclaims the ownerless, empty, aged directories this function used to leave
+ * behind, which is what keeps projects built by earlier versions from wedging.
+ *
+ * Known limitation, shared with every lock in this repo and not addressed here:
+ * an owner record names a pid and nothing else — no hostname, no boot id, no
+ * session id. A pid is only meaningful on the machine that issued it, so on a
+ * project living on a shared/network filesystem two machines' hooks can each
+ * find the other's pid "definitely dead" and both take the lease. Single-machine
+ * use, which is every supported host today, is unaffected.
+ */
 export function withCursorSpawnObservationLock<T>(cwd: string, runId: string, mutate: () => T): T | null {
-  const lockDir = cursorSpawnObservationLockDir(cwd, runId);
-  const deadline = Date.now() + CURSOR_SPAWN_LOCK_TIMEOUT_MS;
-  try { fs.mkdirSync(path.dirname(lockDir), { recursive: true }); } catch { return null; }
-  while (true) {
-    try {
-      fs.mkdirSync(lockDir);
-      break;
-    } catch {
-      try {
-        const age = Date.now() - fs.statSync(lockDir).mtimeMs;
-        if (age > CURSOR_SPAWN_LOCK_STALE_MS) {
-          fs.rmSync(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      if (Date.now() >= deadline) return null;
-      Atomics.wait(CURSOR_SPAWN_LOCK_WAIT, 0, 0, CURSOR_SPAWN_LOCK_RETRY_MS);
-    }
-  }
-  try {
-    return mutate();
-  } finally {
-    try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-  }
+  // An array rather than a `T | null`: `mutate` may legitimately return null or
+  // undefined, and only "did the lock get taken" decides the caller's answer.
+  const captured: T[] = [];
+  const ran = withOwnedDirLock(
+    cursorSpawnObservationLockDir(cwd, runId),
+    CURSOR_SPAWN_LOCK_TIMEOUT_MS,
+    CURSOR_SPAWN_LOCK_STALE_MS,
+    CURSOR_SPAWN_LOCK_RETRY_MS,
+    CURSOR_SPAWN_LOCK_WAIT,
+    () => { captured.push(mutate()); },
+  );
+  return ran && captured.length ? captured[0]! : null;
 }
 
 export function listCursorSpawnObservations(cwd: string, runId: string): CursorSpawnObservation[] {

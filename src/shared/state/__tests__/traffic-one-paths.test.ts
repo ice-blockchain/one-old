@@ -14,9 +14,13 @@ import {
   resolveTrafficOneEnv,
   trafficOneEnvShellPrefix,
 } from '../traffic-one-paths';
+import { defaultProjectPrefsPath } from '../local-prefs';
 import { sha256 } from '../../text';
 
 test('removeStrayProjectArtifactsFromGlobalDir purges project artifacts, keeps machine state', () => {
+  // NOT realpath'd on purpose: os.tmpdir() is `/var/folders/…`, a symlink to
+  // `/private/var/folders/…`, so this fixture's $HOME is spelled the way a
+  // symlinked home is spelled. That is the shape the sweep used to miss.
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-stray-'));
   try {
     const home = path.join(base, 'home');
@@ -32,8 +36,14 @@ test('removeStrayProjectArtifactsFromGlobalDir purges project artifacts, keeps m
     fs.mkdirSync(path.join(dir, 'toolchains'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'one.json'), '{"schemaVersion":3}', 'utf8');
     fs.writeFileSync(path.join(dir, 'windsurf-plugin-root'), 'x', 'utf8');
-    // The bogus "$HOME project" prefs bucket vs a real project's bucket.
-    const homeHash = sha256(path.resolve(home));
+    // The bogus "$HOME project" prefs bucket vs a real project's bucket. The
+    // bucket is named by the function that CREATES it, never by a second
+    // derivation here: this fixture's $HOME is not its own realpath, so
+    // `sha256(path.resolve(home))` names a path no writer ever produces, and a
+    // sweep aimed at that name silently misses the real bucket.
+    const homeHash = path.basename(path.dirname(defaultProjectPrefsPath(home, { HOME: home } as NodeJS.ProcessEnv)));
+    assert.notEqual(homeHash, sha256(path.resolve(home)),
+      'FIXTURE the home spelling must be non-canonical, or this test cannot tell the two derivations apart');
     fs.mkdirSync(path.join(dir, 'projects', homeHash, 'onboarding', 'claude'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'projects', 'a-real-project-hash'), { recursive: true });
 

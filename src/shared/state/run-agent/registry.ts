@@ -6,7 +6,7 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import {  readJson,  writeJson } from '../../fsjson';
+import {  readJson, readJsonResult,  writeJson, writeTextFile } from '../../fsjson';
 import {
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
@@ -17,6 +17,10 @@ import {
   firstString,
   runDir,
 } from './run-paths';
+import {
+  agentRegistryFile,
+  idsForRunAgent,
+} from './registry-identity';
 import {
   withOwnedDirLock,
   withOwnedDirLockResult,
@@ -31,7 +35,7 @@ import {
   strongestRoleSource,
 } from './role-evidence';
 import {
-  isFreshTimestamp,
+  attestsLiveness,
 } from './session-identity';
 import {
   listClaimedAgents,
@@ -108,9 +112,7 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   return flag !== '';
 }
 
-export function agentRegistryFile(cwd: string, runId: string): string {
-  return path.join(runDir(cwd, runId), 'agents.json');
-}
+export { agentRegistryFile, idsForRunAgent };
 
 const AGENT_REGISTRY_LOCK_TIMEOUT_MS = 2_000;
 const AGENT_REGISTRY_LOCK_STALE_MS = 15_000;
@@ -175,14 +177,6 @@ interface VerdictAgentConflict {
   role: string;
   agentId: string;
   matchedId: string;
-}
-
-export function idsForRunAgent(entry: RunAgentEntry | Rec | null | undefined): string[] {
-  const e = obj(entry);
-  if (!e) return [];
-  return [e.agentId, e.resumeId, e.toolCallId]
-    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
-    .map((id) => id.trim());
 }
 
 function verdictConflictFromAgents(agents: Rec, role: string, ids: readonly string[]): VerdictAgentConflict | null {
@@ -296,6 +290,12 @@ type RunAgentRecordInput = {
   parentSessionId?: string | null;
   roleSource?: string | null;
   transcriptPath?: string | null;
+  /**
+   * The CHILD was just observed acting for itself — it bound its role in this
+   * run. Only such an observation may advance the row's liveness clock; see
+   * `recordedAt` in recordRunAgentUnlocked for why a re-record must not.
+   */
+  childObserved?: boolean;
 };
 
 /**
@@ -330,13 +330,51 @@ export function recordRunAgent(
   recordRunAgentResult(cwd, runId, role, entry);
 }
 
+// Same suffix and the same rule as state/normalize.ts's `.one.json` quarantine,
+// restated here rather than shared because the two files' write paths have
+// nothing else in common: bytes we could not parse are preserved BESIDE the file
+// before anything replaces it, so "heal" costs nothing that was not already
+// lost.
+const CORRUPT_REGISTRY_SUFFIX = '.corrupt';
+
+/**
+ * The only whole-registry republisher, and therefore the only writer here that
+ * may HEAL a `agents.json` nobody can read.
+ *
+ * `corrupt` first, because its cost is smaller than it looks: every consumer of
+ * this file goes through `readRunAgentRegistry`, which already answers `{}` for
+ * an unparseable one — so the other roles' rows are not lost by the write that
+ * replaces it, they were lost the moment the bytes stopped parsing. What the
+ * write does destroy is the EVIDENCE, so it is quarantined first and the heal
+ * proceeds: nothing else rewrites this file wholesale, so a permanent refusal
+ * would leave the run with no live-agent registry at all — every role
+ * re-spawning fresh for the rest of the run, which is the exact cost the
+ * registry exists to avoid. That is writeState's tie-break, for the same reason.
+ *
+ * `unreadable` gets the opposite answer, also for writeState's reason: there are
+ * bytes there and we cannot copy them, so replacing the file destroys content
+ * that was never even seen — and an EACCES `agents.json` is perfectly readable
+ * to whoever owns it, which is not a hypothesis about this run's registry but
+ * about who is allowed to look at it.
+ *
+ * The CAS-shaped writers of this same file (rebind-journal*.ts) refuse both
+ * kinds rather than healing: a compare-and-swap against a base it cannot see is
+ * not a repair, it is a coin toss. One healer, and it is the one whose ordinary
+ * job is already to republish the whole file.
+ */
 export function recordRunAgentUnlocked(
   cwd: string,
   runId: string,
   role: string,
   entry: RunAgentRecordInput,
 ): MutationResult<void> {
-  const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+  const registryFile = agentRegistryFile(cwd, runId);
+  const read = readJsonResult<Rec>(registryFile);
+  if (read.kind === 'unreadable') return unavailable('registry-unreadable');
+  if (read.kind === 'corrupt' && !writeTextFile(`${registryFile}${CORRUPT_REGISTRY_SUFFIX}`, read.text)) {
+    return unavailable('registry-quarantine-refused');
+  }
+  const registry = (read.kind === 'ok' ? obj(read.value) : null) || {};
   const agents = obj(registry.agents) || {};
   const history = Array.isArray(registry.history) ? registry.history.filter((item) => item && typeof item === 'object') : [];
   const prior = obj(agents[role]);
@@ -397,6 +435,28 @@ export function recordRunAgentUnlocked(
   const priorRoleSource = prior && typeof prior.roleSource === 'string' && prior.roleSource ? prior.roleSource : null;
   const priorTranscriptPath = prior && typeof prior.transcriptPath === 'string' && prior.transcriptPath ? prior.transcriptPath : null;
   const recordedAt = stateTimestamp();
+  // The row's LIVENESS clock, and therefore not simply "when this row was last
+  // written". It was the latter, stamped unconditionally on every call — so the
+  // Cursor SubagentStart-then-PostToolUse(Task) sequence reset it, and so did
+  // every later Task for the role, which lands here as the `sameAgent` upgrade
+  // that only increments `tasks`. A row re-recorded that way never aged out
+  // however long the child had been gone, and that is what made the deadlock
+  // permanent rather than merely long: liveRunAgent protects a live row from
+  // replacement, and the act refreshing it was the parent's.
+  //
+  // A Task call is the PARENT acting. A parent that keeps sending work to a
+  // child it cannot see is evidence about the parent. So the same agent keeps
+  // the stamp it was born with, and only a fresh agent (or a child observed
+  // acting for itself) sets a new one — which also makes this field mean what
+  // its two other readers already assume: the spawn's start time, for
+  // registry-refresh.ts's transcript-candidate ordering and retire-release.ts's
+  // "was this handoff minted before the row?" test.
+  const priorRecordedAt = typeof prior?.recordedAt === 'string' && prior.recordedAt.trim()
+    ? (prior.recordedAt as string)
+    : '';
+  const rowRecordedAt = sameAgent && !entry.childObserved && priorRecordedAt
+    ? priorRecordedAt
+    : recordedAt;
   const nextHistory = history.slice(-99);
   if (prior && !sameAgent) {
     nextHistory.push({
@@ -419,7 +479,7 @@ export function recordRunAgentUnlocked(
     parentSessionId: firstString(entry.parentSessionId, sameAgent ? priorParentSessionId : null),
     roleSource: strongestRoleSource(entry.roleSource, sameAgent ? priorRoleSource : null),
     transcriptPath: firstString(entry.transcriptPath, sameAgent ? priorTranscriptPath : null),
-    recordedAt,
+    recordedAt: rowRecordedAt,
     tasks: sameAgent && typeof prior?.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
     replaced: false,
   };
@@ -443,11 +503,17 @@ export function recordRunAgentUnlocked(
 // (reviewer) that may not write files, so resolveRunAgentContext never gets a
 // chance to self-heal from a write hook.
 
-// The live (reusable) agent for a role, or null. parentSessionId binding: when
-// BOTH sides are known they must match — an agent spawned by a different parent
-// session no longer exists in-process. When either side is unknown (host did
-// not surface a session id), fall back to a freshness window instead of
-// blocking forever on a stale registry.
+// The live (reusable) agent for a role, or null.
+//
+// Two independent questions, and they used to share one branch: WHOSE agent is
+// this, and does it still exist? parentSessionId answers the first — an agent
+// spawned by a different parent session died with that session, so a mismatch
+// is decisive and a match is decisive about nothing else. It was returning the
+// row unbounded, which made a parent-session match a permanent proof of life:
+// with a matching parent (the ordinary case — the recorder stamps the row from
+// the same session that later reads it) the row never aged out at all, and the
+// staleness window below applied only to rows the host had told us least about.
+// The bound is a property of the ROW's evidence, so it applies either way.
 export function liveRunAgent(
   cwd: string,
   runId: string,
@@ -456,10 +522,8 @@ export function liveRunAgent(
 ): RunAgentEntry | null {
   const entry = readRunAgentRegistry(cwd, runId)[role];
   if (!entry || entry.replaced) return null;
-  if (entry.parentSessionId && parentSessionId) {
-    return entry.parentSessionId === parentSessionId ? entry : null;
-  }
-  return isFreshTimestamp(entry.recordedAt, SUBAGENT_STALE_MS) ? entry : null;
+  if (entry.parentSessionId && parentSessionId && entry.parentSessionId !== parentSessionId) return null;
+  return attestsLiveness(entry.recordedAt, SUBAGENT_STALE_MS) ? entry : null;
 }
 
 

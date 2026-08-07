@@ -213,9 +213,16 @@ export function explainUnresolvedRunAgent(
   // on its face: with both runs on one machine the claim, ledger and live
   // fingerprints it prints are all three EQUAL, under a sentence asserting the
   // run's identity drifted away from its claims.
+  //
+  // `claim-superseded` ranks above `claim-stale` and below the identity
+  // mismatches: it is a precise, current fact about THIS run — another agent
+  // holds the role — and it carries a different remedy from every reason around
+  // it. Unranked it would be worse than absent: the loop below SKIPS any reason
+  // with no rank, so the one claim that explains the write would be dropped and
+  // the default `no-claim` reported in its place.
   const ranked: RunAgentDiagnosisReason[] = [
-    'fingerprint-mismatch', 'run-id-mismatch', 'not-materialized', 'claim-stale', 'no-claim',
-    'foreign-run-claim',
+    'fingerprint-mismatch', 'run-id-mismatch', 'not-materialized', 'claim-superseded', 'claim-stale',
+    'no-claim', 'foreign-run-claim',
   ];
   const stateRunId = obj(state)?.currentRunId;
   const currentRunId = typeof stateRunId === 'string' && stateRunId ? stateRunId : null;
@@ -482,7 +489,14 @@ export function resolveRunAgentContext(
           || currentPending.role !== matched.claim.role
           || !claimAllowsState(cwd, state, currentPending)) return;
         const existingThreadClaim = readClaimFile(runAgentFile(cwd, runId, sessionId));
-        if (existingThreadClaim && claimAllowsState(cwd, state, existingThreadClaim)) return;
+        // A superseded thread must not correlate its way back onto a role
+        // another agent now owns (the same guard claimThreadRole takes). Its
+        // claim fails claimAllowsState, so without naming the reason this test
+        // would read "another agent already took this role from me" as "no
+        // claim under my key" and bind a fresh one over the replacement.
+        if (existingThreadClaim
+          && (claimAllowsState(cwd, state, existingThreadClaim)
+            || claimRejectReason(cwd, state, existingThreadClaim) === 'claim-superseded')) return;
         const ledger = ensureRunLedger(cwd, runId, {
           status: 'active',
           kind: 'agent-claim',

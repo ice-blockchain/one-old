@@ -8,6 +8,8 @@ import { ensureAgentTeamsEnv, ensureOpenCodeDelegationReady, ensureSessionMateri
 import { writeMaterializedContent } from '../../../shared/materialize/__tests__/fixtures/materialized-content';
 import { materializeProjectAssets } from '../../../shared/materialize/materialize';
 import { recordPluginUseChoice, resetPluginUseCache } from '../../../shared/state/plugin-use';
+import { readJsonResult } from '../../../shared/fsjson';
+import { readState } from '../../../shared/state';
 
 function withTmp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sslib-'));
@@ -457,6 +459,62 @@ test('ensureOpenCodeDelegationReady: a refused authorization backfill is reporte
     assert.match(notice, /\.one\.json/, 'and the notice names the exact refused path');
     assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).openCodeDelegation, undefined,
       'fixture guard: the record really is not on disk');
+  });
+});
+
+// The kind of failure the fence case above cannot reach, and the one that used
+// to be silent AND destructive at the same time. `patchState` re-reads
+// `.one.json` inside the state lock and refuses an illegible base; the old
+// `writeState(cwd, { ...readState(cwd), openCodeDelegation: record })` read a
+// torn file as `{}` and made this one backfill the project's ENTIRE state —
+// stack, mode, onboardingComplete gone to `.one.json.corrupt` — while returning
+// no notice at all, because it answered true.
+//
+// CORRUPT is the discriminating kind. `unreadable` is a CONTROL, labelled as
+// one: `writeState` already refused bytes it could not copy, so both spellings
+// answer false there. EACCES rather than a directory at the path, because a
+// directory THROWS out through the write and into this function's own
+// `catch { /* best-effort */ }`, which swallows it — the case would then measure
+// the catch rather than the read. A root uid reads mode-000 straight through,
+// hence the hard guard.
+test('ensureOpenCodeDelegationReady: an authorization backfill over an illegible `.one.json` is refused, not merged', () => {
+  withOpenCodeEnv('other', (cwd, { managedBin }) => {
+    installStubCli(managedBin);
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const torn = '{"mode":"new-project","stack":"default","onboardingComplete":tr';
+    fs.writeFileSync(statePath, torn, 'utf8');
+    assert.equal(readJsonResult(statePath).kind, 'corrupt', 'fixture guard: the base is unparseable');
+    assert.deepEqual(readState(cwd), {},
+      'the base the old spelling merged onto: a torn file reads as an EMPTY project, so this one '
+      + "backfill used to become the file's entire contents");
+
+    const notice = ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } });
+    assert.match(notice, /delegation authorization could not be recorded/,
+      'a backfill whose base could not be read must be said out loud — the gate that cites this field will reject the delegation');
+    assert.match(notice, /could not be read/,
+      'and it names WHY, because a torn file needs a different repair from a planted symlink');
+    assert.equal(fs.readFileSync(statePath, 'utf8'), torn,
+      "the user's state is byte-identical — a patch it could not read the base of destroys nothing");
+    assert.equal(fs.existsSync(`${statePath}.corrupt`), false,
+      'and nothing was quarantined, because nothing was replaced');
+  });
+
+  withOpenCodeEnv('other', (cwd, { managedBin }) => {
+    installStubCli(managedBin);
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const bytes = JSON.stringify({ mode: 'existing-codebase' });
+    fs.writeFileSync(statePath, bytes, 'utf8');
+    fs.chmodSync(statePath, 0o000);
+    const guard = readJsonResult(statePath).kind;
+    const notice = ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } });
+    fs.chmodSync(statePath, 0o644);
+
+    assert.equal(guard, 'unreadable',
+      'fixture guard: this environment must actually produce an unreadable read (a root uid ignores '
+      + 'the mode bits, and an `ok` read here would measure nothing)');
+    assert.match(notice, /delegation authorization could not be recorded/,
+      'control: bytes that exist and cannot be copied are refused too');
+    assert.equal(fs.readFileSync(statePath, 'utf8'), bytes, 'and they survive');
   });
 });
 

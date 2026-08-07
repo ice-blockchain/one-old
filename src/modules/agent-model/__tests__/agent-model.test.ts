@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { SUBAGENT_STALE_MS } from '../../../config/state';
 import { agentModelGate } from '../handler';
 import { classifySubagentStop, extractSpawnedAgentId, recordSpawnedAgent } from '../record-agent';
 import { subagentStartBind } from '../subagent-bind';
@@ -4447,6 +4448,54 @@ test('reuse: a BOUND agent in a closed run is still protected (only unbindable o
   });
 });
 
+// The bound on all three protections above. Each of them holds because the row
+// is SECONDS old; none of them says a row is protected forever, and it used to
+// be: liveRunAgent returned a row whose parentSessionId matched with no
+// staleness check at all, and a matching parent is the ordinary case, so the
+// window applied only to rows the host had told us least about. A role whose
+// agent has been silent for longer than the run stores treat any agent as live
+// must be replaceable, or the orchestrator has no way to make progress.
+test('reuse: protection is bounded — a role whose agent went silent past the staleness window is replaceable', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-stale');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'build the API' },
+        'agentId: backendaabbccddee',
+        'parent-1',
+      ));
+      assert.ok(transitionRunStatus(cwd, 'run-reuse-stale', { status: 'active' }));
+      const registryFile = path.join(cwd, '.traffic-one', 'runs', 'run-reuse-stale', 'agents.json');
+      const store = JSON.parse(fs.readFileSync(registryFile, 'utf8')) as {
+        agents: Record<string, Record<string, unknown>>;
+      };
+
+      // PRECONDITIONS: the row is this parent's (so it takes the branch that had
+      // no bound), it is not retired, and while it is fresh it IS protected —
+      // the same marker-without-a-reason spawn the cluster above asserts.
+      assert.equal(store.agents['senior-backend']!.parentSessionId, 'parent-1');
+      assert.equal(store.agents['senior-backend']!.replaced, false);
+      const whileFresh = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(whileFresh.kind, 'deny', 'PRECONDITION: fresh, so protected');
+
+      store.agents['senior-backend']!.recordedAt = new Date(Date.now() - (SUBAGENT_STALE_MS + 60_000)).toISOString();
+      fs.writeFileSync(registryFile, JSON.stringify(store), 'utf8');
+
+      const whileStale = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.notEqual(whileStale.kind, 'deny', 'a silent agent must not hold its role slot for the rest of the run');
+    });
+  });
+});
+
 test('runLedgerAdmitsClaims mirrors what a worker claim actually attempts', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // No ledger at all reads as `planned` — claims are admitted.
@@ -4499,6 +4548,66 @@ test('an unclaimable Codex child is told WHY: a closed ledger is not a retryable
           !denied.reason.includes('model verification passed but'),
           'a closed run must not be reported as an atomicity failure',
         );
+        // The resume it prescribes is legal out of `blocked` ONLY.
+        // `runLedgerTransitionAllowed` permits nothing at all out of `completed`
+        // or `failed`, so an unqualified "resume the RUN first" hands two of the
+        // three terminal statuses a command that is refused when they run it.
+        // A status discriminator would double this arm's render space for a
+        // difference of one sentence; the arm states the precondition instead.
+        assert.ok(denied.reason.includes('resume is legal ONLY out of `blocked`'),
+          'the resume must carry its own precondition, or it is prescribed to runs that cannot take it');
+        assert.ok(denied.reason.includes('minting a new run is the only remedy'),
+          'and the other two statuses must be left with the remedy that does work');
+      }
+    });
+  });
+});
+
+// The same gate, on the ledger it could not READ. This arm did not exist: the
+// boolean answered `true` for a truncated `run.json`, so an illegible ledger
+// fell past the closed-ledger probe and inherited the retry-then-replace-the-
+// child prescription from the claim-mint failure below it — an unbounded
+// replacement loop against a condition no replacement can clear.
+test('an illegible run ledger is its own arm: not closed, and not a retryable claim-mint failure', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      freezeRunPolicy(cwd, 'codex');
+      const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+      const child = '019f8fa1-4444-7000-8000-00000000004b';
+      const transcript = path.join(cwd, `rollout-illegible-${child}.jsonl`);
+      fs.writeFileSync(
+        transcript,
+        `${JSON.stringify(codexSessionMeta(child, parentThread, '/root/senior_tester'))}\n`,
+        'utf8',
+      );
+
+      assert.ok(transitionRunStatus(cwd, 'run-test', { status: 'active' }));
+      const ledger = path.join(cwd, '.traffic-one', 'runs', 'run-test', 'run.json');
+      assert.ok(fs.existsSync(ledger), 'fixture guard: the ledger must exist before it is truncated');
+      fs.writeFileSync(ledger, '{"status":"act', 'utf8');
+      assert.equal(runLedgerAdmitsClaims(cwd, 'run-test'), true,
+        'the premise: the boolean this arm used to ask still calls a truncated ledger admitting');
+
+      const denied = codexChildModelGate(
+        codexChildPreToolCtx(cwd, child, parentThread, transcript, 'gpt-5.6-terra'),
+      );
+      assert.equal(denied.kind, 'deny');
+      if (denied.kind === 'deny') {
+        assert.equal(denied.denyId, 'codex-child-model-ledger-illegible',
+          'a distinct id, so the per-target budget and the decision record can tell this apart from a closed run');
+        assert.ok(denied.reason.includes('cannot be read or parsed'), 'the deny must name what it is');
+        assert.ok(denied.reason.includes('ledger-corrupt'),
+          'and the code every transition returns, so an operator can match it against the run log');
+        // The three prescriptions this arm must NOT inherit. Each is live text in
+        // a sibling arm, so a mutation that renders any of those unconditionally
+        // turns these red.
+        assert.ok(!denied.reason.includes('Retry this tool once'), 'retrying re-reads the same bytes');
+        assert.ok(!denied.reason.includes('run-status.cjs'),
+          'a resume is refused with `ledger-corrupt` too — prescribing it sends the orchestrator to a command that cannot work');
+        assert.ok(!denied.reason.includes('settle it and mint a new one'),
+          'and so is the settle: settling reads the same unparseable file');
+        assert.ok(denied.reason.includes('ask the USER'),
+          'a deny must end in an action, and no agent may write a run sidecar — so the only terminating action leaves the agent');
       }
     });
   });

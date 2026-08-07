@@ -5,7 +5,6 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import { STATE_FILE } from '../../../config/paths';
 import {  readJson,  writeJson } from '../../fsjson';
 import {
   activeAgentRole,
@@ -14,7 +13,7 @@ import {
   stackFingerprint,
   UNKNOWN_STACK_FINGERPRINT,
 } from '../materialization';
-import { writeState } from '../normalize';
+import { patchState } from '../normalize';
 import {
   activeRunClaimCount,
   effectiveLegacyRunStatus,
@@ -143,7 +142,19 @@ export function reconcileRunIdentityDrift(cwd: string, state: unknown): boolean 
       // whose claims this pass had just released and whose ledger it had just
       // transitioned to `failed`, which is strictly worse than not repairing at
       // all. Same exit the catch beside it already takes.
-      if (!writeState(cwd, { ...readJson<Rec>(path.join(cwd, STATE_FILE), {}), currentRunId: survivor.runId })) {
+      //
+      // `patchState`, not `writeState(cwd, { ...readJson(path, {}), … })`: this
+      // is a ONE-FIELD repair, and spreading a read whose fallback is `{}` made
+      // an unparseable `.one.json` publish `{ currentRunId }` and nothing else —
+      // the entire rest of the state file replaced by the one field this pass
+      // owns. patchState re-reads inside the state lock (so a concurrent hook's
+      // field is merged rather than erased) and refuses outright on a base it
+      // cannot read. That widens this `false` from "the write was refused" to
+      // "…or the base was unreadable", which needs no new handling here and is
+      // the answer this branch already wanted: the losers stay untouched, the
+      // repair is simply not made this pass, and it is idempotent so the next
+      // SessionStart tries again.
+      if (!patchState(cwd, { currentRunId: survivor.runId })) {
         return changed;
       }
       (state as Rec).currentRunId = survivor.runId;

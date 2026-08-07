@@ -28,7 +28,9 @@ export {
   activeRunClaimCount,
   activeRunClaimScan,
   readRunSettlement,
+  runLiveClaimEvidence,
   writeRunSettlement,
+  type RunLiveClaimEvidence,
 } from './io';
 
 export {

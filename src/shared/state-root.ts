@@ -41,7 +41,12 @@
 //     before any plugin path is known (it carries a comment pointing back here);
 //   - src/shared/windsurf-hook-command.ts, the launcher baked into a COMMITTED
 //     `.windsurf/hooks.json`, which has to resolve on a teammate's machine.
-// A precedence step added here is owed to both by hand.
+// A precedence step added here is owed to both by hand — and
+// __tests__/launcher-state-root.test.ts turns that into a failing test rather
+// than a comment: it reads the keys THIS function reads out of this file's
+// source, builds one cell per key, and executes both launchers against them.
+// __tests__/state-root.test.ts covers the four importable resolvers the same
+// way (by replacing this function with one that throws).
 
 import * as os from 'os';
 import * as path from 'path';

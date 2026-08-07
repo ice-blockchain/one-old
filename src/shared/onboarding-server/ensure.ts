@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
+import { trustworthyAgeSince } from '../clock-skew';
 import { agentOnboardingUrls } from '../../config/dashboard';
 import type { HostId } from '../../core/types';
 import { detectHost } from '../host';
@@ -21,8 +22,49 @@ import { clearLegacyOnboardingRuntime, clearServerRecord, readServerRecord, serv
 
 // A launch lock older than this is presumed abandoned (holder crashed between
 // claiming and publishing the record) and may be stolen — a generous multiple of
-// the ~4s ready window so a merely-slow launcher is never stolen from.
+// the ready window below so a merely-slow launcher is never stolen from.
 const LOCK_STALE_MS = 15000;
+
+// TWO budgets, deliberately independent. They used to be ONE deadline computed
+// before the lock-acquisition loop and reused by the post-launch readiness poll,
+// so a wait loop that burned the whole window left the first post-launch check
+// firing IMMEDIATELY: routine contention — documented as NORMAL directly above
+// the lock code — made launch() throw instantly, and that throw was classified
+// as a terminal packaging failure telling the user to reinstall the plugin.
+// Contention must not be able to spend readiness' budget.
+//
+// Both numbers are derived from the same measurement: spawn → record-published
+// for the real built server on this machine. Idle (n=15): median 290ms, max
+// 866ms. Eight concurrent spawns against a machine already running up to 24
+// sibling servers (n=32): median 695ms, p90 1838ms, max 2140ms.
+//
+// READY_TIMEOUT_MS covers OUR OWN child's start and stays at the field-proven
+// 4000ms — 1.9x the worst start observed under heavy load, ~14x the idle
+// median. Nothing measured argues it is too small; it was only ever too small
+// because it was being spent elsewhere.
+//
+// LOCK_WAIT_TIMEOUT_MS covers a PEER publishing its record, the same
+// distribution seen from a second process. 2000ms rather than another 4000ms
+// because exhausting it is not a failure worth paying for: three of the four
+// exits from the wait loop are early and cheap (the peer publishes → reuse; the
+// peer's pid dies → the lock is stolen on the next 50ms poll → we spawn with a
+// FULL readiness budget; the peer releases normally → same). Only a LIVE peer
+// that holds the lock for the entire window without publishing spends all of
+// it, and that case is now a RETRYABLE timeout whose retry reuses the peer's
+// record in milliseconds — so a shorter window buys a faster, correct recovery
+// where a longer one would only buy a slower hook. Worst-case total is 6s.
+const LOCK_WAIT_TIMEOUT_MS = 2000;
+const READY_TIMEOUT_MS = 4000;
+
+// The launcher timed out — a fact about TIME, not about the installation. Carried
+// as an errno-shaped `code` so bootstrap.ts can tell it apart from the genuine
+// packaging failures (a missing runner, an unusable state root) that share the
+// non-permission branch and are correctly terminal.
+export const ONBOARDING_START_TIMEOUT_CODE = 'START_TIMEOUT';
+
+function startTimeoutError(message: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(message), { code: ONBOARDING_START_TIMEOUT_CODE });
+}
 
 export interface EnsureResult {
   // Hosted dashboard entry surfaced first.
@@ -41,7 +83,13 @@ interface EnsureOptions {
   env?: NodeJS.ProcessEnv;
   isAlive?: (pid: number) => boolean;
   launch?: (cwd: string, env: NodeJS.ProcessEnv, host?: string) => number;
+  // How long OUR spawned child gets to publish its record. Measured from AFTER
+  // launch() returns, so the spawn syscall never eats into it either.
   readyTimeoutMs?: number;
+  // How long a CONCURRENT launcher gets to publish its record before we stop
+  // waiting for it. Separate from readyTimeoutMs so contention can never leave
+  // the readiness poll with nothing to spend.
+  lockWaitTimeoutMs?: number;
   // Active host, stamped as `--host=<id>` on the spawned server so its flow's
   // detectHost() is authoritative (env markers aren't set for this subprocess).
   // Without it the wizard defaults to 'claude' and shows host-specific steps that
@@ -123,8 +171,34 @@ function acquireLaunchLock(lockPath: string, isAlive: (pid: number) => boolean):
   } catch {
     // unreadable/torn lock → treat as stealable
   }
+  // The age clause is the ONLY escape from a lock whose holder pid still answers
+  // `kill(pid, 0)` — an orphaned lock file (holder SIGKILLed, so its `finally`
+  // never ran) whose pid has since been REUSED by an unrelated process. This
+  // lock file lives in the state root and outlives reboots, so a stamp ahead of
+  // now — which makes the difference negative and thus never `> STALE` — turns
+  // that into onboarding never launching again on this machine. An age no clock
+  // could have produced therefore counts as stale here. Accepted trade: under a
+  // backwards clock step a genuinely mid-flight launcher can be stolen from,
+  // costing one duplicate server — and only if it is ALSO not yet published,
+  // since the reuseIfLive() re-check after acquisition returns the victim's
+  // record when it landed first; a permanent wedge of onboarding is worse.
+  //
+  // An ABSENT or non-numeric stamp counts as stale for the same reason, measured
+  // rather than assumed: with a reused pid the age clause is the only escape, and
+  // while it abstained a `{"pid":<live>}` record spent the whole 1000ms wait
+  // window and launched NOTHING, on every call, forever; once it counts, the
+  // steal is immediate and the call launches. Nothing else recovers it — no
+  // reaper, no run-id rotation, and the lock sits in the per-project HOME state
+  // root — whereas a record that does not parse at ALL is already stolen here
+  // (`holderPid` stays 0 above), so a record that parses with no usable stamp
+  // cannot defensibly be the stronger claim. This does not widen theft from any
+  // lock this tree writes: a killed writer leaves a byte PREFIX of the JSON,
+  // which never parses, so the shape is only reachable from outside (see
+  // __tests__/lock-absent-stamp.test.ts, which pins that, the live-holder control
+  // on both stamp directions, and the published-victim bound above).
+  const claimAgeMs = trustworthyAgeSince(claimedAt, Date.now());
   const stale = !Number.isInteger(holderPid) || holderPid <= 0 || !isAlive(holderPid)
-    || (Number.isFinite(claimedAt) && Date.now() - claimedAt > LOCK_STALE_MS);
+    || claimAgeMs === null || claimAgeMs > LOCK_STALE_MS;
   if (!stale) return false; // a live launcher owns it → wait
   try { fs.unlinkSync(lockPath); } catch { /* raced away */ }
   return claim();
@@ -137,6 +211,17 @@ function releaseLaunchLock(lockPath: string): void {
 function defaultLaunch(cwd: string, env: NodeJS.ProcessEnv, host?: string): number {
   const entry = env.TRAFFIC_ONE_ONBOARDING_SERVER_ENTRY
     || path.join(pluginRoot(), 'scripts', 'onboarding-server.cjs');
+  // A missing runner is the canonical PACKAGING failure, and spawn() cannot
+  // report it: `node <absent file>` spawns fine and dies asynchronously, so the
+  // only symptom used to be the readiness timeout — which is now retryable, and
+  // retrying a broken install is pointless. Check the one thing that separates
+  // the two before spawning, so a missing runner stays terminal and immediate.
+  if (!fs.existsSync(entry)) {
+    throw Object.assign(
+      new Error(`traffic-one onboarding server runner is missing: ${entry}`),
+      { code: 'ENOENT' },
+    );
+  }
   // Stamp the host so the server's flow detectHost() resolves it (env markers
   // like CURSOR_PLUGIN_ROOT/CODEX_* aren't set for this detached subprocess).
   const args = host ? [entry, cwd, `--host=${host}`] : [entry, cwd];
@@ -205,12 +290,12 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   // then wait for ITS record and never spawn a second server.
   const lockPath = serverLockPath(cwd, env, host);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + (options.readyTimeoutMs ?? 4000);
+  const lockWaitDeadline = Date.now() + (options.lockWaitTimeoutMs ?? LOCK_WAIT_TIMEOUT_MS);
   let holding = acquireLaunchLock(lockPath, isAlive);
   while (!holding) {
     const live = reuseIfLive();
     if (live) return live;
-    if (Date.now() >= deadline) break; // a live holder kept the lock the whole window
+    if (Date.now() >= lockWaitDeadline) break; // a live holder kept the lock the whole window
     sleepSync(50);
     holding = acquireLaunchLock(lockPath, isAlive);
   }
@@ -222,23 +307,39 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
     if (live) return live;
     if (!holding) {
       // We never won the lock and the holder didn't publish within the window. Do
-      // NOT double-launch: surface the in-flight record if it has landed, else fail.
-      const rec = readServerRecord(cwd, env, host);
-      if (rec) return finalize({ port: rec.port, token: rec.token, started: true });
-      throw new Error('traffic-one onboarding server did not become ready (another launcher holds the lock)');
+      // NOT double-launch: surface the in-flight record if it landed in the gap
+      // between the reuse check above and this read, else report a TIMEOUT.
+      //
+      // The liveness check is not redundant with reuseIfLive(): without it this
+      // branch could only ever be taken for a record whose pid reuseIfLive had
+      // just proved DEAD, so the one thing it reliably did was hand the agent a
+      // URL pointing at a corpse, stamped `started: true` — a link the agent then
+      // posts to the user. What it is actually for is the microsecond race, and
+      // that record is live.
+      const late = readServerRecord(cwd, env, host);
+      if (late && isAlive(late.pid)) {
+        return finalize({ port: late.port, token: late.token, started: true });
+      }
+      throw startTimeoutError('traffic-one onboarding server did not become ready (another launcher holds the lock)');
     }
     const stale = readServerRecord(cwd, env, host);
     if (stale) clearServerRecord(cwd, env, host);
 
     const childPid = launch(cwd, env, options.host || host);
+    // Started AFTER launch() so neither the contention wait above nor the spawn
+    // syscall itself can spend our child's window.
+    const readyDeadline = Date.now() + (options.readyTimeoutMs ?? READY_TIMEOUT_MS);
     for (;;) {
       const rec = readServerRecord(cwd, env, host);
       if (rec && (childPid <= 0 || rec.pid === childPid)) {
         return finalize({ port: rec.port, token: rec.token, started: true });
       }
-      if (Date.now() >= deadline) {
-        if (rec) return finalize({ port: rec.port, token: rec.token, started: true });
-        throw new Error('traffic-one onboarding server did not become ready');
+      if (Date.now() >= readyDeadline) {
+        // A record belonging to someone ELSE (rec.pid !== childPid). Worth
+        // surfacing, but only while its process is actually alive — same reason
+        // as the lock-contention branch above.
+        if (rec && isAlive(rec.pid)) return finalize({ port: rec.port, token: rec.token, started: true });
+        throw startTimeoutError('traffic-one onboarding server did not become ready');
       }
       sleepSync(50);
     }

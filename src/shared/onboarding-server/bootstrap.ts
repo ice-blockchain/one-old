@@ -8,7 +8,7 @@
 import type { HostId } from '../../core/types';
 import { makeSkillBlock } from '../skill-block';
 import { pluginRoot } from '../paths';
-import { ensureOnboardingServer, type EnsureResult } from './ensure';
+import { ensureOnboardingServer, ONBOARDING_START_TIMEOUT_CODE, type EnsureResult } from './ensure';
 import { onboardingBootstrapCommand, onboardingWaitCommand, onboardingWaitScriptPath } from './wait-command';
 import { doctorCommand } from '../doctor-command';
 
@@ -36,7 +36,26 @@ interface OnboardingStartFailed {
   errorCode: string;
 }
 
-type OnboardingBootstrap = OnboardingBootstrapReady | OnboardingBootstrapRequired | OnboardingStartFailed;
+// The launcher ran out of TIME, which is a different fact from a broken
+// installation and carries a different remedy. `reason` is the retryable prose;
+// `terminalReason` is what the SAME timeout must say once its one retry is
+// spent. Both are carried because the classification stays PURE — the bound is
+// claimed by the surface that actually BLOCKS (the PreToolUse gate), not by
+// every surface that merely observes a timeout. A prompt-hook observation
+// burning the budget would have handed the gate the terminal text on the very
+// first tool call, which is the failure this whole split exists to remove.
+interface OnboardingStartTimeout {
+  kind: 'start-timeout';
+  reason: string;
+  terminalReason: string;
+  errorCode: string;
+}
+
+type OnboardingBootstrap =
+  | OnboardingBootstrapReady
+  | OnboardingBootstrapRequired
+  | OnboardingStartFailed
+  | OnboardingStartTimeout;
 
 function errorCode(error: unknown): string {
   if (error && typeof error === 'object' && typeof (error as NodeJS.ErrnoException).code === 'string') {
@@ -56,9 +75,21 @@ export function isOnboardingPermissionError(error: unknown): boolean {
   return ONBOARDING_PERMISSION_ERRORS.has(errorCode(error));
 }
 
+export function isOnboardingTimeoutError(error: unknown): boolean {
+  return errorCode(error) === ONBOARDING_START_TIMEOUT_CODE;
+}
+
 // Terminal diagnostic for packaging/runtime failures. Approval cannot repair a
-// missing runner, crashed child, malformed state root, or readiness timeout; do
-// not prescribe the same bootstrap again and trap the agent in a retry loop.
+// missing runner, a crashed child or a malformed state root; do not prescribe
+// the same bootstrap again and trap the agent in a retry loop.
+//
+// A readiness TIMEOUT used to be lumped in here, and it does not belong: it is
+// the one member of the set that is routinely transient (ensure.ts documents
+// concurrent hooks both racing to launch as NORMAL), so this text told a user
+// hitting ordinary contention that their plugin was broken and to reinstall it,
+// and then denied every tool. It has its own pair of messages below. The fear
+// this comment was written with is still right, which is why the retryable one
+// is bounded by the runtime rather than by its own prose.
 export function onboardingStartFailureReason(error: unknown, host?: HostId): string {
   const code = errorCode(error);
   const detail = errorMessage(error);
@@ -67,6 +98,34 @@ export function onboardingStartFailureReason(error: unknown, host?: HostId): str
     return `Traffic One setup launcher failed (${code}: ${detail}). Setup is paused because this is a plugin/runtime failure rather than a sandbox permission request. Stop and report this error. Run the read-only Traffic One doctor: ${doctor}. Reinstall/update the Traffic One plugin if needed, then retry setup.`;
   }
   return `Traffic One setup launcher failed (${code}: ${detail}). This is a plugin/runtime failure, not a sandbox approval request. Do NOT rerun \`--bootstrap-only\` and do not create private state inside the project. Stop and report this error, then run the read-only Traffic One doctor: ${doctor}. Reinstall/update the Traffic One plugin if needed before retrying.`;
+}
+
+// The RETRYABLE half. Prescribes exactly ONE retry and says what the next
+// message will be, so the agent is not choosing between "retry forever" and
+// "give up" — the runtime has already decided, and this text tells it which
+// answer it is holding. Deliberately says reinstalling will NOT help: that is
+// the instruction this case used to receive, and it is wrong.
+export function onboardingStartTimeoutReason(error: unknown, host?: HostId): string {
+  const code = errorCode(error);
+  const detail = errorMessage(error);
+  if (host === 'opencode' || host === 'kilo' || host === 'windsurf') {
+    return `Traffic One setup did not finish starting in time (${code}: ${detail}). This is normally transient — another Traffic One hook process was starting the same setup server. Retry this exact tool call once, unchanged. If the same timeout is reported again, stop and report it; reinstalling the plugin will not help.`;
+  }
+  return `Traffic One setup did not finish starting in time (${code}: ${detail}). This is a TIMEOUT, not a plugin/runtime failure: each Traffic One hook runs in its own process, so a concurrent hook can already be starting the same setup server, and a cold start can overrun the window. Retry this exact tool call ONCE, unchanged — the retry normally reuses the server the other process just finished starting. Do NOT rerun \`--bootstrap-only\`, do not reinstall the plugin, and do not create private state inside the project. If the same timeout is reported again it is no longer contention, and the next message will tell you to stop.`;
+}
+
+// The TERMINAL half, once that one retry is spent. A separate message rather
+// than the packaging one above because the diagnosis differs: nothing here says
+// the installation is broken, and sending an operator to reinstall over a
+// persistently slow or blocked launcher wastes the only lead they have.
+export function onboardingStartTimeoutExhaustedReason(error: unknown, host?: HostId): string {
+  const code = errorCode(error);
+  const detail = errorMessage(error);
+  const doctor = doctorCommand();
+  if (host === 'opencode' || host === 'kilo' || host === 'windsurf') {
+    return `Traffic One setup timed out again (${code}: ${detail}) after a retry, so this is not contention. Stop retrying and report it. Run the read-only Traffic One doctor: ${doctor}.`;
+  }
+  return `Traffic One setup timed out again (${code}: ${detail}). A retry was already spent, so this is no longer a concurrent hook — the setup server is not reaching a listening state on this machine. Stop retrying: another attempt will produce this same message. Do NOT rerun \`--bootstrap-only\` and do not create private state inside the project. Report this to the user, then run the read-only Traffic One doctor: ${doctor}.`;
 }
 
 function permissionStep(host: HostId): string {
@@ -145,6 +204,14 @@ export function prepareOnboardingServer(
     const server = (options.ensure || ensureOnboardingServer)(cwd, { host });
     return { kind: 'ready', server, waitCommand };
   } catch (error) {
+    if (isOnboardingTimeoutError(error)) {
+      return {
+        kind: 'start-timeout',
+        reason: onboardingStartTimeoutReason(error, host),
+        terminalReason: onboardingStartTimeoutExhaustedReason(error, host),
+        errorCode: errorCode(error),
+      };
+    }
     if (!isOnboardingPermissionError(error)) {
       return {
         kind: 'start-failed',

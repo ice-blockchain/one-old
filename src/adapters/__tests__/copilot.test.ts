@@ -27,6 +27,36 @@ test('copilot CLI: before-tool-use parses toolArgs JSON string', () => {
   assert.deepEqual((parsed.raw as Record<string, unknown>).tool_input, { command: 'npm test' });
 });
 
+test('copilot: a MULTI-root VS Code window uses the folder the hook is in, not the first', () => {
+  // VS Code multi-root workspaces send several `workspace_roots`. Taking the
+  // first made the boundary name a sibling project whenever work happened in any
+  // other folder — see the cursor.ts twin of this selector and the shared-block
+  // parity test.
+  const second = inv('before-tool-use', {
+    workspace_roots: ['/w/alpha', '/w/beta'],
+    cwd: '/w/beta/src',
+    tool_name: 'view',
+    tool_args: JSON.stringify({ path: '/w/beta/src/x.ts' }),
+  }, 'vscode');
+  const parsed = second.adapter.parse(second.raw);
+  assert.equal(parsed.workspaceRoot, '/w/beta');
+  assert.equal(parsed.cwd, '/w/beta/src');
+
+  // Nested roots resolve OUTERMOST, so a sub-package never becomes its own root.
+  const nested = inv('before-tool-use', {
+    workspace_roots: ['/w/mono/packages/ui', '/w/mono'],
+    cwd: '/w/mono/packages/ui',
+    tool_name: 'view',
+  }, 'vscode');
+  assert.equal(nested.adapter.parse(nested.raw).workspaceRoot, '/w/mono');
+
+  // Nothing contains the cwd → first element, unchanged.
+  const outside = inv('before-tool-use', {
+    workspace_roots: ['/w/alpha', '/w/beta'], cwd: '/elsewhere/tmp', tool_name: 'view',
+  }, 'vscode');
+  assert.equal(outside.adapter.parse(outside.raw).workspaceRoot, '/w/alpha');
+});
+
 test('copilot CLI: spawn toolArgs are visible to raw-input gates', () => {
   const { adapter, raw } = inv('before-tool-use', {
     tool_name: 'agent',

@@ -114,6 +114,15 @@ export const DENY_IDS = [
   // because a respawn can carry the model.
   'codex-child-model-status-unverified',
   'codex-child-model-ledger-closed',
+  // The ledger could not be READ, which is not the same refusal as a closed one
+  // and does not share its remedy: a closed run can be resumed (out of `blocked`)
+  // or settled and replaced, while an illegible one refuses the claim mint, the
+  // resume AND the settlement with `ledger-corrupt`, and no agent may repair the
+  // file because it is a runtime-owned run sidecar. Split from
+  // `codex-child-model-ledger-closed` rather than folded into it so the deny
+  // budget and the decision record can tell "this run is over" from "this run's
+  // ledger is unreadable", which are different operator actions.
+  'codex-child-model-ledger-illegible',
   'codex-child-model-role-held',
   'codex-child-model-claim-persist-failed',
   'codex-child-model-capability-record-failed',
@@ -350,7 +359,43 @@ export const DENY_IDS = [
   'claude-wait-link-first',
   'codex-wait-link-first',
   'onboarding-use-plugin-question',
+  // Narrowed to what the name says: the wizard server is not up YET and the
+  // host's hook sandbox cannot start it, so the deny carries the approved
+  // bootstrap + waiter commands. It used to cover the LAUNCHER-FAILED branch of
+  // the same call site as well, which is the merge this file's naming rule
+  // forbids: one site, three genuinely different reasons (a permission the user
+  // can grant, a broken install, and a clock), rendering three different
+  // remedies under one id. The other two are split out below.
   'onboarding-server-not-ready',
+  // The launcher ran out of time. Split from the packaging failure because it
+  // is the one cause in that branch that is routinely TRANSIENT — ensure.ts
+  // documents two hooks racing to launch as normal — so its remedy is one
+  // bounded retry, not "reinstall the plugin". A decision log that could not
+  // tell the two apart sent operators to reinstall over ordinary contention.
+  //
+  // ESCALATABLE (absent from NEVER_ESCALATED_DENY_IDS, the default) and that is
+  // deliberate for a deny whose own text prescribes a retry. The prescribed
+  // retry cannot reach the escalation threshold: launch-timeout.ts hands out at
+  // most ONE retry per (project, host) per ten minutes, so the second attempt
+  // renders `-exhausted` below instead — different text, different id, a
+  // different deny-repeat signature. Reaching three IDENTICAL retryable denies
+  // therefore means twenty-plus minutes of repeated launch timeouts, or a bound
+  // that failed to persist; in both cases "report BLOCKED" is the correct
+  // instruction, and this is the backstop for the bound rather than a collision
+  // with it.
+  'onboarding-server-start-timeout',
+  // The same timeout after that retry was spent. Its REMEDY text overlaps
+  // `onboarding-server-start-failed` (stop, run doctor, report), but the
+  // DIAGNOSIS is the opposite one — nothing here says the installation is
+  // broken — and merging them would put "we timed out twice" and "the runner is
+  // missing" in one bucket, which is precisely the distinction this work item
+  // exists to preserve.
+  'onboarding-server-start-timeout-exhausted',
+  // The genuine packaging/runtime failure: a missing runner, an unusable state
+  // root, a child that cannot run. Terminal, and correctly so — approval and
+  // retries repair none of it. Previously indistinguishable from both ids above
+  // under `onboarding-server-not-ready`.
+  'onboarding-server-start-failed',
   'onboarding-setup-required-opencode',
   'windsurf-server-deny-reason',
   'windsurf-server-deny-reason-repeat',
@@ -475,6 +520,7 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   'codex-child-model-status-conflict',
   'codex-child-model-status-unverified',
   'codex-child-model-ledger-closed',
+  'codex-child-model-ledger-illegible',
   'codex-child-model-role-held',
   'codex-child-model-claim-persist-failed',
   'codex-child-model-capability-record-failed',
@@ -498,6 +544,16 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   'run-team-scope-conflict',
   'run-team-runtime-allowlist-gap',
   'run-team-fallback-taken',
+
+  // Deliberately NOT here: `onboarding-server-start-timeout`,
+  // `-start-timeout-exhausted` and `-start-failed`. All three mean "the local
+  // setup wizard could not be started", which is an INFRASTRUCTURE fact about
+  // this machine, not a judgement about the agent's work — and the user whose
+  // launcher is broken is exactly the user who may legitimately need to keep
+  // working while they repair it. Their sibling `onboarding-server-not-ready`
+  // was already overridable for that reason; splitting the id must not silently
+  // change the escape hatch. An override here admits UNONBOARDED work, which is
+  // recoverable (onboarding converges later); a permanently stuck user is not.
 ] as const satisfies readonly DenyId[];
 
 export const NEVER_OVERRIDABLE_DENY_ID_SET: ReadonlySet<string> = new Set(NEVER_OVERRIDABLE_DENY_IDS);
@@ -586,6 +642,26 @@ export const NEVER_ESCALATED_DENY_IDS = [
   'onboarding-stop-links-shown',
   'onboarding-stop-link-posted',
   'onboarding-stop-required',
+  // `onboarding-server-not-ready` above is the sandbox-permission branch ONLY
+  // (see its entry in DENY_IDS). Its two former co-tenants stay OUT, and the
+  // contrast is the same rule working:
+  //   - `onboarding-server-start-failed` names a broken installation and says
+  //     "stop and report this error". An agent that draws it three times
+  //     identically is looping against an explicit instruction, which is
+  //     exactly when escalation's "report BLOCKED" is the honest next step —
+  //     and while these three shared one id, that population was silenced.
+  //   - `onboarding-server-start-timeout` DOES prescribe a retry, which is the
+  //     shape this list exists for, and it still stays out: the retry is
+  //     bounded at ONE per (project, host) per ten minutes by
+  //     launch-timeout.ts, so the prescribed recovery renders
+  //     `-exhausted` on its second draw and can never reach three identical
+  //     ones. Listing it would remove the only backstop for a bound that
+  //     failed to persist — and unlike `spawn-claim-unavailable`, whose prose
+  //     legislates its own repeat count, this deny's answer on a repeat is
+  //     already "stop", which escalation reinforces rather than contradicts.
+  //   - `onboarding-server-start-timeout-exhausted` says "stop retrying:
+  //     another attempt will produce this same message". Same argument.
+  //
   // NOT listed, and the contrast is the rule working: `tech-classify-required`
   // ("setup is pending on the AGENT, not the user" — its own comment) and
   // `onboarding-cursor-models-required` (the gate admits the agent's own

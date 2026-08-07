@@ -63,8 +63,7 @@ export function preseed(cwd: string, ps: PreSeed): boolean {
   if (ps.team?.overrides) team.overrides = { ...ps.team.overrides };
 
   if (ps.openCode !== undefined) {
-    state.openCode = { enabled: ps.openCode, source: 'prompted', decidedAt: stateTimestamp() };
-    // Durable authorization record (stays in .one.json; spawn gates read it).
+    // Durable authorization record (stays in .one.json; spawn gates cite it).
     state.openCodeDelegation = { approved: ps.openCode, source: 'onboarding', decidedAt: stateTimestamp() };
   }
 
@@ -79,6 +78,18 @@ export function preseed(cwd: string, ps: PreSeed): boolean {
   }
 
   const seeded = writeState(cwd, state);
+
+  // The OpenCode CONSENT is written where the wizard's own `open-code` answer
+  // writes it, and nowhere else. state/local-prefs/prefs-split.ts deliberately
+  // does NOT route it out of the shared state file (that file is committed and
+  // agent-writable, so a value in it cannot be attributed to this user), so a
+  // seeder that only wrote it into `.one.json` would leave every case running
+  // with delegation silently off.
+  if (ps.openCode !== undefined) {
+    mergeProjectPrefs(cwd, {
+      openCode: { enabled: ps.openCode, source: 'prompted', decidedAt: stateTimestamp() },
+    });
+  }
 
   // 3) Performance/team are host-scoped local preferences. Generic top-level
   // fields are intentionally discarded by splitLocalPreferences so a stale
