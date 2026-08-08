@@ -334,9 +334,13 @@ export function writeJson(filePath: string, value: unknown): boolean {
  * ── why the recipe is lifted, not designed ───────────────────────────────────
  * Body taken from runners/one-mcp-report/lib.ts's private writeJson, which
  * already had it: exclusive temp open, write, fsync the fd, close, rename, then
- * fsync the DIRECTORY inside a try/catch. That writer is unfenced and returns
- * `void`; this one is the same recipe behind the chokepoint, so "fenced" and
- * "durable" stop being two different functions neither of which has both.
+ * fsync the DIRECTORY inside a try/catch. That writer WAS unfenced and returned
+ * `void` — durability outside the chokepoint, while the chokepoint had fencing
+ * without durability, and no writer had both. It has since been retired onto
+ * this function (it was publishing the canonical `.one.json`, and a planted
+ * directory link at `.traffic-one` sent both its files outside the project),
+ * so the split this paragraph describes is history rather than a live state of
+ * the tree — kept because it is why the recipe is lifted rather than designed.
  *
  * ONE deliberate deviation: the lifted version creates a new file 0o600. Here a
  * new file gets whatever `writeJson` would have given it, and only an EXISTING

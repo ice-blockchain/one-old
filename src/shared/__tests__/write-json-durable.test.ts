@@ -2,8 +2,10 @@
 //
 // THE STRUCTURAL DEFECT it closes: this repo already had the durable recipe, in
 // runners/one-mcp-report/lib.ts's own private writeJson — exclusive temp open,
-// write, fsync the fd, rename, fsync the directory. That writer bypasses the
-// consent/symlink chokepoint and returns `void`. The chokepoint's writeJson is
+// write, fsync the fd, rename, fsync the directory. That writer bypassed the
+// consent/symlink chokepoint and returned `void` — it has since been retired
+// onto this one, so the defect below is the history that motivated the
+// function, not a description of the tree. The chokepoint's writeJson is
 // atomic in the VISIBILITY sense (temp + rename) and performs no fsync at all,
 // so a crash can leave the rename durable and the data not. The two properties a
 // state write needs were implemented in two different functions and no writer

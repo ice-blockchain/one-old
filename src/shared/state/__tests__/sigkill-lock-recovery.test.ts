@@ -14,11 +14,19 @@
 // `readOwnedLock` untouched — keeps the entire suite green (3,764 tests, one
 // unrelated failure). Every real lease then becomes illegible to the reaper, so
 // `reclaimStaleOwnedDirLock` returns false forever and the FIRST hook process
-// killed in a project wedges that store for good: run model policy, codex model
-// observations, exhausted models and cursor spawn observations all stop being
-// writable, and each contender burns its whole timeout before giving up. The
-// hand-planted fixtures cannot see it, because their record is written in the
-// reader's dialect by construction.
+// killed wedges that lock for good, with each contender burning its whole
+// timeout before giving up. The hand-planted fixtures cannot see it, because
+// their record is written in the reader's dialect by construction.
+//
+// The stores that would go with it are the SIX real callers of
+// withOwnedDirLock/withOwnedDirLockResult — the run ledger, the agent registry,
+// run-agent claims, fallback claims, cursor spawn observations and the decision
+// log's hook-sequence counter. Not run-model-policy, codex-model-observation or
+// exhausted-models: those are hand-rolled mkdir/mtime locks and share nothing
+// with this primitive. Five of the six hang off `runDir(cwd, runId)`, so a wedge
+// there is scoped to one run; the sixth is not, and is the widest blast radius
+// of the set — `nextHookSeq(cwd, null)` locks
+// `<project>/.traffic-one/debug/.decisions-seq.lock`, which no new run replaces.
 //
 // So the holder here is a real process that takes the lease through the real
 // `withOwnedDirLock`, and it is killed with SIGKILL — which runs no `finally`,
@@ -217,8 +225,9 @@ test('a lease production wrote, orphaned by SIGKILL, is legible to the reaper an
     const reclaimed = tryAcquire(lockDir);
     assert.equal(reclaimed.held, true,
       'a lease whose owner was SIGKILLed must be reclaimable: the reaper could not act on the record '
-      + `the real acquire left behind (${ownerBytes}), so this store is wedged for the rest of the RUN: every `
-      + 'lock dir in this family hangs off runDir(cwd, runId), and nothing below reclaims an illegible sentinel');
+      + `the real acquire left behind (${ownerBytes}), and nothing below reclaims an illegible sentinel — so this `
+      + 'store stays wedged until its lock dir goes away, which for the run-scoped five is the end of the run and '
+      + 'for the hook-sequence counter is never (see the header)');
     assert.equal(reclaimed.ran, true, 'the mutation must actually run under the reclaimed lock');
     assert.equal(fs.existsSync(ownerFile), false,
       'the orphaned owner sentinel must be gone once its lease has been reclaimed');

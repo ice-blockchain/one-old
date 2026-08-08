@@ -14,10 +14,13 @@ export interface MintedReportId {
   created: boolean;
   invalid?: boolean;
   /**
-   * The id was minted in memory and is NOT on disk: `.one.json` could not be
-   * read, so there was no base to patch it onto and the write was refused.
-   * Distinct from `created: false` alone, which means somebody else's id is
-   * already registered — here nothing is registered and nothing was destroyed.
+   * The id was minted in memory and is NOT on disk. Two causes, one channel:
+   * `.one.json` could not be READ, so there was no base to patch it onto, or the
+   * fenced writer DECLINED the path (a symlink at it, a resolved location
+   * outside the project's state dir, or a project whose use-plugin question is
+   * unanswered). Both leave nothing registered and nothing destroyed, which is
+   * the only distinction this flag has to carry — and distinct from
+   * `created: false` alone, which means somebody else's id IS registered.
    */
   unpersisted?: boolean;
 }

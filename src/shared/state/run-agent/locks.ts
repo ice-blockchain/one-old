@@ -26,15 +26,48 @@ function processDefinitelyDead(pid: unknown): boolean {
   }
 }
 
-function readOwnedLock(filePath: string): { pid: number; acquiredAt: number } | null {
+/**
+ * What a sentinel could be made to say, split by WHICH evidence survived.
+ *
+ * This used to be `{pid, acquiredAt} | null`, and that `null` collapsed four
+ * different worlds: the file is absent, the file cannot be read, its bytes are
+ * not JSON, and its JSON is not this shape. The reaper folded all four into
+ * "refuse", which is right for exactly one of them — so a sentinel that merely
+ * changed shape made its lock unreclaimable for the life of the directory.
+ *
+ * The split is by evidence rather than by cause because the reaper only ever
+ * asks two questions of a sentinel, and they degrade independently:
+ *   - `pid`        decides liveness, and is the guard that protects a holder;
+ *   - `acquiredAt` decides staleness, and has a usable substitute (the lock
+ *                  directory's own mtime, set by the mkdir that IS the lock).
+ * A record missing only the timestamp therefore keeps the guard that matters.
+ */
+type OwnerSentinel =
+  | { kind: 'owner'; pid: number; acquiredAt: number }
+  | { kind: 'pid-only'; pid: number }
+  | { kind: 'illegible' }
+  | { kind: 'gone' };
+
+function readOwnedLock(filePath: string): OwnerSentinel {
+  let raw: string;
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
-    const record = obj(parsed);
-    if (!record || typeof record.pid !== 'number' || typeof record.acquiredAt !== 'number') return null;
-    return { pid: record.pid, acquiredAt: record.acquiredAt };
-  } catch {
-    return null;
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    // Every errno but ENOENT is a sentinel that is THERE and unreadable, which
+    // is not the same claim as "no sentinel" and must not reclaim on the same
+    // terms. ENOENT itself is ambiguous — a holder releasing between the readdir
+    // above and this read, or an entry that is still in the directory and points
+    // at nothing — and lstat separates them without following the link.
+    if (obj(error)?.code !== 'ENOENT') return { kind: 'illegible' };
+    try { fs.lstatSync(filePath); } catch { return { kind: 'gone' }; }
+    return { kind: 'illegible' };
   }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw) as unknown; } catch { return { kind: 'illegible' }; }
+  const record = obj(parsed);
+  if (!record || typeof record.pid !== 'number') return { kind: 'illegible' };
+  if (typeof record.acquiredAt !== 'number') return { kind: 'pid-only', pid: record.pid };
+  return { kind: 'owner', pid: record.pid, acquiredAt: record.acquiredAt };
 }
 
 // Reclaim only the exact owner sentinel observed in a stale directory. The
@@ -48,7 +81,34 @@ function reclaimStaleOwnedDirLock(lockDir: string, staleMs: number): boolean {
   if (owners.length === 1) {
     const ownerFile = path.join(lockDir, owners[0]!);
     const owner = readOwnedLock(ownerFile);
-    if (!owner) return false;
+    // Nothing left to reclaim: the holder is releasing right now and the next
+    // retry finds the directory freed. One retry tick, not a whole timeout.
+    if (owner.kind === 'gone') return false;
+    // An UNREADABLE sentinel is not a veto. Refusing on one costs every later
+    // acquirer its entire timeout, on every attempt, for the life of the
+    // directory — and the directory outlives the process that made it, so there
+    // is no self-heal and no escape. Reclaiming instead can at worst take a
+    // lease from a holder that is still working, so the two guards below are
+    // kept as strong as the evidence allows rather than dropped together:
+    //
+    //   pid-only  — the timestamp is unreadable but the pid is not, so LIVENESS
+    //               still decides exactly as it does for a whole record and a
+    //               running holder keeps its lock. This is the shape a change to
+    //               the record's field names produces, which is the only way a
+    //               LIVE holder plausibly ends up illegible to a reader.
+    //   illegible — no pid, so no liveness evidence at all, and the age is the
+    //               only guard left. It is enough because it is measured from
+    //               the mkdir that IS the lock: a torn sentinel means a writer
+    //               mid-write, whose directory is milliseconds old and therefore
+    //               nowhere near staleMs. Taking a lease here needs a holder
+    //               that has held longer than staleMs AND cannot be read, and
+    //               these locks wrap a single small JSON read-modify-write.
+    //
+    // One shape stays unreclaimable on purpose: a DIRECTORY at the sentinel
+    // path, which `unlink` cannot remove. Widening the removal to reach it would
+    // mean deleting entries this function never examined, and that is the CAS
+    // itself — see the reclaim below. No writer here can produce that shape.
+    //
     // A staleness window fails in the MIRROR direction of a freshness window: a
     // sentinel stamped ahead of now makes `Date.now() - acquiredAt` negative,
     // which is `<= staleMs` no matter how long the lock sits there, so the
@@ -57,8 +117,26 @@ function reclaimStaleOwnedDirLock(lockDir: string, staleMs: number): boolean {
     // therefore does not veto the reclaim — and it does not force one either:
     // the pid check below is still the thing that decides, so a LIVE owner keeps
     // its lock regardless of what its stamp says.
-    const ownerAgeMs = trustworthyAgeSince(owner.acquiredAt, Date.now());
-    if ((ownerAgeMs !== null && ownerAgeMs <= staleMs) || !processDefinitelyDead(owner.pid)) return false;
+    let ownerAgeMs: number | null;
+    if (owner.kind === 'owner') {
+      ownerAgeMs = trustworthyAgeSince(owner.acquiredAt, Date.now());
+    } else {
+      // The substitute stamp. `fs.mkdirSync(lockDir)` below is the acquisition,
+      // and a hold adds no entries to the directory, so this mtime dates the
+      // lease as faithfully as the sentinel would have — and a reader cannot
+      // corrupt it the way it can corrupt the sentinel's own field.
+      let stat: fs.Stats;
+      try { stat = fs.statSync(lockDir); } catch { return false; }
+      ownerAgeMs = trustworthyAgeSince(stat.mtimeMs, Date.now());
+    }
+    // No pid, no liveness claim: `illegible` cannot assert a holder is alive, so
+    // it must not be able to veto on one either.
+    const ownerMayBeAlive = owner.kind !== 'illegible' && !processDefinitelyDead(owner.pid);
+    if ((ownerAgeMs !== null && ownerAgeMs <= staleMs) || ownerMayBeAlive) return false;
+    // Unchanged, and load-bearing: unlinking the EXACT sentinel this reaper
+    // observed is the compare-and-swap for the new paths too. A second reaper's
+    // unlink raises ENOENT and it gives up, and a returning holder whose lease
+    // was taken unlinks a name the new owner does not use.
     try {
       fs.unlinkSync(ownerFile);
       fs.rmdirSync(lockDir);

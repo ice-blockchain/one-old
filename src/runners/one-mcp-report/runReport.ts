@@ -15,7 +15,8 @@ import {
   STATUS_FILE,
 } from '../../config/reporting';
 import { DEFAULT_PUBLIC_ENDPOINT } from '../../config/one-mcp';
-import { mcpRequest, nowIso, readJson, stateForReport, writeJson } from './lib';
+import { writeJsonDurable } from '../../shared/fsjson';
+import { mcpRequest, nowIso, readJson, stateForReport } from './lib';
 import { readReportIdState } from './readReportIdState';
 
 type Rec = Record<string, unknown>;
@@ -28,7 +29,24 @@ export interface RunOptions {
   featureEnabled?: boolean;
 }
 
-export async function runReport(cwd: string, options: RunOptions = {}): Promise<{ ok: boolean; reportId?: string; skipped?: string; error?: unknown }> {
+export interface RunResult {
+  ok: boolean;
+  reportId?: string;
+  skipped?: string;
+  error?: unknown;
+  /**
+   * The POST outcome above is real, and the on-disk status file does NOT
+   * describe it — the fenced writer declined `one-mcp-report.json` (a link at
+   * it, a resolved path outside the state dir, an unanswered consent question).
+   * Separate from `ok` on purpose: a refused bookkeeping write cannot make a
+   * delivered report undelivered, but an unqualified success over a status file
+   * that never recorded the attempt is the "producer certifies, consumer
+   * refuses" shape tests/refusal-contract.test.ts exists to stop.
+   */
+  statusUnpersisted?: true;
+}
+
+export async function runReport(cwd: string, options: RunOptions = {}): Promise<RunResult> {
   if (!(options.featureEnabled ?? ONE_MCP_REPORT)) {
     return { ok: false, skipped: 'reporting-inactive' };
   }
@@ -55,23 +73,31 @@ export async function runReport(cwd: string, options: RunOptions = {}): Promise<
   const attempts = previous && Number.isInteger(previous.attempts) ? (previous.attempts as number) + 1 : 1;
   const queuedAt = previous && previous.queuedAt ? previous.queuedAt : null;
   const trigger = previous && previous.trigger ? previous.trigger : null;
-  if (SAVE_MCP_REPORT) writeJson(statusPath, { status: 'pending', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload });
+  // Fenced like every other write under `.traffic-one/` (lib.ts
+  // writeProjectState carries the measurement for both files). The refusals are
+  // ROUTED rather than dropped, and `statusUnpersisted` rather than `ok` is
+  // where they go: the POST is the product and a declined bookkeeping write
+  // cannot undo it, but a bare `{ ok: true }` over a status file that records
+  // nothing is a certification with no artifact behind it. One flag covers all
+  // three writes — they share one destination, and fsjson's refusals are
+  // durable (only ELOOP, a check-then-open race, could differ between two of
+  // them a millisecond apart).
+  const recordStatus = (status: Rec): boolean => !SAVE_MCP_REPORT || writeJsonDurable(statusPath, status);
+  const attemptRecorded = recordStatus({ status: 'pending', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload });
 
   try {
     const transport = options.transport
       || ((target: string, body: unknown) => mcpRequest(target, body, ONE_MCP_REPORT_TIMEOUT_MS));
     await transport(endpoint, payload);
-    if (SAVE_MCP_REPORT) writeJson(statusPath, { status: 'ok', reportId: idState.id, endpoint, queuedAt, reportedAt: nowIso(), attempts, trigger, mcpPayload });
-    return { ok: true, reportId: idState.id };
+    const recorded = recordStatus({ status: 'ok', reportId: idState.id, endpoint, queuedAt, reportedAt: nowIso(), attempts, trigger, mcpPayload }) && attemptRecorded;
+    return { ok: true, reportId: idState.id, ...(recorded ? {} : { statusUnpersisted: true as const }) };
   } catch (error) {
-    if (SAVE_MCP_REPORT) {
-      writeJson(statusPath, {
-        status: 'failed', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload,
-        error: error && (error as Error).message
-          ? (error as Error).message
-          : String(error || 'unknown error'),
-      });
-    }
-    return { ok: false, error };
+    const recorded = recordStatus({
+      status: 'failed', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload,
+      error: error && (error as Error).message
+        ? (error as Error).message
+        : String(error || 'unknown error'),
+    }) && attemptRecorded;
+    return { ok: false, error, ...(recorded ? {} : { statusUnpersisted: true as const }) };
   }
 }
