@@ -37,6 +37,7 @@ import {
   appendUniqueScaffoldOutputs,
   backendQualityOutputs,
   backendScaffoldOutputs,
+  backendWiringOutputs,
   environmentScaffoldOutputs,
   frontendScaffoldOutputs,
   nativeScaffoldOutputs,
@@ -339,6 +340,15 @@ export function compileArchitecture(
     ...(isNewProject ? nativeScaffoldOutputs(profile) : []),
     ...((isNewProject || input.i18n) ? i18nScaffoldOutputs(i18n) : []),
     ...(isNewProject ? backendScaffoldOutputs(profile) : []),
+    // NOT gated on `isNewProject`, unlike the manifest arm above it, and the
+    // asymmetry is the point: a scaffold output CREATES a skeleton, so it belongs
+    // to a greenfield tree, while a wiring home is the integration edge of a
+    // framework that already exists. The existing-codebase case is the one that
+    // needs it most — an established Laravel app already HAS `routes/api.php` and
+    // the run's job is to add a route to it — and the compiled scope was measured
+    // just as empty there as on a greenfield tree. `routeRegistrationOutputs` and
+    // `testerOutputs` below are unconditional for the same reason.
+    ...backendWiringOutputs(profile, immutablePaths),
     ...routeRegistrationOutputs(profile, input.routes),
     ...testerOutputs(profile, modules),
   ]);

@@ -32,6 +32,7 @@ import {
   type ArchitectureInputV1,
 } from '../architecture-contract';
 import { matchesScope } from '../scope';
+import { resolveInitialScaffoldOwners } from '../architecture-contract/scaffold';
 import { sha256 } from '../text';
 import { browserRequired, deriveUiImpact } from '../verification-contract/impact';
 import {
@@ -1668,6 +1669,401 @@ test('a supabase backend owns its whole data layer, and every project owns a .gi
     assert.ok(scopeFor('senior-frontend').includes('.gitignore'));
     // and the tester gets a workspace runner config instead of improvising one
     assert.ok(scopeFor('senior-tester').includes('vitest.config.ts'));
+  });
+});
+
+// ── backend framework wiring homes ─────────────────────────────────────────
+// THE DEFECT THAT CLOSED. Compiling only the dependency manifest for every
+// non-supabase backend left the framework's own wiring — routes, migrations,
+// provider/DI registration, framework config — owned by nobody. Measured over 15
+// probes driven through real compiled Laravel/Python/Go runs: 4 hard-denied at
+// write time with STRUCT_ASSIGNMENT_ALLOWLIST_GAP, 11 ALLOWED (no gate engages,
+// because `plan-runteam`'s `writingRunTeamTarget` guard never recognizes the
+// path) and then refused at `IMPLEMENTED` for "changed paths outside the frozen
+// verification/WorkUnit authority". Zero completed cleanly. The second shape is
+// the one to keep an eye on here: it needs the ASSIGNMENT SCOPE to cover the
+// path, not merely the write gate to stay quiet, which is why each case below
+// asserts through `matchesScope` over the published manifest.
+
+const LARAVEL_API_STATE = {
+  mode: 'new-project',
+  stack: 'custom-backend',
+  frontend: 'none',
+  backend: 'laravel',
+  mobile: { framework: 'none' },
+};
+
+/** senior-backend's published scope for a compiled run — the exact matcher and
+ *  manifest both the run-team write gate and the verification refresh use. */
+function backendScope(
+  cwd: string,
+  state: Record<string, unknown>,
+  input: ArchitectureInputV1 = SERVICE_INPUT,
+  runId = 'R',
+): { include: string[]; owns: (target: string) => boolean } {
+  const architecture = compileArchitecture(cwd, runId, state, input);
+  const verification = compileVerificationContract(cwd, runId, state, architecture, { changedPaths: [] });
+  const assignments = buildRuntimeAssignments(architecture, verification.contractHash);
+  const scope = assignments.assignments
+    .find((assignment) => assignment.role === 'senior-backend')?.scope || { include: [], exclude: [] };
+  return { include: scope.include, owns: (target: string) => matchesScope(target, scope) };
+}
+
+test('a Laravel backend owns its routes, migrations, providers and framework config', () => {
+  withProject((cwd) => {
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+    const scope = backendScope(cwd, LARAVEL_API_STATE);
+
+    // Every category the framework fixes a location for, per
+    // laravel.com/docs/12.x/structure.
+    for (const wiring of [
+      'routes/web.php',
+      'routes/api.php',
+      'routes/console.php',
+      'bootstrap/app.php',
+      'bootstrap/providers.php',
+      'app/Providers/AppServiceProvider.php',
+      'config/database.php',
+      'database/seeders/DatabaseSeeder.php',
+    ]) {
+      assert.ok(scope.owns(wiring), wiring);
+    }
+
+    // The directory arms exist because the FRAMEWORK generates these names —
+    // `make:migration` stamps a timestamp, `make:controller` and `make:model`
+    // take the feature's name — so no closed set of filenames can cover them and
+    // a literal directory entry is what `matchesPattern` already reads as a
+    // prefix. A pinned first-migration filename (the supabase arm's
+    // `0001_init.sql`) buys the second migration nothing.
+    for (const generated of [
+      'database/migrations/2026_08_08_000000_create_projects_table.php',
+      'database/factories/ProjectFactory.php',
+      'app/Http/Controllers/ProjectController.php',
+      'app/Models/Project.php',
+      'config/projects.php',
+    ]) {
+      assert.ok(scope.owns(generated), generated);
+    }
+
+    // Not a source root: `app` itself is never compiled, because a
+    // server-rendered profile's frontend lib root is `app/View`.
+    assert.equal(scope.include.includes('app'), false);
+    assert.ok(scope.owns('app/Services/SyncService.php'), 'the module output still stands');
+  });
+});
+
+test('Laravel wiring follows the app into a nested workspace root, and never splits from composer.json', () => {
+  // The monorepo shape, driven off a FROZEN profile whose roots are nested —
+  // which is the only way this shape reaches the compiler. Measured while writing
+  // this: a `apps/web/**` Laravel tree does NOT detect as a nested
+  // server-rendered profile at all, it detects as `backend-only` with the default
+  // `[src, app, cmd, internal]` roots, so `webPackageRoot` sees nothing nested
+  // and every arm anchors at `.`. That is a detection question, not a wiring one;
+  // what this pins is that WHEN the profile is nested, `composer.json`/`artisan`
+  // and the wiring below cannot end up in different packages.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'resources/views'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'resources/views/home.blade.php'), '<h1>Home</h1>\n');
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+    // new-project, so the MANIFEST arm compiles too and the two anchors can be
+    // compared against each other in one contract.
+    const state = {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'laravel',
+      mobile: { framework: 'none' },
+    };
+    const flat = compileArchitecture(cwd, 'R', state, SERVICE_INPUT);
+    assert.equal(flat.profile.profileId, 'server-rendered', 'premise: the flat tree is server-rendered');
+
+    const nested = compileArchitecture(cwd, 'R', state, SERVICE_INPUT, flat.baseline, {
+      ...flat.profile,
+      sourceRoots: flat.profile.sourceRoots.map((root) => `apps/web/${root}`),
+      layerRoots: {
+        pages: flat.profile.layerRoots.pages.map((root) => `apps/web/${root}`),
+        components: flat.profile.layerRoots.components.map((root) => `apps/web/${root}`),
+        features: flat.profile.layerRoots.features.map((root) => `apps/web/${root}`),
+        lib: flat.profile.layerRoots.lib.map((root) => `apps/web/${root}`),
+      },
+      entrypoints: flat.profile.entrypoints.map((entry) => `apps/web/${entry}`),
+    });
+    const paths = (nested.scaffoldOutputs || [])
+      .filter((output) => output.ownerRole === 'senior-backend')
+      .map((output) => output.path);
+    for (const wiring of [
+      'apps/web/routes/api.php',
+      'apps/web/bootstrap/app.php',
+      'apps/web/config',
+      'apps/web/database',
+    ]) {
+      assert.ok(paths.includes(wiring), `${wiring} not in ${paths.join(' ')}`);
+    }
+    // The manifest arm anchors identically — they share `backendAppRoot`, so they
+    // cannot disagree about where the application is.
+    assert.ok(paths.includes('apps/web/composer.json'));
+    assert.ok(paths.includes('apps/web/artisan'));
+    // And nothing at the repo root: a root-anchored `config/` would claim the
+    // monorepo's own tooling directory.
+    assert.equal(paths.includes('config'), false);
+    assert.equal(paths.includes('routes/api.php'), false);
+  });
+});
+
+test('two roles cannot own one file through a directory output that contains another', () => {
+  // The owner check keys on the EXACT path, which saw every collision while
+  // every output was a filename. Directory outputs (`config`, `app/Http`,
+  // `alembic`) broke that: `matchesPattern` reads a literal as
+  // exact-or-directory-prefix, so `app` and `app/View` never collide as
+  // strings while both claim `app/View/home.blade.php`. Measured before the
+  // guard existed: both survived, no error, two roles owning one file.
+  //
+  // The shipped tables avoid this by naming `app/Http` and `app/Models`
+  // rather than `app`. This is what makes that a checked property instead of
+  // a thing the last author happened to get right.
+  const profile = { roles: ['senior-frontend', 'senior-backend'] } as never;
+  const output = (p: string, ownerRole: string) => (
+    { path: p, ownerRole, kind: 'source' } as never
+  );
+
+  assert.throws(
+    () => resolveInitialScaffoldOwners(profile, [
+      output('app', 'senior-backend'),
+      output('app/View', 'senior-frontend'),
+    ]),
+    /app\/View \(senior-frontend\) is inside app \(senior-backend\)/,
+  );
+
+  // Order must not decide it: the containing path arriving second is the same
+  // fact, and a guard that only looked forward would miss half the inputs.
+  assert.throws(
+    () => resolveInitialScaffoldOwners(profile, [
+      output('app/View', 'senior-frontend'),
+      output('app', 'senior-backend'),
+    ]),
+    /is inside/,
+  );
+
+  // Two bounds, or the guard would refuse the shipped tables. SIBLINGS are
+  // not containment — `app/Http` and `app/Models` are precisely how the
+  // Laravel arm is spelled, and they must coexist.
+  assert.deepEqual(
+    resolveInitialScaffoldOwners(profile, [
+      output('app/Http', 'senior-backend'),
+      output('app/View', 'senior-frontend'),
+    ]).map((entry: { path: string }) => entry.path),
+    ['app/Http', 'app/View'],
+  );
+
+  // And ONE role may nest freely inside its own directory: there is no second
+  // owner, so there is no ambiguity about who writes the file.
+  assert.equal(
+    resolveInitialScaffoldOwners(profile, [
+      output('config', 'senior-backend'),
+      output('config/projects.php', 'senior-backend'),
+    ]).length,
+    2,
+  );
+});
+
+test('routes/web.php gets exactly one owner: the frontend when pages exist, the backend on an API', () => {
+  // `routeRegistrationOutputs` hands the file to senior-frontend, but only on a
+  // server-rendered profile. A Laravel API ships the same file and had no owner
+  // at all; compiling it in both arms would make resolveInitialScaffoldOwners
+  // throw instead, so the two must stay mutually exclusive.
+  withProject((cwd) => {
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+    assert.ok(backendScope(cwd, LARAVEL_API_STATE).owns('routes/web.php'));
+  });
+
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'resources/views'), { recursive: true });
+    fs.mkdirSync(path.join(cwd, 'routes'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'resources/views/home.blade.php'), '<h1>Home</h1>\n');
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'laravel',
+      mobile: { framework: 'none' },
+    };
+    const input: ArchitectureInputV1 = {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+    };
+    const architecture = compileArchitecture(cwd, 'R', state, input);
+    const owner = (architecture.scaffoldOutputs || [])
+      .filter((output) => output.path === 'routes/web.php');
+    assert.equal(owner.length, 1);
+    assert.equal(owner[0]?.ownerRole, 'senior-frontend');
+    assert.equal(backendScope(cwd, state, input).include.includes('routes/web.php'), false);
+  });
+});
+
+test('framework wiring is compiled on an existing codebase too, not only on a greenfield tree', () => {
+  // The asymmetry against `backendScaffoldOutputs`, which is greenfield-only:
+  // a scaffold output CREATES a skeleton, a wiring home is the integration edge
+  // of a framework that already exists. The established-app case is the one that
+  // needs it most — the run's whole job is to add a route to a file already on
+  // disk — and the compiled scope measured just as empty there.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'routes'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'routes/api.php'), "<?php\n\nreturn [];\n");
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+    const scope = backendScope(cwd, { ...LARAVEL_API_STATE, mode: 'existing-codebase' });
+    assert.ok(scope.owns('routes/api.php'));
+    assert.ok(scope.owns('database/migrations/2026_08_08_000000_create_projects_table.php'));
+    // The manifest arm really is greenfield-only, so this is a genuine
+    // difference in behavior rather than two spellings of the same gate.
+    assert.equal(scope.include.includes('composer.json'), false);
+  });
+});
+
+test('each backend framework compiles the wiring homes its own toolchain fixes, and no others', () => {
+  // One row per advertised backend. Where a framework fixes no single location
+  // the row is EMPTY on purpose and says why — an invented path is worse than an
+  // absent one, because a compiled home the toolchain does not read sends the
+  // role to write in the wrong place with the product's authority behind it.
+  const rows: Array<{ backend: string; owns: string[]; absent: string[] }> = [
+    {
+      // `alembic init alembic` writes alembic.ini beside the project and an
+      // alembic/ tree holding env.py and versions/.
+      backend: 'python',
+      owns: ['alembic.ini', 'alembic/env.py', 'alembic/versions/0001_init.py'],
+      // Raw SQL under `migrations/` is not the Python convention (Alembic is),
+      // and `src/**` is the module tree the architect already declares into.
+      absent: ['migrations/0001_init.sql', 'src/main.py'],
+    },
+    {
+      // Cargo reads src/main.rs and src/lib.rs by name; `migrations/` at the
+      // crate root is sqlx's DEFAULT_PATH and the location diesel mandates.
+      backend: 'rust',
+      owns: ['src/main.rs', 'src/lib.rs', 'migrations/0001_init/up.sql'],
+      absent: ['diesel.toml'],
+    },
+    {
+      // The Maven/Gradle standard layout fixes the resource root, and both
+      // Spring Boot config and Flyway/Liquibase migrations live inside it.
+      backend: 'java',
+      owns: ['src/main/resources/application.yml', 'src/main/resources/db/migration/V1__init.sql'],
+      // The CODE root is a source root, and the base package under it is not
+      // derivable from anything the profile knows.
+      absent: ['src/main/java/com/example/Application.java'],
+    },
+    {
+      backend: 'kotlin',
+      owns: ['src/main/resources/application.yml'],
+      absent: ['src/main/kotlin/com/example/Application.kt'],
+    },
+    {
+      // `dotnet new webapi` emits Program.cs and both appsettings files;
+      // `dotnet ef migrations add` defaults its output to Migrations/.
+      backend: 'dotnet',
+      owns: ['Program.cs', 'appsettings.json', 'appsettings.Development.json', 'Migrations/20260808_Init.cs'],
+      // Startup.cs is the pre-.NET-6 hosting model, the .csproj is named after
+      // the project, and controller-based layouts are opt-in on `dotnet new`.
+      absent: ['Startup.cs', 'Api.csproj', 'Controllers/ProductController.cs'],
+    },
+    {
+      // Go has no framework and no agreed migration home (goose, golang-migrate
+      // and atlas each name a different directory), while `internal`, `cmd` and
+      // `pkg` are this product's own declared Go source roots. Nothing to fix.
+      backend: 'go',
+      owns: [],
+      absent: ['migrations/0001_init.sql', 'internal/routes.go', 'cmd/api/main.go'],
+    },
+  ];
+
+  for (const row of rows) {
+    withProject((cwd) => {
+      const scope = backendScope(cwd, {
+        mode: 'new-project',
+        stack: 'custom-backend',
+        frontend: 'none',
+        backend: row.backend,
+        mobile: { framework: 'none' },
+      });
+      for (const wiring of row.owns) {
+        assert.ok(scope.owns(wiring), `${row.backend} must own ${wiring}`);
+      }
+      for (const wiring of row.absent) {
+        assert.equal(scope.owns(wiring), false, `${row.backend} must not claim ${wiring}`);
+      }
+    });
+  }
+});
+
+test('a Django settings package is derived from baseline evidence, never invented', () => {
+  // The package name is whatever was passed to `django-admin startproject`, and
+  // `config/` (cookiecutter-django) and `<projectname>/` (the startproject
+  // default) are both widespread. So the greenfield arm ships `manage.py` alone,
+  // and the package is owned only where the tree proves which one it is.
+  const state = {
+    mode: 'existing-codebase',
+    stack: 'custom-backend',
+    frontend: 'none',
+    backend: 'django',
+    mobile: { framework: 'none' },
+  };
+
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'mysite'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'manage.py'), '# manage\n');
+    fs.writeFileSync(path.join(cwd, 'mysite/settings.py'), 'DEBUG = False\n');
+    fs.writeFileSync(path.join(cwd, 'mysite/urls.py'), 'urlpatterns = []\n');
+    const scope = backendScope(cwd, state);
+    assert.ok(scope.owns('manage.py'));
+    assert.ok(scope.owns('mysite/urls.py'), 'the evidence names the package');
+    assert.ok(scope.owns('mysite/settings.py'));
+    assert.equal(scope.include.includes('config'), false);
+  });
+
+  withProject((cwd) => {
+    fs.writeFileSync(path.join(cwd, 'manage.py'), '# manage\n');
+    const scope = backendScope(cwd, state);
+    assert.ok(scope.owns('manage.py'));
+    // No settings.py anywhere, so nothing may be guessed.
+    assert.equal(scope.owns('config/settings.py'), false);
+    assert.equal(scope.owns('mysite/settings.py'), false);
+  });
+});
+
+test('a wiring home is a permission: nothing seeds it, and a run that needs none pays nothing', () => {
+  // Measured on the composed pipeline before this table was written: `go.sum` is
+  // compiled for every Go run, run-sim never authors it on purpose, and the run
+  // still reaches IMPLEMENTED, verified and settled with the file absent. This is
+  // the unit-level half of that guarantee — `ensureScaffoldContent` is the ONLY
+  // thing that puts a compiled scaffold path on disk unasked, and no wiring home
+  // may have a body there, or every Laravel feature would grow a migration.
+  withProject((cwd) => {
+    fs.writeFileSync(path.join(cwd, 'composer.json'), JSON.stringify({
+      require: { 'laravel/framework': '^12.0' },
+    }));
+    const architecture = compileArchitecture(cwd, 'R', LARAVEL_API_STATE, SERVICE_INPUT);
+    const wiring = (architecture.scaffoldOutputs || [])
+      .filter((output) => /^(?:app\/|bootstrap\/|config$|database$|routes\/)/.test(output.path));
+    assert.ok(wiring.length >= 8, `premise: this compile declares the wiring table (${wiring.length})`);
+
+    const written = ensureScaffoldContent(cwd, architecture.scaffoldOutputs || [], architecture.profile, {
+      compiled: architecture,
+      newProject: true,
+    });
+    for (const output of wiring) {
+      assert.equal(written.includes(output.path), false, `${output.path} must not be seeded`);
+      assert.equal(fs.existsSync(path.join(cwd, output.path)), false, `${output.path} must not reach disk`);
+    }
   });
 });
 

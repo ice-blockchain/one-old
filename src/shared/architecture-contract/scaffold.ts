@@ -6,6 +6,9 @@ import * as path from 'path';
 import {
   type CapabilityProfileV1,
 } from '../capabilities';
+import {
+  matchesPattern,
+} from '../scope';
 
 import {
   type CompiledArchitectureModuleV1,
@@ -103,7 +106,7 @@ export function backendQualityOutputs(
 ): CompiledArchitectureOutputV1[] {
   if (!profile.roles.includes('senior-backend')) return [];
   const outputs = BACKEND_QUALITY_OUTPUT_BY_FRAMEWORK[profile.backendFramework || ''] || [];
-  const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
+  const appRoot = backendAppRoot(profile);
   return outputs.map((output) => ({
     path: appRoot === '.' ? output : `${appRoot}/${output}`,
     ownerRole: 'senior-backend',
@@ -142,7 +145,7 @@ export function environmentScaffoldOutputs(profile: CapabilityProfileV1): Compil
           ? 'senior-frontend'
           : null
       );
-  const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
+  const appRoot = backendAppRoot(profile);
   return ownerRole
     ? [{ path: appRoot === '.' ? '.env.example' : `${appRoot}/.env.example`, ownerRole, kind: 'scaffold' }]
     : [];
@@ -251,7 +254,33 @@ export function resolveInitialScaffoldOwners(
       + `${existing.ownerRole} and ${output.ownerRole}`,
     );
   }
-  return [...resolved.values()];
+  const owned = [...resolved.values()];
+
+  // The loop above keys on the EXACT path, so it sees a collision only when two
+  // roles name the same string. That was the whole population while every
+  // output was a filename. It stopped being so once outputs began naming
+  // DIRECTORIES (`config`, `app/Http`, `alembic`), because `matchesPattern`
+  // reads a literal as exact-or-directory-prefix — so `app` owned by one role
+  // and `app/View` owned by another never collide as strings while both claim
+  // `app/View/home.blade.php`. Measured: two roles owning the same file, no
+  // error, which is precisely the disjointness every assignment rests on.
+  //
+  // Checked here rather than at each producer because the producers cannot see
+  // each other: the Laravel wiring arm and the frontend lib root are chosen in
+  // different functions off different profile fields, and only the merged set
+  // shows the containment. Kept in the same place as the exact-path error so
+  // the two readings of "conflicting owners" cannot drift apart.
+  for (const a of owned) {
+    for (const b of owned) {
+      if (a === b || a.ownerRole === b.ownerRole) continue;
+      if (a.path === b.path || !matchesPattern(b.path, a.path)) continue;
+      throw new Error(
+        `compiled scaffold output ${b.path} (${b.ownerRole}) is inside `
+        + `${a.path} (${a.ownerRole}), so both roles own it`,
+      );
+    }
+  }
+  return owned;
 }
 
 // Public crawl/share assets `rules/common/seo.md` REQUIRES for every public
@@ -482,7 +511,7 @@ export function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledAr
   if (profile.backendFramework === 'go') outputs = ['go.mod', 'go.sum'];
   else if (['python', 'django', 'fastapi'].includes(profile.backendFramework)) outputs = ['pyproject.toml'];
   else if (['laravel', 'php'].includes(profile.backendFramework)) {
-    const appRoot = profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
+    const appRoot = backendAppRoot(profile);
     outputs = ['composer.json', 'artisan'].map((output) => (
       appRoot === '.' ? output : `${appRoot}/${output}`
     ));
@@ -523,6 +552,167 @@ export function backendScaffoldOutputs(profile: CapabilityProfileV1): CompiledAr
   }
   return outputs.map((output) => ({
     path: output,
+    ownerRole: 'senior-backend',
+    kind: 'scaffold' as const,
+  }));
+}
+
+/**
+ * The app root the backend's own non-source files hang off: the repo root, or the
+ * nested workspace app for a Laravel monorepo. Shared with the manifest arm above
+ * and `backendQualityOutputs`, so `composer.json`, `pint.json`, `.env.example`
+ * and the wiring below can never disagree about where the application is.
+ */
+function backendAppRoot(profile: CapabilityProfileV1): string {
+  return profile.profileId === 'server-rendered' ? webPackageRoot(profile) : '.';
+}
+
+/**
+ * A Django project's settings package, from BASELINE EVIDENCE only. The package
+ * name is whatever the user passed to `django-admin startproject`, so there is
+ * nothing to derive on a greenfield tree — `config/` (cookiecutter-django) and
+ * `<projectname>/` (the startproject default) are both widespread and neither is
+ * canonical. Rather than pick one and compile a home Django will not read, this
+ * answers null and the greenfield arm ships `manage.py` alone.
+ */
+function djangoSettingsPackage(baselinePaths: ReadonlySet<string>): string | null {
+  return [...baselinePaths]
+    .filter((entry) => /^[^/]+\/settings\.py$/.test(entry))
+    .sort()
+    .map((entry) => entry.slice(0, entry.indexOf('/')))[0] ?? null;
+}
+
+/**
+ * FRAMEWORK WIRING: where a route, a migration, a DI/provider registration or a
+ * framework config has to land for the framework to read it at all.
+ *
+ * `backendScaffoldOutputs` above compiles the dependency MANIFEST for every
+ * backend and nothing else — except its supabase arm, which already carries this
+ * whole idea for one stack and states the reason in the same terms. Measured on
+ * the eight others, over 15 probes driven through real compiled runs: not one
+ * backend wiring write completes cleanly. Two shapes, ONE cause — the path is in
+ * no compiled scope — and `plan-runteam.ts`'s `writingRunTeamTarget` guard
+ * decides which shape a project gets. Where FEATURE_SOURCE_RE recognizes the
+ * path the run-team gate engages and hard-denies it (STRUCT_ASSIGNMENT_ALLOWLIST_
+ * GAP: 4 of 15). Where it does not, NO gate engages, the write lands, and
+ * `refreshVerificationAfterImplementation` then refuses the role's `IMPLEMENTED`
+ * as "changed paths outside the frozen verification/WorkUnit authority" (11 of
+ * 15 — every Laravel path and every migration path). The second shape is the
+ * worse one: the role does the work and then cannot report it. Neither is
+ * permanent — an architect replan compiles a home and the identical write is then
+ * allowed (measured: senior-backend's scope grew 10 -> 11 paths) — so what this
+ * closes is a guaranteed wasted round-trip on every backend the product
+ * advertises, not a deadlock.
+ *
+ * A compiled output is a PERMISSION, not an obligation, and that is measured
+ * rather than assumed: `go.sum` is compiled for every Go run, run-sim never
+ * writes it on purpose, and the run still reaches IMPLEMENTED, verified and
+ * settled with the file absent from disk. So a wiring home costs a run that does
+ * not need one exactly nothing, and no feature is ever forced to grow a migration
+ * it does not want.
+ *
+ * TWO PATH SHAPES, and the second is why this is not one flat list of filenames:
+ *   - an exact FILENAME wherever the framework has a singleton it reads BY NAME
+ *     (`bootstrap/app.php`, `Program.cs`, `src/main.rs`, `manage.py`);
+ *   - a DIRECTORY literal wherever the framework GENERATES the member names and
+ *     no deterministic single name exists — every migration directory, and the
+ *     `make:*`/`vendor:publish` families beside it. Still a closed set and still
+ *     glob-free: `matchesPattern` (shared/scope.ts) reads a literal as
+ *     exact-or-directory-prefix, which is already how a folder-shaped `feature`
+ *     module owns its directory in `assignmentOutputs`. The supabase arm had to
+ *     invent `0001_init.sql` for want of this, and that name buys the SECOND
+ *     migration nothing.
+ *
+ * Nothing here is a source ROOT, and two omissions are deliberate for that
+ * reason. `internal/routes.go` and `src/main.py` stay out: those are the
+ * backend's own module tree, `index.ts` states why a broad source root may not be
+ * compiled, and the architect can already declare a module at exactly those paths
+ * (measured). Laravel takes `app/Http`, `app/Models` and `app/Providers`
+ * INDIVIDUALLY rather than `app`, because a server-rendered profile's frontend
+ * lib root is `app/View` — one entry for `app` would put two roles inside one
+ * scope.
+ */
+export function backendWiringOutputs(
+  profile: CapabilityProfileV1,
+  baselinePaths: ReadonlySet<string>,
+): CompiledArchitectureOutputV1[] {
+  if (!profile.roles.includes('senior-backend')) return [];
+  const framework = profile.backendFramework || '';
+  let outputs: string[] = [];
+  if (['laravel', 'php'].includes(framework)) {
+    // laravel.com/docs/12.x/structure: `routes/` holds `web.php` and
+    // `console.php` by default (`api.php` is what `artisan install:api` adds);
+    // `bootstrap/app.php` is the middleware/routing/exception hub that replaced
+    // the HTTP and Console kernels; `bootstrap/providers.php` replaced
+    // `config/app.php`'s providers array; `app/Providers` holds the container
+    // bindings. `config/` and `database/` are wholly backend-owned directories
+    // whose members `vendor:publish` and `make:migration|seeder|factory` name.
+    // `routes/web.php` is absent on purpose — `routeRegistrationOutputs` gives it
+    // to senior-frontend so the page modules' registration edge keeps one owner.
+    outputs = [
+      'app/Http',
+      'app/Models',
+      'app/Providers',
+      'bootstrap/app.php',
+      'bootstrap/providers.php',
+      'config',
+      'database',
+      'routes/api.php',
+      'routes/console.php',
+      // `routeRegistrationOutputs` hands `routes/web.php` to senior-frontend, but
+      // only on a server-rendered profile — the page modules whose registration
+      // edge it is exist only there. A Laravel API has the same file in its
+      // skeleton and no frontend to own it, which measured as an
+      // owned-by-nobody row on every backend-only Laravel run. Compiling it in
+      // both places would instead make `resolveInitialScaffoldOwners` throw.
+      ...(profile.profileId !== 'server-rendered' ? ['routes/web.php'] : []),
+    ];
+  } else if (framework === 'django') {
+    // `manage.py` is the one location Django itself fixes. App migrations live in
+    // `<app>/migrations/`, one per installed app with names the project chooses,
+    // so there is no closed set to compile — that residual is real and stays.
+    const settingsPackage = djangoSettingsPackage(baselinePaths);
+    outputs = ['manage.py', ...(settingsPackage ? [settingsPackage] : [])];
+  } else if (['python', 'fastapi'].includes(framework)) {
+    // `alembic init alembic` writes `alembic.ini` beside the project and an
+    // `alembic/` tree holding `env.py`, `script.py.mako` and `versions/`, whose
+    // revision filenames Alembic generates from a hash. The directory name is
+    // configurable via `script_location`, so this is the DEFAULT layout, which is
+    // the same standard `supabase/migrations` is held to.
+    outputs = ['alembic.ini', 'alembic'];
+  } else if (framework === 'rust') {
+    // Cargo reads `src/main.rs` and `src/lib.rs` by name — a binary or library
+    // crate is defined by their presence. `migrations/` at the crate root is
+    // sqlx's `DEFAULT_PATH` ("./migrations") and the location diesel_migrations
+    // mandates ("a /migrations directory at the root of your project, the same
+    // directory as Cargo.toml"); two independent toolchains agreeing is the
+    // strongest convention evidence any backend here has.
+    outputs = ['migrations', 'src/lib.rs', 'src/main.rs'];
+  } else if (['java', 'kotlin'].includes(framework)) {
+    // The Maven/Gradle standard layout fixes `src/main/resources` as the resource
+    // root, and it is where BOTH named categories land: Spring Boot reads
+    // `application.properties`/`application.yml` from it, Flyway defaults to
+    // `classpath:db/migration` and Liquibase to `db/changelog` inside it. The
+    // CODE roots (`src/main/java`, `src/main/kotlin`) are deliberately absent —
+    // they are source roots, and the base package under them is not derivable.
+    outputs = ['src/main/resources'];
+  } else if (framework === 'dotnet') {
+    // `dotnet new webapi` emits `Program.cs` (the minimal-hosting entry point,
+    // and the DI registration site — `builder.Services.Add…`) plus
+    // `appsettings.json` and `appsettings.Development.json`. `dotnet ef
+    // migrations add` writes to `Migrations` unless `--output-dir` says otherwise.
+    // The `.csproj` is named after the project, so it is not derivable and stays
+    // out; `Directory.Build.props` above already carries the build settings.
+    outputs = ['Migrations', 'Program.cs', 'appsettings.Development.json', 'appsettings.json'];
+  }
+  // Go, plain Node and supabase compile nothing here, each for its own reason.
+  // Go has no framework and no agreed migration home (goose, golang-migrate and
+  // atlas each name a different directory), while `internal`, `cmd` and `pkg` are
+  // this product's own declared Go SOURCE ROOTS. Express/Nest fix no wiring
+  // location either. Supabase is already covered by the arm above.
+  const appRoot = backendAppRoot(profile);
+  return outputs.map((output) => ({
+    path: appRoot === '.' ? output : `${appRoot}/${output}`,
     ownerRole: 'senior-backend',
     kind: 'scaffold' as const,
   }));
