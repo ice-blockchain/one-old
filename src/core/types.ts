@@ -218,14 +218,48 @@ export interface FsJson {
 }
 
 export interface ExecResult {
+  /**
+   * The child's exit status, or 1 when it never produced one. `1` is therefore
+   * AMBIGUOUS by construction: a command that legitimately exited 1 (`git
+   * rev-parse --verify --quiet HEAD` on a repo with no commits answers exactly
+   * that) is indistinguishable here from one that was never found, was killed,
+   * or hit its timeout. Callers that must tell those apart read `runResult`.
+   */
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
 }
 
+export interface ExecOptions {
+  readonly cwd?: string;
+  /**
+   * Wall-clock bound, milliseconds. `timeoutMs` rather than `timeout` to match
+   * build/sync-hosts.ts:120, the repo's existing spelling for this option.
+   */
+  readonly timeoutMs?: number;
+}
+
+/**
+ * What actually happened to a subprocess, with the four outcomes `ExecResult`
+ * folds into `code: 1` kept apart.
+ *
+ * The shape is `readJsonResult`'s (shared/fsjson.ts `JsonRead`): a `kind`
+ * discriminant, with the historical signature kept as a thin wrapper over it so
+ * no existing call site has to churn. Same reason, too — a reader that cannot
+ * say "I could not find out" makes every caller guess, and this one had the
+ * additional problem that its guess collided with a real exit code.
+ */
+export type ExecOutcome =
+  | { readonly kind: 'exited'; readonly code: number; readonly stdout: string; readonly stderr: string }
+  | { readonly kind: 'timed-out'; readonly timeoutMs: number; readonly stdout: string; readonly stderr: string }
+  | { readonly kind: 'signalled'; readonly signal: string; readonly stdout: string; readonly stderr: string }
+  | { readonly kind: 'not-run'; readonly errno: string };
+
 export interface Exec {
   which(bin: string): string | null;
-  run(cmd: string, args: readonly string[], opts?: { cwd?: string }): ExecResult;
+  run(cmd: string, args: readonly string[], opts?: ExecOptions): ExecResult;
+  /** The discriminated sibling of `run`. See ExecOutcome. */
+  runResult(cmd: string, args: readonly string[], opts?: ExecOptions): ExecOutcome;
 }
 
 export interface Paths {

@@ -96,6 +96,56 @@ test('ensureInitialCommit: never auto-commits the plugin authoring root', () => 
   }
 });
 
+// A git that never answers must not be read AS an answer.
+//
+// `git rev-parse --verify --quiet HEAD` returns exit 1 to mean "this repo has no
+// commits", and before exec.runResult existed a hung, killed or missing git came
+// back as exit 1 too. Those are the same value with opposite consequences: the
+// first is the precondition for committing, the second is a repo whose history we
+// simply failed to see. exec.run also had no timeout at all, so the real
+// pre-change behaviour of this path against a wedged git was to block the hook
+// forever rather than to misread it.
+//
+// The shim answers the work-tree probe honestly and hangs only on the HEAD probe,
+// so what is under test is the ONE call whose exit 1 is ambiguous.
+test('ensureInitialCommit: a hung `git rev-parse HEAD` is not read as "no commits"', () => {
+  const dir = tmp();
+  const shimDir = tmp();
+  const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const shim = path.join(shimDir, 'git');
+  fs.writeFileSync(shim, [
+    '#!/bin/sh',
+    'case "$*" in',
+    // Long enough that only the bound can end it: GIT_PROBE_TIMEOUT_MS is 3 s.
+    '  *"--verify --quiet HEAD"*) sleep 30 ;;',
+    `  *) exec ${JSON.stringify(realGit)} "$@" ;;`,
+    'esac',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const path0 = process.env.PATH;
+  try {
+    git(dir, ['init', '-q']);
+    fs.writeFileSync(path.join(dir, 'x.ts'), 'export {};\n', 'utf8');
+    process.env.PATH = `${shimDir}${path.delimiter}${path0 ?? ''}`;
+
+    const started = Date.now();
+    const created = ensureInitialCommit(dir);
+    const elapsed = Date.now() - started;
+    process.env.PATH = path0;
+
+    assert.equal(created, false, 'a probe that did not answer must not authorize a commit');
+    // Bounded at all: without a timeout on exec this call does not return.
+    assert.ok(elapsed < 30_000, `the probe was not bounded — ensureInitialCommit took ${elapsed} ms`);
+    // And the tree is untouched, which is the consequence the boolean stands for.
+    assert.throws(() => git(dir, ['rev-parse', '--verify', 'HEAD']), 'no commit was created');
+    assert.equal(git(dir, ['diff', '--cached', '--name-only']).trim(), '', 'nothing was staged either');
+  } finally {
+    process.env.PATH = path0;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(shimDir, { recursive: true, force: true });
+  }
+});
+
 // A host preamble that shells out to `git diff … origin/HEAD…` exits non-zero on
 // a remote-less scaffold and the host kills the spawn before the agent produces
 // a transcript (18cl: the reviewer died twice, the run finished through a

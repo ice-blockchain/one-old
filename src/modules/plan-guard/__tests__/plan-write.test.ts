@@ -1274,12 +1274,28 @@ test('Edit hot structural gate allows a uniquely reconstructed non-structural ch
 });
 
 // Three-valued on purpose (see src/test-support/__tests__/latency-budget.ts).
-// The 150 ms budget is honest — the idle-machine p95 is ~28 ms, 5x of headroom
-// — but the INSTRUMENT was not: the same assertion returned 28 ms idle and
-// 166 ms, 16.8 s, 31 s and 47.9 s under load, so a red here carried no
+// The 150 ms budget is honest — the idle-machine p95 is ~14 ms, over 10x of
+// headroom — but the INSTRUMENT was not: the same assertion returned 28 ms idle
+// and 166 ms, 16.8 s, 31 s and 47.9 s under load, so a red here carried no
 // information about the code. A wall clock taken while the machine is
 // descheduling this process is not evidence in either direction, and now says
 // so instead of guessing.
+//
+// The ~14 ms supersedes an earlier ~28 ms recorded for this same assertion; the
+// path got faster (the root-resolution memo cut resolveProjectRoot from 206
+// syscalls to 49), so a number measured before that is not a baseline for this
+// one.
+//
+// SCOPE — the name overclaims and cannot be fixed here. This times
+// planWriteGate(ctx) on a prepared Ctx: ONE gate, not a whole invocation. A
+// Claude `Write` matches four hooks.json entries (check-codex-child-model,
+// check-onboarding-gate, check-model-choice-gate, check-plan-write) and `Bash`
+// five, each its own OS process; adapter parse, the fail-closed pre-checks,
+// module discovery and serialize all sit outside this closure. Whole-invocation
+// numbers, including the per-process constant this cannot see, live in
+// tests/hook-timing/. Do NOT rename the test to say so: the `latency-budget`
+// job in .github/workflows/generate-check.yml greps for this exact title as its
+// anti-mute guard, so a rename makes that job fail with "test did not run".
 test('complete Write pre-tool path remains below the 150 ms p95 budget with runtime contracts', (t) => {
   withMaterialized({
     currentRunId: 'run-hot-path',

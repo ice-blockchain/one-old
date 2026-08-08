@@ -57,7 +57,7 @@ import { ensureRunnerShims } from '../../shared/runner-shims';
 import { sweepTrafficOneRetention } from '../../shared/retention';
 import {
   oneMcpSessionWarning,
-  syncOneMcpForSession,
+  syncOneMcpForSessionStart,
   syncOneMcpOnce,
   type SessionOneMcpSync,
 } from './one-mcp-sync';
@@ -174,12 +174,25 @@ function runSessionStartInner(ctx: Ctx): HookResult {
 // the per-session marker; payloads without a stable session id deliberately run
 // every time because duplicates are safe and guessing an identity is not.
 
+// The sync defaults to `syncOneMcpForSessionStart`, NOT `syncOneMcpForSession`:
+// on a host that already has a usable cached model config the worker is fired
+// detached, so SessionStart stops blocking on a second full node process. The
+// blocking form is kept for the cold-cache case (and for the onboarding-wait
+// runner, which genuinely depends on the result — see consent.ts).
+//
+// BEHAVIOUR THIS CHANGES, stated rather than buried. On the detached path the
+// warning below reads the diagnostic the PREVIOUS sync left, because the child
+// writes it after this hook has returned. A sync that fails now surfaces its
+// advisory one session later than it used to. It cannot surface a WRONG one:
+// `claimOneMcpWarningKey` keys on (host, configName, reason, requested,
+// observed), so an already-shown diagnostic stays claimed and a new one is
+// shown exactly once, whenever it lands.
 export function syncOneMcpAtSessionStart(
   cwd: string,
   host: unknown,
   raw: unknown,
   env: NodeJS.ProcessEnv = process.env,
-  sync: SessionOneMcpSync = syncOneMcpForSession,
+  sync: SessionOneMcpSync = syncOneMcpForSessionStart,
   featureEnabled?: boolean,
 ): string | null {
   const sessionId = onboardingSyncSessionId(hookSessionIdentity(raw).sessionId);

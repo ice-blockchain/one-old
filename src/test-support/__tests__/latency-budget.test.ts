@@ -97,6 +97,24 @@ test('the same blocking distribution IS inconclusive once the machine stops deli
   assert.equal(r.verdict, 'inconclusive', r.reason);
 });
 
+test('a breach smaller than the delivery discount is inconclusive, not a regression', () => {
+  // Recorded from tests/hook-timing's claude session-start row on 2026-08-08:
+  // 45.31 ms p95 at 100% delivery running alone, and 152.40 ms p95 at 91%
+  // delivery inside the 291-file `npm test` suite. The second reading is 1.02x
+  // over budget on a machine the instrument itself says could have inflated it
+  // by 1.10x, so calling it a regression is a claim the data does not support —
+  // 152.40 x 0.91 = 138.68 ms, still inside the budget.
+  const r = classifyLatency(samples(shape(120, 152.4, 190), shape(36, 40, 55), 0.91), BUDGET);
+  assert.equal(r.verdict, 'inconclusive', r.reason);
+
+  // The discount is a discount, not an amnesty: the same delivery with a breach
+  // bigger than 1/d is still a failure, and so is a quiet machine at the same
+  // wall clock. Without both of these the rule above would read as "anything
+  // under 91% of the budget-crossing point is fine".
+  assert.equal(classifyLatency(samples(shape(150, 200, 260), shape(36, 40, 55), 0.91), BUDGET).verdict, 'fail');
+  assert.equal(classifyLatency(samples(shape(120, 152.4, 190), shape(36, 40, 55), 1), BUDGET).verdict, 'fail');
+});
+
 test('an under-budget wall clock passes however starved the machine was', () => {
   // The one-way soundness that makes this safe to adopt: contention can only
   // ever inflate, so nothing the classifier does can turn a green into a red.

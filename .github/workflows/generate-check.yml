@@ -11,11 +11,13 @@ name: Generate check
 # platforms, yet until now nothing in CI ever generated or hashed the tree
 # anywhere but ubuntu-latest.
 #
-# `latency-budget` is the QUIET path: one test file, alone, on a runner that has
-# done nothing else. It exists because the only measurement in this repo whose
+# `latency-budget` is the QUIET path: two test files, alone, on a runner that has
+# done nothing else. It exists because the measurements in this repo whose
 # subject is wall-clock time cannot be taken on a machine running 291 test files
 # at once, and a budget that is never evaluated anywhere is a budget that has
-# stopped being enforced.
+# stopped being enforced. It carries the Write pre-tool p95 budget (the older,
+# single-event claim) and tests/hook-timing (per-event dispatch cost for all
+# seven canonical events, plus the OS-process leg that only runs here).
 #
 # `test-env-strict` is the SLOW path: `npm run test:env -- --strict`, the only
 # thing that exercises how the gates, the architecture compiler, the QA runner
@@ -277,6 +279,84 @@ jobs:
             exit 0
           fi
           echo "### Latency budget — measured, answered, and within budget" >> "$GITHUB_STEP_SUMMARY"
+
+      # Second measurement, same idle runner, deliberately AFTER the one above.
+      # The Write pre-tool budget is the older claim and gets the quietest slot;
+      # this one measures every OTHER hook event, which had no budget at all.
+      #
+      # T1_HOOK_TIMING_PROCESS=1 is what makes this job different from `npm
+      # test`. The OS-process leg compiles the runtime and spawns ~60 bare-node
+      # hook processes, which is exactly the kind of load that pushes a
+      # wall-clock measurement into INCONCLUSIVE, so it is off in the parallel
+      # suite and on HERE, where nothing else is running. The report step below
+      # fails if its table does not appear, so "off everywhere" is not a state
+      # this repo can drift into silently.
+      - name: "Per-event hook timing (one file, alone, process leg enabled)"
+        shell: bash
+        env:
+          T1_HOOK_TIMING_PROCESS: '1'
+          # This job is the ONLY place the per-event budget is enforced rather
+          # than merely measured: inside `npm test`'s 291-file parallel suite the
+          # same session-start row reads 45 ms alone and 152-243 ms under load,
+          # and the instrument's starvation detector cannot see the difference
+          # because its reference workload does no I/O. The report step below
+          # fails if the ENFORCED marker is missing.
+          T1_HOOK_TIMING_BUDGET: '1'
+        run: |
+          set -o pipefail
+          node --import ./src/build/test-preload.mjs --import tsx --test \
+            tests/hook-timing/hook-timing.test.ts 2>&1 \
+            | tee "$RUNNER_TEMP/hook-timing.log"
+
+      # The same "refuse a hollow green" contract as the step above, and for the
+      # same reason: this job's whole value is that these specific measurements
+      # ran. Three ways its tick could be empty, all closed here.
+      - name: "Report per-event hook timing (and refuse a hollow green)"
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/hook-timing.log"
+          [ -f "$log" ] || exit 0
+          fail=0
+          # 1. The budget test itself. Renamed, filtered or deleted, a green job
+          #    would certify that six events stay inside a budget nothing checked.
+          budget='every hook event stays inside the 150 ms in-process dispatch budget at p95'
+          if ! grep -qF "$budget" "$log"; then
+            echo "::error title=Per-event hook budget did not run::nothing matching '$budget' appeared in the output"
+            fail=1
+          fi
+          # 2. The coverage gate. Without it the budget test can stay green while
+          #    quietly measuring fewer events than the dispatcher handles.
+          coverage='hook timing harness covers every canonical event and every declared hook subcommand'
+          if ! grep -qF "$coverage" "$log"; then
+            echo "::error title=Hook timing coverage gate did not run::nothing matching '$coverage' appeared in the output"
+            fail=1
+          fi
+          # 3. The process leg. It is opt-in, so the ONE place it is supposed to
+          #    run is the only place that can notice it stopped.
+          if grep -q 'HOOK TIMING · OS PROCESS LEG NOT RUN' "$log" || ! grep -q 'HOOK TIMING · OS PROCESS' "$log"; then
+            echo "::error title=Hook timing OS-process leg did not run::T1_HOOK_TIMING_PROCESS=1 is set on this step precisely so it does; its table is missing from the output"
+            fail=1
+          fi
+          # 4. Enforcement itself. The budget is measured everywhere and ENFORCED
+          #    only here, so this job going quiet is the budget going away.
+          if ! grep -qF 'HOOK TIMING · BUDGET ENFORCED' "$log"; then
+            echo "::error title=Hook timing budget was measured but not enforced::T1_HOOK_TIMING_BUDGET=1 is set on this step precisely so the rows are asserted, not just printed; the ENFORCED marker is missing from the output"
+            fail=1
+          fi
+          [ "$fail" = 0 ] || exit 1
+          if grep -q 'LATENCY BUDGET INCONCLUSIVE' "$log"; then
+            reason=$(grep -o 'LATENCY BUDGET INCONCLUSIVE.*' "$log" \
+              | awk '{ if (length($0) > length(best)) best = $0 } END { print best }')
+            echo "::warning title=Per-event hook budget UNENFORCED on this run::${reason//%/%25}"
+          fi
+          {
+            echo "### Per-event hook timing"
+            echo
+            echo '```'
+            sed -n '/HOOK TIMING ·/,/^$/p' "$log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test-env-strict:
     name: "Full composition (test:env --strict)"

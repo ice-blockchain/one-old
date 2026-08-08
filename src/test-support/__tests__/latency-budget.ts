@@ -38,6 +38,33 @@ export interface LatencyBudgetOptions {
   readonly warmup?: number;
 }
 
+/**
+ * The async twin of LatencyBudgetOptions.
+ *
+ * It exists because the thing this repo most needs a per-event budget on —
+ * core/dispatch.ts, and the host entries above it — is `async`. Handing an
+ * async function to the SYNCHRONOUS measurement below times how long it takes
+ * to return a pending promise (measured: ~0.01 ms for a 39 ms SessionStart),
+ * which is not a small error, it is no measurement at all.
+ */
+export interface LatencyBudgetAsyncOptions {
+  readonly label: string;
+  readonly budgetMs: number;
+  readonly run: () => Promise<unknown> | unknown;
+  readonly samples?: number;
+  readonly warmup?: number;
+  /**
+   * Per-sample preparation, EXCLUDED from the timed window and from the CPU
+   * accounting. This is what makes a COLD distribution measurable: a hook's
+   * first invocation against a project pays work (materialization, the
+   * retention sweep, cache population) that its second does not, so "build a
+   * fresh project, then time one invocation" is the only shape that can see
+   * it. Without a setup seam the fixture build lands inside the sample and
+   * swamps the thing being measured.
+   */
+  readonly setup?: () => Promise<unknown> | unknown;
+}
+
 export interface LatencyStats {
   readonly n: number;
   readonly wallP50: number;
@@ -154,6 +181,31 @@ interface Attempt {
   readonly elapsedMs: number;
 }
 
+/**
+ * Sizing of the interleaved reference workload, shared by the sync and async
+ * measurement loops so both experience the SAME starvation detector. Split out
+ * of measureOnce for that reason and no other: two loops that sized their
+ * reference differently would be two instruments wearing one name.
+ */
+function referenceUnitsFor(probeCpu: readonly number[]): number {
+  const sorted = [...probeCpu].sort((a, b) => a - b);
+  return calibrateSpinUnits(Math.min(quantile(sorted, 0.5) || 1, REFERENCE_TARGET_CAP_MS));
+}
+
+function burstIntervalFor(samples: number): number {
+  return Math.max(1, Math.floor(samples / REFERENCE_BURSTS));
+}
+
+/**
+ * Clamped at 1: Node's GC and JIT threads burn CPU concurrently with the
+ * measured thread, so process-wide CPU time can exceed the section's wall
+ * clock. That overshoot is real (measured: 9 of 250 samples, up to 11.7 ms)
+ * and must not read as better-than-perfect delivery.
+ */
+function deliveredFraction(referenceCpu: number, referenceWall: number): number {
+  return referenceWall > 0 ? Math.min(1, referenceCpu / referenceWall) : 1;
+}
+
 function measureOnce(run: () => void, samples: number, warmup: number): Attempt {
   for (let i = 0; i < warmup; i += 1) run();
 
@@ -165,10 +217,8 @@ function measureOnce(run: () => void, samples: number, warmup: number): Attempt 
     run();
     probe.push(cpuMs(process.cpuUsage(before)));
   }
-  probe.sort((a, b) => a - b);
-  const referenceTargetMs = Math.min(quantile(probe, 0.5) || 1, REFERENCE_TARGET_CAP_MS);
-  const units = calibrateSpinUnits(referenceTargetMs);
-  const burstEvery = Math.max(1, Math.floor(samples / REFERENCE_BURSTS));
+  const units = referenceUnitsFor(probe);
+  const burstEvery = burstIntervalFor(samples);
 
   const wall: number[] = [];
   const cpu: number[] = [];
@@ -193,11 +243,70 @@ function measureOnce(run: () => void, samples: number, warmup: number): Attempt 
   return {
     wall,
     cpu,
-    // Clamped at 1: Node's GC and JIT threads burn CPU concurrently with the
-    // measured thread, so process-wide CPU time can exceed the section's wall
-    // clock. That overshoot is real (measured: 9 of 250 samples, up to 11.7 ms)
-    // and must not read as better-than-perfect delivery.
-    delivered: referenceWall > 0 ? Math.min(1, referenceCpu / referenceWall) : 1,
+    delivered: deliveredFraction(referenceCpu, referenceWall),
+    elapsedMs: performance.now() - startedAt,
+  };
+}
+
+/**
+ * The same procedure for an `async` section, plus a per-sample `setup` that is
+ * kept outside the timer.
+ *
+ * Kept as a separate loop rather than folded into measureOnce, deliberately:
+ * `await` cannot be introduced into the synchronous loop above without adding
+ * microtask turns to the ONE measurement in this repo that already has
+ * standing (the 150 ms Write pre-tool budget), and a timing instrument that
+ * changes the number it reports while its subject is unchanged is worthless.
+ * Everything that decides an OUTCOME — reference sizing, burst interval,
+ * delivery accounting, and classifyLatency itself — is shared, so the two
+ * loops cannot drift into disagreeing verdicts.
+ */
+async function measureOnceAsync(
+  run: () => Promise<unknown> | unknown,
+  samples: number,
+  warmup: number,
+  setup?: () => Promise<unknown> | unknown,
+): Promise<Attempt> {
+  for (let i = 0; i < warmup; i += 1) {
+    if (setup) await setup();
+    await run();
+  }
+
+  const probe: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    if (setup) await setup();
+    const before = process.cpuUsage();
+    await run();
+    probe.push(cpuMs(process.cpuUsage(before)));
+  }
+  const units = referenceUnitsFor(probe);
+  const burstEvery = burstIntervalFor(samples);
+
+  const wall: number[] = [];
+  const cpu: number[] = [];
+  let referenceWall = 0;
+  let referenceCpu = 0;
+  const startedAt = performance.now();
+  for (let sample = 0; sample < samples; sample += 1) {
+    if (setup) await setup();
+    const cpuBefore = process.cpuUsage();
+    const wallBefore = performance.now();
+    await run();
+    wall.push(performance.now() - wallBefore);
+    cpu.push(cpuMs(process.cpuUsage(cpuBefore)));
+
+    if (sample % burstEvery === 0) {
+      const refCpuBefore = process.cpuUsage();
+      const refWallBefore = performance.now();
+      spin(units);
+      referenceWall += performance.now() - refWallBefore;
+      referenceCpu += cpuMs(process.cpuUsage(refCpuBefore));
+    }
+  }
+  return {
+    wall,
+    cpu,
+    delivered: deliveredFraction(referenceCpu, referenceWall),
     elapsedMs: performance.now() - startedAt,
   };
 }
@@ -253,12 +362,25 @@ export function classifyLatency(
   //    from the timings alone, which is why a reference workload was run in the
   //    same window. It did no I/O, so any CPU it was denied is starvation and
   //    nothing else.
-  if (attempt.delivered >= DELIVERY_FLOOR) {
+  //
+  //    The delivery test is necessary but NOT sufficient, and this rule used to
+  //    stop at it. `delivered` bounds the inflation at 1/d — so the figure this
+  //    rule can stand behind is the DISCOUNTED wall clock, and a breach smaller
+  //    than that factor is inside the instrument's own error bar. Measured, on
+  //    the input that forced this: tests/hook-timing's claude session-start row
+  //    reads 45.31 ms p95 at 100% delivery alone and 152.40 ms at 91% delivery
+  //    inside the 291-file parallel suite, against a 150 ms budget. The old form
+  //    called that second reading a REGRESSION at 1.02x over budget while its
+  //    own sentence said the machine could have inflated it by 1.10x. Rule 2
+  //    already catches the case this discount could otherwise mute: a path that
+  //    burns the budget in CPU never reaches here.
+  if (attempt.delivered >= DELIVERY_FLOOR && wallP95 * attempt.delivered >= budgetMs) {
     return {
       verdict: 'fail',
       reason: `wall p95 ${wallP95.toFixed(2)} ms >= ${budgetMs} ms on a machine that delivered `
         + `${(attempt.delivered * 100).toFixed(0)}% of requested CPU (>= ${(DELIVERY_FLOOR * 100).toFixed(0)}%), `
-        + `so it could inflate this by at most ${(1 / attempt.delivered).toFixed(2)}x. The breach is not contention.`,
+        + `so it could inflate this by at most ${(1 / attempt.delivered).toFixed(2)}x — `
+        + `${(wallP95 * attempt.delivered).toFixed(2)} ms even after that discount. The breach is not contention.`,
     };
   }
 
@@ -267,6 +389,23 @@ export function classifyLatency(
     reason: `wall p95 ${wallP95.toFixed(2)} ms >= ${budgetMs} ms, but the machine delivered only `
       + `${(attempt.delivered * 100).toFixed(0)}% of requested CPU and the path burned just `
       + `${cpuP95.toFixed(2)} ms of it. Both a passing and a failing truth are consistent with this data.`,
+  };
+}
+
+function statsFrom(attempt: Attempt, samples: number, attempts: number, elapsedMs: number): LatencyStats {
+  const wall = [...attempt.wall].sort((a, b) => a - b);
+  const cpu = [...attempt.cpu].sort((a, b) => a - b);
+  return {
+    n: samples,
+    wallP50: quantile(wall, 0.5),
+    wallP95: quantile(wall, 0.95),
+    wallMax: wall[wall.length - 1] ?? 0,
+    cpuP50: quantile(cpu, 0.5),
+    cpuP95: quantile(cpu, 0.95),
+    cpuMax: cpu[cpu.length - 1] ?? 0,
+    delivered: attempt.delivered,
+    attempts,
+    elapsedMs,
   };
 }
 
@@ -285,24 +424,43 @@ export function measureLatencyBudget(options: LatencyBudgetOptions): LatencyOutc
     elapsedMs += attempt.elapsedMs;
   }
 
-  const wall = [...attempt.wall].sort((a, b) => a - b);
-  const cpu = [...attempt.cpu].sort((a, b) => a - b);
-  return {
-    verdict: decision.verdict,
-    reason: decision.reason,
-    stats: {
-      n: samples,
-      wallP50: quantile(wall, 0.5),
-      wallP95: quantile(wall, 0.95),
-      wallMax: wall[wall.length - 1] ?? 0,
-      cpuP50: quantile(cpu, 0.5),
-      cpuP95: quantile(cpu, 0.95),
-      cpuMax: cpu[cpu.length - 1] ?? 0,
-      delivered: attempt.delivered,
-      attempts,
-      elapsedMs,
-    },
-  };
+  return { verdict: decision.verdict, reason: decision.reason, stats: statsFrom(attempt, samples, attempts, elapsedMs) };
+}
+
+export async function measureLatencyBudgetAsync(options: LatencyBudgetAsyncOptions): Promise<LatencyOutcome> {
+  const samples = options.samples ?? 250;
+  const warmup = options.warmup ?? 20;
+
+  let attempt = await measureOnceAsync(options.run, samples, warmup, options.setup);
+  let decision = classifyLatency(attempt, options.budgetMs);
+  let attempts = 1;
+  let elapsedMs = attempt.elapsedMs;
+  if (decision.verdict === 'inconclusive' && attempt.elapsedMs < RETRY_IF_ATTEMPT_UNDER_MS) {
+    attempt = await measureOnceAsync(options.run, samples, warmup, options.setup);
+    decision = classifyLatency(attempt, options.budgetMs);
+    attempts = 2;
+    elapsedMs += attempt.elapsedMs;
+  }
+
+  return { verdict: decision.verdict, reason: decision.reason, stats: statsFrom(attempt, samples, attempts, elapsedMs) };
+}
+
+/**
+ * One line of measured numbers, in a fixed column order, for a report table.
+ *
+ * Exported because a measurement whose numbers are never printed is a
+ * measurement nobody can audit: a budget test that prints only a green tick
+ * cannot distinguish "3 ms against 150" from "149 ms against 150", and those
+ * are opposite states of the same claim.
+ */
+export function latencyStatsLine(label: string, stats: LatencyStats): string {
+  return [
+    label.padEnd(38),
+    `n=${String(stats.n).padStart(4)}`,
+    `wall p50/p95/max ${stats.wallP50.toFixed(2)}/${stats.wallP95.toFixed(2)}/${stats.wallMax.toFixed(2)} ms`,
+    `cpu p95 ${stats.cpuP95.toFixed(2)} ms`,
+    `delivered ${(stats.delivered * 100).toFixed(0)}%`,
+  ].join('  ');
 }
 
 function banner(label: string, budgetMs: number, outcome: LatencyOutcome): string {
@@ -345,19 +503,36 @@ function banner(label: string, budgetMs: number, outcome: LatencyOutcome): strin
  * reads it and silently does nothing. Any future test-visible switch has the
  * same trap.
  */
-export function assertLatencyBudget(t: TestContext, options: LatencyBudgetOptions): LatencyOutcome {
-  const outcome = measureLatencyBudget(options);
+function settle(t: TestContext, label: string, budgetMs: number, outcome: LatencyOutcome): LatencyOutcome {
   if (outcome.verdict === 'fail') {
-    throw new Error(`${options.label}: ${outcome.reason}`);
+    throw new Error(`${label}: ${outcome.reason}`);
   }
   if (outcome.verdict === 'inconclusive') {
-    const text = banner(options.label, options.budgetMs, outcome);
+    const text = banner(label, budgetMs, outcome);
     if (process.env[STRICT_ENV] === '1') {
-      throw new Error(`${options.label}: INCONCLUSIVE under ${STRICT_ENV}=1 — ${outcome.reason}`);
+      throw new Error(`${label}: INCONCLUSIVE under ${STRICT_ENV}=1 — ${outcome.reason}`);
     }
     process.stderr.write(text);
-    t.diagnostic(`LATENCY BUDGET INCONCLUSIVE · ${options.label} · ${outcome.reason}`);
-    t.skip(`INCONCLUSIVE (budget NOT checked) · ${options.label} · ${outcome.reason}`);
+    t.diagnostic(`LATENCY BUDGET INCONCLUSIVE · ${label} · ${outcome.reason}`);
+    t.skip(`INCONCLUSIVE (budget NOT checked) · ${label} · ${outcome.reason}`);
+    return outcome;
   }
+  // A PASS carries its numbers too. A green tick alone cannot tell a budget
+  // with 20x of headroom apart from one that cleared by a millisecond, and the
+  // second is a budget about to start flaking with no warning anywhere in the
+  // log. Every node:test reporter prints diagnostics inline.
+  t.diagnostic(`LATENCY BUDGET PASS · ${latencyStatsLine(label, outcome.stats)}  budget ${budgetMs.toFixed(2)} ms`);
   return outcome;
+}
+
+export function assertLatencyBudget(t: TestContext, options: LatencyBudgetOptions): LatencyOutcome {
+  return settle(t, options.label, options.budgetMs, measureLatencyBudget(options));
+}
+
+/** The async twin of assertLatencyBudget — same three-valued contract. */
+export async function assertLatencyBudgetAsync(
+  t: TestContext,
+  options: LatencyBudgetAsyncOptions,
+): Promise<LatencyOutcome> {
+  return settle(t, options.label, options.budgetMs, await measureLatencyBudgetAsync(options));
 }
