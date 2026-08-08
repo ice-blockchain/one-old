@@ -6,15 +6,25 @@ description = "Traffic One documentation and scanner regex examples use inert pl
 # scanners-secrets.ts): `gitleaks git --log-opts=--all` over the full history and
 # `gitleaks dir` over the working tree. The history scan can only ever see
 # COMMITTED files, i.e. `src/**` — `dist/` is generated and gitignored, so every
-# entry below that names the installed-plugin layout (`scripts/…`, `skills/…`)
-# matches nothing in that half of the scan and the allowlist covered none of the
-# files actually in the repository.
+# entry below that names the installed-plugin layout (`scripts/…`,
+# `skills-catalog/…`) matches nothing in that half of the scan and the allowlist
+# covered none of the files actually in the repository.
 #
 # The dist-shaped entries are kept rather than replaced: CI runs
 # `npm run plugin:build` before scanning and `gitleaks dir` walks gitignored
 # paths too (measured — a scan of this checkout reported 185 MB, more than the
 # tree is without its gitignored directories), so the generated tree is a real
 # input to that half.
+#
+# The catalog is emitted at `skills-catalog/<id>/SKILL.md`, NOT `skills/<id>/…`
+# (gen/emit/skills.ts maps each tree onto its own name; measured in a built tree:
+# dist/skills-catalog/docker-patterns/SKILL.md exists, dist/skills/ holds only
+# .gitkeep). gitleaks matches these unanchored and `skills/docker-patterns/…` is
+# not a substring of `skills-catalog/docker-patterns/…`, so the seven entries
+# spelled that way suppressed nothing at all. `skills/` is the bootstrap dir the
+# session-start surgery fills in an INSTALLED plugin root — never in the built
+# tree this config is scanned against. tests/gitleaks-config.test.ts holds every
+# generated entry to a path gen actually emits.
 paths = [
   # Committed source. The scanner's own regex examples and the placeholder
   # credentials its tests assert on live here.
@@ -28,13 +38,13 @@ paths = [
   '''src/modules/skills/skills-catalog/kotlin-patterns/SKILL\.md''',
   # The same content in the generated plugin root, for the working-tree scan.
   '''scripts/security-check-runner\.cjs''',
-  '''skills/docker-patterns/SKILL\.md''',
-  '''skills/django-security/SKILL\.md''',
-  '''skills/python-testing/SKILL\.md''',
-  '''skills/supabase-setup/SKILL\.md''',
-  '''skills/deployment-patterns/SKILL\.md''',
-  '''skills/django-verification/SKILL\.md''',
-  '''skills/kotlin-patterns/SKILL\.md''',
+  '''skills-catalog/docker-patterns/SKILL\.md''',
+  '''skills-catalog/django-security/SKILL\.md''',
+  '''skills-catalog/python-testing/SKILL\.md''',
+  '''skills-catalog/supabase-setup/SKILL\.md''',
+  '''skills-catalog/deployment-patterns/SKILL\.md''',
+  '''skills-catalog/django-verification/SKILL\.md''',
+  '''skills-catalog/kotlin-patterns/SKILL\.md''',
 ]
 regexes = [
   '''sk-proj-xxxxx''',

@@ -127,13 +127,28 @@ export interface Residue {
 // and a `..` in that name is the difference between removing a plugin copy and
 // removing the user's home. Requires at least three segments below home, which
 // no host's plugin root is shallower than.
+//
+// What refuses traversal here is the RESOLUTION, not a segment scan. This used
+// to end with `!rest.includes('..')`, which no input could ever reach:
+// path.resolve normalizes before the segments are split, so `rest` cannot hold
+// a `..` (measured: `/home/dev/.copilot/installed-plugins/../../../etc`
+// resolves to `/home/etc` and is refused by the containment test above, with
+// zero segments examined). It is recorded rather than restored so the next
+// reader does not re-add it believing it carries the traversal case.
+//
+// The containment is a PATH claim, not a filesystem one: this resolves, it does
+// not realpath, so a SYMLINK under a residue root passes — its resolved path is
+// inside home whatever it points at. The blast radius of that is one symlink:
+// fs.rmSync unlinks the link and leaves the target intact (measured against a
+// fixture; __tests__/uninstall.test.ts pins it). Widening this to realpath
+// would refuse a legitimately symlinked plugin dir, which is the more common
+// shape of the two, so the behaviour is documented and pinned rather than
+// changed.
 export function isRemovableResidueDir(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
   const home = path.resolve(homeDir(env));
   const resolved = path.resolve(dir);
   if (resolved === home || !resolved.startsWith(home + path.sep)) return false;
-  const rest = resolved.slice(home.length + 1).split(path.sep).filter(Boolean);
-  if (rest.length < 3) return false;
-  return !rest.includes('..');
+  return resolved.slice(home.length + 1).split(path.sep).filter(Boolean).length >= 3;
 }
 
 /** Does this directory hold the Traffic One plugin bundle? Read, never assumed. */

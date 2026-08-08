@@ -42,6 +42,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Keep the user's setup prompt out of their repository, and ship the release apparatus (`5aea8d77`)
 - Give backend framework wiring a compiled home, and make role ownership catch containment (`3307e571`)
 - Bound UI-impact escalation to intrinsic evidence, and close the refusal instrument's raw-fs blind spot (`c856357d`)
 - Wire session-start API-key revalidation and the updates announcements feed (`ad0a0808`)

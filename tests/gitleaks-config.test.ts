@@ -6,7 +6,9 @@
 // also walks gitignored paths and therefore sees the generated plugin root.
 //
 // The config shipped with an allowlist whose every path entry described the
-// GENERATED layout (`scripts/…`, `skills/…`). `dist/` is gitignored, so that
+// GENERATED layout — and described it wrongly for the catalog, as `skills/<id>/
+// SKILL.md` rather than the `skills-catalog/<id>/SKILL.md` gen emits. `dist/` is
+// gitignored, so that
 // half of the scan had an allowlist covering none of the files in the
 // repository: the entries could not suppress anything the history scan found,
 // and any placeholder credential in a committed source file was a build-breaking
@@ -19,6 +21,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+
+import { SHIMS } from '../src/build/build-runtime';
+import { generatedSkillDocs } from '../src/gen/emit/skills';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const CONFIG = path.join(REPO_ROOT, '.gitleaks.toml');
@@ -57,14 +62,15 @@ test('the allowlist covers the committed tree, not only the generated one', () =
 
 test('every generated-tree entry has a committed-source counterpart', () => {
   const entries = allowlistPaths().map(literal);
-  // The generated layout flattens the catalog: src/modules/skills/skills-catalog/
-  // <id>/SKILL.md is emitted as skills/<id>/SKILL.md, and the security-check
-  // runner is bundled as scripts/security-check-runner.cjs.
-  const generated = entries.filter((e) => e.startsWith('skills/') || e.startsWith('scripts/'));
+  // The generated layout keeps the catalog under its own name:
+  // src/modules/skills/skills-catalog/<id>/SKILL.md is emitted as
+  // skills-catalog/<id>/SKILL.md, and the security-check runner is bundled as
+  // scripts/security-check-runner.cjs.
+  const generated = entries.filter((e) => e.startsWith('skills-catalog/') || e.startsWith('scripts/'));
   assert.ok(generated.length > 0, 'fixture guard: the working-tree half still has entries');
 
   for (const entry of generated) {
-    const skill = /^skills\/([^/]+)\/SKILL\.md$/.exec(entry);
+    const skill = /^skills-catalog\/([^/]+)\/SKILL\.md$/.exec(entry);
     const expected = skill
       ? `src/modules/skills/skills-catalog/${skill[1]}/SKILL.md`
       : 'src/runners/security-check/';
@@ -72,5 +78,36 @@ test('every generated-tree entry has a committed-source counterpart', () => {
       `${entry} names the generated tree only; its source counterpart ${expected} must be allowlisted too or the history scan cannot suppress it`);
     assert.ok(fs.existsSync(path.join(REPO_ROOT, expected)),
       `${expected} must exist — the generated entry ${entry} is emitted from it`);
+  }
+});
+
+// The check above was satisfied by seven entries spelled `skills/<id>/SKILL.md`
+// that the generator has never emitted — it only ever asked whether the SOURCE
+// side existed, so a working-tree entry naming a path that is never written was
+// invisible. gitleaks matches these unanchored, and `skills/docker-patterns/…`
+// is not a substring of `skills-catalog/docker-patterns/…`, so those entries
+// suppressed nothing while reading as though they did.
+//
+// The emitted set is taken from the generators themselves rather than from
+// `dist/`: the suite must not require a build, and asking gen what it writes is
+// the same question one commit earlier.
+test('every generated-tree entry names a path the generator actually emits', () => {
+  const emitted = new Set<string>([
+    ...generatedSkillDocs(REPO_ROOT).map((doc) => doc.relPath.split(path.sep).join('/')),
+    ...Object.keys(SHIMS).map((name) => `scripts/${name}`),
+  ]);
+  // Guards the source of truth, not the config: an emitted set that lost its
+  // skills would make every assertion below vacuously easy to satisfy.
+  assert.ok([...emitted].some((rel) => rel.startsWith('skills-catalog/')),
+    'fixture guard: the generator still emits a skills catalog');
+
+  const entries = allowlistPaths().map(literal);
+  const generated = entries.filter((entry) => !entry.startsWith('src/'));
+  assert.ok(generated.length > 0, 'fixture guard: the working-tree half still has entries');
+
+  for (const entry of generated) {
+    assert.ok(emitted.has(entry),
+      `${entry} is allowlisted for the working-tree scan but nothing emits it — `
+      + `an entry gitleaks can never match suppresses nothing and hides that the real path is unlisted`);
   }
 });

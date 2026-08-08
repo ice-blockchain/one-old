@@ -292,17 +292,74 @@ export function generateChangelog(repoRoot: string = REPO_ROOT): string {
   return renderChangelog(buildReleases(commits, versions));
 }
 
+/**
+ * The document as it reads with HEAD included, and as it read one commit ago.
+ *
+ * Both are needed because a committed generated file cannot describe the commit
+ * that ships it: the generator derives entries from history INCLUDING HEAD, so
+ * fresh output names HEAD's own hash while the file — written before that
+ * commit existed — cannot. Measured at 5aea8d77: the sole difference between
+ * the committed CHANGELOG.md and fresh output was HEAD's own entry.
+ *
+ * `atParent` is what the generator produced when the previous commit was HEAD.
+ * It is the full history minus the first record, and only when that record IS
+ * HEAD — `readCommits` passes `--no-merges`, so when HEAD is a merge it is
+ * absent from the list, contributes nothing to the document, and there is
+ * nothing to drop.
+ */
+export function generateChangelogVariants(repoRoot: string = REPO_ROOT): { atHead: string; atParent: string } {
+  const commits = readCommits(repoRoot);
+  const versions = readVersionsAtCommits(commits.map((commit) => commit.sha), repoRoot);
+  const head = git(['rev-parse', 'HEAD'], repoRoot).trim();
+  const withoutHead = commits[0]?.sha === head ? commits.slice(1) : commits;
+  return {
+    atHead: renderChangelog(buildReleases(commits, versions)),
+    atParent: renderChangelog(buildReleases(withoutHead, versions)),
+  };
+}
+
+/**
+ * Why a committed CHANGELOG.md is stale, or null when it is current.
+ *
+ * Current means byte-identical to the document generated from history
+ * INCLUDING HEAD (just regenerated, not yet committed) or EXCLUDING it (the
+ * steady state: committed one commit ago). Demanding equality with the former
+ * alone is an invariant no commit can satisfy — it fails on the very commit
+ * that updates the changelog, and regenerating moves the goalpost to the new
+ * commit instead of converging. Accepting either keeps both sides EXACT, so a
+ * hand edit, a format drift, and any lag of two commits or more all still fail;
+ * the one commit of tolerance is the lag inherent to the file, not slack.
+ */
+export function changelogStaleness(existing: string, repoRoot: string = REPO_ROOT): string | null {
+  const { atHead, atParent } = generateChangelogVariants(repoRoot);
+  if (existing === atHead || existing === atParent) return null;
+  // Name the oldest commit the file is missing rather than reporting inequality:
+  // "stale by five commits" and "someone hand-edited the preamble" need
+  // different fixes, and only the first one is what a lag looks like.
+  const head = git(['rev-parse', 'HEAD'], repoRoot).trim();
+  const missing = readCommits(repoRoot)
+    // HEAD's own absence is the tolerated lag, never the complaint: counting it
+    // would report "missing 2 commits" for a file that is behind by one.
+    .filter((commit) => commit.sha !== head && groupsForCommit(commit.paths).length > 0)
+    .filter((commit) => !existing.includes(commit.sha.slice(0, 8)));
+  const oldest = missing[missing.length - 1];
+  return oldest
+    ? `CHANGELOG.md is missing ${missing.length} commit(s), oldest ${oldest.sha.slice(0, 8)} "${oldest.subject}"`
+    : 'CHANGELOG.md lists every commit but does not match generated output (hand edit or format drift)';
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const check = argv.includes('--check');
   const target = path.join(REPO_ROOT, 'CHANGELOG.md');
   const generated = generateChangelog();
   if (check) {
     const existing = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
-    if (existing === generated) {
+    const stale = changelogStaleness(existing);
+    if (!stale) {
       process.stdout.write('changelog:check: CHANGELOG.md is current\n');
       return;
     }
-    process.stderr.write('changelog:check: CHANGELOG.md is stale — run `npm run changelog`\n');
+    process.stderr.write(`changelog:check: ${stale} — run \`npm run changelog\`\n`);
     process.exitCode = 1;
     return;
   }

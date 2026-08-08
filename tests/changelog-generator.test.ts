@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import {
   GROUP_ORDER,
   buildReleases,
+  changelogStaleness,
   classifyPath,
   generateChangelog,
   groupsForCommit,
@@ -238,13 +239,43 @@ test('the generated document is deterministic and non-trivial', () => {
 // see tests/release-docs.test.ts for why), so a stale one is the whole failure
 // mode a generated changelog exists to prevent. This is the assertion `npm run
 // changelog:check` makes, wired into the suite so it cannot be forgotten.
+//
+// It is deliberately NOT `committed === generateChangelog()`. That equality is
+// unsatisfiable by construction: the generator reads history including HEAD, so
+// fresh output names HEAD's own hash and the committed file — written before
+// that commit existed — cannot. It therefore fails on every commit that ships a
+// changelog update, and regenerating does not converge, it re-points the
+// goalpost at the new commit. (Measured at 5aea8d77: the whole diff between the
+// committed file and fresh output was HEAD's own entry, and the committed file
+// contained `5aea8d77` zero times.) changelogStaleness accepts the document as
+// of HEAD or as of HEAD's parent, both byte-exact — one commit of lag is
+// inherent to a generated file committed alongside what it describes; two is a
+// defect, and so is a hand edit.
 test('the committed CHANGELOG.md is current', () => {
   const fs = require('node:fs') as typeof import('node:fs');
   const path = require('node:path') as typeof import('node:path');
   const target = path.join(path.resolve(__dirname, '..'), 'CHANGELOG.md');
-  assert.equal(
-    fs.readFileSync(target, 'utf8'),
-    generateChangelog(),
-    'CHANGELOG.md is stale — run `npm run changelog`',
-  );
+  const stale = changelogStaleness(fs.readFileSync(target, 'utf8'));
+  assert.equal(stale, null, `${stale} — run \`npm run changelog\``);
+});
+
+// The tolerance above is one commit of LAG, not a licence to be behind. Losing
+// an older commit is the failure the document exists to prevent, so it is
+// checked by execution rather than argued: strip a commit that is neither HEAD
+// nor HEAD's parent out of an otherwise-current file and the check must name it.
+test('a changelog missing an OLDER commit is still caught, by name', () => {
+  const current = generateChangelog();
+  const entry = /^- .+ \(`([0-9a-f]{8})`\)$/gm;
+  // The third distinct entry from the top: old enough that neither accepted
+  // document contains it, so removing it is genuine staleness and not lag.
+  const shas = [...new Set([...current.matchAll(entry)].map((match) => match[1] as string))];
+  const victim = shas[2];
+  assert.ok(victim, 'fixture guard: the generated changelog has at least three distinct commits');
+  const mutilated = current
+    .split('\n')
+    .filter((line) => !line.includes(`(\`${victim}\`)`))
+    .join('\n');
+  const stale = changelogStaleness(mutilated);
+  assert.ok(stale, 'a changelog missing an older commit must not pass as current');
+  assert.match(stale, new RegExp(victim), 'the failure must name the commit that is missing, not just report a mismatch');
 });

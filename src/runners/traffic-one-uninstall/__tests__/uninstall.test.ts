@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as ts from 'typescript';
 
 import {
   describePluginInstall,
@@ -325,8 +326,80 @@ test('isRemovableResidueDir refuses anything outside a deep user-level plugin pa
   assert.equal(isRemovableResidueDir('/home/dev/.copilot', env), false, 'a host root is never deep enough');
   assert.equal(isRemovableResidueDir('/home/dev/.copilot/installed-plugins', env), false);
   assert.equal(isRemovableResidueDir('/etc/traffic-one/x/y', env), false, 'outside home is refused');
+  // Refused by RESOLUTION and by nothing else: path.resolve normalizes this to
+  // /home/etc before any segment is looked at, so it fails the containment
+  // test, not a `..` check. The predicate no longer claims to scan for `..`,
+  // because no input could ever have reached that scan.
   assert.equal(isRemovableResidueDir('/home/dev/.copilot/installed-plugins/../../../etc', env), false,
-    'traversal cannot escape, whether by resolution or by segment');
+    'traversal cannot escape: the path resolves outside home before it is measured');
+  assert.equal(path.resolve('/home/dev/.copilot/installed-plugins/../../../etc'), path.resolve('/home/etc'),
+    'the reason above, stated as the fact it rests on');
+});
+
+// The containment is a claim about the PATH, not about what the path leads to:
+// isRemovableResidueDir resolves and does not realpath, so a symlinked entry
+// under a residue root is inside home no matter where it points. What that costs
+// is bounded and worth writing down — fs.rmSync unlinks the link itself, so the
+// target survives.
+test('a symlinked residue entry costs the link, never what it points at', () => {
+  withHome((home, env) => {
+    const outside = path.join(home, 'outside-the-residue-root');
+    writeFile(path.join(outside, 'package.json'), '{"name":"traffic-one","version":"1.0.0"}');
+    const link = path.join(home, '.copilot', 'installed-plugins', '_direct', 'linked');
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(outside, link);
+
+    // Ownership is read THROUGH the link, so this is discovered like any copy.
+    assert.deepEqual(discoverInstallResidue(env).map((r) => r.label), ['Copilot plugin copy (linked)']);
+
+    const result = run(['--yes'], env);
+    assert.equal(result.code, 0, result.stdout + (result.stderr || ''));
+    assert.equal(fs.existsSync(link), false, 'the symlink is removed');
+    assert.ok(fs.existsSync(path.join(outside, 'package.json')),
+      'the link TARGET survives — rmSync unlinks the link, so the blast radius of the missing realpath is one symlink');
+  });
+});
+
+// The guard above is wired into removeResidue, and nothing can currently prove
+// that by behaviour: no path discoverInstallResidue can produce is shallower
+// than the three-segment floor or outside home, so deleting the call fails no
+// test (measured). Rather than export removeResidue purely to hand it a
+// synthetic Residue — a public surface widened for a case the product cannot
+// reach — the wiring is asserted where it exists, in the source. The guard is a
+// tripwire for the NEXT residue entry, whose directory name will be read off
+// disk; a tripwire that gets deleted for looking dead is not one.
+test('removeResidue still checks containment before it deletes anything', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf8');
+  const body = /function removeResidue\([\s\S]*?\n}/.exec(source);
+  assert.ok(body, 'fixture guard: removeResidue must still be a function in this file');
+  const text = body[0];
+  const guard = text.indexOf('isRemovableResidueDir');
+  const remove = text.indexOf('fs.rmSync');
+  assert.ok(guard >= 0, 'removeResidue must consult isRemovableResidueDir — without it the delete has no containment at all');
+  assert.ok(remove > guard, 'the containment check must precede the delete');
+
+  // Reference and order are not enough on their own: `isRemovableResidueDir(dir,
+  // env);` as a bare statement satisfies both while discarding the answer, and a
+  // computed-and-dropped value is a shape this codebase has shipped before. So
+  // the call's result must land somewhere a reader could branch on. Asked by
+  // PARENT NODE rather than by matching `if (!isRemovableResidueDir(` , which
+  // would false-fail the legitimate `const contained = …; if (!contained)`
+  // refactor — the point is that the answer is consumed, not how it is spelled.
+  const sf = ts.createSourceFile('index.ts', source, ts.ScriptTarget.Latest, true);
+  const discarded: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === 'isRemovableResidueDir'
+      && ts.isExpressionStatement(node.parent)) {
+      discarded.push(String(sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  assert.deepEqual(discarded, [],
+    'the containment answer must be consumed, not called for its own sake — a bare call statement leaves the '
+    + `delete below it ungoverned (line${discarded.length === 1 ? '' : 's'} ${discarded.join(', ')})`);
 });
 
 test('a machine with nothing installed reports cleanly', () => {
