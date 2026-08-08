@@ -11,6 +11,7 @@ import { isPathWithin, projectRelativeHookPath, resolveProjectRoot } from '../..
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import {
   hasMaterializedProjectAssets,
+  materializedFromDifferentPluginBuild,
   type MaterializeOutcome,
   materializeProjectAssets,
   materializeProjectIfNeeded,
@@ -72,7 +73,17 @@ function materializeProjectMemoryPath(
     // A memory-doc write cannot change the stack fingerprint or the plugin
     // version, so an already-materialized project with its assets on disk needs
     // only the one-mcp report — not a full (skills-tree-touching) re-emit.
-    if (isMaterialized(state) && hasMaterializedProjectAssets(projectRoot, state)) {
+    //
+    // It CAN, however, be the first hook to run after the plugin itself was
+    // upgraded, and the version comparison inside `isMaterialized` misses an
+    // upgrade that shipped without a hand-bump (11 of the last 14 content
+    // commits here — see shared/build-provenance.ts). So the short
+    // circuit also asks whether these bytes came from the installed build; when
+    // they did not, fall through to the full re-emit below, exactly as a stack
+    // change already does.
+    if (isMaterialized(state)
+      && hasMaterializedProjectAssets(projectRoot, state)
+      && !materializedFromDifferentPluginBuild(projectRoot)) {
       reportOneMcp(projectRoot, state, trigger);
       return null;
     }

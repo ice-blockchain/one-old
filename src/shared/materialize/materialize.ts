@@ -32,6 +32,7 @@ import { writeCursorAgentFiles } from './cursor-agents';
 import { writeCopilotAgentFiles } from './copilot-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
+import { pluginContentHash } from '../build-provenance';
 import { writeCodexAgentFiles } from './codex-agents';
 import { writeKiloAgentFiles } from './kilo-agents';
 import { cleanupLegacyOpenCodeProjectAssets, refreshOpenCodeGlobalAgentFiles } from './opencode-assets';
@@ -461,9 +462,19 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   }
 
   const mobile = capabilityState.mobile as Rec | undefined;
+  // WHICH plugin build these bytes came from — the freshness signal
+  // materializedFromDifferentPluginBuild (has-assets.ts) compares on the hook
+  // path, and the same string doctor prints as `plugin.contentHash`. Resolved
+  // from `root`, the layout-verified root this run actually copied from, not
+  // from the ambient default: reporting a build other than the one that
+  // supplied the files would make the stamp a fiction. The key is OMITTED when
+  // the root cannot state one (a fixture or partial tree) rather than written
+  // as null — absence says "unknown", and a null would be a claim.
+  const buildHash = pluginContentHash(root);
   const manifestJson = (generatedAt: string): string => `${JSON.stringify({
     generatedBy: 'traffic-one',
     generatedAt,
+    ...(buildHash ? { pluginContentHash: buildHash } : {}),
     contextProfile: leanMode ? 'lean' : 'full',
     stack: (capabilityState.stack as string) || 'minimal',
     frontend: (capabilityState.frontend as string) || 'none',

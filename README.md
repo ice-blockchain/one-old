@@ -7,6 +7,23 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, **Cu
 **GitHub Copilot CLI**, **VS Code Copilot**, **OpenCode**, **Kilo**, and
 **Windsurf / Devin Desktop Cascade**.
 
+Traffic One is MIT licensed. These documents ship with the plugin and are next
+to this one in the installed bundle:
+
+| Document | What it answers |
+|----------|-----------------|
+| `LICENSE` | The MIT licence text |
+| `THIRD-PARTY-NOTICES.md` | What Traffic One ships, builds with, and installs on your machine — including the one tool whose licence is **not** open source |
+| `PRIVACY.md` | What leaves your machine, what is written to disk, and what lands in your git repository |
+| `PLATFORMS.md` | Which hosts, Node versions and operating systems are actually supported, and how each is proven |
+| `KNOWN-ISSUES.md` | Limitations of this release you can hit in normal use, with workarounds |
+| `SUPPORT.md` | The runbook: symptom → diagnostic → fix |
+
+`CHANGELOG.md` is generated from git history (`npm run changelog`) and grouped
+by how a change reaches you — agent-visible content, deny prose, or runtime. It
+lives in the source repository rather than the bundle: it is a record of the
+past, and every other document here describes the build you have.
+
 ---
 
 ## First action: choose whether to use Traffic One
@@ -19,9 +36,9 @@ explicitly asks to enable it again.
 
 After an opt-in, the local setup wizard opens. If this machine is not yet
 authenticated, the wizard's first and only unresolved step is the Traffic One
-API key. The wizard validates the key through an authenticated MCP `tools/list`
-request; rejected or unreachable validation writes no auth state. Users are not
-asked to pass keys to shell commands or host chat prompts.
+API key. The wizard validates the key through an authenticated MCP `tools/call`
+request on the `updates` tool; rejected or unreachable validation writes no auth
+state. Users are not asked to pass keys to shell commands or host chat prompts.
 
 Production validation always uses the authenticated MCP endpoint compiled as
 `DEFAULT_ENDPOINT`. Tests inject loopback endpoints directly into the validator;
@@ -81,8 +98,10 @@ are never sent to traffic.io's servers or logs.
 
 **How to supply it.** The wizard's first (and, if this machine is not yet
 authenticated, only) step is a plain text field: paste the key and continue.
-The wizard validates it with an authenticated MCP `tools/list` request before
-storing anything — a rejected or unreachable key is never written. There is no
+The wizard validates it with an authenticated MCP `tools/call` request on the
+`updates` tool — the same one request that also returns this account's
+announcement feed — before storing anything; a rejected or unreachable key is
+never written. There is no
 other supported intake path: Traffic One never asks for the key on the command
 line or in a host chat prompt, and the stored auth state must not be edited by
 hand.

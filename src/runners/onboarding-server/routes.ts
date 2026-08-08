@@ -15,11 +15,14 @@ import { dashboardUrlFromEnv } from '../../config/dashboard';
 import { redirectHtml, wizardHtml } from './html';
 import { getTask, startInstallTask } from './tasks';
 
+// No `token` field, deliberately. Two of the routes below render HTML on
+// token-free public paths, so a session token reachable from this context is one
+// interpolation away from being served to an unauthenticated caller. Nothing
+// downstream of the gate in server.ts needs the token, so it does not travel here.
 export interface RouteContext {
   cwd: string;
   env: NodeJS.ProcessEnv;
   authEndpoint?: string;
-  token: string;
   port: number;
   trafficHost: string;
   requestShutdown: () => void;
@@ -77,14 +80,16 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
 
   // `/` forwards to the traffic.io dashboard (the onboarding UI now lives there);
   // `/local` still serves the full self-contained wizard as an offline / blocked-
-  // browser fallback. Both are token-free public paths (see server.ts publicPath).
+  // browser fallback. Both are token-free public paths (see server.ts publicPath),
+  // so NEITHER response may contain `ctx.token`: the pages take it from their own
+  // URL query, which is where the link the user was handed already carries it.
   if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
-    sendHtml(res, 200, redirectHtml(ctx.token, ctx.port, dashboardUrlFromEnv(ctx.env)));
+    sendHtml(res, 200, redirectHtml(ctx.port, dashboardUrlFromEnv(ctx.env)));
     return;
   }
 
   if (method === 'GET' && pathname === '/local') {
-    sendHtml(res, 200, wizardHtml(ctx.token));
+    sendHtml(res, 200, wizardHtml());
     return;
   }
 

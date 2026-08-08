@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { pluginContentHash } from '../../../shared/build-provenance';
 import { probePluginIdentity } from '../plugin-identity';
 import { probePluginRoot } from '../plugin-root-probe';
 
@@ -121,6 +122,90 @@ test('probePluginIdentity reads version and contentHash off the resolved root, n
   withRoot(
     (root) => installedTree(root),
     () => assert.equal(probePluginIdentity(probePluginRoot(), {}, []).contentHash, null),
+  );
+});
+
+// The drift pair this probe and the hook runtime's freshness check used to be.
+// Both read the same two files and both answer "which build is this root", and
+// an operator resolves an upgrade complaint by comparing doctor's
+// `plugin.contentHash` against the project's `.traffic-one/manifest.json`
+// `pluginContentHash` BY EYE — so the two must not be able to disagree.
+//
+// The expression below is the doctor half exactly as it read before the
+// collapse: an unvalidated `sourceHash?: string` declaration and a `??` chain.
+// `??` only falls through on null/undefined, so an empty or non-string hash in
+// the content subtree short-circuited a perfectly good runtime one, and
+// `contentHash: string | null` handed back `''` or a number. Three inputs
+// separate it from the runtime's reader; all three are now impossible, because
+// shared/build-provenance.ts validates at the single read and both consumers
+// evaluate the same chain over the validated records.
+function legacyDoctorContentHash(root: string): unknown {
+  const read = (file: string): { sourceHash?: unknown } | null => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as { sourceHash?: unknown } : null;
+    } catch {
+      return null;
+    }
+  };
+  return read(path.join(root, 'build-provenance.json'))?.sourceHash
+    ?? read(path.join(root, 'scripts', 'build-provenance.json'))?.sourceHash
+    ?? null;
+}
+
+test('doctor and the hook runtime name the same build for every root, including the three that used to separate them', () => {
+  const agrees = (label: string, provenance: { content?: unknown; runtime?: unknown }, expected: string | null): void => {
+    withRoot(
+      (root) => installedTree(root, provenance),
+      (root) => {
+        assert.equal(pluginContentHash(root), expected, label);
+        assert.equal(probePluginIdentity(probePluginRoot(), {}, []).contentHash, expected, `${label} (doctor)`);
+      },
+    );
+  };
+
+  // Ordinary inputs: the two always agreed here, which is why the pair survived.
+  agrees('content subtree wins', { content: { sourceHash: 'hash-a' }, runtime: { sourceHash: 'hash-b' } }, 'hash-a');
+  agrees('runtime subtree is the fallback', { runtime: { sourceHash: 'hash-b' } }, 'hash-b');
+  agrees('neither subtree can answer', {}, null);
+
+  // The three that separated them. Each asserts the OLD answer first, so a
+  // future reader can see the difference was real and not hypothetical.
+  withRoot(
+    (root) => installedTree(root, { content: { sourceHash: '' }, runtime: { sourceHash: 'hash-b' } }),
+    (root) => {
+      assert.equal(legacyDoctorContentHash(root), '', 'the old chain reported an empty hash as an identity');
+      assert.equal(pluginContentHash(root), 'hash-b', 'an empty hash is not an identity; the runtime subtree answers');
+      assert.equal(probePluginIdentity(probePluginRoot(), {}, []).contentHash, 'hash-b');
+    },
+  );
+  withRoot(
+    (root) => installedTree(root, { content: { sourceHash: 42 }, runtime: { sourceHash: 'hash-b' } }),
+    (root) => {
+      assert.equal(legacyDoctorContentHash(root), 42, 'the old chain returned a number for `contentHash: string | null`');
+      assert.equal(pluginContentHash(root), 'hash-b');
+      assert.equal(probePluginIdentity(probePluginRoot(), {}, []).contentHash, 'hash-b');
+    },
+  );
+  withRoot(
+    (root) => installedTree(root, { content: { sourceHash: '  hash-a  ' } }),
+    (root) => {
+      assert.equal(legacyDoctorContentHash(root), '  hash-a  ', 'the old chain compared untrimmed');
+      assert.equal(pluginContentHash(root), 'hash-a');
+      assert.equal(probePluginIdentity(probePluginRoot(), {}, []).contentHash, 'hash-a');
+    },
+  );
+
+  // The probe still reports the pair as it found it — a record whose hash was
+  // dropped keeps every other field, so the layer-mismatch diagnostic and the
+  // `--bundle` dump lose nothing to the validation above.
+  withRoot(
+    (root) => installedTree(root, { content: { gitSha: 'sha-a', sourceHash: '' }, runtime: { gitSha: 'sha-b', sourceHash: 'hash-b' } }),
+    () => {
+      const probe = probePluginRoot();
+      assert.deepEqual(probe.contentProvenance, { gitSha: 'sha-a' });
+      assert.equal(probe.layerMismatch, true, 'different commits are still a mixed install');
+    },
   );
 });
 

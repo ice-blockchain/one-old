@@ -12,6 +12,7 @@ import { detectHost } from '../host';
 import { activeSkillsForProject } from '../skill-filters';
 import { stackSpecForState } from '../stacks';
 import { isGenerated } from './generated';
+import { pluginContentHash } from '../build-provenance';
 
 type Rec = Record<string, unknown>;
 
@@ -75,6 +76,60 @@ export function materializedContentIsIncomplete(cwd: string, state?: Rec): boole
     if (!trackedSkills.has(name)) return true;
   }
   return false;
+}
+
+/**
+ * THE UPGRADE SIGNAL: were these bytes copied from the plugin build that is
+ * installed right now?
+ *
+ * The fourth condition in materializeProjectIfNeeded's conjunction, and — like
+ * `materializedContentIsIncomplete` above — a sibling of `isMaterialized`
+ * rather than a refinement of it. It has to be: the answer lives on DISK (the
+ * project's manifest and the plugin root's `build-provenance.json`), and
+ * `isMaterialized(state)` is a pure function of state consulted from five call
+ * sites and from gates that must not start doing file IO. Same shape, same
+ * reason, as the incompleteness check.
+ *
+ * What it replaces is the version comparison inside `isMaterialized`, which is
+ * a number a human has to remember to bump and measurably did not: 11 of the
+ * last 14 content commits in this repo shipped without one (see
+ * shared/build-provenance.ts). The version check is LEFT IN PLACE — it is free, it is
+ * already stamped, and it catches the one case a source hash cannot (a release
+ * whose only change is package.json's version, which a dirty-tree `sourceHash`
+ * does not cover because it hashes `src/**` only). Two stamped signals, either
+ * of which can say "stale"; neither can say "fresh" on its own.
+ *
+ * THREE ways to be quiet, and each is deliberate:
+ *   - the plugin root cannot state a build identity (`null`) — a source
+ *     checkout, a fixture root, a partial tree. Answering "stale" there would
+ *     re-converge on every hook against a root materializeProjectAssets refuses
+ *     anyway, and would never self-heal because a refusal writes no manifest.
+ *   - no manifest, or a manifest this product did not write. Not ours to judge;
+ *     `hasMaterializedProjectAssets` already answers that question.
+ *   - the manifest's stamp equals the root's. The steady state.
+ *
+ * An ABSENT `pluginContentHash` on a real Traffic One manifest is stale, and
+ * that is the transition: every project already on disk was materialized before
+ * this field existed, so each one re-converges EXACTLY ONCE against a healthy
+ * root. The pass rewrites the manifest — the new field alone changes its bytes,
+ * so `manifestUnchanged` in materialize.ts is false even when every rule and
+ * skill is byte-identical — and the stamp lands, after which this goes quiet
+ * for that build. Treating the absent field as fresh instead would leave every
+ * existing install carrying the defect forever, which is the whole reason this
+ * exists.
+ *
+ * Answering true is permission to try again, not a repair, and it disturbs no
+ * refusal: materializeProjectAssets still refuses a source checkout, an
+ * unverified root, an empty resolved set, and a TORN one (the refusal that kept
+ * 46 of 47 skills alive), and a refused run stamps nothing.
+ */
+export function materializedFromDifferentPluginBuild(cwd: string): boolean {
+  const installed = pluginContentHash();
+  if (!installed) return false;
+  const manifest = readManifest(cwd);
+  if (!manifest || manifest.generatedBy !== 'traffic-one') return false;
+  const stamped = typeof manifest.pluginContentHash === 'string' ? manifest.pluginContentHash.trim() : '';
+  return stamped !== installed;
 }
 
 export function hasMaterializedProjectAssets(cwd: string, state?: Rec): boolean {

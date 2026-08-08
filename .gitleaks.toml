@@ -1,6 +1,32 @@
 [allowlist]
 description = "Traffic One documentation and scanner regex examples use inert placeholder credentials."
+# TWO trees, and the entries are not interchangeable.
+#
+# The security-check runner drives gitleaks TWICE (runners/security-check/
+# scanners-secrets.ts): `gitleaks git --log-opts=--all` over the full history and
+# `gitleaks dir` over the working tree. The history scan can only ever see
+# COMMITTED files, i.e. `src/**` — `dist/` is generated and gitignored, so every
+# entry below that names the installed-plugin layout (`scripts/…`, `skills/…`)
+# matches nothing in that half of the scan and the allowlist covered none of the
+# files actually in the repository.
+#
+# The dist-shaped entries are kept rather than replaced: CI runs
+# `npm run plugin:build` before scanning and `gitleaks dir` walks gitignored
+# paths too (measured — a scan of this checkout reported 185 MB, more than the
+# tree is without its gitignored directories), so the generated tree is a real
+# input to that half.
 paths = [
+  # Committed source. The scanner's own regex examples and the placeholder
+  # credentials its tests assert on live here.
+  '''src/runners/security-check/''',
+  '''src/modules/skills/skills-catalog/docker-patterns/SKILL\.md''',
+  '''src/modules/skills/skills-catalog/django-security/SKILL\.md''',
+  '''src/modules/skills/skills-catalog/python-testing/SKILL\.md''',
+  '''src/modules/skills/skills-catalog/supabase-setup/SKILL\.md''',
+  '''src/modules/skills/skills-catalog/deployment-patterns/SKILL\.md''',
+  '''src/modules/skills/skills-catalog/django-verification/SKILL\.md''',
+  '''src/modules/skills/skills-catalog/kotlin-patterns/SKILL\.md''',
+  # The same content in the generated plugin root, for the working-tree scan.
   '''scripts/security-check-runner\.cjs''',
   '''skills/docker-patterns/SKILL\.md''',
   '''skills/django-security/SKILL\.md''',

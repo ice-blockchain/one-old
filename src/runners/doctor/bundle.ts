@@ -39,9 +39,29 @@ type Rec = Record<string, unknown>;
 //      project state (both raw `.one.json` and the normalized copy) — the
 //      user's own request text and the onboarding Q&A answers derived from
 //      it. This is free-text prompt content, not state, however it got
-//      persisted into `.one.json` (see the work-item context: a separate,
-//      later item gets `originalPrompt` OUT of committed state entirely; this
-//      bundle cannot assume the state it is reading is already clean).
+//      persisted into `.one.json`. The wizard no longer writes the nested
+//      prompt and the SessionStart scrub migrates it out, but this bundle
+//      cannot assume the state it is reading is already clean.
+//   1b. EVERY key naming a prompt — see PROMPT_KEY_TOKENS — wherever it
+//      appears in the project state or the local preferences, on the same
+//      leaf-string terms as the credential pass below. This is not
+//      redundant with 1: the prompt's real home is now the TOP-LEVEL
+//      `originalPrompt` field, which is a routed local preference, so the
+//      verbatim sentence reaches this bundle as `state.originalPrompt` and
+//      `localPreferences.originalPrompt` — neither of which the nested
+//      projectContext pass touches, and neither of which the credential
+//      matchers below have any reason to match (`prompt` is not a
+//      credential word and is deliberately not in either credential set).
+//      Measured before this pass existed: both went out verbatim, while
+//      PRIVACY.md told the reader a bundle was safe to paste with respect
+//      to prompts. The token is matched as a whole camelCase/snake_case
+//      WORD, so it catches `originalPrompt`, `userPrompt`, `initialPrompt`,
+//      `seed_prompt` and a bare `prompt`, and cannot over-reach into an
+//      unrelated identifier that merely contains the letters. Nothing
+//      diagnostic is lost: no field of the project state or the preference
+//      store carries a `prompt` word for a non-prompt reason (the doctor's
+//      own `promptWindow`/`promptRequestCount` counters live in the session
+//      diagnostics probe, which this walk never visits).
 //   2. Every object key naming a credential — see SENSITIVE_KEY_PATTERN and
 //      SENSITIVE_KEY_TOKENS below — wherever it appears in the project state
 //      or local preferences, replacing only the leaf VALUE (not the key, so
@@ -104,6 +124,11 @@ const SENSITIVE_KEY_PATTERN = /token|api[_-]?key|secret|password|passwd|authori[
 // Whole-token matches, for words that are substrings of innocent identifiers
 // (`pat` ⊂ path/patch/compatible, `key` ⊂ monkey/keyboard, `sig` ⊂ signal).
 const SENSITIVE_KEY_TOKENS = new Set(['key', 'keys', 'pat', 'pats', 'jwt', 'refresh', 'sig', 'salt', 'nonce']);
+// Kept OUT of the two credential sets above on purpose. A prompt is not a
+// credential, the emitted `redactsKeysMatching` describes those two sets as
+// "credential-named", and folding a prompt token in would make that emitted
+// sentence false in the document that exists to be believed.
+const PROMPT_KEY_TOKENS = new Set(['prompt', 'prompts']);
 const REDACTED = '[redacted]' as const;
 
 // camelCase/snake_case/kebab-case → lower-case word list.
@@ -120,8 +145,14 @@ export function isSensitiveBundleKey(key: string): boolean {
   return keyTokens(key).some((token) => SENSITIVE_KEY_TOKENS.has(token));
 }
 
+export function isPromptBundleKey(key: string): boolean {
+  return keyTokens(key).some((token) => PROMPT_KEY_TOKENS.has(token));
+}
+
 const SENSITIVE_KEY_RULE = `${SENSITIVE_KEY_PATTERN.source} (substring, case-insensitive)`
   + ` or whole word in {${[...SENSITIVE_KEY_TOKENS].join(', ')}}`;
+
+const PROMPT_KEY_RULE = `whole word in {${[...PROMPT_KEY_TOKENS].join(', ')}}`;
 
 // Credential SHAPES, applied to every string value regardless of what its key
 // is called. Deliberately conservative in the FALSE-POSITIVE direction: the
@@ -153,7 +184,7 @@ export function looksLikeSecretValue(value: string): boolean {
 function redact(value: unknown, keyHint: string | null): unknown {
   if (typeof value === 'string') {
     if (!value) return value;
-    if (keyHint && isSensitiveBundleKey(keyHint)) return REDACTED;
+    if (keyHint && (isSensitiveBundleKey(keyHint) || isPromptBundleKey(keyHint))) return REDACTED;
     return looksLikeSecretValue(value) ? REDACTED : value;
   }
   // The key hint follows an array INTO its elements (`credentials: [a, b]`)
@@ -288,7 +319,9 @@ export function buildDoctorBundle(input: BuildDoctorBundleInput): DoctorBundle {
     generatedAt: new Date().toISOString(),
     plugin: input.plugin,
     redaction: {
-      policy: 'projectContext.{originalPrompt,summary,answers} are redacted; any credential-named key '
+      policy: 'projectContext.{originalPrompt,summary,answers} are redacted; any prompt-named key '
+        + `(${PROMPT_KEY_RULE}) — including the top-level \`originalPrompt\` and its copy in the `
+        + 'local preferences — has its string value redacted; any credential-named key '
         + `(${SENSITIVE_KEY_RULE}) has its string value redacted; every other string value is matched `
         + `against known credential shapes (${SECRET_VALUE_RULE}) and redacted on a hit; decision-log `
         + 'inputs/stateWrites are dropped entirely. No user source code and no prompt text are included '

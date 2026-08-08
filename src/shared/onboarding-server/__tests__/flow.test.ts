@@ -11,7 +11,7 @@ import { hostModelSnapshot, modelTierSnapshot, resolveModel } from '../../model-
 
 // Derived, never hardcoded: which model anchors a tier is editable policy.
 const CLAUDE_HIGHEST = resolveModel('highest', 'claude') as string;
-import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, statePath, writeGlobalCodeGraphProvider, writeState } from '../../state';
+import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readEffectiveState, readGlobalCodeGraphProvider, readProjectPrefs, readState, statePath, writeGlobalCodeGraphProvider, writeState } from '../../state';
 import { readJsonResult } from '../../fsjson';
 import { currentHostModelTarget } from '../../current-model-tiers';
 import { writeRuntimeModelSnapshot } from '../../__tests__/support/one-mcp-runtime';
@@ -440,8 +440,45 @@ test('finalize derives the stack from the seeded original prompt (not minimal)',
     assert.equal(s.stack, 'default');
     assert.equal(s.frontend, 'react-vite');
     assert.equal(s.backend, 'supabase');
-    // summary falls back to the prompt, not the "MVP" placeholder
-    assert.ok(String(asRec(s.projectContext).summary).includes('learning platform'));
+    // The prompt drove the stack (above) WITHOUT being committed. Both
+    // directions are asserted, because either one alone passes for the wrong
+    // reason: a summary that omits the sentence proves nothing if the wizard
+    // simply lost the prompt, and a readable prompt proves nothing about what
+    // is in the file.
+    //
+    // `s` is the RAW committed state — the bytes that get pushed to the team.
+    const committed = JSON.stringify(s);
+    assert.ok(!committed.includes('learning platform'),
+      `the verbatim request must not be committed anywhere in .one.json: ${committed}`);
+    assert.equal(asRec(s.projectContext).originalPrompt, undefined,
+      'projectContext carries no originalPrompt member');
+    assert.equal(asRec(s.projectContext).summary, 'MVP',
+      'a blank summary with no answers floors to the placeholder, never to the request');
+    assert.ok(String(readEffectiveState(cwd).originalPrompt || '').includes('learning platform'),
+      'and the private copy is still readable through merged state');
+  });
+});
+
+// The reader audit for the `project-context` step. It used to read `readState`,
+// which STRIPS routed local preferences — so it was blind to the seeded prompt
+// and could only see a stale copy left inside a not-yet-migrated
+// `projectContext`. Routing that stale copy back into the per-user store would
+// overwrite the live seed with an older sentence.
+test('project-context reads the EFFECTIVE prompt, so a stale committed copy cannot overwrite the seed', () => {
+  withProject(null, (cwd) => {
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'create a modern learning platform with courses' });
+    assert.equal(readProjectPrefs(cwd).originalPrompt, 'create a modern learning platform with courses',
+      'fixture guard: the live seed is in the per-user store');
+    // A pre-upgrade project still carrying the older request in committed state.
+    const raw = JSON.parse(fs.readFileSync(statePath(cwd), 'utf8')) as Record<string, unknown>;
+    raw.projectContext = { source: 'prompted', originalPrompt: 'ok build it', summary: 'ok build it', answers: {}, collectedAt: '2026-01-01T00:00:00Z' };
+    fs.writeFileSync(statePath(cwd), JSON.stringify(raw), 'utf8');
+
+    assert.ok(applyAnswer(cwd, 'project-context', { summary: '', answers: {} }).ok);
+    assert.equal(readProjectPrefs(cwd).originalPrompt, 'create a modern learning platform with courses',
+      'the live seed survives; the stale committed copy did not replace it');
+    assert.equal(asRec(readState(cwd).projectContext).originalPrompt, undefined,
+      'and the stale committed copy is gone from the file');
   });
 });
 

@@ -135,12 +135,23 @@ test('materializeFromProjectMemoryWrite: a refused state write is reported, not 
 // content at the SHIPPED paths. Needed by any case where materialization must
 // actually HAPPEN — this repo is a 'source' checkout under tsx and the writer
 // refuses it. (Same fixture shape as converge.test.ts's withInstalledPluginRoot.)
-function withInstalledPluginRoot<T>(fn: () => T): T {
+function withInstalledPluginRoot<T>(fn: () => T, buildHash?: string): T {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cfw-plugin-'));
   const modules = path.resolve(__dirname, '..', '..', '..', 'modules');
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
   fs.writeFileSync(path.join(root, 'scripts', 'hook-runtime.cjs'), '// test fixture stub\n', 'utf8');
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'traffic-one', version: '9.9.9' }), 'utf8');
+  // The build identity `materializedFromDifferentPluginBuild` reads. Omitted by
+  // default, which is what every other case in this file wants: a root that
+  // states no identity is never judged stale, so those cases keep exercising
+  // whatever they were written for.
+  if (buildHash) {
+    fs.writeFileSync(
+      path.join(root, 'build-provenance.json'),
+      `${JSON.stringify({ schema: 1, gitSha: null, sourceHash: buildHash })}\n`,
+      'utf8',
+    );
+  }
   fs.symlinkSync(path.join(modules, 'rules', 'rules'), path.join(root, 'rules'), 'dir');
   fs.symlinkSync(path.join(modules, 'skills', 'skills-catalog'), path.join(root, 'skills-catalog'), 'dir');
   fs.mkdirSync(path.join(root, 'agents'), { recursive: true });
@@ -196,6 +207,69 @@ test('materializeFromProjectMemoryWrite: a refused materialization stamp is repo
     assert.ok((out?.result?.written ?? 0) > 0, 'fixture guard: assets really were written');
     assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).materializedAt, undefined,
       'fixture guard: the stamp really was refused');
+  });
+});
+
+// A memory-doc write cannot move the stack fingerprint or the version, so this
+// path short-circuits an already-materialized project — and that short circuit
+// is exactly where an UPGRADE used to disappear. 11 of the last 14 content
+// commits in this repo shipped no version bump (shared/materialize/
+// shared/build-provenance.ts), so `isMaterialized` kept answering "current" over the
+// previous release's bytes. Both directions are asserted from one fixture: the
+// same project, the same stamps, only the plugin root's build identity differs.
+test('materializeFromProjectMemoryWrite: the short circuit holds for the same plugin build and yields for a different one', () => {
+  const base = { mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', onboardingComplete: true };
+  // The fixture root's own package.json version — what stateVersion() answers
+  // INSIDE withInstalledPluginRoot, and therefore what a project that is
+  // version-current against that root must carry. Stamping the ambient
+  // stateVersion() here instead would make isMaterialized false for the wrong
+  // reason and both halves below would re-emit regardless of the build.
+  const FIXTURE_VERSION = '9.9.9';
+  const state = {
+    ...base,
+    materializedStack: stackFingerprint(base),
+    materializedVersion: FIXTURE_VERSION,
+    materializedAt: '2026-01-01T00:00:00Z',
+  };
+  const HASH_INSTALLED = 'c'.repeat(64);
+  const HASH_PREVIOUS = 'd'.repeat(64);
+  const skillFile = (cwd: string): string => path.join(cwd, '.traffic-one', 'skills', 'project-memory', 'SKILL.md');
+
+  const seed = (cwd: string, stampedHash: string): string => {
+    writeMaterializedContent(cwd, { state });
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), `# ctx\n\n${GENERATED_MARKER}\n`, 'utf8');
+    fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), '# claude', 'utf8');
+    const manifestPath = path.join(cwd, '.traffic-one', 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    fs.writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, pluginContentHash: stampedHash }, null, 2)}\n`, 'utf8');
+    return path.join(cwd, '.traffic-one', 'product.md');
+  };
+
+  // Same build: nothing to do. Without this the case below could pass because
+  // the path re-emits unconditionally, which would prove nothing about the
+  // build comparison.
+  withProject(state, (cwd) => {
+    const memoryDoc = seed(cwd, HASH_INSTALLED);
+    const before = fs.statSync(skillFile(cwd)).mtimeMs;
+    const out = withInstalledPluginRoot(() => {
+      assert.equal(stateVersion(), FIXTURE_VERSION, 'fixture guard: the version signal says current');
+      return materializeFromProjectMemoryWrite(cwd, memoryDoc);
+    }, HASH_INSTALLED);
+    assert.equal(out, null, 'same build → the short circuit stands');
+    assert.equal(fs.statSync(skillFile(cwd)).mtimeMs, before, 'and the skill tree is untouched');
+  });
+
+  // A different build: the version stamp still matches, every asset is still on
+  // disk, and the project must re-emit anyway.
+  withProject(state, (cwd) => {
+    const memoryDoc = seed(cwd, HASH_PREVIOUS);
+    const out = withInstalledPluginRoot(() => materializeFromProjectMemoryWrite(cwd, memoryDoc), HASH_INSTALLED);
+    assert.equal(out?.status, 'materialized', 'an unbumped upgrade re-emits through the memory-write path');
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'manifest.json'), 'utf8')).pluginContentHash,
+      HASH_INSTALLED,
+      'and the manifest now records the build it was copied from',
+    );
   });
 });
 

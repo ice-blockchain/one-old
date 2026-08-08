@@ -19,8 +19,8 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { readJsonResult } from '../../fsjson';
-import { readState, statePath } from '../../state';
-import { recordPluginUseChoice } from '../../state/plugin-use';
+import { readEffectiveState, readProjectPrefs, readState, statePath } from '../../state';
+import { recordPluginUseChoice, resetPluginUseCache } from '../../state/plugin-use';
 import { seedOriginalPrompt } from '../seed-prompt';
 
 const fixtures: string[] = [];
@@ -64,18 +64,56 @@ test('a legible base is merged onto and an ABSENT one is created — the read on
     const legible = project('legible');
     fs.writeFileSync(statePath(legible), JSON.stringify({ mode: 'new-project' }), 'utf8');
     seedOriginalPrompt(legible, SEED);
-    const merged = readState(legible);
-    assert.equal(merged.originalPrompt, SEED, 'writable baseline: the seed lands');
+    const merged = readEffectiveState(legible);
+    assert.equal(merged.originalPrompt, SEED, 'writable baseline: the seed lands where every consumer reads it');
     assert.equal(merged.uiLibrary, 'mui', 'writable baseline: and the library derived from the same prompt');
     assert.equal(merged.mode, 'new-project', 'writable baseline: onto the base, not over it');
 
+    // Read back the BYTES, not a helper that strips on read: the committed file
+    // is what gets pushed to a shared remote, and a returned `true` from any
+    // writer says nothing about which file the value reached.
+    assert.ok(!fs.readFileSync(statePath(legible), 'utf8').includes(SEED),
+      'the committed state file must not carry the prompt text');
+    assert.equal(readProjectPrefs(legible).originalPrompt, SEED,
+      'it is in the per-user store, outside the repository');
+  });
+
+  // Its OWN prefs scope. One scope is one prefs file shared by every project in
+  // it, and the seed is idempotent against that file — so a second project
+  // inside the first scope would be refused by the seed the first one recorded,
+  // and this case would pass or fail for a reason that is not about the base.
+  withScopedPrefs(() => {
     // The brand-new project this function exists for has no `.one.json` at all.
     // `absent` must stay on the writing side of the guard, or the FIRST prompt of
     // every new project is the one that stops being captured.
     const pristine = project('pristine');
     assert.equal(readJsonResult(statePath(pristine)).kind, 'absent', 'fixture guard: nothing is there yet');
     seedOriginalPrompt(pristine, SEED);
-    assert.equal(readState(pristine).originalPrompt, SEED, 'an absent base is created, not refused');
+    assert.equal(readEffectiveState(pristine).originalPrompt, SEED, 'an absent base is created, not refused');
+    assert.ok(!fs.readFileSync(statePath(pristine), 'utf8').includes(SEED),
+      'and the `.one.json` the UI-library write creates still carries no prompt');
+  });
+});
+
+// The prompt left the repository, so it also left the repository write fence that
+// used to govern it: `writeState` goes through fsjson, which refuses under a
+// pending or declined project's state dir, while the per-user prefs file is
+// machine-owned and exempt. Without the explicit fence in seedOriginalPrompt the
+// first prompt of a project the user DECLINES is recorded outside the repo and no
+// decline can reclaim it — removeDeclinedProjectArtifacts must never touch the
+// per-user dir, because that is where the decline itself is stored.
+test('a declined project records the prompt nowhere', () => {
+  withScopedPrefs(() => {
+    const cwd = project('declined');
+    fs.writeFileSync(statePath(cwd), JSON.stringify({ mode: 'new-project' }), 'utf8');
+    recordPluginUseChoice(cwd, false, 'seed-prompt-test');
+    resetPluginUseCache();
+
+    seedOriginalPrompt(cwd, SEED);
+
+    assert.equal(readProjectPrefs(cwd).originalPrompt, undefined,
+      'nothing was written to the per-user store for a project the user said no to');
+    assert.equal(readEffectiveState(cwd).originalPrompt, undefined, 'and no consumer can read one');
   });
 });
 
@@ -153,19 +191,44 @@ test('an UNREADABLE `.one.json` (EACCES) is refused, and never fails the caller'
 // it must not have replaced them. The first coding prompt is the project
 // description; a later one never overwrites it.
 test('a legible base that already carries a seed is still never overwritten', () => {
+  // An existing user, mid-migration: the value is still in the committed file and
+  // the SessionStart scrub has not run yet. The guard has to see it there too, or
+  // the release that moves the field also overwrites every existing project's
+  // project description with whatever prompt happens to arrive first.
   withScopedPrefs(() => {
-    const cwd = project('idempotent');
+    const cwd = project('idempotent-unscrubbed');
     fs.writeFileSync(statePath(cwd), JSON.stringify({ mode: 'new-project', originalPrompt: 'the first request' }), 'utf8');
     seedOriginalPrompt(cwd, SEED);
-    assert.equal(readState(cwd).originalPrompt, 'the first request');
+    assert.equal(readEffectiveState(cwd).originalPrompt, 'the first request');
+    assert.equal(readProjectPrefs(cwd).originalPrompt, undefined, 'and no second copy was minted in the store');
+  });
 
+  // The same project after the scrub: the value is in the per-user store and the
+  // committed file no longer has it. `readState` is blind to it now, so a guard
+  // that still asked the raw reader would answer "no seed yet" and overwrite.
+  withScopedPrefs(() => {
+    const cwd = project('idempotent-migrated');
+    // A prompt that QUALIFIES as a seed. 'the first request' does not
+    // (isLikelyCodingPrompt is false for it), so using it here recorded nothing
+    // and the case passed on the wrong mechanism.
+    const first = 'create a booking system for clinics';
+    fs.writeFileSync(statePath(cwd), JSON.stringify({ mode: 'new-project' }), 'utf8');
+    seedOriginalPrompt(cwd, first);
+    assert.equal(readProjectPrefs(cwd).originalPrompt, first, 'fixture guard: the first seed is in the store');
+    assert.equal(readState(cwd).originalPrompt, undefined, 'fixture guard: and the raw reader is blind to it');
+    seedOriginalPrompt(cwd, SEED);
+    assert.equal(readEffectiveState(cwd).originalPrompt, first);
+  });
+
+  withScopedPrefs(() => {
     const viaContext = project('idempotent-context');
     fs.writeFileSync(statePath(viaContext), JSON.stringify({
       mode: 'new-project',
       projectContext: { originalPrompt: 'the first request' },
     }), 'utf8');
     seedOriginalPrompt(viaContext, SEED);
-    assert.equal(readState(viaContext).originalPrompt, undefined,
+    assert.equal(readEffectiveState(viaContext).originalPrompt, undefined,
       'the projectContext guard still fires — nothing was seeded at the top level either');
+    assert.equal(readProjectPrefs(viaContext).originalPrompt, undefined, 'nor in the per-user store');
   });
 });

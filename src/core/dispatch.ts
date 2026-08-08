@@ -17,7 +17,9 @@ export async function dispatch(
   raw: RawInvocation,
 ): Promise<string> {
   const input = adapter.parse(raw);
-  maybeTraceHook(input, raw.stdin); // off-by-default; gated by TRAFFIC_ONE_HOOK_TRACE
+  // Off-by-default; armed by TRAFFIC_ONE_HOOK_TRACE or the per-user marker file.
+  // Records the payload's key/type SHAPE, never its values — see shared/hook/trace.ts.
+  maybeTraceHook(input, raw.stdin);
   const ctx = buildContext(input);
   // Persist what this run actually observed. A SessionStart-only host remains
   // completion-only; only the native primary before-tool point can upgrade the

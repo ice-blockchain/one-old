@@ -7,9 +7,10 @@ import * as path from 'path';
 import { ensureAgentTeamsEnv, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, resetUncertifiedHostBannerThrottle, shouldBuildCodeGraph, sweepOldDigests, tokenEconomyBanner, uncertifiedHostBanner } from '../session-start-lib';
 import { writeMaterializedContent } from '../../../shared/materialize/__tests__/fixtures/materialized-content';
 import { materializeProjectAssets } from '../../../shared/materialize/materialize';
+import { hasMaterializedProjectAssets, materializedFromDifferentPluginBuild } from '../../../shared/materialize/has-assets';
 import { recordPluginUseChoice, resetPluginUseCache } from '../../../shared/state/plugin-use';
 import { readJsonResult } from '../../../shared/fsjson';
-import { readState } from '../../../shared/state';
+import { isMaterialized, readState, stateVersion } from '../../../shared/state';
 
 function withTmp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sslib-'));
@@ -298,6 +299,93 @@ test('a materialization whose state stamp is refused is reported as not recorded
       'fixture guard: the stamp really was refused');
     assert.ok(fs.existsSync(path.join(fenced, 'AGENTS.md')),
       'fixture guard: the artifacts DID land, so this test is about the record and not the writer');
+  });
+});
+
+const HASH_A = 'a'.repeat(64);
+const HASH_B = 'b'.repeat(64);
+
+function stampPluginBuild(plugin: string, sourceHash: string): void {
+  fs.writeFileSync(path.join(plugin, 'build-provenance.json'),
+    `${JSON.stringify({ gitSha: 'sha', sourceHash })}\n`, 'utf8');
+}
+
+const projectStamp = (cwd: string): unknown => (
+  JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'manifest.json'), 'utf8')).pluginContentHash
+);
+
+// SessionStart is the earliest point in a session that can notice an upgrade,
+// and before this it could not: a project carried over from the previous
+// release has the same stack fingerprint, every tracked file on disk, and — 11
+// times in the last 14 content commits of this repo — the same package.json
+// version. So `ensureSessionMaterialization` short-circuited and the session ran
+// the previous release's rules and skills.
+//
+// Every arm below asserts the THREE pre-existing signals say "current" before
+// relying on the fourth, so a green result cannot come from the version drifting
+// or a file going missing.
+test('ensureSessionMaterialization: an upgrade that shipped without a version bump re-materializes', () => {
+  withInstalledPluginRoot((base, plugin) => {
+    const cwd = seedProject(base, 'upgraded');
+    convergePluginRoot(plugin, cwd);
+    stampPluginBuild(plugin, HASH_A);
+
+    const state: Record<string, unknown> = { ...MATERIALIZABLE_STATE };
+    assert.equal(ensureSessionMaterialization(cwd, state), true, 'first session materializes and records');
+    assert.equal(projectStamp(cwd), HASH_A, 'the writer stamps the build the bytes came from');
+
+    const guard = (label: string): void => {
+      assert.equal(isMaterialized(state), true, `${label}: the version signal says current`);
+      assert.equal(state.materializedVersion, stateVersion(), `${label}: and it says so by equality, not by absence`);
+      assert.equal(hasMaterializedProjectAssets(cwd, state), true, `${label}: every tracked file is on disk`);
+    };
+
+    let triggers: string[] = [];
+    guard('same build');
+    assert.equal(materializedFromDifferentPluginBuild(cwd), false, 'same build: nothing to notice');
+    assert.equal(ensureSessionMaterialization(cwd, state, (_c, _s, t) => triggers.push(t)), false,
+      'the short circuit still holds for the build the project was materialized from');
+    assert.deepEqual(triggers, ['session materialization already current']);
+
+    // The upgrade: new content, no version bump, nothing else moved.
+    stampPluginBuild(plugin, HASH_B);
+    triggers = [];
+    guard('unbumped upgrade');
+    assert.equal(materializedFromDifferentPluginBuild(cwd), true, 'the build hash is the only signal that moved');
+    assert.equal(ensureSessionMaterialization(cwd, state, (_c, _s, t) => triggers.push(t)), true,
+      'an unbumped upgrade re-materializes at SessionStart instead of serving the previous release');
+    assert.deepEqual(triggers, ['session materialization']);
+    assert.equal(projectStamp(cwd), HASH_B, 'and the project now records the build it is actually running');
+  });
+});
+
+// The asymmetry that decides why this term is here and NOT on the spawn gate
+// (modules/agent-model/converge.ts): a root that cannot converge is refused by
+// the writer, and on THIS path a refusal is just `false` — the same answer the
+// short circuit above gives. Nothing denies, and the next session tries again.
+test('ensureSessionMaterialization: a build mismatch against a torn plugin root refuses quietly', () => {
+  withInstalledPluginRoot((base, plugin) => {
+    const cwd = seedProject(base, 'torn');
+    convergePluginRoot(plugin, cwd);
+    stampPluginBuild(plugin, HASH_A);
+    const state: Record<string, unknown> = { ...MATERIALIZABLE_STATE };
+    assert.equal(ensureSessionMaterialization(cwd, state), true);
+
+    // The shape a marketplace sync leaves mid-flight: the new build's provenance
+    // has landed, some of its content has not. Tear one resolved skill.
+    const catalog = path.join(plugin, 'skills-catalog');
+    const victim = fs.readdirSync(catalog)[0];
+    assert.ok(victim, 'fixture guard: the converged root really has skills to tear');
+    fs.rmSync(path.join(catalog, victim), { recursive: true, force: true });
+    stampPluginBuild(plugin, HASH_B);
+
+    const triggers: string[] = [];
+    assert.equal(materializedFromDifferentPluginBuild(cwd), true, 'fixture guard: the mismatch is live');
+    assert.equal(ensureSessionMaterialization(cwd, state, (_c, _s, t) => triggers.push(t)), false,
+      'a torn root is refused, not forced');
+    assert.deepEqual(triggers, ['session materialization skipped']);
+    assert.equal(projectStamp(cwd), HASH_A,
+      "and the project keeps the previous build's complete assets rather than a partial copy");
   });
 });
 

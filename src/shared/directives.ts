@@ -127,8 +127,10 @@ export function postWriteIncompleteWarning(args: IncompleteWarningArgs): string 
       'core flows, v1 features, roles/auth, data model, admin/ops, business',
       'model, payments when applicable, integrations, engagement, success',
       'metrics, constraints, and domain-specific needs. Save `source`,',
-      '`originalPrompt`, `summary`, `answers`, and `collectedAt` before the',
-      'Mobile App prompt.',
+      '`summary`, `answers`, and `collectedAt` before the Mobile App prompt.',
+      'Do NOT put the original request text in `projectContext` — `.one.json`',
+      'is committed, and the wizard keeps that text in the per-user store',
+      'instead; `summary` is a short description, not the request verbatim.',
     );
   }
 

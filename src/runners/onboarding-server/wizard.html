@@ -230,11 +230,13 @@
   </main>
 
   <script>
-    // The server substitutes %%T1_TOKEN%% with the session token; fall back to the
-    // URL query if it was somehow served unsubstituted.
-    var T1_INJECTED = "%%T1_TOKEN%%";
-    var T1_TOKEN = (T1_INJECTED.charAt(0) !== "%" ? T1_INJECTED : "")
-      || new URLSearchParams(location.search).get("t") || "";
+    // The session token is deliberately NOT injected into this document. `/local`
+    // is a token-free public route (server.ts publicPath), so anything the server
+    // writes into the body is readable by ANY unauthenticated loopback caller —
+    // which turned the page into a dispenser for the credential that guards
+    // /state and /answer. The token rides the URL the user was handed
+    // (`/local?t=…`, config/dashboard.ts) and is read from there only.
+    var T1_TOKEN = new URLSearchParams(location.search).get("t") || "";
     const NEW_PROJECT_STEPS = ["api-key", "open-code", "performance", "team-confirmation", "project-context", "mobile", "code-graph"];
     const EXISTING_STEPS = ["api-key", "tech-detect", "open-code", "performance", "team-confirmation", "code-graph"];
     // Presentation-only grouping for the long project-context form so the fields

@@ -2568,8 +2568,16 @@ const DIVERGENT_PAIR_FUNCTIONS: readonly string[] = [
   // purpose. Both assert on what reached disk (`existsSync`) rather than on the
   // return value, which is why the discard is the point rather than an
   // oversight. Line-keyed because the enclosing `test(…)` callback is anonymous.
+  //
+  // A line key ROTATES when anything is inserted above it, so adding a test to
+  // one of these files reddens the ratchet twice over — the site appears as NEW
+  // at its moved line and the old key reads as stale — with no defect anywhere.
+  // Re-point the line; do not go looking for a dropped write. (Measured: the
+  // normalize entry moved 228 -> 309 when the prompt-privacy migration tests
+  // landed above it.) The alternative, keying on the enclosing test's NAME,
+  // trades this for silence when a test is renamed, which is the worse failure.
   'src/core/__tests__/pipeline.test.ts#<anonymous>@378',
-  'src/shared/state/__tests__/normalize.test.ts#<anonymous>@228',
+  'src/shared/state/__tests__/normalize.test.ts#<anonymous>@309',
 ];
 
 /**

@@ -12,6 +12,7 @@ import {
   mergeProjectHostPrefs,
   mergeProjectPrefs,
   PROJECT_PREFS_LOCK_TIMEOUT_MS,
+  readEffectiveState,
   readProjectPrefs,
 } from '../local-prefs';
 import { scrubProjectStateLocalPrefs } from '../normalize';
@@ -100,6 +101,36 @@ test('scrubProjectStateLocalPrefs strips machine-local prefs a stale runner left
     assert.equal(prefs.hosts, undefined);
     // Idempotent: a clean .one.json is a no-op.
     assert.equal(scrubProjectStateLocalPrefs(cwd), false, 'no-op on an already-clean state file');
+  });
+});
+
+// The existing-user half of moving `originalPrompt` out of committed state. A key
+// move alone only helps projects onboarded AFTER the release; every project
+// already carrying a prompt in its committed `.one.json` needs the value taken
+// OUT of that file, and the SessionStart scrub is what does it. Asserted on the
+// BYTES of the file, because that is what a `git push` carries — and read back
+// through the consumers' own reader, because `writeState` reports nothing about
+// the local-preference half of its own split.
+test('scrubProjectStateLocalPrefs migrates a committed originalPrompt out of the repository', () => {
+  withPrefs((cwd) => {
+    const prompt = 'build an incident dashboard for ACME Corp, api key sk-live-not-a-real-one';
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    const stateFile = path.join(cwd, '.traffic-one', '.one.json');
+    fs.writeFileSync(stateFile, JSON.stringify({
+      mode: 'new-project', stack: 'default', originalPrompt: prompt,
+    }), 'utf8');
+
+    assert.equal(scrubProjectStateLocalPrefs(cwd), true, 'a leaked prompt is a local-preference leak the scrub recognizes');
+
+    assert.ok(!fs.readFileSync(stateFile, 'utf8').includes('ACME Corp'),
+      'the committed file no longer carries the prompt text');
+    assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).stack, 'default',
+      'and the durable project fields beside it survived');
+    assert.equal(readProjectPrefs(cwd).originalPrompt, prompt,
+      'the value moved to the per-user store rather than being destroyed');
+    assert.equal(readEffectiveState(cwd).originalPrompt, prompt,
+      'so every readEffectiveState consumer still sees it');
+    assert.equal(scrubProjectStateLocalPrefs(cwd), false, 'no-op on the already-migrated file');
   });
 });
 

@@ -85,13 +85,14 @@
   <script>
     // The server substitutes these placeholders. %% wrappers ensure the raw
     // template never contains a valid JS identifier that a global replace could
-    // mangle. Fall back to the URL query for the token if served unsubstituted.
-    var T1_INJECTED_TOKEN = "%%T1_TOKEN%%";
+    // mangle. The session token is NOT among them: `/` is a token-free public
+    // route (server.ts publicPath), so an injected token would be readable by any
+    // unauthenticated loopback caller. It comes from the URL the user was handed
+    // (`/?t=…`, the registry record's `url`) and from nowhere else.
     var T1_INJECTED_PORT = "%%T1_PORT%%";
     var T1_DASHBOARD = "%%T1_DASHBOARD%%";
 
-    var token = (T1_INJECTED_TOKEN.charAt(0) !== "%" ? T1_INJECTED_TOKEN : "")
-      || new URLSearchParams(location.search).get("t") || "";
+    var token = new URLSearchParams(location.search).get("t") || "";
     var port = (T1_INJECTED_PORT.charAt(0) !== "%" ? T1_INJECTED_PORT : "")
       || String(location.port || "");
     var dashboard = (T1_DASHBOARD.charAt(0) !== "%" ? T1_DASHBOARD : "") || "https://traffic.io";

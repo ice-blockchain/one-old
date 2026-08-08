@@ -7,7 +7,7 @@ import * as path from 'path';
 import { applyAgentTechClassification, applyExistingCodebaseDetection, stampExistingCodebaseDetection } from '../detection-stamp';
 import { computeOnboarding } from '../../onboarding-server/flow';
 import { recordPluginUseChoice } from '../../state/plugin-use';
-import { readState, writeState } from '../../state';
+import { readEffectiveState, readState, writeState } from '../../state';
 import { writeSimpleAuth } from '../../auth';
 
 // A project onboarded in ONE sitting used to keep a bare `{originalPrompt, version}`
@@ -255,14 +255,26 @@ test('a directory that belongs to an enclosing project is skipped', () => {
   }, { files: laravelFiles(), consent: true });
 });
 
+// `originalPrompt` is a routed local preference now (state/local-prefs/
+// pref-schema.ts): the user's raw first prompt is private, and `.one.json` is
+// committed. So this reads it back through readEffectiveState — the reader every
+// production consumer uses — rather than through readState, which by design no
+// longer returns it. The survival claim is unchanged and still the point of the
+// test: postSetupTriage needs the request after SETUP_COMPLETE.
 test('stamping is idempotent and preserves an existing originalPrompt seed', () => {
   withProject((cwd) => {
     writeState(cwd, { ...readState(cwd), originalPrompt: 'add a batch endpoint' });
+    assert.equal(readEffectiveState(cwd).originalPrompt, 'add a batch endpoint',
+      'fixture guard: the write routed the prompt into the per-user store rather than dropping it');
     assert.equal(stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true }).stamped, true);
     const first = readState(cwd);
     assert.equal(stampExistingCodebaseDetection(cwd, { requireRecordedConsent: true }).stamped, true);
     const second = readState(cwd);
-    assert.equal(second.originalPrompt, 'add a batch endpoint', 'the real request survives — postSetupTriage needs it');
+    assert.equal(readEffectiveState(cwd).originalPrompt, 'add a batch endpoint',
+      'the real request survives two stamps — postSetupTriage needs it');
+    assert.equal(second.originalPrompt, undefined, 'and it is never restored into the committed file');
+    assert.ok(!fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8').includes('batch endpoint'),
+      'the file the user pushes carries no prompt text');
     assert.equal(second.stack, first.stack);
     assert.equal(second.mode, first.mode);
   }, { files: laravelFiles(), consent: true });

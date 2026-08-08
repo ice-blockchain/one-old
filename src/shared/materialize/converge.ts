@@ -28,7 +28,11 @@ import {
   trafficOneStateValidationIssues,
   writeState,
 } from '../state';
-import { hasMaterializedProjectAssets, materializedContentIsIncomplete } from './has-assets';
+import {
+  hasMaterializedProjectAssets,
+  materializedContentIsIncomplete,
+  materializedFromDifferentPluginBuild,
+} from './has-assets';
 import { materializeProjectAssets, type MaterializeResult, type TornRootEvidence } from './materialize';
 import { migrateArchitectureDocsToPlan } from './plan-migration';
 
@@ -374,9 +378,20 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
   // partially copied plugin root passes — its one skill is present, its stamp is
   // current, and nothing looks wrong. Without this the other 46 never return.
   // See has-assets.ts for why it is a subset check and why it cannot loop.
+  //
+  // `materializedFromDifferentPluginBuild` is the fourth, and it is the one
+  // that makes an UPGRADE visible. The first three all pass for a project whose
+  // content is complete, present, and simply from the previous release: the
+  // stack fingerprint did not move, every manifest-tracked file is on disk, and
+  // the runtime's declared set is satisfied. Only the plugin build changed —
+  // and `isMaterialized`'s version comparison misses that whenever the release
+  // shipped without a hand-bump, which is 11 of the last 14 content commits in
+  // this repo (shared/build-provenance.ts). This is where a user who upgraded stops
+  // silently serving the previous release's rules and skills.
   if (isMaterialized(state)
     && hasMaterializedProjectAssets(cwd, state)
-    && !materializedContentIsIncomplete(cwd, state)) {
+    && !materializedContentIsIncomplete(cwd, state)
+    && !materializedFromDifferentPluginBuild(cwd)) {
     reportOneMcp(cwd, state, trigger);
     return null;
   }

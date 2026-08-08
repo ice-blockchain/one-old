@@ -4,7 +4,15 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { describePluginInstall, discoverPluginInstalls, isRemovableStateDir, run, runUninstall } from '../index';
+import {
+  describePluginInstall,
+  discoverInstallResidue,
+  discoverPluginInstalls,
+  isRemovableResidueDir,
+  isRemovableStateDir,
+  run,
+  runUninstall,
+} from '../index';
 
 // Every path this runner touches is user-level, so each case gets its own fake
 // HOME. CODEX_HOME is pinned too: the Codex MCP removal resolves its config from
@@ -196,6 +204,129 @@ test('a graphify that is not a pipx install is named but not blamed', () => {
     assert.match(step?.detail || '', /not a pipx install/);
     assert.equal(/pipx uninstall/.test(step?.detail || ''), false, 'no removal is suggested for a tool that is not ours');
   });
+});
+
+// ── residue no host CLI reclaims ────────────────────────────────────────────
+//
+// Measured against what the install path writes (build/sync-hosts.ts). None of
+// these three paths was reached by an uninstall before: `codex plugin remove`
+// reclaims the plugin CACHE and leaves the staged marketplace copy, the Copilot
+// copy was never even discovered, and the Cursor local install had no CLI so it
+// was only ever printed as advice.
+
+function seedResidue(home: string): void {
+  writeFile(path.join(home, '.codex', 'local-marketplaces', 'traffic-one-local', 'marketplace.json'), '{}');
+  writeFile(path.join(home, '.codex', 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one', 'package.json'),
+    '{"name":"traffic-one","version":"1.0.0"}');
+  writeFile(path.join(home, '.copilot', 'installed-plugins', '_direct', 'dist', 'package.json'),
+    '{"name":"traffic-one","version":"1.0.0"}');
+  writeFile(path.join(home, '.cursor', 'plugins', 'local', 'traffic-one', 'package.json'),
+    '{"name":"traffic-one","version":"1.0.0"}');
+}
+
+test('the residue sweep removes the bundle copies no host CLI reclaims', () => {
+  withHome((home, env) => {
+    seedMachine(home);
+    seedResidue(home);
+
+    const result = run(['--yes'], env);
+    assert.equal(result.code, 0, result.stdout + (result.stderr || ''));
+
+    assert.equal(fs.existsSync(path.join(home, '.codex', 'local-marketplaces', 'traffic-one-local')), false,
+      'the staged Codex marketplace copy is gone — `codex plugin remove` never reclaims it');
+    assert.equal(fs.existsSync(path.join(home, '.copilot', 'installed-plugins', '_direct', 'dist')), false,
+      'the Copilot copy is gone — nothing discovered it before');
+    assert.equal(fs.existsSync(path.join(home, '.cursor', 'plugins', 'local', 'traffic-one')), false,
+      'the Cursor local install is gone — it has no uninstall CLI at all');
+    // Never wider than the three entries: the parents survive, because other
+    // plugins live in them.
+    assert.ok(fs.existsSync(path.join(home, '.copilot', 'installed-plugins', '_direct')), 'the Copilot plugin root survives');
+    assert.ok(fs.existsSync(path.join(home, '.cursor', 'plugins', 'local')), 'the Cursor local plugin root survives');
+  });
+});
+
+test('a Copilot copy is identified by its package name, and a stranger is left alone', () => {
+  withHome((home, env) => {
+    writeFile(path.join(home, '.copilot', 'installed-plugins', '_direct', 'dist', 'package.json'),
+      '{"name":"traffic-one"}');
+    writeFile(path.join(home, '.copilot', 'installed-plugins', '_direct', 'someone-else', 'package.json'),
+      '{"name":"not-traffic-one"}');
+    writeFile(path.join(home, '.copilot', 'installed-plugins', '_direct', 'unreadable', 'package.json'), 'not json');
+
+    const labels = discoverInstallResidue(env).map((r) => r.label);
+    assert.deepEqual(labels, ['Copilot plugin copy (dist)'],
+      'the directory NAME is the source dir, so ownership is read off package.json — and only ours matches');
+
+    run(['--yes'], env);
+    assert.equal(fs.existsSync(path.join(home, '.copilot', 'installed-plugins', '_direct', 'dist')), false);
+    assert.ok(fs.existsSync(path.join(home, '.copilot', 'installed-plugins', '_direct', 'someone-else')),
+      'another vendor’s plugin is never touched');
+    assert.ok(fs.existsSync(path.join(home, '.copilot', 'installed-plugins', '_direct', 'unreadable')),
+      'an unreadable manifest is not evidence of ownership');
+  });
+});
+
+test("Claude's marketplace registration is reported, never removed", () => {
+  withHome((home, env) => {
+    const registration = path.join(home, '.claude', 'plugins', 'marketplaces', 'traffic-one');
+    writeFile(path.join(registration, 'marketplace.json'), '{}');
+
+    const result = run(['--yes'], env);
+    const line = result.stdout.split('\n').find((l) => l.includes('Claude marketplace registration')) || '';
+    assert.match(line, /\[ok\]/, 'reporting it never fails the uninstall');
+    assert.match(line, /plugin UI/, 'the user is told where to do it by hand');
+    assert.ok(fs.existsSync(registration),
+      'no `claude plugin marketplace remove` spelling exists in this repo, so nothing here invents one');
+  });
+});
+
+test('--dry-run names the residue and removes none of it', () => {
+  withHome((home, env) => {
+    seedResidue(home);
+    const result = run(['--dry-run'], env);
+    assert.match(result.stdout, /Codex local marketplace: would remove/);
+    assert.match(result.stdout, /Cursor local install: would remove/);
+    assert.ok(fs.existsSync(path.join(home, '.codex', 'local-marketplaces', 'traffic-one-local')));
+    assert.ok(fs.existsSync(path.join(home, '.cursor', 'plugins', 'local', 'traffic-one')));
+  });
+});
+
+test('--keep-plugin keeps the residue too — it IS the bundle', () => {
+  withHome((home, env) => {
+    seedResidue(home);
+    const result = run(['--yes', '--keep-plugin'], env);
+    assert.equal(result.code, 0, result.stdout);
+    assert.ok(fs.existsSync(path.join(home, '.codex', 'local-marketplaces', 'traffic-one-local')),
+      'keeping the plugin cannot mean deleting a copy of it');
+    assert.ok(fs.existsSync(path.join(home, '.cursor', 'plugins', 'local', 'traffic-one')));
+  });
+});
+
+test('the residue sweep runs after the bundle removal and before the state sweep', () => {
+  withHome((home, env) => {
+    seedMachine(home);
+    seedResidue(home);
+    const labels = runUninstall({ dryRun: false, keepPlugin: false }, env).steps.map((s) => s.label);
+    const bundle = labels.findIndex((l) => l.startsWith('plugin bundle'));
+    const residue = labels.indexOf('Codex local marketplace');
+    const state = labels.findIndex((l) => l.startsWith('state dir'));
+    // After the bundle, because `codex plugin remove` needs the marketplace this
+    // step unregisters; before the state sweep, because it spawns a host CLI that
+    // may touch ~/.traffic-one.
+    assert.ok(bundle >= 0 && residue > bundle, 'residue follows the host CLI removals');
+    assert.ok(state > residue, 'and the state dir still goes last');
+  });
+});
+
+test('isRemovableResidueDir refuses anything outside a deep user-level plugin path', () => {
+  const env: NodeJS.ProcessEnv = { HOME: '/home/dev' };
+  assert.equal(isRemovableResidueDir('/home/dev/.cursor/plugins/local/traffic-one', env), true);
+  assert.equal(isRemovableResidueDir('/home/dev', env), false);
+  assert.equal(isRemovableResidueDir('/home/dev/.copilot', env), false, 'a host root is never deep enough');
+  assert.equal(isRemovableResidueDir('/home/dev/.copilot/installed-plugins', env), false);
+  assert.equal(isRemovableResidueDir('/etc/traffic-one/x/y', env), false, 'outside home is refused');
+  assert.equal(isRemovableResidueDir('/home/dev/.copilot/installed-plugins/../../../etc', env), false,
+    'traversal cannot escape, whether by resolution or by segment');
 });
 
 test('a machine with nothing installed reports cleanly', () => {

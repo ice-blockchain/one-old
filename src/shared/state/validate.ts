@@ -50,9 +50,16 @@ export function hasValidProjectContext(projectContext: unknown): boolean {
     : null;
   if (!c) return false;
   const answers = c.answers;
+  // `originalPrompt` is deliberately NOT required, and is not checked at all.
+  // It is the user's typed sentence, it lives in the per-user preference store
+  // outside the repository, and the onboarding flow no longer writes it into
+  // this committed object (onboarding-server/flow.ts, `project-context`). An
+  // older project may still carry one until the SessionStart scrub migrates it
+  // out, so its presence is tolerated rather than rejected — but requiring it
+  // would make every correctly-private project fail validation and re-open the
+  // wizard. Every OTHER member stays exactly as strict as it was.
   return Boolean(
     typeof c.source === 'string' && c.source.trim() !== ''
-    && typeof c.originalPrompt === 'string'
     && typeof c.summary === 'string' && c.summary.trim() !== ''
     && answers && typeof answers === 'object' && !Array.isArray(answers)
     && typeof c.collectedAt === 'string' && c.collectedAt.trim() !== '',
@@ -152,7 +159,7 @@ export function trafficOneStateValidationIssues(
   }
 
   if (s.mode === 'new-project' && !hasValidProjectContext(s.projectContext)) {
-    issues.push('`projectContext` must be an object with `source`, `originalPrompt`, `summary`, `answers`, and `collectedAt`.');
+    issues.push('`projectContext` must be an object with `source`, `summary`, `answers`, and `collectedAt`.');
   }
 
   if (s.mode === 'new-project' && !hasValidTeamState(s.team)) {

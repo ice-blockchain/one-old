@@ -2,6 +2,7 @@
   "name": "traffic-one",
   "version": "1.0.52",
   "private": true,
+  "license": "MIT",
   "type": "commonjs",
   "description": "Build + codegen tooling for the Traffic One plugin. Readable source lives in src/; generated plugin output lives in ignored dist/.",
   "engines": {
@@ -11,6 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.lighthouse.json",
     "build": "tsx src/build/build-runtime.ts dist/scripts",
     "build:verify": "tsx src/build/verify-build.ts",
+    "changelog": "tsx src/build/changelog.ts",
+    "changelog:check": "tsx src/build/changelog.ts --check",
     "gen": "tsx src/gen/index.ts",
     "gen:check": "tsx src/gen/index.ts --check",
     "golden:update": "tsx src/build/golden-update.ts",

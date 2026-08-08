@@ -31,8 +31,27 @@ function inSet(set: Set<string>, value: unknown): boolean {
 
 // Preferences that remain shared by all hosts used by this user on this project.
 // codeGraphProvider is intentionally NOT here: it is MACHINE-WIDE (one.json).
+//
+// `originalPrompt` is the odd one out and is here for a PRIVACY reason, not
+// because it is a setting. It is the user's raw first request, stored with only
+// surrounding whitespace trimmed, and `.traffic-one/.one.json` is committed by
+// design — so a prompt naming a client, an incident, an internal system, or a
+// pasted credential was pushed to whatever remote the repository has. Routing it
+// here moves it to `~/.traffic-one/projects/<hash>/preferences.json`, outside the
+// repository, and makes the SessionStart scrub
+// (state/normalize.ts `scrubProjectStateLocalPrefs`) migrate the value out of the
+// committed file for projects that already carry one, rather than leaving those
+// users with a leak no release fixes.
+//
+// Membership here has TWO consequences a reader has to hold together: every
+// `readEffectiveState` consumer keeps seeing the field (effectiveState below
+// projects PROJECT_PREF_KEYS back on), and every RAW reader — `readState`, which
+// strips local preferences on read — stops seeing it. `seedOriginalPrompt`'s own
+// idempotency guard was one of those raw readers and now reads the effective
+// state; the two in onboarding-server/flow.ts (`project-context` and `finalize`)
+// are NOT, and lose the seeded prompt as a stack signal.
 export const PROJECT_PREF_KEYS = new Set([
-  'openCode', 'toolchain', 'agentActivity',
+  'openCode', 'toolchain', 'agentActivity', 'originalPrompt',
   'codeGraphAutoRun', 'graphifyAutoRun', 'graphifyLastHintedAt', 'graphifyLastRunAt',
   'graphifyLastErrorAt', 'graphifyLastError', 'gitnexusLastRunAt', 'gitnexusLastErrorAt', 'gitnexusLastError',
 ]);

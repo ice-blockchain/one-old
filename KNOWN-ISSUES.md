@@ -1,0 +1,263 @@
+# Known issues
+
+Limitations of this release that you can hit in normal use. Every entry was
+checked against the code before it was written here, and each says what is
+verified and how, so you can tell a measurement from a reading.
+
+Ordered by how likely you are to meet it. If you hit something that is not here,
+that is worth reporting — see `SUPPORT.md`.
+
+---
+
+## 1. A project with both a web UI and a mobile UI stops and asks you to choose
+
+**Affects:** any repository where Traffic One sees both a web framework and a
+native one — one manifest carrying `next` and `react-native`, or a workspace with
+`apps/web` and `apps/mobile`.
+
+**What happens:** the capability profile comes back as `unsupported-hybrid` with
+one blocking issue, and architecture compilation refuses until it is resolved:
+
+```
+CAPABILITY_HYBRID_UI_TARGET_REQUIRED
+Both web-ui and native-ui were detected; set runtime/user-owned
+architectureTarget to web-ui or native-ui before architecture compilation.
+```
+
+**Workaround:** set `architectureTarget` to `web-ui` or `native-ui`. Traffic One
+then works normally on that surface. There is no setting that makes it drive
+both surfaces in one run.
+
+**Verified** by measurement, not by reading: three fixture projects (single
+manifest with `next` + `react-native`; single manifest with `next` + `expo`;
+split workspaces `apps/web` + `apps/mobile`) run through
+`capabilityProfileForProject`. All three reported
+`surfaces = ["web-ui","native-ui"]`, `profileId = unsupported-hybrid`, and the
+blocking issue above.
+
+**A correction, because it points the wrong way in our own notes.** This is
+sometimes described internally as "a monorepo with both `next` and
+`react-native` reports **no** mobile surface". That is not what happens. The
+mobile surface *is* detected — `native = react-native-expo`, and the skill
+buckets include `native-ui` — in the split layout *and* in the single-manifest
+layout. The problem is a refusal to proceed without a target, which is a
+different symptom with a different fix.
+
+---
+
+## 2. On OpenCode, Kilo and Windsurf, spawning the same role twice gives you two agents
+
+**Affects:** `opencode`, `kilo`, `windsurf`. Not Claude, Codex, Cursor or
+Copilot.
+
+**What happens:** normally Traffic One keeps one live agent per role — a second
+spawn of the same role is refused and the orchestrator is pointed at the agent
+already running, so that role's context loads once instead of once per task. On
+these three hosts, the reuse registry **stands down entirely** and the second
+spawn proceeds as a fresh one. You get two agents for one role, the newer one
+takes over, and you pay for the context twice.
+
+**Why it is deliberate.** On these hosts the recorded agent id cannot be
+corroborated against host identity — it comes from orchestrator-authored text
+(the child's first chat message, or the requested spawn profile), never from the
+host. An unverifiable row was nonetheless authority to *deny* the role's next
+spawn and to release another thread's live claim: absent evidence behaving as
+evidence of no problem. Standing down costs duplicate context; trusting it cost
+correctness.
+
+**Workaround:** on these hosts, spawn each role once per run. Or use a certified
+host.
+
+**Verified** by reading `HOSTS_WITHOUT_VERIFIABLE_REUSE` in
+`src/shared/state/run-agent/registry.ts`, which is exactly
+`['opencode', 'kilo', 'windsurf']`, and the code path it gates.
+
+---
+
+## 3. Subagent round-trips are not certified on any host
+
+**Affects:** all seven hosts, certified ones included.
+
+**What happens:** the release harness cannot read a subagent run manifest or
+subagent digests back out of a headless run, because **every** host row carries
+`headlessSubagents: 'unsupported'`. Assertions that depend on a subagent
+round-trip report `UNSUPPORTED` rather than passing — which is the honest
+outcome and is why you can trust the rest of the harness, but it does mean this
+one path is proven by manual work rather than by CI.
+
+**What this does *not* mean:** subagents work. This is a gap in automated
+*proof*, not a gap in function.
+
+**Cursor has a second, related asymmetry.** It is a certified host, but release
+CI cannot drive it — it has no scriptable install, auto-importing Claude Code's
+user-scope bundle through an editor-only `/add-plugin` pointer. Its release
+evidence is therefore a **dated manual certification record**, fingerprinted to
+the exact build it was taken against. Same certification slot the four
+uncertified hosts use.
+
+**Verified** by reading every host row in
+`src/test-environment/config/hosts.ts` and the `certification` field in
+`src/shared/host/capability-schema.ts`.
+
+---
+
+## 4. Kilo does not support typed subagents, and its wrapper has never met a real Kilo
+
+**Affects:** `kilo`.
+
+**Two separate things, both real:**
+
+`typedSubagents: false` in Kilo's capability row. Roles that rely on a typed
+subagent surface do not get one; Kilo is the only host in the table with this
+set to false.
+
+**And the wrapper's session behaviour is fixture-verified only.** Kilo's plugin
+wrapper is a generated JavaScript file that resolves the project root by walking
+up from the session directory and stopping at `$HOME`. Every test of that
+behaviour — including the "stand down for a session opened directly in the home
+directory" case — works by **pointing `HOME` at a fixture directory** and
+importing the generated wrapper. That proves the logic. It does not prove that a
+real Kilo session presents the directory the wrapper expects, and no recorded
+live Kilo session exists in this repository to say either way.
+
+Kilo is `uncertified` for exactly this class of reason, and installing on it
+refuses by default.
+
+**Verified** by reading `src/shared/host/capability-schema.ts`,
+`src/runners/kilo-host/wrapper-source.ts`, and every `HOME`-manipulating test in
+`src/runners/kilo-host/__tests__/index.test.ts`.
+
+---
+
+## 5. Rust projects are not exercised by the release harness
+
+**Affects:** Rust projects.
+
+**What happens:** Traffic One has Rust-aware pieces — `rustfmt.toml`
+scaffolding, `target/` and `Cargo.lock` in the skip authority — so a Rust project
+will not be obviously broken. But `npm run test:env -- --strict`, the only test
+that exercises how the gates, the architecture compiler, the QA runner and
+settlement *compose*, drives no Rust project. Go and Python are driven; Rust is
+not.
+
+**What that means practically:** nothing proves an end-to-end Rust run works.
+Treat Rust as untested rather than unsupported, and expect to be the first to
+find whatever is wrong.
+
+**Verified** by measurement: zero occurrences of `rust` or `cargo`,
+case-insensitive, across every file in `src/test-environment/config/cases/`,
+against nine lines matching Go/Python in the same directory.
+
+---
+
+## 6. Windows is written for but not tested
+
+**Affects:** Windows.
+
+27 source files branch on `process.platform === 'win32'` — `.cmd` shim
+resolution, zip extraction with an `Expand-Archive` fallback, Defender-lock
+tolerant renames, the flat npm-prefix layout. None of it runs in CI, and there
+is no manual record for it. The managed-runtime downloader publishes assets for
+macOS and Linux on x64 and arm64 only, and skips elsewhere rather than failing.
+
+See `PLATFORMS.md`. **Verified** by reading the CI matrix and
+`src/config/managed-runtimes.ts`.
+
+---
+
+## 7. A prompt already pushed by an older version stays in your git history
+
+**Affects:** projects set up with a version of Traffic One that wrote your first
+prompt into `.traffic-one/.one.json`, and then committed and pushed it.
+
+Your first prompt is no longer stored in a committed file — it lives in your
+per-user preference file, outside the repository — and a project that still has
+the old copy is repaired automatically on its next session: the value is moved
+out of `.one.json` and into that per-user file.
+
+The repair edits your working file. **It cannot rewrite commits you have already
+made, and it cannot reach a remote.** If the prompt is in a pushed commit and it
+says something it should not, removing it is a history rewrite
+(`git filter-repo`, a force push, and a re-clone for everyone else), which no
+plugin upgrade can do for you.
+
+One project state is also out of reach: a project where you have not yet
+answered "use Traffic One here?" keeps its copy, because Traffic One writes
+nothing into a project before that answer and the repair is a write. Answering
+the question — either way — lets the next session perform it.
+
+**Verified** by reading `scrubProjectStateLocalPrefs` in
+`src/shared/state/normalize.ts` (the repair, which runs unconditionally at
+SessionStart and writes through the same consent fence as every other project
+write) and `PROJECT_PREF_KEYS` in
+`src/shared/state/local-prefs/pref-schema.ts` (where the value goes instead).
+Stated in full in `PRIVACY.md`.
+
+---
+
+## 8. In a polyglot workspace, only the top-level `.traffic-one/` is gitignored
+
+**Affects:** repositories with more than one project root — `web/`, `api/`,
+`mobile/` each with their own `.traffic-one/`.
+
+**What happens:** every entry in the generated `.gitignore` block is written as
+`.traffic-one/runs/`, which git anchors to the directory containing the
+`.gitignore`. A workspace member's own `web/.traffic-one/runs/` therefore does
+**not** match, and its run artifacts — including an append-only debug log that
+grows — become untracked files you will eventually `git add .`.
+
+**Workaround:** add `**/.traffic-one/runs/` and its siblings to your own
+`.gitignore`. Traffic One never rewrites lines outside its marked block, so
+yours are safe.
+
+**Verified** by reading `TRAFFIC_ONE_RUN_STATE_ENTRIES` and the template that
+consumes it in `src/shared/architecture-contract/scaffold-content.ts`, whose own
+comment names this case and the one-line change that would fix it.
+
+---
+
+## 9. Key revocation depends on a cross-repository string that nothing checks
+
+**Affects:** nobody today; worth knowing because it fails in a direction most
+software does not.
+
+Traffic One decides whether a 401 from the auth endpoint means "your key is
+revoked" or "we could not check" by reading the server's `error.code` and
+matching `invalid_token`. That string is a contract between two repositories
+with no shared artifact and no version. If the server ever renames it, **nothing
+in Traffic One's test suite goes red** — the client would simply grant every
+rejection the offline grace window.
+
+The bias is deliberate and points away from you: an unparseable revocation gives
+you 7 more days rather than locking you out, because the way back in runs through
+the same endpoint. The four codes are pinned verbatim in
+`src/runners/auth/__tests__/validate-key.test.ts` so a deliberate change is at
+least a conversation.
+
+**Verified** by reading `AUTH_GATE_401_CODES` in
+`src/runners/auth/validate-key.ts` and the test that pins it. The file's own
+header states the drift.
+
+---
+
+## 10. Below Node 22, Traffic One warns rather than refusing
+
+**Affects:** anyone whose *host application* — not their terminal — launches with
+an old Node. Launching a host from the Dock, Start menu or Spotlight never
+sources the shell startup files where `nvm` lives, so a terminal reporting Node
+22 proves nothing about the hooks.
+
+Traffic One writes one stderr line naming your Node, the floor and the usual
+cause, and continues. It does not refuse, because a hook that throws becomes a
+deny nobody can override, and a launcher that exits early reads to the host as
+"this gate had nothing to say" — every gate silently off.
+
+Diagnose with `node ~/.traffic-one/bin/doctor.cjs`; the finding is
+`HOOK_RUNTIME_NODE_BELOW_FLOOR`. See `PLATFORMS.md`.
+
+---
+
+## Reporting something not on this list
+
+`SUPPORT.md` has the runbook and what to attach. `doctor --bundle` produces a
+redacted diagnostic bundle that is safe to send.

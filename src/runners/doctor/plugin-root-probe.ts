@@ -7,31 +7,28 @@
 // run build`) subtrees carry matching build identities. Read-only, like every
 // other doctor probe; never denies (see findings.ts) — this is exactly the
 // diagnostic surface the plan protects from ever becoming undeniable.
+//
+// The paths and the parse are shared/build-provenance.ts's, not this file's:
+// the hook runtime's materialization freshness check reads the same file, and
+// two copies of "where is it and what counts as a record" over a value an
+// operator compares BY EYE against a project's manifest is a drift pair. That
+// reader also validates `sourceHash` (see its type), so plugin-identity.ts's
+// `contentHash` fallback chain and the runtime's `pluginContentHash` are the
+// same expression over the same records instead of two that agree by habit.
 
-import * as fs from 'fs';
-import * as path from 'path';
-
+import {
+  contentProvenancePath as contentProvenancePathFor,
+  readBuildProvenance,
+  runtimeProvenancePath as runtimeProvenancePathFor,
+  type BuildProvenanceRecord,
+} from '../../shared/build-provenance';
 import { pluginRootInfo, type PluginRootInfo } from '../../shared/paths';
-
-interface BuildProvenanceLike {
-  readonly gitSha?: string | null;
-  readonly sourceHash?: string;
-}
-
-function readProvenance(file: string): BuildProvenanceLike | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as BuildProvenanceLike) : null;
-  } catch {
-    return null;
-  }
-}
 
 export interface PluginRootProbe extends PluginRootInfo {
   readonly contentProvenancePath: string;
   readonly runtimeProvenancePath: string;
-  readonly contentProvenance: BuildProvenanceLike | null;
-  readonly runtimeProvenance: BuildProvenanceLike | null;
+  readonly contentProvenance: BuildProvenanceRecord | null;
+  readonly runtimeProvenance: BuildProvenanceRecord | null;
   // True only when BOTH copies exist and disagree — a pair where either (or
   // both) is missing predates this feature or is a partial/dev tree, not
   // evidence of a stale mixed install.
@@ -40,10 +37,10 @@ export interface PluginRootProbe extends PluginRootInfo {
 
 export function probePluginRoot(): PluginRootProbe {
   const info = pluginRootInfo();
-  const contentProvenancePath = path.join(info.root, 'build-provenance.json');
-  const runtimeProvenancePath = path.join(info.root, 'scripts', 'build-provenance.json');
-  const contentProvenance = readProvenance(contentProvenancePath);
-  const runtimeProvenance = readProvenance(runtimeProvenancePath);
+  const contentProvenancePath = contentProvenancePathFor(info.root);
+  const runtimeProvenancePath = runtimeProvenancePathFor(info.root);
+  const contentProvenance = readBuildProvenance(contentProvenancePath);
+  const runtimeProvenance = readBuildProvenance(runtimeProvenancePath);
   const layerMismatch = Boolean(
     contentProvenance
     && runtimeProvenance

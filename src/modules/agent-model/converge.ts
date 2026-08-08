@@ -13,6 +13,60 @@ type Rec = Record<string, unknown>;
 // Back-compat alias: the canonical predicate now lives in shared/config.
 const isKnownStackName = isKnownStack;
 
+/**
+ * Deliberately does NOT ask `materializedFromDifferentPluginBuild` — the term
+ * every OTHER convergence point in the product now carries
+ * (shared/materialize/converge.ts, modules/materialize/converge-from-write.ts,
+ * modules/session/session-start-lib.ts). This is the one predicate of the four
+ * that feeds a LIVE GATE, and the omission is the safe direction, not an
+ * oversight to be tidied up later.
+ *
+ * WHY. Its only consumer is gate-enforcement.ts#modelEnforcementGates, whose
+ * branch is `isNewProject && !isCompletedTrafficOneMaterialization(...)`, and
+ * BOTH arms of that branch return a deny — one after `materializeIfNeeded`
+ * repairs (`agent-materialization-deny`, "rerun the same spawn"), one when it
+ * cannot (`agent-materialization-missing`). Entering the branch is therefore
+ * unconditionally a refusal, so widening the entry condition is not "one more
+ * freshness check", it is a new class of denied spawn.
+ *
+ * And the repair cannot clear a build mismatch against exactly the root state a
+ * build change produces. `materializeProjectAssets` refuses a torn or partial
+ * plugin root (`plugin-root-content-incomplete`, `plugin-root-unverified`) —
+ * the state a marketplace sync leaves mid-flight, which is the same event that
+ * moved the hash. On such a root the sweep returns `skipped`,
+ * `materializeIfNeeded` answers `true` (nothing to record is not a refusal), the
+ * manifest keeps the previous build's stamp, and the read-back would deny
+ * `agent-materialization-missing` on EVERY spawn, forever, with `CAUSE` empty
+ * because the stamp write was never refused. Its prose names
+ * `materializedStack`/`materializedAt`/`materializedVersion` and five paths that
+ * are all present and correct. A permanent refusal whose text describes a
+ * condition that is false, in the one place a user cannot route around, is a
+ * strictly worse outcome than one spawn running against the previous release's
+ * rules — which is all the omission costs, and which the surrounding pipeline
+ * closes within the same tool call (see below).
+ *
+ * THE ORDERING THIS RESTS ON — stated because an unstated one is what the next
+ * reader breaks:
+ *   - On cursor/copilot/opencode/kilo/windsurf a spawn's PreToolUse is ONE
+ *     subcommand, so core/pipeline.ts runs onboarding-gate (module.json
+ *     priority 10, `spawn-agent` in its tool set) before this gate (priority 40)
+ *     in the same process, and onboarding-gate's `materializeProjectIfNeeded`
+ *     DOES carry the term. A spawn is not `isMutatingPreToolUse`, so it attaches
+ *     context rather than denying, and the pipeline reaches this gate with the
+ *     project already converged. Structural: priority order, one process.
+ *   - On claude/codex it does NOT hold. `check-onboarding-gate` and
+ *     `check-agent-model` are separate manifest entries (gen/sources/hooks.ts)
+ *     dispatched as separate processes with separate handler sets
+ *     (core/dispatch.ts#handlersForSubcommand); nothing here orders them. What
+ *     makes that harmless is not ordering at all — it is that this gate REPAIRS
+ *     ITSELF at gate-enforcement.ts's `materializeIfNeeded` before choosing a
+ *     deny. Adding the term here is what would make the missing order matter.
+ *   - Every host does deliver a prompt event that reaches
+ *     `materializeProjectIfNeeded` (claude/codex UserPromptSubmit, cursor
+ *     beforeSubmitPrompt, copilot UserPromptSubmit, windsurf pre_user_prompt via
+ *     the adapter's canonical mapping, opencode/kilo chat.message), but headless
+ *     and subagent sessions fire none, so that is not the guarantee to lean on.
+ */
 export function isCompletedTrafficOneMaterialization(cwd: string, state: Rec): boolean {
   return Boolean(
     state
@@ -66,6 +120,11 @@ export function isCompletedTrafficOneMaterialization(cwd: string, state: Rec): b
 export function materializeIfNeeded(cwd: string): boolean {
   const state = readEffectiveState(cwd);
   if (!isKnownStackName(state.stack) || state.onboardingComplete !== true) return true;
+  // No build-freshness term here either, and here it would be INERT rather than
+  // harmful: the sole caller reaches this line only inside the branch above,
+  // which is entered because `isCompletedTrafficOneMaterialization` already
+  // answered false — so one of the two conditions on this line is already false
+  // and the sweep below already runs, stamping the installed build's hash.
   if (isMaterialized(state) && hasMaterializedProjectAssets(cwd, state)) return true;
   const result = materializeProjectAssets(cwd, state);
   if (result.skipped) return true;

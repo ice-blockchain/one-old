@@ -4,9 +4,9 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { normalizeState, readState, requireAddon, statePath, writeState } from '../normalize';
+import { normalizeState, readState, requireAddon, scrubProjectStateLocalPrefs, statePath, writeState } from '../normalize';
 import { preserveCurrentRunId } from '../project-state-lock';
-import { mergeProjectHostPrefs, readEffectiveState, writeGlobalCodeGraphProvider } from '../local-prefs';
+import { mergeProjectHostPrefs, readEffectiveState, readProjectPrefs, writeGlobalCodeGraphProvider } from '../local-prefs';
 import { nextLocalPreferenceStep } from '../../onboarding/local-prefs';
 
 // Isolate BOTH the per-project prefs file and one.json (the machine-wide store that
@@ -35,6 +35,87 @@ function withPrefs<T>(fn: (dir: string) => T): T {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+// The nested half of the prompt-privacy split. `hasLocalPreferenceFields` reads
+// EXACT TOP-LEVEL keys, so routing `originalPrompt` to the per-user store did
+// nothing for the copy the wizard used to write inside `projectContext` — and a
+// project set up before the split keeps carrying it, in a committed file, until
+// something migrates it.
+//
+// A WRITABLE BASELINE is asserted first on purpose: a refused write and
+// "nothing to do" are the same `false`, and the same clean-looking file, so
+// without it the whole case can pass for the wrong reason.
+const LEAKED_PROMPT = 'build an internal tool for ACME incident 4417';
+
+test('the SessionStart scrub migrates a committed projectContext.originalPrompt out', () => {
+  withPrefs((dir) => {
+    assert.equal(writeState(dir, { mode: 'new-project', marker: 'baseline' }), true,
+      'writable baseline: this fixture can persist shared state at all');
+    fs.writeFileSync(statePath(dir), JSON.stringify({
+      mode: 'new-project',
+      projectContext: {
+        source: 'prompted',
+        originalPrompt: LEAKED_PROMPT,
+        // The blank-summary case, which committed the sentence a SECOND time.
+        summary: LEAKED_PROMPT,
+        answers: { audience: 'ops staff' },
+        collectedAt: '2026-01-01T00:00:00Z',
+      },
+    }), 'utf8');
+    assert.ok(fs.readFileSync(statePath(dir), 'utf8').includes(LEAKED_PROMPT),
+      'premise: the pre-upgrade file really does carry the prompt');
+
+    assert.equal(scrubProjectStateLocalPrefs(dir), true, 'the scrub rewrote the file');
+
+    // A BYTE check, not a field read: what matters is what gets pushed.
+    const bytes = fs.readFileSync(statePath(dir), 'utf8');
+    assert.ok(!bytes.includes(LEAKED_PROMPT), `the prompt is still in the committed bytes: ${bytes}`);
+    assert.ok(!bytes.includes('"originalPrompt"'), 'the member itself is gone');
+    // Nothing is lost — the stack derivation and UI-library detection read it.
+    assert.equal(readProjectPrefs(dir).originalPrompt, LEAKED_PROMPT,
+      'the value moved to the per-user store');
+    assert.equal(readEffectiveState(dir).originalPrompt, LEAKED_PROMPT,
+      'and every merged-state consumer still finds it');
+    // The summary is replaced with the rest of the chain the wizard uses today,
+    // so the migrated project ends up where a fresh setup would have put it.
+    const context = readState(dir).projectContext as Record<string, unknown>;
+    assert.equal(context.summary, 'ops staff');
+    // Normalization adds fields on the way through writeState. Expected, and
+    // pinned so a reader does not mistake it for the scrub inventing state.
+    assert.deepEqual(context.answers, { audience: 'ops staff' });
+    assert.equal(scrubProjectStateLocalPrefs(dir), false, 'and a second pass has nothing to do');
+  });
+});
+
+test('the scrub leaves a summary the USER typed alone, and never invents a prompt', () => {
+  withPrefs((dir) => {
+    assert.equal(writeState(dir, { mode: 'new-project', marker: 'baseline' }), true, 'writable baseline');
+    fs.writeFileSync(statePath(dir), JSON.stringify({
+      mode: 'new-project',
+      projectContext: {
+        source: 'prompted', originalPrompt: LEAKED_PROMPT, summary: 'An ops console',
+        answers: {}, collectedAt: '2026-01-01T00:00:00Z',
+      },
+    }), 'utf8');
+    assert.equal(scrubProjectStateLocalPrefs(dir), true);
+    const context = readState(dir).projectContext as Record<string, unknown>;
+    assert.equal(context.summary, 'An ops console', 'a summary that is not the prompt is not the leak');
+    assert.ok(!fs.readFileSync(statePath(dir), 'utf8').includes(LEAKED_PROMPT));
+  });
+});
+
+test('a project with nothing to migrate is not rewritten', () => {
+  withPrefs((dir) => {
+    assert.equal(writeState(dir, { mode: 'new-project', marker: 'baseline' }), true, 'writable baseline');
+    fs.writeFileSync(statePath(dir), JSON.stringify({
+      mode: 'new-project',
+      projectContext: { source: 'prompted', summary: 'An ops console', answers: {}, collectedAt: '2026-01-01T00:00:00Z' },
+    }), 'utf8');
+    const before = fs.readFileSync(statePath(dir));
+    assert.equal(scrubProjectStateLocalPrefs(dir), false);
+    assert.ok(before.equals(fs.readFileSync(statePath(dir))), 'byte-identical: no gratuitous rewrite');
+  });
+});
 
 test('normalizeState fills bookkeeping + seeds defaults for a stack', () => {
   const s: Record<string, unknown> = { stack: 'default' };

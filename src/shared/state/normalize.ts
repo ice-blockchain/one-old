@@ -305,15 +305,69 @@ function statePreservedBeforeReplace(filePath: string, read: JsonRead<Rec>): boo
 // `toolchain` (with a machine-absolute binPath), `performance`, etc. in `.one.json`, which
 // is NOT gitignored. Run this at SessionStart: it reads the RAW on-disk file (NOT readState,
 // which strips on read and would hide the leak); if any local-pref field is present it
-// rewrites through writeState — stripping them and merging them into preferences.json. No-op
+// rewrites through writeState — stripping them and merging them into preferences.json. It also
+// migrates the ONE nested leak the top-level key sets cannot see — a committed
+// `projectContext.originalPrompt` — see hoistCommittedOriginalPrompt below. No-op
 // when the file is absent, already clean, or in the plugin authoring repo (writeState guards
 // that). Returns true when it scrubbed — i.e. when the rewritten file is on disk;
 // a refused rewrite leaves the leak in place and says so, because the caller's
 // next honest move (log it, re-run next session) differs from "already clean".
 export function scrubProjectStateLocalPrefs(cwd: string): boolean {
   const raw = readJson<Rec>(statePath(cwd), null as unknown as Rec);
-  if (!raw || typeof raw !== 'object' || !hasLocalPreferenceFields(raw)) return false;
+  if (!raw || typeof raw !== 'object') return false;
+  const hoisted = hoistCommittedOriginalPrompt(raw);
+  if (!hoisted && !hasLocalPreferenceFields(raw)) return false;
   return writeState(cwd, raw);
+}
+
+/**
+ * The nested half of the same leak, which the generic scrub above cannot see.
+ *
+ * `hasLocalPreferenceFields` / `stripLocalPreferenceFields` read EXACT TOP-LEVEL
+ * keys, so routing `originalPrompt` to the per-user store did nothing for the
+ * copy the onboarding wizard used to write at
+ * `projectContext.originalPrompt` — a committed, pushed, verbatim second copy
+ * of the user's first request, in the same file the top-level split was added
+ * to protect. The wizard no longer writes it (onboarding-server/flow.ts,
+ * `project-context`), and this is the other half: every project that already
+ * has one gets it moved out on the next SessionStart.
+ *
+ * HOISTS rather than deletes. The value is not junk — the stack derivation and
+ * the UI-library detection read it — so it is promoted to the TOP-LEVEL field,
+ * which `writeState`'s `splitLocalPreferences` then routes into
+ * `~/.traffic-one/projects/<hash>/preferences.json` and strips from the file.
+ * A top-level value already present wins: it is the live one, and the nested
+ * copy is by construction the older of the two.
+ *
+ * Mutates `raw` in place and reports whether anything changed, so the caller
+ * can tell "nothing to do" from "scrubbed" — a distinction the boolean it
+ * returns has to preserve, because a REFUSED write answers `false` too.
+ */
+function hoistCommittedOriginalPrompt(raw: Rec): boolean {
+  const context = obj(raw.projectContext);
+  if (!context || !Object.prototype.hasOwnProperty.call(context, 'originalPrompt')) return false;
+  const nested = typeof context.originalPrompt === 'string' ? context.originalPrompt.trim() : '';
+  const next: Rec = { ...context };
+  delete next.originalPrompt;
+  // The SECOND committed copy, and it is not hypothetical: the wizard's old
+  // summary chain was `submitted || originalPrompt || answers.audience ||
+  // 'MVP'`, and the summary box is optional — the Continue button was never
+  // gated on it — so every user who left it blank committed the sentence twice.
+  // Removing only the `originalPrompt` member would migrate half a leak.
+  //
+  // Matched by EXACT equality with the prompt, which is what the old fallback
+  // produced (it assigned the value, unmodified). A summary the user actually
+  // typed differs from the prompt and is left alone. The replacement is the
+  // rest of that same chain, so a migrated project ends up with exactly the
+  // summary today's code would have written for it.
+  if (nested && typeof next.summary === 'string' && next.summary.trim() === nested) {
+    const audience = obj(next.answers)?.audience;
+    next.summary = (typeof audience === 'string' && audience.trim()) || 'MVP';
+  }
+  raw.projectContext = next;
+  const top = typeof raw.originalPrompt === 'string' ? raw.originalPrompt.trim() : '';
+  if (nested && !top) raw.originalPrompt = nested;
+  return true;
 }
 
 export function normalizeState(state: unknown, defaultMode?: string): boolean {

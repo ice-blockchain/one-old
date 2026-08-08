@@ -21,6 +21,12 @@
 //   - token-rejected    an unauthenticated caller is not the user's wizard
 // Without those exclusions any loopback poke would fabricate permanent silence.
 //
+// The token-rejected exclusion covers `/local` too, even though that route is
+// PUBLIC and renders without a token: every link Traffic One produces carries
+// `?t=` (config/dashboard.ts), so a tokenless `/local` is not the user's browser.
+// server.ts enforces this — the route being reachable and the request counting as
+// arrival are separate questions, and only the second one requires the token.
+//
 // The sentinel is TTL'd rather than absorbing: a user who opens the tab and walks
 // away must be re-offered the link, not left in silence forever.
 

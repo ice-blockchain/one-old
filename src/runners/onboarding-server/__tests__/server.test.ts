@@ -55,17 +55,23 @@ test('server: state/answer routes require the token; page + health are public', 
 
 test('server: `/` serves the redirect page pointing at the dashboard (fragment-carried port+token)', async () => {
   await withServer(async (server) => {
-    const res = await request(server.port, '/'); // no ?t= — public path
+    const res = await request(server.port, `/?t=secret`);
     assert.equal(res.status, 200);
     assert.ok(res.body.includes('Traffic One'));
     // the redirect page builds the dashboard deep link with the token in the fragment
     assert.ok(res.body.includes('https://dash.example.test'));
     assert.ok(res.body.includes('/onboarding/agent'));
-    // the token is injected for the deep link + the /local fallback link
-    assert.ok(res.body.includes('secret'));
+    // The token is NOT injected: `/` is a token-free public path, so a token in
+    // the body is a token served to any unauthenticated local reader. The page
+    // takes it from its own URL query, which is where the handed-out link
+    // (registry record `url`) already carries it.
+    assert.ok(!res.body.includes('secret'));
+    assert.ok(res.body.includes('new URLSearchParams(location.search).get("t")'));
     assert.ok(!res.body.includes('%%T1_TOKEN%%'));
     assert.ok(!res.body.includes('%%T1_PORT%%'));
     assert.ok(!res.body.includes('%%T1_DASHBOARD%%'));
+    // the per-session values that are NOT credentials are still injected
+    assert.ok(res.body.includes(`var T1_INJECTED_PORT = "${server.port}"`));
   }, { TRAFFIC_ONE_DASHBOARD_URL: 'https://dash.example.test' });
 });
 
@@ -75,12 +81,49 @@ test('server: `/local` serves the full fallback wizard (token-free public path)'
     assert.equal(res.status, 200);
     assert.ok(res.body.includes('Traffic One'));
     assert.ok(res.body.includes('Setup complete')); // the real wizard, not the redirect shell
-    // the token is still injected server-side for the page's own API calls
-    assert.ok(res.body.includes('secret'));
-    assert.ok(!res.body.includes('%%T1_TOKEN%%'));
-    // the JS identifier must survive substitution intact (regression guard)
-    assert.ok(!res.body.includes('window.secret'));
+    // This test used to assert the OPPOSITE — that the token is "still injected
+    // server-side for the page's own API calls" — which ratified the defect: the
+    // route is public, so that injection handed the credential guarding /state
+    // and /answer to any process that can reach loopback. The page reads the
+    // token from its own URL query instead (`/local?t=…`, config/dashboard.ts).
+    assert.ok(!res.body.includes('secret'));
+    assert.ok(res.body.includes('new URLSearchParams(location.search).get("t")'));
+    // nothing is substituted into this page at all, so no placeholder can survive
+    assert.deepEqual(res.body.match(/%%[A-Z0-9_]+%%/g), null);
   });
+});
+
+// The defect this guards, reproduced end to end before the fix: an unauthenticated
+// `GET /local` (and `GET /`) returned HTML containing the 32-byte session token;
+// scraping it yielded `GET /state` → 200 and `POST /answer` → 200, which wrote the
+// user's onboarding preferences to disk. The token gate was defeated by public
+// routes that handed out the token. The property asserted here is the durable one:
+// NO unauthenticated response body contains the token, whatever the route list says.
+test('server: no unauthenticated response hands out the session token', async () => {
+  const token = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbsrv-tokenleak-'));
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'prefs.json'),
+    TRAFFIC_ONE_DASHBOARD_URL: 'https://dash.example.test',
+  };
+  const server = await startOnboardingServer({ cwd: dir, env, token, standalone: false, idleMs: 60_000 });
+  try {
+    for (const p of ['/', '/index.html', '/local', '/healthz', '/state', '/nope']) {
+      const res = await request(server.port, p); // no token, on purpose
+      assert.ok(!res.body.includes(token), `${p} must not disclose the session token (status ${res.status})`);
+      // a scraper does not need to know the field name — 64 hex chars is enough
+      assert.equal(/[0-9a-f]{64}/.test(res.body), false, `${p} must not disclose a token-shaped string`);
+    }
+    // and the routes the token protects are still refused to that caller
+    assert.equal((await request(server.port, '/state')).status, 403);
+    assert.equal((await request(server.port, '/answer')).status, 403);
+    // while the caller holding the real token is unaffected
+    assert.equal((await request(server.port, '/state', { 'x-t1-token': token })).status, 200);
+  } finally {
+    await server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('server: CORS is open (ACAO:*) on API responses so the dashboard can call cross-origin', async () => {
@@ -228,8 +271,17 @@ test('server: only a real wizard-UI request records the browser arrival', async 
     assert.equal((await request(server.port, '/state')).status, 403);
     assert.equal(open(), false, 'a token-rejected caller is not the user\'s wizard');
 
-    // The loopback wizard actually loading IS the signal.
+    // `/local` is a PUBLIC route, so it renders for anyone — but rendering is not
+    // arrival. This test previously asserted that a tokenless `/local` records the
+    // arrival, which contradicted the token-rejected exclusion two lines above and
+    // let any local process forge "the user already has the wizard open" and
+    // silence every surface that offers the setup link.
     assert.equal((await request(server.port, '/local')).status, 200);
+    assert.equal(open(), false, 'a tokenless /local poke is not the user\'s browser');
+
+    // The loopback wizard actually loading — via the link the user was handed,
+    // which always carries ?t= (config/dashboard.ts) — IS the signal.
+    assert.equal((await request(server.port, '/local?t=secret')).status, 200);
     assert.equal(open(), true, 'the wizard UI loaded in a browser');
   } finally {
     await server.close();

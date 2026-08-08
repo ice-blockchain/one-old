@@ -16,9 +16,44 @@ import type { GenRun } from '../lib/run';
 // Codex discovers plugin hooks but does not inject a plugin-root AGENTS.md.
 // Keeping the files distinct also means a session inside the source repo never
 // reads end-user project conventions.
+//
+// The release documents below join README.md/ref.md for one reason each, and
+// all of them fail the same way if they are left out: a statement the product
+// makes about itself that the person running the product never receives.
+//   - LICENSE: the grant. A licence the user never gets is not a licence.
+//   - THIRD-PARTY-NOTICES.md: the only place that says which third-party tools
+//     the product will install on the reader's machine, and under what terms —
+//     one of them (GitNexus) is PolyForm Noncommercial, so the notice has real
+//     consequences for a commercial reader and has to travel with the bundle.
+//   - PRIVACY.md / PLATFORMS.md / KNOWN-ISSUES.md / SUPPORT.md: what leaves the
+//     machine, what is supported, what is broken, and what to do about it.
+//     Every one of them answers a question asked from inside an install, where
+//     this repository is not present.
+//
+// CHANGELOG.md is deliberately ABSENT, and the reason is structural rather than
+// an oversight. It is generated from git history (`npm run changelog`), so its
+// entries are commit subjects written for maintainers — and a history quotes
+// the vocabulary of its own past forever. __tests__/gen.test.ts scans every
+// emitted `.md` for obsolete host-API identifiers, on the sound principle that
+// agent-readable prose in the plugin root must not name an API that no longer
+// exists; a 2026-05 commit subject saying `fork_context` trips it, correctly,
+// and would keep tripping it for every future release. A record of the past and
+// a statement of current behaviour cannot be the same file, so the changelog
+// stays a repository artifact and the bundle ships only documents that describe
+// the build the reader has.
+//
+// Each entry MUST exist at the source root: readSourceText below throws on a
+// missing file, so `npm run gen` fails loudly rather than shipping a bundle
+// with a hole in it.
 const STATIC_TEXT_FILES = [
   'README.md',
   'ref.md',
+  'LICENSE',
+  'THIRD-PARTY-NOTICES.md',
+  'PRIVACY.md',
+  'PLATFORMS.md',
+  'KNOWN-ISSUES.md',
+  'SUPPORT.md',
 ] as const;
 
 const PLUGIN_INSTRUCTIONS_SOURCE = path.join('src', 'gen', 'static', 'plugin-instructions.md');
@@ -63,10 +98,19 @@ export function emitStaticPluginFiles(run: GenRun): void {
   run.file('CLAUDE.md', pluginInstructions);
   run.file(path.join('skills', '.gitkeep'), '');
   const sourceRoot = sourceRootWith(run, 'package.json');
+  // `private: true` is NOT an oversight and must not be "fixed" for looking
+  // inconsistent beside a licence: this bundle is distributed through host
+  // plugin marketplaces (`claude`/`codex plugin marketplace add`, Cursor's
+  // `/add-plugin`, `copilot plugin install`) and by the wrapper installers,
+  // never by `npm publish` — nothing in this repository or its CI runs it. The
+  // flag is what stops an accidental publish of a tree that was never shaped
+  // to be an npm package. `license` states the terms of the code the user did
+  // receive, which is a separate question from the channel it arrived on.
   run.json('package.json', {
     name: NAME,
     version: pluginVersion(sourceRoot),
     private: true,
+    license: 'MIT',
     type: 'commonjs',
     description: 'Generated Traffic One plugin runtime.',
     engines: { node: pluginNodeEngine(sourceRoot) },

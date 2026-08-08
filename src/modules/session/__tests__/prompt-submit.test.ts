@@ -11,7 +11,7 @@ import { runUserPromptSubmit } from '../prompt-submit';
 import type { Ctx, Handler, HookInput, HookResult, ToolClass } from '../../../core/types';
 import { markOpenCodeGateDenied, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
-import { transitionRunStatus, writeGlobalCodeGraphProvider } from '../../../shared/state';
+import { readEffectiveState, readProjectPrefs, transitionRunStatus, writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { markModelChoicePrompted, readModelChoice } from '../../agent-model/model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../../agent-model/exhausted-models';
@@ -274,10 +274,16 @@ test('authed + no state + a coding prompt → bootstraps new-project setup (mid-
 
 test('seeds the user request into new-project state so the wizard can derive the stack', () => {
   withAuthedProject(null, (cwd) => {
-    runUserPromptSubmit(ctx(cwd, 'create a modern learning platform with courses and an admin area'));
+    const prompt = 'create a modern learning platform with courses and an admin area';
+    runUserPromptSubmit(ctx(cwd, prompt));
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
     assert.equal(state.mode, 'new-project');
-    assert.ok(String(state.originalPrompt || '').includes('learning platform'), 'original prompt persisted for the wizard');
+    assert.ok(String(readEffectiveState(cwd).originalPrompt || '').includes('learning platform'),
+      'original prompt persisted for the wizard');
+    // The committed file is the one that gets pushed. Asserted on its bytes,
+    // because the field is routed out of it and a routed write reports nothing.
+    assert.ok(!fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8').includes(prompt),
+      'and NOT into the committed state file');
   });
 });
 
@@ -316,12 +322,11 @@ test('a control/stop command is NEVER seeded as originalPrompt (initialized-but-
   // must never seed it.
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
     runUserPromptSubmit(ctx(cwd, 'stop all'));
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
-    assert.notEqual(String(state.originalPrompt || ''), 'stop all', 'a control command is not seeded as the project description');
+    assert.notEqual(String(readEffectiveState(cwd).originalPrompt || ''), 'stop all',
+      'a control command is not seeded as the project description');
     // A real build prompt afterward IS captured.
     runUserPromptSubmit(ctx(cwd, 'create a modern learning platform with courses and an admin area'));
-    const after = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
-    assert.ok(String(after.originalPrompt || '').includes('learning platform'), 'the real build prompt is seeded');
+    assert.ok(String(readEffectiveState(cwd).originalPrompt || '').includes('learning platform'), 'the real build prompt is seeded');
   });
 });
 
@@ -344,13 +349,13 @@ test('coding-intent gate: a verb-less project description is captured (not dropp
   withAuthedProject(null, (cwd) => {
     const first = runUserPromptSubmit(ctx(cwd, 'a marketplace where freelancers and clients find each other'));
     assert.equal(first.kind, 'context', 'a real project description activates instead of being dropped');
-    const seeded = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
-    assert.ok(String(seeded.originalPrompt || '').includes('marketplace'), 'the first project prompt is seeded as originalPrompt');
+    assert.ok(String(readEffectiveState(cwd).originalPrompt || '').includes('marketplace'),
+      'the first project prompt is seeded as originalPrompt');
 
     // A thin follow-up with a build verb must NOT overwrite the seeded project prompt.
     runUserPromptSubmit(ctx(cwd, 'ok build it'));
-    const after = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
-    assert.ok(String(after.originalPrompt || '').includes('marketplace'), 'the thin follow-up does not clobber the seeded project prompt');
+    assert.ok(String(readEffectiveState(cwd).originalPrompt || '').includes('marketplace'),
+      'the thin follow-up does not clobber the seeded project prompt');
   });
 });
 
@@ -657,7 +662,12 @@ test('a torn `.one.json` is left exactly as it was on this path — neither writ
     assert.equal(readJsonResult(statePathOf(cwd)).kind, 'ok', 'baseline guard: the base is legible');
     assert.equal(runUserPromptSubmit(ctx(cwd, SEED_ONLY)).kind, 'context');
     const after = JSON.parse(fs.readFileSync(statePathOf(cwd), 'utf8'));
-    assert.equal(after.originalPrompt, SEED_ONLY, 'baseline: the seed reaches its write and a legible base takes it');
+    // The seed's destination is the per-user store now, so the baseline is read
+    // there: an unchanged `.one.json` below has to mean the READ refused, not
+    // that this writer stopped writing to that file on every path.
+    assert.equal(readProjectPrefs(cwd).originalPrompt, SEED_ONLY,
+      'baseline: the seed reaches its write and a legible base takes it');
+    assert.equal(after.originalPrompt, undefined, 'baseline: and never into the committed file');
     assert.equal(after.uiLibrary, undefined, 'baseline: and this prompt names no library, so nothing else wrote');
     assert.equal(after.mode, 'new-project', 'baseline: onto the base, not over it');
   });
@@ -687,6 +697,10 @@ test('a torn `.one.json` is left exactly as it was on this path — neither writ
       assert.equal(fs.existsSync(`${statePathOf(cwd)}.corrupt`), false,
         `${writer} quarantined it: only a writer that MEANS to replace the file does that, which on this path is `
         + 'the wizard\'s finalize and not this one');
+      // The seed's own destination moved outside the repository, so "the file is
+      // untouched" no longer covers it: the read has to refuse the PREFS write too.
+      assert.equal(readProjectPrefs(cwd).originalPrompt, undefined,
+        `${writer} seeded the per-user store from a base it could not read`);
     });
   };
 

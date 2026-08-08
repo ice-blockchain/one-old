@@ -24,6 +24,22 @@
 // and generated instructions are project content, not plugin state.
 //
 // Consent-gated like every other user-level mutation here: no `--yes`, no writes.
+//
+// Between steps 3 and 4 sits a residue sweep, because "the host CLI removed the
+// plugin" is not the same claim as "the bytes are gone". Measured against what
+// the install path actually writes (build/sync-hosts.ts): `codex plugin remove`
+// reclaims Codex's plugin CACHE and leaves the staged marketplace copy the
+// install rsync'd into ~/.codex/local-marketplaces/traffic-one-local; `copilot
+// plugin install <dir>` copies the whole bundle into
+// ~/.copilot/installed-plugins/, which discoverPluginInstalls never even looked
+// at; and Cursor's local install is a plain directory with no CLI behind it,
+// which this runner used to only print advice about. All three outlive an
+// uninstall otherwise. Directories are removed only where BOTH the ownership and
+// the removal spelling are established in this repository — see
+// discoverInstallResidue; everything else is reported by path and left alone,
+// which is also why no `claude plugin marketplace remove` appears here: that
+// spelling is nowhere in this repo, and inventing a CLI invocation for a machine
+// none of these tests can observe is a guess, not an uninstall.
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
@@ -93,6 +109,150 @@ export function discoverPluginInstalls(env: NodeJS.ProcessEnv = process.env): Pl
   return found;
 }
 
+// ── residue no host CLI reclaims ────────────────────────────────────────────
+
+export interface Residue {
+  label: string;
+  /** Absolute directory to remove, or null for a report-only finding. */
+  dir: string | null;
+  /** Why it survives the host's own uninstall — printed in the dry-run plan. */
+  why: string;
+  /** Optional host CLI call to make first, in a spelling this repo already uses. */
+  cli?: readonly string[];
+}
+
+// Containment for every delete below. The paths are composed from `home` plus
+// literal segments, so this cannot currently fail — it exists because the next
+// entry added here will be composed from a directory ENTRY NAME read off disk,
+// and a `..` in that name is the difference between removing a plugin copy and
+// removing the user's home. Requires at least three segments below home, which
+// no host's plugin root is shallower than.
+export function isRemovableResidueDir(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const home = path.resolve(homeDir(env));
+  const resolved = path.resolve(dir);
+  if (resolved === home || !resolved.startsWith(home + path.sep)) return false;
+  const rest = resolved.slice(home.length + 1).split(path.sep).filter(Boolean);
+  if (rest.length < 3) return false;
+  return !rest.includes('..');
+}
+
+/** Does this directory hold the Traffic One plugin bundle? Read, never assumed. */
+function isTrafficOneBundle(dir: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { name?: unknown };
+    return parsed.name === PLUGIN_NAME;
+  } catch {
+    return false;
+  }
+}
+
+// Only what is ACTUALLY on this machine, probed the way discoverPluginInstalls
+// probes: a plan that lists paths nobody has is noise, and a plan that omits a
+// path somebody does have is the bug this sweep exists to fix.
+export function discoverInstallResidue(env: NodeJS.ProcessEnv = process.env): Residue[] {
+  const home = homeDir(env);
+  const found: Residue[] = [];
+
+  // Codex: the staged marketplace copy. `codex plugin remove` reclaims the cache,
+  // not this — it is the rsync target of the install, and the marketplace
+  // registration pointing at it is removed with the one spelling sync-hosts.ts
+  // already uses (`codex plugin marketplace remove`).
+  const codexStaged = path.join(home, '.codex', 'local-marketplaces', 'traffic-one-local');
+  if (fs.existsSync(codexStaged)) {
+    found.push({
+      label: 'Codex local marketplace',
+      dir: codexStaged,
+      why: 'the staged plugin copy the install rsyncs here; `codex plugin remove` reclaims the cache, never this',
+      cli: ['codex', 'plugin', 'marketplace', 'remove', 'traffic-one-local'],
+    });
+  }
+
+  // Copilot: `copilot plugin install <dir>` copies the bundle under a name
+  // derived from the SOURCE directory, so the entry is identified by reading its
+  // package.json rather than by expecting to find `traffic-one`.
+  const copilotRoot = path.join(home, '.copilot', 'installed-plugins');
+  for (const parent of [copilotRoot, path.join(copilotRoot, '_direct')]) {
+    let entries: string[] = [];
+    try { entries = fs.readdirSync(parent); } catch { continue; }
+    for (const entry of entries) {
+      const dir = path.join(parent, entry);
+      if (!isTrafficOneBundle(dir)) continue;
+      found.push({
+        label: `Copilot plugin copy (${entry})`,
+        dir,
+        why: 'a full copy of the bundle; no Copilot uninstall spelling is established in this repo, and this runner never looked here',
+      });
+    }
+  }
+
+  // Cursor: a local install is a plain directory with no CLI. The product's own
+  // sync already removes exactly this path (build/sync-hosts.ts syncCursor), so
+  // deleting it here is an established operation rather than a new one. The
+  // registry-backed CACHE installs stay advisory: their host owns them.
+  const cursorLocal = path.join(home, '.cursor', 'plugins', 'local', PLUGIN_NAME);
+  if (fs.existsSync(cursorLocal)) {
+    found.push({
+      label: 'Cursor local install',
+      dir: cursorLocal,
+      why: 'no uninstall CLI exists for it; left behind it also double-fires every hook beside the imported bundle',
+    });
+  }
+
+  // Claude's marketplace registration: reported, never removed. The directory
+  // name would be unambiguous, but no `claude plugin marketplace remove`
+  // spelling exists anywhere in this repo to pair with it, and deleting the
+  // registration's directory while its config entry survives trades one residue
+  // for a dangling one.
+  const claudeMarketplace = path.join(home, '.claude', 'plugins', 'marketplaces', PLUGIN_NAME);
+  if (fs.existsSync(claudeMarketplace)) {
+    found.push({
+      label: 'Claude marketplace registration',
+      dir: null,
+      why: `remove the Traffic One marketplace from Claude's plugin UI — no CLI spelling for this is established here (${claudeMarketplace})`,
+    });
+  }
+
+  return found;
+}
+
+function removeResidue(item: Residue, env: NodeJS.ProcessEnv, dryRun: boolean): Step {
+  const label = item.label;
+  if (!item.dir) return { label, ok: true, detail: `manual: ${item.why}` };
+  if (dryRun) return { label, ok: true, detail: `would remove (${item.why}): ${item.dir}` };
+  if (!isRemovableResidueDir(item.dir, env)) {
+    return { label, ok: false, detail: `refused: ${item.dir} is not a contained user-level plugin path` };
+  }
+  const details: string[] = [];
+  if (item.cli) {
+    const [cmd, ...args] = item.cli;
+    const result = spawnSync(cmd as string, args, { encoding: 'utf8', timeout: 120_000, env });
+    if (result.error && (result.error as NodeJS.ErrnoException).code === 'ENOENT') {
+      details.push(`\`${cmd}\` not on PATH — run \`${item.cli.join(' ')}\` yourself`);
+    } else if (result.error || result.status !== 0) {
+      // Never fatal: the registration may already be gone, which is what a
+      // re-run and a partially-uninstalled machine both look like. The bytes
+      // below are what this step is actually accountable for.
+      details.push(`\`${item.cli.join(' ')}\` did not succeed (${firstLine(result.stderr) || `exit ${result.status}`})`);
+    } else {
+      details.push(firstLine(result.stdout) || `${item.cli.join(' ')}: done`);
+    }
+  }
+  try {
+    fs.rmSync(item.dir, { recursive: true, force: true });
+    details.push(`removed ${item.dir}`);
+    return { label, ok: true, detail: details.join('; ') };
+  } catch (error) {
+    details.push(`failed: ${error instanceof Error ? error.message : String(error)}`);
+    return { label, ok: false, detail: details.join('; ') };
+  }
+}
+
+function residueSteps(env: NodeJS.ProcessEnv, dryRun: boolean): Step[] {
+  const residue = discoverInstallResidue(env);
+  if (residue.length === 0) return [{ label: 'install residue', ok: true, detail: 'none present' }];
+  return residue.map((item) => removeResidue(item, env, dryRun));
+}
+
 function pluginCliArgs(install: PluginInstall): string[] {
   const spec = `${PLUGIN_NAME}@${install.marketplace}`;
   return install.host === 'codex' ? ['plugin', 'remove', spec] : ['plugin', 'uninstall', spec];
@@ -108,6 +268,13 @@ export function describePluginInstall(install: PluginInstall): string {
 function removePluginViaCli(install: PluginInstall, env: NodeJS.ProcessEnv): Step {
   const label = `plugin bundle (${install.host}/${install.marketplace})`;
   if (!install.cli) {
+    // A `local` install is a plain directory with no registry behind it, and the
+    // residue sweep removes it a few steps below; saying "remove it from the
+    // plugin UI" for a path this run is about to delete would send the user
+    // looking for something that is already gone.
+    if (install.marketplace === 'local') {
+      return { label, ok: true, detail: `no uninstall CLI; the residue sweep removes the directory (${install.dir})` };
+    }
     return { label, ok: true, detail: `manual: remove Traffic One from the ${install.host} plugin UI (${install.dir})` };
   }
   const result = spawnSync(install.cli, pluginCliArgs(install), { encoding: 'utf8', timeout: 120_000, env });
@@ -266,6 +433,7 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
       });
     }
     if (installs.length === 0) steps.push({ label: 'plugin bundle', ok: true, detail: 'no installed bundle found' });
+    if (!options.keepPlugin) steps.push(...residueSteps(env, true));
     steps.push(...removeStateDirs(env, true));
     steps.push(pipxGraphifyStep(env));
     return { code: 0, steps };
@@ -288,6 +456,12 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
     for (const install of installs) steps.push(removePluginViaCli(install, env));
   }
 
+  // 3b. Residue the host CLIs do not reclaim. After the CLI removals, because
+  // `codex plugin remove` needs the marketplace this step then unregisters, and
+  // before the state sweep, because it spawns a host CLI that may touch
+  // ~/.traffic-one. Skipped under --keep-plugin: these ARE the bundle.
+  if (!options.keepPlugin) steps.push(...residueSteps(env, false));
+
   // 4. Machine-global state LAST — after every step that could touch it, so the
   // user genuinely ends with no ~/.traffic-one.
   steps.push(...removeStateDirs(env, false));
@@ -305,11 +479,14 @@ function usage(): string {
     '',
     'Removes every machine-global Traffic One artifact: the user-level host',
     'integrations (Kilo, OpenCode, Windsurf, the Codex MCP block), the plugin',
-    'bundle from each host CLI that has it, and — LAST, so nothing can repopulate',
-    'it — the entire state dir ~/.traffic-one (saved API key, per-project',
-    'preferences, runner shims, managed toolchains).',
+    'bundle from each host CLI that has it, the bundle copies no host CLI',
+    'reclaims (the Codex local marketplace, a Copilot plugin copy, a Cursor local',
+    'install), and — LAST, so nothing can repopulate it — the entire state dir',
+    '~/.traffic-one (saved API key, per-project preferences, runner shims,',
+    'managed toolchains).',
     '',
-    'Onboarded projects are never touched.',
+    'Onboarded projects are never touched: their .traffic-one/ folders are',
+    'project content. Delete them per project, or with `git rm -r`.',
     '',
     '  --yes           apply (required; nothing is written without it)',
     '  --dry-run       print the plan and exit',

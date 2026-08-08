@@ -36,7 +36,8 @@ export function isLocallyAuthenticated(env: NodeJS.ProcessEnv = process.env): bo
   return readSimpleAuth(env)?.authenticated === true;
 }
 
-// Store a key after the wizard route validates it through MCP tools/list.
+// Store a key after the wizard route validates it through an MCP `tools/call` on
+// the `updates` tool (see runners/auth/validate-key.ts).
 export function writeSimpleAuth(apiKey: string, env: NodeJS.ProcessEnv = process.env): void {
   const key = String(apiKey || '').trim();
   if (!key) throw new TypeError('Traffic One API key must not be empty');

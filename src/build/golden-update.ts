@@ -101,6 +101,30 @@ export const GOLDEN_EXCLUDED: ReadonlySet<string> = new Set([
   // tests/readme-claims.test.ts (README.md ↔ code, mechanically).
   'README.md',
   'ref.md',
+  // The release documents, excluded for exactly the reason above: they are byte
+  // copies of tracked repo-root files, so a hash here reports "an intentional
+  // docs edit" and the only way to clear it is to accept whatever the new bytes
+  // say. Extending that to six more documents would put a `golden:update`
+  // between the maintainer and every typo fix.
+  //
+  // What the snapshot would genuinely have added is a DISAPPEARANCE check: a
+  // manifest entry whose file stops being emitted fails the `missing` sweep.
+  // That check is not lost, it is relocated to where it reads better —
+  // tests/release-docs.test.ts asserts, by name, that each of these exists at
+  // the source root AND appears in gen/emit/static.ts's STATIC_TEXT_FILES, and
+  // fails saying "no install ever receives it" rather than "a hash moved".
+  // Their CONTENT is pinned in the same file, against the code the claims are
+  // about, which is the one thing a hash can never do.
+  //
+  // CHANGELOG.md is not here because it is not emitted at all — see the note in
+  // gen/emit/static.ts for why a generated history cannot ship beside documents
+  // that describe current behaviour.
+  'LICENSE',
+  'THIRD-PARTY-NOTICES.md',
+  'PRIVACY.md',
+  'PLATFORMS.md',
+  'KNOWN-ISSUES.md',
+  'SUPPORT.md',
   // Runtime surface, not a generated transform: an empty seed directory the
   // per-stack skill filter populates at runtime.
   'skills/.gitkeep',

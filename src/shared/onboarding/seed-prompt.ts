@@ -1,7 +1,11 @@
 // src/shared/onboarding/seed-prompt.ts
-// Persist the user's first request into the project state so the wizard can
-// tailor its questions AND derive the right stack (without it, an empty prompt
-// derives a bare frontend shell). Shared by UserPromptSubmit (normal flow) and the
+// Persist the user's first request so the wizard can tailor its questions AND
+// derive the right stack (without it, an empty prompt derives a bare frontend
+// shell). It lands in the PER-USER project preferences
+// (~/.traffic-one/projects/<hash>/preferences.json), never in the committed
+// `.one.json` — see PROJECT_PREF_KEYS in state/local-prefs/pref-schema.ts for
+// why a raw prompt must not be pushed to a shared remote.
+// Shared by UserPromptSubmit (normal flow) and the
 // onboarding-wait runner's `--use --seed-prompt=…` yes path (ask-first flow,
 // where nothing may be written before the user's recorded yes). Idempotent:
 // never overwrites an existing prompt — the FIRST coding prompt is the project
@@ -11,7 +15,8 @@ import { isLikelyCodingPrompt, promptHasStackSignal } from '../detection';
 import { uiLibraryFromPrompt } from '../capabilities/ui-system';
 import { readJsonResult } from '../fsjson';
 import { projectContextOriginalPrompt } from './project-context';
-import { readState, statePath, writeState } from '../state';
+import { mergeProjectPrefs, patchState, readEffectiveState, statePath } from '../state';
+import { projectWritesPermitted } from '../state/plugin-use';
 
 // Ceiling for a prompt embedded as a `--seed-prompt=` argv value. Stack
 // classification and triage routing only need the leading keywords; an
@@ -65,34 +70,52 @@ export function truncateSeedPrompt(prompt: string): string {
  * ── AN ILLEGIBLE BASE: not the same fact, and not acceptable ─────────────────
  *
  * Everything above was measured on a REFUSED WRITE and is true of exactly that
- * input. It says nothing about the READ one line below it, where what is at
- * stake is not the seed but the file: `readState` answers a torn or unreadable
- * `.one.json` with the same `{}` it gives an absent one, so both idempotency
- * guards decide "no seed yet" from bytes nobody managed to read, and the spread
- * then publishes a two-field object over everything the wizard had recorded. A
- * file that was merely UNPARSEABLE is genuinely gone at that point — its bytes
- * moved to `.one.json.corrupt`, which nothing reads.
+ * input. It says nothing about the READ below it, where what is at stake is not
+ * the seed but the file: `readState` answers a torn or unreadable `.one.json`
+ * with the same `{}` it gives an absent one, so both idempotency guards decide
+ * "no seed yet" from bytes nobody managed to read. That used to publish a
+ * two-field object over everything the wizard had recorded; the prompt no longer
+ * goes into that file at all, but `uiLibrary` still does, and the guard is kept
+ * for the second reason it always had: a project whose recorded state cannot be
+ * read is not one to start deriving preferences for. The one behavioural
+ * consequence, stated rather than left to be discovered: a genuinely torn state
+ * gets no seed until the wizard's `finalize` replaces and heals the file.
  *
- * So the read is checked first and an illegible base RETURNS, the same answer
- * `patchState` gives for the same reason: a seed derived from a prompt has
- * nothing honest to put in a file it could not read, and putting it there anyway
- * is the damage rather than the repair. Refusing costs exactly what the verdict
- * above already accepts — prompt-tailored defaults — and wedges nothing:
- * flow.ts's `finalize` keeps `writeState` deliberately, because it MEANS to
- * replace the file, so it still quarantines and heals the moment the user
- * completes the wizard. The one behavioural consequence, stated rather than
- * left to be discovered: a genuinely torn state gets no seed until then.
+ * ── WHERE THE PROMPT GOES, and why not through `writeState` ──────────────────
+ *
+ * The per-user preference store, via `mergeProjectPrefs`. NOT `writeState` with
+ * `originalPrompt` in the object: `originalPrompt` is a routed local preference
+ * now, so writeState would STRIP it, persist a state file that says nothing
+ * about it, and answer `true` — the exact shape that lost `team` in production
+ * (see the scope note on `writeState`). A caller whose subject IS a local
+ * preference has to write the store directly, and `mergeProjectPrefs` reports by
+ * throwing, which the `catch` below already accepts.
  */
 export function seedOriginalPrompt(cwd: string, prompt: string): void {
   const text = (prompt || '').trim();
   if (!text) return;
   if (!qualifiesAsSeedPrompt(text)) return;
+  // The repo write fence, applied by NAME because it is no longer applied for us.
+  // The old `writeState` went through fsjson, which refuses any write under a
+  // project's `.traffic-one/` while the use-plugin question is pending or
+  // declined. The per-user prefs file is machine-owned and deliberately exempt
+  // from that fence (it is where the consent answer itself lives), so without
+  // this line the first prompt of a project the user then DECLINES would be
+  // recorded anyway — and no decline can reclaim it, because
+  // removeDeclinedProjectArtifacts must never touch the per-user dir.
+  if (!projectWritesPermitted(cwd)) return;
   // Ahead of the guards below, which are the things a `{}` fallback turns into
   // "no seed yet". `absent` deliberately proceeds: a project with no `.one.json`
   // is the brand-new one this function exists for.
   const read = readJsonResult(statePath(cwd));
   if (read.kind === 'corrupt' || read.kind === 'unreadable') return;
-  const state = readState(cwd);
+  // The EFFECTIVE state, not `readState`: the latter strips routed local
+  // preferences on read, so it answers "no seed yet" for a project that has one
+  // and every later coding prompt would overwrite the first — the opposite of
+  // this function's contract. readEffectiveState merges the per-user store back
+  // in, and also rescues a value still embedded in a not-yet-scrubbed
+  // `.one.json`, so an existing project mid-migration is not re-seeded either.
+  const state = readEffectiveState(cwd);
   // Seed for EVERY mode (was new-project-only): the onboarding-wait runner reads
   // `originalPrompt` after SETUP_COMPLETE to emit the maintenance-triage routing
   // for the continued request — existing codebases are exactly where that
@@ -100,12 +123,15 @@ export function seedOriginalPrompt(cwd: string, prompt: string): void {
   if (typeof state.originalPrompt === 'string' && state.originalPrompt.trim()) return;
   if (projectContextOriginalPrompt(state)) return;
   try {
-    const uiLibrary = uiLibraryFromPrompt(text);
-    writeState(cwd, {
-      ...state,
+    mergeProjectPrefs(cwd, {
       originalPrompt: text,
-      ...(uiLibrary ? { uiLibrary } : {}),
     });
+    // `uiLibrary` is a stack fact the materializer reads from shared state, not a
+    // local preference, so it stays in `.one.json` — through `patchState`, which
+    // re-reads the base inside the state lock instead of republishing a snapshot
+    // taken outside it.
+    const uiLibrary = uiLibraryFromPrompt(text);
+    if (uiLibrary) patchState(cwd, { uiLibrary });
   } catch {
     // best-effort; the wizard still runs, just without prompt-tailored defaults
   }

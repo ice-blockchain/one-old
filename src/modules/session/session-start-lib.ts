@@ -17,7 +17,7 @@ import { STACK_IDS } from '../../config/stacks';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { detectMode } from '../../shared/detection';
 import { exec } from '../../shared/exec';
-import { hasMaterializedProjectAssets, materializeProjectAssets, writeOpenCodeHostAssets } from '../../shared/materialize';
+import { hasMaterializedProjectAssets, materializedFromDifferentPluginBuild, materializeProjectAssets, writeOpenCodeHostAssets } from '../../shared/materialize';
 import { detectHost } from '../../shared/host';
 import { isUncertifiedHost, uncertifiedHostSessionBanner } from '../../shared/host/tiers';
 import { firstEmitThisSession } from '../../shared/once';
@@ -489,7 +489,28 @@ export function ensureSessionMaterialization(
     try { writeOpenCodeHostAssets(cwd, state, []); } catch { /* best-effort */ }
   }
 
-  if (isMaterialized(state) && hasMaterializedProjectAssets(cwd, state)) {
+  // `materializedFromDifferentPluginBuild` is the third term because SessionStart
+  // is the EARLIEST point in a session that can notice an upgrade, and the two
+  // before it cannot: a project from the previous release has an unchanged stack
+  // fingerprint and every tracked file on disk, and `isMaterialized`'s version
+  // comparison only moves when a human remembered to bump package.json — 11 of
+  // the last 14 content commits in this repo did not (shared/build-provenance.ts).
+  //
+  // Redundant with the same term in materializeProjectIfNeeded, which every host
+  // reaches at UserPromptSubmit — and deliberately kept anyway, because that
+  // guarantee has two holes this one covers: a HEADLESS session never fires
+  // UserPromptSubmit at all (see modules/onboarding-gate/handler.ts's note on the
+  // same fact), and neither does a subagent's session. Converging here means the
+  // first tool call of such a session already sees the new build's rules.
+  //
+  // Safe to make stricter HERE, unlike the spawn gate (modules/agent-model/
+  // converge.ts, which deliberately does NOT carry this term): nothing on this
+  // path denies. A root that cannot converge — torn, unverified, a source
+  // checkout — comes back `skipped`, and the caller treats that exactly like the
+  // already-current answer above.
+  if (isMaterialized(state)
+    && hasMaterializedProjectAssets(cwd, state)
+    && !materializedFromDifferentPluginBuild(cwd)) {
     reportOneMcp(cwd, state, 'session materialization already current');
     return false;
   }

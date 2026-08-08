@@ -175,31 +175,37 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
           return;
         }
         // The redirect shell (`/`), the local fallback wizard (`/local`) and health
-        // are loopback-reachable and need NO token: the redirect page bootstraps the
-        // dashboard, and `/local` re-injects the token into its own served HTML for
-        // its API calls. The state/answer/task routes stay token-protected.
+        // are loopback-reachable and need NO token: they are static pages that the
+        // user reaches before anything has authenticated, and each reads the token
+        // out of its own URL query for its API calls. Neither page may CONTAIN the
+        // token (see routes.ts / html.ts) — a public route that emits it hands the
+        // credential to any local reader. The state/answer/task routes stay
+        // token-protected.
         const publicPath = reqUrl.pathname === '/' || reqUrl.pathname === '/index.html'
           || reqUrl.pathname === '/local' || reqUrl.pathname === '/healthz';
         const provided = headerValue(req.headers['x-t1-token']) || reqUrl.searchParams.get('t') || '';
-        if (!publicPath && !tokenMatches(provided, token)) {
+        const authenticated = tokenMatches(provided, token);
+        if (!publicPath && !authenticated) {
           res.writeHead(403, { 'content-type': 'text/plain' });
           res.end('forbidden');
           return;
         }
-        // A request that reached here is authenticated (or on a public wizard
-        // path) and came from a real browser, so it is the only trustworthy
-        // evidence that the user actually received the setup link. Recorded
-        // AFTER the token gate and only for the two wizard-UI paths — see
-        // shared/onboarding-server/browser-arrival.ts for why `/`, `/healthz`,
-        // `/favicon.ico` and preflights are deliberately excluded.
-        if (isWizardArrivalPath(req.method || 'GET', reqUrl.pathname)) {
+        // The only trustworthy evidence that the user actually received the setup
+        // link: an AUTHENTICATED request from a real browser on a wizard-UI path.
+        // The token is required even on the public `/local` — every link that
+        // surface produces carries `?t=` (config/dashboard.ts), so a tokenless
+        // `/local` is some other local process poking loopback, and letting it
+        // stamp the sentinel would silence every surface that offers the link,
+        // which is the exact failure browser-arrival.ts was written to end.
+        // See that file for why `/`, `/healthz`, `/favicon.ico` and preflights
+        // are excluded too.
+        if (authenticated && isWizardArrivalPath(req.method || 'GET', reqUrl.pathname)) {
           noteBrowserArrival(cwd, token, env, trafficHost);
         }
         const ctx: RouteContext = {
           cwd,
           env,
           authEndpoint: options.authEndpoint,
-          token,
           port,
           trafficHost,
           requestShutdown: standalone ? finish : cleanup,

@@ -144,6 +144,7 @@ test('applyUseChoice records the yes and seeds originalPrompt at decision time (
   const path = await import('node:path');
   const { applyUseChoice } = await import('../index');
   const { readPluginUseChoice } = await import('../../../shared/state/plugin-use');
+  const { readProjectPrefs } = await import('../../../shared/state');
 
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-seed-')));
   const env = process.env;
@@ -155,13 +156,15 @@ test('applyUseChoice records the yes and seeds originalPrompt at decision time (
     const seed = 'create a modern learning platform with courses for web development';
     applyUseChoice(dir, ['--use', '--bootstrap-only', dir, '--host=cursor', `--seed-prompt=${seed}`]);
     assert.equal(readPluginUseChoice(dir)?.enabled, true, 'yes recorded durably');
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
-    assert.equal(state.originalPrompt, seed, 'the triggering request is seeded at decision time');
+    assert.equal(readProjectPrefs(dir).originalPrompt, seed, 'the triggering request is seeded at decision time');
+    // Outside the repository, which for this path means the ask-first yes now
+    // creates no committed file at all: this prompt names no UI library, so the
+    // seed has nothing left to put in `.one.json`.
+    assert.equal(fs.existsSync(statePath), false, 'and the project itself stays untouched');
 
     // Idempotent: a later --use never overwrites the seeded description.
     applyUseChoice(dir, ['--use', dir, '--seed-prompt=ok build it now please']);
-    const after = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
-    assert.equal(after.originalPrompt, seed, 'existing seed preserved');
+    assert.equal(readProjectPrefs(dir).originalPrompt, seed, 'existing seed preserved');
 
     // Without a seed argument the yes is recorded and nothing else is written.
     const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-seedless-')));
@@ -185,6 +188,7 @@ test('ask-first seeding persists an explicit UI library choice with the original
   const os = await import('node:os');
   const path = await import('node:path');
   const { applyUseChoice } = await import('../index');
+  const { readProjectPrefs } = await import('../../../shared/state');
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-ui-library-')));
   const previousPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
@@ -194,7 +198,10 @@ test('ask-first seeding persists an explicit UI library choice with the original
     const state = JSON.parse(
       fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8'),
     ) as Record<string, unknown>;
-    assert.equal(state.originalPrompt, seed);
+    assert.equal(readProjectPrefs(dir).originalPrompt, seed);
+    assert.equal(state.originalPrompt, undefined, 'the request is not carried into the committed file');
+    // The library IS a stack fact, so it still is — and it is what proves the
+    // committed write above happened at all rather than being fenced.
     assert.equal(state.uiLibrary, 'mui');
   } finally {
     if (previousPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;

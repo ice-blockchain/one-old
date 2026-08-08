@@ -460,14 +460,52 @@ function applyAnswerStep(
     case 'project-context': {
       const v = obj(value) || {};
       const answers = obj(v.answers) || {};
-      const originalPrompt = projectContextOriginalPrompt(readState(cwd)) || String(v.originalPrompt || '').trim();
+      // The user's typed sentence is NOT committed, in either of the two
+      // spellings this step used to write it in.
+      //
+      //   - `projectContext.originalPrompt` is gone. `.traffic-one/.one.json`
+      //     is committed and pushed, and the prompt is the one field in it that
+      //     is the user's own words rather than a fact about the project.
+      //     Nothing loses the value: `projectContextOriginalPrompt` falls
+      //     through to the top-level field, which is a routed local preference
+      //     living in the per-user store, so every `readEffectiveState`
+      //     consumer still finds it (validate.ts no longer requires the nested
+      //     member; scrubProjectStateLocalPrefs migrates projects that carry
+      //     one).
+      //   - the SUMMARY no longer falls back to it. Blank is reachable — the
+      //     wizard's Continue button is not gated on the summary box — and that
+      //     fallback made the blank case commit a verbatim SECOND copy. The
+      //     tail below is unchanged (`answers.audience`, then `MVP`) and stays
+      //     that way deliberately: the only other material this step receives
+      //     is `answers`, which is committed verbatim in this same object, so
+      //     promoting one of its values discloses nothing new — and anything
+      //     richer would be a summariser of the prompt, which is exactly the
+      //     text that must not be derived into the committed file.
+      //
+      // The EFFECTIVE state, not `readState`: the seeded prompt is a routed
+      // local preference, so the raw reader has been blind to it since the
+      // split landed (see PROJECT_PREF_KEYS in state/local-prefs/pref-schema.ts,
+      // which names this call site) — the same defect `finalize` was already
+      // fixed for.
+      const effective = readEffectiveState(cwd, env);
+      const stored = typeof effective.originalPrompt === 'string' && effective.originalPrompt.trim() !== '';
+      // Only when the private store does NOT already hold it: a prompt still
+      // sitting in a legacy committed `projectContext`, or one submitted on the
+      // wire, is rescued to the top level so writeState's local-preference
+      // split carries it to `~/.traffic-one/projects/<hash>/preferences.json`
+      // on the way out — the same place `seedOriginalPrompt` writes. It is
+      // routed OUT of the object before `.one.json` is written, so this adds no
+      // committed copy.
+      const rescued = stored
+        ? ''
+        : (projectContextOriginalPrompt(effective) || String(v.originalPrompt || '').trim());
       const summary = String(v.summary || '').trim()
-        || originalPrompt
         || String(answers.audience || '').trim()
         || 'MVP';
       if (!patchSharedState(cwd, {
         mode: 'new-project',
-        projectContext: { source: 'prompted', originalPrompt, summary, answers, collectedAt: stateTimestamp() },
+        ...(rescued ? { originalPrompt: rescued } : {}),
+        projectContext: { source: 'prompted', summary, answers, collectedAt: stateTimestamp() },
       })) {
         return stateWriteRefused('what you want built');
       }
@@ -483,6 +521,16 @@ function applyAnswerStep(
     }
     case 'finalize': {
       const committed = readState(cwd);
+      // The stack SIGNAL and the WRITE BASE are deliberately two different
+      // reads. `originalPrompt` is a PROJECT_PREF_KEY (privacy: it lives in the
+      // per-user store, outside the repository), so a raw `readState` cannot see
+      // it and the derivation silently floors to the default seed. Only the
+      // signal is sourced from the effective state; `committed` stays the raw
+      // base for the write below, or every local preference — the prompt
+      // foremost — would be folded back into the committed `.one.json` that the
+      // privacy split just took it out of. What derivation emits is a stack
+      // NAME, never the prompt.
+      const effective = readEffectiveState(cwd, env);
       // Preserve an already-committed stack (a second user reopening the wizard
       // only needs their local prefs/toolchain seeded — don't re-derive and risk
       // overwriting the first user's choices). Derive only when stack is unset.
@@ -495,7 +543,7 @@ function applyAnswerStep(
       // extra keywords only add signal, so a rich originalPrompt is never downgraded.
       const answers = obj((obj(committed.projectContext) || {}).answers) || {};
       const answerSignal = Object.values(answers).filter((v): v is string => typeof v === 'string' && v.trim() !== '').join('. ');
-      const promptSignal = [projectContextOriginalPrompt(committed), answerSignal]
+      const promptSignal = [projectContextOriginalPrompt(effective), answerSignal]
         .filter((s) => s.trim() !== '')
         .join('. ');
       const mobile = obj(committed.mobile) || { enabled: false, framework: 'none' };
