@@ -1042,13 +1042,18 @@ test('a Svelte rune is a declaration, and only where the compiler allows one', (
       'a state module declares no markup, so it never reaches visual on its own',
     ],
     // And the arms ABOVE it still answer first: adding a disjunct to the last arm
-    // cannot shadow one that would have said `visual`.
+    // cannot shadow one that would have said `visual`. The vehicle used to be the
+    // path NAME — `lib/theme/…` was claimed by the visual arm at the top of the
+    // chain — and it is a declared custom element now, because that name arm is
+    // gone: a rune module under `theme/` is a state module like any other and no
+    // longer buys a screenshot sweep for its spelling. Same shadowing claim, on
+    // evidence from inside the file.
     [
       'src/lib/theme/scale.svelte.ts',
       'export const scale = 1;\n',
-      'let scale = $state(1);\nexport const t = { get scale() { return scale; } };\n',
+      "let width = $state(0);\ncustomElements.define('x-scale', class extends HTMLElement {});\n",
       'visual',
-      'a design-token path is claimed by the visual arm above, as it was before',
+      'a declared custom element is claimed by the component arm above the rune arm',
     ],
   ];
 
@@ -1186,6 +1191,197 @@ test('a mention is not a call: the content probes read code, not comments', () =
         'nonvisual',
         `${rel} classifies itself on its own prose`,
       );
+    }
+  });
+});
+
+// The last NAME arm in the scan, and it sat in the most expensive position:
+// FIRST in the chain and straight to `visual`, so a match bought the
+// three-viewport sweep with no changed-hunk discrimination underneath it. Its
+// alternation ended `(?:\/|[.-])`, which claims filename PREFIXES as readily as
+// directories, and it was asked of every language. Measured over this repo's own
+// 1323 tracked paths it claimed 27 — every `visual` verdict the corpus produced
+// — and not one was a stylesheet, an image or a design token: 24 were the token
+// ACCOUNTING code (everything under `runners/token-report`, `token-logger.ts`,
+// `override/token.ts`) and 3 were documentation, one of them a `SKILL.md` whose
+// only offence was living under `token-usage-report/`. All 27 moved down and
+// none up.
+//
+// The rows below are in two halves and both are load-bearing. The declined half
+// is the lowering; the retained half is what stops it being vacuous, because a
+// classifier that had simply stopped answering would pass the first half alone.
+test('a visual-sounding path name is not evidence; the visual arms read the file itself', () => {
+  const DECLINED: Array<[string, string, string]> = [
+    [
+      'src/runners/token-report/aggregate.ts',
+      'export const total = (rows: number[]): number => rows.reduce((a, b) => a + b, 0);\n',
+      'token ACCOUNTING: `token` before a `-`, the largest victim class in this repo',
+    ],
+    [
+      'src/shared/token-logger.ts',
+      'export const log = (used: number): string => `used ${used}`;\n',
+      'a logger, claimed by the same prefix',
+    ],
+    [
+      'src/shared/override/token.ts',
+      'export const parse = (raw: string): string => raw.trim();\n',
+      '`token` before a `.` — a FILENAME, which the trailing `[.-]` claimed too',
+    ],
+    [
+      'docs/frontend/styles.md',
+      '# Styling\n\nUse the design system for spacing and colour.\n',
+      'documentation ABOUT styling is not styling, and prose cannot be screenshotted',
+    ],
+    [
+      'docs/token-usage-report/GUIDE.md',
+      '# Token usage\n\nHow to read the per-run cost report.\n',
+      'a directory segment read as a design token',
+    ],
+    [
+      'internal/layout-engine.go',
+      'package internal\n\nfunc Paginate(n int) int { return n }\n',
+      'a backend package no browser can load: the arm was never bounded by language',
+    ],
+  ];
+
+  // The same five words as evidence rather than as spelling. If the visual arms
+  // ever stop answering, these move and the half above stops meaning anything.
+  const RETAINED: Array<[string, string, string]> = [
+    ['src/styles/theme.css', 'body { color: black; }\n', 'a stylesheet, by EXTENSION'],
+    [
+      'tailwind.config.ts',
+      'export default { content: [] };\n',
+      'the utility-CSS config, by exact FILENAME',
+    ],
+    [
+      'src/layout/Header.tsx',
+      'export const Header = () => <header>Traffic One</header>;\n',
+      'a layout COMPONENT, by an extension that means markup',
+    ],
+  ];
+
+  withProject((cwd) => {
+    setupReact(cwd);
+    const profile = capabilityProfileForProject(cwd, EXISTING_REACT);
+    for (const [rel, body] of [...DECLINED, ...RETAINED]) {
+      fs.mkdirSync(path.join(cwd, path.dirname(rel)), { recursive: true });
+      fs.writeFileSync(path.join(cwd, rel), body);
+    }
+
+    for (const [rel, body, why] of DECLINED) {
+      assert.match(
+        rel,
+        /(?:^|\/)(?:styles?|theme|tokens?|assets?|layout)(?:\/|[.-])/i,
+        `fixture guard: ${rel} must still MATCH the deleted arm, or it proves nothing`,
+      );
+      assert.doesNotMatch(
+        body,
+        /onClick|onSubmit|navigate|\brouter\b|@Component|defineComponent|customElements/,
+        `fixture guard: ${rel} must hold none of the tokens the surviving probes read`,
+      );
+      assert.equal(
+        deriveUiImpact(cwd, profile, [rel]).impact,
+        'nonvisual',
+        `${rel}: ${why}`,
+      );
+    }
+
+    for (const [rel, , why] of RETAINED) {
+      assert.equal(
+        deriveUiImpact(cwd, profile, [rel]).impact,
+        'visual',
+        `${rel}: ${why} — intrinsic evidence still answers`,
+      );
+    }
+
+    // The name survives in exactly ONE place, and this is the reason it is not
+    // the same call: a scaffold output is a path the plan has not created yet,
+    // so there are no bytes to read and no intrinsic answer to prefer. The pair
+    // below is the whole distinction — the identical path is `visual` as a
+    // PLANNED output and `nonvisual` as a CHANGED one.
+    const planned = 'src/theme/tokens.ts';
+    const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'mapping-service', name: 'Mapping', kind: 'service' }],
+    });
+    assert.equal(
+      plannedUiImpactFloor(cwd, {
+        ...architecture,
+        modules: [],
+        scaffoldOutputs: [{ path: planned, ownerRole: 'senior-frontend', kind: 'scaffold' }],
+      }),
+      'visual',
+      `${planned}: unwritten, so its declared name is the only evidence there is`,
+    );
+    fs.mkdirSync(path.join(cwd, 'src/theme'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, planned), 'export const spacing = 8;\n');
+    assert.equal(
+      deriveUiImpact(cwd, profile, [planned]).impact,
+      'nonvisual',
+      `${planned}: once it exists the file itself is the evidence, and it holds none`,
+    );
+  });
+});
+
+// The complement of the test above, and the two are a pair: that one pins that a
+// visual-SOUNDING name buys nothing, this one pins the single class readmitted
+// after it and the bounds that keep it from growing back into the name arm.
+//
+// Every row below holds BYTE-IDENTICAL content, so the only thing any assertion
+// can be answering is the path. The pairs are the point — each declined row is
+// its raised row moved by exactly one bound.
+test('CSS-in-JS under a presentational directory is visual, and each bound is load-bearing', () => {
+  const TOKENS = 'export const tokens = { color: { brand: "#0af" }, space: { md: 8 } };\n';
+
+  const RAISED: Array<[string, string]> = [
+    ['apps/web/src/theme/tokens.ts', 'design tokens: no markup, no handler, nothing intrinsic to read'],
+    ['apps/web/src/styles/colors.ts', 'a `styles/` module the CSS extension arm cannot see'],
+    ['apps/web/src/assets/index.ts', 'an asset barrel: which images render is a visual fact'],
+  ];
+
+  const DECLINED: Array<[string, string]> = [
+    [
+      'packages/cli/src/theme/tokens.ts',
+      'the sourceRoots bound: identical bytes, identical directory name, terminal theming',
+    ],
+    [
+      'apps/web/src/token-report/aggregate.ts',
+      'the anchor bound: `token-report` is not `tokens/`, and this is the 24-path victim class',
+    ],
+    [
+      'apps/web/src/token-logger.ts',
+      'the anchor bound again, filename form — what the deleted arm claimed via `[.-]`',
+    ],
+    [
+      'apps/web/src/theme/README.md',
+      'the webModule bound: prose ABOUT the tokens is not the tokens, and no browser loads it',
+    ],
+  ];
+
+  withProject((cwd) => {
+    setupReact(cwd);
+    const profile = capabilityProfileForProject(cwd, EXISTING_REACT);
+    // Fixture guard: if the profile ever stops declaring this root, the
+    // sourceRoots bound disarms and every RAISED row would fail rather than
+    // pass for the wrong reason — but the declined CLI row would pass
+    // vacuously, so the pair is only meaningful while this holds.
+    assert.deepEqual(
+      profile.sourceRoots,
+      ['apps/web/src'],
+      'fixture guard: the web root the bound is asked about',
+    );
+
+    for (const [rel] of [...RAISED, ...DECLINED]) {
+      fs.mkdirSync(path.join(cwd, path.dirname(rel)), { recursive: true });
+      fs.writeFileSync(path.join(cwd, rel), TOKENS);
+    }
+
+    for (const [rel, why] of RAISED) {
+      assert.equal(deriveUiImpact(cwd, profile, [rel]).impact, 'visual', `${rel}: ${why}`);
+    }
+    for (const [rel, why] of DECLINED) {
+      assert.equal(deriveUiImpact(cwd, profile, [rel]).impact, 'nonvisual', `${rel}: ${why}`);
     }
   });
 });
@@ -1903,12 +2099,19 @@ test('handler-only edits are behavioral in every framework, not just React', () 
       ['Live.blade.php', '<button wire:click="save(1)">Go</button>', '<button wire:click="save(1, 2)">Go</button>'],
       ['Svelte.svelte', '<button on:click={() => save(1)}>Go</button>', '<button on:click={() => save(1, 2)}>Go</button>'],
       ['Ng.html', '<button (click)="save(1)">Go</button>', '<button (click)="save(1, 2)">Go</button>'],
+      // Plain HTML's own spelling, and the one the camelCase arm cannot reach:
+      // `onclick` is lowercase, carries no colon, `@` or `(x)`, and so was
+      // stripped NOWHERE — not even in `.html`, where it is native. A
+      // handler-only edit here read `visual` while the React row above it read
+      // `behavioral` for the same edit.
+      ['Plain.html', '<button onclick="save(1)">Go</button>', '<button onclick="save(1, 2)">Go</button>'],
     ];
 
     for (const [name, before] of cases) {
       fs.writeFileSync(path.join(cwd, `apps/web/src/pages/${name}`), `${before}\n`);
     }
     fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Styled.vue'), '<button class="p-6">Go</button>\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Filter.html'), '<ul data-only="active"><li>One</li></ul>\n');
     execFileSync('git', ['init', '-q'], { cwd, stdio: 'ignore' });
     execFileSync('git', ['add', '-A'], { cwd, stdio: 'ignore' });
     execFileSync('git', [
@@ -1928,6 +2131,22 @@ test('handler-only edits are behavioral in every framework, not just React', () 
     const styled = 'apps/web/src/pages/Styled.vue';
     fs.writeFileSync(path.join(cwd, styled), '<button class="rounded-xl bg-white p-6 shadow">Go</button>\n');
     assert.equal(deriveUiImpact(cwd, profile, [styled], baseline).impact, 'visual');
+
+    // What bounds the lowercase arm. `data-only` and Astro's `client:only`
+    // contain `on` at a word boundary but are ordinary rendered structure, and
+    // every real collision found has that shape: the `on` is the TAIL of a
+    // hyphenated or namespaced name, never a name of its own. Strip one and it
+    // leaves BOTH sides of the projection, so a real attribute change reads as
+    // no change at all — the silent direction, which is why the guard is worth
+    // its lookbehind. The row is only meaningful because it is the same file
+    // shape as `Plain.html` above: same extension, same tag, one attribute.
+    const namespaced = 'apps/web/src/pages/Filter.html';
+    fs.writeFileSync(path.join(cwd, namespaced), '<ul data-only="all"><li>One</li></ul>\n');
+    assert.equal(
+      deriveUiImpact(cwd, profile, [namespaced], baseline).impact,
+      'visual',
+      'data-only is an attribute, not a handler: on at the tail of a hyphenated name is not on',
+    );
   });
 });
 

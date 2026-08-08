@@ -298,6 +298,63 @@
 // So the fix was ORDERING first — a boolean alone would not have saved it —
 // and consuming the boolean second.
 //
+// ── THE THIRD GAP, NOW CLOSED: the second writer LAYER ──────────────────────
+// Everything above learns its writers from src/shared/fsjson.ts. That was a
+// blind spot of the same species as the two this effort has already closed —
+// the never-overridable deny-id (a guard that ITERATED the list, so an id
+// absent from it was never examined) and the `fsjson-writers` name pin
+// (`writeState` stopped being a writer the day its body said `writeJsonDurable`
+// instead of `writeJson`, dropping thirty call sites in silence). Each time,
+// A CENSUS KEYED ON NAMES WAS BLIND TO THE SITE WRITTEN DIFFERENTLY.
+//
+// Here the site was written through a different LAYER. state/plugin-use.ts's
+// write fence lives inside fsjson.ts, so the sanctioned way to opt out of it is
+// to "reach past those helpers to raw `fs` and say so" — which
+// shared/auth/machine-sidecar.ts and shared/one-settings.ts both legitimately
+// do. The unintended consequence was that the opt-out from the FENCE was also
+// an opt-out from the INSTRUMENT.
+//
+// Proven by execution before anything was designed: two functions in one real
+// file, both discarding a boolean and returning a count, one through the
+// sidecar layer and one through `writeJson`. The fsjson one was reported by
+// name; the sidecar one was not mentioned, and the suite stayed 17/17 green.
+// Both halves are pinned as a test below.
+//
+// The fix is a SHAPE, not a second roster — see rawFsRefusalWriterNames. A
+// roster would be the same defect a fourth time, and it would also break the
+// FSJSON_WRITERS/FSJSON_NON_WRITERS completeness test's premise if the names
+// were folded into those lists (that test asserts the two lists equal fsjson's
+// EXPORTED SURFACE, so a non-fsjson name in either is a straight failure).
+// Seeding a separate resolver leaves that test untouched and load-bearing.
+//
+// ── LIMIT 3, and it is declared rather than half-built ──────────────────────
+// The new layer feeds rules 2 and 3. RULE 4 DOES NOT SEE IT, because rule 4
+// keys a destination on `arguments[0]` — exact for all eight fsjson writers,
+// every one of which takes the path first, and false for a raw-fs writer whose
+// destination is a constant in its own module. Measured: feeding the raw-fs
+// layer to rule 4 reported 7 divergent pairs in updates-store.test.ts alone,
+// all of them consecutive writes to THE SAME FILE. A genuine two-artifact
+// divergence written through raw `fs` is therefore NOT reported, and that is a
+// named gap on the same footing as the two above it.
+//
+// The shape itself is narrow on purpose and its cost is counted: 21 functions
+// match, and 38 more perform a raw-fs mutation while reporting failure through
+// some other value (`null`, `0`, `''`, a string union, a result object). Those
+// are not admitted, because widening to "the catch returns anything falsy"
+// pulls in every lock acquirer in the tree, whose `null` means CONTENTION and
+// is legitimately discarded at many call sites. shared/one-settings.ts's
+// section writers are outside it too — their raw mutations sit several frames
+// below the boolean.
+//
+// ── COVERAGE EXPANSION, COUNTED BEFORE IT LANDED ────────────────────────────
+// The property below applies to this change as much as to a void conversion,
+// so the blast radius was measured on a copy first: 4 new rule-2 publishers,
+// 0 new rule-3, 0 new rule-4, and no baseline entry stopped firing. All four
+// are pre-existing, none newly broken, and each is pinned with a verdict in the
+// ADMITTED BY THE RAW-FS SHAPE section. The writes denominator moved 319 -> 489
+// and the discards 98 -> 131, which is why the raw-fs half now carries its own
+// floor instead of hiding inside the global one.
+//
 // ── SEQUENCING THE REMAINING CONVERSIONS ────────────────────────────────────
 // One property governs how the rest of this work should be ordered, and it is
 // not obvious in the direction people assume: turning a `void` writer into a
@@ -1025,6 +1082,159 @@ const FSJSON_NON_WRITERS: readonly string[] = [
   'stateWritePermitted',  // a question; mutates nothing
 ];
 
+// ── the SECOND writer layer: sanctioned raw-`fs` writers ────────────────────
+// state/plugin-use.ts's write fence is addressed by path and enforced inside
+// shared/fsjson.ts, so "a writer that wants to bypass it has to reach past
+// those helpers to raw `fs` and say so". That opt-out is documented and
+// legitimate — shared/one-settings.ts and shared/auth/machine-sidecar.ts both
+// take it, because for a session rooted at $HOME the machine dir IS that
+// "project's" state dir and a guarded write there deadlocks on the consent
+// question. What was NOT intended is that the same opt-out also leaves the
+// instrument, which learned its writer set by NAME from fsjson.ts and so could
+// not see a refusal that never passed through it.
+//
+// Measured, not argued. Two functions were put in ONE file, both discarding a
+// boolean and then returning a count — one through `recordUpdatesPage` (the
+// sidecar layer) and one through `writeJson`. The fsjson one was reported by
+// name; the sidecar one was not mentioned at all. Same defect, same shape, same
+// file, and the only difference was which layer the write went through.
+//
+// The fix is keyed on SHAPE rather than on another name list, because a name
+// list is the thing that failed: `FSJSON_WRITERS` went blind the day `writeState`
+// forwarded to `writeJsonDurable` instead of `writeJson`, and a
+// `SANCTIONED_RAW_FS_WRITERS` roster would go blind the day someone adds a
+// second sidecar writer and forgets the roster. A shape cannot be forgotten.
+//
+// THE SHAPE, and it is deliberately one shape and not a family:
+//
+//     try { …raw fs mutation…; return true } catch { …; return false }
+//
+// That is a function whose `false` can only mean THE WRITE DID NOT LAND, which
+// is the same contract fsjson.ts's writers carry, established by the code
+// rather than by a list. writeMachineSidecar is written exactly this way.
+//
+// Once a base case is recognised the EXISTING machinery does the rest: the
+// forwarding-wrapper fixpoint carries it through `writeStore` to
+// `recordUpdatesPage` / `markUpdatesShown` / `clearUpdatesStore` with no new
+// resolution code, which is the whole reason this is a seed and not a rule.
+//
+// ── the channel, and why this one is STRONGER than fsjson's ─────────────────
+// fsjson's `act` answers false for exactly `refused` and ELOOP and RETHROWS
+// every other errno, on purpose, so EACCES on a state write still unwinds into
+// the fail-closed `pipeline-handler-crashed` deny. A `catch { return false }`
+// has no such second channel: it collapses refusal AND every errno into one
+// boolean. So for a raw-fs writer the boolean is not the weaker of two signals
+// the way it is for fsjson — it is the ONLY signal, and a caller that drops it
+// has dropped everything. The distinction at the top of this file still holds,
+// it just runs the other way here.
+const RAW_FS_MUTATORS: ReadonlySet<string> = new Set([
+  'appendFileSync', 'chmodSync', 'chownSync', 'copyFileSync', 'cpSync', 'ftruncateSync',
+  'linkSync', 'mkdirSync', 'mkdtempSync', 'openSync', 'renameSync', 'rmSync', 'rmdirSync',
+  'symlinkSync', 'truncateSync', 'unlinkSync', 'utimesSync', 'writeFileSync', 'writeSync',
+]);
+
+/**
+ * Local names bound to the `fs` MODULE — `import * as fs`, `import fs`.
+ *
+ * Only the namespace spellings, because the shape is about a raw mutation and a
+ * bare `writeFileSync(…)` identifier import is not used anywhere in this tree
+ * for a mutation; requiring the namespace keeps a same-named local helper from
+ * being mistaken for the real thing, which is the lookalike protection rule 2
+ * already has for fsjson.
+ */
+function fsNamespaces(source: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const specifier = statement.moduleSpecifier;
+    if (!ts.isStringLiteral(specifier) || !/^(node:)?fs$/.test(specifier.text)) continue;
+    const clause = statement.importClause;
+    if (!clause) continue;
+    if (clause.name) names.add(clause.name.text);
+    const bindings = clause.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+  }
+  return names;
+}
+
+/** `fs.writeFileSync(…)` and friends. `openSync(p, 'r')` is a READ and is not one. */
+function isRawFsMutation(node: ts.Node, namespaces: ReadonlySet<string>): boolean {
+  if (!ts.isCallExpression(node)) return false;
+  const callee = node.expression;
+  if (!ts.isPropertyAccessExpression(callee) || !RAW_FS_MUTATORS.has(callee.name.text)) return false;
+  if (!ts.isIdentifier(callee.expression) || !namespaces.has(callee.expression.text)) return false;
+  if (callee.name.text === 'openSync') {
+    const flag = node.arguments[1];
+    // Five functions in this tree open a file read-only to sniff its first line
+    // (role-evidence.ts, token-report/discovery.ts, host/plan.ts …). Admitting
+    // those would make every `catch { return false }` around a READ a writer.
+    if (flag && ts.isStringLiteral(flag) && flag.text === 'r') return false;
+  }
+  return true;
+}
+
+/** Does `node` contain a match, WITHOUT descending into a nested function? */
+function containsHere(node: ts.Node, predicate: (child: ts.Node) => boolean): boolean {
+  let found = false;
+  const visit = (child: ts.Node): void => {
+    if (found) return;
+    if (child !== node && isFunctionLike(child)) return;
+    if (predicate(child)) { found = true; return; }
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return found;
+}
+
+/**
+ * Names `source` declares that carry a raw-`fs` refusal, by the shape above.
+ *
+ * 21 functions in src/ + tests/ match today. THE LIMIT IS DECLARED RATHER THAN
+ * PAPERED OVER: 38 further functions perform a raw-fs mutation and report the
+ * failure through some OTHER value — `null` (acquirePolicyLock), `0`
+ * (copyActiveSkills), `''` (ensureAgentTeamsEnv), a string union
+ * (ensureCodexMcpServerRegistered), a result object (mintOverride,
+ * runDelegate). None of those is admitted, and widening to "the catch returns
+ * anything falsy" was rejected on measurement: it pulls in `withStoreLock<T>`
+ * and every lock acquirer in the tree, whose `null` is CONTENTION rather than
+ * refusal and is legitimately discarded at many call sites. An instrument that
+ * fires on those is an instrument someone switches off, and then the sidecar
+ * layer is uncovered again along with everything else.
+ *
+ * shared/one-settings.ts's `writeOneSection` / `deleteOneSection` are outside
+ * this too — their raw mutations sit several frames below the boolean, so the
+ * per-function shape does not reach them. That is the same named gap, and
+ * `clearAuthentication` is the caller to look at first if it is ever closed.
+ */
+function rawFsRefusalWriterNames(source: ts.SourceFile): ReadonlySet<string> {
+  const namespaces = fsNamespaces(source);
+  const names = new Set<string>();
+  if (namespaces.size === 0) return names;
+  const returnsLiteral = (node: ts.Node, kind: ts.SyntaxKind): boolean => containsHere(node, (child) =>
+    ts.isReturnStatement(child) && child.expression !== undefined
+    && unwrapExpression(child.expression).kind === kind);
+  const visit = (node: ts.Node): void => {
+    if (ts.isTryStatement(node) && node.catchClause
+      && containsHere(node.tryBlock, (child) => isRawFsMutation(child, namespaces))
+      && returnsLiteral(node.tryBlock, ts.SyntaxKind.TrueKeyword)
+      && returnsLiteral(node.catchClause.block, ts.SyntaxKind.FalseKeyword)) {
+      let owner: ts.Node | undefined = node;
+      while (owner && !isFunctionLike(owner)) owner = owner.parent;
+      if (owner) {
+        const fn = owner as FunctionLike;
+        if ((ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name) {
+          names.add(fn.name.getText(source));
+        } else if (fn.parent && ts.isVariableDeclaration(fn.parent) && ts.isIdentifier(fn.parent.name)) {
+          names.add(fn.parent.name.text);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return names;
+}
+
 interface WriteSite {
   readonly relFile: string;
   readonly line: number;
@@ -1040,6 +1250,13 @@ interface RefusalBlindSite extends WriteSite {
 interface RefusalScanResult {
   /** Every call reaching a refusal-carrying writer. Rule 2's non-vacuity denominator. */
   readonly writes: readonly WriteSite[];
+  /**
+   * The subset reaching the RAW-FS layer. Counted separately for the reason
+   * `writeJsonDurable` exists in this file: a resolver that goes dark inside a
+   * global floor is a resolver nobody notices. 170 of the 489 writes are these,
+   * so the fsjson half alone would still clear `> 200` on its own.
+   */
+  readonly rawFsWrites: readonly WriteSite[];
   /** Those whose boolean is dropped in statement position — the proposal's rule 1. */
   readonly discarded: readonly WriteSite[];
   /** Those discards that sit inside a function handing a value back. Rule 2. */
@@ -1052,7 +1269,17 @@ interface RefusalScanResult {
   readonly divergentPairs: readonly RefusalBlindSite[];
 }
 
-function refusalScanner(tree: SourceTree) {
+/**
+ * The writer resolver, parameterised by its SEED — the base case that makes a
+ * name a writer before any forwarding is considered.
+ *
+ * A factory rather than one resolver with a union seed, because rule 4 must be
+ * able to ask about the fsjson writers ALONE. See `rawFsWriters` in
+ * refusalScanner for why, and `LIMIT 3` in the header for the measurement.
+ * Each instance keeps its own caches; sharing them across seeds is exactly the
+ * bug this shape prevents.
+ */
+function writerResolver(tree: SourceTree, seed: (file: string, source: ts.SourceFile) => Iterable<string>) {
   const writerCache = new Map<string, ReadonlySet<string>>();
   const exportsCache = new Map<string, boolean>();
 
@@ -1065,10 +1292,11 @@ function refusalScanner(tree: SourceTree) {
   function writerNames(file: string): ReadonlySet<string> {
     const cached = writerCache.get(file);
     if (cached) return cached;
-    const names = new Set<string>(file === FSJSON_MODULE ? FSJSON_WRITERS : []);
+    const names = new Set<string>();
     writerCache.set(file, names); // seed before recursing — a self-import must terminate
     const source = tree.parse(file);
     if (!source) return names;
+    for (const name of seed(file, source)) names.add(name);
 
     const imported = new Set<string>();
     for (const statement of source.statements) {
@@ -1081,11 +1309,15 @@ function refusalScanner(tree: SourceTree) {
         if (exportsWriter(target, (element.propertyName ?? element.name).text)) imported.add(element.name.text);
       }
     }
-    // A local forwarding wrapper needs a base case, and the only base case is
-    // fsjson.ts. A file importing no writer can therefore declare none, and the
-    // walk below — the expensive part, and it would otherwise run over every
-    // file in the repo — is skipped outright.
-    if (imported.size === 0 && file !== FSJSON_MODULE) return names;
+    // A local forwarding wrapper needs a base case. A file that neither imports
+    // a writer nor SEEDS one can therefore declare none, and the walk below —
+    // the expensive part, and it would otherwise run over every file in the
+    // repo — is skipped outright. Keyed on `names.size` rather than on
+    // `file !== FSJSON_MODULE`: with a shape seed the base case is no longer one
+    // known module, and the old spelling would have skipped the fixpoint in
+    // every file whose only writer is a raw-fs one — i.e. it would have found
+    // writeMachineSidecar and then missed a local wrapper around it.
+    if (imported.size === 0 && names.size === 0) return names;
 
     for (let pass = 0; pass < 8; pass += 1) {
       const before = names.size;
@@ -1192,6 +1424,25 @@ function refusalScanner(tree: SourceTree) {
       if (direct.size === before) break;
     }
     return direct;
+  }
+
+  return { writerNames, exportsWriter, writerBindings };
+}
+
+function refusalScanner(tree: SourceTree) {
+  // Two seeds, two resolvers, and the split is load-bearing rather than tidy.
+  const fsjson = writerResolver(tree, (file) => (file === FSJSON_MODULE ? FSJSON_WRITERS : []));
+  const rawFs = writerResolver(tree, (_file, source) => rawFsRefusalWriterNames(source));
+
+  /** Every writer visible in `file`, from BOTH layers. Rules 2 and 3. */
+  const allBindingCache = new Map<string, ReadonlySet<string>>();
+  function allWriterBindings(file: string, source: ts.SourceFile): ReadonlySet<string> {
+    const cached = allBindingCache.get(file);
+    if (cached) return cached;
+    const names = new Set<string>(fsjson.writerBindings(file, source));
+    for (const name of rawFs.writerBindings(file, source)) names.add(name);
+    allBindingCache.set(file, names);
+    return names;
   }
 
   /**
@@ -1391,7 +1642,7 @@ function refusalScanner(tree: SourceTree) {
     swallowerCache.set(file, names);
     const source = tree.parse(file);
     if (!source) return names;
-    const writers = writerBindings(file, source);
+    const writers = allWriterBindings(file, source);
     if (writers.size === 0) return names;
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node)) {
@@ -1471,16 +1722,39 @@ function refusalScanner(tree: SourceTree) {
 
   function scanFile(absFile: string): RefusalScanResult {
     const empty: RefusalScanResult = {
-      writes: [], discarded: [], refusalBlind: [], hashVerified: [], falseSuccess: [], divergentPairs: [],
+      writes: [], rawFsWrites: [], discarded: [], refusalBlind: [], hashVerified: [],
+      falseSuccess: [], divergentPairs: [],
     };
     const source = tree.parse(absFile);
     if (!source) return empty;
-    const writers = writerBindings(absFile, source);
+    const writers = allWriterBindings(absFile, source);
+    // ── LIMIT 3, and it is MEASURED ──────────────────────────────────────────
+    // Rule 4 keys a "destination" on `arguments[0]`, and that is exact for the
+    // fsjson writers: all eight take the path FIRST (writeJson(filePath, …),
+    // ensureDir(dirPath), removePath(target), movePath(fromPath, toPath) …), so
+    // two calls with different first arguments really are two artifacts.
+    //
+    // It is FALSE for a raw-fs writer, whose destination is usually a constant
+    // inside its own module. `recordUpdatesPage(page, nowMs, env)` writes one
+    // fixed sidecar file; its first argument is the PAGE. Feeding the raw-fs
+    // layer to rule 4 reported 7 divergent pairs in updates-store.test.ts alone,
+    // every one of them consecutive writes to THE SAME FILE read as a torn pair
+    // because the pages differ textually. All 7 were false.
+    //
+    // So rule 4 asks only the fsjson resolver, and the gap is declared rather
+    // than closed: a genuine two-artifact divergence written through the raw-fs
+    // layer is NOT reported. Closing it needs a way to know a writer's
+    // destination that does not assume the calling convention — the callee's
+    // own path expression — which is a resolution this scanner does not do. A
+    // "does argument[0] look like a path" heuristic is the third proxy this
+    // file would have refused, and it would mis-sort in both directions.
+    const pairWriters = fsjson.writerBindings(absFile, source);
     const swallowers = swallowerBindings(absFile, source);
     if (writers.size === 0 && swallowers.size === 0) return empty;
 
     const relFile = path.relative(REPO_ROOT, absFile);
     const writes: WriteSite[] = [];
+    const rawFsWrites: WriteSite[] = [];
     const discarded: WriteSite[] = [];
     const refusalBlind: RefusalBlindSite[] = [];
     const hashVerified: RefusalBlindSite[] = [];
@@ -1504,14 +1778,17 @@ function refusalScanner(tree: SourceTree) {
         if (ts.isIdentifier(callee) && writers.has(callee.text)) {
           const site: WriteSite = { relFile, line: at(node), text: quote(node) };
           writes.push(site);
+          if (!pairWriters.has(callee.text)) rawFsWrites.push(site);
           if (isDiscarded(node)) {
             discarded.push(site);
-            let owner: ts.Node | undefined = node.parent;
-            while (owner && !isFunctionLike(owner)) owner = owner.parent;
-            if (owner) {
-              const siblings = droppedByFunction.get(owner) ?? [];
-              siblings.push(node);
-              droppedByFunction.set(owner, siblings);
+            if (pairWriters.has(callee.text)) { // rule 4 only — see LIMIT 3 above
+              let owner: ts.Node | undefined = node.parent;
+              while (owner && !isFunctionLike(owner)) owner = owner.parent;
+              if (owner) {
+                const siblings = droppedByFunction.get(owner) ?? [];
+                siblings.push(node);
+                droppedByFunction.set(owner, siblings);
+              }
             }
             const publisher = enclosingPublisher(node);
             if (publisher) {
@@ -1583,7 +1860,7 @@ function refusalScanner(tree: SourceTree) {
       }));
     }
 
-    return { writes, discarded, refusalBlind, hashVerified, falseSuccess, divergentPairs };
+    return { writes, rawFsWrites, discarded, refusalBlind, hashVerified, falseSuccess, divergentPairs };
   }
 
   return { scanFile };
@@ -2125,6 +2402,41 @@ const REFUSAL_BLIND_PUBLISHERS: readonly string[] = [
   // mkdir surfaces as the refused write into it.
   'src/shared/state/decision-log.ts#nextHookSeq',
 
+  // ── ADMITTED BY THE RAW-FS SHAPE ─────────────────────────────────────────
+  // Four sites the instrument could not see until the second writer layer was
+  // admitted. All four are PRE-EXISTING and none is newly broken; they are the
+  // whole measured blast radius of the resolution change, and each carries a
+  // verdict rather than a path.
+  //
+  // REFUSAL. Both `bootstrap`s drop `writeGraphPreview(cwd, …)` inside a try
+  // whose comment already says "best-effort; never fail the run because preview
+  // write glitched", and the `ok: true` they return is the verdict on the
+  // gitnexus/graphify RUN, not on the preview. The exculpation is the stronger
+  // one the header names for the void-writer class: the CONSUMER floors on
+  // absence — session-start-lib.ts#readGraphPreview is `if
+  // (!fs.existsSync(previewPath)) return ''` — so a refused preview costs a
+  // subagent a full Read of the graph artefact and claims nothing false. Worth
+  // keeping pinned rather than exempting, because the boolean is genuinely
+  // available and `writeGraphPreview` is one edit away from meaning something.
+  'src/runners/gitnexus/bootstrap.ts#bootstrap',
+  'src/runners/graphify/index.ts#bootstrap',
+  // WEAK — and it belongs in the section above it in spirit. `ensureProject-
+  // Gitignore`'s false is OVERLOADED exactly the way writeTextIfChanged's is
+  // (see preserveBody): it answers false for a refused write AND for
+  // `next === null || next === existing`, i.e. "the block is already correct".
+  // So the dropped boolean here is not purely a dropped refusal, and routing it
+  // into MaterializeResult would report a no-op as a failure. That is the
+  // reason it is pinned and not fixed, and it is also the reason it is not
+  // exempt: a genuinely refused .gitignore update leaves the state dir
+  // untracked while materialization reports success, and nothing distinguishes
+  // that from the no-op today. The fix is at the callee — a three-valued answer
+  // — and that file is not this lane's.
+  'src/shared/materialize/materialize.ts#materializeProjectAssets',
+  // INERT. A fixture builder in the auth lane's own test that hands back a
+  // populated machine after discarding recordUpdatesPage. A refused write here
+  // fails the very next assertion, loudly.
+  'src/modules/session/__tests__/session-updates-surface.test.ts#populated',
+
   // ── INERT ────────────────────────────────────────────────────────────────
   // `if (landed) removePath(probeTarget)` — the cleanup of a harness probe,
   // guarded by the probe write's own boolean. Costs a stray file.
@@ -2260,11 +2572,37 @@ const DIVERGENT_PAIR_FUNCTIONS: readonly string[] = [
   'src/shared/state/__tests__/normalize.test.ts#<anonymous>@228',
 ];
 
+/**
+ * The zero-drop guard for the RAW-FS half of the writer set — the same idiom
+ * FILES_WITH_RESULT_CALLS uses for rule 1, and for the same reason: a magnitude
+ * floor cannot tell "this layer stopped resolving" from "the tree shrank".
+ *
+ * Deliberately a handful of DISTINCT base cases rather than every file, so it
+ * does not churn. These are CALL SITES, not definitions — machine-sidecar.ts is
+ * absent for that reason: it declares `writeMachineSidecar` and calls only raw
+ * `fs`, so it reaches no writer of its own. What is pinned instead is one file
+ * per hop the resolution has to survive:
+ *   updates-store.ts / revalidation-state.ts  the direct importers, i.e. the
+ *       shape seed itself still fires on machine-sidecar.ts;
+ *   revalidate.ts  two hops out, through `writeStore` — the forwarding fixpoint
+ *       still carries a raw-fs seed across modules, which is the mechanism the
+ *       whole design rests on, and this is the file the lane's defect was in;
+ *   materialize.ts  a completely unrelated raw-fs writer, so the seed is not
+ *       quietly reduced to the auth layer.
+ */
+const FILES_WITH_RAW_FS_WRITES: readonly string[] = [
+  'src/runners/auth/revalidate.ts',
+  'src/shared/auth/revalidation-state.ts',
+  'src/shared/auth/updates-store.ts',
+  'src/shared/materialize/materialize.ts',
+];
+
 test('rule 2: no NEW publisher hands back a value after discarding a write refusal', () => {
   const files = [...listTsFiles(SRC_ROOT), ...listTsFiles(TESTS_ROOT)];
   const scan = refusalScanner(sourceTree());
   const results = files.map((file) => scan.scanFile(file));
   const writes = results.flatMap((result) => result.writes);
+  const rawFsWrites = results.flatMap((result) => result.rawFsWrites);
   const discarded = results.flatMap((result) => result.discarded);
   const refusalBlind = results.flatMap((result) => result.refusalBlind);
   const hashVerified = results.flatMap((result) => result.hashVerified);
@@ -2290,6 +2628,32 @@ test('rule 2: no NEW publisher hands back a value after discarding a write refus
   assert.ok(
     discarded.length > 80,
     `expected well over 80 discarded write refusals, found ${discarded.length} — the statement-position test is broken`,
+  );
+
+  // The SECOND layer's own floor, and it is separate on purpose. 170 of the 489
+  // writes reach a raw-fs writer; folded into the global floor above, the whole
+  // raw-fs resolver could stop resolving and `> 200` would still pass on the
+  // fsjson half alone. That is precisely how the `writeJsonDurable` regression
+  // hid, and the lesson was to floor each half of a denominator that can move
+  // independently.
+  assert.ok(
+    rawFsWrites.length > 60,
+    `expected well over 60 calls reaching a SANCTIONED RAW-FS writer, found ${rawFsWrites.length} — the shape `
+    + 'seed (rawFsRefusalWriterNames) or its forwarding fixpoint has gone dark, and the machine-sidecar layer is '
+    + 'unwatched again',
+  );
+  // …and by FILE, so a layer falling silent fails by name rather than inside a
+  // magnitude. These four are the distinct base cases the shape has to keep
+  // recognising: the sidecar (the layer this was built for), a plain
+  // best-effort writer, a lock reaper, and a fd-based rewriter.
+  const rawFsFiles = new Set(rawFsWrites.map((site) => site.relFile));
+  const rawFsWentSilent = FILES_WITH_RAW_FS_WRITES.filter((file) => !rawFsFiles.has(file));
+  assert.deepEqual(
+    rawFsWentSilent,
+    [],
+    `${rawFsWentSilent.length} file(s) that used to reach a raw-fs writer now reach ZERO. Either the calls really `
+    + 'went away (delete the line in the same commit) or the shape seed no longer recognises that writer — check '
+    + `it still reads \`try { …fs…; return true } catch { return false }\`:\n${rawFsWentSilent.join('\n  ')}`,
   );
 
   // One ratchet, applied four times. BOTH directions fail: a new key is the
@@ -2787,6 +3151,239 @@ test('rule 2 does not fire on a writer lookalike, or on a question about writing
     + '  stateWritePermitted(p);\n  return c;\n}\n',
   )));
   assert.deepEqual(question.scanFile(WRITE_FIXTURE).writes, [], 'a permission question is not a write');
+});
+
+// ── the second writer layer ─────────────────────────────────────────────────
+
+/**
+ * THE MEASUREMENT THIS LANE WAS BUILT FROM, made permanent.
+ *
+ * Two functions were put in one real file, both discarding a boolean and then
+ * returning a count — one through the sidecar layer and one through
+ * `writeJson`. The fsjson one was reported by name and the sidecar one was not
+ * mentioned at all, with the ratchet fully green. Both halves are pinned here,
+ * because the A is worthless without the B: a scanner that reports the sidecar
+ * site and has quietly stopped reporting the fsjson site has not been fixed.
+ *
+ * Deliberately over the REAL src/shared/auth/updates-store.ts, so this fails if
+ * ANY link in the chain breaks — the shape seed on machine-sidecar.ts, the
+ * cross-module import, or the two hops of forwarding fixpoint through
+ * `writeStore` that carry the seed out to `recordUpdatesPage`. A stub would
+ * prove only that the scanner can read a stub.
+ */
+test('a discarded refusal in the raw-fs sidecar layer is reported, exactly as the fsjson one is', () => {
+  const publisher = (call: string): string => 'export function persistFeed(page: { items: unknown[] }, '
+    + `now: number): number {\n  ${call}\n  return page.items.length;\n}\n`;
+
+  const sidecar = refusalScanner(sourceTree({
+    [WRITE_FIXTURE]: "import { recordUpdatesPage } from '../auth/updates-store';\n"
+      + publisher('recordUpdatesPage(page, now);'),
+  })).scanFile(WRITE_FIXTURE);
+  assert.equal(
+    sidecar.writes.length,
+    1,
+    'the sidecar write must RESOLVE through machine-sidecar.ts -> writeStore -> recordUpdatesPage, or every '
+    + 'assertion below is vacuous',
+  );
+  assert.equal(sidecar.rawFsWrites.length, 1, 'and it must be attributed to the RAW-FS layer, not the fsjson one');
+  assert.equal(sidecar.refusalBlind.length, 1, 'the discarded sidecar refusal must be reported');
+  assert.match(sidecar.refusalBlind[0]!.key, /#persistFeed$/);
+
+  // The control. Same shape, same position, the other layer.
+  const viaFsjson = refusalScanner(sourceTree({
+    [WRITE_FIXTURE]: `import { writeJson } from ${REAL_FSJSON};\n` + publisher('writeJson("p", page);'),
+  })).scanFile(WRITE_FIXTURE);
+  assert.equal(viaFsjson.refusalBlind.length, 1, 'the fsjson half must still be reported');
+  assert.deepEqual(viaFsjson.rawFsWrites, [], 'and must NOT be attributed to the raw-fs layer');
+
+  // revalidate.ts#persistFeed as it reads today: the boolean decides the count.
+  const fixed = refusalScanner(sourceTree({
+    [WRITE_FIXTURE]: "import { recordUpdatesPage } from '../auth/updates-store';\n"
+      + 'export function persistFeed(page: { items: unknown[] }, now: number): number {\n'
+      + '  if (!recordUpdatesPage(page, now)) return 0;\n  return page.items.length;\n}\n',
+  })).scanFile(WRITE_FIXTURE);
+  assert.equal(fixed.writes.length, 1, 'the fixed site still has to RESOLVE, or this row proves nothing');
+  assert.deepEqual(fixed.refusalBlind, [], 'consuming the boolean must not be reported');
+});
+
+const SHAPE_CASES_RAW_FS: ReadonlyArray<{ label: string; source: string; writer: boolean }> = [
+  {
+    label: 'writeMachineSidecar itself — the shape, reduced',
+    writer: true,
+    source: "import * as fs from 'fs';\n"
+      + 'export function writeSidecar(p: string, body: string): boolean {\n'
+      + '  try {\n    fs.writeFileSync(p, body);\n    return true;\n'
+      + '  } catch {\n    return false;\n  }\n}\n',
+  },
+  {
+    label: 'a rename, and a best-effort cleanup inside the catch',
+    writer: true,
+    source: "import * as fs from 'node:fs';\n"
+      + 'export function place(tmp: string, dst: string): boolean {\n'
+      + '  try {\n    fs.renameSync(tmp, dst);\n    return true;\n'
+      + '  } catch {\n    try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }\n'
+      + '    return false;\n  }\n}\n',
+  },
+  {
+    // The refusal channel is what makes a writer, so a function that answers
+    // `null` is not one. Admitting it would pull in every lock acquirer in the
+    // tree, whose null is CONTENTION — see the note on rawFsRefusalWriterNames.
+    label: 'the catch answers null rather than false — a lock acquirer, not a writer',
+    writer: false,
+    source: "import * as fs from 'fs';\n"
+      + 'export function acquire(p: string): number | null {\n'
+      + '  try {\n    fs.mkdirSync(p);\n    return 1;\n  } catch {\n    return null;\n  }\n}\n',
+  },
+  {
+    // The errno channel, deliberately left open. This is the STRONGER signal
+    // (it becomes the fail-closed pipeline-handler-crashed deny), and there is
+    // no boolean for a caller to drop.
+    label: 'the catch rethrows — the errno channel, which is not this rule',
+    writer: false,
+    source: "import * as fs from 'fs';\n"
+      + 'export function persist(p: string, body: string): boolean {\n'
+      + '  try {\n    fs.writeFileSync(p, body);\n    return true;\n'
+      + '  } catch (error) {\n    throw error;\n  }\n}\n',
+  },
+  {
+    label: 'no try at all — the errno propagates',
+    writer: false,
+    source: "import * as fs from 'fs';\n"
+      + 'export function persist(p: string, body: string): boolean {\n'
+      + '  fs.writeFileSync(p, body);\n  return true;\n}\n',
+  },
+  {
+    // role-evidence.ts, host/plan.ts, token-report/discovery.ts and two others
+    // sniff a file's first line this way. A read that failed refused nothing.
+    label: 'openSync in READ mode — a read, not a write',
+    writer: false,
+    source: "import * as fs from 'fs';\n"
+      + 'export function readable(p: string): boolean {\n'
+      + "  try {\n    fs.openSync(p, 'r');\n    return true;\n  } catch {\n    return false;\n  }\n}\n",
+  },
+  {
+    label: 'openSync with an EXCLUSIVE CREATE flag — a write',
+    writer: true,
+    source: "import * as fs from 'fs';\n"
+      + 'export function claim(p: string): boolean {\n'
+      + "  try {\n    fs.openSync(p, 'wx');\n    return true;\n  } catch {\n    return false;\n  }\n}\n",
+  },
+  {
+    // The `return true` clause is what makes the boolean THE WRITE'S OUTCOME
+    // rather than merely a value the catch can also produce. Here `true` means
+    // "it was stale" and the unlink is incidental, so `false` is not a refusal
+    // report and a caller discarding it is not this defect. Without the clause
+    // the shape would admit it, which is why the clause is pinned by this row
+    // rather than only by the comment on rawFsRefusalWriterNames.
+    label: 'the try path returns a COMPUTED boolean, so false is not the write\'s answer',
+    writer: false,
+    source: "import * as fs from 'fs';\n"
+      + 'export function reclaimIfStale(p: string, deadline: number): boolean {\n'
+      + '  try {\n    fs.unlinkSync(p);\n    return Date.now() > deadline;\n'
+      + '  } catch {\n    return false;\n  }\n}\n',
+  },
+  {
+    // The lookalike protection rule 2 already has for fsjson, at this layer.
+    label: 'a local object called `fs` that is not the module',
+    writer: false,
+    source: 'const fs = { writeFileSync: (_p: string, _b: string): void => {} };\n'
+      + 'export function persist(p: string, body: string): boolean {\n'
+      + '  try {\n    fs.writeFileSync(p, body);\n    return true;\n  } catch {\n    return false;\n  }\n}\n',
+  },
+  {
+    // The write is in a nested callback, so the try/return true pair is not
+    // this function's contract. Nested scopes are not descended into.
+    label: 'the mutation is inside a nested function, not in the try itself',
+    writer: false,
+    source: "import * as fs from 'fs';\n"
+      + 'declare function withLock(run: () => void): void;\n'
+      + 'export function persist(p: string, body: string): boolean {\n'
+      + '  try {\n    withLock(() => { fs.writeFileSync(p, body); });\n    return true;\n'
+      + '  } catch {\n    return false;\n  }\n}\n',
+  },
+];
+
+test('the raw-fs writer SHAPE admits a refusal contract and nothing else', () => {
+  const fixture = path.join(WRITE_FIXTURE_DIR, 'raw-fs.ts');
+  for (const shapeCase of SHAPE_CASES_RAW_FS) {
+    const source = sourceTree({ [fixture]: shapeCase.source }).parse(fixture);
+    assert.ok(source, `${shapeCase.label}: the fixture must parse`);
+    const names = rawFsRefusalWriterNames(source);
+    assert.equal(
+      names.size > 0,
+      shapeCase.writer,
+      `${shapeCase.label}: expected ${shapeCase.writer ? 'a writer' : 'NO writer'}, got [${[...names].join(', ')}]`,
+    );
+  }
+});
+
+/**
+ * A raw-fs writer must grow LOCAL wrappers the way an fsjson one does.
+ *
+ * This exists because a mutation survived without it. The resolver used to skip
+ * its forwarding fixpoint whenever a file imported no writer AND was not
+ * fsjson.ts — correct while fsjson.ts was the only base case, and wrong the
+ * moment a file can DECLARE one. Reverting that condition left every test green,
+ * because no file in the tree today happens to hold both a raw-fs writer and a
+ * local wrapper around it. "No instance today" is exactly the property that
+ * expires quietly, and machine-sidecar.ts growing one helper is all it takes.
+ */
+test('a local wrapper around a raw-fs writer is a writer too', () => {
+  const fixture = path.join(WRITE_FIXTURE_DIR, 'raw-local.ts');
+  const scanned = refusalScanner(sourceTree({
+    [fixture]: "import * as fs from 'fs';\n"
+      + 'function writeSidecar(p: string, body: string): boolean {\n'
+      + '  try {\n    fs.writeFileSync(p, body);\n    return true;\n  } catch {\n    return false;\n  }\n}\n'
+      // `save` names no fs call at all; it is reachable only through the fixpoint.
+      + 'function save(p: string, c: unknown): boolean { return writeSidecar(p, JSON.stringify(c)); }\n'
+      + 'export function publish(p: string, c: { id: string }): { id: string } {\n'
+      + '  save(p, c);\n  return c;\n}\n',
+  })).scanFile(fixture);
+  assert.ok(
+    scanned.writes.length >= 1,
+    'the wrapper call must RESOLVE through the local fixpoint, or this test proves nothing',
+  );
+  assert.equal(scanned.refusalBlind.length, 1, 'the publisher that dropped the wrapper\'s boolean must be reported');
+  assert.match(scanned.refusalBlind[0]!.key, /#publish$/);
+});
+
+/**
+ * LIMIT 3, pinned from both sides so it stays a DECLARED gap rather than an
+ * accident somebody closes by widening the writer set into rule 4.
+ *
+ * Rule 4 keys a destination on `arguments[0]`. That is exact for all eight
+ * fsjson writers, every one of which takes the path first, and false for a
+ * raw-fs writer whose destination is a constant in its own module. Measured on
+ * the real tree: feeding the raw-fs layer to rule 4 produced 7 pairs in
+ * updates-store.test.ts, all of them consecutive writes to THE SAME file.
+ */
+test('rule 4 does not consult the raw-fs layer, because argument[0] is not its destination', () => {
+  // updates-store.test.ts's shape: two `recordUpdatesPage` calls, one file.
+  const sidecarPair = refusalScanner(sourceTree({
+    [WRITE_FIXTURE]: "import { recordUpdatesPage } from '../auth/updates-store';\n"
+      + 'export function seed(a: unknown, b: unknown, now: number): void {\n'
+      + '  recordUpdatesPage(a, now);\n  recordUpdatesPage(b, now);\n}\n',
+  })).scanFile(WRITE_FIXTURE);
+  // Non-vacuity FIRST: if the writer stopped resolving, the empty pair list
+  // below would be true for the wrong reason, which is how a limit becomes a
+  // blind spot.
+  assert.equal(sidecarPair.rawFsWrites.length, 2, 'both sidecar writes must RESOLVE as raw-fs writes');
+  assert.equal(sidecarPair.discarded.length, 2, 'and both must be seen to be discarded');
+  assert.deepEqual(
+    sidecarPair.divergentPairs,
+    [],
+    'two writes to one fixed sidecar file are not a divergent pair, whatever their first arguments say',
+  );
+
+  // …and the same two-drop shape through fsjson, where argument[0] IS the
+  // destination, must still be reported. This half is what stops the exclusion
+  // from being implemented as "rule 4 off".
+  const fsjsonPair = refusalScanner(sourceTree(publisherFixture(
+    `import { writeJson } from ${REAL_FSJSON};\n`
+    + 'export function seed(a: string, b: string, value: unknown): void {\n'
+    + '  writeJson(a, value);\n  writeJson(b, value);\n}\n',
+  ))).scanFile(WRITE_FIXTURE);
+  assert.equal(fsjsonPair.divergentPairs.length, 1, 'rule 4 must still fire on an fsjson pair');
 });
 
 test('every function fsjson.ts exports is classified as a writer or as a non-writer', () => {

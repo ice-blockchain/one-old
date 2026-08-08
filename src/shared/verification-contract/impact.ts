@@ -61,7 +61,55 @@ const MARKUP_RE = /\.(?:tsx|jsx|vue|svelte|astro|mdx|marko|gjs|gts|html|htm|xhtm
 // discrimination that bounds reading `.mdx` as markup at all. `.marko` is here
 // AND in the tag pass because it accepts both syntaxes and may mix them by line.
 const INDENTED_MARKUP_RE = /\.(?:pug|jade|haml|slim|marko)$/i;
-const VISUAL_PATH_RE = /(?:^|\/)(?:styles?|theme|tokens?|assets?|layout)(?:\/|[.-])/i;
+// One vocabulary, two anchors. The names are shared so the planned arm and the
+// changed-path arm below cannot drift into disagreeing about what a
+// presentational path is called; the ANCHOR is the whole of the difference
+// between them, which is why it is the only thing spelled separately.
+const PRESENTATION_NAMES = 'styles?|theme|tokens?|assets?|layout';
+// A name arm, and the ONLY place a name is the whole of the available evidence:
+// a scaffold output is a path the plan has not created yet, so there are no
+// bytes to read and no intrinsic answer to prefer. Its `[.-]` branch claims
+// filename PREFIXES too, which is affordable here because the planner NAMED
+// this path — `token-report/summary.ts` is not something a plan declares as an
+// output and then does not mean.
+const PLANNED_VISUAL_PATH_RE = new RegExp(`(?:^|/)(?:${PRESENTATION_NAMES})(?:/|[.-])`, 'i');
+// The same vocabulary asked of a path that already EXISTS, where the name is no
+// longer the whole evidence and a wrong answer is expensive. THREE bounds, each
+// removing a measured false-positive class rather than a hypothesised one:
+//
+//   - DIRECTORY SEGMENTS ONLY, no `[.-]` branch. Over this repo's 1323 tracked
+//     paths the full spelling claimed 27 and every one arrived through that
+//     branch — 24 token ACCOUNTING modules (`runners/token-report/**`,
+//     `token-logger.ts`, `override/token.ts`) and 3 docs. As a directory
+//     segment it claims ZERO. So the reason the arm was deleted wholesale — no
+//     bound separates victim from beneficiary, since both are `.ts` — is true
+//     of the EXTENSION and false of the ANCHOR: `styles/colors.ts` and
+//     `token-logger.ts` differ in shape, not merely in spelling.
+//   - WEB MODULES ONLY. A stylesheet, image or font under one of these
+//     directories is already VISUAL_RE's by extension and a component is
+//     MARKUP_RE's, so the paths left over are exactly the residual this exists
+//     for: CSS-in-JS under a presentational directory, a `theme/tokens.ts` or
+//     `styles/colors.ts`, invisible to every intrinsic probe because its bytes
+//     are ordinary object literals.
+//   - UNDER THE PROFILE'S OWN `sourceRoots`. The extension bound alone says
+//     only "a browser COULD load this", which is not the same as "this is the
+//     web app": a monorepo's `packages/cli/src/theme/colors.ts` is terminal
+//     theming and answers the spelling perfectly. `sourceRoots` is the
+//     project's own declaration of where its web code lives, so like
+//     `profile.entrypoints` — and unlike any widening of the regex — it cannot
+//     claim a sibling package that merely shares a directory name. Empty
+//     `sourceRoots` disarms the arm, which is the fail-toward-not-claiming
+//     direction the rest of this classifier takes.
+//
+// `visual` rather than `behavioral` because a design token is the one edit
+// whose blast radius IS every screen at once, and no changed-hunk
+// discrimination applies to a module holding no template.
+//
+// This corpus cannot vouch for the arm in either direction — the repo owns no
+// stylesheet and no such directory, which is equally why DELETING it measured
+// as free here. That silence is the reason the arm is bounded this tightly,
+// not a reason to leave it out.
+const PRESENTATION_DIR_RE = new RegExp(`(?:^|/)(?:${PRESENTATION_NAMES})/`, 'i');
 const VISUAL_CONFIG_RE = /(?:^|\/)(?:tailwind|uno|windi)\.config\.(?:[cm]?[jt]s|ts)$/i;
 const BEHAVIOR_RE = /(?:^|\/)(?:routes?|router|navigation|forms?|state|stores?|features?)(?:\/|[.-])|(?:route|router|navigation|handler|controller)\.[^.]+$/i;
 // The client-side APIs that MAKE a module drive the browser, as identifiers in
@@ -84,8 +132,24 @@ export const IMPORTANT_VISUAL_PATH_RE =
 //   React     onClick={…}          Svelte   on:click={…}
 //   Vue       @click="…"  v-on:…   Alpine   x-on:click="…"  @click="…"
 //   Livewire  wire:click="…"       Angular  (click)="…"
+//   HTML      onclick="…"
+// The plain-HTML form is the one the camelCase arm cannot reach, and it was
+// stripped NOWHERE — not even in `.html`, where it is the native spelling — so
+// `<button onclick="save(1)">` read `visual` while its React equivalent read
+// `behavioral`. It gets its own arm rather than a relaxed `on[A-Za-z]` because
+// lowercase collides with ordinary words, and every real collision found is a
+// SUFFIX one: Astro's `client:only="react"`, a `data-only` attribute. A handler
+// attribute is a name in its own right, never the tail of a namespaced or
+// hyphenated one, which is the whole of the extra guard. A bare `only=`
+// attribute would still be stripped, and that residual is accepted rather than
+// papered over with a word list: it costs the screenshot sweep, never the
+// browser, because an edit confined to a stripped attribute still leaves
+// changed text and so still settles `behavioral`. Leaving the camelCase arm
+// untouched keeps the change one-directional — nothing stripped before stops
+// being.
 const EVENT_ATTR_RE = new RegExp([
   '\\bon[A-Z][A-Za-z0-9_$]*\\s*=',
+  '(?<![-:.])\\bon[a-z][A-Za-z0-9_$]*\\s*=',
   '\\b(?:v-on|x-on|on|wire|hx):[A-Za-z][A-Za-z0-9_.:|-]*\\s*=',
   '@[A-Za-z][A-Za-z0-9_.:-]*\\s*=',
   '\\([A-Za-z][A-Za-z0-9_.]*\\)\\s*=',
@@ -509,7 +573,7 @@ export function plannedUiImpactFloor(
     if (output.ownerRole === 'senior-tester'
       || baselineContainsPath(projectRoot, architecture.baseline, output.path)) continue;
     if (VISUAL_RE.test(output.path)
-      || VISUAL_PATH_RE.test(output.path)
+      || PLANNED_VISUAL_PATH_RE.test(output.path)
       || MARKUP_RE.test(output.path)) return 'visual';
     if (BEHAVIOR_RE.test(output.path)) floor = raiseImpact(floor, 'behavioral');
   }
@@ -562,6 +626,41 @@ export function plannedImportantVisualChange(
  * stack-build/format/test, `plannedUiImpactFloor` raises the contract whenever
  * the PLAN holds UI, and `agentRaisedImpact` exists for a role that knows
  * something the paths do not say.
+ *
+ * The visual name arm went for that reason and no other. `VISUAL_PATH_RE`
+ * (`styles?|theme|tokens?|assets?|layout`) answered from a path's SPELLING in
+ * the same way the bare extension arm did, and it answered in the most
+ * expensive class there is — first arm in the chain, straight to `visual`, so
+ * the three-viewport sweep with no changed-hunk discrimination underneath it.
+ * Its alternation ends `(?:\/|[.-])`, which claims filename PREFIXES as
+ * readily as directories. Measured over this repo's 1323 tracked paths it
+ * claimed 27, and not one of them is a stylesheet, an image or a design token:
+ * 24 are the token ACCOUNTING code (everything under `runners/token-report`,
+ * `token-logger.ts`, `override/token.ts` — `token` before a `-` or a `.`) and 3
+ * are documentation (two `rules/frontend/<framework>/styles.md`, and the
+ * `token-usage-report/` skill, a directory segment read as a design token).
+ * That was every `visual` verdict this corpus produced.
+ *
+ * What it could genuinely see, something intrinsic already sees better:
+ * stylesheets, images and fonts are VISUAL_RE's by extension, a component or
+ * layout under any of those directories is MARKUP_RE's, and the utility-CSS
+ * configs are VISUAL_CONFIG_RE's by exact filename. The residual is real and
+ * narrow — a CSS-in-JS `theme/index.ts`, a `tokens/colors.ts` — and it is NOT
+ * left standing: `PRESENTATION_DIR_RE` readmits exactly that class on three
+ * bounds. The argument for leaving it, that no bound separates victim from
+ * beneficiary because both are `.ts`, holds for a WEB_MODULE_RE bound on the
+ * full spelling (3 moved, 24 kept) and fails for the ANCHOR: all 24 arrive
+ * through the `[.-]` branch and not one is a directory segment.
+ *
+ * Why it is worth readmitting at all, when "non-recognition is not evidence"
+ * argues the other way: the two authorities named below do not in fact cover
+ * this case. `plannedUiImpactFloor` skips every module and output already in
+ * the baseline — it is a NEW-work instrument — so on an existing codebase
+ * editing an existing token file it raises nothing, leaving `agentRaisedImpact`
+ * as the only guard, i.e. a role volunteering what the product could not tell
+ * it. CSS-in-JS is not an exotic shape to leave there. So a theme module is now
+ * answered three ways: that arm, the floor on the plan that ADDS it, and an
+ * agent that knows what the path does not say.
  *
  * `profile.entrypoints` is the one member of that fallback that carried real
  * evidence rather than a spelling: on vue/svelte/angular/generic-web and
@@ -686,6 +785,15 @@ export function deriveUiImpact(
       .map((entry) => normalizeRel(entry))
       .filter((entry): entry is string => entry !== null && WEB_MODULE_RE.test(entry)),
   );
+  // The web surface's own declared extent, for PRESENTATION_DIR_RE's third
+  // bound. Normalized here rather than per path so the containment test below
+  // is a prefix compare on already-canonical strings.
+  const webSourceRoots = profile.sourceRoots
+    .map((root) => normalizeRel(root))
+    .filter((root): root is string => root !== null);
+  const underWebSource = (file: string): boolean => webSourceRoots.some(
+    (root) => file === root || file.startsWith(`${root}/`),
+  );
   for (const file of changedPaths) {
     const normalized = normalizeRel(file);
     if (!normalized) continue;
@@ -696,7 +804,8 @@ export function deriveUiImpact(
     // to be code rather than prose.
     const code = webModule ? codeProjection(content) : '';
     let changedContent = content;
-    if (VISUAL_RE.test(normalized) || VISUAL_PATH_RE.test(normalized) || VISUAL_CONFIG_RE.test(normalized)) {
+    if (VISUAL_RE.test(normalized) || VISUAL_CONFIG_RE.test(normalized)
+      || (webModule && underWebSource(normalized) && PRESENTATION_DIR_RE.test(normalized))) {
       impact = raiseImpact(impact, 'visual');
     } else if (MARKUP_RE.test(normalized) || UI_COMPONENT_RE.test(code)) {
       const evidence = changedHunkEvidence(projectRoot, baseline, normalized);
