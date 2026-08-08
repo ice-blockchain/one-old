@@ -9,6 +9,22 @@ import { oneSettingsPath } from '../one-settings';
 import { isLocallyAuthenticated } from './simple-auth';
 
 export { readSimpleAuth, isLocallyAuthenticated, writeSimpleAuth, clearAuthentication } from './simple-auth';
+export {
+  offlineGraceVerdict,
+  type AuthValidationFailure,
+  type OfflineGraceVerdict,
+} from './offline-grace';
+export {
+  revalidationAction,
+  sessionRevalidationPlan,
+  type AuthValidationOutcome,
+  type RevalidationAction,
+  type SessionRevalidationPlan,
+} from './revalidation';
+// NOT re-exported here: ./start-revalidation, which imports `authEnforced` from
+// THIS file. Adding it would close a require cycle through the barrel for no
+// gain — it has exactly one caller (modules/session/session-start.ts), which
+// imports it directly.
 
 function isLoopbackHostname(hostname: string): boolean {
   const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');

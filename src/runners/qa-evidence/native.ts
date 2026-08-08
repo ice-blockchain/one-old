@@ -17,6 +17,7 @@ import {
   type QaNativeTestSummaryV1,
 } from '../../shared/qa-evidence-runtime';
 import {
+  CHECK_INCONCLUSIVE_PREFIX,
   qaReportV2Path,
   validateQaReportV2,
   type QaReportV2,
@@ -47,6 +48,11 @@ import {
   type NativeMachineResult,
 } from './native-process';
 
+// Reading an .xcresult bundle is a local parse, not a test run, so it takes at
+// most this much however wide --timeout-ms is. It stays BELOW the flag's
+// ceiling; the pin lives in __tests__/inconclusive-evidence.test.ts.
+export const XCRESULTTOOL_MAX_TIMEOUT_MS = 60_000;
+
 async function runXcodeNative(
   args: RunnerArgs,
   command: readonly string[],
@@ -57,7 +63,9 @@ async function runXcodeNative(
 ): Promise<{ process: BoundedProcessResult; machine: NativeMachineResult | null; detail: string }> {
   const bundle = path.join(captureRoot, 'result.xcresult');
   const actualCommand = [...command, '-resultBundlePath', bundle];
-  const processResult = await runBoundedProcess(actualCommand, cwd, args.timeoutMs);
+  const processResult = await runBoundedProcess(actualCommand, cwd, args.timeoutMs, {
+    label: 'native xcode-simulator',
+  });
   if (processResult.kind !== 'completed' || !fs.existsSync(bundle)) {
     return { process: processResult, machine: null, detail: processResult.stderr || processResult.kind };
   }
@@ -72,7 +80,7 @@ async function runXcodeNative(
     '--path',
     bundle,
     '--compact',
-  ], cwd, Math.min(args.timeoutMs, 60_000));
+  ], cwd, Math.min(args.timeoutMs, XCRESULTTOOL_MAX_TIMEOUT_MS));
   if (parserResult.kind !== 'completed' || parserResult.exitCode !== 0) {
     return {
       process: parserResult,
@@ -117,7 +125,9 @@ async function runAndroidNative(
     };
   }
   const before = fileSnapshot(beforeFiles);
-  const processResult = await runBoundedProcess(command, cwd, args.timeoutMs);
+  const processResult = await runBoundedProcess(command, cwd, args.timeoutMs, {
+    label: 'native android-emulator',
+  });
   const roots = androidResultRoots(cwd);
   const files = roots ? androidResultFiles(roots) : null;
   if (!roots || !files) {
@@ -167,8 +177,30 @@ async function runAndroidNative(
   };
 }
 
+/**
+ * Whether the adapter run was killed mid-flight rather than finishing.
+ *
+ * `timeout` used to be folded into `nativeEnvironmentMissing` below, which
+ * reported it as "Native environment unavailable for xcode-simulator" — a
+ * DIAGNOSIS the runner never made. A simulator that is absent and a test run
+ * that was too slow are different problems with different fixes, and the
+ * message named the wrong one. `output-limit` was worse: it fell through to
+ * `failed`, so a build that wrote more than 8 MB of log and would otherwise
+ * have passed was reported as a product failure nobody observed.
+ *
+ * Both stay REJECTABLE — `blocked-environment` is this repo's existing "neither
+ * a code failure nor verification" value, and senior-tester/agent.md already
+ * binds it to a `TESTS_FAILING` verdict. Only the prose changes for a timeout;
+ * for an overflow an invented red becomes an honest "we could not tell".
+ */
+function nativeRunCutShort(result: BoundedProcessResult): string | null {
+  if (result.kind === 'timeout') return 'was still running at its bound and was killed';
+  if (result.kind === 'output-limit') return 'was killed after passing its captured-output bound';
+  return null;
+}
+
 function nativeEnvironmentMissing(adapter: string, result: BoundedProcessResult, detail: string): boolean {
-  if (result.kind === 'unavailable' || result.kind === 'timeout') return true;
+  if (result.kind === 'unavailable') return true;
   const output = `${result.stdout}\n${result.stderr}\n${detail}`;
   return adapter === 'xcode-simulator'
     ? /unable to find a destination|no devices are booted|simulator.{0,40}(?:unavailable|not available)|requires Xcode|xcrun.{0,40}(?:not found|unable)|SDK.{0,40}(?:cannot be located|not found)/i.test(output)
@@ -314,6 +346,7 @@ export async function nativeCommand(
         captureRoot,
         Date.parse(startedAt),
       );
+  const cutShort = nativeRunCutShort(result.process);
   const environmentBlocked = nativeEnvironmentMissing(
     loaded.contract.nativeAdapter!,
     result.process,
@@ -324,12 +357,19 @@ export async function nativeCommand(
     && result.machine
     && result.machine.summary.failed === 0
     && result.machine.summary.passed > 0;
-  const status = passed ? 'passed' : environmentBlocked ? 'blocked-environment' : 'failed';
+  const status = passed
+    ? 'passed'
+    : cutShort || environmentBlocked ? 'blocked-environment' : 'failed';
   const summary = passed
     ? undefined
-    : environmentBlocked
-      ? `Native environment unavailable for ${loaded.contract.nativeAdapter}: ${result.detail || result.process.stderr || result.process.kind}`
-      : `Native adapter ${loaded.contract.nativeAdapter} failed or produced no valid machine result: ${result.detail || result.process.stderr || `exit ${String(result.process.exitCode)}`}`;
+    : cutShort
+      ? `${CHECK_INCONCLUSIVE_PREFIX} the ${loaded.contract.nativeAdapter} adapter ${cutShort} after `
+        + `${Date.now() - Date.parse(startedAt)} ms of a ${args.timeoutMs} ms bound, so no machine-readable `
+        + 'result was produced and neither a pass nor a failure was observed: '
+        + `${result.detail || result.process.stderr || result.process.kind}`
+      : environmentBlocked
+        ? `Native environment unavailable for ${loaded.contract.nativeAdapter}: ${result.detail || result.process.stderr || result.process.kind}`
+        : `Native adapter ${loaded.contract.nativeAdapter} failed or produced no valid machine result: ${result.detail || result.process.stderr || `exit ${String(result.process.exitCode)}`}`;
   return publishNativeResult(
     args,
     loaded,

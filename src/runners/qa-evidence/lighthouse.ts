@@ -31,6 +31,12 @@ import {
 } from './run-context';
 import { isConcreteRoutePath, loadScenario } from './scenario';
 
+// A Lighthouse audit does not finish inside the per-step default, so this step
+// takes at least this much regardless of --timeout-ms. It stays BELOW the
+// flag's ceiling so a narrowing step can never widen the bound; the pin lives
+// in __tests__/inconclusive-evidence.test.ts.
+export const LIGHTHOUSE_MIN_TIMEOUT_MS = 120_000;
+
 interface LighthouseRunResult {
   status: 'passed' | 'failed' | 'blocked-environment';
   evidencePath?: string;
@@ -157,7 +163,7 @@ export async function runLighthouseOnOwnedServer(
       '--output=json',
       `--output-path=${rawOut.absolute}`,
       '--quiet',
-    ], args.projectRoot, Math.max(args.timeoutMs, 120_000));
+    ], args.projectRoot, Math.max(args.timeoutMs, LIGHTHOUSE_MIN_TIMEOUT_MS));
     const summary = readLighthouseArtifact(rawOut.absolute);
     if (!summary) {
       return {

@@ -9,8 +9,12 @@ import { detectHost } from '../../shared/host';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import {  normalizeState, readEffectiveState } from '../../shared/state';
 
-const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;
-const DEFAULT_INTERVAL_MS = 2000;
+// Exported because README.md documents both numbers to the reader as the
+// defaults of `--timeout-ms` / `--interval-ms`, and tests/readme-wait-command.test.ts
+// pins the documented figures to these constants — a default that changed here
+// while the prose kept the old number is a claim the reader would act on.
+export const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;
+export const DEFAULT_INTERVAL_MS = 2000;
 // How recently THIS runner printed its own terminal banner. Deliberately short and
 // deliberately scoped to the banner alone: it stops the same block appearing twice
 // back-to-back in one turn, and gates no other surface. The old cross-surface

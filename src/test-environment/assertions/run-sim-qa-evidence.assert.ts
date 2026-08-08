@@ -11,19 +11,32 @@
 //      `passed` whenever nothing FAILED, so an all-`not-applicable` report
 //      would otherwise read as a pass.
 //   3. `not-applicable` is only acceptable when the project genuinely declares
-//      no such command. When the command resolved but could not be EXECUTED
-//      (missing binary), that is an environment gap: INCONCLUSIVE, never PASS.
-//      Reporting green there is exactly how a suite claims coverage it does
-//      not have.
+//      no such command. Two other causes wear the same status and neither is
+//      coverage: the command resolved but could not be EXECUTED (missing
+//      binary), and the command RAN and was killed at its time or output bound.
+//      Both are environment gaps: INCONCLUSIVE, never PASS. Reporting green
+//      there is exactly how a suite claims coverage it does not have.
 
-import { readQaReportV2 } from '../../shared/qa-report-v2';
+import { CHECK_INCONCLUSIVE_PREFIX, readQaReportV2 } from '../../shared/qa-report-v2';
 import { readVerificationContract } from '../../shared/verification-contract';
 import type { Assertion } from '../core/types';
 import { effState, latestRunId, readRunSimTranscript, rec, result, str } from './util';
 
-// The runner's own wording for the two distinct not-applicable causes
-// (qa-evidence/stack.ts:174 vs :193).
+// The runner's own wording for a command that never started (qa-evidence's
+// stack.ts, the spawn-failure and exit-127 arms). A command that STARTED and
+// was killed does not say this: it carries CHECK_INCONCLUSIVE_PREFIX instead,
+// and is handled separately below, because "no binary" and "no verdict" are
+// different facts about this machine.
 const NOT_EXECUTABLE_RE = /could not be executed/i;
+
+// A check the runner cut short. The marker is the producer's, single-sourced in
+// the v2 schema and read by the validator's exemption, so this cannot drift
+// from the prose either side writes.
+function cutShortChecks(report: { checks: readonly { id: string; summary?: string }[] } | null | undefined) {
+  return (report?.checks ?? []).filter(
+    (check) => (check.summary ?? '').toLowerCase().includes(CHECK_INCONCLUSIVE_PREFIX),
+  );
+}
 
 export const assertion: Assertion = {
   id: 'run-sim-qa-evidence',
@@ -78,6 +91,21 @@ export const assertion: Assertion = {
     // on it, so nothing is laundered.
     if (!report.ok && report.code === 'blocked-environment') {
       return result(ctx, 'INCONCLUSIVE', `The QA runner reported blocked-environment for uiImpact=${contract.uiImpact} (${expectedMode} mode): ${report.message}. A required toolchain is absent on this machine, so this run cannot say whether the product's evidence is good — it is not a pass and not a failure.`);
+    }
+    // Fence 3, second arm — a check the runner STARTED and then killed, at its
+    // time bound or its output bound. The product-side validator refuses to
+    // excuse it (that refusal is the point: a hung suite must not settle a run
+    // green), so the report arrives here rejected as `required-check-failed`.
+    // The rejection is correct and the run is genuinely not certifiable, but
+    // reporting FAIL would name the product as the cause when the fact is that
+    // a command on THIS machine needed longer than the bound allowed. Placed
+    // after fence 1 for the same reason the blocked-environment arm is: a case
+    // declaring the wrong qa.mode still FAILS, because that is a contract
+    // disagreement and has nothing to do with this machine. `--strict` still
+    // fails the release verdict on an INCONCLUSIVE, so nothing is laundered.
+    const cutShort = cutShortChecks(report.report);
+    if (cutShort.length > 0) {
+      return result(ctx, 'INCONCLUSIVE', `${cutShort.length} required check(s) ran and were killed before producing a verdict, so this run cannot say whether the product's evidence is good: ${cutShort.map((check) => `${check.id} (${check.summary})`).join('; ')}. Re-run, or raise the runner's --timeout-ms if the command legitimately needs longer — it is neither a pass nor a product failure.`);
     }
     if (!report.ok) {
       // Maintenance legs that ran AFTER this report legitimately moved the

@@ -21,6 +21,39 @@ interface QaV2Check {
   summary?: string;
 }
 
+/**
+ * The prefix a producer stamps on a `not-applicable` check summary when the
+ * command it names STARTED, ran, and was killed before it could report — at its
+ * timeout, or for overflowing its output bound.
+ *
+ * `not-applicable` is the only status the schema has for "no verdict was
+ * observed", and it is shared by two situations that are not alike. A project
+ * that declares no formatter genuinely has nothing to run, and
+ * `validateQaReportV2` rightly excuses it. A test suite the runner SIGKILLed
+ * mid-flight has everything to run and ran none of it, and excusing that
+ * certifies untested source. This marker is what separates them, and it lives
+ * beside the schema — not in either the producer or the validator — because
+ * both sides must agree on the same string or the distinction silently
+ * evaporates in one direction: a producer that stops emitting it turns every
+ * cut-short check back into a free pass.
+ *
+ * Deliberately not a new `status` value. The three-value union above is
+ * consumed by settlement, the dimension roll-up and every gate; widening it is
+ * a cross-cutting change, and it is not needed — "did not run" plus "and here
+ * is why that is not excusable" already says exactly what happened.
+ */
+export const CHECK_INCONCLUSIVE_PREFIX = 'inconclusive:';
+
+/**
+ * Whether a check summary reports a step that was cut short rather than one
+ * that never had anything to run. Case-insensitive so a summary that has been
+ * through a prose normalizer still reads the same.
+ */
+export function inconclusiveCheckSummary(summary: unknown): boolean {
+  return typeof summary === 'string'
+    && summary.toLowerCase().includes(CHECK_INCONCLUSIVE_PREFIX);
+}
+
 export interface QaBuildIdentityV2 {
   runId: string;
   sourceHash: string;

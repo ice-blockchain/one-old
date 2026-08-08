@@ -16,6 +16,7 @@ import {
 
 import {
   formatSchemaIssues,
+  inconclusiveCheckSummary,
   isRecord,
   isoMs,
   newSchemaIssues,
@@ -253,9 +254,19 @@ function evaluateQaReportV2(
     // is gone with the check itself: it excused a `not-applicable` whose prose
     // no runner ever wrote, so the only report it ever accepted was a
     // hand-authored one — see requiredChecks in verification-contract/impact.ts.
+    //
+    // A check the runner CUT SHORT is excluded from the exemption, and that is
+    // the sharpest edge in this loop. The exemption exists for a command that
+    // had nothing to run; a suite that hung until the runner SIGKILLed it had
+    // everything to run and produced no evidence at all. Both used to arrive
+    // here as `not-applicable / "could not be executed"`, and since stack-test
+    // is on the allowlist above, a hung test suite settled the run GREEN — the
+    // most expensive shape this validator can accept, because `stack-test` is
+    // the only thing between untested source and a settled nonvisual run.
     const justifiedNoStackCommand = (JUSTIFIED_NO_STACK_COMMAND_CHECK_IDS as readonly string[]).includes(required)
       && check?.status === 'not-applicable'
       && typeof check.summary === 'string'
+      && !inconclusiveCheckSummary(check.summary)
       && /\bnot run:/i.test(check.summary)
       && /\b(?:declares no|could not be executed)\b/i.test(check.summary);
     if (check?.status !== 'passed' && !justifiedNoStackCommand) {
@@ -470,9 +481,11 @@ export function readQaReportV2(projectRoot: string, runId: string): QaV2Validati
 
 
 export {
+  CHECK_INCONCLUSIVE_PREFIX,
   QA_ACCEPTANCE_ATTESTATION_SCHEMA_VERSION,
   QA_BUILD_IDENTITY_PROBE_PATH,
   expectedBuildFingerprint,
+  inconclusiveCheckSummary,
   qaAcceptanceAttestationPath,
   qaReportV2Path,
   type QaAcceptanceAttestationV1,

@@ -188,7 +188,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compiled-runtime smoke (bare-node dispatch)
-        run: npm run smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run smoke 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+          # Same "refuse a hollow green" contract as the hook-timing report step.
+          # compiled-smoke.ts guards main() behind `require.main === module` so a
+          # test can import the module without launching a cutover build; under a
+          # loader that stopped satisfying that guard the command runs nothing,
+          # prints nothing and exits 0, and this step would tick having certified
+          # the compiled runtime never dispatched once.
+          if ! grep -qF 'compiled-smoke: PASS' "$RUNNER_TEMP/smoke.log"; then
+            echo "::error title=Compiled-runtime smoke did not run::the command exited 0 but never printed its PASS line"
+            exit 1
+          fi
 
   latency-budget:
     name: "Latency budget (serial)"

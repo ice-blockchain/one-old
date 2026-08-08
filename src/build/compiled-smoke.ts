@@ -18,9 +18,18 @@ import * as path from 'path';
 import { buildRuntime } from './build-runtime';
 import { listModuleIdsWithDescriptor, listModuleSkillDocs } from './copy-module-assets';
 
-function fail(msg: string): never {
-  process.stderr.write(`compiled-smoke: FAIL — ${msg}\n`);
-  process.exit(1);
+/** Raised by fail(); carries the already-formatted line the runner prints. */
+export class SmokeFailure extends Error {}
+
+// THROWS rather than exits. `process.exit()` unwinds nothing: every `finally`
+// in this file — the one that removes the four scratch trees, and the one that
+// puts `scratch/modules` back after the missing-modules section renames it
+// away — was skipped on every failing run, so a smoke that failed left its
+// temp trees behind and contradicted this file's own header ("Non-destructive:
+// the scratch dir is removed"). Failure is still fail-fast and still exits
+// non-zero; it just runs the cleanup it already had.
+export function fail(msg: string): never {
+  throw new SmokeFailure(`compiled-smoke: FAIL — ${msg}`);
 }
 
 function toPosix(rel: string): string {
@@ -113,6 +122,18 @@ function runShimAsync(
     child.on('close', (status) => finish(status));
     child.stdin.end(stdin);
   });
+}
+
+// Temp trees created part-way through the run, collected so the single finally
+// below removes them however the run ends. The four per-host project cwds used
+// to be removed on the last line of the success path only, which is the one
+// path that did not need it.
+const strayScratch: string[] = [];
+
+function scratchDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  strayScratch.push(dir);
+  return dir;
 }
 
 async function main(): Promise<void> {
@@ -221,10 +242,10 @@ async function main(): Promise<void> {
     // deny walkthrough); sharing one cwd across hosts would let the first call's
     // marker steer the next host's branch. A real session is one host per project,
     // so per-host cwds match reality and keep the four checks independent.
-    const claudeCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-claude-'));
-    const cursorCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-cursor-'));
-    const windsurfCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-windsurf-'));
-    const devinCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-devin-'));
+    const claudeCwd = scratchDir('t1-smoke-claude-');
+    const cursorCwd = scratchDir('t1-smoke-cursor-');
+    const windsurfCwd = scratchDir('t1-smoke-windsurf-');
+    const devinCwd = scratchDir('t1-smoke-devin-');
 
     // One record covers all four: TRAFFIC_ONE_PROJECT_PREFS_PATH pins a single
     // prefs FILE, and projectPrefsPath returns it without consulting cwd, so the
@@ -942,16 +963,25 @@ async function main(): Promise<void> {
       fs.renameSync(hiddenModulesDir, modulesDir);
     }
 
-    for (const d of [claudeCwd, cursorCwd, windsurfCwd, devinCwd]) fs.rmSync(d, { recursive: true, force: true });
     process.stdout.write(`compiled-smoke: PASS — built ${builtModuleIds.size} modules (${builtDocs.size} gate-prose files) + ${built.shimsWritten.length} shims; authenticated gates work, Codex reports approved EPERM bootstrap recovery, Cursor lifecycle followups are parent-batch at-most-once under process contention, and all 7 host wrappers fail closed when compiled modules are unavailable.\n`);
   } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-    fs.rmSync(authTmp, { recursive: true, force: true });
-    fs.rmSync(onboardingTmp, { recursive: true, force: true });
-    fs.rmSync(cursorConcurrencyTmp, { recursive: true, force: true });
+    for (const dir of [scratchRoot, authTmp, onboardingTmp, cursorConcurrencyTmp, ...strayScratch]) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 }
 
-main().catch((error: unknown) => {
-  fail(error instanceof Error ? (error.stack || error.message) : String(error));
-});
+// Guarded so the module can be imported (by a test of fail()'s contract)
+// without launching a full cutover build. `npm run smoke` runs this file as the
+// tsx entry, where require.main === module holds.
+if (require.main === module) {
+  main().catch((error: unknown) => {
+    const line = error instanceof SmokeFailure
+      ? error.message
+      : `compiled-smoke: FAIL — ${error instanceof Error ? (error.stack || error.message) : String(error)}`;
+    process.stderr.write(`${line}\n`);
+    // Not process.exit(): stderr to a pipe drains asynchronously, and the
+    // transcript this line belongs to is the only thing a failing run leaves.
+    process.exitCode = 1;
+  });
+}

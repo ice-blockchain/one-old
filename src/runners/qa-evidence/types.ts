@@ -49,6 +49,12 @@ export interface RunnerArgs {
   lighthouseEvidence?: string;
   out?: string;
   timeoutMs: number;
+  // Whether `timeoutMs` came from an explicit `--timeout-ms`. Only stack.ts
+  // reads it, to tell a bound the caller CHOSE (honour it verbatim) from the
+  // per-step default it inherited from a browser run (widen it: a build or a
+  // test suite is not a per-step interaction). Optional because RunnerArgs is
+  // also built directly in tests and by the test-environment harness.
+  timeoutMsExplicit?: boolean;
 }
 
 interface LocatorLike {

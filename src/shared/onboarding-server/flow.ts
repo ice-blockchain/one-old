@@ -82,10 +82,27 @@ export function computeOnboarding(
   }
 
   // Web auth gate. Until the user enters the API key on the wizard's api-key page,
-  // the ONLY unresolved step is 'api-key' — this is the FIRST wizard step on a
-  // fresh project AND the ONLY step shown for an already-onboarded project whose
-  // key a 401 invalidated (the api-key-only re-auth). Gated on authEnforced so
-  // dev/test runs with TRAFFIC_ONE_AUTH=0 keep their existing onboarding flow.
+  // the ONLY unresolved step is 'api-key' — the FIRST wizard step on a fresh
+  // project, and the ONLY step shown for an already-onboarded project that has
+  // lost its local auth record (deleted, or unparseable).
+  //
+  // A REMOTE REJECTION reaches this step too, and does so without any code here:
+  // validateApiKey now runs at a second site, the background revalidation worker
+  // (runners/auth/revalidate.ts, fired detached from SessionStart at most once
+  // per AUTH_REVALIDATION_CADENCE_MS per machine), and a 401 carrying
+  // `invalid_token` makes it clear the auth record. The next computeOnboarding
+  // then finds no record and returns 'api-key' — one predicate, three causes.
+  //
+  // What does NOT re-open this step, deliberately: an unreachable endpoint, a
+  // rate-limited probe, or an auth-PROVIDER outage (the server's `unkey_
+  // unavailable`, a 401 that means "we could not check"). Those spend the
+  // offline grace window instead (shared/auth/offline-grace.ts), because sending
+  // an offline user here is a dead end — this very step's /answer route
+  // validates through the same endpoint and would reject them for the same
+  // reason that got them cleared.
+  //
+  // Gated on authEnforced so dev/test runs with TRAFFIC_ONE_AUTH=0 keep their
+  // existing onboarding flow.
   if (authEnforced(env) && !isLocallyAuthenticated(env)) {
     return {
       mode,

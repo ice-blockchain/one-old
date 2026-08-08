@@ -126,14 +126,24 @@ test('routes: validated API key persists through the server ctx.env custom state
     req.setEncoding('utf8');
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
-      const method = (() => { try { return JSON.parse(body).method; } catch { return ''; } })();
-      if (req.headers.authorization !== 'Bearer sk-custom' || method !== 'tools/list') {
+      // The intake probe is `tools/call` on `updates` — the authenticated
+      // mount's only tool — not `tools/list`. Pinned here as well as in
+      // runners/auth/__tests__/validate-key.test.ts because this is the route
+      // that decides whether a key gets STORED.
+      const envelope = (() => { try { return JSON.parse(body); } catch { return {}; } })();
+      const probesUpdates = envelope.method === 'tools/call' && envelope.params?.name === 'updates';
+      if (req.headers.authorization !== 'Bearer sk-custom' || !probesUpdates) {
         res.writeHead(401, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { code: 'invalid_token' } }));
         return;
       }
+      const payload = { items: [], nextCursor: null, hasMore: false };
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: [] } }));
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        result: { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload },
+      }));
     });
   });
   await new Promise<void>((resolve) => authServer.listen(0, '127.0.0.1', resolve));

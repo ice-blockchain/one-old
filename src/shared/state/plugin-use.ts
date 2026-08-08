@@ -226,7 +226,25 @@ const MACHINE_OWNED_ENTRIES = {
   // lock that guards the machine-wide settings file would deadlock writing it
   // for a session rooted at $HOME, which is the deadlock this carve-out exists
   // to prevent in the first place.
-  files: ['one.json', 'one-mcp.json', 'secret.env', 'windsurf-plugin-root'],
+  //
+  // `auth-revalidation.json` and `auth-updates.json` are one.json's own
+  // sidecars (shared/auth/machine-sidecar.ts): the revalidation cadence and the
+  // update-feed cursor for the credential stored INSIDE the exempt one.json.
+  // They are split out of the envelope only because its `auth` record is
+  // validated by an exact key set and because a cadence stamp does not belong
+  // in the 0600 secret file — not because they belong to any project. Listed
+  // here even though that module writes through raw `fs` and is unfenced today:
+  // the exemption is a statement about who OWNS the path, and leaving it
+  // undeclared means the next reader or writer that reaches for fsjson's
+  // guarded helpers is silently refused on a $HOME-rooted session.
+  files: [
+    'one.json',
+    'one-mcp.json',
+    'secret.env',
+    'windsurf-plugin-root',
+    'auth-revalidation.json',
+    'auth-updates.json',
+  ],
   // Directories: exact match only.
   //
   // `overrides` is the operator-override store (shared/override/paths.ts): the

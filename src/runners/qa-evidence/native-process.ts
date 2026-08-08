@@ -14,6 +14,7 @@ import { sha256 } from '../../shared/text';
 import {
   type RunnerArgs,
 } from './types';
+import { emitProgress } from './report-publish';
 import {
   safeProjectRelative,
   strictRelative,
@@ -35,14 +36,31 @@ export interface NativeMachineResult {
   artifacts: QaNativeArtifactV1[];
 }
 
-const MAX_NATIVE_PROCESS_OUTPUT = 8 * 1024 * 1024;
+export const MAX_NATIVE_PROCESS_OUTPUT = 8 * 1024 * 1024;
 const MAX_NATIVE_ARTIFACTS = 25_000;
 const MAX_NATIVE_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * How often a running native adapter says it is still alive.
+ *
+ * BORROWED: 10 s is `REFRESH_INTERVAL_MS` in
+ * shared/onboarding-server/browser-arrival.ts:39, this repo's existing cadence
+ * for the same job — periodically re-asserting liveness to an observer who
+ * would otherwise read silence as death. Unlike the stack path, this one can
+ * actually do it: `runBoundedProcess` is promise-based, so the event loop is
+ * free while the child runs.
+ *
+ * It matters most here. `xcodebuild test` and `./gradlew connectedAndroidTest`
+ * are the longest steps this runner has, they emit nothing to the caller (their
+ * stdout is captured, not inherited), and their bound is now five minutes.
+ */
+export const NATIVE_HEARTBEAT_MS = 10 * 1000;
 
 export function runBoundedProcess(
   command: readonly string[],
   cwd: string,
   timeoutMs: number,
+  heartbeat?: { label: string; intervalMs?: number },
 ): Promise<BoundedProcessResult> {
   return new Promise((resolvePromise) => {
     let child: ChildProcess;
@@ -67,10 +85,12 @@ export function runBoundedProcess(
     let bytes = 0;
     let forced: BoundedProcessResult['kind'] | null = null;
     let settled = false;
+    const startedAtMs = Date.now();
     const finish = (result: BoundedProcessResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (pulse) clearInterval(pulse);
       resolvePromise(result);
     };
     const capture = (target: Buffer[], chunk: Buffer): void => {
@@ -101,6 +121,16 @@ export function runBoundedProcess(
       forced = 'timeout';
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     }, timeoutMs);
+    // `unref` so a heartbeat can never be the reason a process stays alive: it
+    // reports on work, it is not work.
+    const pulse = heartbeat
+      ? setInterval(() => {
+          emitProgress(
+            `${heartbeat.label}: still running, ${Math.round((Date.now() - startedAtMs) / 1000)}s `
+            + `of a ${Math.round(timeoutMs / 1000)}s bound, ${bytes} byte(s) captured`,
+          );
+        }, Math.max(1, heartbeat.intervalMs ?? NATIVE_HEARTBEAT_MS)).unref()
+      : null;
   });
 }
 

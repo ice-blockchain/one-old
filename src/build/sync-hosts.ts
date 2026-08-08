@@ -53,6 +53,15 @@ export function successLine(host: HostId, version: string): string {
   return `traffic one plugin was successfully synced to v${version} on your ${HOST_LABELS[host]}`;
 }
 
+// The success line's counterpart: nothing went wrong, and nothing was observed
+// either. Printed instead of successLine() whenever this run could not READ the
+// host serving the version it just installed — never as a failure, because the
+// commonest cause is a host that materializes its cache lazily on first use.
+export function unconfirmedLine(host: HostId, version: string, detail: string): string {
+  return `traffic one plugin v${version} was installed for your ${HOST_LABELS[host]},`
+    + ` but this command could not confirm it is serving v${version}: ${detail}`;
+}
+
 // Mandatory, unmissable follow-up: hosts freeze their hook wiring at startup
 // (see the launcher NOTE in src/gen/sources/hooks.ts and the "Uninstall"
 // section of README.md), so every already-open session of a just-synced host
@@ -65,6 +74,28 @@ export function restartLine(hosts: readonly HostId[]): string {
     '>>> RESTART REQUIRED: ' + names,
     `${names} loaded Traffic One's hook wiring at startup and will not pick it up until it restarts.`,
     'Restart it now, before starting a new session — otherwise every Traffic One gate silently stops running.',
+  ].join('\n');
+}
+
+/** A host this run touched and then could not read back. See VerifyResult. */
+export interface UnconfirmedHost { host: HostId; detail: string; }
+
+// The single-host closing line. Success is claimed only for a host that was
+// actually read back serving the version; an unreadable one gets the honest
+// line instead, and neither is a failure.
+export function outcomeLine(host: HostId, version: string, unconfirmed: readonly UnconfirmedHost[]): string {
+  const missed = unconfirmed.find((entry) => entry.host === host);
+  return missed ? unconfirmedLine(host, version, missed.detail) : successLine(host, version);
+}
+
+// The all-hosts equivalent, printed on the success AND the failure path: an
+// unreadable host is neither a problem to list under "sync FAILED" nor a host
+// to leave out of the report entirely.
+export function unconfirmedBlock(unconfirmed: readonly UnconfirmedHost[], version: string): string | null {
+  if (unconfirmed.length === 0) return null;
+  return [
+    `NOT CONFIRMED as serving v${version} — nothing failed, and nothing could be read back either:`,
+    ...unconfirmed.map((entry) => `  - ${entry.host}: ${entry.detail}`),
   ].join('\n');
 }
 
@@ -183,8 +214,51 @@ function dirEntriesLabel(dir: string): string {
   }
 }
 
-function onPath(bin: string): boolean {
-  return spawnSync('which', [bin], { stdio: 'ignore' }).status === 0;
+// "This host is not installed" and "nothing here could observe whether it is"
+// are different facts, and a boolean cannot hold the difference: every probe
+// that could not answer reported `false`, which reads downstream as the
+// positive claim "not installed on this machine" and silently drops the host
+// from the sync.
+export type HostPresence = 'installed' | 'absent' | 'unknown';
+
+// `which` answers three ways: exit 0 (found it), a non-zero exit (it searched
+// PATH and there is nothing there), and no answer at all — a spawn failure, or
+// no `which` on the machine, both of which come back as status null with an
+// `error`. Only the middle one is evidence of absence.
+function pathPresence(bin: string): HostPresence {
+  const r = spawnSync('which', [bin], { stdio: 'ignore' });
+  if (r.error || r.status === null) return 'unknown';
+  return r.status === 0 ? 'installed' : 'absent';
+}
+
+// For hosts that are editors first and a CLI second, a PATH hit is evidence
+// they are here and a PATH miss is evidence of nothing: the editor installs
+// fine without ever putting a launcher on PATH. So this probe can confirm a
+// host and can never deny one.
+//
+// Their config dirs are deliberately NOT consulted. `~/.config/opencode`,
+// `~/.config/kilo` and `~/.codeium/windsurf` are exactly where each wrapper
+// install writes, so after one sync the probe would be reading its own
+// handiwork and answering "installed" forever. (Observed on the machine this
+// was written on: `~/.config/opencode` exists while no `opencode` is on PATH.)
+function installedIfOnPath(bin: string): HostPresence {
+  return pathPresence(bin) === 'installed' ? 'installed' : 'unknown';
+}
+
+// Cursor has no CLI to ask and no scriptable install (see syncCursor), so the
+// only Cursor-side artifacts this command knows are ones Cursor itself creates
+// and this command never writes. Any of them is evidence the editor is here;
+// none of them is evidence it is not, since the state DB path is macOS-only.
+// Hence: `installed` or `unknown`, never `absent`.
+//
+// `markers` is a parameter, defaulted to the real paths, for the reason
+// verifyCodex takes its paths: HOME resolves once at module load, so a fixture
+// has no other way to exercise the branch where nothing is found — and on any
+// machine that has ever run Cursor, that is every branch that matters.
+export function cursorPresence(
+  markers: readonly string[] = [cursorStateDb(), path.join(HOME, '.cursor')],
+): HostPresence {
+  return markers.some((marker) => fs.existsSync(marker)) ? 'installed' : 'unknown';
 }
 
 function pkgVersionAt(dir: string): string | null {
@@ -208,6 +282,12 @@ function pluginBuild(): void {
 // ---------------------------------------------------------------------------
 
 const claudeCache = (): string => path.join(HOME, '.claude', 'plugins', 'cache', 'traffic-one', 'traffic-one');
+// The one entry `claude plugin install` refuses to re-copy into when it is
+// already there, and therefore the only thing that has to be out of the way —
+// verifyClaude reads this same path back. Every OTHER version in claudeCache()
+// is left alone: they are not in the install's way, and taking them out of it
+// meant a killed run left Claude with nothing at all rather than something old.
+const claudeVersionedCache = (version: string): string => path.join(claudeCache(), version);
 const codexCache = (): string => path.join(HOME, '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one');
 const codexMarketplace = (): string => path.join(HOME, '.codex', 'local-marketplaces', 'traffic-one-local');
 const codexStaged = (): string => path.join(codexMarketplace(), 'plugins', 'traffic-one');
@@ -220,6 +300,27 @@ const wrapperScript = (host: HostId): string => path.join(DIST, 'scripts', `${ho
 // ---------------------------------------------------------------------------
 // Per-host sync units
 // ---------------------------------------------------------------------------
+
+// The same distinction HostPresence draws, one step later: `verified` is a
+// version this run READ off disk, `problem` is a defect it read, and `unknown`
+// is the answer it could not get. The first and the last used to share a single
+// `null`, so a probe that inspected nothing was indistinguishable from one that
+// inspected the install and found it current — and only the first of those
+// entitles this command to print "successfully synced".
+export type VerifyResult =
+  | { state: 'verified' }
+  | { state: 'problem'; detail: string }
+  | { state: 'unknown'; detail: string };
+
+export const VERIFIED: VerifyResult = { state: 'verified' };
+
+export function verifyProblem(detail: string): VerifyResult {
+  return { state: 'problem', detail };
+}
+
+export function verifyUnknown(detail: string): VerifyResult {
+  return { state: 'unknown', detail };
+}
 
 export interface SyncUnit {
   /** Hosts that must be synced first for this one to work. */
@@ -248,8 +349,16 @@ export interface SyncUnit {
    * reported — `sync()` can already have pointed the host's plugin registry at
    * the new bundle, so rolling back on verify would leave cache and registry
    * disagreeing, which is worse than either consistent state.
+   *
+   * Each entry takes the version being synced so a host whose cache is KEYED BY
+   * VERSION can stage the one entry that has to be empty (`<cache>/<version>`)
+   * instead of the whole cache. Staging the parent took every other version out
+   * with it, for the entire length of a network install — and commitQuarantine
+   * then deleted that backup — so a run killed mid-flight left the host with no
+   * install at all, which is the one outcome this whole mechanism exists to
+   * avoid. A thunk that ignores the argument is a cache with no version key.
    */
-  caches: readonly (() => string)[];
+  caches: readonly ((version: string) => string)[];
   /**
    * Cache dirs this command must never stage, but whose parents the startup
    * sweep still visits. Two reasons they have to be named somewhere: earlier
@@ -258,12 +367,16 @@ export interface SyncUnit {
    * future unit could gain the ability to repopulate one, at which point it
    * moves to `caches` in one edit.
    */
-  unstageableCaches?: readonly (() => string)[];
-  /** False when the host is not present on this machine. */
-  available: () => boolean;
+  unstageableCaches?: readonly ((version: string) => string)[];
+  /**
+   * Is this host on this machine? `absent` skips it silently, so a probe may
+   * only answer that when it OBSERVED the host missing; everything it cannot
+   * see is `unknown`, which syncs anyway and says so.
+   */
+  available: () => HostPresence;
   sync: (version: string) => void;
-  /** Returns null when the host now serves `version`, else a problem description. */
-  verify: (version: string) => string | null;
+  /** Did this host end up serving `version`? See VerifyResult for the three answers. */
+  verify: (version: string) => VerifyResult;
 }
 
 function syncClaude(): void {
@@ -274,9 +387,9 @@ function syncClaude(): void {
   run('claude list', ['claude', 'plugin', 'list'], { allowFailure: true });
 }
 
-function verifyClaude(version: string): string | null {
+function verifyClaude(version: string): VerifyResult {
   const problems: string[] = [];
-  const versioned = path.join(claudeCache(), version);
+  const versioned = claudeVersionedCache(version);
   if (!fs.existsSync(versioned)) problems.push(`claude cache is missing ${version} (${versioned})`);
   // Read-only duplicate check. A stray Cursor local install makes every hook fire
   // twice, and a Claude sync is exactly what turns it into a duplicate — but
@@ -284,7 +397,10 @@ function verifyClaude(version: string): string | null {
   if (fs.existsSync(cursorLocal())) {
     problems.push(`a Cursor local install shadows this one and will double every hook: ${cursorLocal()} — run \`npm run plugin:sync -- --host=cursor\` to remove it`);
   }
-  return problems.length ? problems.join('; ') : null;
+  // No `unknown` branch: the version-keyed cache dir above IS what Claude
+  // serves from, this run just watched `claude plugin install` write it, and
+  // its presence or absence is a direct reading either way.
+  return problems.length ? verifyProblem(problems.join('; ')) : VERIFIED;
 }
 
 function syncCodex(): void {
@@ -320,20 +436,41 @@ function syncCodex(): void {
 // live Codex: claude's equivalent is version-keyed (`<cache>/<version>/`, see
 // verifyClaude) while a staged plugin dir carries package.json at its root, and
 // either reading counts as "serving this version". Only a cache that EXISTS
-// while matching neither is reported. An ABSENT cache is not a problem: that is
-// what a first-time add looks like before Codex materializes it from the staged
-// copy this same function has just confirmed is current, and calling it a
-// failure would turn a healthy first sync red.
-function verifyCodex(version: string): string | null {
-  const staged = pkgVersionAt(codexStaged());
+// while matching neither is reported.
+//
+// Both paths are parameters, defaulted to the real ones, for the reason
+// quarantineCachesFor takes its `caches`: the four readings below are only
+// distinguishable against directories a test can actually build, and $HOME is
+// resolved once at module load, so a fixture cannot redirect them any other way.
+export interface CodexInstallPaths { staged: string; cache: string; }
+
+export function verifyCodex(
+  version: string,
+  paths: CodexInstallPaths = { staged: codexStaged(), cache: codexCache() },
+): VerifyResult {
+  const staged = pkgVersionAt(paths.staged);
   if (staged !== version) {
-    return `codex staged plugin is ${staged ?? 'absent'}, expected ${version} (${codexStaged()})`;
+    return verifyProblem(`codex staged plugin is ${staged ?? 'absent'}, expected ${version} (${paths.staged})`);
   }
-  const cache = codexCache();
-  if (!fs.existsSync(cache)) return null;
-  if (fs.existsSync(path.join(cache, version)) || pkgVersionAt(cache) === version) return null;
-  return `codex staged ${version} but its plugin cache still holds ${pkgVersionAt(cache) ?? dirEntriesLabel(cache)}`
-    + ` (${cache}) — re-run \`codex plugin add traffic-one@traffic-one-local\``;
+  const cache = paths.cache;
+  // An ABSENT cache is not a problem — it is what a first-time add looks like
+  // before Codex materializes it from the staged copy this function has just
+  // confirmed is current, and calling that a failure would turn a healthy first
+  // sync red. But it is not a VERIFICATION either, and it used to return the
+  // same `null` as a cache that had been read and found current. That put codex
+  // in `synced` and printed "successfully synced to vX on your Codex" off a
+  // path this command had established does not exist — the exact claim it is
+  // least entitled to make, since the staged copy is not what Codex serves and
+  // `codex plugin add`, the step that moves those bytes across, is the one that
+  // runs allowFailure.
+  if (!fs.existsSync(cache)) {
+    return verifyUnknown(`codex staged ${version}, but nothing here can confirm what Codex serves:`
+      + ` its plugin cache does not exist yet (${cache}), which is also what a healthy first add looks like`
+      + ' before Codex materializes it — re-run this sync after opening Codex once');
+  }
+  if (fs.existsSync(path.join(cache, version)) || pkgVersionAt(cache) === version) return VERIFIED;
+  return verifyProblem(`codex staged ${version} but its plugin cache still holds ${pkgVersionAt(cache) ?? dirEntriesLabel(cache)}`
+    + ` (${cache}) — re-run \`codex plugin add traffic-one@traffic-one-local\``);
 }
 
 // Cursor has no scriptable install — it auto-imports Claude's user-scope plugin,
@@ -360,21 +497,28 @@ function syncCursor(): void {
 // `caches`: nothing in Cursor's sync path writes it (the bundle it serves is
 // Claude's, checked below), so it is neither this command's to stage nor its to
 // verify.
-function verifyCursor(version: string): string | null {
+//
+// This is a complete reading, not a partial one, which is why it can return
+// `verified` for a host with no scriptable surface: Cursor's install IS the
+// imported Claude bundle plus the absence of a shadowing local copy, so there
+// is no third artifact left unread here.
+function verifyCursor(version: string): VerifyResult {
   const problems: string[] = [];
   if (fs.existsSync(cursorLocal())) problems.push(`local install still present — duplicate hooks: ${cursorLocal()}`);
-  const versioned = path.join(claudeCache(), version);
+  const versioned = claudeVersionedCache(version);
   if (!fs.existsSync(versioned)) problems.push(`imported source is stale: claude cache is missing ${version}`);
-  return problems.length ? problems.join('; ') : null;
+  return problems.length ? verifyProblem(problems.join('; ')) : VERIFIED;
 }
 
 function syncCopilot(): void {
   run('copilot install', ['copilot', 'plugin', 'install', DIST], { allowFailure: true });
 }
 
-function verifyCopilot(version: string): string | null {
+function verifyCopilot(version: string): VerifyResult {
   const got = pkgVersionAt(copilotCopy());
-  return got === version ? null : `copilot copy is ${got ?? 'absent'}, expected ${version} (${copilotCopy()})`;
+  return got === version
+    ? VERIFIED
+    : verifyProblem(`copilot copy is ${got ?? 'absent'}, expected ${version} (${copilotCopy()})`);
 }
 
 function syncWrapper(host: HostId): () => void {
@@ -383,10 +527,19 @@ function syncWrapper(host: HostId): () => void {
   };
 }
 
-function verifyWrapper(host: HostId): () => string | null {
+// The doctor reads the wrapper this repo installed into the host's own global
+// config and compares its owner stamp against the plugin root being synced, so
+// exit 0 is a real reading of real state. Exit null is not a verdict at all —
+// the doctor was killed by a signal, or never started — and reporting that as a
+// failed doctor blames the host for this command's inability to run one.
+function verifyWrapper(host: HostId): () => VerifyResult {
   return () => {
     const r = run(`${host}-host doctor`, ['node', wrapperScript(host), 'doctor'], { allowFailure: true });
-    return r.status === 0 ? null : `${host}-host doctor exited ${r.status}`;
+    if (r.status === 0) return VERIFIED;
+    if (r.status === null) {
+      return verifyUnknown(`${host}-host doctor never returned an exit status, so nothing here read the installed wrapper`);
+    }
+    return verifyProblem(`${host}-host doctor exited ${r.status}`);
   };
 }
 
@@ -395,31 +548,46 @@ function verifyWrapper(host: HostId): () => string | null {
 // exactly how `cursor`/`codex` came to stage a cache no sync of theirs writes.
 export const HOSTS: Record<HostId, SyncUnit> = {
   claude: {
-    requires: [], caches: [claudeCache], available: () => onPath('claude'),
+    // Stages the version-keyed entry; the PARENT is listed as unstageable so
+    // the startup sweep keeps visiting it — earlier versions of this command
+    // staged the whole cache, so `traffic-one.presync-*` backups holding a real
+    // install exist on maintainers' machines right now.
+    requires: [], caches: [claudeVersionedCache], unstageableCaches: [claudeCache],
+    available: () => pathPresence('claude'),
     sync: syncClaude, verify: verifyClaude,
   },
   codex: {
-    requires: [], caches: [], unstageableCaches: [codexCache], available: () => onPath('codex'),
+    requires: [], caches: [], unstageableCaches: [codexCache], available: () => pathPresence('codex'),
     sync: syncCodex, verify: verifyCodex,
   },
   cursor: {
-    requires: ['claude'], caches: [], unstageableCaches: [cursorCache], available: () => true,
+    requires: ['claude'], caches: [], unstageableCaches: [cursorCache],
+    // Used to be a hardcoded `true` — the same always-sync behaviour, asserted
+    // as an observation.
+    available: () => cursorPresence(),
     sync: syncCursor, verify: verifyCursor,
   },
+  // opencode / windsurf / kilo used to probe `wrapperScript(host)` — a file in
+  // THIS repo's dist/, which writeShims() emits for all three on every build.
+  // It never observed the host: it answered `true` on every machine that had
+  // run a build and `false` on every machine that had not, and main() consults
+  // available() BEFORE pluginBuild(), so a clean checkout was told "opencode is
+  // not installed on this machine". Whether the wrapper is runnable is sync()'s
+  // and verify()'s business, and both already report it.
   opencode: {
-    requires: [], caches: [], available: () => fs.existsSync(wrapperScript('opencode')),
+    requires: [], caches: [], available: () => installedIfOnPath('opencode'),
     sync: syncWrapper('opencode'), verify: verifyWrapper('opencode'),
   },
   copilot: {
-    requires: [], caches: [], available: () => onPath('copilot'),
+    requires: [], caches: [], available: () => pathPresence('copilot'),
     sync: syncCopilot, verify: verifyCopilot,
   },
   windsurf: {
-    requires: [], caches: [], available: () => fs.existsSync(wrapperScript('windsurf')),
+    requires: [], caches: [], available: () => installedIfOnPath('windsurf'),
     sync: syncWrapper('windsurf'), verify: verifyWrapper('windsurf'),
   },
   kilo: {
-    requires: [], caches: [], available: () => fs.existsSync(wrapperScript('kilo')),
+    requires: [], caches: [], available: () => installedIfOnPath('kilo'),
     sync: syncWrapper('kilo'), verify: verifyWrapper('kilo'),
   },
 };
@@ -453,12 +621,16 @@ export interface QuarantineOutcome { quarantined: CacheQuarantine[]; error: stri
 // `caches` is a parameter, not a `HOSTS[id]` lookup, so this can be exercised
 // directly against real temp directories in tests without touching an actual
 // host's cache under $HOME; `id` is only ever used for the log line's label.
-export function quarantineCachesFor(id: HostId, caches: readonly (() => string)[]): QuarantineOutcome {
+export function quarantineCachesFor(
+  id: HostId,
+  caches: readonly ((version: string) => string)[],
+  version: string,
+): QuarantineOutcome {
   const quarantined: CacheQuarantine[] = [];
   if (caches.length === 0) return { quarantined, error: null };
   out(`\n>> clear ${id} plugin cache\n`);
   for (const cacheOf of caches) {
-    const dir = cacheOf();
+    const dir = cacheOf(version);
     if (!fs.existsSync(dir)) {
       out(`absent ${dir}\n`);
       continue;
@@ -486,9 +658,9 @@ export function quarantineCachesFor(id: HostId, caches: readonly (() => string)[
 /** How old a `.presync-*` backup must be before a later run may sweep it. */
 export const STALE_PRESYNC_MS = 60 * 60 * 1000;
 
-// `<cache>.presync-<pid>-<epoch-ms>` — the exact shape quarantineCachesFor
-// creates. The embedded timestamp, not mtime, is the creation time: renaming a
-// months-old cache dir does not touch its mtime.
+// `<staged-dir>.presync-<pid>-<epoch-ms>` — the exact shape
+// quarantineCachesFor creates. The embedded timestamp, not mtime, is the
+// creation time: renaming a months-old cache dir does not touch its mtime.
 const PRESYNC_SUFFIX = /\.presync-(\d+)-(\d+)$/;
 
 // Is the process that created a `.presync-*` backup still running? Signal 0
@@ -518,16 +690,28 @@ export function isPidAlive(pid: number): boolean {
 // that host's install, so an age-only rule lets one run delete another live
 // run's sole rollback copy. `pidAlive` is injectable purely so a test can pin
 // both answers without spawning processes; the default is the real check.
+//
+// Each cache dir contributes its PARENT as a place to look, and every
+// `.presync-<pid>-<epoch-ms>` directory in there is a candidate regardless of
+// what it is named in front of that suffix. It used to require the live cache's
+// own basename as a prefix, which stops working the moment a staged path is
+// version-keyed: `<cache>/1.0.51.presync-*`, left by a run of an OLDER version,
+// carries a name today's run can no longer predict, and nothing else in the
+// system would ever sweep it. The suffix is this command's own invention and
+// the dirs searched are the plugin caches it owns, so nothing else answers to
+// it.
 export function sweepStalePresyncBackups(
-  caches: readonly (() => string)[],
+  caches: readonly ((version: string) => string)[],
+  version: string,
   nowMs: number = Date.now(),
   pidAlive: (pid: number) => boolean = isPidAlive,
 ): string[] {
   const swept: string[] = [];
+  const seen = new Set<string>();
   for (const cacheOf of caches) {
-    const dir = cacheOf();
-    const parent = path.dirname(dir);
-    const prefix = `${path.basename(dir)}.presync-`;
+    const parent = path.dirname(cacheOf(version));
+    if (seen.has(parent)) continue;
+    seen.add(parent);
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(parent, { withFileTypes: true });
@@ -535,7 +719,7 @@ export function sweepStalePresyncBackups(
       continue;
     }
     for (const entry of entries) {
-      if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+      if (!entry.isDirectory()) continue;
       const stamp = PRESYNC_SUFFIX.exec(entry.name);
       // Unparseable name: never guess an age, never delete.
       if (!stamp) continue;
@@ -664,14 +848,22 @@ export function restoreQuarantine(quarantined: readonly CacheQuarantine[]): stri
 //   cannot answer it either — a host whose quarantine failed may already
 //   have had a same-version (but stale) cache on disk, which is the exact
 //   local-dev case the quarantine exists for.
+//
+//   `unconfirmed` — "who could not be read at all?". A THIRD answer, not a
+//   flavour of either of the two above: these hosts are not problems (nothing
+//   failed, so the run stays green) and they are not `synced` (nothing was
+//   observed, so no success may be claimed for them). Folding them into
+//   `synced`, which is what a null-means-verified verify() did, is how a codex
+//   whose cache did not exist got told "successfully synced".
 export function runSelection(
   selection: readonly HostId[],
   version: string,
   hosts: Record<HostId, SyncUnit> = HOSTS,
-): { problems: string[]; synced: HostId[]; mutated: HostId[] } {
+): { problems: string[]; synced: HostId[]; mutated: HostId[]; unconfirmed: UnconfirmedHost[] } {
   const problems: string[] = [];
   const synced: HostId[] = [];
   const mutated: HostId[] = [];
+  const unconfirmed: UnconfirmedHost[] = [];
   const completed: HostId[] = [];
 
   // Before anything else touches disk: clear pre-sync backups an earlier run
@@ -687,14 +879,21 @@ export function runSelection(
   // into $HOME.
   for (const id of HOST_IDS) {
     const unit = hosts[id];
-    sweepStalePresyncBackups([...unit.caches, ...(unit.unstageableCaches ?? [])]);
+    sweepStalePresyncBackups([...unit.caches, ...(unit.unstageableCaches ?? [])], version);
   }
 
   for (const id of selection) {
     const unit = hosts[id];
-    if (!unit.available()) {
+    const presence = unit.available();
+    if (presence === 'absent') {
       out(`\n>> ${id}: skipped (not installed)\n`);
       continue;
+    }
+    if (presence === 'unknown') {
+      // Syncing is the safe side of this coin. A host that is really here and
+      // gets skipped keeps running the old bundle with every gate silently
+      // disabled; a host that is not here absorbs an install nothing will read.
+      out(`\n>> ${id}: nothing here could tell whether it is installed — syncing anyway\n`);
     }
     // Everything past this line can change this host's on-disk state, so the
     // restart claim is recorded first — including for the paths below that
@@ -705,7 +904,7 @@ export function runSelection(
     // throwing, or returning without repopulating the dir. A verify() problem
     // is reported as-is; see the `caches` doc on SyncUnit for why rolling back
     // on verify would be worse, not safer.
-    const { quarantined, error: quarantineError } = quarantineCachesFor(id, unit.caches);
+    const { quarantined, error: quarantineError } = quarantineCachesFor(id, unit.caches, version);
     if (quarantineError) {
       // All-hosts mode reports every broken host instead of stopping at the first.
       problems.push(`${id}: ${quarantineError}`);
@@ -742,12 +941,25 @@ export function runSelection(
   // user-scope bundle claude's verify() inspects — so skipping it would make
   // the two-pass split conditional on the failure that most needs it.
   for (const id of mutated) {
-    const verifyProblem = hosts[id].verify(version);
-    if (verifyProblem) problems.push(`${id}: ${verifyProblem}`);
+    let result: VerifyResult;
+    try {
+      result = hosts[id].verify(version);
+    } catch (err) {
+      // Pass 2 had no catch at all, and verify() reaches spawnSync and the
+      // filesystem: a wrapper `doctor` that hit run()'s timeout threw straight
+      // out of this loop and took the whole command down AFTER pass 1 had
+      // finished mutating every host — losing the restart instruction those
+      // hosts' sessions depend on, which is the one message this command must
+      // never fail to print. A probe that throws is the strongest possible
+      // "could not tell", so it is recorded as one.
+      result = verifyUnknown(`verify() threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (result.state === 'problem') problems.push(`${id}: ${result.detail}`);
+    else if (result.state === 'unknown') unconfirmed.push({ host: id, detail: result.detail });
     else if (completed.includes(id)) synced.push(id);
   }
 
-  return { problems, synced, mutated };
+  return { problems, synced, mutated, unconfirmed };
 }
 
 // ---------------------------------------------------------------------------
@@ -882,7 +1094,12 @@ function main(argv: readonly string[], env: NodeJS.ProcessEnv): number {
   const quiet = target.host !== null && !args.verbose;
   if (quiet) sink = [];
 
-  if (target.host && !HOSTS[target.host].available()) {
+  // Only a POSITIVE reading of "not here" refuses an explicitly named host.
+  // This check runs before pluginBuild(), and the old wrapper-script probe
+  // answered false on any tree that had not been built yet — so `--host=kilo`
+  // on a fresh clone was turned away with a claim about the user's machine that
+  // came from this repo's dist/ directory.
+  if (target.host && HOSTS[target.host].available() === 'absent') {
     discardSink();
     process.stderr.write(`sync-hosts: ${target.host} is not installed on this machine — nothing to sync\n`);
     return 2;
@@ -901,14 +1118,16 @@ function main(argv: readonly string[], env: NodeJS.ProcessEnv): number {
   }
   out(`\nsync ${version} from ${DIST}\n`);
 
-  const { problems, synced, mutated } = runSelection(selection, version);
+  const { problems, synced, mutated, unconfirmed } = runSelection(selection, version);
+  const unconfirmedReport = unconfirmedBlock(unconfirmed, version);
 
   if (problems.length === 0) {
     if (quiet && target.host) {
       discardSink();
-      process.stdout.write(`${successLine(target.host, version)}\n`);
+      process.stdout.write(`${outcomeLine(target.host, version, unconfirmed)}\n`);
       if (mutated.length > 0) process.stdout.write(`${restartLine(mutated)}\n`);
     } else {
+      if (unconfirmedReport) out(`\n${unconfirmedReport}\n`);
       if (mutated.length > 0) out(`\n${restartLine(mutated)}\n`);
       out('DONE\n');
     }
@@ -918,10 +1137,16 @@ function main(argv: readonly string[], env: NodeJS.ProcessEnv): number {
   flushSink();
   process.stdout.write(`\nsync FAILED (${problems.length}):\n`);
   for (const problem of problems) process.stdout.write(`  - ${problem}\n`);
-  const unverified = mutated.filter((id) => !synced.includes(id));
+  // "Not serving" is a verdict, so it covers only hosts something was actually
+  // read for; the unreadable ones get their own block rather than being
+  // silently absorbed into a claim nothing supports.
+  const unverified = mutated.filter(
+    (id) => !synced.includes(id) && !unconfirmed.some((entry) => entry.host === id),
+  );
   if (unverified.length > 0) {
     process.stdout.write(`\nnot serving v${version}: ${unverified.join(', ')}\n`);
   }
+  if (unconfirmedReport) process.stdout.write(`\n${unconfirmedReport}\n`);
   // Named, not just implied: a failed run can leave a full copy of a plugin
   // cache beside the live one, and until now no message ever told the user
   // what to look for. A later run sweeps these automatically once they are an

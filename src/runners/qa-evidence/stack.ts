@@ -24,8 +24,9 @@ import * as path from 'path';
 
 import { readJson } from '../../shared/fsjson';
 import { spawnTool } from '../../shared/spawn-tool';
-import { type QaReportV2 } from '../../shared/qa-report-v2';
+import { CHECK_INCONCLUSIVE_PREFIX, type QaReportV2 } from '../../shared/qa-report-v2';
 
+import { MAX_TIMEOUT_MS } from './cli';
 import { emitProgress } from './report-publish';
 import { type LoadedStackRun } from './run-context';
 import { type RunnerArgs } from './types';
@@ -251,9 +252,76 @@ function truncate(value: string, max = 400): string {
 }
 
 /**
- * Run the resolved commands and map each to a v2 check. A missing command is
- * `not-applicable` with its reason; a present command's exit code decides.
+ * How much of a stack command's combined output is retained. Unchanged from the
+ * inline literal this replaced; named because the overflow arm below now has to
+ * quote it in a summary a human reads.
  */
+export const MAX_STACK_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The errno on `spawnSync`'s `error`, or '' when there is none.
+ *
+ * Same shape and same purpose as `errnoOf` in shared/exec.ts:50 — the repo's
+ * existing precedent for reading a cause off a spawnSync result rather than
+ * collapsing every non-numeric status into one bucket.
+ */
+function errnoOf(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && code ? code : '';
+}
+
+/**
+ * Why a command that produced no exit status produced none — measured on node
+ * v26.5.0/darwin against this file's own spawnSync options:
+ *
+ *   timeout fired     -> status null, signal SIGTERM, error.code ETIMEDOUT
+ *   maxBuffer exceeded-> status null, signal SIGTERM, error.code ENOBUFS
+ *   binary absent     -> status null, signal null,    error.code ENOENT
+ *
+ * The first two mean the command STARTED and was killed mid-flight; the third
+ * means it never started. Those are opposite facts and this arm used to report
+ * them identically, as `not-applicable / "could not be executed"` — the exact
+ * prose `validateQaReportV2` accepts as a justified exemption for stack-test.
+ * A hung test suite therefore settled the run green with no test evidence.
+ */
+function cutShortCause(error: unknown, timeoutMs: number): string | null {
+  const errno = errnoOf(error);
+  if (errno === 'ETIMEDOUT') return `it was still running at its ${timeoutMs} ms bound and was killed`;
+  if (errno === 'ENOBUFS') return `its output passed the ${MAX_STACK_OUTPUT_BYTES} byte bound and it was killed`;
+  return null;
+}
+
+/**
+ * Run the resolved commands and map each to a v2 check. A missing command is
+ * `not-applicable` with its reason; a present command's exit code decides; a
+ * command that ran but was cut short is `not-applicable` marked INCONCLUSIVE,
+ * which no exemption covers, so the run is rejectable rather than green.
+ */
+/**
+ * The bound for ONE stack check — a build, a test suite, a linter.
+ *
+ * It is deliberately not just `args.timeoutMs`. These commands also run as a
+ * leg of the `browser` command, whose default is the PER-STEP thirty seconds
+ * sized for a Playwright navigation; a repo-wide `prettier --check` or a cold
+ * `go build` routinely outruns that. Before the cut-short classification below,
+ * being killed there was laundered into a justified exemption and settled the
+ * run green, so the under-sizing was invisible. Now it is loud — which makes an
+ * under-sized default a manufactured INCONCLUSIVE, exactly the failure this
+ * work is not allowed to introduce. So an INHERITED per-step default widens to
+ * the whole-command bound, while a bound the caller explicitly asked for is
+ * honoured verbatim in both directions.
+ *
+ * A directly-constructed RunnerArgs (tests, the test-environment harness) may
+ * carry no bound at all, which spawnSync reads as "no timeout"; such a caller
+ * gets the whole-command bound rather than an unbounded run.
+ */
+export function stackBoundMs(args: RunnerArgs): number {
+  if (args.timeoutMsExplicit && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0) {
+    return args.timeoutMs;
+  }
+  return MAX_TIMEOUT_MS;
+}
+
 export function runStackChecks(
   args: RunnerArgs,
   required: readonly string[],
@@ -265,15 +333,47 @@ export function runStackChecks(
       return { id, status: 'not-applicable' as const, summary: truncate(`not run: ${resolved.unavailable}`) };
     }
     const label = `${resolved.command} ${resolved.args.join(' ')}`;
-    emitProgress(`stack ${id}: ${label} (${resolved.source})`);
+    // The bound and the deadline are announced BEFORE the command starts, and
+    // this is the only heartbeat this path can honestly offer: spawnTool is
+    // spawnSync, so the one thread that could emit progress is the one blocked
+    // inside the command. What the announcement buys is the thing silence
+    // otherwise destroys — an observer who knows when the silence must end can
+    // tell a working runner from a dead one. A multi-minute silent run reads as
+    // dead and gets relaunched (observed 8co: four concurrent runners over one
+    // run directory), and the bound below is now minutes by default.
+    const startedAtMs = Date.now();
+    const boundMs = stackBoundMs(args);
+    emitProgress(
+      `stack ${id}: ${label} (${resolved.source}) — bound ${boundMs} ms, `
+      + `no output until it finishes or ${new Date(startedAtMs + boundMs).toISOString()}`,
+    );
     const run = spawnTool(resolved.command, resolved.args, {
       cwd: resolved.cwd,
       encoding: 'utf8',
-      timeout: args.timeoutMs,
-      maxBuffer: 8 * 1024 * 1024,
+      timeout: boundMs,
+      maxBuffer: MAX_STACK_OUTPUT_BYTES,
       env: { ...process.env, CI: '1' },
     });
+    const elapsedMs = Date.now() - startedAtMs;
     if (run.error || typeof run.status !== 'number') {
+      const cutShort = cutShortCause(run.error, boundMs);
+      if (cutShort) {
+        // It ran. It was killed. There is no verdict here in EITHER direction,
+        // and reporting one would be a lie whichever way it pointed: `passed`
+        // certifies untested source, `failed` invents a red nobody observed.
+        // The honest third value is "we could not tell", and the marker is what
+        // stops the validator excusing it as an absent command.
+        emitProgress(`stack ${id}: INCONCLUSIVE after ${elapsedMs} ms — ${cutShort}`);
+        return {
+          id,
+          status: 'not-applicable' as const,
+          summary: truncate(
+            `${CHECK_INCONCLUSIVE_PREFIX} \`${label}\` produced no verdict because ${cutShort} `
+            + `after ${elapsedMs} ms (${resolved.source}). No evidence exists in either direction; `
+            + 're-run it, or raise --timeout-ms if the command legitimately needs longer.',
+          ),
+        };
+      }
       // The command exists in the manifest but could not be executed at all —
       // an environment gap, not a product failure, and never a silent pass.
       const detail = run.error ? run.error.message : 'the runner could not be spawned';
@@ -285,6 +385,7 @@ export function runStackChecks(
       };
     }
     if (run.status === 0) {
+      emitProgress(`stack ${id}: passed in ${elapsedMs} ms`);
       return { id, status: 'passed' as const, summary: truncate(`\`${label}\` exited 0 (${resolved.source})`) };
     }
     const output = `${run.stdout || ''}\n${run.stderr || ''}`;

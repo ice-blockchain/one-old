@@ -126,6 +126,91 @@ Traffic One onboarding wizard and enter the Traffic One API key." The
 `materialize-project` command is not a hook; run unauthenticated it does nothing
 and waits for the key.
 
+### When setup does not finish: the waiter, its timeouts, and recovery
+
+The agent starts the wizard with one command and then blocks on a second one —
+the waiter — so the build resumes in the same turn setup completes, with no
+extra message from the user. From an installed plugin the waiter is:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/onboarding-wait.cjs /absolute/path/to/project
+```
+
+It polls this project's onboarding state and stops on the first of three
+outcomes: `TRAFFIC_ONE_SETUP_COMPLETE` — setup finished and the agent continues
+(exit 0, unless one of the directives printed after it blocks the run);
+`TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED` (exit 2) — setup is now waiting on the
+agent to classify the repository, not on the user; or
+`TRAFFIC_ONE_SETUP_PENDING` (exit 2) — the timeout elapsed with setup still
+unfinished.
+
+Two flags tune that poll:
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--timeout-ms <n>` | `480000` (8 minutes) | How long the waiter blocks before printing `TRAFFIC_ONE_SETUP_PENDING` and exiting 2. |
+| `--interval-ms <n>` | `2000` (2 seconds) | How long it sleeps between reads of the onboarding state. |
+
+Inside a Traffic One session the waiter is admitted by matching the *whole*
+argument list, not a filename, so a spelling outside that grammar is denied
+rather than run with the flag ignored:
+
+- the value is a **separate word** — `--timeout-ms 540000`, never
+  `--timeout-ms=540000`;
+- it is a plain positive integer — no `0`, no sign, no decimal point;
+- each flag may appear at most once;
+- the project path is absolute and comes **before** the flags;
+- both flags belong to the blocking form only. The exit-fast modes
+  (`--bootstrap-only`, `--decline`, `--reconsider`, `--set-tech`) return
+  immediately and reject them.
+
+**Raising `--timeout-ms` means raising the host's own command timeout too.** The
+waiter runs in the foreground of the agent's turn, so the shorter of the two
+deadlines is the one that ends it: Traffic One's instructions ask the agent for
+a ~9 minute (540000 ms) host timeout against the 8-minute default, and a
+`--timeout-ms` above the host's limit never takes effect because the host ends
+the command before the waiter can report anything.
+
+**`TRAFFIC_ONE_SETUP_PENDING` is not a failure.** It says only that nobody
+finished the wizard inside the window. Nothing is rolled back, and the wizard
+server is still running, so the first recovery is to run the same waiter again:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/onboarding-wait.cjs /absolute/path/to/project
+```
+
+That re-prints the setup-link banner, with two deliberate exceptions: if the
+wizard server has already seen the wizard opened in a browser, or if this runner
+printed the same banner within the last 90 seconds, it prints a one-line waiting
+notice instead of repeating the whole block.
+
+To wait longer than the default, pass the flag and give the host a timeout
+above it — 30 minutes here:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/onboarding-wait.cjs /absolute/path/to/project --timeout-ms 1800000
+```
+
+If the setup link itself is dead — the host restarted, the machine slept, the
+wizard process was killed — re-mint the server and print a live URL without
+blocking:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/onboarding-wait.cjs --bootstrap-only /absolute/path/to/project
+```
+
+If none of those gets further, ask Doctor what is actually missing before
+retrying:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/doctor.cjs
+```
+
+Spell each of these in full, exactly as printed — same absolute plugin path,
+same argument order, same spaces. `tests/readme-wait-command.test.ts` puts every
+waiter command printed above through the same grammar the gate uses, so this
+section cannot document a command the product then refuses.
+
 ### Codex Desktop hook-trust activation
 
 On the first Traffic One installation, activate its hook fixture before starting

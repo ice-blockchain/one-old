@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -11,9 +12,13 @@ import {
   HOST_LABELS,
   STALE_PRESYNC_MS,
   UsageError,
+  VERIFIED,
+  cursorPresence,
+  verifyCodex,
   detectTerminalHost,
   expandSelection,
   isPidAlive,
+  outcomeLine,
   parseArgs,
   quarantineCachesFor,
   resolveTargetHost,
@@ -23,6 +28,10 @@ import {
   runSelection,
   successLine,
   sweepStalePresyncBackups,
+  unconfirmedBlock,
+  unconfirmedLine,
+  verifyProblem,
+  verifyUnknown,
 } from '../sync-hosts';
 import type { SyncUnit } from '../sync-hosts';
 
@@ -38,7 +47,7 @@ function tmp(prefix: string): string {
 // `runSelection` requires, so a test can override just the one or two units
 // it cares about without hand-typing all seven HostIds every time.
 function noopUnit(): SyncUnit {
-  return { requires: [], caches: [], available: () => false, sync: () => {}, verify: () => null };
+  return { requires: [], caches: [], available: () => 'absent', sync: () => {}, verify: () => VERIFIED };
 }
 
 function fakeHosts(overrides: Partial<Record<HostId, SyncUnit>>): Record<HostId, SyncUnit> {
@@ -186,7 +195,7 @@ test('a throwing sync() restores the quarantined cache byte-for-byte and leaves 
 
     const hosts = fakeHosts({
       claude: {
-        requires: [], caches: [() => cacheDir], available: () => true,
+        requires: [], caches: [() => cacheDir], available: () => 'installed',
         sync: () => {
           // A realistic partial write before the throw — the whole point of
           // the rollback is to discard exactly this.
@@ -194,7 +203,7 @@ test('a throwing sync() restores the quarantined cache byte-for-byte and leaves 
           fs.writeFileSync(path.join(cacheDir, 'file.txt'), 'partial garbage from a failed sync');
           throw new Error('boom');
         },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
     });
 
@@ -229,12 +238,12 @@ test('a successful sync() commits the quarantine and leaves no .presync-* dir be
 
     const hosts = fakeHosts({
       claude: {
-        requires: [], caches: [() => cacheDir], available: () => true,
+        requires: [], caches: [() => cacheDir], available: () => 'installed',
         sync: () => {
           fs.mkdirSync(cacheDir, { recursive: true });
           fs.writeFileSync(path.join(cacheDir, 'file.txt'), 'new version');
         },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
     });
 
@@ -267,9 +276,9 @@ test('a non-throwing sync() that cannot repopulate its quarantined cache is a re
 
     const hosts = fakeHosts({
       cursor: {
-        requires: [], caches: [() => cacheDir], available: () => true,
+        requires: [], caches: [() => cacheDir], available: () => 'installed',
         sync: () => { /* mutates other state entirely; never writes cacheDir */ },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
     });
 
@@ -305,9 +314,9 @@ test('a cache the sync recreated but left EMPTY counts as no install and is roll
 
     const hosts = fakeHosts({
       codex: {
-        requires: [], caches: [() => cacheDir], available: () => true,
+        requires: [], caches: [() => cacheDir], available: () => 'installed',
         sync: () => { fs.mkdirSync(cacheDir, { recursive: true }); },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
     });
 
@@ -333,14 +342,22 @@ test('no real unit stages a cache its own sync() cannot repopulate', () => {
   assert.deepEqual(HOSTS.codex.caches, [], 'syncCodex reaches codexCache() only through an allowFailure command');
   // Still named, so the sweep keeps visiting them: earlier versions DID stage
   // these, so a `.presync-*` copy of a real install can exist there today.
-  const unstageable = (id: HostId): string[] => (HOSTS[id].unstageableCaches ?? []).map((of) => of());
+  const unstageable = (id: HostId): string[] => (HOSTS[id].unstageableCaches ?? []).map((of) => of('9.9.9'));
   assert.match(unstageable('cursor')[0] ?? '', /\.cursor\/plugins\/cache\/traffic-one\/traffic-one$/);
   assert.match(unstageable('codex')[0] ?? '', /\.codex\/plugins\/cache\/traffic-one-local\/traffic-one$/);
   // claude is the one host whose sync (`claude plugin install`, the only
   // non-allowFailure command in it) does repopulate, so it keeps staging.
   assert.equal(HOSTS.claude.caches.length, 1);
-  assert.match(HOSTS.claude.caches[0]!(), /\.claude\/plugins\/cache\/traffic-one\/traffic-one$/);
-  assert.equal(HOSTS.claude.unstageableCaches, undefined);
+  assert.match(HOSTS.claude.caches[0]!('9.9.9'), /\.claude\/plugins\/cache\/traffic-one\/traffic-one\/9\.9\.9$/);
+  // ...and it stages only that version-keyed entry. The cache PARENT holds
+  // every other version Claude has cached, none of which is in this install's
+  // way; staging it took them all out of service for the length of a network
+  // install, and a run killed in that window left Claude with no plugin at all.
+  // It stays named as unstageable so the startup sweep keeps visiting it —
+  // earlier versions DID stage it, so `traffic-one.presync-*` backups holding a
+  // real install are sitting on maintainers' machines right now.
+  assert.equal(unstageable('claude').length, 1);
+  assert.match(unstageable('claude')[0] ?? '', /\.claude\/plugins\/cache\/traffic-one\/traffic-one$/);
 });
 
 test('a renameSync failure during quarantine is reported for that host and lets the rest of the selection proceed', () => {
@@ -357,14 +374,14 @@ test('a renameSync failure during quarantine is reported for that host and lets 
     let codexRan = false;
     const hosts = fakeHosts({
       claude: {
-        requires: [], caches: [() => cacheDir], available: () => true,
+        requires: [], caches: [() => cacheDir], available: () => 'installed',
         sync: () => { throw new Error('claude sync must never run when its quarantine failed'); },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
       codex: {
-        requires: [], caches: [], available: () => true,
+        requires: [], caches: [], available: () => 'installed',
         sync: () => { codexRan = true; },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
     });
 
@@ -394,7 +411,7 @@ test('a restore failure reports honestly and names the manual recovery command i
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'file.txt'), 'irreplaceable original', 'utf8');
 
-    const { quarantined, error } = quarantineCachesFor('claude', [() => dir]);
+    const { quarantined, error } = quarantineCachesFor('claude', [() => dir], '9.9.9');
     assert.equal(error, null);
     assert.equal(quarantined.length, 1);
     const { backup } = quarantined[0]!;
@@ -436,16 +453,16 @@ test('claude appears in the restart instruction even though cursor is the one th
 
     const hosts = fakeHosts({
       claude: {
-        requires: [], caches: [], available: () => true,
+        requires: [], caches: [], available: () => 'installed',
         sync: () => {},
         verify: () => (fs.existsSync(cursorLocalStandIn)
-          ? `a Cursor local install shadows this one and will double every hook: ${cursorLocalStandIn}`
-          : null),
+          ? verifyProblem(`a Cursor local install shadows this one and will double every hook: ${cursorLocalStandIn}`)
+          : VERIFIED),
       },
       cursor: {
-        requires: ['claude'], caches: [], available: () => true,
+        requires: ['claude'], caches: [], available: () => 'installed',
         sync: () => { fs.rmSync(cursorLocalStandIn, { recursive: true, force: true }); },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
     });
 
@@ -477,17 +494,19 @@ test('a host whose sync throws is still verified in pass 2, after later hosts ha
 
     const hosts = fakeHosts({
       claude: {
-        requires: [], caches: [], available: () => true,
+        requires: [], caches: [], available: () => 'installed',
         sync: () => { throw new Error('claude install failed'); },
         verify: () => {
           claudeVerified = true;
-          return fs.existsSync(cursorLocalStandIn) ? 'a Cursor local install shadows this one' : null;
+          return fs.existsSync(cursorLocalStandIn)
+            ? verifyProblem('a Cursor local install shadows this one')
+            : VERIFIED;
         },
       },
       cursor: {
-        requires: ['claude'], caches: [], available: () => true,
+        requires: ['claude'], caches: [], available: () => 'installed',
         sync: () => { fs.rmSync(cursorLocalStandIn, { recursive: true, force: true }); },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
     });
 
@@ -505,9 +524,9 @@ test('a host whose sync throws is still verified in pass 2, after later hosts ha
 test('a host that completes sync but fails verify is stale-but-unproven: restart yes, `synced` no', () => {
   const hosts = fakeHosts({
     claude: {
-      requires: [], caches: [], available: () => true,
+      requires: [], caches: [], available: () => 'installed',
       sync: () => {},
-      verify: () => 'claude cache is missing 9.9.9',
+      verify: () => verifyProblem('claude cache is missing 9.9.9'),
     },
   });
 
@@ -525,13 +544,13 @@ test('a host that completes sync but fails verify is stale-but-unproven: restart
 test('a host skipped as unavailable is neither a problem nor named in the restart instruction', () => {
   const hosts = fakeHosts({
     claude: {
-      requires: [], caches: [], available: () => false,
+      requires: [], caches: [], available: () => 'absent',
       sync: () => { throw new Error('must never be called for an unavailable host'); },
       verify: () => { throw new Error('must never be called for an unavailable host'); },
     },
     codex: {
-      requires: [], caches: [], available: () => true,
-      sync: () => {}, verify: () => null,
+      requires: [], caches: [], available: () => 'installed',
+      sync: () => {}, verify: () => VERIFIED,
     },
   });
 
@@ -562,7 +581,7 @@ test('an abandoned .presync-* backup is swept once it is an hour old, and never 
       fs.writeFileSync(path.join(dir, 'file.txt'), 'x', 'utf8');
     }
 
-    const swept = sweepStalePresyncBackups([() => cacheDir], now, () => false);
+    const swept = sweepStalePresyncBackups([() => cacheDir], '9.9.9', now, () => false);
 
     assert.deepEqual(swept, [abandoned]);
     assert.equal(fs.existsSync(abandoned), false);
@@ -589,7 +608,7 @@ test('a backup whose creating sync is still running is never swept, however old'
     fs.mkdirSync(live, { recursive: true });
     fs.writeFileSync(path.join(live, 'file.txt'), 'the only copy of a live run\'s install', 'utf8');
 
-    assert.deepEqual(sweepStalePresyncBackups([() => cacheDir], now), []);
+    assert.deepEqual(sweepStalePresyncBackups([() => cacheDir], '9.9.9', now), []);
     assert.equal(fs.readFileSync(path.join(live, 'file.txt'), 'utf8'), 'the only copy of a live run\'s install');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -616,13 +635,13 @@ test('runSelection sweeps stale pre-sync backups before touching anything', () =
     let sweptBeforeSync = false;
     const hosts = fakeHosts({
       claude: {
-        requires: [], caches: [() => cacheDir], available: () => true,
+        requires: [], caches: [() => cacheDir], available: () => 'installed',
         sync: () => {
           sweptBeforeSync = !fs.existsSync(abandoned);
           fs.mkdirSync(cacheDir, { recursive: true });
           fs.writeFileSync(path.join(cacheDir, 'file.txt'), 'new version');
         },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
     });
 
@@ -658,18 +677,18 @@ test('the startup sweep visits every known host, including hosts outside the sel
 
     const hosts = fakeHosts({
       claude: {
-        requires: [], caches: [() => claude.cache], available: () => true,
+        requires: [], caches: [() => claude.cache], available: () => 'installed',
         sync: () => { fs.writeFileSync(path.join(claude.cache, 'file.txt'), 'new version'); },
-        verify: () => null,
+        verify: () => VERIFIED,
       },
       // Not selected below, and stages nothing — exactly the real codex unit.
       codex: {
-        requires: [], caches: [], unstageableCaches: [() => codex.cache], available: () => true,
-        sync: () => {}, verify: () => null,
+        requires: [], caches: [], unstageableCaches: [() => codex.cache], available: () => 'installed',
+        sync: () => {}, verify: () => VERIFIED,
       },
       cursor: {
-        requires: [], caches: [], unstageableCaches: [() => cursor.cache], available: () => true,
-        sync: () => {}, verify: () => null,
+        requires: [], caches: [], unstageableCaches: [() => cursor.cache], available: () => 'installed',
+        sync: () => {}, verify: () => VERIFIED,
       },
     });
 
@@ -704,4 +723,365 @@ test('a host command that does not finish in time is killed and reported, and al
   );
   // Control: a fast non-zero exit is still exactly what allowFailure is for.
   assert.equal(runHostCommand('exit 3', ['sh', '-c', 'exit 3'], { allowFailure: true }).status, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Presence: "not installed" vs "could not tell"
+// ---------------------------------------------------------------------------
+
+// A PATH holding nothing but the given stubs. `which` has to be symlinked in:
+// spawnSync resolves the `which` BINARY through PATH too, so a PATH without it
+// makes every probe unanswerable — which is its own test below, and would
+// silently hollow out this one.
+function pathWithOnly(bins: readonly string[]): string {
+  const dir = tmp('path');
+  const realWhich = spawnSync('which', ['which'], { encoding: 'utf8' }).stdout.trim();
+  assert.ok(realWhich, 'this test needs a real `which` to symlink');
+  fs.symlinkSync(realWhich, path.join(dir, 'which'));
+  for (const bin of bins) {
+    const file = path.join(dir, bin);
+    fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', 'utf8');
+    fs.chmodSync(file, 0o755);
+  }
+  return dir;
+}
+
+function withPath<T>(value: string, body: () => T): T {
+  const saved = process.env.PATH;
+  process.env.PATH = value;
+  try {
+    return body();
+  } finally {
+    if (saved === undefined) delete process.env.PATH;
+    else process.env.PATH = saved;
+  }
+}
+
+// The CLI hosts: `which` searched and found nothing, which is a real reading.
+test('a host whose CLI is searched for and not found is absent, and one that is found is installed', () => {
+  const bare = pathWithOnly([]);
+  const stocked = pathWithOnly(['claude', 'codex', 'copilot']);
+  try {
+    withPath(bare, () => {
+      for (const id of ['claude', 'codex', 'copilot'] as const) {
+        assert.equal(HOSTS[id].available(), 'absent', `${id} was searched for and is not there`);
+      }
+    });
+    withPath(stocked, () => {
+      for (const id of ['claude', 'codex', 'copilot'] as const) {
+        assert.equal(HOSTS[id].available(), 'installed', `${id} is on PATH`);
+      }
+    });
+  } finally {
+    for (const dir of [bare, stocked]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// opencode/windsurf/kilo used to answer `fs.existsSync(dist/scripts/<host>-host.cjs)`,
+// a file writeShims() emits for all three on EVERY build of this repo. That
+// probe reported on the developer's build and never on the host: `true` for
+// everyone who had built, `false` for everyone who had not — and main() reads
+// available() BEFORE pluginBuild(), so a clean checkout was told its host was
+// not installed. Neither of those two answers is reachable now: with nothing on
+// PATH the only honest answer is that nobody looked at the host at all.
+test('the wrapper hosts never answer from this repo dist tree: a PATH miss is unknown, not absent', () => {
+  const bare = pathWithOnly([]);
+  const stocked = pathWithOnly(['opencode', 'windsurf', 'kilo']);
+  try {
+    withPath(bare, () => {
+      for (const id of ['opencode', 'windsurf', 'kilo'] as const) {
+        assert.equal(
+          HOSTS[id].available(),
+          'unknown',
+          `${id} has no launcher on PATH, which is not evidence the editor is absent`,
+        );
+      }
+    });
+    withPath(stocked, () => {
+      for (const id of ['opencode', 'windsurf', 'kilo'] as const) {
+        assert.equal(HOSTS[id].available(), 'installed', `${id} is on PATH`);
+      }
+    });
+  } finally {
+    for (const dir of [bare, stocked]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The third state at its source. `which` is itself resolved through PATH, so a
+// PATH that cannot produce it is a probe that never ran — status null, no exit
+// code, nothing observed. Reading that as "the host is not installed" is the
+// inversion the tri-state exists to stop.
+test('a probe that could not run at all is unknown, never absent', () => {
+  const noWhich = tmp('no-which');
+  try {
+    withPath(noWhich, () => {
+      assert.equal(HOSTS.claude.available(), 'unknown');
+      assert.equal(HOSTS.codex.available(), 'unknown');
+      assert.equal(HOSTS.copilot.available(), 'unknown');
+    });
+  } finally {
+    fs.rmSync(noWhich, { recursive: true, force: true });
+  }
+});
+
+// Cursor has no CLI and no scriptable install, so there is nothing here that
+// could ever OBSERVE it missing. It answered a hardcoded `true` before, which
+// is the same sync behaviour stated as a fact.
+//
+// The markers are injected rather than read from $HOME. An earlier version of
+// this test asserted `HOSTS.cursor.available() !== 'absent'` against the real
+// paths and was VACUOUS: every machine that has ever opened Cursor has
+// `~/.cursor`, so the found branch answered both for the fix and for the
+// mutation that reinstated the defect, and the mutation survived.
+test('cursor answers unknown when nothing Cursor-made is found — never absent', () => {
+  const root = tmp('cursor-presence');
+  try {
+    const nothing = path.join(root, 'no-cursor-here');
+    assert.equal(cursorPresence([nothing]), 'unknown');
+    assert.equal(cursorPresence([]), 'unknown');
+
+    const marker = path.join(root, '.cursor');
+    fs.mkdirSync(marker, { recursive: true });
+    assert.equal(cursorPresence([nothing, marker]), 'installed', 'any one Cursor-made path is enough');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an unknown presence is synced anyway, and said out loud rather than assumed', () => {
+  let syncedAnyway = false;
+  const hosts = fakeHosts({
+    codex: {
+      requires: [], caches: [], available: () => 'unknown',
+      sync: () => { syncedAnyway = true; }, verify: () => VERIFIED,
+    },
+  });
+
+  const { problems, synced, mutated } = runSelection(['codex'], '9.9.9', hosts);
+
+  // Skipping a host that IS there leaves it running the old bundle with every
+  // gate silently disabled; installing into a host that is not there costs a
+  // few files nothing will read. The asymmetry decides it.
+  assert.equal(syncedAnyway, true);
+  assert.deepEqual(problems, []);
+  assert.deepEqual(synced, ['codex']);
+  assert.deepEqual(mutated, ['codex'], 'an unknown host that was touched still needs its restart');
+});
+
+// ---------------------------------------------------------------------------
+// Verification: "serving it" vs "could not read it"
+// ---------------------------------------------------------------------------
+
+test('a host that could not be read back is neither a failure nor a success', () => {
+  const hosts = fakeHosts({
+    codex: {
+      requires: [], caches: [], available: () => 'installed',
+      sync: () => {}, verify: () => verifyUnknown('its plugin cache does not exist yet'),
+    },
+  });
+
+  const { problems, synced, mutated, unconfirmed } = runSelection(['codex'], '9.9.9', hosts);
+
+  // Not a problem: nothing failed, and failing a healthy first-time add is the
+  // outcome the old blanket `null` was avoiding.
+  assert.deepEqual(problems, []);
+  // Not synced either: that list is the basis of "successfully synced to
+  // v9.9.9", and nothing here read v9.9.9 anywhere.
+  assert.deepEqual(synced, []);
+  assert.deepEqual(mutated, ['codex']);
+  assert.deepEqual(unconfirmed, [{ host: 'codex', detail: 'its plugin cache does not exist yet' }]);
+});
+
+// verify() reaches spawnSync and the filesystem, and pass 2 had no catch: a
+// wrapper `doctor` that hit run()'s timeout threw out of the loop and killed
+// the command AFTER pass 1 had mutated every host — taking the restart
+// instruction with it, which is the one message this command must always print.
+test('a verify() that throws is recorded as unreadable, and never takes the run down with it', () => {
+  const hosts = fakeHosts({
+    kilo: {
+      requires: [], caches: [], available: () => 'installed',
+      sync: () => {},
+      verify: () => { throw new Error('kilo-host doctor did not finish within 180000ms and was killed'); },
+    },
+    claude: {
+      requires: [], caches: [], available: () => 'installed',
+      sync: () => {}, verify: () => VERIFIED,
+    },
+  });
+
+  const { problems, synced, mutated, unconfirmed } = runSelection(['claude', 'kilo'], '9.9.9', hosts);
+
+  assert.deepEqual(problems, []);
+  assert.deepEqual(synced, ['claude'], 'the hosts that WERE readable are still reported');
+  assert.deepEqual(mutated, ['claude', 'kilo'], 'both sessions are stale, so both must be restarted');
+  assert.equal(unconfirmed.length, 1);
+  assert.equal(unconfirmed[0]!.host, 'kilo');
+  assert.match(unconfirmed[0]!.detail, /^verify\(\) threw: kilo-host doctor did not finish within 180000ms/);
+});
+
+// The closing line is the whole point of the tri-state: this is the sentence a
+// maintainer reads and believes.
+test('the closing line claims success only for a host that was read back', () => {
+  assert.equal(
+    outcomeLine('codex', '1.0.55', []),
+    'traffic one plugin was successfully synced to v1.0.55 on your Codex',
+  );
+  assert.equal(
+    outcomeLine('codex', '1.0.55', [{ host: 'codex', detail: 'its plugin cache does not exist yet' }]),
+    'traffic one plugin v1.0.55 was installed for your Codex,'
+    + ' but this command could not confirm it is serving v1.0.55: its plugin cache does not exist yet',
+  );
+  // Another host being unreadable says nothing about this one.
+  assert.equal(
+    outcomeLine('claude', '1.0.55', [{ host: 'codex', detail: 'x' }]),
+    successLine('claude', '1.0.55'),
+  );
+  assert.equal(
+    unconfirmedLine('claude', '2.0.0', 'why'),
+    'traffic one plugin v2.0.0 was installed for your Claude Code,'
+    + ' but this command could not confirm it is serving v2.0.0: why',
+  );
+});
+
+test('the all-hosts report names every unreadable host, and says nothing when there are none', () => {
+  assert.equal(unconfirmedBlock([], '1.0.55'), null);
+  assert.equal(
+    unconfirmedBlock([{ host: 'codex', detail: 'cache absent' }, { host: 'kilo', detail: 'no doctor' }], '1.0.55'),
+    [
+      'NOT CONFIRMED as serving v1.0.55 — nothing failed, and nothing could be read back either:',
+      '  - codex: cache absent',
+      '  - kilo: no doctor',
+    ].join('\n'),
+  );
+});
+
+function writePkg(dir: string, version: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'traffic-one', version }), 'utf8');
+}
+
+// The staged copy is NOT what Codex serves — `codex plugin add`, the step that
+// moves those bytes into the cache, is the one that runs allowFailure. So an
+// absent cache leaves this function with nothing whatsoever read about the
+// version Codex will serve. It used to return the same `null` for that as for a
+// cache it had read and found current, which put codex into `synced` and
+// printed "successfully synced to vX on your Codex" off a path it had just
+// established does not exist.
+test('codex: an absent plugin cache is unknown — not a failure, and emphatically not a verification', () => {
+  const root = tmp('codex-verify');
+  try {
+    const staged = path.join(root, 'staged');
+    const cache = path.join(root, 'cache');
+    writePkg(staged, '9.9.9');
+
+    const absent = verifyCodex('9.9.9', { staged, cache });
+    assert.equal(absent.state, 'unknown', 'nothing here read what Codex serves');
+    assert.match(absent.state === 'unknown' ? absent.detail : '', /does not exist yet/);
+    assert.match(absent.state === 'unknown' ? absent.detail : '', /healthy first add/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('codex: the readings that ARE readings still come back verified or as a problem', () => {
+  const root = tmp('codex-verify-read');
+  try {
+    const staged = path.join(root, 'staged');
+    writePkg(staged, '9.9.9');
+
+    // Claude-shaped cache: <cache>/<version>/.
+    const versioned = path.join(root, 'versioned');
+    fs.mkdirSync(path.join(versioned, '9.9.9'), { recursive: true });
+    assert.deepEqual(verifyCodex('9.9.9', { staged, cache: versioned }), VERIFIED);
+
+    // Staged-plugin-shaped cache: package.json at its root.
+    const flat = path.join(root, 'flat');
+    writePkg(flat, '9.9.9');
+    assert.deepEqual(verifyCodex('9.9.9', { staged, cache: flat }), VERIFIED);
+
+    // A cache that exists and holds something else is a real defect.
+    const stale = path.join(root, 'stale');
+    writePkg(stale, '1.0.0');
+    const staleResult = verifyCodex('9.9.9', { staged, cache: stale });
+    assert.equal(staleResult.state, 'problem');
+    assert.match(staleResult.state === 'problem' ? staleResult.detail : '', /still holds 1\.0\.0/);
+
+    // Nothing staged at all is this command's own failure, not an unknown.
+    const missing = verifyCodex('9.9.9', { staged: path.join(root, 'nope'), cache: versioned });
+    assert.equal(missing.state, 'problem');
+    assert.match(missing.state === 'problem' ? missing.detail : '', /staged plugin is absent, expected 9\.9\.9/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Staging a version-keyed cache
+// ---------------------------------------------------------------------------
+
+// `claude plugin install` skips re-copying into a cache entry that is already
+// there at the target version, so THAT entry has to be out of the way — and
+// only that one. Staging the whole cache took every other version Claude had
+// out of service for the length of a network install, and commitQuarantine then
+// deleted the backup holding them; a run killed inside that window left Claude
+// with no plugin at all, which is the single outcome this mechanism exists to
+// prevent ("stale, not broken").
+test('only the version being installed is staged: every other version stays in service throughout', () => {
+  const root = tmp('versioned-stage');
+  try {
+    const cache = path.join(root, 'traffic-one');
+    fs.mkdirSync(path.join(cache, '1.0.0'), { recursive: true });
+    fs.mkdirSync(path.join(cache, '9.9.9'), { recursive: true });
+    fs.writeFileSync(path.join(cache, '1.0.0', 'file.txt'), 'the version Claude falls back to', 'utf8');
+    fs.writeFileSync(path.join(cache, '9.9.9', 'file.txt'), 'the version being replaced', 'utf8');
+
+    let siblingDuringSync: string | null = null;
+    const hosts = fakeHosts({
+      claude: {
+        requires: [], caches: [(version) => path.join(cache, version)], available: () => 'installed',
+        sync: () => {
+          // Read at the WORST moment — mid-install, cache staged. This is the
+          // state a SIGKILL freezes, and the only copy of 1.0.0 has to be here.
+          siblingDuringSync = fs.readFileSync(path.join(cache, '1.0.0', 'file.txt'), 'utf8');
+          throw new Error('boom');
+        },
+        verify: () => VERIFIED,
+      },
+    });
+
+    runSelection(['claude'], '9.9.9', hosts);
+
+    assert.equal(siblingDuringSync, 'the version Claude falls back to',
+      'the other versions must never leave their live path');
+    assert.equal(fs.readFileSync(path.join(cache, '9.9.9', 'file.txt'), 'utf8'), 'the version being replaced');
+    assert.deepEqual(fs.readdirSync(cache).sort(), ['1.0.0', '9.9.9']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A backup left inside a version-keyed cache is named for the version that run
+// was installing — `1.0.0.presync-*`, a name today's run cannot predict. The
+// sweep used to require the live cache's own basename as a prefix, so those
+// were unreachable forever, and nothing else in the system removes them.
+test('the sweep reclaims a backup left by an older version of this command', () => {
+  const root = tmp('versioned-sweep');
+  try {
+    const cache = path.join(root, 'traffic-one');
+    fs.mkdirSync(cache, { recursive: true });
+    const now = Date.now();
+    const oldVersion = path.join(cache, `1.0.0.presync-4242-${now - STALE_PRESYNC_MS - 1}`);
+    const live = path.join(cache, '1.0.0');
+    for (const dir of [oldVersion, live]) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'file.txt'), 'x', 'utf8');
+    }
+
+    const swept = sweepStalePresyncBackups([(version) => path.join(cache, version)], '9.9.9', now, () => false);
+
+    assert.deepEqual(swept, [oldVersion]);
+    assert.equal(fs.existsSync(live), true, 'a live version dir is not a backup');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
