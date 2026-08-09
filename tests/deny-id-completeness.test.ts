@@ -69,6 +69,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import test from 'node:test';
 import * as ts from 'typescript';
+import {
+  DENY_IDS,
+  NEVER_ESCALATED_DENY_IDS,
+  NEVER_OVERRIDABLE_DENY_IDS,
+} from '../src/config/deny-ids';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'src');
@@ -950,4 +955,68 @@ test('a spread meta says the denyId must be INLINE, not that it is missing', () 
   const attributed = scanDenyCallSites(sourceTree(withInline), FIXTURE_FILE);
   assert.equal(attributed.length, 1);
   assert.equal(attributed[0]!.declaresDenyId, true);
+});
+
+// ── The two population tallies deny-ids.ts states in prose ──────────────────
+// Both headers explain a DEFAULT by sizing the set that takes it: "a gate NOT
+// listed here is overridable ... the N remaining ids are ordinary
+// process/sequencing refusals", and the same shape for escalation. A reader
+// deciding whether a new id belongs on either list weighs it against that size,
+// so a stale N argues from a population that does not exist.
+//
+// Both had decayed to "~110" — a figure from the 192-id era, wrong by 56 and 62
+// once the catalog reached 201, and wrong for the SECOND time. Numbers written
+// beside the arrays they describe do not stay true on their own, so this pins
+// them the way readme-claims.test.ts pins the README and node-floor pins
+// `engines`: read the number out of the PROSE, derive it from the ARRAYS, and
+// let the two be unable to name different values.
+test('the population tallies in deny-ids.ts prose match the arrays they describe', () => {
+  const file = path.join(SRC_ROOT, 'config', 'deny-ids.ts');
+  // Flatten the comment block before matching: both sentences wrap across lines,
+  // so in the raw bytes "the" and its number are separated by "\n// ". Matching
+  // the raw text needs a pattern that encodes the line-comment prefix, which
+  // then breaks the moment someone rewraps the paragraph — a false failure on an
+  // edit that changed no claim.
+  const text = fs.readFileSync(file, 'utf8').replace(/^\s*\/\/ ?/gm, '').replace(/\s+/g, ' ');
+
+  // Derive from the arrays, never from a second hardcoded number.
+  const declared = new Set(DENY_IDS).size;
+  const tallies: { label: string; stated: RegExp; remaining: number }[] = [
+    {
+      label: 'NEVER_OVERRIDABLE_DENY_IDS',
+      stated: /the (\d+) remaining ids are ordinary process\/sequencing refusals/,
+      remaining: declared - new Set(NEVER_OVERRIDABLE_DENY_IDS).size,
+    },
+    {
+      label: 'NEVER_ESCALATED_DENY_IDS',
+      stated: /the remaining (\d+) ids are refusals with an/,
+      remaining: declared - new Set(NEVER_ESCALATED_DENY_IDS).size,
+    },
+  ];
+
+  for (const { label, stated, remaining } of tallies) {
+    const match = stated.exec(text);
+    assert.ok(
+      match,
+      `deny-ids.ts no longer states a tally for the ids NOT in ${label}.\n`
+      + 'If the sentence was reworded, update this pattern — do not delete the assertion:'
+      + ' the number is what a reader sizes a new entry against.',
+    );
+    assert.equal(
+      Number(match![1]),
+      remaining,
+      `deny-ids.ts prose says ${match![1]} ids fall outside ${label}; the arrays say ${remaining}`
+      + ` (${declared} declared - ${declared - remaining} listed).`
+      + ' FIX: correct the prose. It has gone stale twice, both times by growing the catalog.',
+    );
+  }
+
+  // Non-vacuity: a pattern that matched nothing would fail above, but a pattern
+  // that matched the WRONG sentence would pass while pinning something else.
+  // Both tallies are strictly inside the catalog, and they differ from each
+  // other, so neither can be reading a shared constant or the total.
+  for (const { label, remaining } of tallies) {
+    assert.ok(remaining > 0 && remaining < declared, `${label}'s remainder must be a strict subset`);
+  }
+  assert.notEqual(tallies[0]!.remaining, tallies[1]!.remaining, 'the two tallies must be distinct numbers');
 });

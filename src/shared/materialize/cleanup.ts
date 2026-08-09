@@ -231,6 +231,30 @@ export const NEW_PROJECT_PROFILE_RULE_BY_ID: Readonly<Record<StructuralProfileId
   'backend-only': 'rules/modes/new-project-backend-only.md',
 };
 
+/**
+ * Which modes DECLARE a spine rule — the config-side authority the mode half of
+ * the candidate set is read from, and the reason it is a table rather than the
+ * `rules/modes/${mode}.md` interpolation two functions below.
+ *
+ * `state.mode` is not a closed set on the wire: detectMode (shared/detection)
+ * also answers `existing-with-supabase`, which legitimately ships no mode rule.
+ * Interpolating the mode into a path and asking the root for it would therefore
+ * report a HEALTHY install as torn for every project of that shape — the exact
+ * false-refusal class content-completeness.test.ts exists to catch. Declaring
+ * the pairs instead makes "this mode ships no rule" and "this root lost the
+ * file" two different facts, which is what the self-reference defect in
+ * modeRulesForState collapsed into one.
+ *
+ * Same lockstep argument as NEW_PROJECT_PROFILE_RULE_BY_ID below and as
+ * materialize.ts tornRootRefusal: `rules/**` and this table are emitted and
+ * compiled by one `npm run gen` from one commit, so a release that retires a
+ * mode deletes both halves together and the candidate set shrinks with the tree.
+ */
+export const MODE_SPINE_RULE_BY_MODE: Readonly<Record<string, string>> = {
+  'new-project': 'rules/modes/new-project.md',
+  'existing-codebase': 'rules/modes/existing-codebase.md',
+};
+
 function profileRuleFor(profileId?: string): string | null {
   if (
     !profileId
@@ -248,6 +272,31 @@ function defaultViteNewProject(state: Rec, profileId?: string): boolean {
 
 function existingRulePaths(root: string, relPaths: readonly string[]): string[] {
   return relPaths.filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
+}
+
+/**
+ * The mode half of materialize.ts's CANDIDATE SET: every mode rule the running
+ * runtime declares for this state, resolved from config alone. No `root`
+ * parameter, deliberately — this function must never stat the plugin tree, or it
+ * would answer with whatever the tree happens to hold and the comparison in
+ * tornRootRefusal would be a tautology.
+ *
+ * It mirrors modeRulesForState + modeReferenceRulesForState below entry for
+ * entry, minus their existsSync filters and minus the slice enumeration, which
+ * has no config-side authority — see the note on that branch.
+ */
+export function modeRuleCandidatesForState(state: Rec, profileId?: string): string[] {
+  const mode = state && typeof state.mode === 'string' ? state.mode : '';
+  const spine = mode ? MODE_SPINE_RULE_BY_MODE[mode] : undefined;
+  if (!spine) return [];
+  if (mode !== 'new-project') return [spine];
+  const profileRule = profileRuleFor(profileId);
+  return [
+    spine,
+    ...(profileRule ? [profileRule] : []),
+    NEW_PROJECT_ARCHITECTURE_RULE,
+    ...(defaultViteNewProject(state, profileId) ? [DEFAULT_VITE_NEW_PROJECT_SETUP_RULE] : []),
+  ];
 }
 
 /**
@@ -276,6 +325,24 @@ export function modeRulesForState(root: string, state: Rec, profileId?: string):
   // Large mode rules are split into on-demand slices named `<mode>-<topic>.md`
   // next to the spine; materialize whatever slices exist so the spine's
   // pointers resolve inside the project.
+  //
+  // THE ONE PART OF THIS FILE WITH NO CONFIG-SIDE AUTHORITY, stated rather than
+  // papered over. The set is derived by reading the root's own `rules/modes/`
+  // directory, so a slice a torn tree lost is indistinguishable from a slice
+  // this release never shipped, and modeRuleCandidatesForState cannot declare
+  // it. Inventing a table here would be worse than the gap: the naming rule is
+  // open-ended by design (a slice is added by dropping a file next to the
+  // spine), so the table and the tree would drift on the first slice somebody
+  // adds without it, and the drift's failure mode is a false refusal on a
+  // healthy install.
+  //
+  // The live surface is currently EMPTY and a test pins it that way
+  // (content-completeness.test.ts): no shipped mode has a slice. `new-project`
+  // returns above through the profile branch, so its `new-project-*.md` family
+  // never reaches this readdir; `existing-codebase` is the only other declared
+  // mode and ships none. So nothing can be swept through this path today, and
+  // the test fails the moment that stops being true — at which point the slice
+  // family needs an authority before it needs this comment.
   const slices: string[] = [];
   try {
     const modesDir = path.dirname(path.join(root, templatePath(relPath)));

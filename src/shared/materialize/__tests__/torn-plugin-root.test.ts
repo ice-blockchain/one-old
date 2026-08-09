@@ -54,7 +54,10 @@ const STATE = {
 // (scripts/hook-runtime.cjs) and both keep the other tree whole, because the
 // ordinary rsync shape is a complete `rules/` beside a `skills-catalog/` that
 // lost the race — not a uniformly shrunken tree.
-type Tear = 'whole' | 'skills' | 'rules';
+// 'modes' is the third: `rules/**` is complete except for ONE mode rule, which
+// is the tear the completeness check could not see until the mode candidates
+// stopped being read from the root's own `rules/modes/` directory.
+type Tear = 'whole' | 'skills' | 'rules' | 'modes';
 
 const MODULES = path.resolve(__dirname, '..', '..', '..', 'modules');
 const SOURCE_RULES = path.join(MODULES, 'rules', 'rules');
@@ -65,6 +68,13 @@ const SOURCE_SKILLS = path.join(MODULES, 'skills', 'skills-catalog');
 // real subset rather than a synthetic one.
 const KEPT_SKILL = 'project-memory';
 const KEPT_RULE = path.join('common', 'auth-gate.md');
+
+// The single casualty of the 'modes' tear. STATE below resolves the `vite-react`
+// profile, so cleanup.ts NEW_PROJECT_PROFILE_RULE_BY_ID declares exactly this
+// path — which is what makes its absence a shortfall rather than a mode that
+// ships nothing.
+const TORN_MODE_RULE_REL = path.join('modes', 'new-project-vite-react.md');
+const TORN_MODE_RULE_ID = 'rules/modes/new-project-vite-react.md';
 
 interface Fixture {
   project: string;
@@ -90,6 +100,11 @@ function withRoot(tear: Tear, fn: (fixture: Fixture) => void): void {
     const kept = path.join(plugin, 'rules', KEPT_RULE);
     fs.mkdirSync(path.dirname(kept), { recursive: true });
     fs.copyFileSync(path.join(SOURCE_RULES, KEPT_RULE), kept);
+  } else if (tear === 'modes') {
+    // A COPY rather than the symlink, because exactly one file has to go
+    // missing: deleting through the link would mutate the checkout.
+    fs.cpSync(SOURCE_RULES, path.join(plugin, 'rules'), { recursive: true });
+    fs.rmSync(path.join(plugin, 'rules', TORN_MODE_RULE_REL), { force: true });
   } else {
     fs.symlinkSync(SOURCE_RULES, path.join(plugin, 'rules'), 'dir');
   }
@@ -151,8 +166,8 @@ function snapshot(project: string, tracked: ProjectContent): Map<string, string>
 
 // ── the fixtures, asserted before anything relies on them ───────────────────
 
-test('all three fixture roots classify as installed — the torn ones too', () => {
-  for (const tear of ['whole', 'skills', 'rules'] as const) {
+test('all four fixture roots classify as installed — the torn ones too', () => {
+  for (const tear of ['whole', 'skills', 'rules', 'modes'] as const) {
     withRoot(tear, () => {
       // A torn root that classified 'unverified' would make the cases below pass
       // on the LAYOUT refusal, and the completeness refusal could be deleted
@@ -255,6 +270,56 @@ test('a first run against a torn root is refused too — a project with nothing 
     assert.equal(result.skipped, 'plugin-root-content-incomplete');
     assert.equal(result.written, 0);
     assert.equal(fs.existsSync(path.join(project, '.traffic-one', 'manifest.json')), false, 'no manifest was minted');
+  });
+});
+
+// ── 1b. the tear confined to rules/modes/** ─────────────────────────────────
+// The declared residual, closed. Mode rules used to be absent from the rule
+// candidate set because both resolvers derive them WITH the root in hand
+// (cleanup.ts modeRulesForState / modeReferenceRulesForState take a `root` and
+// filter by existsSync), so a mode rule a torn tree lost simply dropped out of
+// the resolved set and left no trace of having been expected.
+//
+// Measured before the fix, on this exact fixture: skipped=undefined,
+// removed=1 — the project's only copy of the mode rule was deleted and the
+// manifest was rewritten without it, while the run reported success and the
+// caller stamped `materializedAt` over it.
+//
+// What made it fixable is that the expected set has an authority that is NOT
+// the root's own directory: the spine comes from MODE_SPINE_RULE_BY_MODE and
+// the profile rule from NEW_PROJECT_PROFILE_RULE_BY_ID, both compiled from the
+// same commit that emits `rules/**`.
+test('a torn rules/modes/ is caught: one missing mode rule refuses instead of sweeping the project copy', () => {
+  withRoot('modes', ({ project }) => {
+    const tracked = seedFullyMaterialized(project, { rules: [TORN_MODE_RULE_ID] });
+    const modeCopy = path.join(project, '.traffic-one', TORN_MODE_RULE_ID);
+    // The baseline that keeps this from passing vacuously: the project really
+    // does hold the file the sweep would take, and the manifest really tracks it
+    // (cleanupPrevious only deletes manifest-tracked, marker-carrying assets).
+    assert.equal(fs.existsSync(modeCopy), true, 'the project starts with the mode rule materialized');
+    assert.ok(tracked.rules.includes(TORN_MODE_RULE_ID), 'and the manifest tracks it, so the sweep is willing');
+    const before = snapshot(project, tracked);
+
+    const result = materializeProjectAssets(project, { ...STATE });
+
+    assert.equal(result.skipped, 'plugin-root-content-incomplete');
+    assert.equal(result.removed, 0, 'not one manifest-tracked asset may be swept');
+    assert.equal(result.written, 0);
+    assert.deepEqual(
+      result.torn?.rules.missing,
+      [TORN_MODE_RULE_ID],
+      'the shortfall names the mode rule, and nothing else in a tree that is otherwise whole',
+    );
+    assert.deepEqual(result.torn?.skills.missing, [], 'the catalog is not implicated');
+    assert.equal(fs.existsSync(modeCopy), true, 'the project copy survives');
+    for (const [key, bytes] of before) {
+      const file = key === 'manifest.json'
+        ? path.join(project, '.traffic-one', 'manifest.json')
+        : key.startsWith('skills/')
+          ? path.join(project, '.traffic-one', 'skills', key.slice('skills/'.length), 'SKILL.md')
+          : path.join(project, '.traffic-one', key);
+      assert.equal(fs.readFileSync(file, 'utf8'), bytes, `${key} is byte-identical`);
+    }
   });
 });
 

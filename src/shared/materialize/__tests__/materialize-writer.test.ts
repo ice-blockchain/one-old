@@ -21,6 +21,7 @@ import { hasMaterializedProjectAssets } from '../has-assets';
 import { materializeProjectAssets } from '../materialize';
 import { openCodeGlobalAgentPath } from '../opencode-assets';
 import { pluginUseDeclined, recordPluginUseChoice } from '../../state/plugin-use';
+import { assertInstalledPluginRoot } from './fixtures/installed-root';
 
 // A COMPLETE 'installed' plugin root: the compiled runtime entry plus the real
 // shipped content trees, reached through symlinks so nothing is copied and the
@@ -73,6 +74,11 @@ function withPluginAndProject(fn: (project: string, plugin: string) => void): vo
   env.HOME = home;
   delete env.XDG_CONFIG_HOME;
   try {
+    // Before anything relies on it. 43 of this file's materializeProjectAssets
+    // calls run through here, and every one of them would pass over a refusal —
+    // silently, having written and deleted nothing — if this root ever stopped
+    // classifying 'installed'.
+    assertInstalledPluginRoot('materialize-writer fixture');
     fn(project, plugin);
   } finally {
     if (prevPlugin === undefined) delete env.TRAFFIC_ONE_PLUGIN_ROOT; else env.TRAFFIC_ONE_PLUGIN_ROOT = prevPlugin;

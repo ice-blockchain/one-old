@@ -84,6 +84,18 @@ export interface PolyglotWorkspaceOptions {
   readonly containerVcs?: boolean;
   /** Give the container a mode-bearing `.one.json`. */
   readonly onboardContainer?: boolean;
+  /**
+   * Onboard the container as a Traffic One WORKSPACE PROJECT (`mode: 'workspace'`)
+   * whose members registry lists every member by name.
+   *
+   * The real form of what mutation M9 used to SIMULATE. Written with raw `fs`
+   * like every other option here — a fixture that built itself through
+   * shared/state/workspace-members.ts would be proving the reader with the
+   * writer, and the registry is untrusted data whose whole point is that a hand
+   * written `.one.json` reaches it. Applied AFTER `onboardContainer`, so a
+   * caller that sets both gets the workspace mode.
+   */
+  readonly registerMembers?: boolean;
 }
 
 export interface WorkspaceMember extends WorkspaceMemberSpec {
@@ -142,6 +154,17 @@ export function buildPolyglotWorkspace(
     if (options.onboardMembers) writeModeState(dir);
     return { ...spec, dir, manifestPath, nestedSourcePath, nestedSourceDir: path.dirname(nestedSourcePath) };
   });
+
+  if (options.registerMembers) {
+    write(
+      path.join(container, '.traffic-one', '.one.json'),
+      `${JSON.stringify({
+        mode: 'workspace',
+        onboardingComplete: true,
+        workspaceMembers: members.map((member) => ({ path: member.id })),
+      }, null, 2)}\n`,
+    );
+  }
 
   return { container, members, options };
 }
@@ -231,6 +254,14 @@ export function polyglotPreconditions(workspace: PolyglotWorkspace): readonly Fi
     () => members.every((m) => fs.existsSync(path.join(m.dir, '.git'))),
     Boolean(options.memberVcs),
   ]);
+  // Read back as the LIST, not as a boolean: a registry that lost an entry, or
+  // gained one naming a directory that is not a member, is a fixture that has
+  // stopped describing this workspace while still answering "yes, registered".
+  checks.push([
+    'the container is a workspace project registering exactly these members',
+    () => registeredMemberPaths(container).join(','),
+    options.registerMembers ? members.map((m) => m.id).join(',') : '',
+  ]);
 
   return checks;
 }
@@ -269,5 +300,25 @@ function modeOf(dir: string): string {
     return typeof state.mode === 'string' ? state.mode : '';
   } catch {
     return '';
+  }
+}
+
+// Deliberately re-derived here rather than imported from
+// shared/hook/workspace-members.ts: the reader is the code under test for every
+// row that consults this fixture, and a precondition proved with it would pass
+// for the same reason the assertion does.
+function registeredMemberPaths(container: string): string[] {
+  if (modeOf(container) !== 'workspace') return [];
+  try {
+    const state = JSON.parse(
+      fs.readFileSync(path.join(container, '.traffic-one', '.one.json'), 'utf8'),
+    ) as { workspaceMembers?: unknown };
+    if (!Array.isArray(state.workspaceMembers)) return [];
+    return state.workspaceMembers.map((entry) => {
+      const value = (entry as { path?: unknown } | null)?.path;
+      return typeof value === 'string' ? value : '';
+    });
+  } catch {
+    return [];
   }
 }

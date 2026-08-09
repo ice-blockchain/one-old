@@ -26,6 +26,7 @@ import {
   cleanupPrevious,
   loadPreviousManifest,
   modeReferenceRulesForState,
+  modeRuleCandidatesForState,
   modeRulesForState,
 } from './cleanup';
 import { writeCursorAgentFiles } from './cursor-agents';
@@ -361,11 +362,23 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   const rules = unique([...mandatoryRules, ...referenceRules, ...envelopeRules]);
   const host = detectHost();
   // Split from the existsSync filter below, because the unfiltered list is the
-  // CANDIDATE SET tornRootRefusal compares against. Mode rules are deliberately
-  // absent from the rule candidates: modeRulesForState derives them by reading
-  // the root's own `rules/modes/` dir, so a missing one is invisible there and
-  // would be indistinguishable from a mode that legitimately ships no rule.
-  const ruleCandidates = unique([...spec.mandatory, ...spec.optional, ...envelopeCandidates]);
+  // CANDIDATE SET tornRootRefusal compares against.
+  //
+  // Mode rules are in it via modeRuleCandidatesForState, which is config-only by
+  // construction (no `root` parameter). The two resolvers above cannot supply
+  // them: both filter by existsSync, so a mode rule a torn tree lost simply
+  // drops out of their result and the shortfall is invisible — the resolved set
+  // narrows, cleanupPrevious sweeps the project's only copy, and the manifest is
+  // rewritten without it. Measured on a root with `rules/modes/` intact except
+  // one profile rule: the run proceeded, removed=1, and the manifest dropped the
+  // entry. The declared halves (spine, profile rule, architecture, setup) are
+  // covered; the slice family is not and cannot be — see cleanup.ts.
+  const ruleCandidates = unique([
+    ...spec.mandatory,
+    ...spec.optional,
+    ...modeRuleCandidatesForState(capabilityState, capabilityProfile.profileId),
+    ...envelopeCandidates,
+  ]);
   const skillCandidates = [...activeSkillsForProject(cwd, state, host)]
     .filter((name) => !BOOTSTRAP_SKILLS.has(name)) // bootstrap skills live in the host skills/ dir, not per-project
     .filter((name) => !PROJECT_UNAVAILABLE_SKILLS.has(name))

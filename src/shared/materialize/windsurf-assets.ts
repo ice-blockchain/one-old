@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { TEAM_ROLES } from '../../config/onboarding';
 import { pluginRoot } from '../paths';
 import { templatePath } from '../stacks';
 import { renderWindsurfRuleDocs, WINDSURF_RULES_REL, type WindsurfRuleDocument } from '../windsurf-rules';
@@ -52,6 +53,18 @@ function removeEmptyDirs(baseAbs: string): void {
   }
 }
 
+// A real file at `candidate`, reached THROUGH any symlinks, and never a
+// directory. Mirrors paths.ts isFileSafe; never throws, for a nonexistent path,
+// a broken link, a link loop or an unreadable parent — all of which mean "not a
+// role doc this root can supply" here.
+function isFileFollowingLinks(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
 // The file's own text when it is one of ours, null otherwise — read once, because
 // the sweep below needs both the marker and the source class out of it.
 function generatedText(filePath: string): string | null {
@@ -77,19 +90,22 @@ function isRoleDocMirror(text: string): boolean {
  *
  * The keep-list is assembled from TWO independently resolved sources —
  * `<root>/rules/**` (enumerated by the caller, so its completeness is the
- * caller's to guarantee) and `<root>/agents/**` (enumerated by reading the
- * directory, so a tree that is missing or mid-write yields fewer entries and
- * nothing local can tell that from a release that retired a role). One flat
- * sweep over both classes therefore let an absent `agents/` dir delete every
- * mirrored role contract while the run reported success: `docs` was still
- * non-empty from the rule half, so the empty-content refusal below never fired,
- * and `.devin/rules` is the only copy Cascade reads.
+ * caller's to guarantee) and `<root>/agents/**` (read from the directory, so a
+ * tree that is missing or mid-write yields fewer entries). One flat sweep over
+ * both classes therefore let an absent `agents/` dir delete every mirrored role
+ * contract while the run reported success: `docs` was still non-empty from the
+ * rule half, so the empty-content refusal below never fired, and `.devin/rules`
+ * is the only copy Cascade reads.
  *
  * The scope of a sweep is limited to the class whose keep-list the run actually
- * produced. A retired role is still swept on any run that resolved the agents
- * tree; a run that resolved NONE of it leaves those mirrors alone and converges
- * the rule half as usual, which is strictly better than either deleting them or
- * refusing the whole run.
+ * produced IN FULL. `roleDocsResolved` is false both when the agents tree gave
+ * back nothing and when it gave back a strict subset of the declared roster
+ * (DECLARED_ROLE_DOC_IDS) — a partial copy narrows the keep-list by exactly the
+ * mirrors the sweep would then delete, which is the same partial-deletion shape
+ * as the empty one and was measured deleting 8 of 14 mirrors. Either way the
+ * mirrors are left alone and the rule half converges as usual, which is strictly
+ * better than deleting them or refusing the whole run. A genuinely retired role
+ * is still swept, because retiring one shrinks the roster in the same build.
  */
 function cleanupGeneratedRuleFiles(root: string, keep: ReadonlySet<string>, roleDocsResolved: boolean): number {
   const dir = path.join(root, WINDSURF_RULES_REL);
@@ -157,23 +173,73 @@ function activeRuleDocs(root: string, rules: readonly string[]): {
   return { docs, missing };
 }
 
-function roleRuleDocs(root: string) {
+/**
+ * The role docs a COMPLETE install ships as `<root>/agents/<id>.md` — one per
+ * content module that declares an agent in its module.json, which is exactly the
+ * team roster plus the always-available quick-fix role.
+ *
+ * Declared here rather than counted from the directory, for the reason
+ * materialize.ts tornRootRefusal gives at length: a candidate set read from the
+ * tree it is meant to audit cannot detect a shortfall in that tree. It is
+ * upgrade-proof by the same lockstep — `agents/**` is emitted and TEAM_ROLES is
+ * compiled by one `npm run gen` from one commit, so a release that retires a
+ * role deletes its module (and with it the emitted doc) and its roster entry
+ * together, both sides shrink, and nothing reads as missing.
+ * windsurf-assets.test.ts pins the two against each other.
+ */
+export const DECLARED_ROLE_DOC_IDS: readonly string[] = [...TEAM_ROLES.map((member) => member.role), 'quick-fix'];
+
+/**
+ * `missing` is the agents half of the same completeness signal activeRuleDocs
+ * produces for the rules half, and it exists because a PARTIALLY copied
+ * `agents/` is the one tear the doc comment below did not cover.
+ *
+ * Measured on an installed root torn to 3 of 7 role docs, Windsurf host, against
+ * a project already mirrored from a whole root: the run was not refused,
+ * `removed` was 8, and eight role-contract mirrors under `.devin/rules` — the
+ * only copy Cascade reads — were deleted. An absent `agents/` was already
+ * handled (docs empty ⇒ the class is not swept); a SHORT one was not, because
+ * "some entries came back" is indistinguishable from "this release ships these"
+ * when the directory is its own authority.
+ *
+ * Extra docs are still mirrored: this reports what the roster declared and the
+ * root could not supply, and says nothing about entries it did not declare.
+ */
+function roleRuleDocs(root: string): { docs: WindsurfRuleDocument[]; missing: string[] } {
   const agentsRoot = path.join(root, 'agents');
-  if (!fs.existsSync(agentsRoot)) return [];
   const docs: WindsurfRuleDocument[] = [];
-  for (const entry of fs.readdirSync(agentsRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isFile() || !entry.name.endsWith('.md') || entry.name.endsWith('.agent.md')) continue;
-    const relPath = `agents/${entry.name}`;
-    docs.push(...renderWindsurfRuleDocs(relPath, fs.readFileSync(path.join(agentsRoot, entry.name), 'utf8')));
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(agentsRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    // A root with no agents/ at all resolves nothing and is reported as such by
+    // the empty `docs`, not as a shortfall — see writeWindsurfHostAssets.
+    return { docs, missing: [] };
   }
-  return docs;
+  const present = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.name.endsWith('.md') || entry.name.endsWith('.agent.md')) continue;
+    const abs = path.join(agentsRoot, entry.name);
+    // statSync and NOT `entry.isFile()`: readdirSync's Dirent reflects lstat, so
+    // a SYMLINKED role doc answers false there and the whole tree reads as empty.
+    // paths.ts classifyPluginRootLayout already stats through links for exactly
+    // this reason ("an installed tree may symlink its runtime"), and measured on
+    // a root whose agents/ entries are links this filter resolved 0 of 7 — which,
+    // now that the shortfall is a signal, would report a healthy install as
+    // permanently torn and stop the role sweep forever.
+    if (!isFileFollowingLinks(abs)) continue;
+    const relPath = `agents/${entry.name}`;
+    present.add(entry.name.slice(0, -'.md'.length));
+    docs.push(...renderWindsurfRuleDocs(relPath, fs.readFileSync(abs, 'utf8')));
+  }
+  return { docs, missing: DECLARED_ROLE_DOC_IDS.filter((id) => !present.has(id)).sort() };
 }
 
 export function writeWindsurfHostAssets(cwd: string, rules: readonly string[]): WindsurfAssetsResult {
   const root = pluginRoot();
   const mirrored = activeRuleDocs(root, rules);
   const roleDocs = roleRuleDocs(root);
-  const docs = [...mirrored.docs, ...roleDocs];
+  const docs = [...mirrored.docs, ...roleDocs.docs];
   // This writer's OWN destruction guard, deliberately not inherited from
   // materializeProjectAssets' refusals by call-graph accident. `docs` is the
   // keep-list for cleanupGeneratedRuleFiles below, so an empty `docs` means
@@ -203,7 +269,14 @@ export function writeWindsurfHostAssets(cwd: string, rules: readonly string[]): 
     return { rules: 0, skills: 0, written: 0, removed: 0, skipped: 'windsurf-content-incomplete' };
   }
   const keepRules = new Set(docs.map((doc) => doc.relPath.split(path.sep).join('/')));
-  const roleDocsResolved = roleDocs.length > 0;
+  // A TORN `agents/` is treated exactly like an unresolved one, and the choice
+  // is the same one this writer already made for the empty case: narrowing the
+  // keep-list is the destructive act, so a keep-list this root could not fill
+  // does not get to authorize a sweep. Writing is unaffected — the docs that DID
+  // resolve are still mirrored — and the next run against a whole root sweeps
+  // any genuinely retired role then, because a retirement shrinks the declared
+  // roster too and leaves nothing missing.
+  const roleDocsResolved = roleDocs.docs.length > 0 && roleDocs.missing.length === 0;
   let written = 0;
   let removed = cleanupGeneratedRuleFiles(cwd, keepRules, roleDocsResolved) + cleanupGeneratedSkillDirs(cwd);
 

@@ -403,8 +403,31 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const staticViolationsFor = isExistingProjectMode(state)
     ? (target: GateTarget) => assetExtensionMismatchViolations(target.filePath, target.addedContent, block)
     : (target: GateTarget) => planStaticViolations(target.filePath, target.addedContent, isNative, block);
-  for (const target of gateTargets.filter((candidate) => candidate.staticCheck)) {
-    appendUnique(violations, staticViolationsFor(target));
+  // Every static rule names itself and none of them names the FILE — the 14
+  // block() call sites in plan-static.ts all have `filePath` in scope and pass
+  // it to none of their prose. On a one-file Write that costs nothing (the
+  // agent knows what it just wrote, and `denyTarget` carries it), but a
+  // multi-file apply_patch is judged per operation and `appendUnique` dedupes
+  // identical lines: an `any` in the seventh file of a ten-file patch rendered
+  // the byte-identical text an `any` in the first file did, so the whole family
+  // collapsed to one render per rule no matter which file tripped it. The
+  // aggregator's own `denyTarget` cannot recover it either — it is
+  // `gateTargets[0]`, the first operation, not the offending one.
+  //
+  // That collapse also reaches the repeat counter, which signs a refusal as
+  // `denyTarget` plus the whole rendered reason (shared/state/deny-repeat.ts):
+  // two patches tripping the same rule in DIFFERENT files shared one signature
+  // and one escalation bucket, so an agent clearing them file by file — real
+  // progress — was counted as looping. Naming the target splits those counts
+  // back apart.
+  //
+  // Only when more than one file is being judged, so every single-target render
+  // stays byte-identical to today's.
+  const staticTargets = gateTargets.filter((candidate) => candidate.staticCheck);
+  const nameStaticTarget = staticTargets.length > 1;
+  for (const target of staticTargets) {
+    const found = staticViolationsFor(target);
+    appendUnique(violations, nameStaticTarget ? found.map((violation) => `${target.filePath}: ${violation}`) : found);
   }
 
   if (violations.length === 0) return noop();

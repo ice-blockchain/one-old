@@ -269,7 +269,13 @@ export const DENY_IDS = [
   // plan-runid.ts, so this should never actually fire.
   'plan-write-violation-unattributed',
 
-  // ── modules/plan-guard/plan-write/plan-static.ts (via block()) ───────────
+  // Note the directory in the four headers below: the violation SOURCES live at
+  // modules/plan-guard/, one level ABOVE the plan-write/ aggregator that renders
+  // them. plan-write/ holds only index.ts and targets.ts. These headers used to
+  // say plan-write/plan-static.ts and so on — a near-miss that resolves to
+  // nothing, which reads as "the file moved" or "this id is dead" rather than as
+  // a typo.
+  // ── modules/plan-guard/plan-static.ts (via block()) ──────────────────────
   'asset-extension-mismatch',
   'pages-service-files',
   'expo-route-service-files',
@@ -285,7 +291,7 @@ export const DENY_IDS = [
   'no-any',
   'websocket-location',
 
-  // ── modules/plan-guard/plan-write/plan-readiness/index.ts (via block()) ──
+  // ── modules/plan-guard/plan-readiness/index.ts (via block()) ─────────────
   'runtime-assignments-owner-gate',
   'runtime-sidecar-owner-gate',
   'run-artifact-work-unit-gate',
@@ -348,7 +354,7 @@ export const DENY_IDS = [
   'tester-qa-build-identity-mismatch',
   'verification-contract-refresh-gate-tests-green',
 
-  // ── modules/plan-guard/plan-write/plan-runteam.ts (via block()) ──────────
+  // ── modules/plan-guard/plan-runteam.ts (via block()) ─────────────────────
   // NOT listed: `run-team-suffix` — a decorative fragment glued onto a
   // DIFFERENT violation's text (see plan-runteam.ts), never itself a firing
   // cause, and plan-write/index.ts's block() wrapper explicitly skips it
@@ -364,7 +370,7 @@ export const DENY_IDS = [
   'run-team-fallback-taken',
   'run-team-wrong-role',
 
-  // ── modules/plan-guard/plan-write/plan-runid.ts (via block()) ────────────
+  // ── modules/plan-guard/plan-runid.ts (via block()) ───────────────────────
   'run-id-mismatch',
 
   // ── modules/plan-guard/plan-write/index.ts (via block(), file-scoped) ────
@@ -468,7 +474,7 @@ export function isDenyId(value: unknown): value is DenyId {
 // needs it lifted is "fix the cause, or settle the run".
 //
 // A gate NOT listed here is overridable. That is the deliberate default: the
-// ~110 remaining ids are ordinary process/sequencing refusals whose worst case
+// 166 remaining ids are ordinary process/sequencing refusals whose worst case
 // is a lower-quality run, and that run is already marked ineligible for
 // `verified`/`shipped` the moment a token is minted for it
 // (run-settlement/io.ts).
@@ -648,7 +654,7 @@ void _codexChildFamilyIsNeverOverridable;
 // severe it is, and severity is what makes the escalation worth reading.
 //
 // An id NOT listed here escalates from the third byte-identical attempt. That
-// is the deliberate default: the remaining ~110 ids are refusals with an
+// is the deliberate default: the remaining 172 ids are refusals with an
 // in-session remedy the deny text already names, which is the whole 17cl
 // failure (seven identical refusals, 25 minutes, the fix in the text).
 export const NEVER_ESCALATED_DENY_IDS = [

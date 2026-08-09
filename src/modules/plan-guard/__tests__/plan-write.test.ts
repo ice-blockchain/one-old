@@ -629,6 +629,59 @@ test('a pure apply_patch move applies static content checks at the destination',
   });
 });
 
+// The static rules name themselves and never the file — all 14 block() sites in
+// plan-static.ts hold `filePath` and pass it to none of their prose. On a
+// multi-file patch the aggregator judges each operation and `appendUnique`
+// dedupes identical lines, so two files tripping ONE rule rendered a single
+// line naming neither, and `denyTarget` is the patch's FIRST operation rather
+// than an offending one. The reader could not tell which file to fix, and the
+// repeat counter — which signs a refusal as denyTarget plus the whole rendered
+// reason — put every such patch in one escalation bucket.
+test('a multi-file patch names which file each static violation is about', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const patchText = [
+      '*** Begin Patch',
+      '*** Add File: apps/web/src/components/Alpha.tsx',
+      '+export default function Alpha() { return null; }',
+      '*** Add File: apps/web/src/components/Beta.tsx',
+      '+export default function Beta() { return null; }',
+      '*** End Patch',
+    ].join('\n');
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { patchText }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind !== 'deny') return;
+    // BOTH targets, not one deduped line: the two files trip the same rule, so
+    // without the target on each line appendUnique collapses them into one.
+    assert.match(result.reason, /apps\/web\/src\/components\/Alpha\.tsx: /,
+      'the first offending file must be named in the violation line, not only in denyTarget');
+    assert.match(result.reason, /apps\/web\/src\/components\/Beta\.tsx: /,
+      'the second offending file trips the SAME rule, so it survives only if the line carries its path');
+    const lines = result.reason.split('\n').filter((line) => line.startsWith('  - '));
+    assert.equal(lines.length, 2,
+      `one violation line per offending file; got ${lines.length}:\n${lines.join('\n')}`);
+  });
+});
+
+// The other half of that pair, and the reason the naming is conditional: a
+// single-target write already knows its own file, so its render must not move.
+test('a single-file static violation renders without a path prefix', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const patchText = [
+      '*** Begin Patch',
+      '*** Add File: apps/web/src/components/Alpha.tsx',
+      '+export default function Alpha() { return null; }',
+      '*** End Patch',
+    ].join('\n');
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { patchText }));
+    assert.equal(result.kind, 'deny');
+    if (result.kind !== 'deny') return;
+    assert.match(result.reason, /^ {2}- Use named exports only/m,
+      'a one-file write renders the rule text unprefixed, byte-identical to before');
+    assert.equal(result.reason.includes('Alpha.tsx: '), false,
+      'nothing may prefix the line when there is only one file to name');
+  });
+});
+
 test('apply_patch fails closed when reconstruction cannot validate an update', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const patchText = [

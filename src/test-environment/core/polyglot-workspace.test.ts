@@ -32,7 +32,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { resolveProjectRoot } from '../../shared/hook/paths';
+import { isRegisteredWorkspaceMember, resolveProjectRoot, workspaceMembershipOf } from '../../shared/hook/paths';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { dirOwnsProject } from '../../shared/project-membership';
 import { sweepTrafficOneRetention } from '../../shared/retention';
@@ -323,9 +323,9 @@ test('polyglot workspace: an UNPARSEABLE container declaration still anchors res
 });
 
 /**
- * BEFORE anything is onboarded, whether a member resolves to itself depends
- * entirely on whether it is a git repository — its language manifest does not
- * decide it.
+ * BEFORE anything is onboarded, and with NO workspace registered, whether a
+ * member resolves to itself depends entirely on whether it is a git repository —
+ * its language manifest does not decide it.
  *
  * `projectMembershipRoot` (project-membership.ts:78) accepts a manifest for the
  * START dir but only VERSION CONTROL for an ANCESTOR, so a tool touching
@@ -333,8 +333,12 @@ test('polyglot workspace: an UNPARSEABLE container declaration still anchors res
  * owner: the nested directory becomes its own root, and a hook whose cwd is the
  * container adopts the CONTAINER. That is the moment onboarding is offered, so
  * it decides which directory a workspace member's `.one.json` is written into.
+ *
+ * Still recorded rather than fixed, because it is the behaviour of an ORDINARY
+ * container — a directory nobody has told Traffic One anything about. The row
+ * below is the one that moved.
  */
-test('polyglot workspace [recorded]: pre-onboarding, only version control anchors a member', () => {
+test('polyglot workspace [recorded]: with no workspace registered, only version control anchors a member', () => {
   withWorkspace({ memberVcs: false }, (workspace) => {
     readbackFixture(workspace, 'pre-onboarding/no-vcs');
     for (const member of workspace.members) {
@@ -353,6 +357,102 @@ test('polyglot workspace [recorded]: pre-onboarding, only version control anchor
       assert.equal(resolveProjectRoot(workspace.container, member.nestedSourcePath), member.dir,
         `${member.id}: and the container-level cwd follows it`);
     }
+  });
+});
+
+/**
+ * THE ROW THAT USED TO BE A SIMULATION.
+ *
+ * `mode: 'workspace'` plus a members registry is the P4 workspace project, and
+ * it is what makes the three members anchor without version control, without a
+ * language the resolver understands, and without a `workspaces` glob that could
+ * never have named two of them. Mutation M9 asserted this by patching the
+ * resolver; it is asserted here against the shipped one.
+ *
+ * The fixture is deliberately the WEAKEST possible member: no `.git`, no
+ * `.one.json`, and a source file in a subdirectory owning no marker at all. That
+ * is the exact shape the row above records as resolving to the container, so
+ * the difference between the two rows is the registry and nothing else.
+ *
+ * Note what does NOT change: the container still resolves to itself, and no
+ * member becomes a deletion candidate. The registry moves resolution DOWN, never
+ * a project's state off its own directory.
+ */
+test('polyglot workspace: a registered member anchors with no version control and no state of its own', () => {
+  withWorkspace({ memberVcs: false, registerMembers: true }, (workspace) => {
+    readbackFixture(workspace, 'workspace-mode/registered');
+
+    for (const member of workspace.members) {
+      assert.equal(fs.existsSync(path.join(member.dir, '.git')), false,
+        `FIXTURE ${member.id} must own no version control, or this row measures the recorded row above`);
+      assert.equal(fs.existsSync(path.join(member.dir, '.traffic-one')), false,
+        `FIXTURE ${member.id} must not be onboarded`);
+
+      assert.equal(resolveProjectRoot(member.nestedSourceDir), member.dir,
+        `${member.id}: a marker-less source dir inside a REGISTERED member resolves to the member`);
+      assert.equal(resolveProjectRoot(workspace.container, member.nestedSourcePath), member.dir,
+        `${member.id}: and the container-level cwd — the moment onboarding is offered — follows it,`
+        + ' so the wizard is offered for the member rather than for the container');
+      assert.equal(resolveProjectRoot(member.dir), member.dir, `${member.id}: cwd at the member`);
+      assert.equal(
+        resolveProjectRoot(member.dir, member.nestedSourcePath, { ceiling: workspace.container }),
+        member.dir,
+        `${member.id}: with the container as the host workspace ceiling (the multi-root window shape)`,
+      );
+      assert.equal(isRegisteredWorkspaceMember(member.dir), true, `${member.id}: and it says so as a predicate`);
+      assert.equal(isRegisteredWorkspaceMember(member.nestedSourceDir), false,
+        `${member.id}: while a directory inside it is not itself a member`);
+    }
+
+    assert.equal(resolveProjectRoot(workspace.container), workspace.container,
+      'the workspace is still its own root and adopts none of its members');
+    assert.equal(isRegisteredWorkspaceMember(workspace.container), false,
+      'a workspace is never its own member');
+    assert.deepEqual(plannedNestedLeaks(workspace.container), [],
+      'and registering members plans no deletion of anything');
+  });
+
+  // The same registry over members that ARE independently onboarded: every one
+  // of them keeps its own state, and none becomes a leak.
+  withWorkspace({ ...ONBOARDED_MEMBERS, registerMembers: true }, (workspace) => {
+    readbackFixture(workspace, 'workspace-mode/onboarded');
+    for (const member of workspace.members) {
+      assert.equal(resolveProjectRoot(member.dir), member.dir, `${member.id}: still its own root`);
+      assert.equal(leakedByPredicate(member.dir), false, `${member.id}: still not a leak`);
+      assert.equal(isRegisteredWorkspaceMember(member.dir), true, `${member.id}: and now registered as well`);
+    }
+    assert.deepEqual(plannedNestedLeaks(workspace.container), []);
+  });
+});
+
+/**
+ * The registry is the WORKSPACE's word, and an illegible workspace has no word.
+ *
+ * Same direction as the declaration reader's `opaque` arm, arrived at from the
+ * other side: there an unreadable declaration keeps its resolution leniency and
+ * loses its deletion authority, and here an unreadable workspace grants no
+ * membership at all — so the members fall back to the recorded pre-onboarding
+ * behaviour rather than inheriting an anchor nobody could read.
+ */
+test('polyglot workspace: a TORN workspace state registers nobody, and says so as ignorance', () => {
+  withWorkspace({ memberVcs: false, registerMembers: true }, (workspace) => {
+    readbackFixture(workspace, 'workspace-mode/before-tearing');
+    fs.writeFileSync(
+      path.join(workspace.container, '.traffic-one', '.one.json'),
+      '{ "mode": "workspace", "workspaceMembers": [\n',
+      'utf8',
+    );
+
+    for (const member of workspace.members) {
+      assert.equal(workspaceMembershipOf(member.dir).kind, 'indeterminate',
+        `${member.id}: a torn workspace state must not be reported as "not a member"`);
+      assert.equal(isRegisteredWorkspaceMember(member.dir), false,
+        `${member.id}: and the boolean grants nothing on an answer nobody established`);
+      assert.equal(resolveProjectRoot(workspace.container, member.nestedSourcePath), workspace.container,
+        `${member.id}: resolution falls back to the recorded pre-onboarding answer, not to a guessed member`);
+    }
+    assert.deepEqual(plannedNestedLeaks(workspace.container), [],
+      'and an unreadable workspace never authorizes a deletion');
   });
 });
 

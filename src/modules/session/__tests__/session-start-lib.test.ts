@@ -7,6 +7,7 @@ import * as path from 'path';
 import { ensureAgentTeamsEnv, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, resetUncertifiedHostBannerThrottle, shouldBuildCodeGraph, sweepOldDigests, tokenEconomyBanner, uncertifiedHostBanner } from '../session-start-lib';
 import { writeMaterializedContent } from '../../../shared/materialize/__tests__/fixtures/materialized-content';
 import { materializeProjectAssets } from '../../../shared/materialize/materialize';
+import { assertInstalledPluginRoot } from '../../../shared/materialize/__tests__/fixtures/installed-root';
 import { hasMaterializedProjectAssets, materializedFromDifferentPluginBuild } from '../../../shared/materialize/has-assets';
 import { recordPluginUseChoice, resetPluginUseCache } from '../../../shared/state/plugin-use';
 import { readJsonResult } from '../../../shared/fsjson';
@@ -212,6 +213,9 @@ function withInstalledPluginRoot(fn: (base: string, plugin: string) => void): vo
   env.TRAFFIC_ONE_PLUGIN_ROOT = plugin;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(base, 'prefs.json');
   try {
+    // The one-rule seed above is what makes the layout classify; assert it did,
+    // before the convergence loop starts trusting the writer's torn evidence.
+    assertInstalledPluginRoot('session-start-lib fixture');
     fn(base, plugin);
   } finally {
     if (prevRoot === undefined) delete env.TRAFFIC_ONE_PLUGIN_ROOT; else env.TRAFFIC_ONE_PLUGIN_ROOT = prevRoot;

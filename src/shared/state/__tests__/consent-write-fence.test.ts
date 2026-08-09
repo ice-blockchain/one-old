@@ -33,6 +33,7 @@ import { runClaudeHook } from '../../../hooks/claude-entry';
 import { appendTextFile, createJsonExclusive, ensureDir, movePath, removePath, writeJson, writeTextFile } from '../../fsjson';
 import { drainStateWrites } from '../state-write-log';
 import { materializeProjectAssets } from '../../materialize/materialize';
+import { assertInstalledPluginRoot } from '../../materialize/__tests__/fixtures/installed-root';
 import { writeOneSection } from '../../one-settings';
 import {
   clearPluginUseChoice,
@@ -193,6 +194,10 @@ function withInstalledPluginRoot<T>(base: string, fn: () => T): T {
   process.env.TRAFFIC_ONE_PLUGIN_ROOT = plugin;
   process.env.TRAFFIC_ONE_HOST = 'claude';
   try {
+    // The doc comment above states why this fixture has to be installed; this is
+    // that statement made load-bearing. "The fenced writer wrote nothing" is only
+    // a claim about the fence while the writer would otherwise have written.
+    assertInstalledPluginRoot('consent-write-fence fixture');
     return fn();
   } finally {
     if (saved.root === undefined) delete process.env.TRAFFIC_ONE_PLUGIN_ROOT;

@@ -26,6 +26,7 @@ import * as path from 'path';
 
 import { materializedFromDifferentPluginBuild } from '../../../shared/materialize/has-assets';
 import { materializeProjectAssets } from '../../../shared/materialize/materialize';
+import { assertInstalledPluginRoot } from '../../../shared/materialize/__tests__/fixtures/installed-root';
 import { hasMaterializedProjectAssets } from '../../../shared/materialize';
 import { isMaterialized, readEffectiveState, stateVersion } from '../../../shared/state';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from '../converge';
@@ -57,6 +58,10 @@ function withInstalledPluginRoot(fn: (base: string, plugin: string) => void): vo
   env.TRAFFIC_ONE_PLUGIN_ROOT = plugin;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(base, 'prefs.json');
   try {
+    // convergePluginRoot below fills this root from the writer's torn evidence,
+    // which only arrives once the LAYOUT check has already passed — so assert
+    // the layout here rather than inferring it from the loop terminating.
+    assertInstalledPluginRoot('materialization-freshness fixture');
     fn(base, plugin);
   } finally {
     if (prevRoot === undefined) delete env.TRAFFIC_ONE_PLUGIN_ROOT; else env.TRAFFIC_ONE_PLUGIN_ROOT = prevRoot;

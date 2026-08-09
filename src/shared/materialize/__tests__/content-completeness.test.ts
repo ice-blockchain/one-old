@@ -22,6 +22,8 @@ import {
   PROJECT_UNAVAILABLE_SKILLS,
   SKILL_FILTERS,
 } from '../../../config/skill-filters';
+import { STRUCTURAL_PROFILE_IDS } from '../../capabilities';
+import { MODE_SPINE_RULE_BY_MODE, modeRuleCandidatesForState } from '../cleanup';
 import { AGENT_ROLE_BASE_RULES, composeRuleManifest, roleScopedRuleUnion, templatePath } from '../../stacks';
 
 // The SOURCE trees `npm run gen` re-emits byte-identical as `rules/**` and
@@ -96,6 +98,76 @@ test('every rule id the runtime can ask a plugin root for exists in the shipped 
     [...missing].map(([relPath, shape]) => `${relPath} (e.g. ${shape})`),
     [],
     'a rule id with no file makes tornRootRefusal fire on a HEALTHY install for every project of that shape',
+  );
+});
+
+// The same tripwire for the MODE half of the candidate set, which joined it when
+// the rules/modes/** tear was closed. The exposure is larger here than for the
+// stack manifests, because the mode candidates are declared in two hand-written
+// tables (MODE_SPINE_RULE_BY_MODE, NEW_PROJECT_PROFILE_RULE_BY_ID) rather than
+// composed: an entry whose file does not ship would make materialization refuse
+// on a HEALTHY install for every project of that mode/profile.
+test('every mode rule the runtime can ask a plugin root for exists in the shipped rules tree', () => {
+  const shipped = shippedRuleIds();
+  const missing = new Map<string, string>();
+  let shapes = 0;
+  // `stack` is in the cross product because DEFAULT_VITE_NEW_PROJECT_SETUP_RULE
+  // is selected from it, and `undefined` because a profile that has not resolved
+  // yet must fail closed to the spine rather than to a guessed profile rule.
+  for (const mode of Object.keys(MODE_SPINE_RULE_BY_MODE)) {
+    for (const profileId of [...STRUCTURAL_PROFILE_IDS, undefined, 'a-profile-a-future-release-adds']) {
+      for (const stack of STACKS) {
+        shapes += 1;
+        for (const relPath of modeRuleCandidatesForState({ mode, stack }, profileId)) {
+          if (shipped.has(templatePath(relPath))) continue;
+          if (!missing.has(relPath)) missing.set(relPath, `${mode}/${profileId ?? 'no-profile'}/${stack}`);
+        }
+      }
+    }
+  }
+  assert.ok(shapes > 100, `expected the full cross product, checked ${shapes}`);
+  assert.deepEqual(
+    [...missing].map(([relPath, shape]) => `${relPath} (e.g. ${shape})`),
+    [],
+    'a declared mode rule with no file makes the completeness refusal fire on a HEALTHY install',
+  );
+  // Positively: the tables are actually reached. A candidate function that
+  // silently returned [] would satisfy the emptiness assertion above forever.
+  assert.deepEqual(
+    modeRuleCandidatesForState({ mode: 'new-project', stack: 'default' }, 'vite-react'),
+    [
+      'rules/modes/new-project.md',
+      'rules/modes/new-project-vite-react.md',
+      'rules/modes/new-project-architecture.md',
+      'rules/modes/new-project-setup.md',
+    ],
+  );
+  // …and a mode that ships no rule declares no candidate, which is the whole
+  // reason the spine is a table. detectMode also answers `existing-with-supabase`,
+  // and asking a root for `rules/modes/existing-with-supabase.md` would report
+  // every healthy install as torn for those projects.
+  assert.deepEqual(modeRuleCandidatesForState({ mode: 'existing-with-supabase' }, 'vite-react'), []);
+  assert.deepEqual(modeRuleCandidatesForState({}, undefined), []);
+});
+
+// The one branch of modeRulesForState with no config-side authority: slices
+// named `<mode>-<topic>.md` are found by reading the root's own directory, so a
+// slice a torn tree lost is invisible. That is tolerable ONLY while the live
+// surface is empty — no shipped mode has a slice, so nothing can be swept
+// through it today. This pins that, and fails the moment a slice is added, which
+// is the moment the family needs an authority.
+test('no shipped mode has rule slices, so the one self-referential branch has no live surface', () => {
+  const modesDir = path.join(RULES_SOURCE, 'modes');
+  const names = fs.readdirSync(modesDir).filter((name) => name.endsWith('.md'));
+  const slices = Object.keys(MODE_SPINE_RULE_BY_MODE)
+    // `new-project` returns through the profile branch above the slice readdir,
+    // so its `new-project-*.md` family never reaches it.
+    .filter((mode) => mode !== 'new-project')
+    .flatMap((mode) => names.filter((name) => name.startsWith(`${mode}-`)));
+  assert.deepEqual(
+    slices,
+    [],
+    'a mode slice is resolved by reading the plugin root itself and cannot be declared — see cleanup.ts modeRulesForState',
   );
 });
 

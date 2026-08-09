@@ -8,11 +8,17 @@ import * as path from 'path';
 
 import { STATE_DIR, STATE_FILE } from '../../config/paths';
 import { hasPluginAuthoringMarkers, isMachineConfigRoot } from '../authoring-root';
-import { readJson } from '../fsjson';
+import { readJson, readJsonResult } from '../fsjson';
 import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import { isNativeState } from '../state';
 import { hasStateFile } from '../tool-classify';
 import { workspaceClaimsDescendant } from './workspace-declaration';
+import {
+  WORKSPACE_PROJECT_MODE,
+  enclosingRegisteredMember,
+  readWorkspaceMemberRegistry,
+  workspaceMemberRegistryOf,
+} from './workspace-members';
 
 // Re-exported so the resolver stays the single import surface for root questions.
 export { dirOwnsProject, projectMembershipRoot } from '../project-membership';
@@ -64,8 +70,27 @@ export function findProjectRootForHookFile(cwd: string, filePath: unknown): stri
 // materialization when a scaffolder cd'd into it — which is NOT a root and must not
 // shadow the workspace that actually holds the onboarding/lifecycle state.
 export function isOnboardedProjectRoot(dir: string): boolean {
-  const s = readJson<Rec>(path.join(dir, STATE_FILE), {} as Rec);
-  return Boolean(s && typeof s.mode === 'string' && (s.mode as string).trim());
+  return committedProjectState(dir) !== null;
+}
+
+/**
+ * The state record behind `isOnboardedProjectRoot`, or null when the directory
+ * is not a real root — the SAME single `.one.json` read, handing back the value
+ * it already had instead of throwing it away.
+ *
+ * Split out so the resolution walk can ask a second question of each level (is
+ * this a workspace that registered a member below it?) without a second
+ * syscall. Behaviour-identical to the `readJson(…, {})` form it replaces on
+ * every input: `readJson` IS `readJsonResult` plus a fallback, and every
+ * non-`ok` kind — as well as every `ok` value with no string `mode` — reached
+ * the same `false` there that reaches `null` here.
+ */
+function committedProjectState(dir: string): Rec | null {
+  const read = readJsonResult<Rec>(path.join(dir, STATE_FILE));
+  if (read.kind !== 'ok') return null;
+  const s = read.value;
+  if (!s || typeof s !== 'object') return null;
+  return typeof s.mode === 'string' && s.mode.trim() ? s : null;
 }
 
 // Bound the upward walk so a hook can never spend unbounded fs reads climbing to /.
@@ -130,7 +155,8 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: Wor
   let home = '';
   try { home = path.resolve(os.homedir()); } catch { /* no home → unbounded but MAX-capped */ }
   const ceil = ceiling ? path.resolve(ceiling) : '';
-  let current = path.resolve(startDir);
+  const start = path.resolve(startDir);
+  let current = start;
   for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
     if (home && current === home) break; // reached the home dir — don't treat it (or above) as a root
     // Machine-config space (incl. exact system-temp roots like /private/tmp) is
@@ -145,7 +171,28 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: Wor
     // A mode-bearing .one.json INSIDE the plugin authoring repo is a stray, never
     // a project — skip it and keep walking so an enclosing real workspace (if
     // any) still resolves. The repo can therefore never be adopted as a project.
-    if (isOnboardedProjectRoot(current) && !hasPluginAuthoringMarkers(current)) {
+    const committed = committedProjectState(current);
+    if (committed && !hasPluginAuthoringMarkers(current)) {
+      // A Traffic One WORKSPACE PROJECT (mode: 'workspace') hands the walk back
+      // DOWN to the member it registered, instead of adopting the container.
+      // This is the whole of the P4 workspace change to resolution, and it is
+      // unreachable on every project that exists today: `committed.mode` is one
+      // of new-project / existing-codebase / existing-with-supabase everywhere,
+      // and workspaceMemberRegistryOf returns `none` on its first comparison for
+      // all three. No pattern is read, no file is opened, nothing is allocated —
+      // the default path pays one string comparison against a value it is
+      // already holding.
+      //
+      // It can only ever move the answer DOWNWARD, to a directory between this
+      // root and `start` (inclusive of `start`, exclusive of this root — a
+      // workspace is never its own member). A directory that resolved to ITSELF
+      // still does, because the redirect is only reachable at an ANCESTOR level,
+      // which the walk only reaches after declining to return the start. So it
+      // cannot turn a kept `.traffic-one` into a deletion candidate under
+      // shared/retention.ts's `resolveProjectRoot(dir) !== dir`; it can only
+      // rescue one, which is the safe direction for that consumer.
+      const member = enclosingRegisteredMember(current, workspaceMemberRegistryOf(committed), start);
+      if (member) return member;
       // An onboarded root that is ITSELF a workspace root is the monorepo root —
       // the NEAREST such root wins, even when a farther ancestor also declares
       // workspaces (a project nested inside an unrelated umbrella repo must not
@@ -232,6 +279,94 @@ export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
   if (hasStateFile(dir)) return false;                      // owns state → a real root, leave it
   return nearestWorkspaceRoot(path.dirname(dir)) !== null;  // an ANCESTOR is a workspace root
 }
+
+/**
+ * Whether a directory is a VALIDATED MEMBER of an enclosing Traffic One
+ * workspace — and, when the answer is no, whether that is a finding or an
+ * inability.
+ *
+ * `not-member` is a positive fact: every ancestor up to the stopping point was
+ * legible and none of them registered this directory. `indeterminate` means the
+ * walk passed a `.traffic-one/.one.json` it could not read or could not parse,
+ * or a workspace whose registry held a malformed entry, and therefore never
+ * established the answer. Folding those together is the single defect shape
+ * this codebase has closed some twenty times, so they are separate here and the
+ * boolean below is the place the fold is made, deliberately and in one line.
+ *
+ * NEAREST WINS, matching nearestOnboardedRoot's own rule for a monorepo root: the
+ * first workspace root the walk meets owns the question. A workspace that
+ * registers somebody else is a `not-member` answer, not a reason to keep looking
+ * for a farther workspace that might say otherwise — and an ILLEGIBLE ancestor
+ * stops the walk for the same reason, because a farther claim would be overruled
+ * by whatever that unreadable file says.
+ *
+ * EXACT, unlike the redirect inside nearestOnboardedRoot, which is
+ * ancestor-or-self. The resolver is asked "which project owns this file" and a
+ * nested source directory must answer with its member; this is asked "is THIS
+ * directory a member", and `<member>/internal` is not one. The two share
+ * `enclosingRegisteredMember` and differ only in comparing its result back
+ * against the input.
+ *
+ * PURE: a bounded sequence of reads, no lock and no write anywhere in the body,
+ * so it may be asked from inside a lock body. Same contract, and the same
+ * reason, as state/run-agent/ledger.ts runLedgerClaimAdmission.
+ */
+export type WorkspaceMembershipVerdict =
+  | { readonly kind: 'member'; readonly workspaceRoot: string; readonly memberRoot: string }
+  | { readonly kind: 'not-member' }
+  | { readonly kind: 'indeterminate'; readonly why: string };
+
+export function workspaceMembershipOf(dir: string, opts: { ceiling?: string } = {}): WorkspaceMembershipVerdict {
+  let home = '';
+  try { home = path.resolve(os.homedir()); } catch { /* no home → MAX_ROOT_WALK-capped */ }
+  const ceil = opts.ceiling ? path.resolve(opts.ceiling) : '';
+  const target = path.resolve(dir);
+  // Start at the PARENT: a workspace root is never its own member, so reading
+  // the target's own state could only ever cost a syscall to learn nothing.
+  let current = path.dirname(target);
+  for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
+    if (home && current === home) break;
+    if (isMachineConfigRoot(current)) break;
+    if (ceil && !isPathWithin(current, ceil)) break;
+    if (!hasPluginAuthoringMarkers(current)) {
+      const registry = readWorkspaceMemberRegistry(current);
+      if (registry.kind === 'illegible' || registry.kind === 'opaque') {
+        return { kind: 'indeterminate', why: `${current}: ${registry.why}` };
+      }
+      if (registry.kind === 'members') {
+        const member = enclosingRegisteredMember(current, registry, target);
+        return member !== null && path.resolve(member) === target
+          ? { kind: 'member', workspaceRoot: current, memberRoot: member }
+          : { kind: 'not-member' };
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return { kind: 'not-member' };
+}
+
+/**
+ * `workspaceMembershipOf` narrowed to the one arm that GRANTS something.
+ *
+ * `indeterminate` folds to false, and the fold is the whole reason the three
+ * values exist above it. This boolean's consumers are the ones that would treat
+ * `true` as authority — the workspace-gate item next wave reads it to decide
+ * whether a member may be treated as its own project — and authority derived
+ * from a file nobody could read is not authority. A caller that needs to tell
+ * "no" from "could not tell", so it can say so rather than deny silently, must
+ * ask for the verdict instead.
+ */
+export function isRegisteredWorkspaceMember(dir: string, opts: { ceiling?: string } = {}): boolean {
+  return workspaceMembershipOf(dir, opts).kind === 'member';
+}
+
+// Re-exported so the resolver stays the single import surface for root
+// questions (see the dirOwnsProject/projectMembershipRoot re-export at the top),
+// and so a caller never has to know that the registry reader is a separate leaf.
+export { WORKSPACE_PROJECT_MODE, readWorkspaceMemberRegistry } from './workspace-members';
+export type { WorkspaceMemberRegistry } from './workspace-members';
 
 // Resolve the effective Traffic One project root for a hook operating at `cwd` on
 // an optional target `filePath`. Walks UP from the target file's dir (then from

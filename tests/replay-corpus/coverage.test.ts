@@ -81,7 +81,7 @@ test.after(cleanupReplayTempTrees);
 //                      materializedGreenfield are already one call apart).
 const MIN_DENY_IDS_REACHED = 63; // 67 today
 const MIN_DENYING_GATES = 12; // 13 today
-const MIN_PROJECT_STATES = 31; // 33 today
+const MIN_PROJECT_STATES = 32; // 34 today
 
 // Handlers whose `run` is INVOKED at least once, out of the whole registered
 // set (all events, not just PreToolUse) — see instrumentedHandlers. A handler
@@ -158,6 +158,14 @@ const REACHED_DENY_IDS: readonly string[] = [
   'scaffold-stack-gate',
   'spawn-background-forbidden',
   'spawn-child-cannot-mint-run',
+  // Reached from the corpus's very first run, and listed in NEITHER array until
+  // now — which is not a hole (an id that stops being reached still fails
+  // `newlyUnreached`) but the WRONG failure: that assertion's message says "a
+  // new id shipped without a case" and tells the reader to pin it as UNREACHED,
+  // so losing real coverage invited a pin instead of a fix. It also left the
+  // printed reach count (67) one ahead of this list's length (66), which is the
+  // discrepancy that surfaced it.
+  'spawn-claim-unavailable',
   'spawn-role-conflict',
   'spawn-run-id-mismatch',
   'state-mode-downgrade',

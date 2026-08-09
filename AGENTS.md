@@ -95,12 +95,23 @@ best-effort, fall through to all-hosts when they miss, and are overridable with
 
 ## Scratch files (`/.tmp/`)
 
-Every scratch file an agent authors goes under `/.tmp/<lane>/` at the repo root
+Every scratch file an agent authors goes under
+
+```
+/Users/work/code/github.com/ice-blockchain/one/.tmp/<lane>/
+```
+
 and nowhere else: probe scripts, mutation-test copies, measurement drivers,
-progress logs, saved pristine copies, diff dumps. Not `mktemp -d`, not
-`$TMPDIR`, not `/tmp`, not `/var/folders/**`, not anywhere under `$HOME` —
-writing outside the workspace interrupts the user for an approval on every
-command.
+progress logs, saved pristine copies, diff dumps, rsync destinations, redirected
+command output, anything a `--out` flag names.
+
+NEVER write outside this repository, and never run a command that would. Not
+`mktemp -d`, not `$TMPDIR`, not `/tmp`, not `/var/folders/**`, not anywhere
+under `$HOME`, not `~/traffic-one-*`. A write outside the workspace stops the
+run and interrupts the user for an approval on every single command, which is
+never an acceptable cost for scratch. If a tool insists on an absolute
+destination, give it one under `/.tmp/<lane>/`; if that seems impossible, the
+task is wrong, not the rule — say so instead of reaching outside.
 
 Root level is required rather than tidy. The test glob is `src/**/*.test.ts`
 `tests/**/*.test.ts` and `tsconfig.json` includes `src/**/*.ts` plus

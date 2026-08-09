@@ -36,6 +36,7 @@ publication date.**
 
 ### Deny prose — what a refusal says
 
+- Require positive workspace membership before deleting nested project state (`d3462aad`)
 - Make silent refusals speak, and stop Cursor's enforcement hooks failing open (`05cb6c87`)
 - Harden state legibility, clock skew, and consent boundaries (`9b7e547e`)
 - fix: report write refusals instead of silently reporting success (`199dcb19`)
@@ -43,6 +44,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Require positive workspace membership before deleting nested project state (`d3462aad`)
 - Unify native detection, and make three instruments tell the truth (`798a6808`)
 - Make silent refusals speak, and stop Cursor's enforcement hooks failing open (`05cb6c87`)
 - Make the shipped security checks actually check, and the release checks satisfiable (`22d84e35`)
