@@ -2,12 +2,19 @@
 // The onboarding flow engine: computeOnboarding + applyAnswer over the
 // view/meta helpers in flow-view.ts.
 
+import * as path from 'path';
+
 import { classifyPromptForStack, detectStackFromCodebase, promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
 import { authEnforced, isLocallyAuthenticated } from '../auth';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
 import { nextOnboardingStep } from '../onboarding/prompts';
 import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../onboarding/local-prefs';
+import {
+  inheritWorkspacePrefsToMembers,
+  isSharedWorkspaceAnswerStep,
+  workspaceContainerView,
+} from '../onboarding/workspace-inherit';
 import {
   projectContextOriginalPrompt,
 } from '../onboarding/project-context';
@@ -29,6 +36,8 @@ import {
   writeState,
 } from '../state';
 
+import { WORKSPACE_PROJECT_MODE } from '../hook/workspace-members';
+
 import {
   buildTeamLineup,
   deviceFingerprint,
@@ -39,6 +48,7 @@ import {
   metaForStep,
   stepWhenDurablePrefsMissing,
   wizardStepFromRaw,
+  workspaceWaitingMeta,
   type AnswerOutcome,
   type OnboardingView,
   type WizardStep,
@@ -54,9 +64,25 @@ function stackRoutingState(cwd: string, state: Rec): Rec {
   return detected.stack ? { ...state, stack: detected.stack } : state;
 }
 
+// A workspace may hold a workspace. The recursion below is bounded by the same
+// kind of constant every walk in hook/paths.ts uses rather than by an argument
+// a caller could get wrong: a member is strictly INSIDE its container, so the
+// chain is already bounded by directory depth, and this only caps the
+// pathological case. A member reached at the cap is reported PENDING, never
+// done — the safe direction, since "done" is what unblocks work.
+const MAX_WORKSPACE_NESTING = 4;
+
 export function computeOnboarding(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
+): OnboardingView {
+  return computeOnboardingAt(cwd, env, 0);
+}
+
+function computeOnboardingAt(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  depth: number,
 ): OnboardingView {
   const { state, mode } = effectiveOnboardingState(cwd, env);
   const originalPrompt = projectContextOriginalPrompt(state);
@@ -120,6 +146,28 @@ export function computeOnboarding(
   let done: boolean;
   const localPreferenceTarget = currentLocalPreferenceTarget(host, env, cwd);
 
+  // ── The workspace CONTAINER branch ─────────────────────────────────────────
+  // A container is not a codebase, and every arm below follows from that one
+  // fact. Reached only for `mode: 'workspace'`, which no project carried before
+  // this wave, so every existing shape falls straight through.
+  //
+  // What it fixes, measured on a two-member container whose registry was minted
+  // by the product's own writer: WITHOUT this branch the container fell into
+  // the existing-codebase arm below, `stackRoutingState` derived no stack for
+  // it (correctly — it has none), and the wizard demanded `tech-detect`. That
+  // asks the session agent to classify the tech stack of a directory that by
+  // construction has no single one, and setup could never complete.
+  if (mode === WORKSPACE_PROJECT_MODE) {
+    const container = workspaceContainerView(cwd);
+    if (container.isContainer) {
+      return workspaceContainerOnboarding(cwd, state, container, env, host, originalPrompt, localPreferenceTarget, depth);
+    }
+    // `mode` said workspace and the registry reader disagrees — the state file
+    // the two read is the same file, so this is only reachable through a legacy
+    // state path. Fall through to the ordinary router rather than inventing a
+    // third answer.
+  }
+
   if (mode === 'new-project') {
     if (isNewProjectOnboardingIncomplete(state, host)) {
       step = wizardStepFromRaw(nextOnboardingStep(state, host));
@@ -172,6 +220,105 @@ export function computeOnboarding(
     hostname: deviceName(),
     deviceId: deviceFingerprint(),
   };
+}
+
+/**
+ * The container's own view: shared steps here, stack steps nowhere, done only
+ * when every member is done.
+ *
+ * THREE THINGS THE CONTAINER IS NOT ASKED, and each omission is the point:
+ *
+ *   - a STACK. `tech-detect`, `project-context`, `mobile` and `finalize` all
+ *     describe one codebase. The members are the codebases; the container has
+ *     no stack to classify and nothing to derive one from.
+ *   - a MEMBER LIST. An empty registry is a refusal, not a to-do — see
+ *     WorkspaceStepInfo. Nothing here enumerates the directory, offers a
+ *     chooser, or registers anything: registration happens when a person runs
+ *     setup ON the member they mean.
+ *   - anything a member already answered. The shared steps run against the
+ *     CONTAINER's own preference bucket, once, and reach members through
+ *     onboarding/workspace-inherit.ts.
+ *
+ * The shared-step router is `nextLocalPreferenceStep`, unchanged, with one
+ * substitution that has to be named rather than hidden: it opens with
+ * `if (!s.stack) return null`, a guard that exists so a SPARSE repo — one whose
+ * stack is not yet known — is not asked for preferences it may not need. A
+ * container's stack is not unknown, it is absent by construction, which is the
+ * opposite fact reaching the same test. The sentinel below satisfies the guard
+ * and is never published: the view's `stack` is read from the real state, so a
+ * container still reports `stack: null` to every consumer.
+ */
+const WORKSPACE_ROUTING_STACK = 'workspace-container';
+
+function workspaceContainerOnboarding(
+  cwd: string,
+  state: Rec,
+  container: ReturnType<typeof workspaceContainerView>,
+  env: NodeJS.ProcessEnv,
+  host: string,
+  originalPrompt: string,
+  localPreferenceTarget: ReturnType<typeof currentLocalPreferenceTarget>,
+  depth: number,
+): OnboardingView {
+  const base = {
+    mode: WORKSPACE_PROJECT_MODE,
+    stack: typeof state.stack === 'string' ? state.stack : null,
+    originalPrompt,
+    hostname: deviceName(),
+    deviceId: deviceFingerprint(),
+  };
+
+  if (container.why) {
+    return {
+      ...base,
+      step: null,
+      done: false,
+      meta: workspaceWaitingMeta({
+        container: cwd, members: [], pending: [], reason: 'unreadable-registry', why: container.why,
+      }),
+    };
+  }
+
+  // The shared half, answered at the container exactly once.
+  const routed = { ...state, stack: WORKSPACE_ROUTING_STACK };
+  const sharedStep = nextLocalPreferenceStep(routed, host, localPreferenceTarget);
+  if (sharedStep) {
+    return {
+      ...base,
+      step: sharedStep as WizardStep,
+      done: false,
+      meta: enrichStepMeta(metaForStep(sharedStep as WizardStep, originalPrompt), sharedStep as WizardStep, state, env, localPreferenceTarget),
+    };
+  }
+
+  // An empty registry is checked AFTER the shared steps, not before, and the
+  // order is deliberate: the shared answers are what a member inherits, so a
+  // person who registers their first member should find those questions already
+  // answered rather than meeting them one directory later.
+  if (container.members.length === 0) {
+    return {
+      ...base,
+      step: null,
+      done: false,
+      meta: workspaceWaitingMeta({ container: cwd, members: [], pending: [], reason: 'empty-registry' }),
+    };
+  }
+
+  const pending = container.members.filter((member) => {
+    if (depth >= MAX_WORKSPACE_NESTING) return true;
+    return !computeOnboardingAt(path.join(cwd, ...member.split('/')), env, depth + 1).done;
+  });
+  if (pending.length > 0) {
+    return {
+      ...base,
+      step: null,
+      done: false,
+      meta: workspaceWaitingMeta({
+        container: cwd, members: container.members, pending, reason: 'members-pending',
+      }),
+    };
+  }
+  return { ...base, step: null, done: true, meta: metaForStep(null, originalPrompt) };
 }
 
 // Attach the resolved subagent line-up (role → tier → host model) so the wizard's
@@ -315,18 +462,46 @@ function attachPendingInstallTask(
   return { ...outcome, task: { kind: 'onboarding-toolchain' } };
 }
 
+/**
+ * Fan a SHARED answer out to the container's members, immediately after it is
+ * recorded.
+ *
+ * Here rather than inside each `applyAnswerStep` case because the three shared
+ * steps write through three different helpers (`mergeProjectPrefs`,
+ * `mergeProjectHostPrefs` twice) and the propagation rule is the same for all
+ * of them: whatever the container's bucket now holds is what its members hold.
+ * Reading the bucket back after the answer, rather than forwarding the answer's
+ * own value, is what keeps the two in step — normalization, the performance
+ * target metadata and the team line-up derived from the level all happen inside
+ * the write, and a member seeded from the raw submitted value would carry a
+ * different record than the container it inherited from.
+ *
+ * `code-graph` is absent from the shared set on purpose: it writes MACHINE-wide
+ * state (`~/.traffic-one/one.json`), which every directory on the machine
+ * already reads. Measured: a member's effective state carried the container's
+ * `codeGraphProvider` with nothing copied anywhere.
+ *
+ * Best-effort by contract. A member that could not take the write is a real
+ * failure and it is reported by `inheritWorkspacePrefsToMember`, but it must
+ * not turn a recorded container answer into a wizard error — the answer DID
+ * land, and re-asking it would be the false report this file's
+ * `stateWriteRefused` note exists to prevent.
+ */
+function fanOutSharedWorkspaceAnswer(cwd: string, step: string, env: NodeJS.ProcessEnv): void {
+  if (!isSharedWorkspaceAnswerStep(step)) return;
+  if (!workspaceContainerView(cwd).isContainer) return;
+  inheritWorkspacePrefsToMembers(cwd, env);
+}
+
 export function applyAnswer(
   cwd: string,
   step: string,
   value: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): AnswerOutcome {
-  return attachPendingInstallTask(
-    cwd,
-    step,
-    applyAnswerStep(cwd, step, value, env),
-    env,
-  );
+  const outcome = applyAnswerStep(cwd, step, value, env);
+  if (outcome.ok) fanOutSharedWorkspaceAnswer(cwd, step, env);
+  return attachPendingInstallTask(cwd, step, outcome, env);
 }
 
 function applyAnswerStep(

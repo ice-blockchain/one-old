@@ -19,6 +19,7 @@ import {
   isTrafficOneDoctorCommand,
   isWriteLikeToolName,
   normalizedToolName,
+  onboardingSetTechMemberSelector,
   parsedToolInput,
 } from '../tool-classify';
 import type { ToolInput } from '../../core/types';
@@ -298,6 +299,68 @@ test('set-tech admits --force, once, and never on another mode', () => {
   assert.equal(isOnboardingWaitCommand('Bash', { command: `${wait} '--force'` }), false);
   const decline = onboardingDeclineCommand('/proj', 'claude');
   assert.equal(isOnboardingWaitCommand('Bash', { command: `${decline} '--force'` }), false);
+});
+
+// ── set-tech --project=<memberId>: WHICH member of a workspace ───────────────
+// Executed through the real parser, never reasoned about from the character
+// class: the value reaches `isMemberSelectorArgument` only after
+// `cleanShellWords` has had it, and single quotes make `*`, `$` and `..`
+// ORDINARY characters that the shell-level rejections never see. Every row
+// below is therefore a claim about the two member authorities
+// (`isSafeRunId` per segment, `memberPathVerdict` over the whole path) rather
+// than about quoting.
+
+test('set-tech admits --project=<memberId>, once, and the un-prefixed form stays the shorthand', () => {
+  const base = onboardingSetTechCommandTemplate('/proj', 'claude');
+  const surfaces = "'--frontend=none' '--backend=go'";
+  const setTech = (tail: string): boolean => isOnboardingSetTechCommand('Bash', { command: `${base} ${surfaces} ${tail}` });
+
+  // THE SHORTHAND. No --project at all is the single-project form and is what
+  // every command shipped so far spells; it must stay valid unchanged.
+  assert.equal(isOnboardingSetTechCommand('Bash', { command: `${base} ${surfaces}` }), true, 'un-prefixed shorthand');
+  assert.equal(onboardingSetTechMemberSelector('Bash', { command: `${base} ${surfaces}` }), '',
+    'the shorthand selects no member');
+
+  // A single segment — the id a top-level member is minted with.
+  assert.equal(setTech("'--project=api'"), true, 'single-segment id');
+  assert.equal(onboardingSetTechMemberSelector('Bash', { command: `${base} ${surfaces} '--project=api'` }), 'api');
+  // A nested member is spelled by PATH, because that is the only spelling that
+  // distinguishes `apps/web` from `services/web`.
+  assert.equal(setTech("'--project=apps/web'"), true, 'nested member path');
+  assert.equal(
+    onboardingSetTechMemberSelector('Bash', { command: `${base} ${surfaces} '--project=services/go/api'` }),
+    'services/go/api',
+  );
+  // Order is free within the grammar, as it is for every other flag here.
+  assert.equal(
+    isOnboardingSetTechCommand('Bash', { command: `${base} '--project=api' ${surfaces} '--force'` }),
+    true,
+    '--project before the surface flags',
+  );
+
+  // Once only, set-tech only.
+  assert.equal(setTech("'--project=api' '--project=web'"), false, 'duplicated');
+  const wait = onboardingWaitCommand('/proj', 'claude');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${wait} '--project=api'` }), false, 'not on the wait mode');
+  const decline = onboardingDeclineCommand('/proj', 'claude');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${decline} '--project=api'` }), false, 'not on decline');
+
+  // Values the two member authorities refuse. Each is INSIDE single quotes, so
+  // the shell-level rejections are inert and only the predicate can catch them.
+  for (const bad of [
+    // path shape (memberPathVerdict)
+    '', '.', '..', 'api/..', '../api', '/api', 'api//web', 'api/', 'C:/x',
+    '*', '?', 'apps/*', '[a]', 'node_modules', 'apps/node_modules', '.traffic-one', '.git', 'dist',
+    // depth
+    'a/b/c/d/e',
+    // the charset — every one of these is admitted by the two path authorities
+    // ALONE and refused only by MEMBER_SELECTOR_SEGMENT_RE. A regression that
+    // dropped the class would leave exactly these passing.
+    'a b', '-api', '--api', '~', '$HOME', 'API$', 'a;b', 'a|b', 'a&b', 'a>b',
+    '`x`', 'a"b', "a'b", '.hidden', '\u202eapi', '\u00e9api',
+  ]) {
+    assert.equal(setTech(`'--project=${bad}'`), false, `refused selector: ${JSON.stringify(bad)}`);
+  }
 });
 
 // ── isTrafficOneDoctorCommand: bounded exact argv grammar ────────────────────

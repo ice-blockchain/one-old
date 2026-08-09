@@ -28,7 +28,7 @@ import {
   type StackDetection,
 } from '../detection';
 import { BACKEND_IDS, FRONTEND_IDS, MOBILE_FRAMEWORK_IDS } from '../../config/state';
-import { isUnclaimedWorkspaceSubPackage } from '../hook/paths';
+import { isRegisteredWorkspaceMember, isUnclaimedWorkspaceSubPackage } from '../hook/paths';
 import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import { nowIsoNoMs } from '../text';
 import {
@@ -79,6 +79,42 @@ export interface DetectionStampOptions {
 const skip = (reason: DetectionStampSkip, detected?: StackDetection): DetectionStampResult => (
   { stamped: false, reason, ...(detected ? { detected } : {}) }
 );
+
+/**
+ * Is this directory a project in its own right — or somebody else's
+ * subdirectory?
+ *
+ * The two guards below are HEURISTICS over the filesystem, and both of them say
+ * "no" about a workspace member: `isUnclaimedWorkspaceSubPackage` reads the
+ * container's `workspaces` globs and sees a sub-package, and the membership
+ * fence sees a directory inside the container's repository. Both are right
+ * about what they measured and wrong about the conclusion, because a REGISTERED
+ * member is a directory the workspace has explicitly RECORDED as a project of
+ * its own — a committed fact, in the repository, that outranks a guess made
+ * from a glob and a `.git`.
+ *
+ * The verdict, never the boolean's looser cousin: `isRegisteredWorkspaceMember`
+ * folds `indeterminate` to false (see its note), so an unreadable registry
+ * somewhere up the walk leaves the two heuristics in charge and this directory
+ * is refused exactly as it is today. Authority derived from a file nobody could
+ * read is not authority, and the safe direction here is to decline to stamp.
+ *
+ * EXACT, not ancestor-or-self, which is what `isRegisteredWorkspaceMember`
+ * already is: `<member>/internal` is not a member and must keep resolving to
+ * `<member>`, so it stays refused.
+ */
+function classifiableAsOwnProject(cwd: string): boolean {
+  if (isRegisteredWorkspaceMember(cwd)) return true;
+  if (isUnclaimedWorkspaceSubPackage(cwd)) return false;
+  return dirOwnsProject(cwd) || projectMembershipRoot(path.dirname(path.resolve(cwd))) === null;
+}
+
+// Which of the two heuristics refused, so the caller's message still sends the
+// reader to the right place. Only meaningful once classifiableAsOwnProject has
+// answered false.
+function ownProjectRefusal(cwd: string): DetectionStampSkip {
+  return isUnclaimedWorkspaceSubPackage(cwd) ? 'workspace-sub-package' : 'belongs-to-enclosing-project';
+}
 
 // The one stamp tail both classification paths share: run-identity freeze check,
 // the canonical Object.assign field list, then normalizeState. `autoDetected`
@@ -162,10 +198,7 @@ export function stampExistingCodebaseDetection(
   // sub-package belongs to its workspace root, and a subdirectory of a repo belongs
   // to that repo. writeState vetoes the same shape, but stopping here also keeps the
   // in-memory `persist: false` path (SessionStart) from half-stamping a state object.
-  if (isUnclaimedWorkspaceSubPackage(cwd)) return skip('workspace-sub-package');
-  if (!dirOwnsProject(cwd) && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) {
-    return skip('belongs-to-enclosing-project');
-  }
+  if (!classifiableAsOwnProject(cwd)) return skip(ownProjectRefusal(cwd));
 
   const detected = applyExistingCodebaseDetection(cwd, state, mode);
   // Undetectable: leave the project exactly as it is and hand the partial
@@ -260,10 +293,7 @@ export function applyAgentTechClassification(
   const state = options.state || (readEffectiveState(cwd) as Rec);
   const mode = (typeof state.mode === 'string' && state.mode) || detectMode(cwd);
   if (!mode.startsWith('existing')) return { ok: false, reason: 'not-existing-mode' };
-  if (isUnclaimedWorkspaceSubPackage(cwd)) return { ok: false, reason: 'workspace-sub-package' };
-  if (!dirOwnsProject(cwd) && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) {
-    return { ok: false, reason: 'belongs-to-enclosing-project' };
-  }
+  if (!classifiableAsOwnProject(cwd)) return { ok: false, reason: ownProjectRefusal(cwd) };
   // Defense in depth: the gate's command classifier already membership-checks the
   // argv, but this writer is also callable directly (sim/tests), so re-validate.
   const issues: string[] = [];

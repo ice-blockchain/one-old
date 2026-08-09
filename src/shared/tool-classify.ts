@@ -22,6 +22,11 @@ import { modelGateScriptPath } from './model-gate-command';
 // PRINTERS (doctor-command.ts) so what the runtime prints and what this grammar
 // admits cannot drift apart; see its header for the charset reasoning.
 import { gateExemptDoctorScriptPaths, isDoctorIdArgument } from './doctor-command';
+// A member SELECTOR is judged by the two authorities that already own the two
+// spellings it may take, plus one character class. See isMemberSelectorArgument
+// for what the two authorities measurably fail to exclude on their own.
+import { memberPathVerdict } from './hook/workspace-members';
+import { isSafeRunId } from './qa-report/schema';
 import { legacyStatePath, statePath } from './state';
 import { resolveTrafficOneEnv } from './state/traffic-one-paths';
 
@@ -382,6 +387,67 @@ function comparablePath(value: string): string {
   }
 }
 
+/**
+ * How deep a `--project=` selector may reach. A member path is a directory
+ * inside the container, and the registry's own reader accepts any depth; the
+ * bound exists because this is a bounded exact-argv grammar and every other
+ * value in it carries one. Four is the depth at which a monorepo has stopped
+ * being one (`apps/web`, `services/go/api`, `packages/ui/core`).
+ */
+const MEMBER_SELECTOR_MAX_SEGMENTS = 4;
+
+/**
+ * A value `--project=` may carry: a member's minted ID, or the relative PATH of
+ * the member it names.
+ *
+ * Both spellings are admitted because both are things a person legitimately
+ * has in hand. The id is what the registry records and what a run record joins
+ * on (`web-3f2a1c` for the second `web` in a workspace); the path is what the
+ * person typed when they nominated the directory (`apps/web`) and the only
+ * spelling available before the member is registered at all — which is the
+ * case this flag exists to serve. Resolution between the two is the runner's
+ * job (memberBySelector, id first); this only decides what argv is ADMITTED.
+ *
+ * THREE authorities, and the third is a character class typed right here —
+ * which an earlier draft of this comment claimed was unnecessary. It was wrong,
+ * and the measurement is the reason it changed: `isSafeRunId` is a
+ * FILESYSTEM-SAFETY predicate (no slash, no backslash, not `.` or `..`, no
+ * control characters, ≤128) and `memberPathVerdict` is a PATH-SHAPE predicate
+ * (relative, normalized, not a glob, not a vendor directory). Executed together
+ * over a 46-row table they admitted 22 rows, and the admitted set included
+ * `-api`, `--api`, `~`, `$HOME`, backticks, `a;b`, `a|b`, `a&b`, `a>b`, a
+ * literal space, and `\u202e` — the right-to-left override. Two of those matter
+ * here even though none of them can reach a shell (this value becomes a path
+ * component and a JSON string, never argv): a selector starting with `-` is a
+ * NEAR-COLLISION with a flag, the exact spelling class this grammar refuses
+ * deliberately everywhere else, and a bidi override lands in the registry and
+ * is then echoed back inside a refusal message, where reordering the visible
+ * text is the whole attack.
+ *
+ * So each segment must also be `[A-Za-z0-9_][A-Za-z0-9._-]*`. The other two
+ * authorities stay, and stay FIRST in the source order, because they are the
+ * ones that tighten on their own when the registry's rules tighten; this class
+ * only removes spellings, never adds one.
+ *
+ * The escape hatch for a directory this class refuses — a unicode name, a
+ * leading dot — is not an escape hatch at all, it is the ordinary path: run
+ * setup INSIDE that member. `--project=` is a convenience for naming a member
+ * from its container, not the only way to reach one.
+ *
+ * Nothing here relies on `cleanShellWords` having been strict: `*`, `?`, `[`,
+ * `~`, `$` and the rest are rejected upstream OUTSIDE quotes, but single quotes
+ * make them inert and they arrive as ordinary characters — so `--project='*'`
+ * reaches this predicate as the literal `*` and is refused on the merits.
+ */
+const MEMBER_SELECTOR_SEGMENT_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+
+function isMemberSelectorArgument(value: string): boolean {
+  const segments = value.split('/');
+  return segments.length <= MEMBER_SELECTOR_MAX_SEGMENTS
+    && segments.every((segment) => isSafeRunId(segment) && MEMBER_SELECTOR_SEGMENT_RE.test(segment))
+    && memberPathVerdict(value).ok;
+}
+
 interface OnboardingRunnerInvocation {
   bootstrap: boolean;
   // The per-project "don't use / reconsider Traffic One" choice commands share
@@ -396,6 +462,11 @@ interface OnboardingRunnerInvocation {
   // instead of only filling an empty one. Without it a probe's guess is
   // permanent, because every writer refuses to overwrite a committed stack.
   force: boolean;
+  // `--set-tech --project=<memberId>`: the classification is about ONE MEMBER
+  // of the workspace at the positional cwd, not about the cwd itself. Empty
+  // when absent, which is the single-project shorthand and stays the default —
+  // every existing `--set-tech` command means exactly what it always meant.
+  project: string;
 }
 
 function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): OnboardingRunnerInvocation | null {
@@ -434,6 +505,7 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
   const seen = new Set<string>();
   let host = '';
   let force = false;
+  let project = '';
   while (args.length > 0) {
     const arg = args.shift() as string;
     if (/^--host=(?:claude|codex|cursor|opencode|copilot|windsurf|kilo)$/.test(arg)) {
@@ -483,6 +555,17 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       seen.add('realtime');
       continue;
     }
+    // WHICH project this classification is about, inside a workspace. Valid
+    // only on `--set-tech`, once, and bounded by the two member authorities
+    // (isMemberSelectorArgument). It selects a target; it never widens what a
+    // submission may SAY, which stays the surface flags below.
+    if (arg.startsWith('--project=')) {
+      const selector = arg.slice('--project='.length);
+      if (!setTech || seen.has('project') || !isMemberSelectorArgument(selector)) return null;
+      seen.add('project');
+      project = selector;
+      continue;
+    }
     // Correcting a stack already on record. Valid only on `--set-tech`, and
     // still membership-checked through the same surface flags — `--force`
     // widens WHEN a submission applies, never WHAT it may say.
@@ -524,7 +607,7 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       if (value !== expectedValue) return null;
     }
   }
-  return { bootstrap, decline, reconsider, setTech, force };
+  return { bootstrap, decline, reconsider, setTech, force, project };
 }
 
 // The blocking "wait for setup" command is allow-listed only when it invokes
@@ -542,6 +625,14 @@ export function isOnboardingBootstrapCommand(toolName: unknown, toolInput: unkno
 // repo (`--set-tech --frontend=… --backend=…`). Same exact-argv allow-listing.
 export function isOnboardingSetTechCommand(toolName: unknown, toolInput: unknown): boolean {
   return onboardingRunnerInvocation(toolName, toolInput)?.setTech === true;
+}
+
+// The member a `--set-tech` submission is ABOUT, or '' for the un-prefixed
+// single-project shorthand. Exported so a caller reads the selector the grammar
+// admitted rather than re-scanning the command text for it.
+export function onboardingSetTechMemberSelector(toolName: unknown, toolInput: unknown): string {
+  const invocation = onboardingRunnerInvocation(toolName, toolInput);
+  return invocation?.setTech ? invocation.project : '';
 }
 
 // The trust anchor for `words[1]`. Byte-equality against a path derived from

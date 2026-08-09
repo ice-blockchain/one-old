@@ -2,8 +2,10 @@
 // The ONE path layer. pluginRoot resolves the authoring/install root (env
 // override -> __dirname), and the same relative depth holds whether running from
 // src/shared (tsx dev) or dist/scripts/shared (compiled). projectRoot is
-// hint-aware: it prefers the directory of a tool's target file (PostToolUse
-// materialisation derives the project from the edited path, not cwd).
+// hint-aware about the TOOL: it prefers the directory of a tool's target file
+// (PostToolUse materialisation derives the project from the edited path, not
+// cwd). It is deliberately NOT hint-aware about prompt TEXT — see
+// promptSuggestedMember below for what replaced that branch and why.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -243,31 +245,140 @@ function candidateRootFromHint(cwd: string, hint: string, boundary: string, base
   return findUp(resolved, boundary);
 }
 
-function promptPathHints(prompt: unknown, cwd: string): string[] {
+// ── The directory a PROMPT mentions ─────────────────────────────────────────
+//
+// This used to be `promptPathHints`, a private third hint source inside
+// projectRoot() below: any directory named after `in`/`inside`/`under`/
+// `within`/`for` became a candidate root, first match wins. It is gone from
+// resolution, and the reason is not that it was inaccurate — it is that
+// NOTHING DOWNSTREAM RE-DECIDES IT ANY MORE.
+//
+// The two-stage shape is what made a wrong guess survivable. Stage one is this
+// function's caller; stage two is hook/paths.ts resolveProjectRoot, which every
+// write path re-runs on the answer (session/prompt-submit.ts,
+// agent-model/choice-reply.ts). Stage two CORRECTS a bad guess only when it
+// finds a committed non-workspace root above the guessed directory — measured:
+// in an npm monorepo carrying `mode: 'new-project'`, `add tests for auth`
+// resolved to `auth` at stage one and came back to the repo root at stage two.
+// It RATIFIES the guess whenever the guessed directory is project-like and no
+// committed ancestor overrules it, which is already true of a wrapper repo
+// holding a mode-less `.one.json`, and is true BY DESIGN for a Traffic One
+// workspace: nearestOnboardedRoot hands the walk back DOWN to a registered
+// member, so `for auth` in a workspace that registered `auth` resolves to
+// `auth` at both stages and the word "for" has picked the project.
+//
+// A registered member is a mode-bearing root that owns its own plan, run state
+// and role claims. Which member a turn belongs to is therefore an ATTRIBUTION
+// decision, and hook/workspace-members.ts is explicit that member identity is
+// RECORDED rather than derived. An English preposition is not a record of
+// anything, and `for` is an ordinary word in `add tests for auth`.
+//
+// So the mention survives as a SUGGESTION and nothing more. It is checked
+// against the workspace's own registry — the only authority on who the members
+// are — never against the filesystem, so a mention that happens to name a real
+// directory nobody registered matches nothing. And an ambiguous prompt yields
+// NO suggestion rather than the first match: "first match wins" is the specific
+// behaviour that made the old branch a coin toss between two members.
+//
+// ONE SHAPE ANSWERS DIFFERENTLY NOW, AND THAT IS THE RULING RATHER THAN A COST.
+// In a wrapper repo holding a mode-less `.one.json` with the app in a
+// subdirectory, a bare first prompt naming that subdirectory used to anchor
+// there and now anchors at the wrapper. Keep it that way. The wrapper's
+// committed state is a fact the team wrote down; the subdirectory is a guess
+// read off an English preposition, and when the guess is wrong it is wrong
+// SILENTLY — there is no render, so the user cannot tell it happened. Anchoring
+// on the written-down fact also agrees with everything hook/paths.ts has
+// accumulated the hard way (a monorepo has ONE root; the packages/* leak rule),
+// whereas this branch was a fossil of the superseded decision in ca4f85cd
+// ("init on working folder instead of root/workspace folder"). Two subsystems
+// disagreed and the regex won only because it ran first.
+//
+// The recovery path is intact and measured: `tool.workdir` and `tool.filePath`
+// still reach the inner app for that shape, so only the first prompt before any
+// tool call is affected. Do NOT re-pin the old answer with a prompt-based test —
+// a tool-hint test is the honest way to hold that shape.
+//
+// DORMANT, like the registry readers it consumes: nothing calls it in
+// production yet, and the adjacent product question is settled in the direction
+// of NOT calling it — an empty workspace container refuses and directs the user
+// at one member rather than guessing or self-registering. See the four
+// `workspace-member-unresolved` renders in shared/tool-scope.ts, which already
+// refuse-and-enumerate at the tool boundary. What is genuinely undecided is
+// narrower: whether an AMBIGUOUS mention (two registered members named, so this
+// helper answers null) is worth quoting back to the user, and where.
+
+/** A registered member the prompt named, with the text that named it. */
+export interface PromptMemberSuggestion {
+  /** The registry's own relative spelling of the member. */
+  readonly member: string;
+  /** `member` joined onto the caller's container — spelling-preserving, never a realpath. */
+  readonly root: string;
+  /** The literal text the prompt used, for prose that quotes the user back. */
+  readonly mention: string;
+}
+
+// The same two patterns the resolution branch used, kept deliberately: they are
+// preposition-ANCHORED, and a bare scan for member names would match `web` in
+// "a web app". The looseness that mattered was never the trigger set — it was
+// that a match BOUND the root.
+const QUOTED_MENTION = /\b(?:in|inside|under|within|for)\s+["'`]([^"'`]+)["'`]/gi;
+const BARE_MENTION = /\b(?:in|inside|under|within|for)\s+((?:\.{1,2}\/)?[A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)*)(?=$|[\s,.;:!?])/gi;
+
+function normalizeMention(raw: string): string {
+  return raw.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+/** The last path segment — the name a human uses for `apps/web`. */
+function lastSegment(memberPath: string): string {
+  return memberPath.split('/').filter(Boolean).pop() || '';
+}
+
+/**
+ * The ONE registered member this prompt names, or null.
+ *
+ * `members` is the registry's `members` array (validated, relative, opted-out
+ * entries already excluded — see hook/workspace-members.ts). It is passed as a
+ * VALUE rather than read here, so this file gains no import edge and no syscall:
+ * every caller that could ask this question is already holding the registry
+ * that `resolveProjectRootDetailed` handed it.
+ *
+ * Null on ambiguity, and that is the whole point rather than a guard. A prompt
+ * naming two members, or naming a segment two members share (`apps/web` and
+ * `services/web` are both "web"), has not identified anybody — the same reading
+ * `resolveMemberIdentities` takes of a colliding id base, and the opposite of
+ * the first-match-wins rule this replaces.
+ */
+export function promptSuggestedMember(
+  prompt: unknown,
+  container: string,
+  members: readonly string[],
+): PromptMemberSuggestion | null {
   const text = typeof prompt === 'string' ? prompt : '';
-  if (!text) return [];
-  const hints: string[] = [];
-  const seen = new Set<string>();
-  const add = (candidate: string): void => {
-    const trimmed = candidate.trim();
-    if (!trimmed || seen.has(trimmed)) return;
-    const abs = path.resolve(cwd, trimmed);
-    try {
-      if (fs.existsSync(abs) && fs.lstatSync(abs).isDirectory()) {
-        seen.add(trimmed);
-        hints.push(trimmed);
-      }
-    } catch {
-      // ignore bad prompt hints
+  if (!text || members.length === 0) return null;
+
+  const mentions: string[] = [];
+  for (const pattern of [QUOTED_MENTION, BARE_MENTION]) {
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+      const normalized = normalizeMention(match[1] || '');
+      if (normalized) mentions.push(normalized);
     }
-  };
+  }
+  if (mentions.length === 0) return null;
 
-  const quoted = /\b(?:in|inside|under|within|for)\s+["'`]([^"'`]+)["'`]/gi;
-  for (const match of text.matchAll(quoted)) add(match[1] || '');
-
-  const bare = /\b(?:in|inside|under|within|for)\s+((?:\.{1,2}\/)?[A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)*)(?=$|[\s,.;:!?])/gi;
-  for (const match of text.matchAll(bare)) add(match[1] || '');
-  return hints;
+  let hit: PromptMemberSuggestion | null = null;
+  for (const mention of mentions) {
+    for (const member of members) {
+      if (mention !== member && mention !== lastSegment(member)) continue;
+      // A second, DIFFERENT member ends the search with no answer. A repeat of
+      // the same member (`in web, under apps/web`) is not ambiguity.
+      if (hit && hit.member !== member) return null;
+      if (!hit) {
+        hit = { member, root: path.join(container, ...member.split('/')), mention };
+      }
+    }
+  }
+  return hit;
 }
 
 function projectWalkCeiling(input: HookInput, cwd: string): string {
@@ -323,11 +434,10 @@ export function projectRoot(input: HookInput): string {
     : null;
   if (fileRoot) return fileRoot;
 
-  for (const hint of promptPathHints(input.prompt, cwd)) {
-    const promptRoot = candidateRootFromHint(cwd, hint, hintBoundary);
-    if (promptRoot) return promptRoot;
-  }
-
+  // No third branch reading `input.prompt`. The tool hints above are STATEMENTS
+  // of the path being operated on, made by the host; prompt text is not, and
+  // the branch that treated it as one is retired above (promptSuggestedMember).
+  // `input.prompt` is consequently no longer read by this function at all.
   const start = hostBoundary(cwd);
   return findUp(start, ceiling) ?? (isInsideOrEqual(start, ceiling) ? start : ceiling);
 }

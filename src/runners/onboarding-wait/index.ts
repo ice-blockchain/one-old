@@ -12,6 +12,7 @@ import {
   stampExistingCodebaseDetection,
   type DetectionStampResult,
 } from '../../shared/onboarding/detection-stamp';
+import { resolveWorkspaceMemberTarget } from '../../shared/onboarding/workspace-member-target';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { askUsePluginFirst } from '../../shared/onboarding-server/flow-view';
 import {
@@ -320,7 +321,31 @@ function runSetTech(cwd: string, host: HostId, argv: readonly string[]): never {
     const arg = argv.find((a) => a.startsWith(prefix));
     return arg ? arg.slice(prefix.length) : undefined;
   };
-  const result = applyAgentTechClassification(cwd, {
+  // `--project=<memberId>` moves the whole rest of this function to ONE MEMBER
+  // of the workspace at `cwd`. Absent — the un-prefixed form — it stays the
+  // single-project shorthand and `target` is `cwd`, so every command that
+  // exists today means exactly what it always meant.
+  //
+  // Resolution runs FIRST, before the classification, because it is also the
+  // registration: a member is registered by a person running setup on it, and
+  // classifying a directory the registry does not list would stamp a stack into
+  // a folder the workspace does not manage.
+  const selector = (flag('project') || '').trim();
+  let target = cwd;
+  if (selector) {
+    const resolved = resolveWorkspaceMemberTarget(cwd, selector);
+    if (resolved.kind === 'refused') {
+      process.stdout.write([
+        TECH_INVALID_TOKEN,
+        '',
+        `- --project=${selector} did not resolve: ${resolved.why}`,
+        '',
+      ].join('\n'));
+      process.exit(2);
+    }
+    target = resolved.memberRoot;
+  }
+  const result = applyAgentTechClassification(target, {
     frontend: flag('frontend') || '',
     backend: flag('backend') || '',
     mobile: flag('mobile'),
@@ -333,7 +358,7 @@ function runSetTech(cwd: string, host: HostId, argv: readonly string[]): never {
 
   if (!result.ok) {
     if (result.reason === 'declined') {
-      process.stdout.write(declineOutput(cwd, host));
+      process.stdout.write(declineOutput(target, host));
       process.exit(0);
     }
     if (result.reason === 'consent-missing') {
@@ -360,8 +385,11 @@ function runSetTech(cwd: string, host: HostId, argv: readonly string[]): never {
 
   // Assets ready before the wizard completes (the stamp set onboardingComplete,
   // so convergence runs; idempotent + best-effort like the completion path).
+  // Addressed at `target`, not `cwd`: the stack was stamped into the member, so
+  // the member is the project whose assets are now derivable. A container has no
+  // stack of its own and materializing it would be materializing nothing.
   try {
-    materializeProjectIfNeeded(cwd, { trigger: 'onboarding-wait set-tech (post-classification materialize)' });
+    materializeProjectIfNeeded(target, { trigger: 'onboarding-wait set-tech (post-classification materialize)' });
   } catch {
     // best-effort; the PreToolUse gate's materialize-then-retry remains the backstop
   }

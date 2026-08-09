@@ -7,14 +7,16 @@
 
 import * as path from 'path';
 
-import { STATE_DIR } from '../../config/paths';
+import { STATE_DIR, STATE_FILE } from '../../config/paths';
 import { TRAFFIC_ONE_BLOCK_BODY } from '../architecture-contract/scaffold-content';
+import { readJsonResult } from '../fsjson';
 import {
   MEMBER_OPT_OUT_KEY,
   WORKSPACE_MEMBERS_KEY,
   WORKSPACE_PROJECT_MODE,
   memberGitOwnership,
   memberPathVerdict,
+  readWorkspaceMemberRegistry,
   resolveMemberIdentities,
   type WorkspaceMemberIdentity,
 } from '../hook/workspace-members';
@@ -58,6 +60,38 @@ export interface WorkspaceMemberInput {
 }
 
 /**
+ * The mode a directory has ALREADY committed, when that mode forbids making it
+ * a container — or '' when nothing stands in the way.
+ *
+ * A CONTAINER IS NOT AN UPGRADE OF A PROJECT. This write publishes
+ * `mode: 'workspace'`, and doing that to a directory already onboarded as
+ * `new-project` / `existing-codebase` / `existing-with-supabase` would not add
+ * a capability to it, it would REPLACE its identity: `inferPhaseFromMode` stops
+ * reading it as maintenance, `isExistingProjectMode` starts answering false,
+ * and — the one that cannot be undone by writing the old mode back — every gate
+ * begins refusing every call at that root as "a container with no project in
+ * it" (shared/tool-scope.ts). A repository with a plan, a compiled architecture
+ * and run history would be told it holds no project.
+ *
+ * Unreachable before this wave (nothing called this function) and reachable the
+ * moment registration exists, because the directory a person runs setup in is
+ * routinely one that has already been set up.
+ *
+ * Read OUTSIDE the state lock, which is a bounded race and not a hole: the only
+ * writer that could commit a mode in the gap is another onboarding of the same
+ * directory, and two of those are already contending for what this directory
+ * is. The value being read is durable — a project does not spontaneously stop
+ * being one — so a stale read here is a stale read of a constant.
+ */
+function blockingCommittedMode(root: string): string {
+  const read = readJsonResult<Record<string, unknown>>(path.join(root, STATE_FILE));
+  if (read.kind !== 'ok' || !read.value || typeof read.value !== 'object') return '';
+  const mode = (read.value as Record<string, unknown>).mode;
+  if (typeof mode !== 'string' || !mode.trim() || mode === WORKSPACE_PROJECT_MODE) return '';
+  return mode;
+}
+
+/**
  * Publish `workspaceRoot`'s member registry, and mark it a workspace project.
  *
  * WHOLE-VALUE, not append-one, and that is a correctness choice rather than a
@@ -76,12 +110,24 @@ export interface WorkspaceMemberInput {
  * `mode: 'workspace'` is inert (the reader's first comparison rejects it) and a
  * workspace mode without a registry registers nobody, so publishing them
  * separately would leave a window in which the state file means neither thing.
+ *
+ * A directory that has already committed a PROJECT mode is refused outright —
+ * see blockingCommittedMode.
  */
 export function writeWorkspaceMemberRegistry(
   workspaceRoot: string,
   memberDirs: readonly (string | WorkspaceMemberInput)[],
 ): WorkspaceMemberRegistryWrite {
   const root = path.resolve(workspaceRoot);
+  const committedMode = blockingCommittedMode(root);
+  if (committedMode) {
+    return {
+      outcome: 'rejected',
+      why: `${root} is already onboarded as a ${committedMode} project, and a Traffic One workspace is a CONTAINER of `
+        + 'projects rather than a project with members — converting it would make every gate refuse work at this root. '
+        + 'Register members in the directory that HOLDS the projects.',
+    };
+  }
   const nominated: { path: string; declaredId: string | null; optOut: boolean }[] = [];
   for (const nomination of memberDirs) {
     const input: WorkspaceMemberInput = typeof nomination === 'string' ? { dir: nomination } : nomination;
@@ -140,6 +186,29 @@ export function writeWorkspaceMemberRegistry(
   const entries = resolved.identities.map((identity) => (identity.optOut
     ? { path: identity.path, id: identity.id, [MEMBER_OPT_OUT_KEY]: true }
     : { path: identity.path, id: identity.id }));
+  // NO `onboardingComplete`, DELIBERATELY — do not "fix" this by adding it.
+  //
+  // It looks like an omission because every project state file carries it, and
+  // the obvious reading is that a container is left permanently un-onboarded.
+  // It is not: for `mode: 'workspace'` the onboarding gate asks
+  // `computeOnboarding(root).done`, and that answer comes from the container
+  // branch in onboarding-server/flow.ts — the shared steps, then the member
+  // recursion — which never reads this field. So the flag decides nothing the
+  // container's own completeness depends on, and `normalizeState` cannot heal
+  // it in either, because it returns at its stackless early exit and a
+  // container has no stack.
+  //
+  // What the flag WOULD decide is materialization. materialize/converge.ts asks
+  // `state.mode === 'new-project' || state.onboardingComplete === true` on a
+  // stackless state, so adding it routes a container into
+  // materializeProjectFromState. Measured both ways: absent yields `null` and
+  // nothing written, present yields status `incomplete` and the system message
+  // "`.traffic-one/.one.json` is incomplete; cannot materialize project" on
+  // every SessionStart. Nothing is written either way — validation catches
+  // it — but the second is a false statement about a file that is exactly as
+  // complete as it should be, and it sends the reader off to repair the
+  // container when the thing to do is work in a member.
+  //
   // The boolean is the whole point of routing through patchState: it is false
   // when the fence refused, when a symlink was planted, and when the current
   // `.one.json` was corrupt or unreadable (patchState refuses rather than
@@ -153,6 +222,85 @@ export function writeWorkspaceMemberRegistry(
     };
   }
   return { outcome: 'written', members, identities: resolved.identities };
+}
+
+/**
+ * What registering ONE member did.
+ *
+ * `already` is separated from `registered` because the caller reports them
+ * differently — re-running setup on a member that is already registered is the
+ * ordinary idempotent case and must not read as a fresh registration.
+ */
+export type WorkspaceMemberRegistration =
+  | { readonly outcome: 'registered'; readonly member: WorkspaceMemberIdentity }
+  | { readonly outcome: 'already'; readonly member: WorkspaceMemberIdentity }
+  /**
+   * The repository has recorded that this workspace does NOT manage this
+   * directory, and that decision is FINAL here. Registration is the one
+   * operation that would silently reverse it, so it is the one operation that
+   * has to refuse: `optOut` is committed in `.one.json`, it travels with the
+   * clone, and a person running setup inside the directory is not evidence that
+   * the team's exclusion was withdrawn. Revoking it is an edit to the
+   * repository's own state, made deliberately, by whoever made the exclusion.
+   */
+  | { readonly outcome: 'opted-out'; readonly member: WorkspaceMemberIdentity; readonly why: string }
+  | { readonly outcome: 'rejected'; readonly why: string }
+  | { readonly outcome: 'refused'; readonly why: string };
+
+/**
+ * Add `memberPath` to `workspaceRoot`'s registry, preserving every entry that
+ * is already there.
+ *
+ * The underlying write is WHOLE-VALUE (see writeWorkspaceMemberRegistry), so
+ * this re-nominates the existing entries WITH the ids and opt-outs they already
+ * carry. Re-deriving them instead would silently re-id a member the moment this
+ * registration changed a collision count — `apps/web` alone is `web`, and the
+ * arrival of `services/web` turns both into disambiguated ids, which would
+ * orphan every run record that named the first one.
+ *
+ * An unenumerable registry REFUSES rather than being replaced. The bytes say
+ * something this reader could not understand; overwriting them with a list
+ * built from what it could parse would drop members it never saw.
+ */
+export function registerWorkspaceMember(
+  workspaceRoot: string,
+  memberPath: string,
+): WorkspaceMemberRegistration {
+  const root = path.resolve(workspaceRoot);
+  const registry = readWorkspaceMemberRegistry(root);
+  if (registry.kind === 'illegible' || registry.kind === 'opaque') {
+    return { outcome: 'refused', why: `${root}: ${registry.why}` };
+  }
+  const verdict = memberPathVerdict(
+    path.isAbsolute(memberPath)
+      ? path.relative(root, path.resolve(memberPath)).replace(/\\/g, '/')
+      : memberPath,
+  );
+  if (!verdict.ok) return { outcome: 'rejected', why: `${memberPath} ${verdict.why}` };
+
+  const existing = registry.kind === 'members' ? registry.identities : [];
+  const already = existing.find((entry) => entry.path === verdict.path);
+  if (already?.optOut) {
+    return {
+      outcome: 'opted-out',
+      member: already,
+      why: `${verdict.path} is recorded in ${root}'s member registry as opted out, and that exclusion is committed to `
+        + 'the repository. Traffic One does not re-enable a directory the repository excluded; remove the '
+        + `${MEMBER_OPT_OUT_KEY} entry there if the exclusion no longer applies.`,
+    };
+  }
+  if (already) return { outcome: 'already', member: already };
+
+  const nominations: WorkspaceMemberInput[] = [
+    ...existing.map((entry) => ({ dir: entry.path, id: entry.id, optOut: entry.optOut })),
+    { dir: verdict.path },
+  ];
+  const written = writeWorkspaceMemberRegistry(root, nominations);
+  if (written.outcome !== 'written') return written;
+  const member = written.identities.find((entry) => entry.path === verdict.path);
+  return member
+    ? { outcome: 'registered', member }
+    : { outcome: 'refused', why: `${verdict.path} is absent from the registry this write published` };
 }
 
 // ── RECURSIVE GITIGNORE ──────────────────────────────────────────────────────

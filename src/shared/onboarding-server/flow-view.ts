@@ -81,6 +81,63 @@ export interface StepMeta extends StepCopy {
   // True when the user declined Traffic One for this project — the wizard shows
   // the "Traffic One disabled" view instead of "Setup complete".
   declined?: boolean;
+  // Present only on the workspace-container views below. Machine-readable so a
+  // caller (the wait runner's banner, a test) reads the facts rather than
+  // parsing the prose.
+  workspace?: WorkspaceStepInfo;
+}
+
+/**
+ * Why a workspace CONTAINER is not done, in a shape a caller can branch on.
+ *
+ * `empty-registry` is a REFUSAL and not a to-do: a container that has
+ * registered nobody is not a project the wizard can set up, and it is
+ * deliberately not offered a chooser of the directories it can see. Only the
+ * person knows which directory was meant, and enumerating-and-registering would
+ * mint Traffic One state into folders a team may have excluded on purpose. The
+ * same reasoning already ships as the `workspace-member-unresolved-empty` gate
+ * refusal (shared/tool-scope.ts); this is that refusal reaching the one surface
+ * that had no way to state it.
+ */
+export interface WorkspaceStepInfo {
+  readonly container: string;
+  /** Registered, non-opted-out members, relative to the container. */
+  readonly members: readonly string[];
+  /** The subset whose own setup is not finished. Empty for the two refusals. */
+  readonly pending: readonly string[];
+  readonly reason: 'empty-registry' | 'unreadable-registry' | 'members-pending';
+  /** The registry reader's own words, on `unreadable-registry` only. */
+  readonly why?: string;
+}
+
+/**
+ * The container's passive page: a `waiting` step the user cannot answer.
+ *
+ * `waiting` rather than a new step id, deliberately. The kind already exists
+ * and the wizard already renders it (it is what `tech-detect` uses), so the
+ * container view needs no new entry in `STEP_COPY` and no new branch in the
+ * wizard client — and, more to the point, a container has nothing to ANSWER
+ * here. Every one of the three reasons is resolved somewhere else: by running
+ * setup on a member, by finishing a member's own wizard, or by repairing state
+ * the user owns.
+ */
+export function workspaceWaitingMeta(info: WorkspaceStepInfo): StepMeta {
+  const question = info.reason === 'empty-registry'
+    ? 'This directory is a Traffic One workspace CONTAINER, not a project: it holds member projects, and it has '
+      + 'registered none of them. A container carries no stack, no plan and no run state, so there is nothing here '
+      + 'to set up. Run setup inside the member directory you want worked on — that is what registers it.'
+    : info.reason === 'unreadable-registry'
+      ? `This workspace's member registry could not be read — ${info.why || 'the registry is unusable'} — so nothing `
+        + 'here can say which projects it holds. Setup cannot continue until it is restored.'
+      : `Setup for this workspace finishes when every member is done. Still pending: ${info.pending.join(', ')}. `
+        + 'Open each of those directories and finish its setup; this page continues automatically.';
+  return {
+    step: null,
+    kind: 'waiting',
+    title: info.reason === 'members-pending' ? 'Waiting on workspace members' : 'A workspace container, not a project',
+    question,
+    workspace: info,
+  };
 }
 
 // Display label for a wizard model id. Anthropic ids read poorly raw, so both

@@ -11,10 +11,12 @@ import {
   isManagedPluginCachePath,
   pluginRoot,
   pluginRootInfo,
+  promptSuggestedMember,
   type PluginRootEnvVar,
   type PluginRootLayout,
   projectRoot,
 } from '../paths';
+import { resolveProjectRoot } from '../hook/paths';
 
 // ── pluginRootInfo / classifyPluginRootLayout ───────────────────────────────
 // Untested until now, which is how BOTH halves of the "materialization deleted
@@ -401,10 +403,127 @@ function input(cwd: string, patch: Partial<HookInput>): HookInput {
   return { event: 'UserPromptSubmit', host: 'codex', cwd, raw: {}, ...patch } as HookInput;
 }
 
-test('projectRoot: prompt-mentioned inner app beats wrapper .traffic-one state', () => {
+// ── Prompt text never picks the write root ──────────────────────────────────
+// This assertion is the inverse of the one it replaces ("prompt-mentioned inner
+// app beats wrapper .traffic-one state"), and the inversion is the work item.
+//
+// The old branch was survivable only because stage two (hook/paths.ts
+// resolveProjectRoot, re-run by every write path) climbed back off a wrong
+// guess. Stage two does that only when a COMMITTED non-workspace root sits
+// above the guessed directory; where none does — a wrapper holding a mode-less
+// `.one.json`, and by construction a Traffic One workspace, whose walk hands
+// itself DOWN to a registered member — it ratifies instead. So an English
+// preposition decided which project a turn belonged to.
+//
+// The tool hints are untouched and are the recovery path for this same shape:
+// the row below re-asserts that a real workdir/filePath still reaches the inner
+// app (the test after this one covers it in full).
+test('projectRoot: prompt text never moves the root — only the host\'s own tool hints do', () => {
   withWrapperProject((root, child) => {
-    assert.equal(projectRoot(input(root, { prompt: 'in "one-nextjs" add an about page' })), child);
+    for (const prompt of [
+      'in "one-nextjs" add an about page',
+      'add an about page in one-nextjs',
+      'add tests for one-nextjs',
+      'under one-nextjs, fix the header',
+    ]) {
+      assert.equal(projectRoot(input(root, { prompt })), root, `prompt must not re-root: ${prompt}`);
+    }
+    // The same directory, named by the host instead of by the user, still wins.
+    assert.equal(projectRoot(input(root, {
+      event: 'PreToolUse',
+      prompt: 'add an about page',
+      tool: { class: 'shell', rawName: 'exec_command', command: 'npm test', workdir: 'one-nextjs' },
+    })), child);
   });
+});
+
+// The composed, two-stage assertion this work item exists for. Restoring the
+// prompt-hint branch turns BOTH stages into the member and reds this row: stage
+// one picks `auth` off the word "for", and stage two — nearestOnboardedRoot's
+// hand-down to a registered member — ratifies rather than corrects it.
+//
+// The container is the correct answer here, and it is not a silent one: a
+// PreToolUse call landing on a container with no member resolved is refused by
+// shared/tool-scope.ts's `workspace-member-unresolved`, which enumerates the
+// members. Routing that stays at the container is routing the fence can see.
+test('projectRoot + resolveProjectRoot: a prompt naming a registered member still resolves to the CONTAINER', () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ws-member-')));
+  try {
+    const container = path.join(base, 'ws');
+    file(path.join(container, 'package.json'), JSON.stringify({ private: true, workspaces: ['auth', 'web'] }));
+    file(path.join(container, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'workspace',
+      workspaceMembers: [{ path: 'auth' }, { path: 'web' }],
+    }));
+    file(path.join(container, 'auth', 'package.json'), JSON.stringify({ name: 'auth' }));
+    file(path.join(container, 'web', 'package.json'), JSON.stringify({ name: 'web' }));
+
+    for (const prompt of ['add tests for auth', 'fix the bug in web', 'add an about page in "web"']) {
+      const stageOne = projectRoot(input(container, { prompt }));
+      assert.equal(stageOne, container, `stage one must not pick a member: ${prompt}`);
+      assert.equal(resolveProjectRoot(stageOne, undefined, {}), container,
+        `stage two must not be handed a member to ratify: ${prompt}`);
+    }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// ── promptSuggestedMember: the mention, kept and made non-binding ───────────
+
+test('promptSuggestedMember: names a registered member, by full path or by its last segment', () => {
+  const container = path.join(path.sep, 'ws');
+  const members = ['apps/web', 'services/auth'];
+  assert.deepEqual(promptSuggestedMember('add tests for auth', container, members), {
+    member: 'services/auth',
+    root: path.join(container, 'services', 'auth'),
+    mention: 'auth',
+  });
+  assert.equal(promptSuggestedMember('in "apps/web" add an about page', container, members)?.member, 'apps/web');
+  assert.equal(promptSuggestedMember('under apps/web, fix the header', container, members)?.member, 'apps/web');
+  // Naming the SAME member twice is emphasis, not ambiguity.
+  assert.equal(promptSuggestedMember('in web, specifically under apps/web', container, members)?.member, 'apps/web');
+});
+
+test('promptSuggestedMember: the REGISTRY is the authority — a real directory nobody registered is not a member', () => {
+  const container = path.join(path.sep, 'ws');
+  // `tools` exists in the measured fixture for this shape and is deliberately
+  // unregistered; the old branch resolved it because it asked the filesystem.
+  assert.equal(promptSuggestedMember('add tests for tools', container, ['auth']), null);
+  assert.equal(promptSuggestedMember('add tests for auth', container, []), null);
+  assert.equal(promptSuggestedMember('add tests for auth', container, ['auth-service']), null,
+    'a name that merely shares a prefix is not the member');
+});
+
+test('promptSuggestedMember: ambiguity yields NO suggestion, where the old branch took the first match', () => {
+  const container = path.join(path.sep, 'ws');
+  assert.equal(promptSuggestedMember('move the token from auth into web', container, ['auth', 'web']), null,
+    'two different members named → nobody identified');
+  assert.equal(promptSuggestedMember('add tests for web', container, ['apps/web', 'services/web']), null,
+    'a segment two members share identifies neither');
+});
+
+test('promptSuggestedMember: a prompt that is not a string, or names nothing, suggests nothing', () => {
+  const container = path.join(path.sep, 'ws');
+  const members = ['auth'];
+  for (const prompt of [undefined, null, 42, {}, [], '', '   ']) {
+    assert.equal(promptSuggestedMember(prompt, container, members), null, `prompt: ${JSON.stringify(prompt)}`);
+  }
+  assert.equal(promptSuggestedMember('add tests to the login flow', container, members), null);
+  // No preposition anchor → no mention, even though the word is present.
+  assert.equal(promptSuggestedMember('auth needs tests', container, members), null);
+});
+
+test('promptSuggestedMember: is spelling-preserving and never touches the filesystem', () => {
+  // A container that does not exist: every arm must still answer, because the
+  // registry is the authority and no arm may stat anything.
+  const container = path.join(path.sep, 'nope', 'no-such-workspace');
+  const suggestion = promptSuggestedMember('add tests for auth', container, ['services/auth']);
+  assert.equal(suggestion?.root, path.join(container, 'services', 'auth'));
+  // /tmp is a symlink to /private/tmp on macOS; a realpath here would break the
+  // by-string comparison shared/retention.ts makes of resolver answers.
+  const tmpContainer = path.join(path.sep, 'tmp', 'ws');
+  assert.equal(promptSuggestedMember('in "auth"', tmpContainer, ['auth'])?.root, path.join(tmpContainer, 'auth'));
 });
 
 test('projectRoot: tool workdir and file paths resolve the inner app', () => {
