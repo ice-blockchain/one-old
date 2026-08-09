@@ -48,6 +48,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P7 install verification: exercise the installed runtime, document mid-chain provenance churn (`4ab0eded`)
 - P7 release accuracy: derive platform claims from code, refuse an envelope with no immutable twin (`5181cea5`)
 - P5/P6 release accuracy: truthful deny causes, atomic write-set, corrected licence record (`c241fde8`)
 - P5 deny accuracy: offending denyTarget, compliance detector, raw-fs refusal pin (`7f060688`)

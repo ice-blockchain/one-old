@@ -89,6 +89,53 @@ test('validation fails closed on malformed JSON shapes instead of throwing', () 
   assert.equal(manualHostDeclaredCertified(malformed), false);
 });
 
+test('os and operator are optional, rejected when present but empty, and always reported', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-manual-host-provenance-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fingerprint = 'sha256:release';
+
+  // Optional: the base fixture names neither and is still a valid record.
+  assert.deepEqual(validateManualHostCertification(record('cursor', 'NOT_RUN')), []);
+  assert.deepEqual(validateManualHostCertification({
+    ...record('cursor', 'NOT_RUN'),
+    os: 'macOS 15.5 (arm64)',
+    operator: 'maintainer@example.test',
+  }), []);
+
+  // Present but not an answer. These are worse than omission: the report would
+  // render them as though the record had named something.
+  for (const junk of [{ os: '' }, { os: '   ' }, { os: 42 }, { operator: null }, { operator: [] }]) {
+    const field = Object.keys(junk)[0]!;
+    assert.match(
+      validateManualHostCertification({ ...record('cursor', 'NOT_RUN'), ...junk }).join('; '),
+      new RegExp(`${field} must be a non-empty string when present`),
+      `${field}: ${JSON.stringify(Object.values(junk)[0])} was accepted`,
+    );
+  }
+
+  // Reported in both directions, so an omission is visible to a release
+  // reviewer rather than silently absent from the evidence.
+  writeManualHostCertification(dir, {
+    ...record('cursor', 'NOT_RUN', fingerprint),
+    os: 'macOS 15.5 (arm64)',
+    operator: 'maintainer@example.test',
+  });
+  writeManualHostCertification(dir, record('windsurf', 'NOT_RUN', fingerprint));
+  const config = defaultConfig();
+  config.enabledHosts = ['cursor', 'windsurf'];
+  const summary = writeReport(
+    [],
+    config,
+    '2026-07-26T12:00:00.000Z',
+    path.join(dir, 'run'),
+    loadManualHostCertifications(dir, ['cursor', 'windsurf'], fingerprint, true),
+    fingerprint,
+  );
+  const markdown = fs.readFileSync(summary.reportPath, 'utf8');
+  assert.match(markdown, /host 1\.2\.3; os macOS 15\.5 \(arm64\); operator maintainer@example\.test/);
+  assert.match(markdown, /host 1\.2\.3; os not recorded; operator not recorded/);
+});
+
 test('an explicit maintainer waiver is certification but an incomplete waiver is rejected', () => {
   const waived = {
     ...record('copilot', 'NOT_RUN'),

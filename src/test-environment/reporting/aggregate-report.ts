@@ -111,6 +111,16 @@ function tableText(value: string): string {
   return value.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|');
 }
 
+// The plan requires a manual record to name the host version, the OS and the
+// operator per release. Only hostVersion is schema-required, so the other two
+// are reported as `not recorded` rather than omitted — a release reviewer has
+// to be able to see that a record does not say where it ran or who ran it.
+function manualProvenanceLabel(outcome: ManualHostCertificationOutcome): string {
+  const record = outcome.record;
+  if (!record) return 'no valid record';
+  return `host ${record.hostVersion}; os ${record.os ?? 'not recorded'}; operator ${record.operator ?? 'not recorded'}`;
+}
+
 function manualWaiverLabel(outcome: ManualHostCertificationOutcome): string {
   const waiver = outcome.record?.waiver;
   if (!waiver) return outcome.waiverStatus;
@@ -207,6 +217,7 @@ export function writeReport(
     for (const outcome of manualCertifications) {
       const detail = [
         outcome.filePath ?? 'no directory supplied',
+        manualProvenanceLabel(outcome),
         outcome.hostCapability.detail,
         ...outcome.errors,
       ].map(tableText).join('; ');

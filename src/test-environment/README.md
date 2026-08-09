@@ -192,6 +192,11 @@ writeManualHostCertification('/absolute/release-certifications', {
   schemaVersion: 1,
   host: 'copilot',
   hostVersion: '1.2.3',
+  // Optional in the schema, expected per release: a record that names neither
+  // says nothing about which platform was exercised or who drove it, and the
+  // report prints `not recorded` for each so the omission is visible.
+  os: 'macOS 15.5 (arm64)',
+  operator: 'maintainer@example.test',
   installedPluginFingerprint: '<paste exact sha256:... output from command above>',
   installSteps: [
     'Install /absolute/path/to/dist in GitHub Copilot',

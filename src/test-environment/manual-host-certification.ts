@@ -32,6 +32,16 @@ export interface ManualHostCertificationV1 {
   schemaVersion: typeof MANUAL_HOST_CERTIFICATION_SCHEMA_VERSION;
   host: ManualCertificationHost;
   hostVersion: string;
+  /**
+   * Where the run happened and who drove it. Optional, so a record written
+   * before these existed still loads — but absent is NOT the same as covered:
+   * a record with no `os` says nothing about which platform was exercised, and
+   * PLATFORMS.md's Windows row depends on that distinction being visible
+   * rather than assumed. The report prints both, so an omission shows up in
+   * the release evidence instead of reading as a claim nobody made.
+   */
+  os?: string;
+  operator?: string;
   installedPluginFingerprint: string;
   installSteps: string[];
   prompt: string;
@@ -163,6 +173,14 @@ export function validateManualHostCertification(
     errors.push('host is not manual-certification eligible');
   }
   if (!isNonEmptyString(record.hostVersion)) errors.push('hostVersion is required');
+  // Optional, but a present key must carry a real value. `os: ""` and
+  // `operator: 42` are the shapes that read as filled in and are not, which is
+  // worse than omission because the report would render them as an answer.
+  for (const field of ['os', 'operator'] as const) {
+    if (record[field] !== undefined && !isNonEmptyString(record[field])) {
+      errors.push(`${field} must be a non-empty string when present`);
+    }
+  }
   if (!isNonEmptyString(record.installedPluginFingerprint)) errors.push('installedPluginFingerprint is required');
   if (
     !Array.isArray(record.installSteps)
