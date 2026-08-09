@@ -14,6 +14,17 @@
 // fallback — there is no HookResult to describe there, and the fixed decision
 // vocabulary (allow/deny/context/noop) has no fifth "crashed" value to invent
 // for it; see the work-item report).
+//
+// It is also where the compliance detector (shared/state/deny-expectation.ts)
+// is consulted, on the same reasoning that put deny-repeat.ts here: whether a
+// refusal's remedy was ever applied is a property of ALL denies, and a rule
+// wired into one gate leaves the other ~120 uninstrumented. Three sites, each
+// gated on the event so no other path pays for it — a PostToolUse closes an
+// expectation the completed call resolved, a UserPromptSubmit reports whatever
+// the previous turn left unmet, and the deny exit opens one only when the
+// refusal ESCALATED. The allow path is untouched: it reads and writes nothing
+// for this, which is deliberate — it is the only path on the 150 ms pre-tool
+// budget that runs on every tool call.
 
 import type { Ctx, FallbackDenyId, Handler, HookInput, HookResult } from './types';
 import type { DenyId } from '../config/deny-ids';
@@ -35,7 +46,14 @@ import {
   type DecisionRecord,
 } from '../shared/state/decision-log';
 import { drainStateWrites, type StateWriteRecord } from '../shared/state/state-write-log';
-import { denyRepeat } from '../shared/state/deny-repeat';
+import { DENY_REPEAT_ESCALATE_AT, denyRepeat } from '../shared/state/deny-repeat';
+import {
+  denyExpectationSubject,
+  openDenyExpectation,
+  satisfyDenyExpectation,
+  takeUnmetDenyExpectations,
+  unmetDenyExpectationNotice,
+} from '../shared/state/deny-expectation';
 import { shrink } from '../shared/state/claim-capture';
 
 export function selectHandlers(handlers: readonly Handler[], ctx: Ctx): Handler[] {
@@ -263,6 +281,21 @@ export async function runPipeline(handlers: readonly Handler[], ctx: Ctx): Promi
     if (logging) recordDecision(ctx, result, meta, repeatCount, stateWrites);
   };
 
+  // ── the compliance detector's CLOSE leg ────────────────────────────────────
+  // This call ran, so no gate refused it, so whatever was refusing this subject
+  // has stopped — see deny-expectation.ts for why that is a proof rather than a
+  // proxy. Before the handler loop because the action already happened: what a
+  // POST-event gate goes on to say about it cannot un-run it. `'none'` is the
+  // overwhelmingly common answer (nothing is open) and costs one absent-file
+  // read; only `'refused'` is worth a line, and it gets one rather than being
+  // dropped — the chokepoint has already recorded the write itself.
+  if (ctx.input.event === 'PostToolUse') {
+    const subject = denyExpectationSubject(ctx.input.tool);
+    if (subject && satisfyDenyExpectation(ctx.cwd, subject) === 'refused') {
+      ctx.log.debug(`deny-expectation: closing ${subject} was refused; it stays open`);
+    }
+  }
+
   const collected: HookResult[] = [];
   for (const handler of selectHandlers(handlers, ctx)) {
     let result: HookResult;
@@ -326,6 +359,25 @@ export async function runPipeline(handlers: readonly Handler[], ctx: Ctx): Promi
       // one — see denyRepeat) and the OUTGOING identity, so that the exclusion
       // rule and the decision log judge the same id.
       const repeat = denyRepeat(ctx.cwd, runIdOnce(), { ...result, denyId: resolvedDenyId(result, handler.id) });
+      // ── the compliance detector's OPEN leg ────────────────────────────────
+      // Exactly the refusals that just ESCALATED, which is the moment the deny
+      // text stops informing and starts prescribing ("STOP RETRYING — do
+      // exactly one of…"). `repeat.count` is already computed one line up, so
+      // this decides for free and the first two attempts write nothing. The
+      // subject comes from the pipeline's OWN tool input rather than
+      // `denyTarget`, because the later PostToolUse that closes it reads the
+      // same field — a key derived from what gates choose to put in
+      // `denyTarget` would have to mean the same thing on both events.
+      //
+      // Nothing here may change the verdict, so the refusal of the record's own
+      // write has no branch to take; it is reported instead of swallowed, the
+      // way state/plugin-use.ts reports an unrecorded consent answer.
+      if (repeat.count !== null && repeat.count >= DENY_REPEAT_ESCALATE_AT) {
+        const subject = denyExpectationSubject(ctx.input.tool);
+        if (subject && !openDenyExpectation(ctx.cwd, runIdOnce(), subject, String(resolvedDenyId(result, handler.id)))) {
+          ctx.log.debug(`deny-expectation: recording the unmet remedy for ${subject} was refused`);
+        }
+      }
       const stamped = stampDeny(result, handler.id, correlationSuffix, overridable
         ? operatorOverrideHint({ ...denyInput, gateId: handler.id, runId: runIdOnce() })
         : '', repeat.suffix); // short-circuit
@@ -333,6 +385,25 @@ export async function runPipeline(handlers: readonly Handler[], ctx: Ctx): Promi
       return stamped;
     }
     collected.push(result);
+  }
+  // ── the compliance detector's REPORT leg ──────────────────────────────────
+  // A new user prompt is the only event in the canonical vocabulary that means
+  // the previous AGENT turn is over, so an expectation still open here is one
+  // the turn ended without satisfying — no grace period to invent, and no
+  // number to pick. Context, never a deny: a detector that refused something
+  // would wedge exactly the agent that obeyed the escalation's own "report it
+  // in your digest and let the orchestrator route it" instruction.
+  //
+  // AFTER the loop, so a handler's deny short-circuits past it: the notice
+  // would be discarded with the merged result, and the take has already
+  // consumed the entries. Losing a turn's report to a deny that the agent will
+  // see anyway is cheaper than losing it silently, and the next prompt reports
+  // it. `takeUnmetDenyExpectations` answers with an empty list when the
+  // discharge did not persist, which is what keeps a fenced project from being
+  // told the same thing on every prompt forever.
+  if (ctx.input.event === 'UserPromptSubmit') {
+    const unmet = takeUnmetDenyExpectations(ctx.cwd);
+    if (unmet.length) collected.push(context(unmetDenyExpectationNotice(unmet)));
   }
   const merged = mergeResults(collected);
   settle(merged);

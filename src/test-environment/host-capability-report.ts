@@ -14,6 +14,14 @@ import type {
   HostId,
 } from './core/types';
 
+// What `observedBlockingPoint: null` reads as. Lives here, beside the field it
+// describes, because two renderers spell it — the markdown report and the
+// console summary — and they had drifted: one said "no primary blocking point"
+// and the other "no observed primary blocking point", which also repeated the
+// word its own label already supplied ("observed unknown (no observed primary
+// blocking point)"). One fact, one spelling.
+export const NO_OBSERVED_BLOCKING_POINT = 'no primary blocking point';
+
 function runIdFromState(projectRoot: string): string {
   const state = readJson<Record<string, unknown> | null>(
     path.join(projectRoot, '.traffic-one', '.one.json'),

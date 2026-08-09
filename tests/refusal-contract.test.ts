@@ -340,18 +340,24 @@
 //      THE WRITE DID NOT LAND, so a caller dropping it has dropped the only
 //      report there was. A `null` meaning "someone else holds the lock" is not
 //      this, and admitting one would fire on every lock acquirer in the tree;
-//   3. the answer is the CALLEE'S OWN, produced in the frame that mutates, so
-//      the seed can be decided from that function's text. one-settings.ts fails
-//      this and only this: its raw mutations sit several frames below the
-//      boolean its section writers return, which is why it is a named gap
-//      rather than a third authority.
+//   3. the answer is produced in a frame that SYNCHRONOUSLY DOMINATES the
+//      mutation, so the seed can be decided from the module's text. The frame
+//      that mutates satisfies this trivially; so does a frame whose `try` calls
+//      a MODULE-LOCAL function that mutates, because a direct call runs inside
+//      the caller and its throw is the throw the caller's `catch` converts. A
+//      callback handed to somebody else does NOT, and a parse cannot tell a
+//      synchronously-invoked one from a stored one.
+//      This clause used to read "the callee's own frame", and one-settings.ts
+//      failed it on that reading and only on that reading. It no longer does —
+//      see the DESCENT clause on rawFsRefusalWriterNames — so it is a third
+//      authority with its own pin rather than the named gap it was.
 // A module that meets 1-3 gets a seed (a name list if its writers are a fixed
 // exported surface, a shape if they are not) plus a completeness pin below. A
 // module that meets none of them is not a writer layer at all, and wiring one
 // in is how these rules would start firing on correct code.
 //
-// EACH AUTHORITY AUDITS ITS OWN MODULE, and the two pins are not the same
-// assertion because the two seeds are not the same kind of thing:
+// EACH AUTHORITY AUDITS ITS OWN MODULE, and the three pins are not the same
+// assertion because the seeds are not the same kind of thing:
 //   fsjson.ts — a NAME seed, so the pin asks that FSJSON_WRITERS plus
 //     FSJSON_NON_WRITERS equal the module's exported function surface. It
 //     catches an unclassified primitive.
@@ -362,8 +368,16 @@
 //     any raw-fs mutation. That second clause is what the fsjson pin cannot
 //     have — a prose reason is only as good as its author — and it means the
 //     exculpation list cannot be used to silence a writer the shape missed.
-// Both fail in the direction that matters: a writer nobody classified does not
-// go quiet, it fails by name.
+//   one-settings.ts — the same SHAPE seed, but its exculpation list cannot be
+//     "mutates nothing", because two of its exports DO mutate and are still
+//     correct: `updateOneSettings` and `writeOneSection` answer with a path and
+//     report failure by THROWING. That is the errno channel this file
+//     deliberately leaves open (see the rethrow row in SHAPE_CASES_RAW_FS) and
+//     there is no boolean for a caller to drop. So the excuse it checks is
+//     "this frame CATCHES NOTHING", which is a parse-checkable proof that the
+//     failure escapes rather than a sentence about intent.
+// All three fail in the direction that matters: a writer nobody classified does
+// not go quiet, it fails by name.
 //
 // ── TWO HOLES IN THE COLLECTOR, ONE CLOSED AND ONE PINNED ───────────────────
 // The fsjson pin collected only `ts.isFunctionDeclaration`, so `export const
@@ -405,14 +419,17 @@
 // divergence written through raw `fs` is therefore NOT reported, and that is a
 // named gap on the same footing as the two above it.
 //
-// The shape itself is narrow on purpose and its cost is counted: 21 functions
+// The shape itself is narrow on purpose and its cost is counted: 22 functions
 // match, and 38 more perform a raw-fs mutation while reporting failure through
 // some other value (`null`, `0`, `''`, a string union, a result object). Those
 // are not admitted, because widening to "the catch returns anything falsy"
 // pulls in every lock acquirer in the tree, whose `null` means CONTENTION and
 // is legitimately discarded at many call sites. shared/one-settings.ts's
-// section writers are outside it too — their raw mutations sit several frames
-// below the boolean.
+// `writeOneSection` is outside it for a different reason and stays outside: it
+// answers with a PATH and reports failure by throwing, so it has no refusal
+// boolean at all — the frames-below-the-boolean reading this paragraph used to
+// give was wrong about it, and right only about `deleteOneSection`, which the
+// descent clause now admits.
 //
 // ── COVERAGE EXPANSION, COUNTED BEFORE IT LANDED ────────────────────────────
 // The property below applies to this change as much as to a void conversion,
@@ -1258,9 +1275,68 @@ function containsHere(node: ts.Node, predicate: (child: ts.Node) => boolean): bo
 }
 
 /**
+ * Module-local function bodies by NAME — the descent table for the clause
+ * below. Collected over the whole tree rather than the top-level statements
+ * because that is how every other resolver in this file reads a module, and
+ * the cost of the difference is a name declared in two scopes being conflated:
+ * the same name-based approximation `bodyForwards` and `writerNames` already
+ * make, and the same one they are held to by fixtures rather than by argument.
+ */
+function localFunctionBodies(source: ts.SourceFile): ReadonlyMap<string, ts.Node> {
+  const bodies = new Map<string, ts.Node>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) bodies.set(node.name.text, node.body);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+      && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+      bodies.set(node.name.text, node.initializer.body);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return bodies;
+}
+
+/**
+ * The module-local names whose OWN FRAME reaches a raw-fs mutation, directly or
+ * through another module-local name, to a fixpoint.
+ *
+ * `containsHere` at every level, so a nested function is never descended into
+ * at any depth — the descent follows CALLS, not scopes, which is what keeps the
+ * `withLock(() => fs.writeFileSync(…))` fixture below a non-writer. A direct
+ * call to a module-local function runs synchronously inside the caller's frame,
+ * so a throw from it is a throw the enclosing `catch` converts; a callback
+ * handed to somebody else has no such guarantee and a parse cannot supply one.
+ *
+ * The bound is a true fixpoint rather than this file's usual fixed pass count:
+ * a pass either adds a name or ends the walk, so `bodies.size + 1` passes
+ * cannot truncate a deep chain the way a literal 8 could.
+ */
+function rawFsMutatingLocals(
+  source: ts.SourceFile,
+  namespaces: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const bodies = localFunctionBodies(source);
+  const reaching = new Set<string>();
+  const frameReaches = (node: ts.Node): boolean => containsHere(node, (child) => {
+    if (isRawFsMutation(child, namespaces)) return true;
+    if (!ts.isCallExpression(child)) return false;
+    const callee = unwrapExpression(child.expression);
+    return ts.isIdentifier(callee) && reaching.has(callee.text);
+  });
+  for (let pass = 0; pass < bodies.size + 1; pass += 1) {
+    const before = reaching.size;
+    for (const [name, body] of bodies) {
+      if (!reaching.has(name) && frameReaches(body)) reaching.add(name);
+    }
+    if (reaching.size === before) break;
+  }
+  return reaching;
+}
+
+/**
  * Names `source` declares that carry a raw-`fs` refusal, by the shape above.
  *
- * 21 functions in src/ + tests/ match today. THE LIMIT IS DECLARED RATHER THAN
+ * 22 functions in src/ + tests/ match today. THE LIMIT IS DECLARED RATHER THAN
  * PAPERED OVER: 38 further functions perform a raw-fs mutation and report the
  * failure through some OTHER value — `null` (acquirePolicyLock), `0`
  * (copyActiveSkills), `''` (ensureAgentTeamsEnv), a string union
@@ -1272,21 +1348,50 @@ function containsHere(node: ts.Node, predicate: (child: ts.Node) => boolean): bo
  * fires on those is an instrument someone switches off, and then the sidecar
  * layer is uncovered again along with everything else.
  *
- * shared/one-settings.ts's `writeOneSection` / `deleteOneSection` are outside
- * this too — their raw mutations sit several frames below the boolean, so the
- * per-function shape does not reach them. That is the same named gap, and
- * `clearAuthentication` is the caller to look at first if it is ever closed.
+ * ── the DESCENT clause, and what it cost ────────────────────────────────────
+ * The mutation no longer has to sit in the try block's own frame: a call to a
+ * MODULE-LOCAL function that reaches one counts, transitively. That is what
+ * closes shared/one-settings.ts#deleteOneSection, whose write sits two local
+ * hops down (`withSettingsLock` → `acquireSettingsLock`'s lock `mkdirSync`, and
+ * `writeWholeFile` below the lock body), and it is a resolver change rather
+ * than a list edit for exactly that reason.
+ *
+ * Measured over src/ + tests/ before it landed, by running both seeds side by
+ * side: the admitted census moves 21 -> 22 and the ONLY addition is
+ * `deleteOneSection`. Nothing left the set. A variant that ALSO descended into
+ * function expressions passed as call arguments was measured in the same run
+ * and admitted the same 22, so it buys nothing and costs the nested-callback
+ * fixture below — which is why the descent follows calls only.
+ *
+ * TWO LIMITS, declared rather than half-built:
+ *   - the descent is INTRA-MODULE. This function is handed a `ts.SourceFile`
+ *     and no tree, so a helper imported from another file ends the walk. A
+ *     writer whose mutation is one IMPORT away is therefore still not admitted,
+ *     and the fixture below pins that rather than leaving it to be discovered.
+ *   - a mutation whose own failure is swallowed by an INNER `try`/`catch` still
+ *     counts, so the outer `false` can be attributed to a write the outer catch
+ *     could never have seen. The pre-existing direct clause has always had this
+ *     hole (`try { try { fs.x() } catch {} return true } catch { return false }`
+ *     matches today), and closing it in the descent alone would make the two
+ *     halves of one shape disagree.
  */
 function rawFsRefusalWriterNames(source: ts.SourceFile): ReadonlySet<string> {
   const namespaces = fsNamespaces(source);
   const names = new Set<string>();
   if (namespaces.size === 0) return names;
+  const mutatingLocals = rawFsMutatingLocals(source, namespaces);
+  const reachesMutation = (node: ts.Node): boolean => containsHere(node, (child) => {
+    if (isRawFsMutation(child, namespaces)) return true;
+    if (!ts.isCallExpression(child)) return false;
+    const callee = unwrapExpression(child.expression);
+    return ts.isIdentifier(callee) && mutatingLocals.has(callee.text);
+  });
   const returnsLiteral = (node: ts.Node, kind: ts.SyntaxKind): boolean => containsHere(node, (child) =>
     ts.isReturnStatement(child) && child.expression !== undefined
     && unwrapExpression(child.expression).kind === kind);
   const visit = (node: ts.Node): void => {
     if (ts.isTryStatement(node) && node.catchClause
-      && containsHere(node.tryBlock, (child) => isRawFsMutation(child, namespaces))
+      && reachesMutation(node.tryBlock)
       && returnsLiteral(node.tryBlock, ts.SyntaxKind.TrueKeyword)
       && returnsLiteral(node.catchClause.block, ts.SyntaxKind.FalseKeyword)) {
       let owner: ts.Node | undefined = node;
@@ -3384,8 +3489,11 @@ const SHAPE_CASES_RAW_FS: ReadonlyArray<{ label: string; source: string; writer:
       + '  try {\n    fs.writeFileSync(p, body);\n    return true;\n  } catch {\n    return false;\n  }\n}\n',
   },
   {
-    // The write is in a nested callback, so the try/return true pair is not
-    // this function's contract. Nested scopes are not descended into.
+    // The write is in a nested callback handed to a function this module cannot
+    // see, so nothing here proves it ran inside the `try` at all — a stored
+    // callback would make `return true` a lie for an entirely different reason.
+    // The descent clause follows CALLS, not scopes, and `withLock` is `declare`d
+    // with no body, so there is no local frame to descend into either.
     label: 'the mutation is inside a nested function, not in the try itself',
     writer: false,
     source: "import * as fs from 'fs';\n"
@@ -3393,6 +3501,65 @@ const SHAPE_CASES_RAW_FS: ReadonlyArray<{ label: string; source: string; writer:
       + 'export function persist(p: string, body: string): boolean {\n'
       + '  try {\n    withLock(() => { fs.writeFileSync(p, body); });\n    return true;\n'
       + '  } catch {\n    return false;\n  }\n}\n',
+  },
+  {
+    // The DESCENT clause, reduced to one hop. Without it this is the
+    // deleteOneSection defect: a real refusal boolean nothing recognises.
+    label: 'the mutation is one MODULE-LOCAL call below the try',
+    writer: true,
+    source: "import * as fs from 'fs';\n"
+      + 'function place(p: string, body: string): void { fs.writeFileSync(p, body); }\n'
+      + 'export function persist(p: string, body: string): boolean {\n'
+      + '  try {\n    place(p, body);\n    return true;\n  } catch {\n    return false;\n  }\n}\n',
+  },
+  {
+    // deleteOneSection's actual depth: the try calls a lock helper, and the
+    // helper calls the thing that mutates. A one-hop-only clause would miss it.
+    label: 'the mutation is TWO module-local calls below the try',
+    writer: true,
+    source: "import * as fs from 'fs';\n"
+      + 'function place(p: string, body: string): void { fs.writeFileSync(p, body); }\n'
+      + 'function guarded(p: string, body: string): void { place(p, body); }\n'
+      + 'export function persist(p: string, body: string): boolean {\n'
+      + '  try {\n    guarded(p, body);\n    return true;\n  } catch {\n    return false;\n  }\n}\n',
+  },
+  {
+    // The same chain in REVERSE declaration order, and it is what actually pins
+    // the fixpoint. Function declarations hoist, so this is ordinary code — and
+    // a single forward pass over the declarations resolves nothing from it,
+    // because each caller is visited before the callee it depends on. Measured:
+    // capping rawFsMutatingLocals at one pass leaves the row above GREEN (both
+    // trees declare helper-before-caller, so one pass happens to suffice) and
+    // turns only this row red.
+    label: 'the two-hop chain declared AFTER its caller — one pass cannot resolve it',
+    writer: true,
+    source: "import * as fs from 'fs';\n"
+      + 'export function persist(p: string, body: string): boolean {\n'
+      + '  try {\n    guarded(p, body);\n    return true;\n  } catch {\n    return false;\n  }\n}\n'
+      + 'function guarded(p: string, body: string): void { place(p, body); }\n'
+      + 'function place(p: string, body: string): void { fs.writeFileSync(p, body); }\n',
+  },
+  {
+    // The descent is INTRA-MODULE and that is a declared limit, not an
+    // oversight: this seed is handed a SourceFile and no tree, so it cannot
+    // read the imported module to find out. Pinned so the limit is a fixture
+    // rather than a sentence somebody has to remember.
+    label: 'the mutation is below an IMPORTED call — outside this module, so outside the descent',
+    writer: false,
+    source: "import * as fs from 'fs';\n"
+      + "import { place } from './elsewhere';\n"
+      + 'export function persist(p: string, body: string): boolean {\n'
+      + '  try {\n    place(p, body);\n    return true;\n  } catch {\n    return false;\n  }\n}\n',
+  },
+  {
+    // The descent must not degrade into "a local call in a try makes a writer".
+    // Nothing below `audit` mutates, so `false` reports no refusal.
+    label: 'a module-local call that reaches no mutation is still not a write',
+    writer: false,
+    source: "import * as fs from 'fs';\n"
+      + 'function audit(p: string): number { return p.length; }\n'
+      + 'export function persist(p: string): boolean {\n'
+      + '  try {\n    audit(p);\n    return true;\n  } catch {\n    return false;\n  }\n}\n',
   },
 ];
 
@@ -3691,10 +3858,10 @@ test('a writer re-exported as an object MEMBER is reached by no call in the tree
  * a mutation pushed below a helper — therefore fails by name rather than being
  * born invisible, which is the whole failure this lane exists for.
  *
- * shared/one-settings.ts, the other raw-fs opt-out, is deliberately NOT pinned:
- * its section writers keep their mutations several frames below the boolean, so
- * it fails clause 3 of the authority criterion and is a declared gap in the
- * header rather than a second module for this test.
+ * shared/one-settings.ts, the other raw-fs opt-out, has its own pin below now
+ * that the descent clause reaches it. It cannot share this one: two of its
+ * exports mutate and are still correct, so "excused means mutates nothing" is
+ * an excuse it could not pass and must not be loosened to accommodate it.
  */
 const MACHINE_SIDECAR_MODULE = path.join(SRC_ROOT, 'shared', 'auth', 'machine-sidecar.ts');
 
@@ -3757,5 +3924,131 @@ test('every raw-fs mutation machine-sidecar.ts exports is admitted by the shape 
     'a name excused as a machine-sidecar NON-writer performs a raw-fs mutation. It cannot be excused: either it '
     + 'carries a refusal (give it the shape, and let the seed admit it) or the mutation belongs somewhere else:\n'
     + mutating.map((name) => `  ${name}`).join('\n'),
+  );
+});
+
+/**
+ * The THIRD authority auditing its own module.
+ *
+ * one-settings.ts owns ~/.traffic-one/one.json and takes the same sanctioned
+ * opt-out machine-sidecar.ts takes — for a session rooted at $HOME the guarded
+ * write would deadlock on the consent question — so it reaches raw `fs`
+ * directly and was invisible here for exactly as long as the shape required the
+ * mutation to sit in the frame that answers. The descent clause on
+ * rawFsRefusalWriterNames closes that, and this pin is the other half: a seed
+ * without a completeness check is a seed that goes quiet without saying so.
+ *
+ * TWO EXCULPATION LISTS, because this module needs an excuse the sidecar does
+ * not have, and the difference is the whole reason it gets its own test.
+ * `updateOneSettings` and `writeOneSection` DO mutate — they are the write path
+ * for the auth key — and they are still correct: they answer with a PATH and
+ * report failure by THROWING, which is the errno channel this file deliberately
+ * leaves open (the rethrow row in SHAPE_CASES_RAW_FS) and which the hook
+ * pipeline turns into the non-overridable `pipeline-handler-crashed` deny. A
+ * caller cannot drop a refusal that was never a value.
+ *
+ * Both lists are CHECKED against the code rather than believed, the way
+ * MACHINE_SIDECAR_NON_WRITERS is, and the throwing list is checked in BOTH
+ * directions: a name on it must really reach a mutation (or it is a
+ * non-mutator being filed in the wrong place, and the wrong list would stop
+ * asking the question that matters) and must really catch nothing.
+ */
+const ONE_SETTINGS_MODULE = path.join(SRC_ROOT, 'shared', 'one-settings.ts');
+
+/** Exported names that reach NO raw-fs mutation, by the widened reach. */
+const ONE_SETTINGS_NON_MUTATORS: readonly string[] = [
+  'oneSettingsPath',          // pure: path arithmetic
+  'readCanonicalOneSettings', // read + validate
+  'readOneSettings',          // read
+];
+
+/**
+ * Exported names that mutate and answer with a path, letting the errno escape.
+ * Each is checked to reach a mutation, to declare a non-boolean return, and to
+ * contain no `catch` of its own that could turn a failure into a value.
+ */
+const ONE_SETTINGS_THROWING_MUTATORS: readonly string[] = [
+  'updateOneSettings', // the single low-level mutator; throws on lock/schema failure
+  'writeOneSection',   // forwards updateOneSettings
+];
+
+test('every raw-fs mutation one-settings.ts exports is admitted, excused as a read, or thrown', () => {
+  const source = sourceTree().parse(ONE_SETTINGS_MODULE);
+  assert.ok(source, `the parse found ${path.relative(REPO_ROOT, ONE_SETTINGS_MODULE)}`);
+
+  const exported = exportedFunctionNames(source);
+  assert.ok(exported.length > 0, 'an empty exported surface would make every assertion here vacuous');
+
+  const namespaces = fsNamespaces(source);
+  assert.ok(namespaces.size > 0, 'one-settings.ts must still import `fs` as a namespace, or the seed sees nothing');
+  const reaches = rawFsMutatingLocals(source, namespaces);
+  const admitted = rawFsRefusalWriterNames(source);
+  const admittedExports = exported.filter((name) => admitted.has(name)).sort();
+
+  // Non-vacuity, and the reason this pin exists: deleteOneSection is the
+  // module's ONE refusal boolean, and it is the site the descent clause was
+  // built for. If it stops being admitted, `clearAuthentication` — which
+  // consumes it precisely so a rejected key is not silently kept trusted —
+  // drops out of rules 2 and 3 without a word.
+  assert.ok(
+    admitted.has('deleteOneSection'),
+    'the shape seed no longer admits deleteOneSection. Its raw write sits BELOW a module-local call, so it needs '
+    + 'the descent clause on rawFsRefusalWriterNames; if that clause narrowed, every caller of this module\'s only '
+    + 'refusal boolean left rules 2-3 silently',
+  );
+
+  assert.deepEqual(
+    exported,
+    [...admittedExports, ...ONE_SETTINGS_NON_MUTATORS, ...ONE_SETTINGS_THROWING_MUTATORS].sort(),
+    'one-settings.ts exports a function that is neither admitted by the raw-fs shape, nor excused as reaching no '
+    + 'mutation, nor excused as letting the errno escape. This module is a sanctioned raw-fs opt-out from the '
+    + 'consent write fence, so a refusal-carrying writer here that the shape does not admit is INVISIBLE to rules '
+    + '2 and 3 — not unchecked, unseen. Give it the shape (`try { …fs…; return true } catch { return false }`), or '
+    + 'put it in the list its code can actually pass',
+  );
+
+  const wronglyExcused = ONE_SETTINGS_NON_MUTATORS.filter((name) => reaches.has(name));
+  assert.deepEqual(
+    wronglyExcused,
+    [],
+    'a name excused as reaching NO raw-fs mutation reaches one. It cannot be excused: either it carries a refusal '
+    + '(give it the shape) or the mutation belongs somewhere else:\n'
+    + wronglyExcused.map((name) => `  ${name}`).join('\n'),
+  );
+
+  // The throwing list, both directions. A name that reaches no mutation does
+  // not belong here (it belongs above, where the stricter check applies), and
+  // a name that catches something is answering with a value after all.
+  const declarations = new Map<string, FunctionLike>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) declarations.set(node.name.text, node);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+      && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+      declarations.set(node.name.text, node.initializer);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
+
+  const notThrowing: string[] = [];
+  for (const name of ONE_SETTINGS_THROWING_MUTATORS) {
+    const fn = declarations.get(name);
+    if (!fn) { notThrowing.push(`${name} — no declaration found`); continue; }
+    if (!reaches.has(name)) { notThrowing.push(`${name} — reaches no raw-fs mutation`); continue; }
+    if (fn.type && fn.type.kind === ts.SyntaxKind.BooleanKeyword) {
+      notThrowing.push(`${name} — declares \`boolean\`, so it HAS a refusal channel`);
+      continue;
+    }
+    if (fn.body && containsHere(fn.body, (child) => ts.isCatchClause(child))) {
+      notThrowing.push(`${name} — catches in its own frame, so a failure can become a value`);
+    }
+  }
+  assert.deepEqual(
+    notThrowing,
+    [],
+    'a name excused as letting the errno ESCAPE does not. The excuse is that there is no refusal value for a '
+    + 'caller to drop, so a `catch` in its own frame or a `boolean` return retires it — give it the shape and let '
+    + 'the seed admit it instead:\n'
+    + notThrowing.map((entry) => `  ${entry}`).join('\n'),
   );
 });

@@ -298,6 +298,34 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const block = makeViolationBlock(firstFiredViolation);
 
   const violations: string[] = [];
+  // Which targets actually OFFENDED. The refusal's subject used to be
+  // `filePath` — the direct target, else `gateTargets[0]`, the patch's FIRST
+  // operation — so on a multi-file apply_patch the deny named whichever file the
+  // agent happened to write first, which had usually violated nothing. Two
+  // readers depend on that subject: `runs/<id>/debug/decisions.jsonl` (stamped
+  // by core/pipeline.ts), where it is the only record of WHICH file was refused,
+  // and the repeat counter, which signs a refusal as `denyTarget` plus the whole
+  // rendered reason (shared/state/deny-repeat.ts). Measured on a 3-op patch
+  // whose first operation stayed constant while the agent cleared the offenders
+  // one at a time: three refusals with an identical path-free reason and an
+  // identical first op collapsed into ONE bucket and escalated on the third —
+  // an agent making real progress told to STOP RETRYING about a file it had
+  // already fixed. Naming the offender splits that into three counts of one,
+  // while the identical patch drawn three times still reaches the threshold.
+  //
+  // Only the per-target rules can attribute: readiness, the state-mode
+  // downgrade guard and the static family each judge ONE target per iteration,
+  // so the target whose iteration grew `violations` is the one to name. The
+  // rest — run-team ownership, OpenCode reservations, run-id paths, the
+  // registry probe, model choice — judge the write or the command as a whole
+  // and have no offending target to offer, so those keep today's subject.
+  const offendingTargets = new Set<string>();
+  // `appendUnique` dedupes, so a later target whose lines an earlier one
+  // already rendered is not recorded. That never moves the answer: the earlier
+  // target offended too and is resolved first.
+  const noteOffender = (target: string, before: number): void => {
+    if (target && violations.length > before) offendingTargets.add(target);
+  };
   const readinessTargets = gateTargets.length > 0
     ? gateTargets
     : [{
@@ -307,6 +335,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
       staticCheck: true,
     }];
   for (const target of readinessTargets) {
+    const before = violations.length;
     appendUnique(violations, planReadinessViolations({
       filePath: target.filePath,
       content: target.resultContent,
@@ -323,6 +352,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
       rawData: raw,
       block,
     }));
+    noteOffender(target.filePath, before);
   }
   if (hostFlags(ctx.host).opencodeSelfHosted && writingExternalTempViaCommand) {
     violations.push(block('opencode-external-temp-shell',
@@ -351,6 +381,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
     if (proposedMode.startsWith('existing')) {
       violations.push(block('state-mode-downgrade',
         'State mode gate: this project was onboarded as `new-project`; rewriting `.traffic-one/.one.json` to an existing-* mode mid-run would disarm the architecture gates that mode selects. Mode changes go through onboarding, not a state-file edit. If the user explicitly wants this project treated as an existing codebase, re-run Traffic One onboarding.'));
+      offendingTargets.add(target.filePath);
       break;
     }
   }
@@ -424,8 +455,9 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // identical lines: an `any` in the seventh file of a ten-file patch rendered
   // the byte-identical text an `any` in the first file did, so the whole family
   // collapsed to one render per rule no matter which file tripped it. The
-  // aggregator's own `denyTarget` cannot recover it either — it is
-  // `gateTargets[0]`, the first operation, not the offending one.
+  // aggregator's own `denyTarget` names an offending target now (see
+  // `offendingTargets` above), but it names exactly ONE of them, so it can
+  // never stand in for the per-line naming a multi-file patch needs.
   //
   // That collapse also reaches the repeat counter, which signs a refusal as
   // `denyTarget` plus the whole rendered reason (shared/state/deny-repeat.ts):
@@ -439,11 +471,20 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const staticTargets = gateTargets.filter((candidate) => candidate.staticCheck);
   const nameStaticTarget = staticTargets.length > 1;
   for (const target of staticTargets) {
+    const before = violations.length;
     const found = staticViolationsFor(target);
     appendUnique(violations, nameStaticTarget ? found.map((violation) => `${target.filePath}: ${violation}`) : found);
+    noteOffender(target.filePath, before);
   }
 
   if (violations.length === 0) return noop();
+  // First in OPERATION order, not in the order the gates happened to run: which
+  // rule noticed is an implementation detail of this dispatcher, while the
+  // patch's own ordering is what the agent wrote and what the reason lists.
+  // Falls back to `filePath` — today's subject — when nothing per-target
+  // offended, which is the honest answer for a cause that has no target.
+  const denyTarget = readinessTargets
+    .find((target) => offendingTargets.has(target.filePath))?.filePath || filePath;
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
   // Attribution makes multi-agent runs debuggable: without it a deny line can't
   // be tied to the subagent that was denied except by transcript archaeology.
@@ -504,5 +545,5 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // file the agent assumed partial content existed and issued Edit calls
   // against it ("File does not exist" ×2, observed 5cl-claude on plan.md).
   return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}\nNo write was applied — the denied Write/Edit/apply_patch left the target file(s) unchanged on disk. Fix the violation(s) and re-issue the FULL corrected write; do not Edit content that was never written.`,
-    { denyId: firstFiredViolation.denyId ?? 'plan-write-violation-unattributed', denyTarget: filePath || undefined });
+    { denyId: firstFiredViolation.denyId ?? 'plan-write-violation-unattributed', denyTarget: denyTarget || undefined });
 }

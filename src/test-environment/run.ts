@@ -24,6 +24,7 @@ import { approveCodexE2EHooks } from './core/codex-e2e-hook-approval';
 import { preflightCodexE2eModels } from './core/codex-e2e-models';
 import { runCase, reassertCase } from './core/case-runner';
 import { releaseResultFailed } from './core/result-policy';
+import { NO_OBSERVED_BLOCKING_POINT } from './host-capability-report';
 import { writeReport } from './reporting/aggregate-report';
 import { runVerdict } from './reporting/verdict';
 import {
@@ -60,7 +61,7 @@ function printManualCertifications(
       ? ` — ${certification.errors.join('; ')}`
       : '';
     const capability = certification.hostCapability;
-    const point = capability.observedBlockingPoint ?? 'no observed primary blocking point';
+    const point = capability.observedBlockingPoint ?? NO_OBSERVED_BLOCKING_POINT;
     console.log(
       `  ${certification.host}: ${result}${waiver}`
       + ` · E2E/waiver ${certification.certified ? 'certified' : 'not certified'}`

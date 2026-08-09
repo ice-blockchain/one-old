@@ -46,6 +46,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P4 workspace onboarding: member registration, prompt routing, linked runs (`626abce5`)
 - P4 workspace enforcement: member write fence, member identity, harness case model (`76598567`)
 - P4 workspace foundation, torn-root residuals, deny-id tiering census (`a5bb395c`)
 - Require positive workspace membership before deleting nested project state (`d3462aad`)

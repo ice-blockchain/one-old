@@ -12,6 +12,7 @@ import type {
   RootTestConfig,
 } from '../core/types';
 import type { ManualHostCertificationOutcome } from '../manual-host-certification';
+import { NO_OBSERVED_BLOCKING_POINT } from '../host-capability-report';
 import {
   HOST_CAPABILITIES,
   type HostModelObservation,
@@ -121,7 +122,7 @@ function observedCapabilityLabel(capability: HostCapabilityReport | undefined): 
   if (capability.observedPrevention === 'unknown') {
     return `${capability.evidenceStatus}: unknown`;
   }
-  const point = capability.observedBlockingPoint ?? 'no primary blocking point';
+  const point = capability.observedBlockingPoint ?? NO_OBSERVED_BLOCKING_POINT;
   const deny = capability.primaryBlockingPointDenied ? 'primary deny observed' : 'no primary deny';
   return `${capability.observedPrevention} — ${point}; ${deny}`;
 }
