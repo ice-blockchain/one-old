@@ -60,10 +60,10 @@ takes over, and you pay for the context twice.
 **Why it is deliberate.** On these hosts the recorded agent id cannot be
 corroborated against host identity — it comes from orchestrator-authored text
 (the child's first chat message, or the requested spawn profile), never from the
-host. An unverifiable row was nonetheless authority to *deny* the role's next
+host. Honouring such a row would make it authority to *deny* the role's next
 spawn and to release another thread's live claim: absent evidence behaving as
-evidence of no problem. Standing down costs duplicate context; trusting it cost
-correctness.
+evidence of no problem. Standing down costs duplicate context; trusting it would
+cost correctness.
 
 **Workaround:** on these hosts, spawn each role once per run. Or use a certified
 host.
@@ -254,6 +254,76 @@ deny nobody can override, and a launcher that exits early reads to the host as
 
 Diagnose with `node ~/.traffic-one/bin/doctor.cjs`; the finding is
 `HOOK_RUNTIME_NODE_BELOW_FLOOR`. See `PLATFORMS.md`.
+
+---
+
+## 11. Five ordinary documentation filenames at your repository root are treated as Traffic One's own
+
+**Affects:** any repository that already keeps `api.md`, `database.md`,
+`deployment.md`, `environment-setup.md` or `security.md` at its top level —
+documentation-heavy repositories especially.
+
+**What happens:** when Traffic One materializes a project you have opted in, the
+contents of any of those five files are copied into `.traffic-one/` under the
+same name. Your file at the root is **not** moved, renamed or deleted, and the
+copy is skipped when the same text is already there. What you are left with is
+two copies, and the one under `.traffic-one/` is the one Traffic One's own rules
+read. Rewrite the root file later and its new text is appended as a further
+block rather than replacing the old one, so the two drift apart with the
+`.traffic-one/` copy carrying both versions.
+
+There is a second thing that can remove the root file, and it is not a hook: the
+documentation skill tells the agent to treat those five names as legacy and move
+their content into `.traffic-one/`. That is an action you can see in the
+transcript and decline, which a silent rewrite would not be.
+
+**Workaround:** rename the file, or keep it below the top level, if you want it
+to stay yours alone. Only those exact five names, and only at the repository
+root, are matched.
+
+**Verified** by reading the five-name list and the adoption routine in
+`src/shared/materialize/cleanup.ts` — it copies, and contributes nothing to the
+run's removal count because it removes nothing — and the legacy-documents rule
+in the `auto-documentation-generator` skill.
+
+---
+
+## 12. An incomplete plugin installation refuses every file change until you complete it
+
+**Affects:** any project running against a Traffic One installation that is
+incomplete at that moment — most easily by rebuilding the folder you installed
+from while a session is open, but equally an interrupted install or a host
+plugin cache updating in the background.
+
+**What happens:** before letting anything write, Traffic One checks that the
+installation actually carries every rule and skill your project needs. A short
+installation fails that check, and Traffic One refuses rather than proceeding,
+because proceeding would delete what it could not resupply — `.traffic-one/rules`
+and `.traffic-one/skills` are your project's only copy.
+
+Nothing in your project is lost or changed while this lasts, and each refused
+call says so and says why: that the installation is incomplete, how many entries
+each of its two content trees resolved against how many your project needs, the
+first few that are missing, and the command that will diagnose the installation
+for you. It also states that re-issuing the same call draws the same refusal, so
+what you should get is the agent reporting the problem to you rather than
+looping on it. Reading, searching, and anything else that changes no file is
+unaffected, so an agent can keep making progress while you sort the install out.
+
+**Workaround:** complete or redo the installation, then repeat the tool call.
+There is no project-side repair to do afterwards, because nothing in the project
+was changed. If you install from a locally built copy, finish building it before
+starting a session rather than during one.
+
+**Verified** by measurement as well as by reading: a project holding its full
+materialized skill set, run against an installation missing all but one skill,
+comes back having removed nothing, written nothing, and leaving every tracked
+file byte-identical. Separately, every outcome this check can produce was
+rendered and hashed for both a file-changing and a read-only call — each
+incomplete-install refusal carries its own diagnosis and ends on something its
+reader can act on, and the two "already up to date" outcomes are unchanged. The
+refusal and the diagnosis are in `src/shared/materialize/`; the branch that
+chooses between them is in `src/modules/onboarding-gate/handler.ts`.
 
 ---
 

@@ -850,12 +850,12 @@ const NO_FALLBACK_SITES: readonly string[] = [
 // The claim in AGENTS.md is that the TS fallback is a verbatim copy of the
 // T1BLOCK, so a torn install renders the same prose. Measured across the whole
 // population (135 pairs = a call site that BOTH passes a fallback AND names a
-// block that exists), it is true of 70. It is not "mostly true with a few typos"
+// block that exists), it is true of 72. It is not "mostly true with a few typos"
 // — the divergences fall into three kinds with three different meanings, and
 // collapsing them into one relaxed comparison would hide the only kind that
 // matters:
 //
-//   70  the fallback IS the block, byte for byte, once `{{VAR}}` is substituted
+//   72  the fallback IS the block, byte for byte, once `{{VAR}}` is substituted
 //       to the `${expr}` the call site passes. This is the bar.
 //   31  the fallback is not a LITERAL at the call site at all — a lookup into a
 //       reason table, or a `…Reason()` helper that composes several sentences.
@@ -865,15 +865,20 @@ const NO_FALLBACK_SITES: readonly string[] = [
 //       fallback. A single generic T1BLOCK cannot be byte-identical to four
 //       different fallbacks — this is a structural fact about the block, not
 //       drift. BLOCK_WITH_PER_SITE_FALLBACKS.
-//   22  genuine 1:1 prose divergence: one block, one fallback, different words.
+//   20  genuine 1:1 prose divergence: one block, one fallback, different words.
 //       PROSE_DIVERGED_FROM_FALLBACK.
 //
 // The bar is byte-identity, NOT a normalised comparison. Normalising whitespace
-// or stripping backticks would have silently absorbed `no-any` (SKILL.md ships
-// ``Avoid `any` — use `unknown` …`` while its fallback reads `Avoid the any type
-// — use unknown …`) and 21 others, which is how they got here unnoticed. Every
-// divergence is pinned BY NAME instead, and each list is an EQUALITY: a new
-// divergence fails, and so does a stale pin whose pair now matches.
+// or stripping backticks would silently absorb this entire class. `no-any` was
+// the pair that settled it: SKILL.md shipped ``Avoid `any` — use `unknown` …``
+// against a fallback reading `Avoid the any type — use unknown …`, which is how
+// it and its siblings reached this list unnoticed in the first place. That pair
+// has since CONVERGED — the four-sentence deny rewrite gave both sides one text
+// — which is why it is no longer pinned below and why this bucket is 20 rather
+// than the 22 the three kinds were first measured at. Every divergence is
+// pinned BY NAME instead, and each list is an EQUALITY: a new divergence fails,
+// and so does a stale pin whose pair now matches. The second half is not
+// hypothetical — it is what caught the rewrite.
 //
 // A pinned divergence is not a defect to be fixed on sight — the two texts are
 // two spellings of the same refusal and both read fine. What the pin buys is
@@ -885,11 +890,9 @@ const PROSE_DIVERGED_FROM_FALLBACK: readonly string[] = [
   'plan-guard :: architect-opencode-queue-gate',
   'plan-guard :: architect-planning-allowlist-gate',
   'plan-guard :: cross-feature-import',
-  'plan-guard :: css-ts-import',
   'plan-guard :: frontend-collapse-gate',
   'plan-guard :: frontend-structure-hot-gate',
   'plan-guard :: monorepo-root-flat-scaffold',
-  'plan-guard :: no-any',
   'plan-guard :: plan-opencode-queue-gate',
   'plan-guard :: plan-opencode-queue-policy-gate',
   'plan-guard :: run-team-runtime-allowlist-gap',

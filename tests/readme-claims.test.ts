@@ -50,6 +50,32 @@ function hostsWithTier(tier: 'certified' | 'uncertified'): TrafficOneHost[] {
     .sort();
 }
 
+test('no install command names a marketplace source that does not exist', () => {
+  // A `marketplace add` argument is the one thing in this file a reader copies
+  // verbatim and runs, and until publication there is no published source to
+  // name. The "after publication" section printed `traffic-one/traffic-one`,
+  // which is not this repository and is not registered anywhere — the worst of
+  // the three possible arguments, because it looks real and fails at the
+  // marketplace rather than at the shell.
+  //
+  // WHEN PUBLICATION HAPPENS this test goes red, deliberately: substituting a
+  // real source is exactly the moment to decide whether the surrounding prose
+  // still says "not available yet". Replace the placeholder here with the
+  // published name rather than deleting the assertion.
+  const sources = [...README.matchAll(/(?:plugin marketplace add|\/add-plugin)\s+(\S+)/g)]
+    .map((match) => match[1]!);
+  assert.ok(
+    sources.length >= 5,
+    `README no longer prints marketplace install sources (found ${sources.length}) — update this test with them`,
+  );
+  for (const source of sources) {
+    assert.ok(
+      source.startsWith('/absolute/path/to/') || source === '<published-marketplace>',
+      `README prints an install source that is neither the local build path nor the publication placeholder: ${source}`,
+    );
+  }
+});
+
 test('the supported-host count is the number of hosts, not the number of products', () => {
   // The defect: "all eight supported hosts" counted Copilot's CLI and VS Code
   // surfaces separately. They are one host id, so no per-host claim may say 8.

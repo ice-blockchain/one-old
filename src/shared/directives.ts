@@ -96,7 +96,7 @@ export function postWriteIncompleteWarning(args: IncompleteWarningArgs): string 
       `${providers.map((p) => `\`${p}\``).join(' or ')}. The graph reduces token`,
       'usage 50–70% on multi-file work. See `rules/common/codebase-graph.md`',
       'and the FIRST-RUN ONBOARDING directive for the license trade-off',
-      '(gitnexus is PolyForm Noncommercial; graphify is MIT).',
+      '(gitnexus is PolyForm Noncommercial; graphify is Apache-2.0).',
     );
   } else if (cgUnknown) {
     if (lines.length > 2) lines.push('');

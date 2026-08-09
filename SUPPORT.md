@@ -213,6 +213,17 @@ promise about your project's contents.
 correlation ref, your host and its version, and the bundle. With the first two,
 the exact decision can be located in your log without guessing.
 
+**Where it goes: a GitHub issue on the public repository.** There is no support
+email address, and that is deliberate rather than an omission — a bundle sent
+privately helps exactly one person, while the same bundle on an issue is
+findable by the next reader who hits your symptom. The bundle is designed to be
+safe to attach in public for that reason.
+
+The repository is not published yet, so this section prints no URL rather than
+a link that would 404 today; `README.md` says the same of the marketplace
+listing for the same reason. Until it exists, report through whoever gave you
+this checkout.
+
 Check `KNOWN-ISSUES.md` first — several confusing behaviours are known,
 explained, and have workarounds.
 

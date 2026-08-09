@@ -101,7 +101,7 @@ Noncommercial does not permit you to use GitNexus on it. Traffic One does not
 make that judgement for you, and it does not make the choice silently: the
 code-graph provider is a required onboarding question with no default and no
 skip, and the question states the trade-off in as many words — *"gitnexus is
-PolyForm Noncommercial; graphify is MIT"*. Choosing `graphify` avoids GitNexus
+PolyForm Noncommercial; graphify is Apache-2.0"*. Choosing `graphify` avoids GitNexus
 entirely and nothing installs it. After a scan, the run summary repeats the
 licence reminder.
 
@@ -110,18 +110,27 @@ To turn the whole code-graph path off after the fact, set
 
 Traffic One reads GitNexus's output and never redistributes GitNexus itself.
 
-### graphify — MIT
+### graphify — Apache-2.0
 
 | | |
 |---|---|
 | Package | `graphifyy` (PyPI — the double `y` is the real published name) |
-| Licence | MIT |
-| Home | <https://github.com/edmondchuc/graphify> |
+| Licence | Apache-2.0 |
+| Home | <https://github.com/Graphify-Labs/graphify> |
 | Minimum accepted | 0.4.0 |
 | Installed version | latest published at install time |
 | Installed to | a Python virtual environment under `~/.traffic-one/toolchains/graphify/venv/` |
 
-The MIT alternative to GitNexus. Requires Python 3.10 or newer.
+The permissively licensed alternative to GitNexus, and the one to choose if your
+project is commercial. Requires Python 3.10 or newer.
+
+The licence is read from the published package itself: PyPI declares
+`license_expression: Apache-2.0` for `graphifyy`, and the project's repository
+agrees. Two places where you might look instead will tell you nothing — PyPI's
+older `license` field is empty for this package and it publishes no licence
+classifier. Apache-2.0 asks more of a *redistributor* than MIT does; Traffic One
+installs `graphifyy` from PyPI into a virtual environment on your machine and
+never redistributes it, so nothing further is owed here.
 
 ### OpenCode — MIT
 

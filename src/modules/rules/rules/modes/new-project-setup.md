@@ -371,7 +371,7 @@ instead of creating it out of scope.
    `.traffic-one/backups/<run-stamp>/` before each run and restores
    traffic-one's versions if changed.
 
-   **When `codeGraphProvider: "graphify"`** (MIT license):
+   **When `codeGraphProvider: "graphify"`** (Apache-2.0 license):
    ```bash
    node ~/.traffic-one/bin/graphify-runner.cjs   # report lands at .traffic-one/graphify-out/GRAPH_REPORT.md
    ```

@@ -678,7 +678,41 @@ export function onboardingGate(ctx: Ctx): HookResult {
 
   const materialized = materializeProjectIfNeeded(root, { trigger: 'generic pre-tool convergence' });
   if (materialized) {
-    if (isMutatingPreToolUse(toolName, toolInput)) return deny(block('repaired-materialization'), { denyId: 'repaired-materialization' });
+    // Discriminate on STATUS, not on non-nullness. materializeProjectIfNeeded
+    // returns an outcome for seven statuses (shared/materialize/converge.ts) and
+    // only two of them mean the project is now current: 'materialized' (content
+    // was rewritten) and 'current' (convergence ran, found nothing to change,
+    // and re-stamped the state). For those two the repair paragraph is true and
+    // its remedy works — the next call short-circuits and the tool runs.
+    //
+    // The others did not converge: 'skipped' (five plugin-root/consent causes),
+    // 'incomplete' (an invalid `.one.json`), 'failed' (the writer threw, or the
+    // stamp was refused). Denying stays correct for every one of them —
+    // proceeding is what deletes `.traffic-one/rules` and `.traffic-one/skills`,
+    // the project's only copy of content a short plugin root cannot resupply —
+    // so only the REASON changes, to the diagnosis the read-only arm below
+    // already hands over. Told they had been "repaired", those cases prescribed
+    // a rerun that cannot work and repeats until the run ends.
+    //
+    // WRAPPED rather than passed through, because the diagnosis is not written
+    // to be the last thing an agent reads: 'failed' from a throw ends on an
+    // errno, 'incomplete' on a list of state fields, and neither names anything
+    // to do. The wrapper owns the closing action, and deliberately does not
+    // prescribe re-issuing this call — deny-repeat.ts signs a refusal as its
+    // whole rendered reason, and this one repeats byte-identically by
+    // construction, so a prescribed retry would drive the agent into the
+    // escalation at DENY_REPEAT_ESCALATE_AT for doing what it was told.
+    if (isMutatingPreToolUse(toolName, toolInput)) {
+      return (materialized.status === 'materialized' || materialized.status === 'current')
+        ? deny(block('repaired-materialization'), { denyId: 'repaired-materialization' })
+        : deny(
+          block('materialization-not-converged', { DIAGNOSIS: materialized.context },
+            'traffic-one — this tool use was denied because Traffic One could not finish bringing this project\'s materialized rules and skills up to date, and a file-changing tool must not run against a half-converged project: `.traffic-one/rules` and `.traffic-one/skills` are the project\'s only copy of content a broken plugin root cannot resupply.\n'
+            + `${materialized.context}\n`
+            + 'Re-issuing this tool call draws this same refusal. The cause above is a fact about the installation or about `.traffic-one/.one.json`, not about the tool you tried, so nothing about running it again changes it. Repair that cause if it is yours to repair; if it is not, report it to the user in the terms above and carry on with work that changes no files, which is not affected.'),
+          { denyId: 'materialization-not-converged' },
+        );
+    }
     return context(materialized.context, { systemMessage: materialized.systemMessage });
   }
   // Headless sessions never fire UserPromptSubmit, so the prompt-boundary

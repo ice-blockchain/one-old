@@ -314,11 +314,11 @@ Run-id gate: this run's id (`currentRunId` in .traffic-one/.one.json) is `{{EXPE
 <!-- T1BLOCK:END run-id-mismatch -->
 
 <!-- T1BLOCK:BEGIN pages-service-files -->
-Service/store/hook/slice files belong in src/services/, src/features/<name>/, or packages/* — not in src/pages/.
+Route-page placement gate: `src/pages/` holds route components, and this write puts a `.service`/`.store`/`.hook`/`.query`/`.slice`/`.api` module inside it. Data access and state parked next to one route is the shape that later forces a second route to import across the pages tree, which is the coupling this layout exists to prevent. Re-issuing the same path draws the same refusal — the rule reads the path, so renaming the export or shrinking the file changes nothing. Write the module at `src/services/`, `src/features/<name>/`, or a `packages/*` workspace instead and import it from the page; if none of those is in your compiled allowlist, name this path in your digest with verdict `BLOCKED` so the architect can compile a home for it.
 <!-- T1BLOCK:END pages-service-files -->
 
 <!-- T1BLOCK:BEGIN expo-route-service-files -->
-Expo Router route files must stay thin. Service/store/hook/slice files belong in src/features/, src/services/, or packages/*.
+Expo Router placement gate: every file under `app/` is part of the route tree and must stay thin, and this write puts a `.service`/`.store`/`.hook`/`.query`/`.slice`/`.api` module there. Expo Router derives navigation from that directory, so a service module placed in it joins the route surface instead of staying a module the routes import. Re-issuing the same path draws the same refusal — the rule reads the `app/` path shape and not the project platform, so it fires on an `app/` directory in a web workspace too. Move the module to `src/features/<name>/`, `src/services/`, or a `packages/*` workspace and import it from the thin route file; if none of those is in your compiled allowlist, name this path in your digest with verdict `BLOCKED`.
 <!-- T1BLOCK:END expo-route-service-files -->
 
 <!-- T1BLOCK:BEGIN component-placement -->
@@ -330,41 +330,41 @@ Cross-feature import detected ({{CURRENT}} -> {{CROSS}}). Share via packages/ui,
 <!-- T1BLOCK:END cross-feature-import -->
 
 <!-- T1BLOCK:BEGIN deep-relative-package -->
-Use the workspace package name (`@app/ui`, `@app/ui-native`, `@app/utils`) instead of a deep relative path across packages.
+Workspace import gate: this file reaches into another workspace package through a `../../../packages/…` relative path instead of importing that package by name. A deep relative path bypasses the package entry point, breaks the moment either side moves, and hides the dependency from the workspace resolver the build and the package graph read. Re-issuing the same import draws the same refusal — the rule reads the specifier, so adding or removing a `../` level does not satisfy it. Replace the specifier with the workspace package name (`@app/ui`, `@app/ui-native`, `@app/utils`) in this same file — the fix is an edit to the import line, never a relocation.
 <!-- T1BLOCK:END deep-relative-package -->
 
 <!-- T1BLOCK:BEGIN default-export -->
-Use named exports only for reusable components — including the compiled feature entry `features/<name>/index.tsx`, which is a module entry, not a route file. Route files — Expo Router files under app/ and web page components under src/pages/ — are the default-export exception.
+Use named exports only for reusable components — this file declares a default export, and the compiled feature entry `features/<name>/index.tsx` is a module entry rather than a route file, so it is covered too. A default export carries no name across the import boundary, so each consumer may spell it differently and a later rename never propagates to any of them. Re-issuing the file unchanged draws the same refusal — the rule reads the default-export declaration itself, so moving it down the file or wrapping it changes nothing. Route files — Expo Router files under `app/` and web page components under `src/pages/` — are the stated exception; everywhere else the fix is a one-token rename inside this same file plus the matching change at each import site, never a relocation.
 <!-- T1BLOCK:END default-export -->
 
 <!-- T1BLOCK:BEGIN native-inline-style -->
-No inline object styles — use NativeWind `className` for static styles. `StyleSheet.create` is reserved for dynamic/animated values.
+No inline object styles on React Native — this `.tsx` passes an inline style object, and NativeWind `className` is where a static style belongs on this stack. A style object literal is allocated again on every render and sits outside the class system the rest of the UI is themed through, so the same constant is restated per component instead of resolving to one utility. Re-issuing the file unchanged draws the same refusal — unlike the web rule, this one denies derived values too, so making a value computed does not satisfy it. Express the constant styles as a `className` string on the same element and keep `StyleSheet.create` for values that genuinely animate or are measured at runtime; both edits stay inside this same file.
 <!-- T1BLOCK:END native-inline-style -->
 
 <!-- T1BLOCK:BEGIN native-dom-tags -->
-React Native UI must use native primitives (`View`, `Text`, `Pressable`, `TextInput`, etc.), not DOM tags.
+React Native has no DOM — this `.tsx` uses one of the `div`, `span`, `button`, `a`, or `input` tags, which the React Native renderer has no component for. The bundle still builds and typechecks, so this fails on the device at runtime rather than in any verification command this run will execute, which is why it is refused at write time. Re-issuing the file unchanged draws the same refusal — the rule matches the tag names in the source, so re-exporting them from a shim module does not satisfy it. Replace each one with its native primitive in this same file: `View` for `div`, `Text` for `span`, `Pressable` for `button` and `a`, and `TextInput` for `input`.
 <!-- T1BLOCK:END native-dom-tags -->
 
 <!-- T1BLOCK:BEGIN web-inline-style -->
-No static inline styles — use Tailwind utility `className` and shadcn primitives. Inline `style={{}}` is allowed only when a value is dynamic/derived (computed at runtime), never for constant values.
+No static inline styles — this `.tsx` passes an inline style object whose every value is a plain string or numeric literal, which is exactly what a Tailwind utility class already expresses. A constant inline style leaves the design tokens behind: it cannot be themed through the HSL CSS variables, it carries no breakpoint or dark-mode variant, and it outranks any class a consumer later tries to override it with. Re-issuing the file unchanged draws the same refusal — the rule inspects the values inside the object rather than the element or the file, so moving the same literal object elsewhere does not satisfy it. Convert those entries to `className` utilities, reaching for a shadcn primitive where one exists, in this same file; an inline style stays allowed for a value computed at runtime, so a genuinely derived width or transform may remain.
 <!-- T1BLOCK:END web-inline-style -->
 
 <!-- T1BLOCK:BEGIN vanilla-extract-import -->
-vanilla-extract is no longer in the active stack. Use Tailwind utility classes and shadcn primitives in `packages/ui/src/components/ui/`.
+vanilla-extract is no longer in the active stack — this file imports from the `@vanilla-extract` scope. The active stack styles with Tailwind and shadcn, so nothing installs that package or runs its build plugin, and the import has nothing to resolve to once the write lands. Re-issuing the file unchanged draws the same refusal — the rule reads the import specifier, so aliasing the package or importing it lazily does not satisfy it. Express the same styling with Tailwind utility classes and the shadcn primitives in `packages/ui/src/components/ui/`, editing the imports and the markup in this same file.
 <!-- T1BLOCK:END vanilla-extract-import -->
 
 <!-- T1BLOCK:BEGIN css-ts-import -->
-`.css.ts` (vanilla-extract) imports are no longer permitted. Use Tailwind utility classes; theme via the HSL CSS variables in `globals.css`.
+`.css.ts` (vanilla-extract) imports are no longer permitted — this file imports a generated vanilla-extract stylesheet module. Those modules mean something only under the vanilla-extract build plugin this stack does not run, so without it the import resolves to plain TypeScript whose class names were never emitted into a stylesheet and the component renders unstyled instead of failing loudly. Re-issuing the file unchanged draws the same refusal — the rule reads the import specifier, so renaming the stylesheet module while keeping the import does not satisfy it. Replace the imported style references with Tailwind utility classes in this same file and theme them through the HSL CSS variables in `globals.css`.
 <!-- T1BLOCK:END css-ts-import -->
 
 <!-- T1BLOCK:BEGIN no-any -->
-Avoid `any` — use `unknown` and narrow types, or define a discriminated union.
+Avoid `any` — this non-test `.ts`/`.tsx` annotates a value with the `any` type, which turns off type checking for every downstream use of that value. An `any` spreads silently through assignments and return types, so the errors it hides surface later in a sibling role build instead of in your own, where they cost a fix cycle just to attribute. Re-issuing the file unchanged draws the same refusal — the rule reads the annotation, so widening it to an array of `any` or casting through it does not satisfy it. Replace the annotation with `unknown` plus a narrowing check, a precise interface, or a discriminated union in this same file; files in test scope are exempt, so a mock or fixture may keep its coarse typing.
 <!-- T1BLOCK:END no-any -->
 
 <!-- T1BLOCK:BEGIN websocket-location -->
-Open WebSocket connections only inside packages/ws-client/ or src/services/ws/. Components must subscribe via hooks.
+WebSocket construction belongs to the transport layer — this file constructs a WebSocket outside `packages/ws-client/` and `src/services/ws/`. A socket opened next to the UI is created and abandoned with the component that opened it, so reconnect, backoff, and fan-out to other subscribers have nowhere to live and every remount opens another connection. Re-issuing the file unchanged draws the same refusal — the rule reads the constructor call together with the path, so wrapping the call in a local helper does not satisfy it. Move the connection into `packages/ws-client/` or `src/services/ws/` and subscribe to it from here through a hook; if neither path is in your compiled allowlist, name this file and the transport module you need in your digest with verdict `BLOCKED`.
 <!-- T1BLOCK:END websocket-location -->
 
 <!-- T1BLOCK:BEGIN asset-extension-mismatch -->
-Asset gate: do not write SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. Save SVG content with a `.svg` extension, or generate/provide a real bitmap asset for bitmap extensions.
+Asset gate: this write puts SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. The bytes are markup rather than an encoded bitmap, so every consumer that decodes by extension — an image tag, an image pipeline, a favicon reader — reads a corrupt file, and no build or typecheck step in this run will report it. Re-issuing the same content draws the same refusal — the rule compares the extension against the leading bytes of the content, so reformatting or minifying the markup does not satisfy it. Save this content at a `.svg` path and update the references to it, or supply a real encoded bitmap for the bitmap path; this is a file-integrity check, so it holds on an existing codebase too.
 <!-- T1BLOCK:END asset-extension-mismatch -->

@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { pluginVersion } from '../../config/plugin-identity';
-import { readJsonResult, writeJson, writeTextFile } from '../fsjson';
+import { readJsonResult, writeJson, writeJsonSet, writeTextFile, type JsonWrite } from '../fsjson';
 import { withProjectStateLock } from '../state/project-state-lock';
 
 import {
@@ -290,11 +290,31 @@ function recordProjectedTerminalTransition(
  * boolean here would only add one more droppable value — its three call sites
  * have nothing they could do with it.
  *
- * What did have to change is the ORDER. Two writes to two paths carried the same
- * `canonicalStatus`/`settlementHash`, and both refusals were dropped, so the
- * sidecar could advance while `run.json` — the file every legacy reader consults
- * through `effectiveLegacyRunStatus` — stayed behind, each one citing a different
- * settlement. `run.json` is the primary, so its refusal now stops the pass.
+ * ── the pair, and why ordering was only half of it ───────────────────────────
+ * Two writes to two paths carry the same `canonicalStatus`/`settlementHash`, so
+ * either one landing alone leaves the two files citing different settlements.
+ * Ordering them and consuming the primary's boolean closed ONE direction: a
+ * refused `run.json` no longer lets the sidecar advance past the file every
+ * legacy reader consults through `effectiveLegacyRunStatus`.
+ *
+ * The other direction stayed open, and no ordering can close it — a refused
+ * SIDECAR left `run.json` already advanced, stamped with a settlement the
+ * sidecar has never heard of. Both are now one `writeJsonSet`, which decides
+ * every member's fence verdict before it stages anything, so neither half can
+ * land without the other. That is also what makes the `void` above honest for
+ * the first time: the docblock has always claimed a refused mirror "leaves
+ * legacy readers on the previous consistent projection", and until the set that
+ * was true of one direction and aspirational in the other.
+ *
+ * The set is ordered primary-first deliberately. Its guarantee against a REFUSAL
+ * is all-or-nothing, but against a crash it is a bounded window over the commit
+ * loop (see `writeJsonSet`), and a prefix landing in this order is `run.json`
+ * alone — exactly the ordered-writes behaviour it replaces, never worse.
+ *
+ * An ILLEGIBLE sidecar is not a member at all rather than a refusal of the set:
+ * there is nothing honest to merge into, `run.json` is unaffected by that, and
+ * holding the primary back over it would be the inversion this ordering exists
+ * to avoid.
  */
 export function writeLegacyProjection(projectRoot: string, settlement: RunSettlementV2): void {
   const dir = runDir(projectRoot, settlement.runId);
@@ -402,7 +422,7 @@ export function writeLegacyProjection(projectRoot: string, settlement: RunSettle
   if (!next.runtimeV2RollbackGuard) delete next.runtimeV2RollbackGuard;
   if (!next.outcome) delete next.outcome;
   recordProjectedTerminalTransition(existing, next, settlement);
-  if (!writeJson(file, next)) return;
+  const updates: JsonWrite[] = [{ path: file, value: next }];
 
   const maintenanceFile = path.join(dir, 'maintenance.json');
   if (fs.existsSync(maintenanceFile)) {
@@ -421,16 +441,21 @@ export function writeLegacyProjection(projectRoot: string, settlement: RunSettle
     // base that is not there has nothing honest to publish (patchState's answer),
     // and the settlement carries no `units` to rebuild it from. `existsSync` was
     // just true, so `absent` here is a concurrent delete and refusing is right
-    // for that too. run.json is already correct at this point; what is lost is
-    // only the convenience stamp on the sidecar, and nothing derives a run's
-    // status from it (`effectiveLegacyRunStatus` reads run.json).
+    // for that too. run.json is still published on its own in that case; what is
+    // lost is only the convenience stamp on the sidecar, and nothing derives a
+    // run's status from it (`effectiveLegacyRunStatus` reads run.json).
     const maintenance = readJsonResult<Rec>(maintenanceFile);
-    if (maintenance.kind !== 'ok') return;
-    writeJson(maintenanceFile, {
-      ...maintenance.value,
-      canonicalStatus: settlement.status,
-      settlementHash: settlement.settlementHash,
-    });
+    if (maintenance.kind === 'ok') {
+      updates.push({
+        path: maintenanceFile,
+        value: {
+          ...maintenance.value,
+          canonicalStatus: settlement.status,
+          settlementHash: settlement.settlementHash,
+        },
+      });
+    }
   }
+  writeJsonSet(updates);
 }
 

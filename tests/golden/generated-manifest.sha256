@@ -24,7 +24,7 @@ eb435a3bd24e5aea7a1e9dfd4b083c4e3f3bc43d2e95c66dc6efb71b666cdae6  .cursor/rules/
 809c493c29a5a34e61a4eff12560f0242e7f6d48df9fad1601b8e736a7f53e81  .cursor/rules/backend-rust.mdc
 4b68a3a89a1ef6c8563f39228d8bb1485b187397fb23852d8284af1736944d00  .cursor/rules/common-agent-handoff-digests.mdc
 84ec06ff768e674a2c040fa4f6c4cf24fd314aacfa684aac90ae5bec39912481  .cursor/rules/common-clean-code.mdc
-9e9d394668c497f21804d5469efe52ebbffb94dd3b3a67654167977765914bc1  .cursor/rules/common-codebase-graph.mdc
+ec2a6184250b54912f44212a916a42e848a589ac3de43dc6d0e1029c661a167e  .cursor/rules/common-codebase-graph.mdc
 e218ee727fd18f0deb5a95973ca627f054e87c44ba7402eb722550e036c46e09  .cursor/rules/common-dependencies.mdc
 bbed18b37a9f13641f9e76f42ddc8785cf672b2f4e8c68eec080f7c0c5305999  .cursor/rules/common-documentation.mdc
 2af4ab400fbc26fec608aabc52676082fb977c4fdb980bc98d5d8382a5380a70  .cursor/rules/common-execution-discipline.mdc
@@ -76,7 +76,7 @@ f733d88b7c4dc3a6865b2bbffeae10f57155eae65a8469e05593645cc8b3259d  .cursor/rules/
 f1570996704c1a0122ea7a354b6cb368c269eae7f208d8b034a1fff361a9208d  .cursor/rules/mode-new-project-nuxt.mdc
 1b5244b5ec6a3ee48c5a713c404008d96fb2667deb5d53e67d89ba341194232a  .cursor/rules/mode-new-project-react-native.mdc
 a1a0c53690adce84e7093e4135e93abc95a1d2cb8d209618ec3582974ae449e6  .cursor/rules/mode-new-project-server-rendered.mdc
-fb68def6e8d4f2fcda37982609954858d1bc1c04d2fe1bc358e1df1dede446a1  .cursor/rules/mode-new-project-setup.mdc
+0b47e05d06a06a1f74d30afa2e6fe8d4d3f22e3dc2cdf6519c2cea1784bfbbc7  .cursor/rules/mode-new-project-setup.mdc
 e054507fdc7b88696fd3a92e34ca917f5c82d1b0efd25f5dda49f21b4f86b417  .cursor/rules/mode-new-project-svelte.mdc
 4f1a7ebb235dfdd688abbe3196ee9f4763c24331cca5035640686c97d475460c  .cursor/rules/mode-new-project-sveltekit.mdc
 55155d6f6a5bdbbf5b8f6f5c57a88e31f6bf4cc4201eb1b7beb2040c2c2cdf13  .cursor/rules/mode-new-project-swift-native.mdc
@@ -134,7 +134,7 @@ b59121b40a9d10cd22bffe4eea1b97d5024bd60fe0bc51533a445ce7a760a0d1  .devin/rules/b
 8e9e21949ebc289dbae87d8f72778bd01274169314acd19909b9d056e87f457a  .devin/rules/backend-rust.md
 ca771272fa0ae2a36479f2be67805f4e948be7497f19f42cb7606bfdfcd36e14  .devin/rules/common-agent-handoff-digests.md
 407cd58eab12b5b951103c65fc232dae510134f52668adf5c18fc8d20edc9440  .devin/rules/common-clean-code.md
-becd00850c6dfcd64068aef2d677cc0418e51e070e1d6ae38d9b16fea0e56282  .devin/rules/common-codebase-graph.md
+98a0d8a15331f6cd3c278d4b9721190cdcbb014323f017da19d4552121d4704f  .devin/rules/common-codebase-graph.md
 911a7f3a7cabcec0b08149ea3b85256d1a3198bb4fcfb97e38aa98dcadc39e9a  .devin/rules/common-dependencies.md
 6e3d2d25fd3b5933d0a37a2d880bc6aa44b57d3fc1d5a26140f2a13ca591c136  .devin/rules/common-documentation.md
 1e00937cb2d4acc1e55b84e7094ddcfb3bc532c58b0044818514ceda2bd0d716  .devin/rules/common-execution-discipline.md
@@ -190,7 +190,7 @@ dc8b09d886c85c3ceb5792327527109589d04fe913a42c4906ac83b96b787fb0  .devin/rules/m
 22d128e0edcaeef963bbc6475fda5b821bb04bc347d624b47750516b5113abaa  .devin/rules/mode-new-project-server-rendered.md
 77bceca066e10f44bb3bd8d115603dcdac14f27a658baa418adad417f44260bb  .devin/rules/mode-new-project-setup-01.md
 2077137b45e7a155438811a0f06311e9edd75bef7f597417d6f3248c8b1c3190  .devin/rules/mode-new-project-setup-02.md
-fdc14c7fa3ef2760cc987d670969f92ee6da478a57ec9e7da21bb9b06c3356bd  .devin/rules/mode-new-project-setup-03.md
+ecd391e08a2f255d8d2cfa6c9675906416601f349c628183d94bceb0e182391d  .devin/rules/mode-new-project-setup-03.md
 fe87fc48f9d3d43355b6e0df2347575418d7c47407e7275ba173e3514960a789  .devin/rules/mode-new-project-svelte.md
 f0fa75fba67916ba59156c30d92873ea8d1602f609c7c06788085a872c4ba862  .devin/rules/mode-new-project-sveltekit.md
 faa1fee91320ef14e1ad684d0271316e4f05fa4e533a7d85cdbb309ec9a3cfd0  .devin/rules/mode-new-project-swift-native.md
@@ -260,7 +260,7 @@ f5723112617a9e9ba8931451c8db469aa0785c4effd7c105441c31fe6327675d  rules/backend/
 0456c9159ed7092f06e6cd29b4290fb2cc641236437d1b7c22fef1c7badb9a35  rules/common/agent-handoff-digests.md
 ce3d134107ca9062f1db424dce4cb5f79811b62251702d3e03f19eec7b38e0d0  rules/common/auth-gate.md
 c257316eb80f95a61fb14e94d4c1bbc717bfecdfa942434eaeb42898b2f27ace  rules/common/clean-code.md
-eae03ed6ec7fac324798530ca8e0738946e7264d07203761a4ebab7e848f0414  rules/common/codebase-graph.md
+b672f2ad292a973f650ce19aebf556a30e06ed4da496df9a5fd5fa74e663e5ac  rules/common/codebase-graph.md
 b51d8079b89279a68e2f9690b6909b9cdd6054e204427c7e48a481158a1cf06a  rules/common/dependencies.md
 b5a7cb1bf7cfd99f48ba10c8fda288111e78247e832346c10e7a221d73a31712  rules/common/documentation.md
 c481edaa191e53d9dd609d48ebdb5bd47b7e0d76de2eadd002990fa893c45632  rules/common/execution-discipline.md
@@ -334,7 +334,7 @@ dfdd402b79c766ef0730fe6c8c87e7ca094dfce64f97620499dc62f850bf5d8c  rules/modes/ne
 be1866c3cdf310534ce27e5dfa58a567c84783e2a857fad926790902aa0842be  rules/modes/new-project-nuxt.md
 eb63d9048e34b055b1ddb22d2fb3d1ae5abc017a593d5ee36418d1f4e6658036  rules/modes/new-project-react-native.md
 91229dd49b0e3c81ed1cabfbef3e7dc104483f72409d93373b5a4fe002612c58  rules/modes/new-project-server-rendered.md
-815caafdcdf803b6991f5d4f43b93d2594fd519310d668e14e1f5d2e18e01959  rules/modes/new-project-setup.md
+75447f50fcf0e61bfdd2519bbe005a6cc7463c9f7ecd0bc039364f0c1622cd39  rules/modes/new-project-setup.md
 e3fbad07bd82ba82b5d9f064e792e810e57a3b597162527881ef06cb82dde897  rules/modes/new-project-svelte.md
 dcff44fd6f1fa18e85e0115ef553bd2abe4af23275676dfd06631d1585f61fdf  rules/modes/new-project-sveltekit.md
 4b9ac999691d145663ef7dba4a1016aa8cb53c6bd91021518918788e2fbdb3b7  rules/modes/new-project-swift-native.md
@@ -351,11 +351,11 @@ ef460bcf82b035e7a838134f1313fcfc37ee4b989236e2e61cc5f84df127def7  scripts/module
 ebd8f4c732ca696655995bb9bc825c3b5eaa5243cab8440e1e1449f58fa263de  scripts/modules/model-choice-gate/module.json
 2fe925fab92b29db597c89a8f090f78c0f3b9c069360e80407132003bed36d58  scripts/modules/model-choice-gate/skill/SKILL.md
 62525e9627d7ca0fd90d58be50abe06dadc8155c6558e0852652bb8d20de806b  scripts/modules/onboarding-gate/module.json
-d8703cc87b9451fc868d247fdcbb7490ffe15ca11c156c293dd379d01695803b  scripts/modules/onboarding-gate/skill/SKILL.md
+825a459bda13bb4f81326ad2e6d732a430832610add44b411e8878b38a577974  scripts/modules/onboarding-gate/skill/SKILL.md
 6cb2fc48329c01ee667764f1e62fccb2c4f1cb98f0a248ab20f42823ad3656fe  scripts/modules/one-mcp-tool-gate/module.json
 07e039f365dd3c4c92d8c1e47cd999ce33d72244670d1deb796a68300a06d85d  scripts/modules/page-speed/module.json
 b7ed425c012f35a9ecd29f72d01283782c2f3e812836a51bd4e472a5304c695d  scripts/modules/plan-guard/module.json
-130830d0198a92b16c884c078e006c88ae4bea560dd8964edb73d7b283d10bf4  scripts/modules/plan-guard/skill/SKILL.md
+83d672b284cab9571ac0f50a3ac0e877ae858db164c17bdc681ec811401c7861  scripts/modules/plan-guard/skill/SKILL.md
 5df06d518e9734d3cce28f90401f648e5fe3ba0d769794e1e556bdbb87510b95  scripts/modules/quick-fix/module.json
 e4ed718ed23b24ade8d22e9b1ccbbaa6a5c216876262ab5bf47c6ecd016f9965  scripts/modules/rules/module.json
 655096a0aa19fc241d641cb9b7da9beec306bd26efa5b0d83ef3723cd2df73a7  scripts/modules/senior-architect/module.json

@@ -53,7 +53,7 @@ test.after(cleanupReplayTempTrees);
 //     the real handler set on purpose, so it has none.
 //
 // Everything else is fair game and the number below is the floor, not the goal.
-// Reach today: 67 of 201 declared ids (33%), which is 67 of the ~140 that are
+// Reach today: 67 of 203 declared ids (33%), which is 67 of the ~140 that are
 // reachable at all by the definition above (~48%). Every remaining group is
 // named in the printed report's `unreached:` lines and pinned by
 // UNREACHED_DENY_IDS below.
@@ -183,7 +183,7 @@ const REACHED_DENY_IDS: readonly string[] = [
   'workspace-boundary-unresolved-expansion',
 ];
 
-// The mirror image of REACHED_DENY_IDS, and the reason the 134 unreached ids
+// The mirror image of REACHED_DENY_IDS, and the reason the 136 unreached ids
 // are now BOUNDED as well as reported. Sorted; regenerate with the block this
 // test prints.
 //
@@ -193,7 +193,7 @@ const REACHED_DENY_IDS: readonly string[] = [
 // grows. A newly declared id that no case reaches raises the unreached tally
 // silently: the reached COUNT is unchanged, so MIN_DENY_IDS_REACHED still
 // passes, the per-id superset check still passes, and the only trace is one
-// more name in a 134-entry printed list nobody diffs. The corpus's reach then
+// more name in a 136-entry printed list nobody diffs. The corpus's reach then
 // falls as a fraction of the surface while every assertion stays green.
 //
 // So this is a subset check on the unreached set — the unreached set may
@@ -278,6 +278,13 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'implementer-verification-skipped-gate',
   'lighthouse-claim-reconciliation-gate',
   'materialization-gate',
+  // Strictly behind `repaired-materialization` further down, which the corpus
+  // does not reach either: both need a mutating PreToolUse on a project whose
+  // convergence returned a NON-NULL outcome, and every fixture here is either
+  // already materialized (the guard short-circuits to null) or refused before
+  // the branch. Driven instead through the real assembler in the render-space
+  // measurement taken with this id.
+  'materialization-not-converged',
   'model-choice-enable-required',
   'model-rotation-exhausted-model',
   'model-rotation-policy-missing',
@@ -387,7 +394,7 @@ function groupOf(denyId: string): string {
   if (/^model-choice-stop/.test(denyId)) return 'model-choice-gate';
   if (/^(deploy-gate|supabase-local|scaffold-|library-allowlist)/.test(denyId)) return 'plan-guard / stack gates';
   if (/^(plan-write|run-id-mismatch|registry-probe|state-mode-downgrade|opencode-external-temp|opencode-reserved|run-team)/.test(denyId)) return 'plan-guard / write dispatcher';
-  if (/^(onboarding|browser-open|tech-classify|claude-wait|cursor-wait|codex-wait|windsurf-server|team-mode|repaired-materialization)/.test(denyId)) return 'onboarding-gate';
+  if (/^(onboarding|browser-open|tech-classify|claude-wait|cursor-wait|codex-wait|windsurf-server|team-mode|repaired-materialization|materialization-not-converged)/.test(denyId)) return 'onboarding-gate';
   if (/^(pipeline-handler-crashed|user-approval-request)/.test(denyId)) return 'core';
   // Everything else is a plan-write violation name (plan-static, plan-readiness,
   // completion) — the biggest family, split so the report stays readable.

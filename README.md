@@ -781,17 +781,27 @@ node /absolute/path/to/traffic-one/dist/scripts/windsurf-host.cjs uninstall --ye
 
 ### Marketplace install after publication
 
-After the marketplace listing is live, use the published marketplace source
-instead of the local path:
+**Not available yet, and the published name is not decided.** This section
+deliberately prints no command you can run today: install from a local checkout
+as described above.
+
+Only one thing changes once a listing exists. The marketplace *source* — the
+local `dist` path in the commands above — becomes the published name, written
+here as `<published-marketplace>`, a placeholder rather than a value:
 
 ```
-claude plugin marketplace add traffic-one/traffic-one
+claude plugin marketplace add <published-marketplace>
+codex plugin marketplace add <published-marketplace>
+/add-plugin <published-marketplace>
+```
+
+Everything after that is unchanged, because `traffic-one@traffic-one` is
+`plugin@marketplace` and the marketplace name is declared by the bundle's own
+manifest rather than by where it is hosted:
+
+```
 claude plugin install traffic-one@traffic-one
-
-codex plugin marketplace add traffic-one/traffic-one
 codex plugin add traffic-one
-
-/add-plugin traffic-one/traffic-one
 ```
 
 For OpenCode, Kilo, and Windsurf, run the same

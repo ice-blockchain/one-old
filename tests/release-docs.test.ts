@@ -180,6 +180,89 @@ test('the hosts KNOWN-ISSUES.md names as lacking spawn reuse are the hosts the c
   );
 });
 
+// Item 11 names five filenames as the whole matched set and tells the reader
+// that anything else, or the same name below the root, is untouched. Both
+// halves are one constant away from being false, and the failure is silent in
+// the direction that matters: a sixth name added here adopts a file the
+// document promised to leave alone.
+test('the root documents KNOWN-ISSUES.md says are adopted are the ones the code adopts', () => {
+  const cleanup = read(path.join('src', 'shared', 'materialize', 'cleanup.ts'));
+  const listed = /LEGACY_ROOT_DOCUMENTATION_FILES[^=]*=\s*\[([^\]]*)\]/.exec(cleanup)?.[1];
+  assert.ok(listed, 'LEGACY_ROOT_DOCUMENTATION_FILES is gone or reshaped');
+  const names = [...listed!.matchAll(/'([^']+)'/g)].map((match) => match[1] as string).sort();
+  assert.deepEqual(
+    names,
+    ['api.md', 'database.md', 'deployment.md', 'environment-setup.md', 'security.md'],
+    'the legacy root-document set changed — KNOWN-ISSUES.md item 11 names it exhaustively',
+  );
+  const text = flat('KNOWN-ISSUES.md');
+  for (const name of names) {
+    assert.ok(text.includes(`\`${name}\``), `KNOWN-ISSUES.md item 11 does not name \`${name}\``);
+  }
+  // The other half of the promise: a COPY. If this ever moves the file again,
+  // "not moved, renamed or deleted" becomes the most damaging sentence in the
+  // document — it is the reason a reader leaves their own api.md at the root.
+  const adopt = /function adoptLegacyRootDocumentationFile\b[\s\S]*?\n\}/.exec(cleanup)?.[0];
+  assert.ok(adopt, 'adoptLegacyRootDocumentationFile is gone or reshaped');
+  for (const destructive of ['movePath', 'removePath', 'rmSync', 'renameSync', 'unlinkSync']) {
+    assert.ok(
+      !adopt!.includes(destructive),
+      `root-document adoption calls ${destructive} — KNOWN-ISSUES.md item 11 promises the root file is left in place`,
+    );
+  }
+  assert.ok(adopt!.includes('writeTextFile'), 'the adoption no longer writes the copy item 11 promises');
+});
+
+// Item 12 tells the reader that an incomplete installation preserves everything
+// and that the refusal they see names the real cause. The first half is the
+// refusal; the second is the branch that renders it. Either one leaving turns
+// the entry from a warning into a false reassurance.
+test('the incomplete-installation claim tracks the refusal and the branch that reports it', () => {
+  const materialize = read(path.join('src', 'shared', 'materialize', 'materialize.ts'));
+  assert.match(materialize, /function tornRootRefusal/, 'the completeness refusal is gone');
+  assert.match(
+    materialize,
+    /skipped: 'plugin-root-content-incomplete'/,
+    'the completeness refusal no longer reports itself, so nothing preserves the project',
+  );
+  // The property the entry now rests on, and the one that was WRONG until this
+  // change: a non-converged outcome must not be refused with the repair
+  // paragraph. That paragraph asserts the project is current and tells the
+  // agent to rerun — false and unachievable for every status here, and it is
+  // what item 12 used to have to warn the reader about. Asserted on the
+  // STRUCTURE of the branch rather than on the deny text, because the deny text
+  // is resolved from SKILL.md and interpolates the diagnosis, so it is never a
+  // stable key.
+  const handler = read(path.join('src', 'modules', 'onboarding-gate', 'handler.ts'));
+  const arm = /if \(isMutatingPreToolUse\(toolName, toolInput\)\) \{\n([\s\S]*?)\n {4}\}\n {4}return context\(materialized\.context/
+    .exec(handler)?.[1];
+  assert.ok(
+    arm,
+    'the mutating arm of the convergence branch is gone or reshaped — item 12 describes what a file-changing call sees',
+  );
+  assert.match(
+    arm!,
+    /materialized\.status === 'materialized' \|\| materialized\.status === 'current'/,
+    'the mutating arm stopped discriminating on STATUS. Every non-null outcome would render the repair paragraph again — '
+    + '"state was repaired, rerun the same tool now" — for five statuses where nothing was repaired and rerunning cannot '
+    + 'work, which is the defect KNOWN-ISSUES.md item 12 was rewritten to stop describing.',
+  );
+  assert.match(
+    arm!,
+    /block\('materialization-not-converged'.*\{ DIAGNOSIS: materialized\.context \}/s,
+    'the non-converged arm no longer carries `materialized.context`, so the refusal has lost the diagnosis item 12 '
+    + 'promises the reader — the missing entries, the counts, and the doctor command',
+  );
+  // …and the verdict must not have been softened along the way. Both arms deny.
+  assert.equal(
+    (arm!.match(/\bdeny\(/g) ?? []).length, 2,
+    'the mutating arm no longer has exactly two deny() outcomes. Proceeding is what deletes content the plugin root '
+    + 'cannot resupply, so the fix was to the REASON, never to the verdict.',
+  );
+  const text = flat('KNOWN-ISSUES.md');
+  assert.ok(text.includes('An incomplete plugin installation refuses every file change'));
+});
+
 test('the Rust-is-unexercised claim is measured, not remembered', () => {
   const casesDir = path.join(REPO_ROOT, 'src', 'test-environment', 'config', 'cases');
   const offenders: string[] = [];
@@ -443,11 +526,31 @@ test('the override refusals SUPPORT.md promises are the refusals unblock.ts impl
 
 // ── third-party notices ──────────────────────────────────────────────────────
 
-test('THIRD-PARTY-NOTICES.md lists every installable toolchain with the licence its manifest declares', () => {
+// Scoped to each tool's DECLARATION LINE rather than to the document, and the
+// difference is the whole value of the test. Asking `text.includes(licence)`
+// only ever asked "does this licence string appear anywhere in the file", which
+// a five-tool notice satisfies by accident: when every tool was MIT the check
+// passed on any one of them, and a half-corrected graphify (manifest moved to
+// Apache-2.0, its own section left at MIT) would ALSO have passed, because
+// Apache-2.0 already appears six times for other dependencies. That is exactly
+// how a false licence survived in a shipped notice.
+//
+// A declaration line is structural — a `### <tool>` heading or a `| <tool> |`
+// table row — so prose that merely discusses a tool cannot satisfy it. That
+// exclusion is load-bearing: the notice quotes the onboarding question, one
+// line naming both gitnexus and graphify with both licences, which would let
+// either tool borrow the other's correctness.
+//
+// THE LIMIT, which no scoping fixes: this compares two IN-REPO copies, so it
+// can catch them disagreeing and can never catch both being wrong together.
+// Only an upstream check could, and tests must not reach the network — so the
+// durable mitigation is the provenance note recorded in the manifest itself.
+test('THIRD-PARTY-NOTICES.md declares every installable toolchain with the licence its manifest declares', () => {
   const manifest = (JSON.parse(
     read(path.join('src', 'runners', 'toolchain', 'toolchain-versions.json')),
   ) as { tools?: Record<string, { license?: string }> }).tools ?? {};
   const text = read('THIRD-PARTY-NOTICES.md');
+  const lines = text.split('\n');
   let checked = 0;
   for (const [tool, entry] of Object.entries(manifest)) {
     if (!entry || typeof entry !== 'object' || !entry.license) continue;
@@ -456,9 +559,20 @@ test('THIRD-PARTY-NOTICES.md lists every installable toolchain with the licence 
       text.toLowerCase().includes(tool.toLowerCase()),
       `THIRD-PARTY-NOTICES.md never mentions the toolchain "${tool}"`,
     );
+    const declarations = lines.filter((line) => {
+      const named = line.toLowerCase().includes(tool.toLowerCase());
+      return named && (line.startsWith('### ') || line.startsWith('| '));
+    });
     assert.ok(
-      text.includes(entry.license),
-      `THIRD-PARTY-NOTICES.md does not state ${tool}'s declared licence "${entry.license}"`,
+      declarations.length > 0,
+      `THIRD-PARTY-NOTICES.md discusses "${tool}" but never declares it: no "### ${tool}" heading and no table row naming it. `
+        + 'A tool mentioned only in prose has no licence of record.',
+    );
+    assert.ok(
+      declarations.some((line) => line.includes(entry.license!)),
+      `${tool}'s declaration in THIRD-PARTY-NOTICES.md does not state its manifest licence "${entry.license}".\n`
+        + `  declared as: ${declarations.map((line) => line.trim()).join('\n               ')}\n`
+        + '  (the licence appearing elsewhere in the document does not count — that is the defect this test exists for)',
     );
   }
   assert.ok(checked > 0, 'toolchain-versions.json declares no licences — did the manifest move?');

@@ -454,6 +454,25 @@ export const DENY_IDS = [
   'onboarding-run-bootstrap-unavailable',
   'onboarding-model-policy-freeze-failed',
   'repaired-materialization',
+  // Its COMPLEMENT, split off the same call site rather than folded into it.
+  // `repaired-materialization` used to render for every non-null convergence
+  // outcome, so five statuses that did NOT converge ('skipped' ×5, 'incomplete',
+  // 'failed' ×2) were refused with "state was repaired … rerun the same tool
+  // now" — a false cause and a remedy that cannot work. Both halves of this
+  // file's naming rule apply: the CAUSE is different (the project is current
+  // vs. the plugin root or the state file is broken), and so is the OWNER — one
+  // clears by re-issuing the tool, the other needs a human to repair an install
+  // this session cannot reach. `denyId` is the only thing the decision log and
+  // the doctor's deny tally can read that apart by; the rendered text carries
+  // the interpolated diagnosis, so it is never a key.
+  //
+  // ESCALATABLE (absent from NEVER_ESCALATED_DENY_IDS, the default) and that is
+  // the point rather than an oversight: it repeats byte-identically until a
+  // human fixes the install, which is exactly the population escalation exists
+  // for, and "report BLOCKED" at three is the correct terminal instruction for
+  // a cause the agent cannot reach. Its prose prescribes no retry, so its own
+  // remedy can never be what trips the counter.
+  'materialization-not-converged',
 
   // ── modules/onboarding-gate/stop.ts ──────────────────────────────────────
   'onboarding-stop-links-shown',
@@ -492,7 +511,7 @@ export function isDenyId(value: unknown): value is DenyId {
 // needs it lifted is "fix the cause, or settle the run".
 //
 // A gate NOT listed here is overridable. That is the deliberate default: the
-// 167 remaining ids are ordinary process/sequencing refusals whose worst case
+// 168 remaining ids are ordinary process/sequencing refusals whose worst case
 // is a lower-quality run, and that run is already marked ineligible for
 // `verified`/`shipped` the moment a token is minted for it
 // (run-settlement/io.ts).
@@ -635,6 +654,24 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   // was already overridable for that reason; splitting the id must not silently
   // change the escape hatch. An override here admits UNONBOARDED work, which is
   // recoverable (onboarding converges later); a permanently stuck user is not.
+  //
+  // Deliberately NOT here: `materialization-not-converged`, checked against the
+  // bar rather than inherited from the severity of its cause. It reads like a
+  // data-loss refusal and is not one: the protection against deleting content
+  // the plugin root cannot resupply lives INSIDE materializeProjectAssets, which
+  // has already refused by the time this deny renders, and no token reaches it.
+  // What an override admits is one file-changing tool call against a project
+  // whose materialization is stale — and that outcome is legible afterwards
+  // rather than indistinguishable, because none of the statuses this id covers
+  // stamps `materializedStack`/`materializedAt`/`materializedVersion`
+  // (shared/materialize/converge.ts returns before the stamp for every one), so
+  // the project's own state file records that it never materialized. Same
+  // reasoning as the three `onboarding-server-start-*` ids above: an incomplete
+  // install is an INFRASTRUCTURE fact about this machine, not a judgement about
+  // the agent's work, and the user whose install is short is exactly the user
+  // who may legitimately need to keep working while they repair it. Its sibling
+  // `repaired-materialization` is unlisted too, so listing only the complement
+  // would be the stranger of the two choices.
 ] as const satisfies readonly DenyId[];
 
 export const NEVER_OVERRIDABLE_DENY_ID_SET: ReadonlySet<string> = new Set(NEVER_OVERRIDABLE_DENY_IDS);
@@ -692,7 +729,7 @@ void _codexChildFamilyIsNeverOverridable;
 // severe it is, and severity is what makes the escalation worth reading.
 //
 // An id NOT listed here escalates from the third byte-identical attempt. That
-// is the deliberate default: the remaining 173 ids are refusals with an
+// is the deliberate default: the remaining 174 ids are refusals with an
 // in-session remedy the deny text already names, which is the whole 17cl
 // failure (seven identical refusals, 25 minutes, the fix in the text).
 export const NEVER_ESCALATED_DENY_IDS = [

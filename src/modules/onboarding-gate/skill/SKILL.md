@@ -268,6 +268,12 @@ The attempted mutating tool has been denied once so it cannot run against stale 
 rerun the same tool now; the canonical `.traffic-one/.one.json` and project-local materialization are current.
 <!-- T1BLOCK:END repaired-materialization -->
 
+<!-- T1BLOCK:BEGIN materialization-not-converged -->
+traffic-one — this tool use was denied because Traffic One could not finish bringing this project's materialized rules and skills up to date, and a file-changing tool must not run against a half-converged project: `.traffic-one/rules` and `.traffic-one/skills` are the project's only copy of content a broken plugin root cannot resupply.
+{{DIAGNOSIS}}
+Re-issuing this tool call draws this same refusal. The cause above is a fact about the installation or about `.traffic-one/.one.json`, not about the tool you tried, so nothing about running it again changes it. Repair that cause if it is yours to repair; if it is not, report it to the user in the terms above and carry on with work that changes no files, which is not affected.
+<!-- T1BLOCK:END materialization-not-converged -->
+
 <!-- T1BLOCK:BEGIN kilo-opencode-spawn-first -->
 [traffic-one] {{HOST}} build start — `team.mode="subagents"` is ACTIVE and `.traffic-one/plan.md` is still missing. You are the PARENT/orchestrator.
 

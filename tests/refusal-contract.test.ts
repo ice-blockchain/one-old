@@ -1133,6 +1133,16 @@ const FSJSON_MODULE = path.join(SRC_ROOT, 'shared', 'fsjson.ts');
  * its three values IS `'refused'`, so dropping its answer drops a refusal.
  * `stateWritePermitted` and `projectStateWritable` are NOT: they are questions,
  * they mutate nothing, and discarding an answer to a question is not this bug.
+ *
+ * `writeJsonSet` is here for the ordinary reason — its `false` means the set was
+ * REFUSED — but it is invisible to RULE 4 rather than merely uncovered by it,
+ * and that is by construction rather than a gap. Rule 4 keys a destination on
+ * `arguments[0]`, which for this writer is the whole SET; two members of one
+ * call are one call, so a pair can never form. That is the correct answer:
+ * refusing the set atomically is precisely what makes the two artifacts unable
+ * to disagree, so a rule about divergent pairs has nothing left to report. What
+ * it does NOT mean is that the pair became crash-atomic — see the bound on the
+ * function itself, which commits N paths with N renames and says so.
  */
 const FSJSON_WRITERS: readonly string[] = [
   'appendTextFile',
@@ -1142,6 +1152,7 @@ const FSJSON_WRITERS: readonly string[] = [
   'removePath',
   'writeJson',
   'writeJsonDurable',
+  'writeJsonSet',
   'writeTextFile',
 ];
 

@@ -11,10 +11,10 @@ Kilo user-level wrappers are listed separately because their source of truth is
 
 ## External References
 
-- Everything Claude Code repository: https://github.com/affaan-m/everything-claude-code
-- Everything Claude Code rules tree: https://github.com/affaan-m/everything-claude-code/tree/main/rules
-- Everything Claude Code skills tree: https://github.com/affaan-m/everything-claude-code/tree/main/skills
-- Karpathy-style Claude guidance: https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md
+- Everything Claude Code repository: https://github.com/affaan-m/ECC
+- Everything Claude Code rules tree: https://github.com/affaan-m/ECC/tree/main/rules
+- Everything Claude Code skills tree: https://github.com/affaan-m/ECC/tree/main/skills
+- Karpathy-style Claude guidance: https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md
 - X inspiration post from `anatolikopadze`: https://x.com/anatolikopadze/status/2050225292585607440?s=46&t=jHyjiUvxKWyCPPhGMqepEw
 - X inspiration post from `mnilax`: https://x.com/mnilax/status/2053116311132155938?s=46&t=jHyjiUvxKWyCPPhGMqepEw
 - Mindrally JWT skill: https://github.com/Mindrally/skills/blob/main/jwt-security/SKILL.md
@@ -82,8 +82,8 @@ dev tooling under `src/test-environment/` + `src/build/compiled-smoke.ts`.
 
 ## Source Conventions
 
-- ECC skill source pattern: `https://github.com/affaan-m/everything-claude-code/blob/main/skills/<skill-name>/SKILL.md`.
-- ECC language rule source pattern: `https://github.com/affaan-m/everything-claude-code/blob/main/rules/<language>/<rule-file>.md`.
+- ECC skill source pattern: `https://github.com/affaan-m/ECC/blob/main/skills/<skill-name>/SKILL.md`.
+- ECC language rule source pattern: `https://github.com/affaan-m/ECC/blob/main/rules/<language>/<rule-file>.md`.
 - Traffic One local source means the rule or skill was authored for this plugin and may be inspired by the external references above, but no one-to-one upstream file is declared in frontmatter.
 - Runtime skills may carry structured provenance metadata (`source`,
   `source_path`, `source_commit`) for future upstream sync. Human-readable
@@ -130,58 +130,58 @@ Catalog conventions normalized by the audit: the activation heading is
 
 | Local file | Source or inspiration |
 | --- | --- |
-| `rules/core.md` | Traffic One local core, inspired by ECC common/typescript layering: https://github.com/affaan-m/everything-claude-code/tree/main/rules |
-| `rules/common/agent-handoff-digests.md` | Traffic One local token-economy rule, inspired by ECC subagent/memory patterns: https://github.com/affaan-m/everything-claude-code |
+| `rules/core.md` | Traffic One local core, inspired by ECC common/typescript layering: https://github.com/affaan-m/ECC/tree/main/rules |
+| `rules/common/agent-handoff-digests.md` | Traffic One local token-economy rule, inspired by ECC subagent/memory patterns: https://github.com/affaan-m/ECC |
 | `rules/common/auth-gate.md` | Traffic One local auth-gate rule (wizard-validated API key in user-level `one.json.auth`; per-project opt-out is owned by `pluginUse`). |
-| `rules/common/clean-code.md` | Traffic One local baseline, inspired by ECC common rules and Karpathy simplicity guidance: https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md — **canonical owner** of the language-agnostic floor; `*-patterns`/`coding-standards` skills defer here. |
-| `rules/common/codebase-graph.md` | Traffic One local graphify cache rule, inspired by ECC memory/token optimization: https://github.com/affaan-m/everything-claude-code — **canonical owner** of graph artefact paths + read protocol; `agent-handoff-digests`/`project-memory` defer here. |
-| `rules/common/dependencies.md` | Traffic One local dependency gate, now topped up from ECC search-first behavior: https://github.com/affaan-m/everything-claude-code/blob/main/skills/search-first/SKILL.md |
-| `rules/common/documentation.md` | Traffic One local docs standard, inspired by ECC docs/agent surfaces: https://github.com/affaan-m/everything-claude-code |
-| `rules/common/execution-discipline.md` | Behavior rule merging the Karpathy/Forrest Chang baseline, supplied Mnilax/Anatoli workflow links, and ECC search/eval/agentic guidance: https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md |
-| `rules/common/git.md` | Traffic One local Gitflow rule, inspired by ECC common git workflow: https://github.com/affaan-m/everything-claude-code/blob/main/rules/common/git-workflow.md |
-| `rules/common/library-catalog.md` | Traffic One local curated catalog, inspired by ECC dependency/library guidance: https://github.com/affaan-m/everything-claude-code/tree/main/rules/common — **canonical owner** of provider-first defaults (payments/observability/email/proxies/per-language libs); `stack-recommendations` defers here. |
+| `rules/common/clean-code.md` | Traffic One local baseline, inspired by ECC common rules and Karpathy simplicity guidance: https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md — **canonical owner** of the language-agnostic floor; `*-patterns`/`coding-standards` skills defer here. |
+| `rules/common/codebase-graph.md` | Traffic One local graphify cache rule, inspired by ECC memory/token optimization: https://github.com/affaan-m/ECC — **canonical owner** of graph artefact paths + read protocol; `agent-handoff-digests`/`project-memory` defer here. |
+| `rules/common/dependencies.md` | Traffic One local dependency gate, now topped up from ECC search-first behavior: https://github.com/affaan-m/ECC/blob/main/skills/search-first/SKILL.md |
+| `rules/common/documentation.md` | Traffic One local docs standard, inspired by ECC docs/agent surfaces: https://github.com/affaan-m/ECC |
+| `rules/common/execution-discipline.md` | Behavior rule merging the Karpathy/Forrest Chang baseline, supplied Mnilax/Anatoli workflow links, and ECC search/eval/agentic guidance: https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md |
+| `rules/common/git.md` | Traffic One local Gitflow rule, inspired by ECC common git workflow: https://github.com/affaan-m/ECC/blob/main/rules/common/git-workflow.md |
+| `rules/common/library-catalog.md` | Traffic One local curated catalog, inspired by ECC dependency/library guidance: https://github.com/affaan-m/ECC/tree/main/rules/common — **canonical owner** of provider-first defaults (payments/observability/email/proxies/per-language libs); `stack-recommendations` defers here. |
 | `rules/common/onboarding.md` | Traffic One local onboarding-gate rule; defers the gate-clear conditions to `setup-gate`. |
-| `rules/common/project-memory.md` | Traffic One local persistent memory rule, topped up from ECC codebase onboarding/reconnaissance guidance: https://github.com/affaan-m/everything-claude-code/blob/main/skills/codebase-onboarding/SKILL.md |
+| `rules/common/project-memory.md` | Traffic One local persistent memory rule, topped up from ECC codebase onboarding/reconnaissance guidance: https://github.com/affaan-m/ECC/blob/main/skills/codebase-onboarding/SKILL.md |
 | `rules/common/project-routing.md` | Traffic One local project/mode routing rule. |
-| `rules/common/quality-tooling.md` | Traffic One local quality tooling rule, inspired by ECC ESLint/config/tooling guidance: https://github.com/affaan-m/everything-claude-code/blob/main/eslint.config.js |
-| `rules/common/security.md` | Traffic One local security baseline, inspired by ECC security guide and AgentShield: https://github.com/affaan-m/everything-claude-code/blob/main/rules/common/security.md — **canonical owner** of the security checklist, the pre-deploy gate, and the external/destructive confirmation boundary; `*-security`/`security-review`/`predeploy-security-check`/`verification-loop`/`backend/*`/`execution-discipline` defer here. |
-| `rules/common/senior-engineer-team.md` | Traffic One local senior-agent orchestration, inspired by ECC subagent orchestration: https://github.com/affaan-m/everything-claude-code |
+| `rules/common/quality-tooling.md` | Traffic One local quality tooling rule, inspired by ECC ESLint/config/tooling guidance: https://github.com/affaan-m/ECC/blob/main/eslint.config.js |
+| `rules/common/security.md` | Traffic One local security baseline, inspired by ECC security guide and AgentShield: https://github.com/affaan-m/ECC/blob/main/rules/common/security.md — **canonical owner** of the security checklist, the pre-deploy gate, and the external/destructive confirmation boundary; `*-security`/`security-review`/`predeploy-security-check`/`verification-loop`/`backend/*`/`execution-discipline` defer here. |
+| `rules/common/senior-engineer-team.md` | Traffic One local senior-agent orchestration, inspired by ECC subagent orchestration: https://github.com/affaan-m/ECC |
 | `rules/common/seo.md` | Traffic One local SEO web baseline — **canonical owner**; `stack-recommendations`/`create-*`/mode rules defer here. |
 | `rules/common/setup-gate.md` | Traffic One local setup gate — **canonical owner** of gate-clear conditions + the read-only-orientation clause; `auth-gate`/`onboarding`/`skill-precedence`/`senior-engineer-team` defer here. |
 | `rules/common/skill-precedence.md` | Traffic One local skill-precedence rule; defers to `setup-gate`. |
-| `rules/common/stack-recommendations.md` | Traffic One local stack defaults, inspired by ECC provider-first patterns: https://github.com/affaan-m/everything-claude-code |
-| `rules/backend/cpp.md` | Merged from ECC `rules/cpp/*`: https://github.com/affaan-m/everything-claude-code/tree/main/rules/cpp |
-| `rules/backend/csharp.md` | Merged from ECC `rules/csharp/*`: https://github.com/affaan-m/everything-claude-code/tree/main/rules/csharp |
-| `rules/backend/golang.md` | Merged from ECC `rules/golang/*`: https://github.com/affaan-m/everything-claude-code/tree/main/rules/golang |
-| `rules/backend/java.md` | Merged from ECC `rules/java/*`, including coding style: https://github.com/affaan-m/everything-claude-code/blob/main/rules/java/coding-style.md |
-| `rules/backend/kotlin.md` | Merged from ECC `rules/kotlin/*`: https://github.com/affaan-m/everything-claude-code/tree/main/rules/kotlin |
-| `rules/backend/node.md` | Traffic One Node/TypeScript backend rule, inspired by ECC TypeScript/backend skills: https://github.com/affaan-m/everything-claude-code/tree/main/rules/typescript |
-| `rules/backend/perl.md` | Merged from ECC `rules/perl/*`: https://github.com/affaan-m/everything-claude-code/tree/main/rules/perl |
-| `rules/backend/php.md` | Merged from ECC `rules/php/*`: https://github.com/affaan-m/everything-claude-code/tree/main/rules/php |
+| `rules/common/stack-recommendations.md` | Traffic One local stack defaults, inspired by ECC provider-first patterns: https://github.com/affaan-m/ECC |
+| `rules/backend/cpp.md` | Merged from ECC `rules/cpp/*`: https://github.com/affaan-m/ECC/tree/main/rules/cpp |
+| `rules/backend/csharp.md` | Merged from ECC `rules/csharp/*`: https://github.com/affaan-m/ECC/tree/main/rules/csharp |
+| `rules/backend/golang.md` | Merged from ECC `rules/golang/*`: https://github.com/affaan-m/ECC/tree/main/rules/golang |
+| `rules/backend/java.md` | Merged from ECC `rules/java/*`, including coding style: https://github.com/affaan-m/ECC/blob/main/rules/java/coding-style.md |
+| `rules/backend/kotlin.md` | Merged from ECC `rules/kotlin/*`: https://github.com/affaan-m/ECC/tree/main/rules/kotlin |
+| `rules/backend/node.md` | Traffic One Node/TypeScript backend rule, inspired by ECC TypeScript/backend skills: https://github.com/affaan-m/ECC/tree/main/rules/typescript |
+| `rules/backend/perl.md` | Merged from ECC `rules/perl/*`: https://github.com/affaan-m/ECC/tree/main/rules/perl |
+| `rules/backend/php.md` | Merged from ECC `rules/php/*`: https://github.com/affaan-m/ECC/tree/main/rules/php |
 | `rules/backend/postgres.md` | Traffic One Postgres/Supabase rule, paired with ECC/Postgres skills and Mindrally PostgreSQL: https://github.com/Mindrally/skills/blob/main/postgresql-best-practices/SKILL.md |
-| `rules/backend/python.md` | Merged from ECC `rules/python/*`: https://github.com/affaan-m/everything-claude-code/tree/main/rules/python |
-| `rules/backend/rust.md` | Merged from ECC `rules/rust/*`: https://github.com/affaan-m/everything-claude-code/tree/main/rules/rust |
-| `rules/frontend/accessibility.md` | Traffic One local frontend a11y rule, paired with ECC accessibility skill and web semantic guidance: https://github.com/affaan-m/everything-claude-code/blob/main/skills/accessibility/SKILL.md — shared base; per-framework a11y rules keep platform deltas and defer here. |
+| `rules/backend/python.md` | Merged from ECC `rules/python/*`: https://github.com/affaan-m/ECC/tree/main/rules/python |
+| `rules/backend/rust.md` | Merged from ECC `rules/rust/*`: https://github.com/affaan-m/ECC/tree/main/rules/rust |
+| `rules/frontend/accessibility.md` | Traffic One local frontend a11y rule, paired with ECC accessibility skill and web semantic guidance: https://github.com/affaan-m/ECC/blob/main/skills/accessibility/SKILL.md — shared base; per-framework a11y rules keep platform deltas and defer here. |
 | `rules/frontend/i18n.md` | Traffic One local frontend i18n rule, paired with the `i18n-text` skill (canonical i18n owner). |
-| `rules/frontend/performance.md` | Traffic One local frontend performance rule, topped up from ECC web/Vite bundle guidance: https://github.com/affaan-m/everything-claude-code/tree/main/rules/web |
-| `rules/frontend/realtime.md` | Traffic One local realtime rule, inspired by ECC backend/frontend service patterns: https://github.com/affaan-m/everything-claude-code |
-| `rules/frontend/services.md` | Traffic One local service-layer rule, inspired by ECC TypeScript/service patterns: https://github.com/affaan-m/everything-claude-code/tree/main/rules/typescript |
-| `rules/frontend/testing.md` | Traffic One local frontend testing rule, paired with ECC testing skills: https://github.com/affaan-m/everything-claude-code/tree/main/skills |
+| `rules/frontend/performance.md` | Traffic One local frontend performance rule, topped up from ECC web/Vite bundle guidance: https://github.com/affaan-m/ECC/tree/main/rules/web |
+| `rules/frontend/realtime.md` | Traffic One local realtime rule, inspired by ECC backend/frontend service patterns: https://github.com/affaan-m/ECC |
+| `rules/frontend/services.md` | Traffic One local service-layer rule, inspired by ECC TypeScript/service patterns: https://github.com/affaan-m/ECC/tree/main/rules/typescript |
+| `rules/frontend/testing.md` | Traffic One local frontend testing rule, paired with ECC testing skills: https://github.com/affaan-m/ECC/tree/main/skills |
 | `rules/frontend/typography.md` | Traffic One local typography rule, inspired by bencium design guidance and UI quality rule. |
 | `rules/frontend/component-system.md` | Traffic One canonical UI-system resolution and catalog-first rule: framework-specific shadcn adapters, demand-driven `uiPrimitives`, shared `packages/ui`, CLI-only primitives, and justified custom fallback. |
 | `rules/frontend/ui-quality.md` | Distilled from bencium-marketplace `impact-designer` and `controlled-ux-designer`; also inspired by the supplied X posts. — **canonical owner** of the design brief, anti-AI-slop list, token mandate, `https://traffic.io/` setup-link contract, and UI states; `create-*`/`frontend-design`/`design-audit`/`design-system` defer here. |
 | `rules/frontend/ui-quality-reference.md` | Traffic One local UI-quality reference checklists; companion to `ui-quality.md`. |
-| `rules/frontend/react/components.md` | Traffic One React component rule, inspired by ECC web/typescript rules: https://github.com/affaan-m/everything-claude-code/tree/main/rules/web |
-| `rules/frontend/react/core.md` | Traffic One forced React stack rule, inspired by ECC TypeScript/Web layering: https://github.com/affaan-m/everything-claude-code/tree/main/rules/typescript — **canonical owner** of the React styling stack (shadcn/cn/cva/tokens); `components` cites it. |
+| `rules/frontend/react/components.md` | Traffic One React component rule, inspired by ECC web/typescript rules: https://github.com/affaan-m/ECC/tree/main/rules/web |
+| `rules/frontend/react/core.md` | Traffic One forced React stack rule, inspired by ECC TypeScript/Web layering: https://github.com/affaan-m/ECC/tree/main/rules/typescript — **canonical owner** of the React styling stack (shadcn/cn/cva/tokens); `components` cites it. |
 | `rules/frontend/react/design-quality.md` | Traffic One React design gate, paired with `frontend-design`/`design-audit` and topped up with ECC anti-template web guidance. |
-| `rules/frontend/react/performance.md` | Traffic One React performance rule, inspired by ECC web performance guidance: https://github.com/affaan-m/everything-claude-code/tree/main/rules/web — **canonical owner** of the realtime render budget (30fps / rAF batching). |
+| `rules/frontend/react/performance.md` | Traffic One React performance rule, inspired by ECC web performance guidance: https://github.com/affaan-m/ECC/tree/main/rules/web — **canonical owner** of the realtime render budget (30fps / rAF batching). |
 | `rules/frontend/react/realtime.md` | Traffic One React realtime rule, inspired by service/realtime architecture patterns. — **canonical owner** of the WS→Redux bridge pattern; `stores` cites it. |
-| `rules/frontend/react/security.md` | Traffic One React security rule, inspired by ECC security rules: https://github.com/affaan-m/everything-claude-code/blob/main/rules/common/security.md |
+| `rules/frontend/react/security.md` | Traffic One React security rule, inspired by ECC security rules: https://github.com/affaan-m/ECC/blob/main/rules/common/security.md |
 | `rules/frontend/react/services.md` | Traffic One React services rule, inspired by ECC TypeScript/service patterns. — **canonical owner** of RTK Query discipline; `stores` cites it. |
 | `rules/frontend/react/stores.md` | Traffic One Redux/RTK Query/zustand rule, local forced-stack rule. |
 | `rules/frontend/react/supabase-client.md` | Traffic One Supabase client rule, local forced-stack rule. |
 | `rules/frontend/react/testing.md` | Traffic One React test rule, paired with ECC `e2e-testing` and `tdd-workflow` skills. |
-| `rules/frontend/react/vite.md` | Traffic One Vite rule adapted from ECC Vite patterns: https://github.com/affaan-m/everything-claude-code/blob/main/skills/vite-patterns/SKILL.md |
+| `rules/frontend/react/vite.md` | Traffic One Vite rule adapted from ECC Vite patterns: https://github.com/affaan-m/ECC/blob/main/skills/vite-patterns/SKILL.md |
 | `rules/frontend/ionic/accessibility.md` | Traffic One Ionic accessibility rule, paired with `ionic-mobile` and `accessibility`. |
 | `rules/frontend/ionic/capacitor.md` | Traffic One Capacitor rule, informed by Mindrally Ionic concepts and local forced stack. |
 | `rules/frontend/ionic/components.md` | Traffic One Ionic component rule, informed by Mindrally Ionic concepts and React stack rules. |
@@ -232,23 +232,23 @@ Catalog conventions normalized by the audit: the activation heading is
 
 | Skill | Local file | Source |
 | --- | --- | --- |
-| `accessibility` | `skills/accessibility/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/accessibility/SKILL.md |
-| `ai-regression-testing` | `skills/ai-regression-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/ai-regression-testing/SKILL.md |
-| `android-clean-architecture` | `skills/android-clean-architecture/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/android-clean-architecture/SKILL.md |
-| `api-connector-builder` | `skills/api-connector-builder/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/api-connector-builder/SKILL.md |
-| `api-design` | `skills/api-design/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/api-design/SKILL.md |
+| `accessibility` | `skills/accessibility/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/accessibility/SKILL.md |
+| `ai-regression-testing` | `skills/ai-regression-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/ai-regression-testing/SKILL.md |
+| `android-clean-architecture` | `skills/android-clean-architecture/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/android-clean-architecture/SKILL.md |
+| `api-connector-builder` | `skills/api-connector-builder/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/api-connector-builder/SKILL.md |
+| `api-design` | `skills/api-design/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/api-design/SKILL.md |
 | `app-launch-checklist` | `skills/app-launch-checklist/SKILL.md` | Traffic One local web/mobile launch readiness and compliance checklist workflow |
-| `architecture-decision-records` | `skills/architecture-decision-records/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/architecture-decision-records/SKILL.md |
-| `auto-documentation-generator` | `skills/auto-documentation-generator/SKILL.md` | Traffic One local docs skill, topped up from ECC codebase onboarding: https://github.com/affaan-m/everything-claude-code/blob/main/skills/codebase-onboarding/SKILL.md |
-| `backend-patterns` | `skills/backend-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/backend-patterns/SKILL.md |
-| `browser-qa` | `skills/browser-qa/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/browser-qa/SKILL.md |
-| `bun-runtime` | `skills/bun-runtime/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/bun-runtime/SKILL.md |
-| `click-path-audit` | `skills/click-path-audit/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/click-path-audit/SKILL.md |
-| `coding-standards` | `skills/coding-standards/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/coding-standards/SKILL.md |
-| `compose-multiplatform-patterns` | `skills/compose-multiplatform-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/compose-multiplatform-patterns/SKILL.md |
+| `architecture-decision-records` | `skills/architecture-decision-records/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/architecture-decision-records/SKILL.md |
+| `auto-documentation-generator` | `skills/auto-documentation-generator/SKILL.md` | Traffic One local docs skill, topped up from ECC codebase onboarding: https://github.com/affaan-m/ECC/blob/main/skills/codebase-onboarding/SKILL.md |
+| `backend-patterns` | `skills/backend-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/backend-patterns/SKILL.md |
+| `browser-qa` | `skills/browser-qa/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/browser-qa/SKILL.md |
+| `bun-runtime` | `skills/bun-runtime/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/bun-runtime/SKILL.md |
+| `click-path-audit` | `skills/click-path-audit/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/click-path-audit/SKILL.md |
+| `coding-standards` | `skills/coding-standards/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/coding-standards/SKILL.md |
+| `compose-multiplatform-patterns` | `skills/compose-multiplatform-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/compose-multiplatform-patterns/SKILL.md |
 | `context-budget` | `skills/context-budget/SKILL.md` | Traffic One local token-budget skill, topped up with agent fan-out/model-effort budgeting |
-| `cpp-coding-standards` | `skills/cpp-coding-standards/SKILL.md` | ECC plus C++ Core Guidelines: https://github.com/affaan-m/everything-claude-code/blob/main/skills/cpp-coding-standards/SKILL.md |
-| `cpp-testing` | `skills/cpp-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/cpp-testing/SKILL.md |
+| `cpp-coding-standards` | `skills/cpp-coding-standards/SKILL.md` | ECC plus C++ Core Guidelines: https://github.com/affaan-m/ECC/blob/main/skills/cpp-coding-standards/SKILL.md |
+| `cpp-testing` | `skills/cpp-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/cpp-testing/SKILL.md |
 | `create-component` | `skills/create-component/SKILL.md` | Traffic One local React component workflow |
 | `create-feature` | `skills/create-feature/SKILL.md` | Traffic One local feature workflow |
 | `create-native-component` | `skills/create-native-component/SKILL.md` | Traffic One local RN component workflow |
@@ -257,84 +257,84 @@ Catalog conventions normalized by the audit: the activation heading is
 | `create-native-service` | `skills/create-native-service/SKILL.md` | Traffic One local RN service workflow |
 | `create-page` | `skills/create-page/SKILL.md` | Traffic One local page workflow |
 | `create-service` | `skills/create-service/SKILL.md` | Traffic One local service workflow |
-| `csharp-testing` | `skills/csharp-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/csharp-testing/SKILL.md |
-| `dart-flutter-patterns` | `skills/dart-flutter-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/dart-flutter-patterns/SKILL.md |
-| `dashboard-builder` | `skills/dashboard-builder/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/dashboard-builder/SKILL.md |
-| `database-migrations` | `skills/database-migrations/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/database-migrations/SKILL.md |
-| `deployment-patterns` | `skills/deployment-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/deployment-patterns/SKILL.md |
+| `csharp-testing` | `skills/csharp-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/csharp-testing/SKILL.md |
+| `dart-flutter-patterns` | `skills/dart-flutter-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/dart-flutter-patterns/SKILL.md |
+| `dashboard-builder` | `skills/dashboard-builder/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/dashboard-builder/SKILL.md |
+| `database-migrations` | `skills/database-migrations/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/database-migrations/SKILL.md |
+| `deployment-patterns` | `skills/deployment-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/deployment-patterns/SKILL.md |
 | `design-audit` | `skills/design-audit/SKILL.md` | bencium-marketplace `design-audit`, distilled |
-| `design-system` | `skills/design-system/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/design-system/SKILL.md |
-| `documentation-lookup` | `skills/documentation-lookup/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/documentation-lookup/SKILL.md |
-| `django-patterns` | `skills/django-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/django-patterns/SKILL.md |
-| `django-security` | `skills/django-security/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/django-security/SKILL.md |
-| `django-tdd` | `skills/django-tdd/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/django-tdd/SKILL.md |
-| `django-verification` | `skills/django-verification/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/django-verification/SKILL.md |
-| `docker-patterns` | `skills/docker-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/docker-patterns/SKILL.md |
-| `dotnet-patterns` | `skills/dotnet-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/dotnet-patterns/SKILL.md |
-| `e2e-testing` | `skills/e2e-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/e2e-testing/SKILL.md |
-| `execution-discipline` | `skills/execution-discipline/SKILL.md` | Merges Karpathy/Forrest Chang baseline, supplied Mnilax/Anatoli workflow links, and ECC AI-assisted engineering guidance: https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md |
-| `flutter-dart-code-review` | `skills/flutter-dart-code-review/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/flutter-dart-code-review/SKILL.md |
-| `frontend-design` | `skills/frontend-design/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/frontend-design/SKILL.md |
-| `frontend-patterns` | `skills/frontend-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/frontend-patterns/SKILL.md |
+| `design-system` | `skills/design-system/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/design-system/SKILL.md |
+| `documentation-lookup` | `skills/documentation-lookup/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/documentation-lookup/SKILL.md |
+| `django-patterns` | `skills/django-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/django-patterns/SKILL.md |
+| `django-security` | `skills/django-security/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/django-security/SKILL.md |
+| `django-tdd` | `skills/django-tdd/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/django-tdd/SKILL.md |
+| `django-verification` | `skills/django-verification/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/django-verification/SKILL.md |
+| `docker-patterns` | `skills/docker-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/docker-patterns/SKILL.md |
+| `dotnet-patterns` | `skills/dotnet-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/dotnet-patterns/SKILL.md |
+| `e2e-testing` | `skills/e2e-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/e2e-testing/SKILL.md |
+| `execution-discipline` | `skills/execution-discipline/SKILL.md` | Merges Karpathy/Forrest Chang baseline, supplied Mnilax/Anatoli workflow links, and ECC AI-assisted engineering guidance: https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md |
+| `flutter-dart-code-review` | `skills/flutter-dart-code-review/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/flutter-dart-code-review/SKILL.md |
+| `frontend-design` | `skills/frontend-design/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/frontend-design/SKILL.md |
+| `frontend-patterns` | `skills/frontend-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/frontend-patterns/SKILL.md |
 | `git-commit` | `skills/git-commit/SKILL.md` | Traffic One local Gitflow/conventional commit skill |
-| `golang-patterns` | `skills/golang-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/golang-patterns/SKILL.md |
-| `golang-testing` | `skills/golang-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/golang-testing/SKILL.md |
-| `hexagonal-architecture` | `skills/hexagonal-architecture/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/hexagonal-architecture/SKILL.md |
+| `golang-patterns` | `skills/golang-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/golang-patterns/SKILL.md |
+| `golang-testing` | `skills/golang-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/golang-testing/SKILL.md |
+| `hexagonal-architecture` | `skills/hexagonal-architecture/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/hexagonal-architecture/SKILL.md |
 | `i18n-text` | `skills/i18n-text/SKILL.md` | Traffic One local i18n workflow — **canonical owner** of new-UI defaults, locale parity, React child `<Trans>`/string-value `t()`, and exact literal-brand exceptions; `create-*` skills defer here. |
 | `ionic-mobile` | `skills/ionic-mobile/SKILL.md` | Traffic One local skill merging Mindrally Ionic concepts into React/Capacitor stack |
-| `java-coding-standards` | `skills/java-coding-standards/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/java-coding-standards/SKILL.md |
-| `jpa-patterns` | `skills/jpa-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/jpa-patterns/SKILL.md |
+| `java-coding-standards` | `skills/java-coding-standards/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/java-coding-standards/SKILL.md |
+| `jpa-patterns` | `skills/jpa-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/jpa-patterns/SKILL.md |
 | `jwt-security` | `skills/jwt-security/SKILL.md` | Mindrally: https://github.com/Mindrally/skills/blob/main/jwt-security/SKILL.md — **canonical owner** of token-storage policy; `security-review`/`springboot-security` defer here. |
-| `kotlin-coroutines-flows` | `skills/kotlin-coroutines-flows/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/kotlin-coroutines-flows/SKILL.md |
-| `kotlin-exposed-patterns` | `skills/kotlin-exposed-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/kotlin-exposed-patterns/SKILL.md |
-| `kotlin-ktor-patterns` | `skills/kotlin-ktor-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/kotlin-ktor-patterns/SKILL.md |
-| `kotlin-patterns` | `skills/kotlin-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/kotlin-patterns/SKILL.md |
-| `kotlin-testing` | `skills/kotlin-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/kotlin-testing/SKILL.md |
-| `laravel-patterns` | `skills/laravel-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/laravel-patterns/SKILL.md |
-| `laravel-security` | `skills/laravel-security/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/laravel-security/SKILL.md |
-| `laravel-tdd` | `skills/laravel-tdd/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/laravel-tdd/SKILL.md |
-| `laravel-verification` | `skills/laravel-verification/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/laravel-verification/SKILL.md |
-| `library-pick` | `skills/library-pick/SKILL.md` | Traffic One local dependency quality gate skill, topped up from ECC search-first: https://github.com/affaan-m/everything-claude-code/blob/main/skills/search-first/SKILL.md |
-| `mcp-server-patterns` | `skills/mcp-server-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/mcp-server-patterns/SKILL.md |
+| `kotlin-coroutines-flows` | `skills/kotlin-coroutines-flows/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/kotlin-coroutines-flows/SKILL.md |
+| `kotlin-exposed-patterns` | `skills/kotlin-exposed-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/kotlin-exposed-patterns/SKILL.md |
+| `kotlin-ktor-patterns` | `skills/kotlin-ktor-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/kotlin-ktor-patterns/SKILL.md |
+| `kotlin-patterns` | `skills/kotlin-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/kotlin-patterns/SKILL.md |
+| `kotlin-testing` | `skills/kotlin-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/kotlin-testing/SKILL.md |
+| `laravel-patterns` | `skills/laravel-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/laravel-patterns/SKILL.md |
+| `laravel-security` | `skills/laravel-security/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/laravel-security/SKILL.md |
+| `laravel-tdd` | `skills/laravel-tdd/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/laravel-tdd/SKILL.md |
+| `laravel-verification` | `skills/laravel-verification/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/laravel-verification/SKILL.md |
+| `library-pick` | `skills/library-pick/SKILL.md` | Traffic One local dependency quality gate skill, topped up from ECC search-first: https://github.com/affaan-m/ECC/blob/main/skills/search-first/SKILL.md |
+| `mcp-server-patterns` | `skills/mcp-server-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/mcp-server-patterns/SKILL.md |
 | `model-tier-sync` | `skills/model-tier-sync/SKILL.md` | Traffic One local plugin-maintenance skill (model-tier table sync) |
 | `monorepo-architecture` | `skills/monorepo-architecture/SKILL.md` | Traffic One local Turborepo + pnpm monorepo skill |
-| `nestjs-patterns` | `skills/nestjs-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/nestjs-patterns/SKILL.md |
-| `nextjs-turbopack` | `skills/nextjs-turbopack/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/nextjs-turbopack/SKILL.md |
-| `nuxt4-patterns` | `skills/nuxt4-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/nuxt4-patterns/SKILL.md |
+| `nestjs-patterns` | `skills/nestjs-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/nestjs-patterns/SKILL.md |
+| `nextjs-turbopack` | `skills/nextjs-turbopack/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/nextjs-turbopack/SKILL.md |
+| `nuxt4-patterns` | `skills/nuxt4-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/nuxt4-patterns/SKILL.md |
 | `observability` | `skills/observability/SKILL.md` | Traffic One local post-deploy observability and AI fix suggestion workflow — **canonical owner** of replay-privacy/SLO/AI-fix policy; `security.md`/`deployment-patterns`/frontend security rules defer here. |
-| `perl-patterns` | `skills/perl-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/perl-patterns/SKILL.md |
-| `perl-security` | `skills/perl-security/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/perl-security/SKILL.md |
-| `perl-testing` | `skills/perl-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/perl-testing/SKILL.md |
+| `perl-patterns` | `skills/perl-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/perl-patterns/SKILL.md |
+| `perl-security` | `skills/perl-security/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/perl-security/SKILL.md |
+| `perl-testing` | `skills/perl-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/perl-testing/SKILL.md |
 | `postgres-patterns` | `skills/postgres-patterns/SKILL.md` | ECC plus Mindrally: https://github.com/Mindrally/skills/blob/main/postgresql-best-practices/SKILL.md |
 | `postgres-review` | `skills/postgres-review/SKILL.md` | Traffic One local PostgreSQL/Supabase review skill |
 | `predeploy-security-check` | `skills/predeploy-security-check/SKILL.md` | Traffic One local security gate skill |
-| `project-memory` | `skills/project-memory/SKILL.md` | Traffic One local persistent memory skill, topped up from ECC codebase onboarding: https://github.com/affaan-m/everything-claude-code/blob/main/skills/codebase-onboarding/SKILL.md — **canonical owner** of the `.traffic-one` file inventory, secret-redaction, and schema snapshot; `auto-documentation-generator` defers here. |
-| `python-patterns` | `skills/python-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/python-patterns/SKILL.md |
-| `python-testing` | `skills/python-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/python-testing/SKILL.md |
+| `project-memory` | `skills/project-memory/SKILL.md` | Traffic One local persistent memory skill, topped up from ECC codebase onboarding: https://github.com/affaan-m/ECC/blob/main/skills/codebase-onboarding/SKILL.md — **canonical owner** of the `.traffic-one` file inventory, secret-redaction, and schema snapshot; `auto-documentation-generator` defers here. |
+| `python-patterns` | `skills/python-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/python-patterns/SKILL.md |
+| `python-testing` | `skills/python-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/python-testing/SKILL.md |
 | `refactor` | `skills/refactor/SKILL.md` | Traffic One local refactor workflow |
 | `repo-scan` | `skills/repo-scan/SKILL.md` | ECC plus Repo Scan upstream: https://github.com/haibindev/repo-scan |
-| `rust-patterns` | `skills/rust-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/rust-patterns/SKILL.md |
-| `rust-testing` | `skills/rust-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/rust-testing/SKILL.md |
-| `security-review` | `skills/security-review/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/security-review/SKILL.md |
+| `rust-patterns` | `skills/rust-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/rust-patterns/SKILL.md |
+| `rust-testing` | `skills/rust-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/rust-testing/SKILL.md |
+| `security-review` | `skills/security-review/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/security-review/SKILL.md |
 | `security-scan` | `skills/security-scan/SKILL.md` | ECC plus AgentShield: https://github.com/affaan-m/agentshield |
 | `senior-eng-orchestrator` | `skills/senior-eng-orchestrator/SKILL.md` | Traffic One local role-orchestration skill, topped up with ECC agentic/AI-first work-unit guidance |
-| `seo` | `skills/seo/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/seo/SKILL.md |
-| `springboot-patterns` | `skills/springboot-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/springboot-patterns/SKILL.md |
-| `springboot-security` | `skills/springboot-security/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/springboot-security/SKILL.md |
-| `springboot-tdd` | `skills/springboot-tdd/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/springboot-tdd/SKILL.md |
-| `springboot-verification` | `skills/springboot-verification/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/springboot-verification/SKILL.md |
+| `seo` | `skills/seo/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/seo/SKILL.md |
+| `springboot-patterns` | `skills/springboot-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/springboot-patterns/SKILL.md |
+| `springboot-security` | `skills/springboot-security/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/springboot-security/SKILL.md |
+| `springboot-tdd` | `skills/springboot-tdd/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/springboot-tdd/SKILL.md |
+| `springboot-verification` | `skills/springboot-verification/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/springboot-verification/SKILL.md |
 | `supabase-setup` | `skills/supabase-setup/SKILL.md` | Traffic One local Supabase setup skill |
-| `swift-actor-persistence` | `skills/swift-actor-persistence/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/swift-actor-persistence/SKILL.md |
-| `swift-concurrency-6-2` | `skills/swift-concurrency-6-2/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/swift-concurrency-6-2/SKILL.md |
-| `swift-protocol-di-testing` | `skills/swift-protocol-di-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/swift-protocol-di-testing/SKILL.md |
-| `swiftui-patterns` | `skills/swiftui-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/swiftui-patterns/SKILL.md |
+| `swift-actor-persistence` | `skills/swift-actor-persistence/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/swift-actor-persistence/SKILL.md |
+| `swift-concurrency-6-2` | `skills/swift-concurrency-6-2/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/swift-concurrency-6-2/SKILL.md |
+| `swift-protocol-di-testing` | `skills/swift-protocol-di-testing/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/swift-protocol-di-testing/SKILL.md |
+| `swiftui-patterns` | `skills/swiftui-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/swiftui-patterns/SKILL.md |
 | `task-triage` | `skills/task-triage/SKILL.md` | Traffic One local maintenance-triage skill (complexity/scale routing) |
-| `tdd-workflow` | `skills/tdd-workflow/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/tdd-workflow/SKILL.md — **canonical owner** of the RED-GREEN-REFACTOR cycle, coverage tiers, AAA, and test maxims; `*-testing`/`*-tdd` skills defer here. |
+| `tdd-workflow` | `skills/tdd-workflow/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/tdd-workflow/SKILL.md — **canonical owner** of the RED-GREEN-REFACTOR cycle, coverage tiers, AAA, and test maxims; `*-testing`/`*-tdd` skills defer here. |
 | `token-usage-report` | `skills/token-usage-report/SKILL.md` | Traffic One local token-usage reporting skill |
 | `traffic-one-doctor` | `skills/traffic-one-doctor/SKILL.md` | Traffic One local setup-diagnostic skill (finding codes + fix commands) |
-| `ui-demo` | `skills/ui-demo/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/ui-demo/SKILL.md |
-| `verification-loop` | `skills/verification-loop/SKILL.md` | ECC verification loop plus production audit merge: https://github.com/affaan-m/everything-claude-code/blob/main/skills/production-audit/SKILL.md — **canonical owner** of the verification phase pipeline + VERIFICATION REPORT template; `*-verification` skills defer here. |
-| `vite-patterns` | `skills/vite-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/vite-patterns/SKILL.md |
+| `ui-demo` | `skills/ui-demo/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/ui-demo/SKILL.md |
+| `verification-loop` | `skills/verification-loop/SKILL.md` | ECC verification loop plus production audit merge: https://github.com/affaan-m/ECC/blob/main/skills/production-audit/SKILL.md — **canonical owner** of the verification phase pipeline + VERIFICATION REPORT template; `*-verification` skills defer here. |
+| `vite-patterns` | `skills/vite-patterns/SKILL.md` | ECC: https://github.com/affaan-m/ECC/blob/main/skills/vite-patterns/SKILL.md |
 
 ## Skill Support Files
 

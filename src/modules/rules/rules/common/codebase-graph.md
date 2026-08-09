@@ -109,7 +109,9 @@ Instead:
   auto-writes `AGENTS.md`, `CLAUDE.md`, and `.claude/skills/` which overlap
   traffic-one's own files; the runner backs up and restores traffic-one's
   versions automatically.
-- **graphify** is MIT. No conflict mitigation needed.
+- **graphify** is Apache-2.0 — permissive, so commercial projects are fine. It
+  writes only under `.traffic-one/graphify-out/`, so no conflict mitigation is
+  needed either.
 
 ## Skip when
 

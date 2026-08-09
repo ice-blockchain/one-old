@@ -389,6 +389,139 @@ export function writeJsonDurable(filePath: string, value: unknown): boolean {
   });
 }
 
+/** One member of a write set: where it goes and what goes there. */
+export interface JsonWrite {
+  readonly path: string;
+  readonly value: unknown;
+}
+
+/**
+ * Publish several JSON artifacts as ONE update, so a REFUSAL cannot land part
+ * of it.
+ *
+ * ── the defect this exists for ───────────────────────────────────────────────
+ * Not a lost write: TWO ARTIFACTS ON DISK THAT DISAGREE, each writer
+ * individually looking fine. `writeJson(a, …); writeJson(b, …)` with both
+ * booleans carrying the same derived fact is the shape — refuse either one and
+ * the survivor describes a state the other has never heard of. Ordering the
+ * pair and consuming the first boolean (`if (!writeJson(a, …)) return;`) closes
+ * ONE direction only; the second write's refusal still leaves `a` advanced and
+ * `b` behind. tests/refusal-contract.test.ts's rule 4 reports the pairs a parse
+ * can see and says outright that it cannot make them atomic.
+ *
+ * ── THE GUARANTEE, STATED AS A BOUND RATHER THAN AS ATOMICITY ────────────────
+ * Read this before relying on it. It is NOT all-or-nothing against a crash, and
+ * a primitive that claimed otherwise would be worse than none.
+ *
+ *   ALL-OR-NOTHING against REFUSAL, exactly. Every path is classified before
+ *   anything is staged, so a consent-fenced, symlinked, escaping or
+ *   unresolvable member declines the WHOLE set with nothing written. This is
+ *   the entire failure class above: every divergence found in this codebase was
+ *   a refusal landing on one path and not the other.
+ *
+ *   ALL-OR-NOTHING against a STAGING errno too. The payloads are written to
+ *   temp siblings first, so ENOSPC or EACCES on the third member throws with
+ *   the first two still only staged — where the sequential shape would have
+ *   landed them.
+ *
+ *   BOUNDED, NOT CLOSED, against a crash or a rename-time errno. Committing N
+ *   paths is N `rename` syscalls and POSIX has no multi-path commit; a journal
+ *   is the only thing that would, and this layer has none. The window is the
+ *   commit loop: N-1 renames with no I/O and no allocation between them, every
+ *   payload already staged and every fence decision already made. A SIGKILL or
+ *   a rename failure inside it leaves a PREFIX of the set landed.
+ *
+ * So order the set by descending authority — the artifact every reader consults
+ * first — and a prefix landing degrades to exactly the ordered-writes behaviour
+ * this replaces, never to something worse.
+ *
+ * Durability matches `writeJson`, not `writeJsonDurable`: an fsync per member
+ * would cost 4 ms each (see writeJsonDurable's measurement) and buy no
+ * atomicity, because the residual window above is the rename loop rather than
+ * the data.
+ *
+ * An EMPTY set is `true`. Nothing was declined, because nothing was asked.
+ */
+export function writeJsonSet(entries: readonly JsonWrite[]): boolean {
+  if (entries.length === 0) return true;
+  // ── decide the WHOLE set before touching anything ──────────────────────────
+  // classifyStateWrite has no side effect, which is what makes an up-front pass
+  // over every member possible — and the reason `stateWritePermitted`'s TOCTOU
+  // warning does not apply here. That warning is about checking and then
+  // writing THROUGH an unguarded path; these members are still committed with
+  // O_NOFOLLOW staging, so the kernel re-decides the final component anyway.
+  const verdicts = entries.map((entry) => classifyStateWrite(entry.path));
+  if (verdicts.some((verdict) => verdict !== 'plain' && verdict !== 'state')) {
+    // Every member is reported, not just the refused one: the operator reading
+    // `stateWrites` needs to see that an UPDATE was declined, and a log naming
+    // only the fenced path reads as "one write failed" — which is the
+    // misdiagnosis this whole primitive exists to prevent.
+    entries.forEach((entry, index) => {
+      const verdict = verdicts[index]!;
+      recordStateWrite({
+        path: entry.path,
+        op: 'write-json-set',
+        ok: false,
+        errno: verdict === 'plain' || verdict === 'state' ? 'write-set-refused' : verdict,
+      });
+    });
+    return false;
+  }
+
+  const staged = entries.map((entry, index) => ({
+    entry,
+    // Unique per member as well as per process: two members of one set are
+    // siblings in the same directory often enough (run.json + maintenance.json)
+    // that a pid-only name would collide inside a single call.
+    temp: `${entry.path}.${process.pid}.${index}.set.tmp`,
+    state: verdicts[index] === 'state',
+  }));
+  const discard = (): void => {
+    for (const { temp } of staged) {
+      try { fs.unlinkSync(temp); } catch { /* best effort */ }
+    }
+  };
+
+  try {
+    for (const { entry, temp } of staged) {
+      fs.mkdirSync(path.dirname(entry.path), { recursive: true });
+      writeFileNoFollow(temp, `${JSON.stringify(entry.value, null, 2)}\n`, 'truncate');
+    }
+  } catch (error) {
+    discard();
+    const errno = errnoOf(error);
+    for (const { entry, state } of staged) {
+      if (state) recordStateWrite({ path: entry.path, op: 'write-json-set', ok: false, errno });
+    }
+    // Same split as `act`: ELOOP is the kernel making the refusal the pre-check
+    // would have made, everything else is the caller's problem and must not
+    // become a silent no-op.
+    if (errno === 'ELOOP') return false;
+    throw error;
+  }
+
+  // ── the bounded window ─────────────────────────────────────────────────────
+  try {
+    for (const { entry, temp } of staged) fs.renameSync(temp, entry.path);
+  } catch (error) {
+    discard();
+    const errno = errnoOf(error);
+    for (const { entry, state } of staged) {
+      if (state) recordStateWrite({ path: entry.path, op: 'write-json-set', ok: false, errno });
+    }
+    // NOT converted to `false`, even for ELOOP: unlike every other refusal here
+    // a failure at this point may have landed a prefix, and reporting that as a
+    // clean refusal is the lie the docblock's bound exists to avoid. It escapes
+    // as the loud fail-closed deny the pipeline makes of any errno.
+    throw error;
+  }
+  discard();
+  for (const { entry, state } of staged) {
+    if (state) recordStateWrite({ path: entry.path, op: 'write-json-set', ok: true });
+  }
+  return true;
+}
+
 /**
  * What an exclusive create did. Three values, because "it already existed" is a
  * NORMAL and load-bearing answer here — it is the losing side of a

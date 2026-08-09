@@ -22,13 +22,13 @@
       "runtime": "python",
       "runtimeMinMajor": 3,
       "runtimeMinMinor": 10,
-      "license": "MIT",
-      "url": "https://github.com/edmondchuc/graphify",
+      "license": "Apache-2.0",
+      "url": "https://github.com/Graphify-Labs/graphify",
       "pipPackage": "graphifyy",
       "versionCommand": "graphify --version",
       "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
       "installCommand": "Traffic One managed venv install/upgrade (latest)",
-      "notes": "Python CLI requiring Python >=3.10 (runtime field — graphifyy wheels set Requires-Python >=3.10, so a stock-macOS CLT Python 3.9.x venv yields `No matching distribution`; the runtime resolver finds a >=3.10 interpreter via Homebrew/pyenv absolute paths). The `graphifyy` package name is intentional (not a typo) — that's how it is published on PyPI. Installed at latest into a Traffic One-managed venv under the toolchain root — never into the user's pipx home or any other global location; an existing `graphify` on PATH is reused as-is but never created by us. Traffic One prefers `graphify --version` and retains the adjacent `pip show graphifyy` probe for compatibility with older releases. `graphify update .` exits non-zero on a project with no code files, so onboarding gates on install (not on the first scan)."
+      "notes": "Python CLI requiring Python >=3.10 (runtime field — graphifyy wheels set Requires-Python >=3.10, so a stock-macOS CLT Python 3.9.x venv yields `No matching distribution`; the runtime resolver finds a >=3.10 interpreter via Homebrew/pyenv absolute paths). The `graphifyy` package name is intentional (not a typo) — that's how it is published on PyPI. Installed at latest into a Traffic One-managed venv under the toolchain root — never into the user's pipx home or any other global location; an existing `graphify` on PATH is reused as-is but never created by us. Traffic One prefers `graphify --version` and retains the adjacent `pip show graphifyy` probe for compatibility with older releases. `graphify update .` exits non-zero on a project with no code files, so onboarding gates on install (not on the first scan). Licence read from the published artifact itself — PyPI reports `license_expression: Apache-2.0` for graphifyy, and Graphify-Labs/graphify agrees; note that PyPI's deprecated `license` field is empty and its classifier list carries no licence, so a check that reads only those concludes the package declares none. This was recorded as MIT, alongside a home URL that 404s, until it was checked upstream, and the release-docs pin could not catch it because it compares this file against THIRD-PARTY-NOTICES.md and both said MIT."
     },
     "opencode": {
       "installLatest": true,
