@@ -17,6 +17,7 @@ import * as path from 'path';
 
 import { buildRuntime } from './build-runtime';
 import { listModuleIdsWithDescriptor, listModuleSkillDocs } from './copy-module-assets';
+import { exerciseEnv, exerciseRuntime, runShimAllowingBlock, type RuntimeExercisePins } from './exercise-runtime';
 
 /** Raised by fail(); carries the already-formatted line the runner prints. */
 export class SmokeFailure extends Error {}
@@ -60,21 +61,10 @@ function withProcessEnv<T>(overrides: Readonly<Record<string, string | undefined
   }
 }
 
-// Invoke a legacy-path shim (e.g. hook-runtime.cjs) at the scratch root.
-function runShim(scratch: string, shim: string, subcommand: string, stdin: string, env: NodeJS.ProcessEnv): string {
-  const result = spawnSync(process.execPath, [path.join(scratch, shim), subcommand], {
-    input: stdin, encoding: 'utf8', env, timeout: 20000,
-  });
-  if (result.status !== 0 && result.status !== null) fail(`${shim} ${subcommand} exited ${result.status}: ${result.stderr || ''}`);
-  return result.stdout || '';
-}
-
-function runShimAllowingBlock(scratch: string, shim: string, subcommand: string, stdin: string, env: NodeJS.ProcessEnv): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync(process.execPath, [path.join(scratch, shim), subcommand], {
-    input: stdin, encoding: 'utf8', env, timeout: 20000,
-  });
-  return { status: result.status, stdout: result.stdout || '', stderr: result.stderr || '' };
-}
+// The bare-node shim invocation lives in exercise-runtime.ts, which
+// plugin:sync's verify() calls too. Every remaining call site here is one whose
+// host wire shape signals a deny THROUGH the exit status, so all of them want
+// the non-throwing form.
 
 interface AsyncShimResult {
   status: number | null;
@@ -201,47 +191,38 @@ async function main(): Promise<void> {
       .sort();
     if (orphanProse.length > 0) fail(`built tree ships gate prose for modules with no descriptor: ${orphanProse.join(', ')}`);
 
-    for (const shim of ['hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'windsurf-hook-runtime.cjs', 'devin-hook-runtime.cjs']) {
-      if (!fs.existsSync(path.join(scratch, shim))) fail(`missing shim ${shim}`);
-    }
-
     // 2. Invoke through the legacy-path shims under bare node. UNAUTHENTICATED
-    //    tool use must be denied. pluginRoot points at the realistic scratch
-    //    install, so skillBlock reads the compiled skill prose from scripts/.
-    //    Auth is enforced explicitly (TRAFFIC_ONE_AUTH=on). The priority-0 auth
-    //    gate, while unauthenticated, delegates to the onboarding gate, which
-    //    denies mutating tools until setup completes; NO_SPAWN keeps that
-    //    delegation from launching a real wizard server, so the deny arrives with
-    //    an empty setup link rather than a live one.
+    //    tool use must be denied, in each host's own wire shape.
+    //
+    //    The assertions themselves live in exercise-runtime.ts, because
+    //    plugin:sync's per-host verify() runs the SAME exercise against the
+    //    bundle each host actually serves — an installed runtime that loads and
+    //    reaches a named gate is a far stronger reading of "install-verifiable"
+    //    than the package.json version that command used to stat. What stays
+    //    here is the fixture: the scratch install, the pinned paths, and the
+    //    consent answer.
     //
     //    The fixture must ANSWER the use-plugin question for any of this to be
     //    about auth. On an unanswered project the ask-first branch denies every
     //    one of these calls before auth is ever consulted, so each host check
-    //    below went green off a deny that has nothing to do with authentication:
-    //    they passed identically with auth switched off, and would keep passing
-    //    if the priority-0 auth gate were deleted outright. Consent moves the
-    //    deny back onto the gate the assertions name — confirmed by the auth-off
-    //    control below, which stops being denied precisely because auth was the
-    //    only thing objecting.
+    //    went green off a deny that has nothing to do with authentication: they
+    //    passed identically with auth switched off, and would keep passing if
+    //    the priority-0 auth gate were deleted outright. Consent moves the deny
+    //    back onto the gate the assertions name — confirmed by the auth-off
+    //    control inside the exercise, which stops being denied precisely
+    //    because auth was the only thing objecting.
     const authHome = path.join(authTmp, 'home');
     fs.mkdirSync(authHome, { recursive: true });
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      HOME: authHome,
-      TRAFFIC_ONE_AUTH: 'on',
-      TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
-      TRAFFIC_ONE_STATE_PATH: path.join(authTmp, 'one.json'),
-      TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(authTmp, 'prefs.json'),
-      TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
+    const pins: RuntimeExercisePins = {
+      base: process.env,
+      home: authHome,
+      pluginRoot,
+      statePath: path.join(authTmp, 'one.json'),
+      projectPrefsPath: path.join(authTmp, 'prefs.json'),
+      consent: 'recorded-consent',
     };
-    delete env.XDG_STATE_HOME;
-    delete env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    const env = exerciseEnv(pins);
 
-    // Each host gets its OWN project cwd. The unauthenticated gate delegates to the
-    // onboarding gate, which writes per-project session markers (once-per-session
-    // deny walkthrough); sharing one cwd across hosts would let the first call's
-    // marker steer the next host's branch. A real session is one host per project,
-    // so per-host cwds match reality and keep the four checks independent.
     const claudeCwd = scratchDir('t1-smoke-claude-');
     const cursorCwd = scratchDir('t1-smoke-cursor-');
     const windsurfCwd = scratchDir('t1-smoke-windsurf-');
@@ -259,86 +240,16 @@ async function main(): Promise<void> {
       () => compiledAuthPluginUse.recordPluginUseChoice(claudeCwd, true, 'compiled-smoke', process.env),
     );
 
-    // The auth gate's own words. Asserting the DECISION alone is not enough:
-    // every branch that could answer one of these calls answers with a deny, so
-    // `deny` on its own says only "something objected", not "the unauthenticated
-    // gate objected".
-    const AUTH_DENY = 'Traffic One setup is required before building';
-    const assertAuthDeny = (host: string, reason: unknown): void => {
-      if (!String(reason || '').includes(AUTH_DENY)) {
-        fail(`${host} deny did not come from the unauthenticated gate (reason: ${String(reason || '(empty)').slice(0, 160)})`);
-      }
-    };
-
-    const claudeStdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(claudeCwd, 'x.ts'), content: 'export const x = 1;' }, cwd: claudeCwd });
-    const claudeOut = JSON.parse(runShim(
-      scratch,
-      'hook-runtime.cjs',
-      'check-plan-write',
-      claudeStdin,
-      { ...env, TRAFFIC_ONE_HOST: 'claude' },
-    ) || '{}');
-    if (claudeOut.hookSpecificOutput?.permissionDecision !== 'deny') fail('hook-runtime.cjs shim did not deny an unauthed write');
-    assertAuthDeny('Claude', claudeOut.hookSpecificOutput?.permissionDecisionReason);
-    if (String(claudeOut.hookSpecificOutput?.additionalContext || '').includes('traffic-one-hook-context:v1')) {
-      fail('Claude hook context incorrectly carried the Codex-only provenance marker');
-    }
-    // Control: the SAME call with auth not enforced. This is what makes the three
-    // denies above attributable — if they survive auth being switched off, they
-    // were never the auth gate's. Deliberately not asserted as an allow: the
-    // claim is only that this specific deny is auth's, so a future unrelated
-    // gate objecting here must not read as an auth-gate regression.
-    const claudeAuthOff = JSON.parse(runShim(
-      scratch,
-      'hook-runtime.cjs',
-      'check-plan-write',
-      claudeStdin,
-      { ...env, TRAFFIC_ONE_AUTH: 'off', TRAFFIC_ONE_HOST: 'claude' },
-    ) || '{}');
-    if (String(claudeAuthOff.hookSpecificOutput?.permissionDecisionReason || '').includes(AUTH_DENY)) {
-      fail('the unauthenticated deny fired with auth switched off — the checks above are not testing the auth gate');
-    }
-
-    const cursorOut = JSON.parse(runShim(scratch, 'cursor-hook-runtime.cjs', 'before-shell-execution', JSON.stringify({ cwd: cursorCwd, command: 'npm run build' }), env) || '{}');
-    if (cursorOut.permission !== 'deny') fail('cursor-hook-runtime.cjs shim did not deny an unauthed shell');
-    // Cursor's wire shape carries the reason in user_message, so an empty one is
-    // a real defect on its own — but non-emptiness cannot say WHERE the wording
-    // came from: a resolved T1BLOCK and its verbatim TS fallback are byte-identical
-    // by design. "Prose actually shipped" is proven on disk by the built-vs-source
-    // cross-check in step 1; "the right gate spoke" is proven by the text below.
-    if (!cursorOut.user_message) fail('cursor deny had no user_message');
-    assertAuthDeny('Cursor', cursorOut.user_message);
-
-    // A MUTATING command, unlike Claude's and Cursor's calls above. Windsurf and
-    // Devin are the hosts whose gate releases read-only orientation while setup
-    // is pending (their recipe rides the native prompt-submit context instead),
-    // and `npm run build` classifies as orientation — so this leg and Devin's
-    // passed only while the ask-first deny was covering for them, and both went
-    // ALLOW the moment the fixture became a realistically consented project.
-    const windsurfOut = runShimAllowingBlock(
-      scratch,
-      'windsurf-hook-runtime.cjs',
-      'pre_run_command',
-      JSON.stringify({ agent_action_name: 'pre_run_command', tool_info: { cwd: windsurfCwd, command_line: 'git push --force' } }),
-      env,
-    );
-    if (windsurfOut.status !== 2) fail(`windsurf-hook-runtime.cjs shim did not exit 2 on an unauthed shell (status ${windsurfOut.status})`);
-    if (!windsurfOut.stderr) fail('windsurf deny had no stderr message');
-    assertAuthDeny('Windsurf', windsurfOut.stderr);
-
-    const devinOut = JSON.parse(runShim(
-      scratch,
-      'devin-hook-runtime.cjs',
-      'check-onboarding-gate',
-      // Mutating, and its own cwd, for the same two reasons as Windsurf above:
-      // the Devin entry releases read-only orientation while setup is pending,
-      // and this call now writes once-per-session markers into whatever cwd it
-      // is handed (authTmp holds the fixture's prefs/state files, not a project).
-      JSON.stringify({ hook_event_name: 'PreToolUse', cwd: devinCwd, tool_name: 'exec', tool_input: { command: 'git push --force' } }),
-      env,
-    ) || '{}');
-    if (devinOut.decision !== 'block') fail('devin-hook-runtime.cjs shim did not block an unauthed exec');
-    assertAuthDeny('Devin', devinOut.reason);
+    const exercise = exerciseRuntime({
+      scripts: scratch,
+      pins,
+      projects: { claude: claudeCwd, cursor: cursorCwd, windsurf: windsurfCwd, devin: devinCwd },
+    });
+    if (exercise.problem) fail(exercise.problem);
+    // "No leg objected" and "no leg ran" are the same null otherwise, and a
+    // shim-discovery change would silently turn this whole section into a
+    // no-op that still prints PASS.
+    if (exercise.exercised.length === 0) fail('the runtime exercise reached no host');
 
     // 3. Regression: Codex hooks run inside a workspace-only sandbox, while
     //    private onboarding state is intentionally user-local. Inject a real

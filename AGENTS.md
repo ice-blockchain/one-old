@@ -47,6 +47,23 @@ npm run smoke
 npm run test:env -- --strict   # deterministic full-run simulations (free, no host)
 ```
 
+Run the chain end to end with NOTHING ELSE EDITING `src/`. Both `gen` and
+`build` write their own `build-provenance.json`, and its `sourceHash` hashes
+every file under `src/**` directly whenever git cannot vouch for the working
+tree — which is always, mid-work. A source edit landing between two steps
+therefore reports a drift that is not drift, at two independent places:
+`gen --check` recomputes the stamp and finds it moved, and `build:verify`
+byte-compares a fresh build against `dist/scripts` with that file in the
+comparison set. `golden:update` rewrites a tracked file, so it wants the same
+quiet tree for a different reason. A chain run against a tree changing
+underneath it proves nothing about either artifact.
+
+A LONE `build-provenance.json` in a drift list is the dull cause, not
+nondeterministic generation: source changed after the last `gen`. Re-run `gen`.
+`gen --check` prints exactly that when it is the only entry, and deliberately
+stays silent when anything drifted alongside it — that set is a real content
+move and is worth investigating.
+
 `test:env --strict` drives complete post-onboarding runs for every supported
 project shape with scripted role writes against the real gates: no host CLI, no
 LLM, no spend. It builds `dist` first (materialization resolves rules and skills

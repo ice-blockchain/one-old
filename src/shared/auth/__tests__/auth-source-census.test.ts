@@ -51,12 +51,23 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 // Tests and harnesses set this variable constantly — that is how they drive the
-// two branches — so the census is about PRODUCTION source. compiled-smoke.ts is
-// named explicitly rather than pattern-matched: it is the smoke harness, it
-// spawns compiled hooks with `TRAFFIC_ONE_AUTH: 'on'` in their env, and it is
-// the one harness that does not live under a test path.
+// two branches — so the census is about PRODUCTION source. The two files below
+// are the harnesses that do not live under a test path, and they are named
+// EXPLICITLY rather than matched by a `src/build/` prefix: sync-hosts.ts is
+// their neighbour, and a pattern here would exempt the one file in that
+// directory where a bypass could usefully hide.
+//
+// Neither harness sets the variable for ITSELF. Both compose an env object for
+// a child process spawned against a scratch install, so no assignment here can
+// lift enforcement for a real session — and neither file ships at all, since
+// tsconfig.build.json excludes src/build/** from the compiled bundle.
+// exercise-runtime.ts holds the runtime-exercising leg extracted out of
+// compiled-smoke.ts, which is why the exemption arrived with the code: it pins
+// auth 'on' to prove the shipped gate denies, and 'off' exactly once as the
+// control that makes those denies ATTRIBUTABLE — a deny that survives auth
+// being switched off was never the auth gate's.
 const HARNESS_PATHS = ['src/test-support/', 'src/test-environment/'];
-const HARNESS_FILES = ['src/build/compiled-smoke.ts'];
+const HARNESS_FILES = ['src/build/compiled-smoke.ts', 'src/build/exercise-runtime.ts'];
 
 function isProduction(rel: string): boolean {
   if (rel.startsWith('tests/')) return false;

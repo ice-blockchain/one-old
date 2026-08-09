@@ -11,11 +11,13 @@
 // EXPECTED, and the one confusing thing about this file: committing (or
 // staging, or any source edit) between `npm run gen` and `npm run
 // plugin:check` makes gen --check report exactly one drifted artifact,
-// `build-provenance.json`, with no explanation. That is this stamp working —
-// gitSha moved to the new commit, or sourceHash to the new working tree — not
-// a generator bug. Re-run `npm run gen`. The drift printer in
-// src/gen/index.ts cannot say so today because GenRun.file() records only the
-// relative path.
+// `build-provenance.json`. That is this stamp working — gitSha moved to the
+// new commit, or sourceHash to the new working tree — not a generator bug.
+// Re-run `npm run gen`. driftDiagnosis() in src/gen/index.ts prints that
+// explanation when this file is the ONLY entry, and stays silent otherwise:
+// a set with real content moves in it must not be waved off as a stale dist.
+// It matches on the path suffix rather than an exact string, because
+// GenRun.file() records only the relative path.
 
 import { buildProvenance } from '../lib/build-provenance';
 import type { GenRun } from '../lib/run';
