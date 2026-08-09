@@ -10,10 +10,31 @@
 // python-build-standalone's per-asset .sha256 sidecar), so no hash ever needs to
 // live in (and rot in) source.
 //
-// Tranche 1 covers darwin + linux × x64 + arm64. Other platforms (Windows,
-// musl, exotic arches) return null → the caller degrades to its existing
-// install-skipped/defer path. The asset builders are PURE so they unit-test
-// without touching the network.
+// READ THE MAPS BELOW, NOT THIS PARAGRAPH, for what resolves. This comment used
+// to say "Tranche 1 covers darwin + linux × x64 + arm64; other platforms
+// (Windows, musl, exotic arches) return null", and PLATFORMS.md's managed-runtime
+// matrix was transcribed from it rather than from the tables — which is how a
+// false support claim reached a shipped document. Two of its three examples were
+// wrong about the code directly beneath it:
+//   - Windows RESOLVES. NODE_PLATFORM maps win32, so a Node asset exists for
+//     Windows on both arches; PY_TRIPLE carries win32:x64. Only win32:arm64 is
+//     absent, and deliberately (no aarch64-pc-windows-msvc build — see :43).
+//   - musl is NOT DETECTED AT ALL. `process.platform` reads 'linux' on Alpine,
+//     so the glibc asset is selected there; nothing distinguishes the two, and
+//     no null is returned.
+// What is true is the DEGRADATION, wherever the maps genuinely miss (an unlisted
+// platform or arch): the builders return null and the caller falls back to its
+// existing install-skipped/defer path rather than failing.
+//
+// A resolving asset is not platform SUPPORT — Windows has no automated coverage
+// (PLATFORMS.md says so in its own row). These maps answer only "is there an
+// asset to download", which is a narrower question than the one a reader
+// arriving here is usually asking.
+//
+// The asset builders are PURE so they unit-test without touching the network,
+// and tests/platforms-claims.test.ts derives PLATFORMS.md's matrix by CALLING
+// runtimeAsset() rather than by reading any prose, so the document can no longer
+// inherit a claim from a comment here.
 
 export type RuntimeKind = 'python' | 'node';
 

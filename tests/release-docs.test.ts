@@ -26,6 +26,8 @@ import { NODE_FLOOR_MAJOR } from '../src/shared/node-floor';
 import { isTrafficOneDoctorCommand } from '../src/shared/tool-classify';
 import { AUTH_OFFLINE_GRACE_MS, AUTH_REVALIDATION_CADENCE_MS } from '../src/config/auth';
 import { GOLDEN_EXCLUDED } from '../src/build/golden-update';
+import { runtimeAsset } from '../src/config/managed-runtimes';
+import { HOST_COMMANDS } from '../src/test-environment/config/hosts';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -46,6 +48,25 @@ function read(rel: string): string {
 /** Whitespace-normalized, so a paragraph reflow never fails a claim. */
 function flat(rel: string): string {
   return read(rel).replace(/\s+/g, ' ');
+}
+
+/**
+ * One numbered KNOWN-ISSUES entry, whitespace-normalized.
+ *
+ * Scoping is not tidiness. The document names most of the seven hosts SOMEWHERE
+ * — item 2 alone names all of them — so an unscoped `includes` lets one entry
+ * borrow another's correctness, which is exactly how a half-corrected licence
+ * passed the notice check that the third-party test at the bottom of this file
+ * was rewritten to close. It also fails loudly on a renumber, which matters:
+ * the messages below name entries by number.
+ */
+function issue(n: number): string {
+  const text = read('KNOWN-ISSUES.md');
+  const start = text.indexOf(`\n## ${n}. `);
+  assert.notEqual(start, -1, `KNOWN-ISSUES.md has no item ${n} — the entries were renumbered or one was removed`);
+  const rest = text.slice(start + 1);
+  const end = rest.indexOf('\n## ');
+  return (end === -1 ? rest : rest.slice(0, end)).replace(/\s+/g, ' ');
 }
 
 // ── the bundle actually carries them ─────────────────────────────────────────
@@ -161,11 +182,74 @@ test('the headless-subagent claim is true of every configured host', () => {
     ['unsupported'],
     'a host now supports headless subagents — PLATFORMS.md and KNOWN-ISSUES.md both say none does',
   );
+  // The half a value scan cannot see, and the half item 3 used to get wrong by
+  // saying "EVERY host row carries `headlessSubagents: 'unsupported'`": the
+  // field is OPTIONAL, and two rows omit it entirely. Silence is only honest
+  // while those rows are also undrivable — a row that gains a runnable harness
+  // config while staying silent about subagents would leave the entry claiming
+  // a proof nobody took.
+  for (const [host, config] of Object.entries(HOST_COMMANDS)) {
+    assert.ok(
+      config.headlessSubagents === 'unsupported' || config.e2eSupported === false,
+      `harness host ${host} declares no headlessSubagents support and is not e2eSupported:false — `
+      + 'KNOWN-ISSUES.md item 3 says every drivable row is `unsupported` and the rest are undrivable',
+    );
+  }
   assert.ok(flat('PLATFORMS.md').includes('No configured host supports headless subagents'));
-  assert.ok(flat('KNOWN-ISSUES.md').includes('Subagent round-trips are not certified on any host'));
+  assert.ok(issue(3).includes('Subagent round-trips are not certified on any host'));
+  for (const [host, config] of Object.entries(HOST_COMMANDS)) {
+    if (config.headlessSubagents !== undefined) continue;
+    assert.ok(
+      issue(3).includes(`\`${host}\``),
+      `item 3 names the silent harness rows explicitly; \`${host}\` is now one of them and is not named`,
+    );
+  }
+});
+
+// Item 4's first half is a comparison across the capability table, and a
+// comparison is the shape most likely to rot: it was written when Kilo really
+// was alone, and by the time this pin was added `codex`, `copilot` and
+// `windsurf` had joined it while the sentence still said "the only host".
+// Derived as the full partition, so neither side can drift unnoticed.
+test('the typed-subagent split KNOWN-ISSUES.md draws is the split the capability table declares', () => {
+  const hosts = Object.keys(HOST_CAPABILITIES) as TrafficOneHost[];
+  const without = hosts.filter((host) => !HOST_CAPABILITIES[host].typedSubagents).sort();
+  const with_ = hosts.filter((host) => HOST_CAPABILITIES[host].typedSubagents).sort();
+  assert.ok(without.length > 0 && with_.length > 0, 'the typed-subagent column is uniform — item 4 draws a split that no longer exists');
+  const text = issue(4);
+  // Both lists are READ OUT of the entry and compared as sets, rather than each
+  // host merely being findable somewhere in the paragraph: the two lists sit in
+  // one sentence, so a membership-only check would pass for an entry that put
+  // every host on both sides.
+  const names = (list: string | undefined): string[] =>
+    [...(list ?? '').matchAll(/`([a-z]+)`/g)].map((match) => match[1] as string).sort();
+  const statedFalse = names(/((?:`[a-z]+`[,\s]*(?:and\s+)?)+)all have it false/.exec(text)?.[1]);
+  const statedTrue = names(/only ((?:`[a-z]+`[,\s]*(?:and\s+)?)+)have it true/.exec(text)?.[1]);
+  assert.ok(
+    statedFalse.length > 0 && statedTrue.length > 0,
+    'item 4 no longer states the typed-subagent split as "<hosts> all have it false … only <hosts> have it true", '
+    + 'which is the shape this pin reads it in',
+  );
+  assert.deepEqual(statedFalse, without, 'item 4 names the wrong hosts as lacking typed subagents');
+  assert.deepEqual(statedTrue, with_, 'item 4 names the wrong hosts as having typed subagents');
 });
 
 // ── known issues ─────────────────────────────────────────────────────────────
+
+// Item 1 quotes a code and a message a reader will paste into a search box, and
+// quotes them as a fenced block — the format that says "this is what you will
+// see". Both are single-sourced in the profile assembler.
+test('the hybrid-UI refusal KNOWN-ISSUES.md quotes is the one the profiler emits', () => {
+  const profile = read(path.join('src', 'shared', 'capabilities', 'profile.ts'));
+  const emitted = /code: '(CAPABILITY_[A-Z_]+)' as const,\s*\n\s*message: '([^']+)',/.exec(profile);
+  assert.ok(emitted, 'the hybrid blocking issue is gone or reshaped in capabilities/profile.ts');
+  const text = issue(1);
+  assert.ok(text.includes(emitted![1] as string), `item 1 quotes a blocking-issue code the profiler no longer emits (it emits ${emitted![1]})`);
+  assert.ok(
+    text.includes(emitted![2] as string),
+    `item 1 quotes a message the profiler no longer emits.\n  emitted: ${emitted![2]}`,
+  );
+});
 
 test('the hosts KNOWN-ISSUES.md names as lacking spawn reuse are the hosts the code names', () => {
   const registry = read(path.join('src', 'shared', 'state', 'run-agent', 'registry.ts'));
@@ -180,7 +264,7 @@ test('the hosts KNOWN-ISSUES.md names as lacking spawn reuse are the hosts the c
   );
 });
 
-// Item 11 names five filenames as the whole matched set and tells the reader
+// Item 10 names five filenames as the whole matched set and tells the reader
 // that anything else, or the same name below the root, is untouched. Both
 // halves are one constant away from being false, and the failure is silent in
 // the direction that matters: a sixth name added here adopts a file the
@@ -193,11 +277,11 @@ test('the root documents KNOWN-ISSUES.md says are adopted are the ones the code 
   assert.deepEqual(
     names,
     ['api.md', 'database.md', 'deployment.md', 'environment-setup.md', 'security.md'],
-    'the legacy root-document set changed — KNOWN-ISSUES.md item 11 names it exhaustively',
+    'the legacy root-document set changed — KNOWN-ISSUES.md item 10 names it exhaustively',
   );
-  const text = flat('KNOWN-ISSUES.md');
+  const text = issue(10);
   for (const name of names) {
-    assert.ok(text.includes(`\`${name}\``), `KNOWN-ISSUES.md item 11 does not name \`${name}\``);
+    assert.ok(text.includes(`\`${name}\``), `KNOWN-ISSUES.md item 10 does not name \`${name}\``);
   }
   // The other half of the promise: a COPY. If this ever moves the file again,
   // "not moved, renamed or deleted" becomes the most damaging sentence in the
@@ -207,13 +291,31 @@ test('the root documents KNOWN-ISSUES.md says are adopted are the ones the code 
   for (const destructive of ['movePath', 'removePath', 'rmSync', 'renameSync', 'unlinkSync']) {
     assert.ok(
       !adopt!.includes(destructive),
-      `root-document adoption calls ${destructive} — KNOWN-ISSUES.md item 11 promises the root file is left in place`,
+      `root-document adoption calls ${destructive} — KNOWN-ISSUES.md item 10 promises the root file is left in place`,
     );
   }
-  assert.ok(adopt!.includes('writeTextFile'), 'the adoption no longer writes the copy item 11 promises');
+  assert.ok(adopt!.includes('writeTextFile'), 'the adoption no longer writes the copy item 10 promises');
+  // The entry's SECOND mechanism, and the one that can actually remove the root
+  // file: the skill telling the agent to consolidate it. The entry tells the
+  // reader to expect that in the transcript and that they may decline it, so
+  // the instruction leaving would make the warning describe nothing.
+  const skill = read(path.join(
+    'src', 'modules', 'skills', 'skills-catalog', 'auto-documentation-generator', 'SKILL.md',
+  )).replace(/\s+/g, ' ');
+  const legacyClause = /Treat root ((?:`[^`]+`[,\s]*(?:and\s+)?)+)as legacy\. Move their content into `\.traffic-one\/`/.exec(skill);
+  assert.ok(
+    legacyClause,
+    'the auto-documentation-generator skill no longer instructs the agent to treat the root documents as legacy — '
+    + 'KNOWN-ISSUES.md item 10 describes that instruction as the second, agent-visible way the root file can move',
+  );
+  assert.deepEqual(
+    [...(legacyClause![1] as string).matchAll(/`([^`]+)`/g)].map((match) => match[1] as string).sort(),
+    names,
+    'the skill and the adoption routine name different legacy documents — item 10 presents them as one set of five',
+  );
 });
 
-// Item 12 tells the reader that an incomplete installation preserves everything
+// Item 11 tells the reader that an incomplete installation preserves everything
 // and that the refusal they see names the real cause. The first half is the
 // refusal; the second is the branch that renders it. Either one leaving turns
 // the entry from a warning into a false reassurance.
@@ -229,7 +331,7 @@ test('the incomplete-installation claim tracks the refusal and the branch that r
   // change: a non-converged outcome must not be refused with the repair
   // paragraph. That paragraph asserts the project is current and tells the
   // agent to rerun — false and unachievable for every status here, and it is
-  // what item 12 used to have to warn the reader about. Asserted on the
+  // what item 11 used to have to warn the reader about. Asserted on the
   // STRUCTURE of the branch rather than on the deny text, because the deny text
   // is resolved from SKILL.md and interpolates the diagnosis, so it is never a
   // stable key.
@@ -245,12 +347,12 @@ test('the incomplete-installation claim tracks the refusal and the branch that r
     /materialized\.status === 'materialized' \|\| materialized\.status === 'current'/,
     'the mutating arm stopped discriminating on STATUS. Every non-null outcome would render the repair paragraph again — '
     + '"state was repaired, rerun the same tool now" — for five statuses where nothing was repaired and rerunning cannot '
-    + 'work, which is the defect KNOWN-ISSUES.md item 12 was rewritten to stop describing.',
+    + 'work, which is the defect KNOWN-ISSUES.md item 11 was rewritten to stop describing.',
   );
   assert.match(
     arm!,
     /block\('materialization-not-converged'.*\{ DIAGNOSIS: materialized\.context \}/s,
-    'the non-converged arm no longer carries `materialized.context`, so the refusal has lost the diagnosis item 12 '
+    'the non-converged arm no longer carries `materialized.context`, so the refusal has lost the diagnosis item 11 '
     + 'promises the reader — the missing entries, the counts, and the doctor command',
   );
   // …and the verdict must not have been softened along the way. Both arms deny.
@@ -259,8 +361,7 @@ test('the incomplete-installation claim tracks the refusal and the branch that r
     'the mutating arm no longer has exactly two deny() outcomes. Proceeding is what deletes content the plugin root '
     + 'cannot resupply, so the fix was to the REASON, never to the verdict.',
   );
-  const text = flat('KNOWN-ISSUES.md');
-  assert.ok(text.includes('An incomplete plugin installation refuses every file change'));
+  assert.ok(issue(11).includes('An incomplete plugin installation refuses every file change'));
 });
 
 test('the Rust-is-unexercised claim is measured, not remembered', () => {
@@ -278,6 +379,189 @@ test('the Rust-is-unexercised claim is measured, not remembered', () => {
     [],
     'a harness case now mentions Rust — KNOWN-ISSUES.md item 5 claims none does, and must be rewritten or removed',
   );
+  // The positive control, and it is not decoration: an emptied, moved or
+  // renamed cases directory satisfies the scan above with zero offenders and
+  // certifies nothing. The entry's contrast — Go and Python ARE driven — is
+  // what the same directory has to keep proving, and the entry now quotes the
+  // exact declarations rather than a line count taken on a day nobody recorded.
+  const corpus = fs.readdirSync(casesDir)
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => fs.readFileSync(path.join(casesDir, name), 'utf8'))
+    .join('\n');
+  const text = issue(5);
+  for (const backend of ['go', 'python']) {
+    const declaration = `backend: '${backend}'`;
+    assert.ok(
+      corpus.includes(declaration),
+      `no harness case declares ${declaration} any more — item 5's contrast between the driven backends and Rust is gone`,
+    );
+    assert.ok(
+      text.includes(`\`${declaration}\``),
+      `item 5 no longer quotes ${declaration} as a backend the harness does drive`,
+    );
+  }
+});
+
+// Item 6 carries the two claim shapes this document decays through fastest: a
+// COUNT (a measurement with a date, restated as a fact) and a platform matrix
+// transcribed from a comment rather than from the table the comment describes.
+// It arrived here stating 27 files — the number of files that MENTION win32,
+// not the number that branch on it — and stating that the runtime downloader
+// publishes nothing for Windows, which the asset tables have not been true of
+// for some time.
+test('the Windows claims are the measurement, the CI matrix and the asset table', () => {
+  const branching: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules') continue;
+        walk(full);
+        continue;
+      }
+      // Non-test .ts only, and the same `(?:===|!==) 'win32'` pattern
+      // tests/platforms-claims.test.ts uses for PLATFORMS.md's Windows row.
+      // The population is matched DELIBERATELY rather than incidentally: this
+      // entry points the reader at that document, so a reader who follows the
+      // pointer must not meet a second number for what reads as one fact. Both
+      // pins derive from the tree rather than from each other, so they cannot
+      // drift apart silently — a change to the code fails both, and a change to
+      // one predicate fails that document's own pin.
+      if (!entry.name.endsWith('.ts')) continue;
+      if (full.includes('__tests__') || entry.name.endsWith('.test.ts')) continue;
+      if (/(?:===|!==) 'win32'/.test(fs.readFileSync(full, 'utf8'))) branching.push(full);
+    }
+  };
+  walk(path.join(REPO_ROOT, 'src'));
+  const text = issue(6);
+  assert.ok(branching.length > 0, 'nothing under src/ branches on win32 any more — item 6 describes code that is gone');
+  assert.ok(
+    text.includes(`${branching.length} non-test source files under \`src/\` branch on \`'win32'\``),
+    `item 6 states a stale file count: ${branching.length} non-test source files under src/ carry a 'win32' branch today`,
+  );
+
+  // "None of it runs in CI" — read off the matrix rather than remembered. A
+  // windows runner appearing is the good outcome, and it must take the entry
+  // with it rather than leaving a reader told their platform is unexercised.
+  const workflow = read(path.join('.github', 'workflows', 'generate-check.yml'));
+  const matrix = /os:\s*\[([^\]]*)\]/.exec(workflow)?.[1];
+  assert.ok(matrix, 'the generate-check OS matrix is gone or reshaped');
+  const runners = matrix!.split(',').map((entry) => entry.trim()).filter(Boolean);
+  assert.equal(
+    runners.filter((runner) => /windows/i.test(runner)).length,
+    0,
+    'CI now runs a Windows runner — item 6 says none of the Windows code runs in CI and must be rewritten',
+  );
+  for (const runner of runners) {
+    assert.ok(text.includes(`\`${runner}\``), `item 6 does not name the CI runner \`${runner}\``);
+  }
+
+  // The asset matrix, both directions. The comment at the top of
+  // config/managed-runtimes.ts still says tranche 1 is darwin+linux and that
+  // Windows returns null; the tables underneath it say otherwise, and the
+  // document must follow the tables.
+  const resolves = (kind: 'node' | 'python', platform: string, arch: string): boolean =>
+    runtimeAsset(kind, platform, arch) !== null;
+  assert.equal(
+    resolves('node', 'win32', 'x64') && resolves('node', 'win32', 'arm64') && resolves('python', 'win32', 'x64'),
+    text.includes('it resolves a pinned Node for Windows on x64 **and** arm64, and a pinned Python for Windows on x64'),
+    'item 6 and the managed-runtime asset tables disagree about which Windows runtimes resolve. Today: '
+    + `node/win32/x64=${resolves('node', 'win32', 'x64')}, node/win32/arm64=${resolves('node', 'win32', 'arm64')}, `
+    + `python/win32/x64=${resolves('python', 'win32', 'x64')}`,
+  );
+  assert.equal(
+    resolves('python', 'win32', 'arm64'),
+    false,
+    'a Python asset exists for Windows-ARM now — item 6 names it as the gap, and PLATFORMS.md repeats the claim',
+  );
+  assert.ok(
+    text.includes('Python on Windows-ARM'),
+    'item 6 no longer names the one Windows pair with no published asset',
+  );
+});
+
+// Item 7's whole content is an ANCHORING accident, and the scaffold comment
+// beside the constant names the one-line change that fixes it. That makes the
+// entry unusually easy to leave standing after the fix lands, so the pin is
+// written to fail when the defect is REPAIRED as well as when it spreads.
+test('the polyglot-gitignore entry describes the template the scaffold still writes', () => {
+  const scaffold = read(path.join('src', 'shared', 'architecture-contract', 'scaffold-content.ts'));
+  const listed = /TRAFFIC_ONE_RUN_STATE_ENTRIES[^=]*=\s*\[([^\]]*)\]/.exec(scaffold)?.[1];
+  assert.ok(listed, 'TRAFFIC_ONE_RUN_STATE_ENTRIES is gone or reshaped');
+  const entries = [...listed!.matchAll(/'([^']+)'/g)].map((match) => match[1] as string);
+  const text = issue(7);
+  assert.ok(entries.includes('runs/'), `the entry item 7 quotes is gone; the set is now ${entries.join(', ')}`);
+  assert.ok(text.includes('`.traffic-one/runs/`'), 'item 7 no longer quotes the line it says git anchors');
+  // Scoped to the `.map(…)` CALL SITES. The comment beside the constant quotes
+  // the recursive template as the fix it has not applied, so a looser pattern
+  // reads the proposal as if it had shipped.
+  const templates = [...scaffold.matchAll(/\.map\(\(entry\) => `([^`]*)\$\{entry\}`\)/g)].map((match) => match[1] as string);
+  assert.ok(templates.length > 0, 'the gitignore template that consumes the entries is gone or reshaped');
+  assert.deepEqual(
+    [...new Set(templates)],
+    ['.traffic-one/'],
+    'the run-state gitignore template changed. If it now starts `**/`, the polyglot case is FIXED and KNOWN-ISSUES.md '
+    + 'item 7 must be deleted rather than corrected — it would be telling readers to work around a bug that is gone.',
+  );
+});
+
+// Item 8 is the entry that says a test suite CANNOT catch something, which is
+// the one claim a test suite can still be held to: the table it describes, the
+// single code that means revocation, and the grace the other three fall back
+// to are all in this repository even though the server's vocabulary is not.
+test('the revocation-code entry counts the codes the auth table declares', () => {
+  const { AUTH_GATE_401_CODES } = require('../src/runners/auth/validate-key') as {
+    AUTH_GATE_401_CODES: Record<string, string>;
+  };
+  const codes = Object.keys(AUTH_GATE_401_CODES).sort();
+  const rejecting = codes.filter((code) => AUTH_GATE_401_CODES[code] === 'rejects-the-key');
+  const words: Record<number, string> = { 2: 'two', 3: 'three', 4: 'four', 5: 'five', 6: 'six' };
+  const text = issue(8);
+  assert.ok(words[codes.length], `AUTH_GATE_401_CODES now has ${codes.length} entries, which item 8 has no word for`);
+  assert.ok(
+    text.includes(`The ${words[codes.length]} codes are pinned verbatim`),
+    `item 8 states the wrong number of 401 codes — the table declares ${codes.length}: ${codes.join(', ')}`,
+  );
+  assert.deepEqual(
+    rejecting,
+    ['invalid_token'],
+    'more than one 401 code now rejects the key — item 8 says matching `invalid_token` is the whole mechanism',
+  );
+  assert.ok(text.includes('`invalid_token`'), 'item 8 no longer names the code the client matches');
+  // The grace the entry quantifies, which is the reason it can call the failure
+  // direction safe.
+  const graceDays = AUTH_OFFLINE_GRACE_MS / 86_400_000;
+  assert.ok(
+    text.includes(`gives you ${graceDays} more days`),
+    `item 8 states a grace window that is not AUTH_OFFLINE_GRACE_MS (${graceDays} days)`,
+  );
+  // …and the test the entry sends the reader to, which is the only thing
+  // standing between a deliberate rename and a silent one.
+  const pinned = read(path.join('src', 'runners', 'auth', '__tests__', 'validate-key.test.ts'));
+  for (const code of codes) {
+    assert.ok(pinned.includes(`'${code}'`), `validate-key.test.ts no longer pins '${code}' verbatim, as item 8 says it does`);
+  }
+});
+
+test('the Node-floor entry states the declared floor, in its heading', () => {
+  assert.ok(
+    issue(9).startsWith(`## 9. Below Node ${NODE_FLOOR_MAJOR}, Traffic One warns rather than refusing`),
+    `KNOWN-ISSUES.md item 9 does not head on the declared floor of Node ${NODE_FLOOR_MAJOR}`,
+  );
+  // The verdict, not just the number: the guard is emitted as source text into
+  // every launcher, and "warns rather than refusing" is a property of THAT
+  // text. A throw or an early exit there turns the entry into a lie in the
+  // direction that costs a user every gate.
+  const guard = read(path.join('src', 'shared', 'node-floor.ts'));
+  const source = /export function nodeFloorGuardSource\(\): string \{[\s\S]*?\n\}/.exec(guard)?.[0];
+  assert.ok(source, 'nodeFloorGuardSource is gone or reshaped');
+  assert.ok(source!.includes('process.stderr.write'), 'the below-floor guard no longer writes the line item 9 promises');
+  for (const refusing of ['throw ', 'process.exit']) {
+    assert.ok(
+      !source!.includes(refusing),
+      `the below-floor guard now uses ${refusing.trim()} — item 9 tells the reader Traffic One warns and continues`,
+    );
+  }
 });
 
 // ── privacy ──────────────────────────────────────────────────────────────────
@@ -344,7 +628,7 @@ test('the originalPrompt disclosure matches where the prompt is actually stored'
 
   // The nested spelling the wizard used to commit alongside it. Both the write
   // and the schema requirement are gone; the migration that removes an existing
-  // one is what KNOWN-ISSUES.md item 7 promises.
+  // one is what PRIVACY.md promises to anyone who has one.
   const flow = read(path.join('src', 'shared', 'onboarding-server', 'flow.ts'));
   const contextWrite = /projectContext: \{ source: 'prompted',([^}]*)\}/.exec(flow)?.[1];
   assert.ok(contextWrite, 'the project-context state write is gone or reshaped');
@@ -360,7 +644,7 @@ test('the originalPrompt disclosure matches where the prompt is actually stored'
   assert.match(
     read(path.join('src', 'shared', 'state', 'normalize.ts')),
     /function hoistCommittedOriginalPrompt/,
-    'the migration KNOWN-ISSUES.md item 7 promises is gone',
+    'the migration PRIVACY.md promises ("a project set up by an older version has its copy moved out automatically") is gone',
   );
 
   const privacy = flat('PRIVACY.md');
@@ -368,11 +652,20 @@ test('the originalPrompt disclosure matches where the prompt is actually stored'
     'PRIVACY.md no longer states where the prompt is not');
   assert.ok(privacy.includes('~/.traffic-one/projects/<hash>/preferences.json`, under `originalPrompt`'),
     'PRIVACY.md no longer names the file the prompt IS in');
-  // The residual, which is the part a reader has to act on themselves.
-  const known = flat('KNOWN-ISSUES.md');
-  assert.ok(known.includes('A prompt already pushed by an older version stays in your git history'));
-  assert.ok(known.includes('use Traffic One here?'),
-    'KNOWN-ISSUES.md no longer states that a project pending consent keeps its copy');
+  // The residual, and the one document that still claims it. KNOWN-ISSUES.md
+  // used to carry it too, as "a prompt already pushed by an older version stays
+  // in your git history" — removed, because there is no older version: no tag
+  // on the remote, no published bundle, `private: true`, and every documented
+  // install path a local one, so the population it addressed is empty. The
+  // migration below stays, and stays pinned, because the CODE is right to keep
+  // it; what could not stay was a known ISSUE nobody can hit. If PRIVACY.md's
+  // "older version" paragraphs go the same way, the pin above this comment is
+  // what tells you the migration is then unclaimed by any shipped document.
+  assert.ok(
+    privacy.includes('A project set up by an older version has its copy moved out automatically'),
+    'PRIVACY.md no longer promises the repair — nothing shipped now claims it, and the pin on '
+    + 'hoistCommittedOriginalPrompt above is guarding an undocumented behaviour',
+  );
 });
 
 // PRIVACY.md tells the reader a bundle is safe to paste with respect to prompts.

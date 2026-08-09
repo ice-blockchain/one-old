@@ -79,8 +79,10 @@ host.
 **Affects:** all seven hosts, certified ones included.
 
 **What happens:** the release harness cannot read a subagent run manifest or
-subagent digests back out of a headless run, because **every** host row carries
-`headlessSubagents: 'unsupported'`. Assertions that depend on a subagent
+subagent digests back out of a headless run. Every host row the harness can
+drive carries `headlessSubagents: 'unsupported'`, and the two rows that carry no
+such field at all — `copilot` and `windsurf` — are `e2eSupported: false`, so the
+harness never drives them in the first place. Assertions that depend on a subagent
 round-trip report `UNSUPPORTED` rather than passing — which is the honest
 outcome and is why you can trust the rest of the harness, but it does mean this
 one path is proven by manual work rather than by CI.
@@ -108,8 +110,9 @@ uncertified hosts use.
 **Two separate things, both real:**
 
 `typedSubagents: false` in Kilo's capability row. Roles that rely on a typed
-subagent surface do not get one; Kilo is the only host in the table with this
-set to false.
+subagent surface do not get one. Kilo is not alone in this — `codex`, `kilo`,
+`copilot` and `windsurf` all have it false, and only `claude`, `cursor` and
+`opencode` have it true — but it compounds with the second half below.
 
 **And the wrapper's session behaviour is fixture-verified only.** Kilo's plugin
 wrapper is a generated JavaScript file that resolves the project root by walking
@@ -145,8 +148,10 @@ Treat Rust as untested rather than unsupported, and expect to be the first to
 find whatever is wrong.
 
 **Verified** by measurement: zero occurrences of `rust` or `cargo`,
-case-insensitive, across every file in `src/test-environment/config/cases/`,
-against nine lines matching Go/Python in the same directory.
+case-insensitive and matched at a word boundary, across every file in
+`src/test-environment/config/cases/` — a directory whose run-simulation cases do
+name the other two backends outright, as `backend: 'go'` and
+`backend: 'python'`.
 
 ---
 
@@ -154,48 +159,28 @@ against nine lines matching Go/Python in the same directory.
 
 **Affects:** Windows.
 
-27 source files branch on `process.platform === 'win32'` — `.cmd` shim
+19 non-test source files under `src/` branch on `'win32'` — `.cmd` shim
 resolution, zip extraction with an `Expand-Archive` fallback, Defender-lock
-tolerant renames, the flat npm-prefix layout. None of it runs in CI, and there
-is no manual record for it. The managed-runtime downloader publishes assets for
-macOS and Linux on x64 and arm64 only, and skips elsewhere rather than failing.
+tolerant renames, the flat npm-prefix layout. Test files are deliberately not
+counted: a test that branches on Windows is scaffolding, not Windows support,
+and counting it would overstate exactly the thing this entry exists to warn you
+about. It is the same population `PLATFORMS.md` states, so the two agree. None of
+it runs in CI: the matrix is `ubuntu-latest` and `macos-latest`, and there is no
+manual record for Windows either.
+
+The managed-runtime downloader belongs to that written-but-untested half rather
+than to some excluded one: it resolves a pinned Node for Windows on x64 **and**
+arm64, and a pinned Python for Windows on x64, then unpacks a `.zip` through
+PowerShell. What has no asset is Python on Windows-ARM, and any other
+platform/architecture pair — there the download returns nothing and the caller
+skips rather than failing.
 
 See `PLATFORMS.md`. **Verified** by reading the CI matrix and
 `src/config/managed-runtimes.ts`.
 
 ---
 
-## 7. A prompt already pushed by an older version stays in your git history
-
-**Affects:** projects set up with a version of Traffic One that wrote your first
-prompt into `.traffic-one/.one.json`, and then committed and pushed it.
-
-Your first prompt is no longer stored in a committed file — it lives in your
-per-user preference file, outside the repository — and a project that still has
-the old copy is repaired automatically on its next session: the value is moved
-out of `.one.json` and into that per-user file.
-
-The repair edits your working file. **It cannot rewrite commits you have already
-made, and it cannot reach a remote.** If the prompt is in a pushed commit and it
-says something it should not, removing it is a history rewrite
-(`git filter-repo`, a force push, and a re-clone for everyone else), which no
-plugin upgrade can do for you.
-
-One project state is also out of reach: a project where you have not yet
-answered "use Traffic One here?" keeps its copy, because Traffic One writes
-nothing into a project before that answer and the repair is a write. Answering
-the question — either way — lets the next session perform it.
-
-**Verified** by reading `scrubProjectStateLocalPrefs` in
-`src/shared/state/normalize.ts` (the repair, which runs unconditionally at
-SessionStart and writes through the same consent fence as every other project
-write) and `PROJECT_PREF_KEYS` in
-`src/shared/state/local-prefs/pref-schema.ts` (where the value goes instead).
-Stated in full in `PRIVACY.md`.
-
----
-
-## 8. In a polyglot workspace, only the top-level `.traffic-one/` is gitignored
+## 7. In a polyglot workspace, only the top-level `.traffic-one/` is gitignored
 
 **Affects:** repositories with more than one project root — `web/`, `api/`,
 `mobile/` each with their own `.traffic-one/`.
@@ -216,7 +201,7 @@ comment names this case and the one-line change that would fix it.
 
 ---
 
-## 9. Key revocation depends on a cross-repository string that nothing checks
+## 8. Key revocation depends on a cross-repository string that nothing checks
 
 **Affects:** nobody today; worth knowing because it fails in a direction most
 software does not.
@@ -240,7 +225,7 @@ header states the drift.
 
 ---
 
-## 10. Below Node 22, Traffic One warns rather than refusing
+## 9. Below Node 22, Traffic One warns rather than refusing
 
 **Affects:** anyone whose *host application* — not their terminal — launches with
 an old Node. Launching a host from the Dock, Start menu or Spotlight never
@@ -257,7 +242,7 @@ Diagnose with `node ~/.traffic-one/bin/doctor.cjs`; the finding is
 
 ---
 
-## 11. Five ordinary documentation filenames at your repository root are treated as Traffic One's own
+## 10. Five ordinary documentation filenames at your repository root are treated as Traffic One's own
 
 **Affects:** any repository that already keeps `api.md`, `database.md`,
 `deployment.md`, `environment-setup.md` or `security.md` at its top level —
@@ -288,7 +273,7 @@ in the `auto-documentation-generator` skill.
 
 ---
 
-## 12. An incomplete plugin installation refuses every file change until you complete it
+## 11. An incomplete plugin installation refuses every file change until you complete it
 
 **Affects:** any project running against a Traffic One installation that is
 incomplete at that moment — most easily by rebuilding the folder you installed

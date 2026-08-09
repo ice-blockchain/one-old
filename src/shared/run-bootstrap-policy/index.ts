@@ -117,7 +117,20 @@ export function ensureRunBootstrap(
     envelopeHash,
   };
   const immutable = immutableEnvelopePath(cwd, runId, role, envelopeHash);
-  if (!fs.existsSync(immutable)) writeJson(immutable, envelope);
+  // A REFUSED twin is fatal, and publishing the pointer anyway is worse than
+  // useless. `readActiveRunBootstrap` resolves an active envelope only when the
+  // immutable copy keyed by its hash is also readable and hash-identical, so an
+  // active file written over a refused twin can never resolve — it can only
+  // DESTROY the envelope that was resolving a moment ago. Measured, with a
+  // dangling symlink planted at this one path and everything around it writable:
+  // active advanced to the new hash, the previous envelope's pointer was gone,
+  // the role stopped resolving, and a retry on the same inputs recomputed the
+  // same hash and refused again. The answer this function gives is unchanged —
+  // the read-back below already returned null for exactly this case — so the
+  // only thing that changes is that it no longer spends the active write to get
+  // there. Nothing is written when the twin already exists: that is a no-op, not
+  // a refusal, and the file is content-addressed.
+  if (!fs.existsSync(immutable) && !writeJson(immutable, envelope)) return null;
   // Publish active last. A child can see either the old complete envelope or
   // the new complete envelope, never a partial bootstrap.
   writeJson(activeRunBootstrapPath(cwd, runId, role), envelope);

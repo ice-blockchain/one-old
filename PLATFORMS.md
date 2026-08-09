@@ -68,13 +68,16 @@ silence either surface.
 
 ### What is genuinely not covered anywhere
 
-**No configured host supports headless subagents.** Every host row in the
-release harness carries `headlessSubagents: 'unsupported'`
-(`src/test-environment/config/hosts.ts`), which means the harness cannot read a
-subagent run manifest or subagent digests back out of a headless run on *any*
-host. Subagent round-trips therefore cannot be certified automatically anywhere,
-on certified hosts included. Those assertions report `UNSUPPORTED` rather than
-passing quietly. See `KNOWN-ISSUES.md`.
+**No configured host supports headless subagents.** Every host row the release
+harness can drive headlessly carries `headlessSubagents: 'unsupported'`
+(`src/test-environment/config/hosts.ts`). The two rows that carry no such field
+at all — Copilot and Windsurf — are the two marked `e2eSupported: false`: they
+have no unattended CLI entrypoint, so there is no headless run for the field to
+describe. Either way the harness cannot read a subagent run manifest or subagent
+digests back out of a headless run on *any* host. Subagent round-trips therefore
+cannot be certified automatically anywhere, on certified hosts included. Those
+assertions report `UNSUPPORTED` rather than passing quietly. See
+`KNOWN-ISSUES.md`.
 
 ---
 
@@ -111,19 +114,29 @@ is `HOOK_RUNTIME_NODE_BELOW_FLOOR`.
 |---|---|---|
 | macOS | Exercised on every push | `macos-latest` in the `generate-check` CI matrix: typecheck, determinism gates, the full unit + golden suite, compiled-runtime smoke |
 | Linux | Exercised on every push, most thoroughly | `ubuntu-latest` in the same matrix, **plus** the two jobs that run nowhere else: the serial hook-timing/latency budget, and `test:env --strict`, the only test of how the gates, the architecture compiler, the QA runner and settlement compose |
-| Windows | **Code paths exist; no automated coverage** | 27 source files branch on `process.platform === 'win32'` (`.cmd` shim resolution, zip extraction, `Expand-Archive` fallback, Defender-lock-tolerant renames, flat npm-prefix layout). None of it is exercised by CI, and there is no manual certification record for it |
+| Windows | **Code paths exist; no automated coverage** | 19 non-test source files under `src/` branch on `'win32'` (`.cmd` shim resolution, zip extraction, `Expand-Archive` fallback, Defender-lock-tolerant renames, flat npm-prefix layout). None of it is exercised by CI, and there is no manual certification record for it |
 
 **Read the Windows row literally.** Traffic One is written to work on Windows and
 has been thought about carefully there — but nothing in this repository proves
 it does, so it is not a supported platform. If you run it on Windows you are the
 test.
 
-The managed-runtime downloader is narrower still and says so in code: published
-assets are provided for **macOS and Linux on x64 and arm64** only. Elsewhere —
-Windows, musl, exotic architectures — the download returns nothing and the
-caller degrades to its existing install-skipped path rather than failing. There
-is additionally no `aarch64-pc-windows-msvc` standalone Python build, so
-Windows-on-ARM is intentionally absent from that table.
+The managed-runtime downloader has a matrix of its own, and the asset maps in
+`src/config/managed-runtimes.ts` are what decide it — read those rather than the
+prose around them. A pinned **Node** asset resolves for **macOS, Linux and
+Windows on x64 and arm64**; a pinned **Python** asset for **macOS and Linux on
+x64 and arm64, plus Windows on x64**. The one hole is deliberate and named in
+code: there is no `aarch64-pc-windows-msvc` standalone Python build, so
+Windows-on-ARM has a managed Node and no managed Python. Anywhere the maps do
+not reach — an unlisted platform, an unlisted architecture — the download
+returns nothing and the caller degrades to its existing install-skipped path
+rather than failing.
+
+A resolving Windows asset is **not** Windows support: it is the same code the row
+above describes, with the same absence of coverage behind it. And musl is not a
+distinction these maps can draw at all — `process.platform` reads `linux` on
+Alpine, so the glibc asset is what gets selected there, and nothing detects the
+difference.
 
 ---
 

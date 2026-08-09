@@ -237,8 +237,15 @@
 //   run-bootstrap-policy#ensureRunBootstrap asks
 //     `verified.envelopeHash !== envelopeHash`, where the right side is a local
 //     computed BEFORE the writes. That proves the active envelope landed and
-//     says nothing about the immutable one, which nothing re-reads. Exempt from
-//     rule 2, flagged by rule 4 — correctly.
+//     says nothing about the immutable one. Exempt from rule 2, flagged by rule
+//     4 — correctly, and the reason is worth stating precisely because the
+//     obvious reading of it is wrong: the immutable twin IS re-read, one frame
+//     down inside `readActiveRunBootstrap`, which resolves nothing unless the
+//     copy keyed by the active hash is present and agrees. A parse cannot see
+//     that, must not follow the call to find it (following calls is how rule 2's
+//     exemption would start clearing sites it has not read), and would be wrong
+//     to treat it as an exemption anyway — see that row's verdict at rule 4's
+//     baseline for what the coverage did and did not buy.
 // Rule 2's predicate applied to rule 4 would have exempted the second, which is
 // how this was tested rather than assumed.
 //
@@ -2745,19 +2752,39 @@ const DIVERGENT_PAIR_FUNCTIONS: readonly string[] = [
   // all and left `replayAuthoritativeRebindJournal` answering `none` — "nothing
   // to replay" — over a half-applied rebind.
   //
-  // immutable + active envelope. `ensureArchitectureRunSnapshot` used to sit
-  // beside this row under a verdict that was wrong in both halves, and moving it
-  // to HASH_VERIFIED_PUBLISHERS is what produced rule 4's own exemption — see
-  // the header. This row is what makes the two predicates necessary rather than
-  // pedantic, and it stays: the compare at :125 is
-  // `verified.envelopeHash !== envelopeHash`, whose right operand is a local
-  // computed at :111, BEFORE either write. It proves the active envelope landed
-  // and says nothing whatever about the immutable one at :120, which nothing
-  // re-reads. Refuse :120, land :123, and a child resolves an active envelope
-  // whose immutable twin — the integrity copy keyed by that very hash — is not
-  // there. Rule 2 exempts this function and rule 4 does not, which is the whole
-  // point of them asking different questions.
-  'src/shared/run-bootstrap-policy/index.ts#ensureRunBootstrap',
+  // The immutable + active envelope pair in `ensureRunBootstrap` is FIXED and
+  // gone from this list — the immutable write is guarded and returns null on
+  // refusal, which leaves one dropped write and takes the pair below this rule's
+  // threshold. `ensureArchitectureRunSnapshot` used to sit beside it under a
+  // verdict that was wrong in both halves, and moving that one to
+  // HASH_VERIFIED_PUBLISHERS is what produced rule 4's own exemption; this row's
+  // own verdict was wrong in one half, and the correction is worth keeping
+  // because it is the sharpest illustration of what rule 4 can and cannot see.
+  //
+  // What the verdict said: refuse the immutable write, land the active one, and a
+  // child resolves an active envelope whose immutable twin is not there. MEASURED
+  // FALSE, by construction — a dangling symlink planted at the twin's
+  // hash-named path with the rest of the role directory asserted writable. The
+  // twin is re-read one frame down, inside `readActiveRunBootstrap`, which
+  // resolves nothing unless the copy keyed by the active hash is present and
+  // hash-identical, and every consumer of an envelope goes through it. No
+  // consumer can see the two artifacts disagree, so the divergence this rule is
+  // named for was unreachable at this site.
+  //
+  // What the shape cost instead, also measured: the refused twin did not stop
+  // the active write, so `active.json` was advanced to a hash that resolves for
+  // nobody — destroying the pointer to the PREVIOUS envelope, which was still
+  // resolving. The role went from bootstrapped to unresolvable, a retry on the
+  // same inputs recomputed the same hash and refused again, and the function
+  // returned exactly the null it would have returned without touching anything.
+  // A dropped pair whose two artifacts cannot disagree can still be worth fixing
+  // for the write it spends getting to its own failure, and that is not something
+  // a shape rule can rank — which is the argument for reading every row rather
+  // than ordering them worst-first and trusting the order.
+  //
+  // Pinned in src/shared/__tests__/run-bootstrap-immutable-twin.test.ts: one test
+  // per half, the unresolvable-without-twin invariant and the survival of the
+  // previous envelope across a refused publish.
   // The fences' own tests, each dropping a permitted write and a refused one on
   // purpose. Both assert on what reached disk (`existsSync`) rather than on the
   // return value, which is why the discard is the point rather than an
@@ -3330,10 +3357,12 @@ test('rule 4 exempts a cross-artifact compare, not a per-write one', () => {
     'and the pair is counted as an exemption rather than silently dropped',
   );
 
-  // run-bootstrap-policy#ensureRunBootstrap: one read-back against the
-  // candidate. Proves ONE write landed and says nothing about the other, so the
-  // pair is still flagged. This is the row that forced rule 4 to have its own
-  // predicate instead of borrowing rule 2's — under rule 2's, this would pass.
+  // The shape run-bootstrap-policy#ensureRunBootstrap had when rule 4 was built:
+  // one read-back against the candidate. Proves ONE write landed and says nothing
+  // about the other, so the pair is still flagged. That is the shape which forced
+  // rule 4 to have its own predicate instead of borrowing rule 2's — under rule
+  // 2's, this would pass — and it is kept synthetic here precisely so the
+  // predicate stays pinned now that the site itself is fixed.
   const perWrite = pairWith('if (!one || one.hash !== candidate.hash) throw new Error("not persisted");');
   assert.equal(perWrite.divergentPairs.length, 1, 'a per-write compare does not close the divergence');
   assert.ok(
