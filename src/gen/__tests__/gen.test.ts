@@ -27,6 +27,14 @@ const MAX_CURSOR_TIER_LENGTH = Math.max(
     .flatMap((plan) => Object.values(plan).map((row) => row?.length ?? 0)),
 );
 
+// Written out here rather than derived from CURSOR_EVENTS: a list read back out
+// of the table it is checking asserts nothing. This is the independent copy, and
+// __tests__/cursor-fail-closed.test.ts is what ties it to the runtime's own
+// definition of a Cursor pre-tool subcommand.
+const CURSOR_FAIL_CLOSED_EVENTS: readonly string[] = [
+  'beforeShellExecution', 'beforeReadFile', 'beforeMCPExecution', 'preToolUse',
+];
+
 function assertPortableNodeHookCommand(command: string, label: string): void {
   assert.match(command, /^node -e "/, `${label} must launch through Node`);
   assert.doesNotMatch(command, /\$\{[A-Z][A-Z0-9_]*:-/, `${label} must not use POSIX parameter expansion`);
@@ -85,11 +93,15 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
       );
       assert.doesNotMatch(entry.command, /\.\/scripts|:-|TRAFFIC_ONE_PLUGIN_ROOT/);
       const lifecycle = event === 'stop' || event === 'subagentStop';
+      const failClosed = CURSOR_FAIL_CLOSED_EVENTS.includes(event);
       assert.deepEqual(
         Object.keys(entry).sort(),
-        lifecycle ? ['command', 'loop_limit'] : ['command'],
+        lifecycle ? ['command', 'loop_limit'] : (failClosed ? ['command', 'failClosed'].sort() : ['command']),
         `${event} emitted unsupported Cursor hook fields`,
       );
+      // `true` or absent — never an explicit `false`. See the calibration block
+      // in sources/hooks.ts for why a stated default is worse than no key.
+      assert.equal(entry.failClosed, failClosed ? true : undefined, `${event} failClosed`);
       if (lifecycle) {
         assert.equal(entry.loop_limit, 8);
         assert.ok(
@@ -108,6 +120,7 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     }]);
     assert.deepEqual(cursorHooks.hooks.beforeMCPExecution, [{
       command: 'node "${CURSOR_PLUGIN_ROOT}/scripts/cursor-hook-runtime.cjs" before-mcp-execution',
+      failClosed: true,
     }]);
     const sourcePackage = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
     const expectedVersion = sourcePackage.version;

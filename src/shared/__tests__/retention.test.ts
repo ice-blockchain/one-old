@@ -643,6 +643,146 @@ test('the abandoned-run TTL rule also asks the liveness question', () => {
   });
 });
 
+// ── the post-settlement deleter's report ─────────────────────────────────────
+// `sweepAfterTerminalSettlement` used to be `void` around a catch-all, so three
+// different worlds arrived at the caller as one silence: nothing to reclaim,
+// every reclaim REFUSED by the state-write fence, and the sweep throwing. The
+// three tests below pin each apart. The property that must SURVIVE — settlement
+// never fails because cleanup did — is asserted in every one of them.
+
+/**
+ * Run `fn` with stderr captured, and hand BOTH back. Returning the value rather
+ * than letting the caller assign into an outer `let` is deliberate: TypeScript
+ * cannot see that a callback ran, so an outer binding stays narrowed to its
+ * initializer and every property read off it is an error on `never`.
+ */
+function capturedStderr<T>(fn: () => T): { value: T; stderr: string } {
+  const original = process.stderr.write;
+  let captured = '';
+  process.stderr.write = ((chunk: unknown) => {
+    captured += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const value = fn();
+    return { value, stderr: captured };
+  } finally {
+    process.stderr.write = original;
+  }
+}
+
+/**
+ * A project with two stale candidates: one plain (the WRITABLE BASELINE — it
+ * must really be reclaimed, or a fixture that stopped fencing would pass) and
+ * one fenced behind a symlink.
+ *
+ * The fence is the READ-BEFORE-WRITE variant, and it has to be. The sweep
+ * SCHEDULES `.codegraph-build-lock` only after `fs.existsSync` and a `statSync`
+ * mtime both resolve at that path, so a DANGLING link is never scheduled at all
+ * and `removePath` is never reached — the test would report zero refusals having
+ * proved nothing about the fence. So the real file is moved aside to
+ * `.codegraph-build-lock.real` (a name nothing sweeps) and the original name is
+ * a link to it; `lockIsReadable` below is the guard that the read still
+ * resolves. EACCES/EISDIR were not candidates here: the refusal this exercises
+ * is the fsjson symlink guard, which is decided by `lstat` before any I/O, and
+ * an errno would instead be RETHROWN through `act` into the other arm.
+ */
+function fencedProject(dir: string): { lock: string; debugLog: string } {
+  const t1 = path.join(dir, '.traffic' + '-one');
+  fs.writeFileSync(
+    path.join(t1, 'retention.json'),
+    JSON.stringify({ keepRuns: 3, backupKeep: 1, orphanTtlDays: 3 }),
+    'utf8',
+  );
+  const stale = (Date.now() - 30 * DAY) / 1000;
+
+  const debugLog = path.join(t1, 'debug', 'session.log');
+  fs.mkdirSync(path.dirname(debugLog), { recursive: true });
+  fs.writeFileSync(debugLog, 'stale\n', 'utf8');
+  fs.utimesSync(debugLog, stale, stale);
+
+  const lock = path.join(t1, '.codegraph-build-lock');
+  const behind = `${lock}.real`;
+  fs.writeFileSync(behind, 'held\n', 'utf8');
+  fs.utimesSync(behind, stale, stale);
+  fs.symlinkSync(behind, lock);
+  return { lock, debugLog };
+}
+
+test('sweepAfterTerminalSettlement tells an EMPTY sweep from a fully REFUSED one', () => {
+  withProject((dir) => {
+    const empty = sweepAfterTerminalSettlement(dir);
+    assert.equal(empty.status, 'swept');
+    assert.deepEqual(
+      empty,
+      { status: 'swept', planned: 0, removed: 0, refused: 0 },
+      'a project with nothing to reclaim reports planned 0 — not merely "no error"',
+    );
+  });
+
+  withProject((dir) => {
+    const { lock, debugLog } = fencedProject(dir);
+    // FIXTURE GUARDS, both directions, before anything is asserted about the fix.
+    assert.equal(fs.lstatSync(lock).isSymbolicLink(), true, 'fixture: the lock path is a link');
+    assert.equal(fs.existsSync(lock), true, 'fixture: the link RESOLVES — a dangling one is never scheduled');
+    const planned = sweepTrafficOneRetention(dir, { dryRun: true }).actions.map((action) => action.path);
+    assert.ok(planned.includes(lock), 'fixture: the fenced lock is genuinely scheduled for removal');
+    assert.ok(planned.includes(debugLog), 'baseline: the unfenced debug log is scheduled too');
+
+    // stderr is discarded here; the next test is the one that asserts on it.
+    capturedStderr(() => {
+      const swept = sweepAfterTerminalSettlement(dir);
+      assert.equal(swept.status, 'swept');
+      if (swept.status !== 'swept') return;
+      assert.equal(swept.planned, 2, 'both candidates were planned');
+      assert.equal(swept.removed, 1, 'WRITABLE BASELINE: the unfenced candidate really was reclaimed');
+      assert.equal(swept.refused, 1, 'the fenced candidate was refused, and the report says so');
+    });
+
+    assert.equal(fs.existsSync(debugLog), false, 'baseline: the plain candidate is gone');
+    assert.equal(fs.lstatSync(lock).isSymbolicLink(), true, 'the fenced candidate survived, as the fence intends');
+  });
+});
+
+test('a refused reclaim is ANNOUNCED, not swallowed — and settlement still does not fail', () => {
+  withProject((dir) => {
+    fencedProject(dir);
+    const { value: report, stderr } = capturedStderr(() => sweepAfterTerminalSettlement(dir, '1001'));
+    assert.equal(report.status, 'swept', 'the deleter returned rather than threw');
+    assert.match(
+      stderr,
+      /retention sweep after settlement reclaimed 1 of 2 path\(s\) for run 1001 — 1 refused by the state-write fence/,
+      'the refusal names the run, the arithmetic, and the fence that made it',
+    );
+  });
+});
+
+// The catch is DEFENSIVE, and that is a measurement rather than an assumption:
+// thirteen hostile shapes were tried against the sweep — retention.json and
+// .one.json as directories (EISDIR), retention.json at chmod 000 (EACCES), an
+// unreadable runs/, a symlink loop inside a run, backups/ as a file, a missing
+// cwd, a NUL-bearing cwd, a 300-char currentRunId, five malformed ledgers and
+// out-of-range policy numerics — and every one is absorbed by a guard. The only
+// input found that reaches the catch is a NON-STRING cwd, which `path.join`
+// rejects inside `readPolicy` before anything is read, let alone deleted. That
+// is an untyped caller, not a filesystem state, so the cast below is the shape
+// of the defect and not a trick: no stub is involved, and the throw travels the
+// real code path.
+test('a THROWN sweep reports `failed` and never escapes into settlement', () => {
+  const { value: report, stderr } = capturedStderr(
+    () => sweepAfterTerminalSettlement(undefined as unknown as string, '1001'),
+  );
+  assert.equal(report.status, 'failed', 'the deleter RETURNED `failed` — it neither threw nor claimed a sweep');
+  if (report.status === 'failed') {
+    assert.match(report.reason, /must be of type string/, 'the swallowed error text is carried out to the caller');
+  }
+  assert.match(
+    stderr,
+    /retention sweep after settlement failed for run 1001: .*— how much it had reclaimed first is unknown/,
+    'the failure is announced, and declines to invent a removed count it cannot know',
+  );
+});
+
 test('a dry-run sweep never deletes a lighthouse report', () => {
   withProject((dir) => {
     const t1 = '.traffic' + '-one';

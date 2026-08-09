@@ -2,7 +2,10 @@
 // Wizard URL announcement, bootstrap-ready output, completion ack, and
 // decline/use choice handling. Stdout protocol tokens stay byte-identical.
 
+import * as path from 'path';
+
 import { detectHost } from '../../shared/host';
+import { projectMembershipRoot } from '../../shared/project-membership';
 import {  recordPluginUseChoice } from '../../shared/state/plugin-use';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -127,13 +130,47 @@ export function awaitWizardCompletionAck(cwd: string, host: string, graceMs: num
   }
 }
 
+// The cause prefs-store.ts decides the refusal from: it will not CREATE a
+// preferences root for a directory an enclosing project already owns, and it
+// reads that from the PARENT. Resolved the same way here so the message can name
+// the directory a durable decline would have to be recorded against. A null
+// keeps the wording generic rather than guessing at a root.
+function enclosingProjectRoot(cwd: string): string | null {
+  try {
+    return projectMembershipRoot(path.dirname(path.resolve(cwd)));
+  } catch {
+    return null;
+  }
+}
+
 // The --decline output: records the durable opt-out. A setup tab the user may
 // still have open is theirs to close — we do not drive their browser.
+//
+// This string is the whole of what the command hands back, so it has to be true
+// of the run that produced it. `recordPluginUseChoice` answers false when the
+// choice never reached disk — measured on a plain sub-directory of a workspace,
+// which gets no preferences root of its own (prefs-store.ts, the
+// `mercury/strategies` guard). By then `removeDeclinedProjectArtifacts` has
+// ALREADY swept, so the old body was wrong in both directions: the project's
+// runtime files are gone AND the question comes back. Line 1 is the stdout
+// protocol token four surfaces pin (test-environment's consent-decline-fence
+// assertion, state/__tests__/home-rooted-consent.ts, and two cases in this
+// runner's own wait.test.ts); it stays byte-identical and only the body varies.
 export function declineOutput(cwd: string, _host: string): string {
-  recordPluginUseChoice(cwd, false, 'command');
+  if (recordPluginUseChoice(cwd, false, 'command')) {
+    return 'TRAFFIC_ONE_DISABLED\n'
+      + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions. "
+      + 'It stays silent here until the user explicitly asks for Traffic One again.\n';
+  }
+  const enclosing = enclosingProjectRoot(cwd);
   return 'TRAFFIC_ONE_DISABLED\n'
-    + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions. "
-    + 'It stays silent here until the user explicitly asks for Traffic One again.\n';
+    + "Continue the user's request without Traffic One conventions. "
+    + 'The decline was NOT saved, so do not report it as settled: this directory\'s preferences belong to '
+    + `${enclosing || 'an enclosing project'}, and Traffic One opens no preferences root for a sub-directory of `
+    + 'one — nothing was written. The Traffic One runtime files that were here were deleted before that was known '
+    + 'and do not come back, and with no answer on record the question returns next session. Only a decline '
+    + `recorded against ${enclosing || 'the enclosing project root'} lasts, and turning Traffic One off for that `
+    + "whole project is the user's call.\n";
 }
 
 // The `--use` yes path: record the durable per-project opt-in, then seed the

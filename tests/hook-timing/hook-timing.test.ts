@@ -40,8 +40,102 @@
 // (3.5x for the most expensive, ~100x for the cheapest), and a future tightening
 // becomes a data-driven change against a table that already exists. What this
 // file does NOT do is assert 150 ms on the whole-process figure — see the
-// process leg for why that claim is not currently true, and see the work-item
-// report for what would have to change before it could be.
+// process leg for why that claim is not currently true, and the section below
+// for why it does not have to be.
+//
+// ── what the hosts actually enforce ─────────────────────────────────────────
+// 150 ms is this product's own claim, not the host's, and the two are three
+// orders of magnitude apart. That gap is what decides how to read a breach: a
+// slow hook is a latency problem long before it is a correctness one, so the
+// whole-process figure belongs in a table rather than in an assertion.
+//
+// The ceiling each host puts on the events we register, and what it does when
+// one is hit. Claude and Codex share an event vocabulary, so they share a table;
+// Cursor has its own and is below.
+//
+//   event             claude   codex   claude on timeout
+//   SessionStart      600 s    600 s   logged, session continues
+//   UserPromptSubmit   30 s    600 s   prompt blocked
+//   PreToolUse        600 s    600 s   tool call blocked
+//   PostToolUse       600 s    600 s   result kept, turn continues
+//   Stop              600 s    600 s   warning, agent stops
+//   SubagentStart     never    600 s   Claude does not fire it (the subcommand
+//                                      is in the shared manifest and the leg
+//                                      below times it, but no Claude event
+//                                      reaches it — see sources/hooks.ts)
+//
+// Claude's figures and behaviour are from code.claude.com/docs/en/hooks (read
+// 2026-08-08). Codex's 600 s is its implementation's own default rather than a
+// doc claim — codex-rs/hooks/src/engine/discovery.rs, normalize_command_hook,
+// `timeout_sec.unwrap_or(600).max(1)`. No manifest in gen/emit/hooks.ts sets a
+// per-hook `timeout`, so every figure above is the default. Claude does not
+// enumerate SessionStart, which therefore falls to its catch-all — the failure
+// is logged and the session continues — meaning a SessionStart that times out
+// drops the injected context (auth banner, pending updates, onboarding notice)
+// with nothing said in the session about their absence.
+//
+// Cursor publishes no timeout figure at all — its per-hook `timeout` documents
+// its default as "platform default" — so there is no number to record here, and
+// that is the honest entry rather than an omission. (Re-read 2026-08-09: still
+// no number.) What Cursor does publish is the more consequential half, and it is
+// the opposite of Claude's. Its per-hook `failClosed` defaults to FALSE, and a
+// hook that fails — crash, timeout, invalid JSON, or any exit code other than 0
+// or 2 — lets the action through; the fail-open sentence is stated on
+// beforeShellExecution/beforeMCPExecution and again on beforeReadFile, and the
+// exit-code half appears twice more (the command-hook section and the
+// third-party-hooks page).
+//
+// So a Cursor timeout is not a slow deny the way Claude's PreToolUse timeout is.
+// It is a SILENT ALLOW, and the same is true of the outage this repo already
+// documents on the other side of the same hazard: a plugin sync that replaces
+// the version-keyed cache dir mid-flight leaves the launcher requiring a deleted
+// path, node exits non-zero, and at the default every gate is off for the rest
+// of the session with nothing said (see the NOTE in src/gen/sources/hooks.ts).
+//
+// hooks/hooks-cursor.json now sets `failClosed: true` on FOUR of the twelve
+// events it registers — beforeShellExecution, beforeReadFile, beforeMCPExecution
+// and preToolUse — and omits the key on the other eight. The set is not a
+// judgement call about which gates matter: it is exactly the events whose
+// subcommand adapters/cursor.ts maps to canonical PreToolUse, which is the only
+// canonical event for which its serialize() emits `permission: 'deny'`. On the
+// other eight Traffic One cannot block on SUCCESS, so blocking there on FAILURE
+// would enforce a decision this product never makes, while still wedging a turn
+// end or withholding a completed edit. The per-event reasoning lives beside the
+// event table in src/gen/sources/hooks.ts and is pinned in both directions by
+// src/gen/__tests__/cursor-fail-closed.test.ts.
+//
+// The fail-open-versus-fail-wedged trade is therefore settled per event rather
+// than globally, and it is NOT the trade the Node floor guard resolved in the
+// other direction. That guard warns instead of exiting because an early exit
+// emits no stdout, which hosts read as "no verdict" — it declines an action that
+// would turn gates off. Here the process is already dead and already silent, and
+// the only remaining question is what the host does with that silence. What the
+// flag cannot recover is the remediation text: a deny Traffic One produces
+// itself names the fix and exempts `doctor` (hooks/fail-closed.ts), and a
+// host-level block on a dead process does neither.
+//
+// Two further asymmetries are worth carrying out of the table above.
+//
+// The tightest ceiling that reaches us is 30 s, and it reaches exactly one
+// event. Claude's shorter limits govern events we do not emit: 10 s for
+// MessageDisplay, and a 1.5 s budget for SessionEnd that a PLUGIN's own
+// `timeout` is explicitly not permitted to raise (only user settings or
+// CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS can). Codex clamps SessionEnd harder
+// still, 1 s default and 3 s maximum. So the budget is comfortable everywhere
+// we currently stand, and the one place it would not be is the place a future
+// SessionEnd hook would land — where the process constant measured by the leg
+// below is already most of the whole allowance, before any dispatch at all.
+//
+// Those two hosts then fail in OPPOSITE directions on the enforcement event.
+// Claude blocks the tool call and tells the model the hook did not answer in
+// time, so a slow gate there is a false deny — loud, and safe. Codex calls a
+// timeout a hook failure, and says of a failed PreToolUse hook run that it
+// "continues the tool call" — under which the same slowness is a silent
+// enforcement gap instead, landing Codex with Cursor rather than with Claude.
+// But those are two separate sentences in Codex's docs joined by inference and
+// never observed against a live Codex, so that reading is weaker evidence than
+// the Claude column and is recorded in the manual certification slot rather
+// than relied on here.
 
 import './invocations';
 

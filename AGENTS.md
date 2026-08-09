@@ -93,6 +93,28 @@ user-scope bundle it imports. Only the `claude` env-marker row in
 best-effort, fall through to all-hosts when they miss, and are overridable with
 `--host=`.
 
+## Scratch files (`/.tmp/`)
+
+Every scratch file an agent authors goes under `/.tmp/<lane>/` at the repo root
+and nowhere else: probe scripts, mutation-test copies, measurement drivers,
+progress logs, saved pristine copies, diff dumps. Not `mktemp -d`, not
+`$TMPDIR`, not `/tmp`, not `/var/folders/**`, not anywhere under `$HOME` —
+writing outside the workspace interrupts the user for an approval on every
+command.
+
+Root level is required rather than tidy. The test glob is `src/**/*.test.ts`
+`tests/**/*.test.ts` and `tsconfig.json` includes `src/**/*.ts` plus
+`tests/**/*.ts`, so a scratch tree under either is swept into `npm test` and
+`npm run typecheck`; `/.tmp/` matches neither. The `.gitignore` entry is
+anchored with a leading slash for the same reason — unanchored, `.tmp/` would
+hide a `src/.tmp` from `git status` while the test glob still collected it.
+
+An rsync copy taken for mutation testing must pass `--exclude .tmp` or it
+recurses into itself, and each lane needs its own copy path: two agents sharing
+one destroys the measurement of whichever finishes second. This governs
+authored scratch only — `os.tmpdir()` inside a test fixture runs under the test
+runner and interrupts nobody.
+
 ## Conventions
 
 - Keep changes surgical; match local style; every gate keeps a verbatim deny

@@ -78,10 +78,47 @@ export function readPluginUseChoice(cwd: string, env: NodeJS.ProcessEnv = proces
 // removed the record it had just written — so the user was asked again next
 // session and could destroy the directory again. Recording LAST makes the answer
 // the one write nothing afterwards can reclaim.
-export function recordPluginUseChoice(cwd: string, enabled: boolean, source: string, env: NodeJS.ProcessEnv = process.env): void {
+//
+// Answers whether the choice is now ON DISK, because it is not always written
+// and the caller could not tell. `updateProjectPrefs` DECLINES to create a prefs
+// root for a directory that belongs to an enclosing project (prefs-store.ts, the
+// `mercury/strategies` incident) and reports that decline by returning the
+// prefs it just READ — a `Rec` shaped exactly like a successful merge. MEASURED
+// on a plain sub-directory of a workspace: nothing is written, the answer reads
+// back `null`, and this function used to return `void`, so the wizard recorded
+// the user's answer, said nothing, and asked again next session.
+//
+// The decline path makes it worse than a lost preference:
+// `removeDeclinedProjectArtifacts` has ALREADY run by then, so the artifacts are
+// irreversibly gone AND the "no" is not recorded — the same shape the ordering
+// comment above was written to prevent, arriving by a different route.
+//
+// The check is the merge RESULT rather than a re-read: on the decline path that
+// result is the untouched on-disk prefs, so it carries our answer only when the
+// answer really is recorded — including the legitimate case where it was already
+// recorded with this value. Only `enabled` is checked; a refreshed `source` or
+// `decidedAt` is not what any consumer reads.
+export function recordPluginUseChoice(cwd: string, enabled: boolean, source: string, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!enabled) removeDeclinedProjectArtifacts(cwd, env);
-  mergeProjectPrefs(cwd, { pluginUse: { enabled, source, decidedAt: stateTimestamp() } }, env);
+  const next = mergeProjectPrefs(cwd, { pluginUse: { enabled, source, decidedAt: stateTimestamp() } }, env);
   resetPluginUseCache();
+  const recorded = obj(next.pluginUse)?.enabled === enabled;
+  // Fail-open, not fail-silent — state/decision-log.ts's rule. The boolean only
+  // reaches a caller that consults it, and all three production callers live in
+  // the onboarding wizard, which does not yet; until they do, this is the only
+  // thing that makes a discarded consent answer visible at all.
+  if (!recorded) {
+    try {
+      process.stderr.write(
+        `[traffic-one] plugin-use: the "${enabled ? 'use' : 'decline'}" answer for ${path.resolve(cwd)} was NOT `
+        + 'recorded — its preferences belong to an enclosing project, so nothing was written and the question '
+        + 'will be asked again.\n',
+      );
+    } catch {
+      // stderr itself can fail in exotic hosts; there is nowhere left to report this.
+    }
+  }
+  return recorded;
 }
 
 // Forget the recorded choice entirely so the normal onboarding flow (and, when

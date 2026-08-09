@@ -22,7 +22,7 @@ import {
   uiImpactWithPlannedFloor,
   type UiImpact,
 } from '../verification-contract';
-import { rank } from '../verification-contract/impact';
+import { changedRoutes, rank } from '../verification-contract/impact';
 import { capabilityProfileForProject } from '../capabilities';
 
 function withProject(fn: (cwd: string) => void): void {
@@ -1710,6 +1710,198 @@ test('Tailwind breakpoints and shared component edits are visual and cover every
     assert.equal(contract.performance.required, false);
     assert.equal(contract.performance.advisory, true);
     assert.equal(contract.performance.reason, 'visual-risk');
+  });
+});
+
+// The route fan-out and the advisory Lighthouse budget are the two things a
+// "this is presentational" NAME still decides, and they are decided about paths
+// that already EXIST — so the name is not the whole evidence there, and the
+// filename-prefix branch that is affordable for a PLANNED output is not
+// affordable here. Measured over this repo's own 1339 tracked paths, that
+// branch was the whole of both predicates' yield: 25 of 26 `visualRisk` claims
+// and 31 of 31 fan-out claims, and the population is token ACCOUNTING code and
+// documentation — `token-report/**`, `token-logger.ts`, `override/token.ts`,
+// `frontend/*/styles.md`. Not one stylesheet, image or design token among them.
+//
+// It is not a cosmetic over-claim. The fan-out is consumed by
+// qa-evidence/lighthouse.ts, which runs Lighthouse PER ROUTE, and by
+// qa-evidence/browser.ts, which requires the scenario to cover changedRoutes
+// exactly — so a `token-logger.ts` in the diff bought a full-site sweep on the
+// strength of a hyphen.
+test('token accounting is not a design token: the changed-path anchor is a directory segment', () => {
+  withProject((cwd) => {
+    setupReact(cwd);
+    fs.mkdirSync(path.join(cwd, 'apps/web/src/theme'), { recursive: true });
+    const home = path.join(cwd, 'apps/web/src/pages/Home.tsx');
+    fs.writeFileSync(home, 'export const Home = () => <main>Home</main>;\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/News.tsx'), 'export const News = () => <main>News</main>;\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/lib/token-logger.ts'), 'export const logTokens = () => 1;\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/theme/tokens.ts'), 'export const palette = { bg: "#fff" };\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/app.css'), 'body { color: black; }\n');
+    // An EXISTING codebase with both pages already in the baseline, because the
+    // other two terms of `visualRisk` would otherwise decide it on their own:
+    // `plannedImportantVisualChange` is true for any page a plan ADDS, which is
+    // every page of a new-project fixture.
+    commit(cwd);
+    const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, {
+      schemaVersion: 1,
+      routes: [
+        { id: 'home-route', path: '/', moduleId: 'home' },
+        { id: 'news-route', path: '/news', moduleId: 'news' },
+      ],
+      modules: [
+        { id: 'home', name: 'Home', kind: 'page' as const },
+        { id: 'news', name: 'News', kind: 'page' as const },
+      ],
+    });
+    fs.writeFileSync(home, 'export const Home = () => <main className="wide">Home page</main>;\n');
+
+    // The fan-out is asked directly rather than through the contract: a
+    // contract's `paths` are the diff UNIONED with every compiled output, so on
+    // a two-page plan both routes are "changed" whatever the fan-out says, and
+    // the assertion would pass on either anchor.
+    assert.deepEqual(
+      changedRoutes(architecture, ['apps/web/src/lib/token-logger.ts'], 'visual'),
+      ['/'],
+      'token accounting in the diff must not fan the sweep out to every compiled route',
+    );
+    // The class the arm exists for, one directory segment away, is untouched:
+    // a CSS-in-JS design token IS every screen at once.
+    assert.deepEqual(
+      changedRoutes(architecture, ['apps/web/src/theme/tokens.ts'], 'visual'),
+      ['/', '/news'],
+      'a real theme/ directory edit must still cover every compiled route',
+    );
+    // …and so is everything the two intrinsic terms above the name arm carry.
+    assert.deepEqual(
+      changedRoutes(architecture, ['apps/web/src/app.css'], 'visual'),
+      ['/', '/news'],
+      'a stylesheet is global by EXTENSION and never needed the name arm',
+    );
+
+    const compile = (runId: string, changedPaths: string[]) => compileVerificationContract(
+      cwd, runId, EXISTING_REACT, { ...architecture, runId }, { changedPaths },
+    );
+
+    // Fixture guard: with both pages in the baseline, a visual page edit alone
+    // leaves the budget off — so this fixture can express `false` at all, and
+    // the two cases below are measuring the changed-path anchor and nothing
+    // else.
+    const pageOnly = compile('R0', ['apps/web/src/pages/Home.tsx']);
+    assert.equal(pageOnly.uiImpact, 'visual', 'fixture guard: the className edit is a visual change');
+    assert.equal(pageOnly.performance.advisory, false, 'fixture guard: no important-visual path in this diff');
+
+    // `token-logger.ts` is `token` before a `-`. It is accounting code, it is
+    // not under any presentational directory, and it must not buy a budget.
+    const accounting = compile('R1', ['apps/web/src/pages/Home.tsx', 'apps/web/src/lib/token-logger.ts']);
+    assert.equal(accounting.uiImpact, 'visual', 'fixture guard: the page edit still makes this a visual run');
+    assert.equal(
+      accounting.performance.advisory,
+      false,
+      'token accounting in the diff must not buy an advisory Lighthouse budget',
+    );
+    assert.equal(accounting.performance.reason, 'not-required');
+
+    const designToken = compile('R2', ['apps/web/src/pages/Home.tsx', 'apps/web/src/theme/tokens.ts']);
+    assert.equal(
+      designToken.performance.advisory,
+      true,
+      'a real theme/ directory edit is still important-visual and still buys the advisory budget',
+    );
+    assert.equal(designToken.performance.reason, 'visual-risk');
+  });
+});
+
+// First-match ordering let the markup arm LOWER a verdict the behavior arm
+// would have reached: it claims a file on its extension and is then allowed to
+// say nothing about it, because changed-hunk evidence can be AVAILABLE and
+// EMPTY. Three shapes reach that state straight out of
+// changedPathsFromImmutableBaseline, with no injected changedPaths anywhere: a
+// mode-only chmod, an untracked empty file, and a whitespace-only edit.
+//
+// The asymmetry is the tell. Under the old chain a `.tsx` component in a
+// `features/` directory was CHEAPER to verify than the plain `index.ts` beside
+// it — same directory, same non-edit, and the only difference was which arm
+// reached the file first.
+test('the markup arm contributes a floor and can never lower what the behavior arm reached', () => {
+  withProject((cwd) => {
+    setupReact(cwd);
+    const feature = path.join(cwd, 'apps/web/src/features/hero');
+    fs.mkdirSync(feature, { recursive: true });
+    const card = path.join(feature, 'Card.tsx');
+    const sibling = path.join(feature, 'index.ts');
+    fs.writeFileSync(card, 'export const Card = () => <main>hi</main>;\n');
+    fs.writeFileSync(sibling, 'export const hero = 1;\n');
+    commit(cwd);
+
+    const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+    });
+    const profile = capabilityProfileForProject(cwd, EXISTING_REACT);
+    assert.equal(
+      architecture.baseline.kind,
+      'git-head',
+      'fixture guard: the downgrade needs REAL changed-hunk evidence, so the baseline must be Git',
+    );
+
+    // A whitespace-only edit: a real hunk whose trimmed text is empty, so the
+    // markup arm claims both files and has nothing to say about either.
+    fs.writeFileSync(card, 'export const Card = () => <main>hi</main>;\n\t\n');
+    fs.writeFileSync(sibling, 'export const hero = 1;\n\t\n');
+    const cardImpact = deriveUiImpact(
+      cwd, profile, ['apps/web/src/features/hero/Card.tsx'], architecture.baseline,
+    );
+    const siblingImpact = deriveUiImpact(
+      cwd, profile, ['apps/web/src/features/hero/index.ts'], architecture.baseline,
+    );
+    assert.equal(
+      cardImpact.impact,
+      'behavioral',
+      'a component under features/ whose hunk says nothing still owes what its PATH says',
+    );
+    assert.equal(
+      cardImpact.impact,
+      siblingImpact.impact,
+      'a .tsx must never verify cheaper than the plain module beside it merely because MARKUP_RE reached it first',
+    );
+
+    // An untracked EMPTY component is the same hole through the other door:
+    // `git ls-files --others` lists it and its whole body is the empty hunk.
+    const fresh = path.join(feature, 'Empty.tsx');
+    fs.writeFileSync(fresh, '');
+    assert.equal(
+      deriveUiImpact(cwd, profile, ['apps/web/src/features/hero/Empty.tsx'], architecture.baseline).impact,
+      'behavioral',
+      'an untracked empty component under features/ still owes what its path says',
+    );
+
+    // The bounds the restructure had to carry through untouched. A behavior
+    // SPELLING is still only evidence in a file a browser loads, and the rune
+    // probe is still bound to `.svelte.ts` rather than to WEB_MODULE_RE.
+    fs.writeFileSync(path.join(feature, 'router.go'), 'package hero\n');
+    assert.equal(
+      deriveUiImpact(cwd, profile, ['apps/web/src/features/hero/router.go'], architecture.baseline).impact,
+      'nonvisual',
+      'bound: a Go router under features/ is not browser-observable and must stay nonvisual',
+    );
+    // A first pass wrote the rune bytes to `lib/store.ts`, which BEHAVIOR_RE
+    // claims on the word `store` — the assertion would have been measuring the
+    // path, not the bound. The filename has to carry no behavior spelling of
+    // its own for the extension to be the only thing under test.
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/lib/counter.svelte.ts'), 'export let width = $state(0);\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/lib/counter.ts'), 'export let width = $state(0);\n');
+    assert.equal(
+      deriveUiImpact(cwd, profile, ['apps/web/src/lib/counter.svelte.ts'], architecture.baseline).impact,
+      'behavioral',
+      'fixture guard: the same bytes in a .svelte.ts ARE a rune declaration',
+    );
+    assert.equal(
+      deriveUiImpact(cwd, profile, ['apps/web/src/lib/counter.ts'], architecture.baseline).impact,
+      'nonvisual',
+      'bound: rune bytes one extension away from .svelte.ts are an identifier collision, not client state',
+    );
   });
 });
 

@@ -46,10 +46,10 @@
 // missing — a live empty-reason defect. A call site that passes one degrades to
 // that prose instead, which is a documentation drift, not an enforcement loss.
 // Both are asserted; only the first is described as a defect. plan-guard's
-// assembler makes the fallback a REQUIRED positional argument, which is why its
-// 8 TS-only names below are safe — and why they are pinned rather than fixed
-// here: closing them means moving prose into shipped SKILL.md, which is a
-// golden-snapshot change and a separate piece of work.
+// assembler makes the fallback a REQUIRED positional argument (`Block` in
+// plan-readiness/context.ts, bound by `makePlanBlock`), which is why its
+// TS-only names below are safe: the compiler, not a test, is what keeps
+// plan-guard's fallback-less count at zero across 99 call sites.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -106,12 +106,25 @@ export interface BlockCallSite {
   readonly names: readonly string[] | null;
   readonly literal: boolean;
   readonly hasFallback: boolean;
+  /** The fallback argument COOKED: its string VALUE, with every `${expr}` kept
+   *  as its source text. null when the expression is not a literal the parse can
+   *  evaluate (a table lookup, a helper call, a ternary) — see
+   *  FALLBACK_NOT_A_LITERAL. */
+  readonly fallbackCooked: string | null;
+  /** How the fallback expression was shaped, so a pair that leaves the
+   *  comparable population says WHY. */
+  readonly fallbackShape: string;
+  /** The vars object literal: property name → initializer source text. */
+  readonly vars: Readonly<Record<string, string>> | null;
 }
 
 interface Census {
   readonly root: string;
   readonly modules: readonly string[];
   readonly blocksByModule: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Raw SKILL.md text per module, so the parity bar reads block BODIES through
+   *  the production extractor rather than re-listing the files. */
+  readonly skillTextByModule: ReadonlyMap<string, string>;
   readonly sites: readonly BlockCallSite[];
   readonly fileCount: number;
 }
@@ -569,6 +582,103 @@ function scanRoot(root: string): Census {
     return null;
   };
 
+  // ── the fallback COOKER ─────────────────────────────────────────────────────
+  // The parity bar below compares the shipped T1BLOCK against the verbatim
+  // fallback, so it needs the fallback's VALUE. `.getText()` on the node cannot
+  // supply it: a single-quoted literal and a template literal spell an embedded
+  // backtick differently, and that one asymmetry alone would report every
+  // plan-guard pair as drifted. So each supported literal shape is evaluated,
+  // and `${expr}` is kept as source text — which is exactly the form a
+  // `{{VAR}}` substitutes to, since the vars a call site passes are named by
+  // their initializer text.
+  const shapes = new Map<ts.Node, string>();
+  const cook = (st: FileState, expr: ts.Expression | undefined, depth = 0): string | null => {
+    if (!expr || depth > 6) return null;
+    const e = unwrap(expr);
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) {
+      shapes.set(expr, ts.isStringLiteral(e) ? 'string-literal' : 'template-plain');
+      return e.text;
+    }
+    if (ts.isTemplateExpression(e)) {
+      shapes.set(expr, 'template-interpolated');
+      let out = e.head.text;
+      for (const span of e.templateSpans) {
+        out += `\${${span.expression.getText(st.src)}}`;
+        out += span.literal.text;
+      }
+      return out;
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = cook(st, e.left, depth + 1);
+      const right = cook(st, e.right, depth + 1);
+      shapes.set(expr, 'concat');
+      return left === null || right === null ? null : left + right;
+    }
+    if (ts.isIdentifier(e)) {
+      // Exactly ONE initializer, in this file or across one import hop, for the
+      // same reason resolveNames insists on one: a shadowed name is never
+      // guessed at.
+      const local: ts.Expression[] = [];
+      const visit = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+          && node.name.text === e.text && node.initializer) local.push(node.initializer);
+        ts.forEachChild(node, visit);
+      };
+      visit(st.src);
+      if (local.length === 1) {
+        const cooked = cook(st, local[0], depth + 1);
+        shapes.set(expr, `const:${e.text}`);
+        return cooked;
+      }
+      const imported = st.imports.get(e.text);
+      const targetState = imported?.file ? states.get(imported.file) : undefined;
+      if (targetState) {
+        const found: ts.Expression[] = [];
+        const visitImported = (node: ts.Node): void => {
+          if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+            && node.name.text === imported!.name && node.initializer) found.push(node.initializer);
+          ts.forEachChild(node, visitImported);
+        };
+        visitImported(targetState.src);
+        if (found.length === 1) {
+          const cooked = cook(targetState, found[0], depth + 1);
+          shapes.set(expr, `imported-const:${e.text}`);
+          return cooked;
+        }
+      }
+      shapes.set(expr, `unresolved-identifier:${e.text}`);
+      return null;
+    }
+    if (ts.isConditionalExpression(e)) { shapes.set(expr, 'conditional'); return null; }
+    if (ts.isCallExpression(e)) { shapes.set(expr, `call:${unwrap(e.expression).getText(st.src)}`); return null; }
+    shapes.set(expr, ts.SyntaxKind[e.kind]);
+    return null;
+  };
+
+  // The vars object literal a call site passes, by name. Which argument carries
+  // it is not assumed: the three argument orders in this repo disagree, so the
+  // first object literal argument is the vars bag by construction (no other
+  // object literal is passed to an assembler).
+  const varsOf = (st: FileState, node: ts.CallExpression): Record<string, string> | null => {
+    for (const argument of node.arguments) {
+      const value = unwrap(argument);
+      if (!ts.isObjectLiteralExpression(value)) continue;
+      const out: Record<string, string> = {};
+      for (const property of value.properties) {
+        if (ts.isPropertyAssignment(property)
+          && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))) {
+          out[property.name.text] = property.initializer.getText(st.src);
+        } else if (ts.isShorthandPropertyAssignment(property)) {
+          out[property.name.text] = property.name.text;
+        } else if (ts.isSpreadAssignment(property)) {
+          out['\u2026spread'] = property.expression.getText(st.src);
+        }
+      }
+      return out;
+    }
+    return null;
+  };
+
   const sites: BlockCallSite[] = [];
   for (const st of states.values()) {
     const relFile = path.relative(root, st.file);
@@ -594,6 +704,9 @@ function scanRoot(root: string): Census {
             literal: Boolean(nameExpr && ts.isStringLiteralLike(unwrap(nameExpr))),
             // An explicitly-empty fallback is no fallback: it renders `''` too.
             hasFallback: Boolean(fallbackExpr) && !(fallback && ts.isStringLiteralLike(fallback) && fallback.text === ''),
+            fallbackCooked: fallbackExpr ? cook(st, fallbackExpr) : null,
+            fallbackShape: fallbackExpr ? (shapes.get(fallbackExpr) ?? 'none') : 'none',
+            vars: varsOf(st, node),
           });
         }
       }
@@ -613,8 +726,10 @@ function scanRoot(root: string): Census {
     .map((entry) => entry.name)
     .sort();
   const blocksByModule = new Map<string, ReadonlySet<string>>();
+  const skillTextByModule = new Map<string, string>();
   for (const id of modules) {
     const text = fs.readFileSync(path.join(modulesDir, id, 'skill', 'SKILL.md'), 'utf8');
+    skillTextByModule.set(id, text);
     const declared = new Set<string>();
     for (const match of text.matchAll(/<!-- T1BLOCK:BEGIN (\S+) -->/g)) {
       // Confirm through the production extractor, so a BEGIN without its END
@@ -624,7 +739,7 @@ function scanRoot(root: string): Census {
     blocksByModule.set(id, declared);
   }
 
-  return { root, modules, blocksByModule, sites, fileCount: files.length };
+  return { root, modules, blocksByModule, skillTextByModule, sites, fileCount: files.length };
 }
 
 const CENSUS = scanRoot(REPO_ROOT);
@@ -635,17 +750,34 @@ const CENSUS = scanRoot(REPO_ROOT);
 // SKILL.md is not their source of truth, and that has to be visible rather than
 // discovered. Pinned as an exact set: a NINTH one fails here, and so does
 // authoring one of these eight into SKILL.md without deleting its line.
-// Deliberately NOT closed by hand-writing prose into SKILL.md — that is shipped
-// bytes inside the golden snapshot and belongs to the generation work.
+// Six of the original eight were authored into plan-guard/skill/SKILL.md as
+// byte-exact transcriptions of their TS fallbacks (`${expr}` → `{{VAR}}` over
+// the vars the call site already passes). Four of the six did not move the
+// rendered deny by a byte; the last two — `run-team-quick-fix-contract` and
+// `architecture-input-owner-gate` — had their PROSE fixed first (each prescribed
+// an action its own addressee could not take, and the first also dropped the
+// `TARGETS` var its call site passes), and were then transcribed, so their cells
+// moved deliberately and are measured in
+// modules/plan-guard/__tests__/skill-fallback-parity.test.ts.
+// The two that remain are each here for a STRUCTURAL reason, not for want of
+// effort — transcribing either as it stands would ship a WORSE deny than the TS
+// fallback renders today:
+//
+//   run-artifact-work-unit-gate — the fallback ends in a three-valued clause
+//     built in TS (`unresolvedNote`: settled ledger / illegible ledger /
+//     neither) that is NOT among the vars the call site passes. A single
+//     T1BLOCK collapses those three renders into one, which is exactly the
+//     "illegible ledger reads like a healthy run" defect that clause exists to
+//     fix. Authorable only together with a `{{NOTE}}` var at the call site —
+//     the idiom `run-team-not-subagent` already uses for `{{RECOVERY}}`.
+//   run-team-maintenance-contract — ONE name, TWO call sites
+//     (plan-runteam.ts, the no-bounded-scope arm and the not-in-subagent arm)
+//     with different CAUSE and different REMEDY. One block renders both arms
+//     identically; splitting the stem into vars leaves a block that is mostly
+//     placeholders and reviewable by nobody. Needs two block names first.
 const TS_ONLY_PROSE: readonly string[] = [
-  'plan-guard :: architecture-input-owner-gate',
-  'plan-guard :: implementer-collapse-gate',
   'plan-guard :: run-artifact-work-unit-gate',
-  'plan-guard :: run-id-mismatch',
   'plan-guard :: run-team-maintenance-contract',
-  'plan-guard :: run-team-quick-fix-contract',
-  'plan-guard :: run-team-runtime-contract-invalid',
-  'plan-guard :: runtime-sidecar-owner-gate',
 ];
 
 // Call sites whose block name the parse cannot resolve to a literal set. EMPTY
@@ -654,6 +786,168 @@ const TS_ONLY_PROSE: readonly string[] = [
 // rather than a silent skip, because the assertion below requires
 // resolved + exempt == total: a site cannot leave the population quietly.
 const UNRESOLVABLE_NAME_SITES: readonly string[] = [];
+
+// ── the fallback-less population, pinned exactly ─────────────────────────────
+// Every (file, module, block) triple whose call site passes NO verbatim
+// fallback, so a SKILL.md that goes missing AT RUNTIME renders `''` there. The
+// conformance test above already fails in CI when a rename or deletion makes
+// one of these blocks absent, so none of them is a live defect; what this pin
+// buys is the other direction — the population of sites that WOULD render
+// empty can no longer grow silently.
+//
+// Pinned as an exact set rather than a count floor on purpose. A floor
+// (`bare.length >= 30`, which this replaces) is anti-correlated with the goal:
+// it is satisfied by having MORE vulnerable sites and would have failed the
+// day someone finished giving all of them fallbacks. Non-vacuity is proven by
+// the synthetic fixtures below instead, which detect a fallback-less site in a
+// tree this file has never heard of — a property that does not degrade as the
+// real population shrinks.
+//
+// A 34th entry fails, and so does REMOVING one without deleting its line:
+// adding a fallback is a deliberate, reviewed shrink of this list.
+//
+// Keyed on file+module+block, never on a line number, so an unrelated edit
+// above a call site does not churn it. `agent-model :: agent-reuse-continue`
+// is one entry for three call sites in gate-reuse.ts — this is a set of
+// vulnerable BLOCK RENDERS, not a tally of calls.
+const NO_FALLBACK_SITES: readonly string[] = [
+  'src/modules/agent-model/choice-reply.ts :: agent-model :: model-choice-recorded-enable',
+  'src/modules/agent-model/choice-reply.ts :: agent-model :: model-choice-recorded-fallback',
+  'src/modules/agent-model/gate-enforcement.ts :: agent-model :: agent-materialization-deny',
+  'src/modules/agent-model/gate-enforcement.ts :: agent-model :: performance-main-agent',
+  'src/modules/agent-model/gate-enforcement.ts :: agent-model :: team-confirmation',
+  'src/modules/agent-model/gate-opencode-first.ts :: agent-model :: opencode-plan-batch-required',
+  'src/modules/agent-model/gate-opencode-first.ts :: agent-model :: opencode-role-delegate',
+  'src/modules/agent-model/gate-reuse.ts :: agent-model :: agent-reuse-await-cursor-id',
+  'src/modules/agent-model/gate-reuse.ts :: agent-model :: agent-reuse-continue',
+  'src/modules/agent-model/model-denies.ts :: agent-model :: cursor-exact-model-required',
+  'src/modules/agent-model/model-denies.ts :: agent-model :: model-availability-advisory',
+  'src/modules/agent-model/model-denies.ts :: agent-model :: model-availability-banner',
+  'src/modules/agent-model/model-denies.ts :: agent-model :: model-unavailable-choice',
+  'src/modules/agent-model/model-denies.ts :: agent-model :: performance-model-param',
+  'src/modules/agent-model/model-rotation.ts :: agent-model :: model-choice-enable-required',
+  'src/modules/agent-model/spawn-hygiene.ts :: agent-model :: absolute-traffic-one-path',
+  'src/modules/agent-model/spawn-shape.ts :: agent-model :: kilo-general-agent-required',
+  'src/modules/agent-model/spawn-shape.ts :: agent-model :: opencode-named-agent-required',
+  'src/modules/model-choice-gate/index.ts :: model-choice-gate :: model-choice-stop-first',
+  'src/modules/model-choice-gate/index.ts :: model-choice-gate :: model-choice-stop-repeat',
+  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: repaired-materialization',
+  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: server-deny-reason',
+  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: server-deny-reason-links-shown',
+  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: server-deny-reason-repeat',
+  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: team-mode-downgrade-guard',
+  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: team-mode-marker-guard',
+  'src/modules/session/prompt-submit.ts :: onboarding-gate :: server-deny-reason',
+  'src/modules/session/prompt-submit.ts :: onboarding-gate :: server-deny-reason-repeat',
+  'src/modules/session/prompt-submit.ts :: onboarding-gate :: team-mode-switch-authorized',
+  'src/modules/session/session-start-setup.ts :: onboarding-gate :: setup-pending',
+  'src/modules/session/session-start-setup.ts :: onboarding-gate :: server-deny-reason',
+  'src/modules/session/triage-directive.ts :: onboarding-gate :: maintenance-triage-main-agent',
+  'src/modules/session/triage-directive.ts :: onboarding-gate :: maintenance-triage-subagents',
+];
+
+// ── the parity bar: "every gate keeps a VERBATIM deny fallback" ──────────────
+// The claim in AGENTS.md is that the TS fallback is a verbatim copy of the
+// T1BLOCK, so a torn install renders the same prose. Measured across the whole
+// population (135 pairs = a call site that BOTH passes a fallback AND names a
+// block that exists), it is true of 70. It is not "mostly true with a few typos"
+// — the divergences fall into three kinds with three different meanings, and
+// collapsing them into one relaxed comparison would hide the only kind that
+// matters:
+//
+//   70  the fallback IS the block, byte for byte, once `{{VAR}}` is substituted
+//       to the `${expr}` the call site passes. This is the bar.
+//   31  the fallback is not a LITERAL at the call site at all — a lookup into a
+//       reason table, or a `…Reason()` helper that composes several sentences.
+//       There is nothing at the call site to transcribe; the prose lives in
+//       another symbol. FALLBACK_NOT_A_LITERAL.
+//   12  ONE block name, SEVERAL call sites, each with its OWN site-specific
+//       fallback. A single generic T1BLOCK cannot be byte-identical to four
+//       different fallbacks — this is a structural fact about the block, not
+//       drift. BLOCK_WITH_PER_SITE_FALLBACKS.
+//   22  genuine 1:1 prose divergence: one block, one fallback, different words.
+//       PROSE_DIVERGED_FROM_FALLBACK.
+//
+// The bar is byte-identity, NOT a normalised comparison. Normalising whitespace
+// or stripping backticks would have silently absorbed `no-any` (SKILL.md ships
+// ``Avoid `any` — use `unknown` …`` while its fallback reads `Avoid the any type
+// — use unknown …`) and 21 others, which is how they got here unnoticed. Every
+// divergence is pinned BY NAME instead, and each list is an EQUALITY: a new
+// divergence fails, and so does a stale pin whose pair now matches.
+//
+// A pinned divergence is not a defect to be fixed on sight — the two texts are
+// two spellings of the same refusal and both read fine. What the pin buys is
+// that the NEXT one is a test failure and not a discovery.
+const PROSE_DIVERGED_FROM_FALLBACK: readonly string[] = [
+  'agent-model :: agent-reuse-await-codex-meta',
+  'agent-model :: architect-phase-incomplete',
+  'plan-guard :: architect-memory-baseline-gate',
+  'plan-guard :: architect-opencode-queue-gate',
+  'plan-guard :: architect-planning-allowlist-gate',
+  'plan-guard :: cross-feature-import',
+  'plan-guard :: css-ts-import',
+  'plan-guard :: frontend-collapse-gate',
+  'plan-guard :: frontend-structure-hot-gate',
+  'plan-guard :: monorepo-root-flat-scaffold',
+  'plan-guard :: no-any',
+  'plan-guard :: plan-opencode-queue-gate',
+  'plan-guard :: plan-opencode-queue-policy-gate',
+  'plan-guard :: run-team-runtime-allowlist-gap',
+  'plan-guard :: run-team-scope-conflict',
+  'plan-guard :: scaffold-plan-gate',
+  'plan-guard :: tester-qa-build-identity-mismatch',
+  'plan-guard :: tester-qa-build-identity-missing',
+  'plan-guard :: tester-qa-v2-gate',
+  'plan-guard :: tester-stale-qa-gate',
+  'plan-guard :: verification-contract-refresh-gate',
+  'plan-guard :: verification-contract-scan-gate',
+];
+
+// One name, several call sites, each passing a DIFFERENT fallback. The T1BLOCK
+// is a generic stem and the fallbacks are per-arm; byte-identity is not
+// available to them by construction. The two `run-team-*` entries in
+// TS_ONLY_PROSE are the same shape caught one step earlier — a name that needs
+// splitting before it can be authored at all.
+const BLOCK_WITH_PER_SITE_FALLBACKS: readonly string[] = [
+  'plan-guard :: architecture-contract-gate',
+  'plan-guard :: bootstrap-publication-gate',
+  'plan-guard :: frontend-structure-completion-gate',
+  'plan-guard :: lighthouse-claim-reconciliation-gate',
+  'plan-guard :: reviewer-structure-gate',
+  'plan-guard :: run-team-fallback-taken',
+];
+
+// The fallback argument is not a literal the parse can evaluate, so there is no
+// text at the call site to compare. Every one is a deliberate indirection: a
+// per-host/per-provider reason TABLE indexed at the call site, or a helper that
+// assembles several sentences from runtime state. Pinned with its shape, so a
+// fallback that becomes an inline literal (and therefore JOINS the comparable
+// population) shows up here as a stale line rather than slipping in unmeasured.
+const FALLBACK_NOT_A_LITERAL: readonly string[] = [
+  'agent-model :: cursor-agent-type-required',
+  'agent-model :: cursor-api-limit-auto-retry',
+  'agent-model :: cursor-api-limit-composer-choice',
+  'agent-model :: cursor-api-limit-terminal',
+  'agent-model :: cursor-model-failure-generic',
+  'agent-model :: cursor-model-unavailable-runtime-choice',
+  'materialize :: digest-size',
+  'onboarding-gate :: browser-open-denied',
+  'onboarding-gate :: claude-wait-background-denied',
+  'onboarding-gate :: claude-wait-link-first',
+  'onboarding-gate :: codex-wait-link-first',
+  'onboarding-gate :: cursor-wait-link-first',
+  'onboarding-gate :: server-bootstrap-required',
+  'onboarding-gate :: server-bootstrap-required-compact',
+  'onboarding-gate :: stop-setup-link-posted',
+  'onboarding-gate :: stop-setup-links-shown',
+  'onboarding-gate :: stop-setup-required',
+  'onboarding-gate :: tech-classify-required',
+  'onboarding-gate :: windsurf-server-deny-reason',
+  'onboarding-gate :: windsurf-server-deny-reason-repeat',
+  'plan-guard :: capability-no-implementer-gate',
+  'plan-guard :: contract-self-conflict',
+  'session :: authoring-write-guard',
+];
 
 // Per-module floors, from the parsed census. A module listed here that stops
 // yielding call sites fails BY NAME — the failure this repo keeps re-learning
@@ -671,6 +965,13 @@ const MODULE_SITE_FLOORS: Readonly<Record<string, number>> = {
 
 function siteLabel(site: BlockCallSite): string {
   return `${site.relFile}:${site.line}`;
+}
+
+// file :: module :: block, with a POSIX separator so the pin above reads the
+// same on every platform.
+function renderLabels(site: BlockCallSite): string[] {
+  const file = site.relFile.split(path.sep).join('/');
+  return (site.names ?? []).map((name) => `${file} :: ${site.moduleId} :: ${name}`);
 }
 
 // ── the census itself ────────────────────────────────────────────────────────
@@ -769,14 +1070,6 @@ test('every block a gate renders exists in the SKILL.md that gate reads', () => 
 
 test('a block rendered with NO verbatim fallback is a live empty-reason risk and must exist', () => {
   const bare = CENSUS.sites.filter((site) => !site.hasFallback);
-  // The floor that makes the assertion below non-vacuous. Measured at 36 of
-  // 174 sites; the convention in AGENTS.md says every gate carries a fallback,
-  // and this is the count of the sites where it does not.
-  assert.ok(
-    bare.length >= 30,
-    `expected at least 30 call sites passing NO verbatim fallback, found ${bare.length} — if the fallback slot moved, `
-    + 'this assertion is measuring nothing',
-  );
   const defects: string[] = [];
   for (const site of bare) {
     if (!site.moduleId || !site.names) continue;
@@ -790,6 +1083,200 @@ test('a block rendered with NO verbatim fallback is a live empty-reason risk and
     `${defects.length} call site(s) render an EMPTY reason today: the block is absent from the SKILL.md and the site `
     + `passes no verbatim fallback, so the agent is refused and told nothing:\n  ${defects.join('\n  ')}`,
   );
+});
+
+test('the fallback-less population is pinned exactly and can only be shrunk deliberately', () => {
+  const measured = [...new Set(
+    CENSUS.sites.filter((site) => !site.hasFallback).flatMap(renderLabels),
+  )].sort();
+  const pinned = [...NO_FALLBACK_SITES].sort();
+
+  const added = measured.filter((label) => !pinned.includes(label));
+  assert.deepEqual(
+    added, [],
+    `${added.length} NEW call site(s) render a deny with no verbatim fallback. The block exists today, so nothing is `
+    + 'broken yet — but a later rename or deletion of that T1BLOCK, or a SKILL.md that goes missing in the shipped '
+    + 'install, makes this deny render an EMPTY reason. Pass a verbatim fallback as the assembler\'s fallback argument '
+    + `(the plan-guard \`Block\` type makes it REQUIRED, which is why plan-guard has none of these):\n  ${added.join('\n  ')}`,
+  );
+
+  const removed = pinned.filter((label) => !measured.includes(label));
+  assert.deepEqual(
+    removed, [],
+    `${removed.length} pinned entr(ies) no longer name a fallback-less site. If you gave them a verbatim fallback, `
+    + `delete the line from NO_FALLBACK_SITES in the same change — a stale entry masks the next real one:\n  ${removed.join('\n  ')}`,
+  );
+});
+
+// ── the parity comparison ────────────────────────────────────────────────────
+
+interface ParityPair {
+  readonly key: string;
+  readonly site: BlockCallSite;
+  /** The block body with `{{VAR}}` substituted to the `${expr}` the call site
+   *  passes for it — the form the fallback is written in. */
+  readonly expected: string;
+  /** The block body untouched. `skillBlock` runs applyVars over the FALLBACK as
+   *  well as over the block, so a fallback that carries `{{VAR}}` verbatim
+   *  renders identically too; both spellings satisfy the bar. */
+  readonly body: string;
+  readonly actual: string | null;
+}
+
+function parityPairs(census: Census): ParityPair[] {
+  const out: ParityPair[] = [];
+  for (const site of census.sites) {
+    if (!site.moduleId || !site.names || !site.hasFallback) continue;
+    const text = census.skillTextByModule.get(site.moduleId);
+    if (text === undefined) continue;
+    for (const name of site.names) {
+      const body = extractBlock(text, name);
+      if (body === null) continue;
+      const vars = site.vars ?? {};
+      let expected = body;
+      for (const [varName, expression] of Object.entries(vars)) {
+        expected = expected.split(`{{${varName}}}`).join(`\${${expression}}`);
+      }
+      out.push({ key: `${site.moduleId} :: ${name}`, site, expected, body, actual: site.fallbackCooked });
+    }
+  }
+  return out;
+}
+
+const matchesBar = (pair: ParityPair): boolean => pair.actual === pair.expected || pair.actual === pair.body;
+
+test('the verbatim-fallback claim holds byte for byte, or the pair is pinned by name', () => {
+  const pairs = parityPairs(CENSUS);
+  assert.ok(
+    pairs.length >= 130,
+    `expected at least 130 comparable (block, fallback) pairs, found ${pairs.length} — the cooker or the extractor broke`,
+  );
+
+  // A name with several call sites passing DIFFERENT fallbacks cannot be
+  // byte-identical to all of them. Measured, then required to EQUAL the list, so
+  // a new one is a failure and a name that gets split into per-arm blocks
+  // forces its line to be deleted.
+  const byKey = new Map<string, ParityPair[]>();
+  for (const pair of pairs) byKey.set(pair.key, [...(byKey.get(pair.key) ?? []), pair]);
+  const perSite = [...byKey.entries()]
+    .filter(([, group]) => new Set(group.map((pair) => pair.actual)).size > 1)
+    .map(([key]) => key).sort();
+  assert.deepEqual(
+    perSite, [...BLOCK_WITH_PER_SITE_FALLBACKS].sort(),
+    'the set of block names whose call sites pass DIFFERENT fallbacks moved. A new one means one T1BLOCK is now being '
+    + 'asked to stand in for several distinct refusals — give each arm its own block name, or add it here with the '
+    + 'reason. A name that left means it can be compared now, so delete its line.',
+  );
+
+  const notLiteral = [...new Set(pairs.filter((pair) => pair.actual === null).map((pair) => pair.key))].sort();
+  assert.deepEqual(
+    notLiteral, [...FALLBACK_NOT_A_LITERAL].sort(),
+    'the set of fallbacks that are not literals at the call site moved. A NEW one leaves the parity population '
+    + 'unmeasured — inline the prose, or add it here. One that LEFT is now comparable, so delete its line and let the '
+    + 'bar hold it:\n  '
+    + `found: ${notLiteral.join(', ')}`,
+  );
+
+  // The bar. Byte-identity, with no normalisation of whitespace, backticks or
+  // hole spelling: each of those relaxations was measured to absorb real
+  // rewordings.
+  const comparable = pairs.filter((pair) => pair.actual !== null
+    && !BLOCK_WITH_PER_SITE_FALLBACKS.includes(pair.key));
+  const diverged = [...new Set(comparable.filter((pair) => !matchesBar(pair)).map((pair) => pair.key))].sort();
+
+  const unpinned = diverged.filter((key) => !PROSE_DIVERGED_FROM_FALLBACK.includes(key));
+  assert.deepEqual(
+    unpinned, [],
+    `${unpinned.length} deny paragraph(s) DRIFTED between skill/SKILL.md and the verbatim TS fallback. SKILL.md is `
+    + 'what ships and what the operator reviews; the fallback is what renders when SKILL.md cannot be read, and an '
+    + 'agent must not be refused with two different reasons. Apply the edit to both. If the divergence is deliberate '
+    + 'and benign, add the name to PROSE_DIVERGED_FROM_FALLBACK — never relax the comparison, because that admits the '
+    + `next real drift silently:\n  ${unpinned.map((key) => {
+      const pair = comparable.find((candidate) => candidate.key === key)!;
+      return `${key} (${siteLabel(pair.site)})\n      SKILL.md: ${JSON.stringify(pair.expected)}\n      TS      : ${JSON.stringify(pair.actual)}`;
+    }).join('\n  ')}`,
+  );
+
+  // Equality, not containment, and against the MEASURED divergence set rather
+  // than "is it still in the population": an entry that names a pair which now
+  // matches, a pair that moved into one of the two lists above, or nothing at
+  // all, is a line that has stopped exempting anything.
+  const stale = PROSE_DIVERGED_FROM_FALLBACK.filter((key) => !diverged.includes(key));
+  assert.deepEqual(
+    stale, [],
+    `${stale.length} PROSE_DIVERGED_FROM_FALLBACK entr(ies) name nothing that diverges — the pair matches now (or the `
+    + `name is gone), so delete the line in the same change. A stale pin masks the next real drift:\n  ${stale.join('\n  ')}`,
+  );
+
+  // Non-vacuity from the other side: the bar must be PASSED by a large majority,
+  // or the comparison is answering "everything differs" and the pins above are
+  // doing all the work.
+  const passing = comparable.filter(matchesBar);
+  assert.ok(
+    passing.length >= 60,
+    `only ${passing.length} of ${comparable.length} comparable pairs are byte-identical — a comparison that almost `
+    + 'nothing passes is measuring the comparison, not the prose',
+  );
+});
+
+test('the parity comparison detects a one-word divergence in a tree it has never seen', () => {
+  // The real assertions above are pinned equalities, so they cannot show that
+  // the COMPARATOR works — a cooker that returned the block body for every
+  // fallback would pass them all. These fixtures drive the same code over a
+  // synthetic tree: identical prose must compare equal, and a single changed
+  // word must not.
+  const handler = (fallback: string): string =>
+    `${PRELUDE}export const g = () => skillBlock('fx', 'a', {}, ${fallback});\n`;
+
+  withSyntheticRoot({
+    'src/modules/fx/skill/SKILL.md': FIXTURE_SKILL('a'),
+    'src/modules/fx/handler.ts': handler("'prose'"),
+  }, (root) => {
+    const pairs = parityPairs(scanRoot(root));
+    assert.equal(pairs.length, 1, 'precondition: one comparable pair');
+    assert.equal(pairs[0]!.actual, 'prose', 'the fallback literal was cooked to its value');
+    assert.equal(matchesBar(pairs[0]!), true, 'identical prose passes the bar');
+  });
+
+  withSyntheticRoot({
+    'src/modules/fx/skill/SKILL.md': FIXTURE_SKILL('a'),
+    'src/modules/fx/handler.ts': handler("'prose.'"),
+  }, (root) => {
+    const pairs = parityPairs(scanRoot(root));
+    assert.equal(pairs.length, 1);
+    assert.equal(matchesBar(pairs[0]!), false, 'one added character is a divergence, not a rounding error');
+  });
+
+  // A backtick spelled in a single-quoted literal and in a template literal is
+  // the same rendered character. If the cooker used `.getText()` this pair would
+  // read as drifted, and 26 plan-guard pairs would need a pin they do not
+  // deserve.
+  withSyntheticRoot({
+    'src/modules/fx/skill/SKILL.md': '---\nname: fixture\n---\n\n'
+      + '<!-- T1BLOCK:BEGIN a -->\nAvoid `any` here.\n<!-- T1BLOCK:END a -->\n',
+    'src/modules/fx/handler.ts': handler('`Avoid \\`any\\` here.`'),
+  }, (root) => {
+    const pairs = parityPairs(scanRoot(root));
+    assert.equal(pairs.length, 1);
+    assert.equal(pairs[0]!.actual, 'Avoid `any` here.', 'the template literal cooked to its VALUE, not its source');
+    assert.equal(matchesBar(pairs[0]!), true);
+  });
+
+  // And the `{{VAR}}` → `${expr}` substitution is real: the block carries the
+  // placeholder, the fallback interpolates the expression the call site names
+  // for it, and the two are the same pair.
+  withSyntheticRoot({
+    'src/modules/fx/skill/SKILL.md': '---\nname: fixture\n---\n\n'
+      + '<!-- T1BLOCK:BEGIN a -->\nTarget: {{TARGET}}.\n<!-- T1BLOCK:END a -->\n',
+    'src/modules/fx/handler.ts': `${PRELUDE}declare const filePath: string;\n`
+      + "export const g = () => skillBlock('fx', 'a', { TARGET: filePath }, `Target: ${filePath}.`);\n",
+  }, (root) => {
+    const pairs = parityPairs(scanRoot(root));
+    assert.equal(pairs.length, 1);
+    assert.deepEqual(pairs[0]!.site.vars, { TARGET: 'filePath' }, 'the vars bag was read off the call');
+    assert.equal(matchesBar(pairs[0]!), true, 'the placeholder and the interpolation are the same hole');
+    assert.equal(pairs[0]!.expected, 'Target: ${filePath}.');
+  });
 });
 
 test('a block name the parse cannot resolve is declared, never silently skipped', () => {
@@ -914,7 +1401,16 @@ test('discovery that finds nothing fails a floor rather than passing vacuously',
     // silent pass. Proven by running the same predicates the tests above run.
     assert.equal(census.modules.length >= 6, false, 'the module floor would fail');
     assert.equal(census.sites.length >= 150, false, 'the site floor would fail');
-    assert.equal(census.sites.filter((site) => !site.hasFallback).length >= 30, false, 'the no-fallback floor would fail');
+    // The fallback-less pin is an EQUALITY, so an empty census fails it from
+    // the other side: every pinned entry reads as removed. That is why the pin
+    // replaced a count floor — a floor is satisfied by having more vulnerable
+    // sites, and would have failed the day the last one was given a fallback.
+    const measured = new Set(census.sites.filter((site) => !site.hasFallback).flatMap(renderLabels));
+    assert.equal(measured.size, 0, 'precondition: nothing measured');
+    assert.equal(
+      NO_FALLBACK_SITES.filter((label) => !measured.has(label)).length, NO_FALLBACK_SITES.length,
+      'every pinned fallback-less site would report as removed, so the pin fails closed on an empty census',
+    );
   });
 });
 

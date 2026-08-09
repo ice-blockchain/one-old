@@ -30,7 +30,7 @@ import {
   unique,
 } from './git';
 import {
-  IMPORTANT_VISUAL_PATH_RE,
+  IMPORTANT_VISUAL_CHANGED_PATH_RE,
   browserRequired,
   changedRoutes,
   deriveUiImpact,
@@ -110,7 +110,12 @@ export function buildVerificationContract(
   const visualRisk = impact === 'visual' && (
     Boolean(options.advisoryLighthouse && Object.keys(options.advisoryLighthouse).length > 0)
     || plannedImportantVisualChange(projectRoot, architecture)
-    || baselineDiff.paths.some((file) => IMPORTANT_VISUAL_PATH_RE.test(file))
+    // The CHANGED-path anchor, not the planned one: these paths exist, so the
+    // name is not the whole evidence and the filename-prefix branch is the
+    // measured false-positive source (see impact.ts). The planned side keeps
+    // that branch and reaches this same `visualRisk` through
+    // plannedImportantVisualChange on the line above.
+    || baselineDiff.paths.some((file) => IMPORTANT_VISUAL_CHANGED_PATH_RE.test(file))
   );
   // A page-speed budget BLOCKS only when someone declared one: an explicit
   // threshold from the user/plan, an architect `performanceRisk`, or a redesign.

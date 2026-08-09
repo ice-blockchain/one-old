@@ -408,7 +408,16 @@ export function appendDecision(projectRoot: string, record: DecisionRecord): voi
       inputs: shrink(record.inputs) as Record<string, unknown>,
       stateWrites: boundStateWrites(record.stateWrites),
     };
-    appendTextFile(file, `${JSON.stringify(bounded)}\n`);
+    // The REFUSED half of the same rule. `logFailure` above covers a THROWN
+    // append; a refused one returns `false` and used to be indistinguishable
+    // from a durable one, so the module that documents "fail-open, not
+    // fail-silent" was silent for the one outcome it can actually produce here.
+    // The consent fence is already excluded by `decisionsRecorded`, so what is
+    // left is a planted symlink or a path escaping the state dir — anomalous by
+    // construction, never a per-tool-call log line.
+    if (!appendTextFile(file, `${JSON.stringify(bounded)}\n`)) {
+      logFailure('append', 'the state-write fence refused the decision log append');
+    }
   } catch (error) {
     logFailure('append', error);
   }

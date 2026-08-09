@@ -101,6 +101,14 @@ Plan gate: `.traffic-one/plan.md` is missing and this project is in Low/main-age
 Runtime contract gate: `.traffic-one/runs/<runId>/assignments.json` is generated atomically from CompiledArchitectureV1 and VerificationContractV2. Agents and the parent may not create, edit, widen, or replace it; change ArchitectureInputV1 and re-run PLAN_READY compilation instead.
 <!-- T1BLOCK:END runtime-assignments-owner-gate -->
 
+<!-- T1BLOCK:BEGIN runtime-sidecar-owner-gate -->
+Runtime sidecar gate: `{{TARGET}}` is generated and atomically published by Traffic One runtime. Agents, children, and the parent may read it but may not create, edit, delete, widen, replace, or repair it through Write/Edit/apply_patch/shell. Change the semantic ArchitectureInputV1 or invoke the owning runtime transition instead.
+<!-- T1BLOCK:END runtime-sidecar-owner-gate -->
+
+<!-- T1BLOCK:BEGIN architecture-input-owner-gate -->
+Architecture input gate: only the parent-bound `senior-architect` planning role may write ArchitectureInputV1; active role is `{{ROLE}}`. Retrying the write, or making it through shell instead, draws the same refusal — the owner is decided by the run's role claim, not by the tool. Record the semantic change you wanted (routes, modules including component placement, exact UI primitive identifiers, i18n locale/exact-brand intent, or a narrow exception request) in your own digest instead, and let the orchestrator route it to `senior-architect`, who owns this artifact and re-runs PLAN_READY compilation from it.
+<!-- T1BLOCK:END architecture-input-owner-gate -->
+
 <!-- T1BLOCK:BEGIN architecture-input-gate -->
 Architecture input gate: ArchitectureInputV1 may contain only semantic routes, modules (including component placement), exact UI primitive identifiers, i18n locale/exact-brand intent, and narrow exception requests. Runtime owns profiles, roots, roles, limits, output paths, and the baseline. Fix: {{ERRORS}}.
 <!-- T1BLOCK:END architecture-input-gate -->
@@ -156,6 +164,10 @@ Frontend completion gate: STRUCT_SCAN_INCOMPLETE after {{SCANNED}} product sourc
 <!-- T1BLOCK:BEGIN frontend-collapse-gate -->
 Frontend completion gate: do not write `IMPLEMENTED` with collapsed source. `{{FILE}}` packs an entire component/route onto one line. Collapsed or minified product source is a defect even when build and typecheck pass. Format it and split routes, pages, features, and shared components according to the compiled architecture before re-emitting `IMPLEMENTED`.
 <!-- T1BLOCK:END frontend-collapse-gate -->
+
+<!-- T1BLOCK:BEGIN implementer-collapse-gate -->
+Implementer completion gate: do not write `IMPLEMENTED` with collapsed source. `{{FILE}}` packs an entire function/component onto a single line — collapsed/minified source is a defect even when build, typecheck and lint pass, and the project formatter could not repair it. Write one statement per line, run the project formatter, and re-emit `IMPLEMENTED`.
+<!-- T1BLOCK:END implementer-collapse-gate -->
 
 <!-- T1BLOCK:BEGIN frontend-emit-config-gate -->
 Frontend completion gate: {{PROBLEMS}}. The stock Vite template emits compiled `.js`/`.d.ts` next to every source on the first build, and the stale output can shadow the module at import time. Fix exactly this: set `"noEmit": true` in the app tsconfig, remove `"composite": true`, and use `"build": "tsc --noEmit && vite build"`, `"typecheck": "tsc --noEmit"`. Then re-emit `IMPLEMENTED`.
@@ -285,9 +297,21 @@ Run-team enforcement gate: the active Traffic One role `{{ROLE}}` does not own `
 Run-team enforcement gate: unexpected denial for {{ROLE}} writing `{{FILEPATH}}`. This is a gate bug — please report.
 <!-- T1BLOCK:END run-team-unexpected -->
 
+<!-- T1BLOCK:BEGIN run-team-quick-fix-contract -->
+Run-team enforcement gate: the quick-fix worker has no valid parent-published WorkUnitContract covering every requested output. Not covered by one: `{{TARGETS}}`. No maintenance or fallback write is allowed without the exact original contract and allowlist hash, and you cannot publish or widen that contract yourself — only the parent can, so retrying this write draws the same refusal. Write only the outputs your own published contract already names; if it names none of these, stop and write your digest with verdict `BLOCKED` listing exactly these paths, so the orchestrator can re-run parent preflight with a bounded runtime-owned contract that covers them.
+<!-- T1BLOCK:END run-team-quick-fix-contract -->
+
+<!-- T1BLOCK:BEGIN run-team-runtime-contract-invalid -->
+Run-team enforcement gate: this run has CompiledArchitectureV1 but its current-run runtime assignments or VerificationContractV2 are missing, stale, or tampered. The write fails closed; repair/recompile this run and never borrow an assignments manifest from a sibling run.
+<!-- T1BLOCK:END run-team-runtime-contract-invalid -->
+
 <!-- T1BLOCK:BEGIN run-team-suffix -->
 If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.
 <!-- T1BLOCK:END run-team-suffix -->
+
+<!-- T1BLOCK:BEGIN run-id-mismatch -->
+Run-id gate: this run's id (`currentRunId` in .traffic-one/.one.json) is `{{EXPECTED}}`, but this write targets run-id `{{WRONG}}`. The run-id is a plain epoch-millisecond number Traffic One mints for you — do NOT generate one with `date` (an ISO/UTC string like `2026-06-17T12-09-40Z` splits run state: assignments and digests land under a stray `.traffic-one/runs/{{WRONG}}/` that the run-team and OpenCode gates — keyed on `{{EXPECTED}}` — cannot see, blocking implementer spawns). Read `currentRunId` from .traffic-one/.one.json and write under `.traffic-one/runs/{{EXPECTED}}/` and `.traffic-one/digests/{{EXPECTED}}/` instead.
+<!-- T1BLOCK:END run-id-mismatch -->
 
 <!-- T1BLOCK:BEGIN pages-service-files -->
 Service/store/hook/slice files belong in src/services/, src/features/<name>/, or packages/* — not in src/pages/.

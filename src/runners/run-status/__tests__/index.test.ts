@@ -406,6 +406,67 @@ test('a terminal transition triggers the retention sweep; a non-terminal one doe
   });
 });
 
+// The sweep is IRREVERSIBLE and used to answer `void`, so a settlement whose
+// cleanup reclaimed nothing it planned printed `{"ok":true,…}` and said no more.
+// The reachable half is a REFUSAL, not a crash: `removePath` answers false when
+// the state-write fence declines a path, and a project whose use-plugin consent
+// is unanswered has every path declined — `.traffic-one` then grows without
+// bound while every settlement reports success.
+//
+// The fence here is the READ-BEFORE-WRITE variant. The sweep schedules
+// `.codegraph-build-lock` only after `existsSync` and a `statSync` mtime resolve
+// at it, so a DANGLING link is never scheduled and `removePath` is never
+// reached; the real file is moved aside and the original name links to it, with
+// a guard below that the read still resolves. The unfenced digest dir is the
+// WRITABLE BASELINE: it must really be reclaimed in the same call.
+test('a settlement whose cleanup was REFUSED still exits 0, and says so', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 't1-run-status-refused-'));
+  try {
+    fs.mkdirSync(path.join(root, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.traffic-one', '.one.json'), JSON.stringify({ currentRunId: 'run-2' }), 'utf8');
+    fs.writeFileSync(
+      path.join(root, '.traffic-one', 'retention.json'),
+      JSON.stringify({ keepRuns: 1, backupKeep: 1, orphanTtlDays: 3 }),
+      'utf8',
+    );
+    // keepRuns:1 plus the reserved current/settled id means run-2 and run-1
+    // survive and run-0 is the one genuinely superseded candidate.
+    for (const id of ['run-0', 'run-1', 'run-2']) {
+      fs.mkdirSync(path.join(root, '.traffic-one', 'digests', id), { recursive: true });
+    }
+    const lock = path.join(root, '.traffic-one', '.codegraph-build-lock');
+    const behind = `${lock}.real`;
+    const stale = (Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000;
+    fs.writeFileSync(behind, 'held\n', 'utf8');
+    fs.utimesSync(behind, stale, stale);
+    fs.symlinkSync(behind, lock);
+    assert.equal(fs.existsSync(lock), true, 'fixture: the link RESOLVES — a dangling one is never scheduled');
+
+    assert.equal(capturedStderr(() => {
+      assert.equal(main(['--run-id', 'run-2', '--status', 'active'], root), 0);
+    }), '', 'a non-terminal transition sweeps nothing and reports nothing');
+
+    let code = -1;
+    const stderr = capturedStderr(() => {
+      code = main(['--run-id', 'run-2', '--status', 'blocked', '--outcome', 'review-cycle-cap'], root);
+    });
+    assert.equal(code, 0, 'the SETTLEMENT stands — cleanup must never fail it');
+    assert.equal(
+      fs.existsSync(path.join(root, '.traffic-one', 'digests', 'run-0')),
+      false,
+      'WRITABLE BASELINE: the unfenced candidate really was reclaimed',
+    );
+    assert.equal(fs.lstatSync(lock).isSymbolicLink(), true, 'the fenced candidate survived, as the fence intends');
+    assert.match(
+      stderr,
+      /run-status: run run-2 settled blocked and the settlement stands, but post-settlement cleanup reclaimed only \d+ of \d+ candidate path\(s\) — the rest were refused\. Re-run it with `traffic-one-cleanup\.cjs --apply`\./,
+      'the CLI names the run, the shortfall, and the command that retries it',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('run-status CLI rejects completed outcomes until verification or shipper evidence exists', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 't1-run-status-evidence-'));
   const originalOut = process.stdout.write;

@@ -242,7 +242,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   if (architectureInputTarget) {
     if (writerRole && writerRole !== 'senior-architect') {
       violations.push(block('architecture-input-owner-gate',
-        `Architecture input gate: only the parent-bound \`senior-architect\` planning role may write ArchitectureInputV1; active role is \`${writerRole}\`.`,
+        `Architecture input gate: only the parent-bound \`senior-architect\` planning role may write ArchitectureInputV1; active role is \`${writerRole}\`. Retrying the write, or making it through shell instead, draws the same refusal — the owner is decided by the run's role claim, not by the tool. Record the semantic change you wanted (routes, modules including component placement, exact UI primitive identifiers, i18n locale/exact-brand intent, or a narrow exception request) in your own digest instead, and let the orchestrator route it to \`senior-architect\`, who owns this artifact and re-runs PLAN_READY compilation from it.`,
         { ROLE: writerRole }));
     }
     if (contentVerified) {

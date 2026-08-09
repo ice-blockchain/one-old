@@ -408,7 +408,15 @@ test('an oversized decisions.jsonl that is a SYMLINK is never trimmed or appende
     fs.symlinkSync(outside, path.join(dir, 'decisions.jsonl'));
 
     drainStateWrites(); // the collector is per-process and earlier tests have used it
-    appendDecision(cwd, baseRecord({ runId: 'trim-run', correlationId: buildCorrelationId('trim-run', 1, process.pid) }));
+    const originalErr = process.stderr.write;
+    let stderr = '';
+    process.stderr.write = ((chunk: unknown) => { stderr += String(chunk); return true; }) as typeof process.stderr.write;
+    try {
+      appendDecision(cwd, baseRecord({ runId: 'trim-run', correlationId: buildCorrelationId('trim-run', 1, process.pid) }));
+    } finally {
+      process.stderr.write = originalErr;
+    }
+    assert.match(stderr, /decision-log append failed: the state-write fence refused/, 'the refused append is announced');
 
     assert.equal(fs.statSync(outside).size, before, 'the file behind the link was neither trimmed nor appended to');
     assert.equal(fs.readdirSync(dir).filter((name) => name.includes('.tmp')).length, 0, 'no temp file was left behind');
@@ -427,6 +435,53 @@ test('an oversized decisions.jsonl that is a SYMLINK is never trimmed or appende
     // visible, and a refused trim must leave nothing but refusals behind.
     const wrote = drainStateWrites().filter((record) => record.ok);
     assert.deepEqual(wrote, [], 'a refused trim performed a write anyway');
+  });
+});
+
+// A REFUSED append and a THROWN one are different channels, and this module's
+// header commits to "fail-open, not fail-silent" for failure in general. Only
+// the throw was reported: `appendTextFile` answers `false` for a refusal without
+// raising, so the one outcome the fence can actually produce here left no trace
+// anywhere — the audit record an operator is reading precisely to reconstruct a
+// session simply was not there, and nothing said why.
+test('a decision-log append the fence REFUSED is announced, not swallowed', () => {
+  withProject((cwd) => {
+    // WRITABLE BASELINE, first: an unfenced append in this very project lands.
+    appendDecision(cwd, baseRecord({ runId: 'ok-run', correlationId: buildCorrelationId('ok-run', 1, process.pid) }));
+    assert.equal(readDecisions(cwd, 'ok-run').length, 1, 'baseline: an unfenced append really does land');
+
+    const dir = path.join(cwd, '.traffic-one', 'runs', 'fenced-run', 'debug');
+    fs.mkdirSync(dir, { recursive: true });
+    // MOVE-ASIDE rather than a dangling link, because appendDecision STATS the
+    // destination before it writes: a link the read cannot resolve sends it down
+    // the size-0 branch instead of the one under test, and the fixture would
+    // prove nothing about the refusal. The size guard below is what pins that.
+    const behind = path.join(cwd, 'outside-decisions.jsonl');
+    fs.writeFileSync(behind, `${JSON.stringify({ prior: true })}\n`, 'utf8');
+    const link = path.join(dir, 'decisions.jsonl');
+    fs.symlinkSync(behind, link);
+    const before = fs.statSync(link).size;
+    assert.ok(before > 0, 'fixture: the link RESOLVES — the pre-write read reaches the file behind it');
+
+    const originalErr = process.stderr.write;
+    let stderr = '';
+    process.stderr.write = ((chunk: unknown) => { stderr += String(chunk); return true; }) as typeof process.stderr.write;
+    try {
+      appendDecision(cwd, baseRecord({
+        runId: 'fenced-run',
+        correlationId: buildCorrelationId('fenced-run', 2, process.pid),
+      }));
+    } finally {
+      process.stderr.write = originalErr;
+    }
+
+    assert.equal(fs.statSync(behind).size, before, 'nothing was written through the link');
+    assert.ok(fs.lstatSync(link).isSymbolicLink(), 'the link is left exactly as it was');
+    assert.match(
+      stderr,
+      /\[traffic-one\] decision-log append failed: the state-write fence refused the decision log append/,
+      'the refused append names itself, exactly as a thrown one does',
+    );
   });
 });
 

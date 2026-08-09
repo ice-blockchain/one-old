@@ -54,11 +54,17 @@ function claudeHooks(promptStatus: boolean): Rec {
   };
 }
 
+// Both optional keys are rendered the same way and for the same reason: Cursor
+// documents each one against a subset of events, so an event that is not in that
+// subset omits the key rather than restating its default. The per-event decision
+// (which events are fail-closed, and why the rest are not) lives beside the data
+// in sources/hooks.ts, not here.
 function cursorConfig(): Rec {
   const hooks: Rec = {};
-  for (const { event, subcommand, loopLimit } of CURSOR_EVENTS) {
+  for (const { event, subcommand, loopLimit, failClosed } of CURSOR_EVENTS) {
     hooks[event] = [{
       command: cursorCommand(subcommand),
+      ...(failClosed ? { failClosed } : {}),
       ...(loopLimit !== undefined ? { loop_limit: loopLimit } : {}),
     }];
   }

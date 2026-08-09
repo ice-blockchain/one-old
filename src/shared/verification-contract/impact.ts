@@ -122,8 +122,40 @@ const BEHAVIOR_CODE_RE = /\b(?:onClick|onSubmit|navigate|router|hydrateRoot|crea
 // backend code — and every match forced a third viewport through the whole sweep.
 // Require it to look like a breakpoint.
 const TABLET_RISK_RE = /(?:tablet|breakpoint|@media|\bmd:|min-width|max-width|\b768px\b|\bmd\b\s*:\s*['"]?768)/i;
-export const IMPORTANT_VISUAL_PATH_RE =
-  /(?:^|\/)(?:packages\/ui|design-system|theme|tokens?|layouts?)(?:\/|[.-])|(?:^|\/)(?:globals?|app|styles?)\.(?:css|scss|sass|less)$|(?:^|\/)(?:tailwind|uno|windi)\.config\.(?:[cm]?[jt]s|ts)$/i;
+// The "is this a REDESIGN-scale surface?" vocabulary, and it needs the same
+// one-vocabulary-two-anchors split PRESENTATION_NAMES above already has, for
+// the same measured reason and with the same division of labour between its
+// two consumers.
+//
+// The exact-filename half is INTRINSIC and shared by both anchors: a
+// `globals.css` or a `tailwind.config.ts` is named in full, extension and all,
+// so it cannot claim anything but the thing it names.
+const IMPORTANT_VISUAL_FILE = '(?:^|/)(?:globals?|app|styles?)\\.(?:css|scss|sass|less)$'
+  + '|(?:^|/)(?:tailwind|uno|windi)\\.config\\.(?:[cm]?[jt]s|ts)$';
+const IMPORTANT_VISUAL_NAMES = 'packages/ui|design-system|theme|tokens?|layouts?';
+// PLANNED outputs, where the name is the whole of the available evidence
+// because the path does not exist yet — so the `[.-]` branch stays, exactly as
+// it does for PLANNED_VISUAL_PATH_RE, and for the same reason: a plan that
+// declares `theme-tokens.ts` as an output meant it.
+export const IMPORTANT_VISUAL_PATH_RE = new RegExp(
+  `(?:^|/)(?:${IMPORTANT_VISUAL_NAMES})(?:/|[.-])|${IMPORTANT_VISUAL_FILE}`,
+  'i',
+);
+// Paths that already EXIST, where the name is not the whole evidence and the
+// `[.-]` branch is a measured false-positive generator rather than a
+// hypothesised one. Over this repo's 1339 tracked paths the full spelling
+// claimed 26 and 25 of them arrived through that branch — 24 token ACCOUNTING
+// modules (`runners/token-report/**`, `token-logger.ts`, `override/token.ts`,
+// `token` before a `-` or a `.`) and the `token-usage-report/` skill doc, a
+// directory segment read as a design token. Exactly ONE claim is a directory
+// segment, and it is the only one of the 26 that is about design at all. This
+// is the same 24-vs-0 split the PRESENTATION_DIR_RE comment records for the
+// other vocabulary, which is why it takes the same answer: the anchor, not the
+// spelling, is what separates a design token from token accounting.
+export const IMPORTANT_VISUAL_CHANGED_PATH_RE = new RegExp(
+  `(?:^|/)(?:${IMPORTANT_VISUAL_NAMES})/|${IMPORTANT_VISUAL_FILE}`,
+  'i',
+);
 
 // Every framework's handler-attribute syntax, not only React's. When only these
 // are recognized as behavior, a handler-only edit in a Vue SFC or a Blade
@@ -597,10 +629,13 @@ export function plannedImportantVisualChange(
 }
 
 /**
- * What the CHANGED PATHS are evidence of. The arms below are ordered and
- * exhaustive in one direction only: each raises on evidence that the file is
- * visual, is markup, or drives behavior, and a file none of them recognize
- * leaves the impact where `baseImpact` put it.
+ * What the CHANGED PATHS are evidence of. The arms below are ADDITIVE and
+ * exhaustive in one direction only: each contributes a FLOOR on evidence that
+ * the file is visual, is markup, or drives behavior, the answer is the
+ * maximum, and a file none of them recognize leaves the impact where
+ * `baseImpact` put it. No arm may lower a verdict another arm reached — see
+ * the note in the loop for the three production shapes where first-match
+ * ordering did exactly that.
  *
  * That last clause is the load-bearing one. The chain used to end in two more
  * arms: `NONVISUAL_RE` (types/mappers/schemas/data/config/constants/utils/lib,
@@ -807,21 +842,57 @@ export function deriveUiImpact(
     if (VISUAL_RE.test(normalized) || VISUAL_CONFIG_RE.test(normalized)
       || (webModule && underWebSource(normalized) && PRESENTATION_DIR_RE.test(normalized))) {
       impact = raiseImpact(impact, 'visual');
-    } else if (MARKUP_RE.test(normalized) || UI_COMPONENT_RE.test(code)) {
-      const evidence = changedHunkEvidence(projectRoot, baseline, normalized);
-      changedContent = evidence.changedText;
-      if (!evidence.available) {
-        impact = raiseImpact(impact, 'visual');
-        fallbackReasons.push(`${normalized}: ${evidence.reason || 'changed-hunk evidence unavailable'}`);
-      } else if (changedCodeIsVisual(evidence, normalized)) {
-        impact = raiseImpact(impact, 'visual');
-      } else if (evidence.changedText.trim()) {
+    } else {
+      // The markup arm and the behavior arm are ADDITIVE, not alternatives.
+      // As an `else if` chain the markup arm could LOWER a verdict the
+      // behavior arm would have reached, because it is allowed to claim a file
+      // and then say nothing about it: `changedHunkEvidence` can be available
+      // with an EMPTY changed text, and the chain then fell out of the whole
+      // `if` having raised nothing.
+      //
+      // Three shapes reach that state from production, all of them emitted by
+      // `changedPathsFromImmutableBaseline` itself with no injected
+      // `changedPaths` anywhere: a MODE-ONLY change (`git diff --name-only`
+      // lists a chmod, and the unified diff for it holds no +/- line), an
+      // UNTRACKED EMPTY file (`git ls-files --others` lists it, and its whole
+      // body is the empty changed text), and a WHITESPACE-ONLY edit (a real
+      // hunk whose `.trim()` is empty). Measured: `src/app/features/hero/
+      // Card.tsx` chmod'ed answered `nonvisual`, while `index.ts` in the same
+      // directory under the same chmod answered `behavioral` — the `.tsx` was
+      // cheaper to verify than the plain module beside it, purely because
+      // MARKUP_RE reached it first. Enumerated over a 300-cell corpus crossing
+      // every arm-2 shape with every arm-3 evidence shape and every
+      // hunk-emptying change shape, 14 cells moved and none moved down.
+      //
+      // The arm above keeps its short-circuit and loses nothing by it: it
+      // yields `visual`, the maximum either arm below can produce, so reading
+      // them too could not raise the answer — and skipping them is what keeps
+      // `changedContent` the whole file for TABLET_RISK_RE rather than
+      // narrowing it to a hunk, which is the non-lowering direction.
+      if (MARKUP_RE.test(normalized) || UI_COMPONENT_RE.test(code)) {
+        const evidence = changedHunkEvidence(projectRoot, baseline, normalized);
+        changedContent = evidence.changedText;
+        if (!evidence.available) {
+          impact = raiseImpact(impact, 'visual');
+          fallbackReasons.push(`${normalized}: ${evidence.reason || 'changed-hunk evidence unavailable'}`);
+        } else if (changedCodeIsVisual(evidence, normalized)) {
+          impact = raiseImpact(impact, 'visual');
+        } else if (evidence.changedText.trim()) {
+          impact = raiseImpact(impact, 'behavioral');
+        }
+      }
+      // Every bound here is load-bearing and survives the restructure
+      // unchanged: `code` is still the projection of a WEB_MODULE_RE file and
+      // empty otherwise, so BEHAVIOR_CODE_RE is still only asked of a file a
+      // browser loads (`router` is ordinary Go/chi, FastAPI and Spring
+      // vocabulary), and the rune probe is still bound to SVELTE_RUNE_MODULE_RE
+      // rather than WEB_MODULE_RE (`$state(` in a plain `.ts` is an AngularJS
+      // identifier collision, not a rune).
+      if (entrypoints.has(normalized)
+        || (webModule && (BEHAVIOR_RE.test(normalized) || BEHAVIOR_CODE_RE.test(code)))
+        || (SVELTE_RUNE_MODULE_RE.test(normalized) && SVELTE_RUNE_RE.test(code))) {
         impact = raiseImpact(impact, 'behavioral');
       }
-    } else if (entrypoints.has(normalized)
-      || (webModule && (BEHAVIOR_RE.test(normalized) || BEHAVIOR_CODE_RE.test(code)))
-      || (SVELTE_RUNE_MODULE_RE.test(normalized) && SVELTE_RUNE_RE.test(code))) {
-      impact = raiseImpact(impact, 'behavioral');
     }
     if (TABLET_RISK_RE.test(changedContent) || /(?:^|[-_.])tablet(?:[-_.]|$)/i.test(normalized)) tabletRisk = true;
   }
@@ -868,10 +939,27 @@ export function changedRoutes(
   impact: UiImpact,
 ): string[] {
   const changed = new Set(paths);
+  // A change whose blast radius is EVERY screen, so every route is re-verified
+  // rather than the ones whose own module changed. The first two terms are
+  // intrinsic — a stylesheet, image or font by extension, a utility-CSS config
+  // by exact filename. The third is the residual name arm for the CSS-in-JS
+  // shape those cannot see, and it is anchored to a DIRECTORY SEGMENT for the
+  // reason the two arms above it record with numbers: over this repo's 1339
+  // tracked paths the `(?:\/|[.-])` spelling claimed 31 and every single one
+  // arrived through the `[.-]` branch — 24 token ACCOUNTING modules and 7
+  // documentation pages, not one stylesheet, image or design token among them.
+  // As a directory segment it claims zero here, and the class it exists for —
+  // `theme/tokens.ts`, `styles/colors.ts`, `packages/ui/**` — is untouched.
+  //
+  // Getting this wrong is expensive in a way the impact verdict is not: the
+  // fan-out is consumed by qa-evidence/lighthouse.ts, which runs Lighthouse
+  // PER ROUTE, and by qa-evidence/browser.ts, which requires the scenario to
+  // cover `changedRoutes` exactly. A `token-report/aggregate.ts` in the diff
+  // bought a full-site sweep on the strength of a hyphen.
   const globalVisualChange = impact === 'visual' && paths.some((file) => (
     VISUAL_RE.test(file)
     || VISUAL_CONFIG_RE.test(file)
-    || /(?:^|\/)(?:styles?|theme|tokens?|assets?|layouts?|components?|packages\/ui)(?:\/|[.-])/i.test(file)
+    || /(?:^|\/)(?:styles?|theme|tokens?|assets?|layouts?|components?|packages\/ui)\//i.test(file)
   ));
   if (globalVisualChange) {
     const allRoutes = architecture.routes

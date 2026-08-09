@@ -500,6 +500,62 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
   };
 }
 
+/**
+ * What the post-settlement sweep achieved. It exists because the three answers
+ * below used to be ONE answer — `void` — and the two that are not "all fine"
+ * are the ones a caller most needs:
+ *
+ *   - `swept`, `planned === removed`: the sweep ran and got what it planned.
+ *     `planned === 0` says there was nothing to reclaim, which is a DIFFERENT
+ *     fact from the next one and used to be indistinguishable from it.
+ *   - `swept`, `refused > 0`: the sweep ran, planned N deletions, and the state-
+ *     write fence REFUSED some of them. `removePath` answers `false` for exactly
+ *     two things — a refused guard (unanswered use-plugin consent, a planted
+ *     symlink, a path escaping the state dir) and `ELOOP` — so this count is
+ *     refusals and nothing else. It is the reachable failure here, not the
+ *     throw: a project whose consent question is unanswered refuses EVERY path,
+ *     so every terminal settlement reclaims nothing, forever, and said so to
+ *     nobody.
+ *   - `failed`: an exception escaped. How much had been reclaimed first is NOT
+ *     reported, because it is not knowable from out here — claiming `removed: 0`
+ *     would be inventing the one number the failure destroyed.
+ */
+export type TerminalSweepReport =
+  | {
+    readonly status: 'swept';
+    /** Paths the sweep decided to reclaim. */
+    readonly planned: number;
+    /** Paths it actually reclaimed. */
+    readonly removed: number;
+    /** `planned - removed` — deletions the write chokepoint refused. */
+    readonly refused: number;
+  }
+  | {
+    readonly status: 'failed';
+    /** The swallowed error, as text. Never prose the caller should parse. */
+    readonly reason: string;
+  };
+
+function sweepErrorText(error: unknown): string {
+  return error && typeof error === 'object' && 'message' in error
+    ? String((error as { message: unknown }).message)
+    : String(error);
+}
+
+// Fail-open, not fail-silent — the rule state/decision-log.ts already spells out
+// for its own swallowed failures. A returned report only reaches a caller that
+// consults it, and one of the two callers here structurally cannot (see
+// materialize/build-complete.ts), so the anomaly is also announced at the point
+// it is swallowed. Both branches are anomalous by construction, so this is not a
+// per-settlement log line.
+function reportSweepAnomaly(detail: string): void {
+  try {
+    process.stderr.write(`[traffic-one] retention sweep after settlement ${detail}\n`);
+  } catch {
+    // stderr itself can fail in exotic hosts; there is nowhere left to report this.
+  }
+}
+
 // Post-settlement trigger: reclaim superseded artefacts the moment a run reaches
 // a terminal ledger state instead of waiting for the next SessionStart (observed
 // 12co: 113 run files + 9.5 MB of reports sat untouched until a later session
@@ -508,14 +564,29 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
 // legitimately settle OLDER runs (blocked/failed cleanup), and an adversarial
 // review proved the keep-window could reclaim the very ledger such a settle
 // wrote milliseconds earlier.
-export function sweepAfterTerminalSettlement(cwd: string, settledRunId?: string): void {
+//
+// Still never THROWS: settlement must not fail because cleanup did, and that
+// property is the correct one. What it no longer does is stay silent about it.
+export function sweepAfterTerminalSettlement(cwd: string, settledRunId?: string): TerminalSweepReport {
+  const forRun = settledRunId ? ` for run ${settledRunId}` : '';
   try {
-    sweepTrafficOneRetention(cwd, {
+    const result = sweepTrafficOneRetention(cwd, {
       dryRun: false,
       ...(settledRunId ? { protectRunIds: [settledRunId] } : {}),
     });
-  } catch {
-    // best-effort: settlement must never fail because cleanup did
+    const planned = result.actions.length;
+    const refused = planned - result.removed;
+    if (refused > 0) {
+      reportSweepAnomaly(
+        `reclaimed ${result.removed} of ${planned} path(s)${forRun} — ${refused} refused by the state-write `
+        + 'fence (unanswered use-plugin consent, a planted symlink, or a path escaping the state dir)',
+      );
+    }
+    return { status: 'swept', planned, removed: result.removed, refused };
+  } catch (error) {
+    const reason = sweepErrorText(error);
+    reportSweepAnomaly(`failed${forRun}: ${reason} — how much it had reclaimed first is unknown`);
+    return { status: 'failed', reason };
   }
 }
 

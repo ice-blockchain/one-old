@@ -147,6 +147,10 @@ function buildSettlement(root: string, state: unknown, atPromptBoundary: boolean
     // are still active, and nothing else releases them on the non-verified path.
     releaseRunClaims(root, runId, 'terminal-environment-blocked');
     if (transitionRunStatus(root, runId, { status: 'blocked', outcome: 'environment-blocked' })) {
+      // The report is discarded DELIBERATELY, not overlooked: this is a hook path
+      // whose only answer is "did the build flip to maintenance", and how much
+      // disk cleanup reclaimed cannot change that. The sweep announces a refused
+      // or failed reclaim on stderr itself, which is the only channel here.
       sweepAfterTerminalSettlement(root, runId);
     }
   }

@@ -13,6 +13,22 @@ import {
   removeDeclinedProjectArtifacts,
 } from '../plugin-use';
 
+/**
+ * Run `fn` with stderr captured, handing BOTH the value and the text back.
+ * Returned rather than assigned into an outer `let`: TypeScript cannot see that
+ * a callback ran, so an outer binding stays narrowed to its initializer.
+ */
+function capturedStderr<T>(fn: () => T): { value: T; stderr: string } {
+  const original = process.stderr.write;
+  let captured = '';
+  process.stderr.write = ((chunk: unknown) => { captured += String(chunk); return true; }) as typeof process.stderr.write;
+  try {
+    return { value: fn(), stderr: captured };
+  } finally {
+    process.stderr.write = original;
+  }
+}
+
 function withProject(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-plugin-use-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -84,11 +100,25 @@ test('consent is never recorded for a directory that belongs to an enclosing pro
     // Let the real hash-keyed path resolve so this exercises production behavior.
     delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
 
-    recordPluginUseChoice(pkg, true, 'command');
+    // The veto is correct and stays. What is asserted alongside it is that the
+    // caller can now SEE it: this used to return `void`, so the wizard recorded
+    // the user's answer, was told nothing, and asked again next session — and on
+    // the decline path `removeDeclinedProjectArtifacts` has already run by then,
+    // so the artifacts are gone AND the "no" is unrecorded.
+    const vetoed = capturedStderr(() => recordPluginUseChoice(pkg, true, 'command'));
     assert.equal(readPluginUseChoice(pkg), null, 'a package inside a repo gets no prefs root');
+    assert.equal(vetoed.value, false, 'and the caller is TOLD the answer did not land');
+    assert.match(
+      vetoed.stderr,
+      /plugin-use: the "use" answer for .* was NOT recorded/,
+      'fail-open, not fail-silent: the discarded answer names itself',
+    );
 
-    recordPluginUseChoice(repo, true, 'command');
+    // WRITABLE BASELINE: the same call at the repo root records, and says so.
+    const landed = capturedStderr(() => recordPluginUseChoice(repo, true, 'command'));
     assert.equal(readPluginUseChoice(repo)?.enabled, true, 'the repo root records consent');
+    assert.equal(landed.value, true, 'a recorded answer reports true');
+    assert.equal(landed.stderr, '', 'and says nothing — the diagnostic is for the anomaly only');
     clearPluginUseChoice(repo);
   } finally {
     if (prev === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;

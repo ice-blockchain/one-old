@@ -137,7 +137,22 @@ export function main(
   // now instead of waiting for the next SessionStart. Never on planned/active,
   // and the settled run itself is explicitly protected (it may not be current).
   if (args.status === 'completed' || args.status === 'blocked' || args.status === 'failed') {
-    sweepAfterTerminalSettlement(cwd, args.runId);
+    const sweep = sweepAfterTerminalSettlement(cwd, args.runId);
+    // The settlement STANDS either way, and the exit code stays 0 deliberately:
+    // this command's answer is about the run ledger, and cleanup is downstream of
+    // it. What is no longer silent is a cleanup that did not do what the `ok: true`
+    // above implies. `refused > 0` is the reachable half — a project whose
+    // use-plugin consent is unanswered has EVERY reclaim refused by the state-write
+    // fence, so `.traffic-one` grows without bound and nothing ever said so.
+    if (sweep.status === 'failed' || sweep.refused > 0) {
+      const what = sweep.status === 'failed'
+        ? `did not complete (${sweep.reason}); what it reclaimed first is unknown`
+        : `reclaimed only ${sweep.removed} of ${sweep.planned} candidate path(s) — the rest were refused`;
+      process.stderr.write(
+        `run-status: run ${args.runId} settled ${args.status} and the settlement stands, but post-settlement `
+        + `cleanup ${what}. Re-run it with \`traffic-one-cleanup.cjs --apply\`.\n`,
+      );
+    }
   }
   return 0;
 }

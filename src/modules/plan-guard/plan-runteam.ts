@@ -233,9 +233,14 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
       ? { include: bootstrap.workUnit.allowlist, exclude: bootstrap.workUnit.allowlistExclude }
       : null;
     if (!scope || !writeTargetPaths.every((target) => matchesScope(target, scope))) {
+      // `writeTargetPaths` is `[]` when neither an explicit target list nor a
+      // filePath resolved (see its definition above), and this arm is reachable
+      // in that state through `!scope` — so the var is guarded here rather than
+      // leaving the prose to render an empty pair of backticks.
+      const targets = writeTargetPaths.join(', ') || filePath || '(no write target resolved)';
       return deny(block('run-team-quick-fix-contract',
-        'Run-team enforcement gate: the quick-fix worker has no valid parent-published WorkUnitContract covering every requested output. No maintenance or fallback write is allowed without the exact original contract and allowlist hash; re-run parent preflight with a bounded runtime-owned contract.',
-        { TARGETS: writeTargetPaths.join(', ') }));
+        `Run-team enforcement gate: the quick-fix worker has no valid parent-published WorkUnitContract covering every requested output. Not covered by one: \`${targets}\`. No maintenance or fallback write is allowed without the exact original contract and allowlist hash, and you cannot publish or widen that contract yourself — only the parent can, so retrying this write draws the same refusal. Write only the outputs your own published contract already names; if it names none of these, stop and write your digest with verdict \`BLOCKED\` listing exactly these paths, so the orchestrator can re-run parent preflight with a bounded runtime-owned contract that covers them.`,
+        { TARGETS: targets }));
     }
     return null;
   }
