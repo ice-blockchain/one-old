@@ -33,7 +33,7 @@ import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { resolveToolScope } from '../../shared/tool-scope';
+import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scope';
 import { allowsNextjs } from './forbidden';
 import { makePlanBlock } from './plan-static';
 
@@ -64,6 +64,11 @@ export function scaffoldGate(ctx: Ctx): HookResult {
   if (!hostFlags(canonicalHost(ctx.host)).ignoresMaterializedGuidance) return noop();
   const scope = resolveToolScope(ctx);
   if (scope.standsDown) return noop();
+  const unresolvedMember = workspaceMemberRefusal(scope);
+  if (unresolvedMember) {
+    return deny(unresolvedMember.reason,
+      { denyId: unresolvedMember.denyId, denyTarget: unresolvedMember.denyTarget });
+  }
   const root = scope.projectRoot;
   if (pluginUseDeclined(root)) return noop();
   // Never police scaffolding confined to the plugin authoring repo.

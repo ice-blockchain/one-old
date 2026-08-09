@@ -15,6 +15,7 @@ import { hasStateFile } from '../tool-classify';
 import { workspaceClaimsDescendant } from './workspace-declaration';
 import {
   WORKSPACE_PROJECT_MODE,
+  type WorkspaceMemberRegistry,
   enclosingRegisteredMember,
   readWorkspaceMemberRegistry,
   workspaceMemberRegistryOf,
@@ -146,7 +147,43 @@ function dirAnchorsWorkspaceFor(dir: string, claimant: string): boolean {
   return workspaceClaimsDescendant(dir, claimant);
 }
 
-function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: WorkspaceAuthority = 'declared'): string | null {
+/**
+ * An onboarded root the walk stopped at, plus the ONE extra fact the walk
+ * already knows about it and used to throw away: whether a workspace CONTAINER
+ * was involved, and which members it registered.
+ *
+ * `container` and `registry` are set together or not at all — a non-empty
+ * container always carries the registry that made it one. They are set on BOTH
+ * container outcomes: the walk that adopted the container itself (`root ===
+ * container`) and the walk that was handed DOWN to a member (`root` is the
+ * member). The second is the one that is easy to drop and expensive to lose:
+ * without it a call already resolved to a member could not say WHICH workspace
+ * it is a member of, and the attribution guard in plan-runteam.ts has nothing
+ * to compare against.
+ *
+ * `none` is folded to null rather than carried, so a consumer's test is
+ * `registry !== null` and not a second `kind` comparison it could get backwards.
+ */
+interface OnboardedRootHit {
+  readonly root: string;
+  readonly container: string;
+  readonly registry: WorkspaceContainerRegistry | null;
+}
+
+/**
+ * A registry that BELONGS to a container: the `none` arm is gone, because
+ * `none` and "this is not a container" are the same statement and carrying both
+ * spellings of it invites a consumer to test the wrong one. The remaining arms
+ * all deny, and a consumer still has to tell `members` from the two that could
+ * not be enumerated.
+ */
+export type WorkspaceContainerRegistry = Exclude<WorkspaceMemberRegistry, { kind: 'none' }>;
+
+function containerRegistry(registry: WorkspaceMemberRegistry): WorkspaceContainerRegistry | null {
+  return registry.kind === 'none' ? null : registry;
+}
+
+function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: WorkspaceAuthority = 'declared'): OnboardedRootHit | null {
   // The home dir is machine-wide config space (`~/.traffic-one`), never a project
   // root. Stop the walk there (and never above it): a stray mode-bearing
   // `~/.traffic-one/.one.json` — e.g. from running the plugin in `~` once — must
@@ -191,13 +228,15 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: Wor
       // cannot turn a kept `.traffic-one` into a deletion candidate under
       // shared/retention.ts's `resolveProjectRoot(dir) !== dir`; it can only
       // rescue one, which is the safe direction for that consumer.
-      const member = enclosingRegisteredMember(current, workspaceMemberRegistryOf(committed), start);
-      if (member) return member;
+      const registry = workspaceMemberRegistryOf(committed);
+      const member = enclosingRegisteredMember(current, registry, start);
+      if (member) return { root: member, container: current, registry: containerRegistry(registry) };
       // An onboarded root that is ITSELF a workspace root is the monorepo root —
       // the NEAREST such root wins, even when a farther ancestor also declares
       // workspaces (a project nested inside an unrelated umbrella repo must not
       // resolve to the umbrella — the tests/claude/3 digests-at-parent incident).
-      if (dirDeclaresWorkspace(current)) return current;
+      const container = containerRegistry(registry);
+      if (dirDeclaresWorkspace(current)) return { root: current, container: container ? current : '', registry: container };
       // …and a mode-bearing .one.json BELOW a workspace root is a leak, not a
       // project root: a monorepo has ONE root (the workspace), so a stray
       // packages/*/.traffic-one (the packages/ui incident) must not shadow it.
@@ -217,7 +256,9 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: Wor
       // climbs past and still heals.
       if (nearestWorkspaceRoot(path.dirname(current), ceiling, authority === 'membership' ? current : '') === null
         && (dirOwnsProject(current)
-          || projectMembershipRoot(path.dirname(current), ceiling) === null)) return current;
+          || projectMembershipRoot(path.dirname(current), ceiling) === null)) {
+        return { root: current, container: container ? current : '', registry: container };
+      }
     }
     const parent = path.dirname(current);
     if (parent === current) break; // filesystem root
@@ -415,6 +456,50 @@ export function resolveProjectRoot(
   filePath?: unknown,
   opts: { ceiling?: string; workspaceAuthority?: WorkspaceAuthority } = {},
 ): string {
+  return resolveProjectRootDetailed(cwd, filePath, opts).root;
+}
+
+/**
+ * What `resolveProjectRoot` resolved, plus whether the answer is a WORKSPACE
+ * CONTAINER rather than a project — and, when it is, the member registry the
+ * resolution walk already read out of that root's `.one.json`.
+ *
+ * Split out for exactly the reason `committedProjectState` was: the walk has
+ * the answer in hand and used to drop it, so a caller that needed it had to
+ * re-open the same file. `resolveProjectRoot` is 200-odd call sites and stays a
+ * `string`; this is the one extra fact the gate fence needs
+ * (shared/tool-scope.ts workspaceMemberRefusal), delivered for ZERO additional
+ * syscalls on every input, workspace or not.
+ *
+ * `workspaceRegistry` is non-null ONLY on the exits that read a committed
+ * `mode`, which is the complete set of exits that can return a container: a
+ * workspace root carries `mode: 'workspace'`, so it IS an onboarded root, so
+ * nearestOnboardedRoot reaches it whenever the walk passes it, and the ceiling
+ * exit below is the only other reader of a committed mode. The remaining exits
+ * (the workspace-DECLARATION anchor, projectMembershipRoot, the legacy cwd
+ * fallback) are reached only after nearestOnboardedRoot declined, and the
+ * declaration anchor additionally requires a package-manager declaration, which
+ * nearestOnboardedRoot returns on directly. The residue is one doubly-nested
+ * pathology — a container with no package-manager declaration, owning no
+ * project marker, itself sitting inside another declared workspace — which
+ * reports null and therefore behaves exactly as it does today. Nothing writes
+ * this mode yet, so that residue has no live population; it is recorded rather
+ * than papered over.
+ */
+export interface ProjectRootResolution {
+  readonly root: string;
+  /** The workspace container the walk met, '' when none. Non-empty iff `workspaceRegistry` is. */
+  readonly workspaceContainer: string;
+  readonly workspaceRegistry: WorkspaceContainerRegistry | null;
+}
+
+const NO_WORKSPACE_CONTAINER = { workspaceContainer: '', workspaceRegistry: null } as const;
+
+export function resolveProjectRootDetailed(
+  cwd: string,
+  filePath?: unknown,
+  opts: { ceiling?: string; workspaceAuthority?: WorkspaceAuthority } = {},
+): ProjectRootResolution {
   const ceiling = opts.ceiling ? path.resolve(opts.ceiling) : '';
   const authority = opts.workspaceAuthority ?? 'declared';
   // Relative targets still resolve against the REAL cwd; only the walk anchors
@@ -432,19 +517,28 @@ export function resolveProjectRoot(
   const claimant = (start: string): string => (authority === 'membership' ? start : '');
   const onboarded = (fileStart && nearestOnboardedRoot(fileStart, ceiling, authority))
     || nearestOnboardedRoot(cwdStart, ceiling, authority);
-  if (onboarded) return onboarded;
+  if (onboarded) {
+    return { root: onboarded.root, workspaceContainer: onboarded.container, workspaceRegistry: onboarded.registry };
+  }
   const workspace = (fileStart && nearestWorkspaceRoot(fileStart, ceiling, claimant(fileStart)))
     || nearestWorkspaceRoot(cwdStart, ceiling, claimant(cwdStart));
-  if (workspace) return workspace;
+  if (workspace) return { root: workspace, ...NO_WORKSPACE_CONTAINER };
   // Cursor can run a subagent shell with cwd under its internal metadata tree
   // (for example ~/.cursor/.../terminals), outside workspace_roots. The ceiling
   // bounded walks above correctly refuse to climb from that cwd, but falling back
   // to cwd would make Traffic One think this out-of-tree dir is a fresh project.
   if (ceiling && !isPathWithin(path.resolve(cwdStart), ceiling)) {
-    if (isOnboardedProjectRoot(ceiling)) return ceiling;
+    // `committedProjectState` rather than `isOnboardedProjectRoot`, which IS
+    // that call plus a `!== null`: the same single read now also answers
+    // whether the ceiling we are about to adopt is a container.
+    const ceilingState = committedProjectState(ceiling);
+    if (ceilingState) {
+      const ceilingRegistry = containerRegistry(workspaceMemberRegistryOf(ceilingState));
+      return { root: ceiling, workspaceContainer: ceilingRegistry ? ceiling : '', workspaceRegistry: ceilingRegistry };
+    }
     const workspaceAtCeiling = nearestWorkspaceRoot(ceiling, ceiling, claimant(ceiling));
-    if (workspaceAtCeiling) return workspaceAtCeiling;
-    return ceiling;
+    if (workspaceAtCeiling) return { root: workspaceAtCeiling, ...NO_WORKSPACE_CONTAINER };
+    return { root: ceiling, ...NO_WORKSPACE_CONTAINER };
   }
   // Nothing is onboarded and no workspace is declared — so ask which project this
   // directory BELONGS to. Without this the fallback below returns `cwd` verbatim,
@@ -456,8 +550,8 @@ export function resolveProjectRoot(
   // defeat the packages/* leak rule.
   const member = (fileStart && projectMembershipRoot(fileStart, ceiling))
     || projectMembershipRoot(cwdStart, ceiling);
-  if (member) return member;
-  return findProjectRootForHookFile(cwdStart, fileAbs || filePath);
+  if (member) return { root: member, ...NO_WORKSPACE_CONTAINER };
+  return { root: findProjectRootForHookFile(cwdStart, fileAbs || filePath), ...NO_WORKSPACE_CONTAINER };
 }
 
 export function projectRelativeHookPath(cwd: string, projectRoot: string, filePath: unknown): string {

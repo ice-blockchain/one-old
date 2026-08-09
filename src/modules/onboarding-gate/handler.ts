@@ -68,7 +68,7 @@ import {
   runModelPolicyPath,
 } from '../../shared/run-model-policy';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
-import { resolveToolScope } from '../../shared/tool-scope';
+import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scope';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
@@ -180,6 +180,15 @@ export function onboardingGate(ctx: Ctx): HookResult {
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
   const toolScope = resolveToolScope(ctx);
   if (toolScope.standsDown) return noop();
+  // A workspace CONTAINER has nothing to onboard: its members are the projects.
+  // Ahead of initializeTrafficOneEnv / computeOnboarding / prepareOnboardingServer,
+  // because the harm this fence exists to stop is precisely a wizard spawned for
+  // the container and state written there.
+  const unresolvedMember = workspaceMemberRefusal(toolScope);
+  if (unresolvedMember) {
+    return deny(unresolvedMember.reason,
+      { denyId: unresolvedMember.denyId, denyTarget: unresolvedMember.denyTarget });
+  }
   // Monorepo safety: a scaffolder may run from a sub-package cwd or target a
   // sub-package file. Resolve UP to the workspace root that holds onboarding state,
   // so a stray per-package state file can't trip a bogus per-package wizard or hide

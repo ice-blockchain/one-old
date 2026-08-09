@@ -629,7 +629,11 @@ test('runSelection sweeps stale pre-sync backups before touching anything', () =
   try {
     const cacheDir = path.join(root, 'cache');
     fs.mkdirSync(cacheDir, { recursive: true });
-    const abandoned = path.join(root, `cache.presync-4242-${Date.now() - STALE_PRESYNC_MS - 1}`);
+    // pid 0 is dead by isPidAlive's own contract (`pid <= 0`), pinned by the
+    // test above. runSelection calls the real check with no injection point, so
+    // an arbitrary literal made this verdict depend on what the machine running
+    // the suite happens to have running.
+    const abandoned = path.join(root, `cache.presync-0-${Date.now() - STALE_PRESYNC_MS - 1}`);
     fs.mkdirSync(abandoned, { recursive: true });
 
     let sweptBeforeSync = false;
@@ -667,7 +671,8 @@ test('the startup sweep visits every known host, including hosts outside the sel
     const make = (name: string): { cache: string; backup: string } => {
       const cache = path.join(root, name);
       fs.mkdirSync(cache, { recursive: true });
-      const backup = path.join(root, `${name}.presync-4242-${stamp}`);
+      // pid 0, dead by contract — same reason as the sweep test above.
+      const backup = path.join(root, `${name}.presync-0-${stamp}`);
       fs.mkdirSync(backup, { recursive: true });
       return { cache, backup };
     };

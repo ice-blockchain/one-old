@@ -42,7 +42,7 @@ import { planReadinessViolations } from '../plan-readiness';
 import { runIdPathViolation } from '../plan-runid';
 import { openCodeReservedFilesViolation, runTeamEnforcementViolation } from '../plan-runteam';
 import { assetExtensionMismatchViolations, planStaticViolations, makePlanBlock } from '../plan-static';
-import { resolveToolScope } from '../../../shared/tool-scope';
+import { resolveToolScope, workspaceMemberRefusal } from '../../../shared/tool-scope';
 import { isDenyId, type DenyId } from '../../../config/deny-ids';
 
 import {
@@ -114,6 +114,14 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // target remain inside plugin authoring or machine-config space. An absolute
   // target in a real project is resolved and gated below.
   if (toolScope.standsDown) return noop();
+  // Ahead of the patch parse: a workspace container has no plan, no compiled
+  // architecture and no run team, so there is nothing for the reconstruction
+  // below to be validated against even when the envelope is perfect.
+  const unresolvedMember = workspaceMemberRefusal(toolScope);
+  if (unresolvedMember) {
+    return deny(unresolvedMember.reason,
+      { denyId: unresolvedMember.denyId, denyTarget: unresolvedMember.denyTarget });
+  }
 
   const structuralPatch = isApplyPatch ? parseApplyPatch(rawPatchText) : null;
   if (structuralPatch && !structuralPatch.ok) {
@@ -378,6 +386,11 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const runTeam = runTeamEnforcementViolation({
     host: ctx.host,
     projectRoot,
+    // The workspace MEMBER this write anchored to, '' outside a workspace. The
+    // fence above has already refused every call that could not name exactly
+    // one, so a non-empty value here is always the member that owns every
+    // target — which is precisely what makes it usable as an attribution guard.
+    workspaceMember: toolScope.workspace.kind === 'member' ? toolScope.workspace.member : '',
     filePath,
     state,
     rawData: raw,

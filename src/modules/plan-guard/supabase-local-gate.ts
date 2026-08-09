@@ -21,7 +21,7 @@ import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { resolveToolScope } from '../../shared/tool-scope';
+import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scope';
 import { makePlanBlock } from './plan-static';
 
 const block = makePlanBlock(makeSkillBlock(pluginRoot));
@@ -36,6 +36,11 @@ export const SUPABASE_LOCAL_STACK_RE = /(^|[\s;&|(])(?:(?:pnpm|npm|yarn|bun)\s+(
 export function supabaseLocalGate(ctx: Ctx): HookResult {
   const scope = resolveToolScope(ctx);
   if (scope.standsDown) return noop();
+  const unresolvedMember = workspaceMemberRefusal(scope);
+  if (unresolvedMember) {
+    return deny(unresolvedMember.reason,
+      { denyId: unresolvedMember.denyId, denyTarget: unresolvedMember.denyTarget });
+  }
   const root = scope.projectRoot;
   if (pluginUseDeclined(root)) return noop();
   if (isNonProjectRoot(root)) return noop();

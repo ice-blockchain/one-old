@@ -51,6 +51,7 @@ function context(project: string, dist: string): AssertionContext {
       [RUNTIME_PROOF_TOKEN_ENV]: '0123456789abcdef0123456789abcdef',
       [RUNTIME_PROOF_ENTRY_ENV]: 'scripts/cursor-hook-runtime.cjs',
     },
+    members: [], // a single-project case
     host: 'cursor',
     testCase: CASE,
     spec: { id: 'plugin-runtime-fingerprint' },

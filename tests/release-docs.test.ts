@@ -185,7 +185,10 @@ test('the Rust-is-unexercised claim is measured, not remembered', () => {
   const offenders: string[] = [];
   for (const name of fs.readdirSync(casesDir)) {
     if (!name.endsWith('.ts')) continue;
-    if (/rust|cargo/i.test(fs.readFileSync(path.join(casesDir, name), 'utf8'))) offenders.push(name);
+    // Leading \b only: it keeps `trust`/`untrusted`/`crust` out while still claiming
+    // `rustfmt`, `rustc` and `rust-lang`, which do mention Rust. A trailing \b would
+    // drop those three; no boundary at all fails a case for writing ordinary English.
+    if (/\brust|\bcargo/i.test(fs.readFileSync(path.join(casesDir, name), 'utf8'))) offenders.push(name);
   }
   assert.deepEqual(
     offenders,

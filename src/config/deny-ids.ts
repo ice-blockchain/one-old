@@ -57,6 +57,24 @@ export const DENY_IDS = [
   'workspace-boundary-guard',
   'workspace-boundary-unresolved-expansion',
 
+  // ── shared/tool-scope.ts workspaceMemberRefusal (every PreToolUse gate) ──
+  // A call resolved to a Traffic One WORKSPACE ROOT — a container of
+  // independent member projects (`mode: 'workspace'`) — with no single
+  // registered member owning it. A container is not a project: a plan, a
+  // compiled architecture, QA evidence, run state and a role claim each
+  // describe ONE codebase, and at the container level there is no one codebase
+  // for them to describe, so a gate that operated there would mint all of it
+  // against nothing. Named for the CAUSE ("which member is this?" has no
+  // answer) rather than for the container, because the container is legitimate;
+  // it is the ATTRIBUTION that is missing.
+  //
+  // Not per-gate: the refusal is resolved once in shared/tool-scope.ts and
+  // returned by every consumer, so `gateId` says which gate happened to be
+  // first while the cause is one. Four render shapes share it — no member owns
+  // the target, the targets span two members, the workspace registers nobody,
+  // the registry could not be enumerated — argued at workspaceMemberRefusal.
+  'workspace-member-unresolved',
+
   // ── modules/session/authoring-guard.ts ──────────────────────────────────
   'authoring-guard',
 
@@ -474,7 +492,7 @@ export function isDenyId(value: unknown): value is DenyId {
 // needs it lifted is "fix the cause, or settle the run".
 //
 // A gate NOT listed here is overridable. That is the deliberate default: the
-// 166 remaining ids are ordinary process/sequencing refusals whose worst case
+// 167 remaining ids are ordinary process/sequencing refusals whose worst case
 // is a lower-quality run, and that run is already marked ineligible for
 // `verified`/`shipped` the moment a token is minted for it
 // (run-settlement/io.ts).
@@ -495,6 +513,26 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   // radius is the whole filesystem.
   'workspace-boundary-guard',
   'workspace-boundary-unresolved-expansion',
+
+  // Deliberately NOT here: `workspace-member-unresolved`, checked against the
+  // bar above rather than inherited from the two entries it sits beside. Those
+  // two refuse a write to an arbitrary path on the machine, and a file they
+  // would have refused is indistinguishable afterwards from one they allowed.
+  // Lifting THIS one admits run state, a plan and role claims into a workspace
+  // CONTAINER — a wrong root, but a permanently and trivially legible one: the
+  // container's own `.one.json` carries `mode: 'workspace'` and a
+  // `workspaceMembers` array, a marker no project root ever has, so an operator
+  // (and shared/retention.ts, and the next read of the same file this refusal
+  // is derived from) can always tell that artefacts there belong to no member.
+  // The blast radius is one directory inside the user's own repository, and
+  // nothing about it forges an identity or a verdict. That is the ordinary
+  // process-refusal shape this list's default is written for.
+  //
+  // The counter-argument considered and rejected: "the container is not a
+  // project, so nothing may ever operate there". True, and it is the reason the
+  // refusal exists — but this list is not "the refusals that matter", it is the
+  // refusals whose LIFTED outcome cannot later be told apart from a legitimate
+  // one, and this one's can.
 
   // The plugin's own source tree / a machine-config root. Same argument, plus:
   // an override that admits a write HERE can rewrite the override primitive.
@@ -654,7 +692,7 @@ void _codexChildFamilyIsNeverOverridable;
 // severe it is, and severity is what makes the escalation worth reading.
 //
 // An id NOT listed here escalates from the third byte-identical attempt. That
-// is the deliberate default: the remaining 172 ids are refusals with an
+// is the deliberate default: the remaining 173 ids are refusals with an
 // in-session remedy the deny text already names, which is the whole 17cl
 // failure (seven identical refusals, 25 minutes, the fix in the text).
 export const NEVER_ESCALATED_DENY_IDS = [

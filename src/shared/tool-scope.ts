@@ -11,8 +11,11 @@ import type { Ctx } from '../core/types';
 import { asString } from '../adapters/coerce';
 import { parseApplyPatch, patchOperationPaths, patchTextFromToolInput } from './apply-patch';
 import { isNonProjectRoot } from './authoring-root';
-import { isPathWithin, resolveProjectRoot } from './hook/paths';
+import { isPathWithin, resolveProjectRootDetailed, type WorkspaceContainerRegistry } from './hook/paths';
+import { enclosingRegisteredMember } from './hook/workspace-members';
 import { obj } from './obj';
+import { pluginRoot } from './paths';
+import { makeSkillBlock } from './skill-block';
 import { canonicalToolName, commandFromToolInput, isMutatingPreToolUse, normalizedToolName, parsedToolInput } from './tool-classify';
 
 function stringValue(value: unknown): string {
@@ -36,7 +39,38 @@ interface ToolScopeTarget {
   evidence?: 'write' | 'transition' | 'relative-operand' | 'operand';
 }
 
-interface ToolScopeResolution {
+/**
+ * Where this call sits relative to a Traffic One WORKSPACE — a container of
+ * independent member projects (`mode: 'workspace'`, see
+ * hook/workspace-members.ts). Three arms, and the split that earns the third is
+ * `member` vs `unresolved`: both mean "the walk met a container", and only one
+ * of them names a project a gate may operate on.
+ *
+ * `none` is the answer for every project that exists today and is produced
+ * WITHOUT a syscall — `resolveProjectRootDetailed` hands back the registry the
+ * resolution walk already read, and it is null for every non-workspace mode.
+ */
+export type ToolScopeWorkspace =
+  | { readonly kind: 'none' }
+  /** Every target belongs to ONE registered member; `projectRoot` is that member. */
+  | { readonly kind: 'member'; readonly container: string; readonly member: string }
+  /**
+   * The call resolved to a container and no single member owns it. The fields
+   * are what the refusal renders: `members` is the registry (relative
+   * spellings, empty when it could not be enumerated), `why` names the
+   * inability, `offending` is the anchor paths that failed, and `touched` is
+   * the members the anchors DID span — two or more of which is the split case.
+   */
+  | {
+      readonly kind: 'unresolved';
+      readonly container: string;
+      readonly members: readonly string[];
+      readonly why: string;
+      readonly offending: readonly string[];
+      readonly touched: readonly string[];
+    };
+
+export interface ToolScopeResolution {
   rawCwd: string;
   base: string;
   targets: ToolScopeTarget[];
@@ -44,6 +78,7 @@ interface ToolScopeResolution {
   unresolvedWriteTargets: string[];
   projectRoot: string;
   standsDown: boolean;
+  workspace: ToolScopeWorkspace;
 }
 
 const PATH_FIELDS = [
@@ -402,6 +437,85 @@ function targetStart(target: ToolScopeTarget): string {
   }
 }
 
+// The default-path answer, shared rather than re-allocated: every project that
+// is not a Traffic One workspace gets this exact object.
+const NOT_A_WORKSPACE: ToolScopeWorkspace = { kind: 'none' };
+
+/**
+ * Which registered member, if any, owns this call — asked ONLY when the
+ * resolution walk already established that the resolved root is a container.
+ *
+ * The anchors are the call's TARGETS, not its cwd, and the difference is
+ * load-bearing: an agent working in a monorepo routinely runs with the
+ * container as its working directory while every path it touches belongs to one
+ * member, and anchoring on the cwd would refuse all of that. The cwd (then the
+ * raw cwd) is the FALLBACK anchor, used only when no target lands inside the
+ * container at all — a bare `Bash` with no path operands, where the working
+ * directory is the only statement of intent the call makes.
+ *
+ * Targets OUTSIDE the container are dropped rather than counted as unresolved.
+ * A `cd member-a && cat /etc/hosts` names a path this workspace has no opinion
+ * about; whether that path may be read at all is session/workspace-boundary
+ * -guard.ts's question, asked with the whole target list, and answering it a
+ * second time here would refuse the call for the wrong reason.
+ *
+ * This is also the RE-ANCHOR half of the member fence, and it deliberately runs
+ * after `targetsMayReanchor` has had its say. That predicate governs ADOPTION —
+ * may a foreign path pull the active project away from this cwd — and refuses a
+ * read-only tool's target for a reason that does not apply here: moving from a
+ * container to a member it registered is not adoption of another project, it is
+ * resolution INSIDE the one project tree the walk already chose, and it can only
+ * ever move downward.
+ */
+function workspaceAnchoring(
+  container: string,
+  registry: WorkspaceContainerRegistry,
+  targets: readonly ToolScopeTarget[],
+  base: string,
+  rawCwd: string,
+): ToolScopeWorkspace {
+  const members = registry.kind === 'members' ? registry.members : [];
+  const inside = [...new Set(
+    targets.map((target) => targetStart(target)).filter((dir) => isPathWithin(dir, container)),
+  )];
+  const fallback = [base, rawCwd].find((dir) => isPathWithin(dir, container));
+  const anchors = inside.length > 0 ? inside : (fallback ? [fallback] : []);
+  const unresolved = (offending: readonly string[], touched: readonly string[]): ToolScopeWorkspace => ({
+    kind: 'unresolved',
+    container,
+    members,
+    // `opaque` (and, defensively, `illegible`) is the arm that carries an
+    // inability rather than a list — a registry an agent's Write tool corrupted.
+    // It denies like the others and renders differently, because "no member owns
+    // this" and "nobody could tell who owns this" are not the same refusal.
+    why: registry.kind === 'members' ? '' : registry.why,
+    offending: offending.length > 0 ? offending : (anchors.length > 0 ? anchors : [container]),
+    touched,
+  });
+  // An unreadable registry names the CONTAINER as the offending path, where the
+  // arms below name the anchors: when nobody could be enumerated, no statement
+  // about a subpath is warranted, and the workspace itself is the whole of what
+  // is known. (Pinned — mutating this to the anchors survived every other test,
+  // because in the common shape the anchor IS the container.)
+  if (registry.kind !== 'members') return unresolved([container], []);
+  // No `members.length === 0` early exit: with nobody registered the loop below
+  // reaches the identical `unresolved(anchors, [])`, and the empty-registry
+  // RENDER is chosen by workspaceMemberRefusal off `members` rather than here.
+  // An exit was written first and removed once a mutation proved it unkillable.
+  const owned: string[] = [];
+  const offending: string[] = [];
+  for (const anchor of anchors) {
+    const member = enclosingRegisteredMember(container, registry, anchor);
+    if (member) owned.push(member);
+    else offending.push(anchor);
+  }
+  const touched = [...new Set(owned)];
+  if (offending.length === 0 && touched.length === 1) {
+    return { kind: 'member', container, member: touched[0]! };
+  }
+  return unresolved(offending, touched);
+}
+
 /**
  * Resolve a pre-tool call against both its raw cwd and every explicit path
  * carried by the host. When a hook runs inside the plugin source but points at
@@ -419,6 +533,39 @@ export function resolveToolScope(ctx: Ctx): ToolScopeResolution {
     && externalTargets.length === 0
     && unresolvedWriteTargets.length === 0;
 
+  // The workspace question is asked ONCE, here, off the registry the resolution
+  // walk already read — so a non-workspace project pays one `!== null` test and
+  // reaches `NOT_A_WORKSPACE` without opening a file. Both exits below share it
+  // rather than restating it, because the two differ only in what they hand the
+  // resolver, never in what a container means afterwards.
+  const finish = (
+    resolved: ReturnType<typeof resolveProjectRootDetailed>,
+  ): ToolScopeResolution => {
+    // Asked whenever a container was MET, including when the resolver already
+    // handed itself down to a member. That second case looks redundant and is
+    // not: the resolver redirects on ONE start dir (the file hint, else the
+    // cwd), so a call whose hint lands in `api` while a second target lands in
+    // `web` would come back as a clean member answer with the span unnoticed.
+    // This is the ACTIVE-MEMBER check — every target, not one hint.
+    const workspace = resolved.workspaceRegistry
+      ? workspaceAnchoring(resolved.workspaceContainer, resolved.workspaceRegistry, targets, base, rawCwd)
+      : NOT_A_WORKSPACE;
+    return {
+      rawCwd,
+      base,
+      targets,
+      externalTargets,
+      unresolvedWriteTargets,
+      // A refused call reports the CONTAINER, so the root a gate would have
+      // operated on is the root the refusal names.
+      projectRoot: workspace.kind === 'member'
+        ? workspace.member
+        : (workspace.kind === 'unresolved' ? workspace.container : resolved.root),
+      standsDown,
+      workspace,
+    };
+  };
+
   const preferred = targetsMayReanchor(ctx, externalTargets)
     ? ([...externalTargets].reverse().find((target) => target.source !== 'command')
       || [...externalTargets].reverse()[0])
@@ -429,15 +576,7 @@ export function resolveToolScope(ctx: Ctx): ToolScopeResolution {
     // (no external target at all), where it is what finds a monorepo sub-package's
     // enclosing workspace root.
     const filePath = externalTargets.length > 0 ? undefined : ctx.input.tool?.filePath;
-    return {
-      rawCwd,
-      base,
-      targets,
-      externalTargets,
-      unresolvedWriteTargets,
-      projectRoot: resolveProjectRoot(rawCwd, filePath, { ceiling: ctx.input.workspaceRoot }),
-      standsDown,
-    };
+    return finish(resolveProjectRootDetailed(rawCwd, filePath, { ceiling: ctx.input.workspaceRoot }));
   }
 
   const start = targetStart(preferred);
@@ -449,15 +588,7 @@ export function resolveToolScope(ctx: Ctx): ToolScopeResolution {
   const workspaceRoot = ctx.input.workspaceRoot && isPathWithin(start, ctx.input.workspaceRoot)
     ? ctx.input.workspaceRoot
     : undefined;
-  return {
-    rawCwd,
-    base,
-    targets,
-    externalTargets,
-    unresolvedWriteTargets,
-    projectRoot: resolveProjectRoot(resolutionCwd, preferred.path, { ceiling: workspaceRoot }),
-    standsDown,
-  };
+  return finish(resolveProjectRootDetailed(resolutionCwd, preferred.path, { ceiling: workspaceRoot }));
 }
 
 /**
@@ -468,5 +599,130 @@ export function resolveToolScope(ctx: Ctx): ToolScopeResolution {
 
 export function resolveToolProjectRoot(ctx: Ctx): string {
   return resolveToolScope(ctx).projectRoot;
+}
+
+/**
+ * The project root a NON-GATE caller may write runtime state to, or '' when the
+ * call resolved to a workspace container.
+ *
+ * "No gate may operate on a workspace root" is not enforceable by the gates
+ * alone: core/dispatch.ts records host capability into `.traffic-one/` from the
+ * request path itself, BEFORE the pipeline and therefore before any refusal, so
+ * a fence living only in the handlers would still leave a run sidecar minted in
+ * the container. That is exactly the state the invariant exists to prevent, and
+ * it would then be indistinguishable from a real member's.
+ *
+ * Returns a root rather than refusing because dispatch has no one to refuse to:
+ * it runs before the decision and its observation is a diagnostic, not a
+ * verdict. Dropping the record for a call the pipeline is about to deny loses
+ * nothing — the deny is itself the stronger evidence that enforcement ran.
+ */
+export function resolveToolStateRoot(ctx: Ctx): string {
+  const scope = resolveToolScope(ctx);
+  return scope.workspace.kind === 'unresolved' ? '' : scope.projectRoot;
+}
+
+// ── The workspace member fence ───────────────────────────────────────────────
+// "No gate may operate on a workspace root." A container is not a project: a
+// plan, a compiled architecture, QA evidence, run state and a role claim all
+// describe ONE codebase, and at the container level there is no one codebase
+// for them to describe. So a gate that finds itself resolved to a registered
+// workspace ROOT with no member resolved for the operation refuses, by name,
+// instead of quietly operating on the container and minting all of that there.
+//
+// It lives HERE, next to the resolution it reads, rather than in a handler of
+// its own, and that is a cost decision as much as a placement one: a separate
+// priority-(-1) handler would have to call `resolveToolScope` a second time —
+// a whole extra resolution walk — on every tool call in every project, to
+// answer a question that is already sitting on the scope every gate has
+// resolved anyway. Each consumer spends two lines instead
+// (src/shared/__tests__/tool-scope-fence.test.ts pins that none of them
+// forgets), and a non-workspace project spends one comparison.
+
+const skillBlock = makeSkillBlock(pluginRoot);
+
+// Verbatim fallbacks: a missing T1BLOCK must never disable the fence.
+const MEMBER_OUTSIDE_FALLBACK = 'traffic-one — blocked: {{PATHS}} is inside the Traffic One workspace {{WORKSPACE}}, '
+  + 'and belongs to no member project that workspace has registered. A workspace root is a CONTAINER of independent '
+  + 'member projects, never a project itself — it holds no plan, no compiled architecture, no run state and no role '
+  + 'claims — so no gate has anything at this level to judge this call against. The members it registered are: '
+  + '{{MEMBERS}}. Re-issue this call against exactly one of them: give it a path under that member, and if it is a '
+  + 'shell command run it with that member directory as the working directory.';
+
+const MEMBER_SPLIT_FALLBACK = 'traffic-one — blocked: this call spans {{COUNT}} members of the Traffic One workspace '
+  + '{{WORKSPACE}} at once — {{TOUCHED}} — through {{PATHS}}. Each member is an independent project with its own plan, '
+  + 'run state and role claims, so a call crossing two of them has no single project to be judged against and no '
+  + 'single owner to be attributed to; nothing here refuses the work, only the shape of the call. Split it into one '
+  + 'call per member and issue them one at a time, starting with {{FIRST}}.';
+
+const MEMBER_EMPTY_FALLBACK = 'traffic-one — blocked: {{WORKSPACE}} is a Traffic One workspace that has registered no '
+  + 'member projects at all, so {{PATHS}} sits in a container with no project in it. A workspace root holds no plan, '
+  + 'no run state and no role claims — its MEMBERS are the projects — and registering one is a setup step no tool '
+  + 'call can perform, so re-issuing this will produce this same refusal. Report it to the user as BLOCKED, naming '
+  + '{{WORKSPACE}} and its empty member registry, so they can run setup for the directory they want worked on.';
+
+const MEMBER_REGISTRY_FALLBACK = 'traffic-one — blocked: {{WORKSPACE}} is a Traffic One workspace whose member '
+  + 'registry could not be read — {{WHY}} — so {{PATHS}} cannot be attributed to a member and no gate can judge it. '
+  + 'Traffic One\'s `.traffic-one/.one.json` is runtime-owned state: editing it by hand is itself denied, so there is '
+  + 'nothing here for you to repair. Report this to the user as BLOCKED, quoting {{WORKSPACE}} and {{WHY}} verbatim '
+  + 'so they can restore the registry or re-run setup.';
+
+export interface WorkspaceMemberRefusal {
+  readonly reason: string;
+  readonly denyId: 'workspace-member-unresolved';
+  readonly denyTarget: string;
+}
+
+/**
+ * The named refusal for a call that resolved to a workspace CONTAINER, or null.
+ *
+ * ONE deny id across four render shapes, which is a deliberate reading of
+ * config/deny-ids.ts's naming rule rather than an inheritance of it. The rule
+ * splits ids when one site is reached "for genuinely different reasons", and
+ * these four are one reason seen from four angles: the call names no member of
+ * this workspace. They share a loop (an agent operating at the container
+ * instead of in a member), so they share a deny BUDGET bucket correctly, and
+ * they stay legible apart in the decision log through `denyTarget` — the
+ * offending paths for three shapes, the container itself for the registry
+ * one — and through the rendered text, which never repeats across shapes.
+ *
+ * The one asymmetry worth naming rather than hiding: the registry-unreadable
+ * shape's remedy is "report", where the other three end in a call the agent can
+ * re-issue. That is the same spread `run-team-not-subagent` carries under one
+ * id, and for the same reason — the shapes are angles on one condition, not
+ * branches with independent lifetimes.
+ *
+ * ESCALATABLE (absent from NEVER_ESCALATED_DENY_IDS, the default), and every
+ * shape is written to survive that. Nothing here prescribes re-issuing the SAME
+ * call: `outside`/`split` prescribe a call against a different path, which
+ * changes both `denyTarget` and the rendered reason and therefore starts a new
+ * deny-repeat signature rather than filling this one's bucket; `empty` and
+ * `registry` prescribe reporting, so three identical draws mean an agent
+ * ignoring an explicit instruction twice — exactly when escalation's own
+ * "report BLOCKED" is the right thing to add, and it agrees with the prose
+ * instead of contradicting it.
+ */
+export function workspaceMemberRefusal(scope: ToolScopeResolution): WorkspaceMemberRefusal | null {
+  const workspace = scope.workspace;
+  if (workspace.kind !== 'unresolved') return null;
+  const container = workspace.container;
+  const relative = (dir: string): string => path.relative(container, dir).split(path.sep).join('/') || dir;
+  const paths = workspace.offending.join(', ');
+  const vars = { WORKSPACE: container, PATHS: paths };
+  const reason = workspace.why
+    ? skillBlock('session', 'workspace-member-unresolved-registry',
+      { ...vars, WHY: workspace.why }, MEMBER_REGISTRY_FALLBACK)
+    : workspace.members.length === 0
+      ? skillBlock('session', 'workspace-member-unresolved-empty', vars, MEMBER_EMPTY_FALLBACK)
+      : workspace.touched.length > 1
+        ? skillBlock('session', 'workspace-member-unresolved-split', {
+          ...vars,
+          COUNT: workspace.touched.length,
+          TOUCHED: workspace.touched.map(relative).join(', '),
+          FIRST: relative(workspace.touched[0]!),
+        }, MEMBER_SPLIT_FALLBACK)
+        : skillBlock('session', 'workspace-member-unresolved-outside',
+          { ...vars, MEMBERS: workspace.members.join(', ') }, MEMBER_OUTSIDE_FALLBACK);
+  return { reason, denyId: 'workspace-member-unresolved', denyTarget: paths };
 }
 

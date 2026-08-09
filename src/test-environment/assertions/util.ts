@@ -59,6 +59,19 @@ export function readCaseConsent(ctx: AssertionContext): Rec | null {
   return readJsonFile(path.join(ctx.caseFolder, 'consent.json'));
 }
 
+/**
+ * The consent sidecar for ONE member of a workspace case.
+ *
+ * Kept per member rather than folded into the case-wide one because consent is
+ * an answer about a PROJECT: production's write fence
+ * (shared/state/plugin-use.ts) is default-closed per project root, so three
+ * members are three questions and three answers. A single record would let two
+ * members ride on a third's yes.
+ */
+export function readMemberConsent(ctx: AssertionContext, memberId: string): Rec | null {
+  return readJsonFile(path.join(ctx.caseFolder, 'members', memberId, 'consent.json'));
+}
+
 export function readDeclineProbe(ctx: AssertionContext): Rec | null {
   return readJsonFile(path.join(ctx.caseFolder, 'decline-probe.json'));
 }

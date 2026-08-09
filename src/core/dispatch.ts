@@ -9,7 +9,7 @@ import { buildContext } from './context';
 import { runPipeline } from './pipeline';
 import { maybeTraceHook } from '../shared/hook/trace';
 import { observeCurrentRunHostCapabilityFromHook } from '../shared/host/capabilities';
-import { resolveToolProjectRoot } from '../shared/tool-scope';
+import { resolveToolStateRoot } from '../shared/tool-scope';
 
 export async function dispatch(
   adapter: HostAdapter,
@@ -26,23 +26,35 @@ export async function dispatch(
   // per-run sidecar to preventive enforcement. Resolve from the full tool
   // scope, not raw cwd: hooks may start in a nested package or in this plugin's
   // source while targeting an external end-user project.
-  observeCurrentRunHostCapabilityFromHook(
-    resolveToolProjectRoot(ctx),
-    input,
-    process.env,
-    'invoked',
-  );
+  //
+  // `resolveToolStateRoot`, not `resolveToolProjectRoot`: it hands back '' for a
+  // call that resolved to a workspace CONTAINER, and this is the one write on
+  // the request path that happens before the pipeline can refuse one. Resolved
+  // twice, before and after, because the pipeline can mint onboarding state that
+  // changes the answer — the same reason the original two calls were separate.
+  const invokedRoot = resolveToolStateRoot(ctx);
+  if (invokedRoot) {
+    observeCurrentRunHostCapabilityFromHook(
+      invokedRoot,
+      input,
+      process.env,
+      'invoked',
+    );
+  }
   const result = await runPipeline(handlers, ctx);
   // The first build gate may mint currentRunId during this invocation. Record
   // the canonical pipeline decision separately from hook coverage: merely
   // reaching a before-tool callback (or dispatching with no handlers) is not
   // evidence that this host/runtime can enforce a denial.
-  observeCurrentRunHostCapabilityFromHook(
-    resolveToolProjectRoot(ctx),
-    input,
-    process.env,
-    result.kind === 'deny' ? 'denied' : 'allowed',
-  );
+  const decidedRoot = resolveToolStateRoot(ctx);
+  if (decidedRoot) {
+    observeCurrentRunHostCapabilityFromHook(
+      decidedRoot,
+      input,
+      process.env,
+      result.kind === 'deny' ? 'denied' : 'allowed',
+    );
+  }
   return adapter.serialize(result, input);
 }
 

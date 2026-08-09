@@ -105,6 +105,16 @@ export function workspaceBoundaryGuard(ctx: Ctx): HookResult {
   const rawName = normalizedToolName(ctx.input.tool?.rawName || raw.tool_name || raw.toolName);
   const isApplyPatch = /^apply_patch$/i.test(rawName);
   const toolScope = resolveToolScope(ctx);
+  // Deliberately NO workspaceMemberRefusal here, unlike every other
+  // resolveToolScope consumer (the enumeration in
+  // shared/__tests__/tool-scope-fence.test.ts names this file as the one
+  // exception, so the omission is asserted rather than assumed). This guard
+  // never operates ON the project root: it enforces the HOST workspace
+  // boundary, and its one use of a resolved root is as a boundary ceiling for
+  // apply_patch, where a workspace container is a wider — therefore stricter
+  // for nobody, safer for everybody — ceiling than a member would be. Fencing
+  // here would also mis-attribute a genuine escape to a sibling project as
+  // "member unresolved", which is the wrong refusal and the wrong remedy.
   if (toolScope.unresolvedWriteTargets.length > 0) {
     return deny(
       `${DENY_PREFIX}: a shell write target contains an unresolved environment or command expansion `

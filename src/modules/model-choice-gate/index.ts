@@ -21,7 +21,7 @@ import {
 } from '../../shared/tool-classify';
 import { rolesAwaitingModelChoice } from '../agent-model/cursor-failures';
 import { modelChoiceReplyPending } from '../agent-model/model-choice';
-import { resolveToolScope } from '../../shared/tool-scope';
+import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scope';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -36,6 +36,12 @@ export function modelChoiceGate(ctx: Ctx): HookResult {
 
   const scope = resolveToolScope(ctx);
   if (scope.standsDown) return noop();
+
+  const unresolvedMember = workspaceMemberRefusal(scope);
+  if (unresolvedMember) {
+    return deny(unresolvedMember.reason,
+      { denyId: unresolvedMember.denyId, denyTarget: unresolvedMember.denyTarget });
+  }
   const root = scope.projectRoot;
   if (isNonProjectRoot(root)) return noop();
   if (pluginUseDeclined(root)) return noop();

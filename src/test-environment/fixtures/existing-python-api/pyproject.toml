@@ -1,0 +1,5 @@
+[project]
+name = "reporting-etl"
+version = "0.1.0"
+description = "A reporting pipeline that never met Traffic One."
+requires-python = ">=3.10"

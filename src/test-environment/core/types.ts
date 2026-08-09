@@ -18,7 +18,13 @@ export type Category =
   | 'feature-auth'
   | 'feature-onboarding'
   | 'run-sim'
-  | 'lint-corpus';
+  | 'lint-corpus'
+  // A repository that CONTAINS several independent projects. Its own category so
+  // the P4 workspace lanes can select exactly these rows (`--category=workspace`)
+  // without running the whole matrix. MUST also be listed in ALL_CATEGORIES
+  // (config/test-config.ts) — flags.ts filters `--category` against that array
+  // and silently drops anything missing.
+  | 'workspace';
 
 // pure-node  → fully deterministic, no host CLI, reuses src/ functions directly.
 // host-e2e   → drives a real host CLI headlessly against a seeded temp project.
@@ -50,7 +56,57 @@ export type FixtureKind =
   | 'existing-react-vite'
   | 'existing-node-api'
   | 'existing-go-api'
-  | 'existing-go-web';
+  | 'existing-go-web'
+  | 'existing-python-api';
+
+/**
+ * ONE member of a workspace case: a directory under the container that is a
+ * project in its own right.
+ *
+ * `fixture` is a plain `FixtureKind` and that is the whole point of the shape —
+ * a member IS an ordinary single project, built by the ordinary
+ * `materializeFixture`, so there is exactly one answer in this tree to "how is a
+ * project fixture materialized". The workspace builder calls it once per member;
+ * it does not reimplement it.
+ */
+export interface WorkspaceMemberCase {
+  /** Directory name under the container. Also this member's identity in reports. */
+  readonly id: string;
+  readonly fixture: FixtureKind;
+  /**
+   * This member's OWN onboarding selection — the case's `preSeed` when absent.
+   *
+   * The collapse this replaces: a `Case` carried ONE `PreSeed`, so every project
+   * a case touched necessarily shared one mode, one stack and one performance
+   * level. A workspace whose members cannot differ is not a workspace; it is one
+   * project copied N times, and it would certify a world in which per-member
+   * state never diverges.
+   */
+  readonly preSeed?: PreSeed;
+}
+
+/**
+ * A case whose fixture is a CONTAINER holding N independent member projects.
+ *
+ * Discriminated from a `FixtureKind` by the presence of `members` rather than by
+ * a `kind` tag: `FixtureKind` is a string union, so `typeof fixture === 'string'`
+ * already separates the two totally and a tag would only be a second thing to
+ * keep in step.
+ */
+export interface WorkspaceFixture {
+  readonly members: readonly WorkspaceMemberCase[];
+  /**
+   * Materialize AND seed the container as a project of its own (the "git
+   * umbrella that is also onboarded" shape). Absent = a bare container, which is
+   * the shape the P4 workspace items are about: a directory that owns no
+   * manifest and is nobody's project until something onboards it as one.
+   */
+  readonly container?: FixtureKind;
+  /** Give the bare container a `.git` marker without making it a project. */
+  readonly containerVcs?: boolean;
+}
+
+export type CaseFixture = FixtureKind | WorkspaceFixture;
 
 // The onboarding selection a case declares. preseed.ts turns this into an
 // AUTHENTIC .one.json + preferences.json by calling the real source writers,
@@ -206,7 +262,12 @@ export interface Case {
   category: Category;
   layer: RunLayer;
   hostFilter?: HostId[]; // restrict to a subset of enabled hosts; default all
-  fixture: FixtureKind;
+  // ONE project, or a container holding N of them. See WorkspaceFixture.
+  fixture: CaseFixture;
+  // The onboarding selection of the case's ROOT project — and, for a workspace
+  // case, the default every member inherits unless it declares its own. A
+  // workspace with a BARE container has no root project to seed, so there the
+  // value is read only through the members.
   preSeed: PreSeed;
   // The ask-first "use Traffic One here?" answer this case starts from; 'use'
   // when absent. NOT optional in effect — the fence is default-closed, so a case
@@ -380,14 +441,44 @@ export interface HostDriver {
   run(cfg: HostCommandConfig, ctx: HostRunContext): Promise<HostRunResult>;
 }
 
+/**
+ * One materialized member of a workspace case, as an assertion sees it.
+ *
+ * `cwd` is a single project root, exactly like `AssertionContext.cwd`, and
+ * DELIBERATELY so: production anchors every gate, every state read and every
+ * prefs bucket to one project root, so a member-aware `cwd` would be a shape the
+ * product never has. The multiplicity lives in the LIST, not in the root.
+ *
+ * `env` is this member's own environment block, and the difference from the
+ * case's env is the whole of D2: `TRAFFIC_ONE_PROJECT_PREFS_PATH` is derived
+ * PER MEMBER by production's own `defaultProjectPrefsPath`, so N members get the
+ * N distinct preference buckets they would get in production instead of sharing
+ * one file. See core/env.ts memberCaseEnv.
+ */
+export interface CaseMemberContext {
+  readonly id: string;
+  readonly cwd: string;
+  /** The member directory this member's declared fixture was materialized as. */
+  readonly fixture: FixtureKind;
+  /** A directory inside the member owning no manifest of its own (see fixtures.ts). */
+  readonly probeDir: string;
+  readonly probeFile: string;
+  readonly env: Record<string, string>;
+}
+
 export interface AssertionContext {
-  cwd: string; // temp project root
+  cwd: string; // temp project root — the CONTAINER for a workspace case
   // The per-case folder that OWNS `cwd` (<runDir>/projects/<caseId>__<target>).
   // Holds isolated state, logs, and the run-sim transcript. Passing it explicitly
   // — rather than resolving `cwd/..` — is what makes `--reassert` work for
   // transcript-reading assertions.
   caseFolder: string;
   env: Record<string, string>; // per-case env (PREFS_PATH, XDG_STATE_HOME, ...)
+  // The member projects this case materialized, in declaration order. EMPTY for
+  // every single-project case, which is what keeps the widening additive: the 12
+  // assertion files that read `ctx.cwd` are untouched and keep meaning exactly
+  // what they meant.
+  members: readonly CaseMemberContext[];
   host: HostId | 'pure-node';
   testCase: Case;
   spec: AssertionSpec;

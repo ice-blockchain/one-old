@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type { FixtureKind } from './types';
+import type { CaseFixture, FixtureKind, WorkspaceFixture, WorkspaceMemberCase } from './types';
 
 const FIXTURE_SRC_DIR = path.resolve(__dirname, '..', 'fixtures');
 
@@ -149,6 +149,90 @@ export function materializeFixture(dir: string, kind: FixtureKind): string {
       writeProjectMarkers(dir, 'existing-node-api');
       break;
     }
+    // A Python project that never met Traffic One, and the third language a
+    // WORKSPACE case needs to be genuinely polyglot. Deliberately gets NO
+    // `package.json` and no `.git`: its `pyproject.toml` is the only thing that
+    // makes the directory own a project, which is what makes a workspace row
+    // measure member ownership rather than a marker the harness planted.
+    //
+    // Adds no machine prerequisite. Nothing executes it — `pytest`/`ruff` are
+    // spawned only by the QA evidence runner, which no workspace case reaches —
+    // and `python3` is already one of the three toolchains a `--strict` run
+    // assumes (core/polyglot-workspace.ts HARNESS_TOOLCHAINS).
+    case 'existing-python-api': {
+      const skeleton = path.join(FIXTURE_SRC_DIR, 'existing-python-api');
+      if (fs.existsSync(skeleton)) copyDir(skeleton, dir);
+      break;
+    }
   }
   return dir;
+}
+
+/**
+ * A directory inside a member that owns NO project marker of its own.
+ *
+ * Planted by the workspace builder rather than borrowed from whichever skeleton
+ * the member happens to use: the nesting is what reaches the membership fallback
+ * in `resolveProjectRoot`, and a row that pointed at `server/routes` or
+ * `internal` would silently stop measuring that the day a skeleton grew a
+ * manifest in it. The name is the harness's, so no skeleton can collide with it.
+ */
+const MEMBER_PROBE_REL = path.join('harness-probe', 'deep');
+const MEMBER_PROBE_FILE = 'probe.txt';
+
+export interface CaseMemberProject {
+  readonly id: string;
+  readonly fixture: FixtureKind;
+  readonly root: string;
+  readonly probeDir: string;
+  readonly probeFile: string;
+  readonly member: WorkspaceMemberCase;
+}
+
+/**
+ * What a case's fixture materialized to: ONE root, plus the member projects
+ * under it. `members` is empty for every single-project case.
+ */
+export interface CaseProject {
+  readonly root: string;
+  readonly members: readonly CaseMemberProject[];
+}
+
+export function isWorkspaceFixture(fixture: CaseFixture): fixture is WorkspaceFixture {
+  return typeof fixture !== 'string';
+}
+
+/**
+ * Materialize a case's fixture — one project, or a container holding N of them.
+ *
+ * The workspace arm builds each member through `materializeFixture`, the same
+ * function every single-project case uses, so there is ONE implementation of
+ * "how a project fixture is built" and a fixture fixed for a single-project case
+ * is fixed for a member on the same commit. The container itself is written here
+ * because a container is not a project: it deliberately gets no
+ * `writeProjectMarkers` unless the case asks for one by naming a `container`
+ * fixture.
+ */
+export function materializeCaseFixture(dir: string, fixture: CaseFixture): CaseProject {
+  if (!isWorkspaceFixture(fixture)) {
+    return { root: materializeFixture(dir, fixture), members: [] };
+  }
+
+  fs.mkdirSync(dir, { recursive: true });
+  if (fixture.container) materializeFixture(dir, fixture.container);
+  // Only ever ADDS version control; a declared container fixture may already own
+  // a `.git`, and removing one here would silently undo that fixture's choice.
+  if (fixture.containerVcs) fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+
+  const members = fixture.members.map((member): CaseMemberProject => {
+    const root = path.join(dir, member.id);
+    materializeFixture(root, member.fixture);
+    const probeDir = path.join(root, MEMBER_PROBE_REL);
+    const probeFile = path.join(probeDir, MEMBER_PROBE_FILE);
+    fs.mkdirSync(probeDir, { recursive: true });
+    fs.writeFileSync(probeFile, `harness probe for workspace member ${member.id}\n`, 'utf8');
+    return { id: member.id, fixture: member.fixture, root, probeDir, probeFile, member };
+  });
+
+  return { root: dir, members };
 }

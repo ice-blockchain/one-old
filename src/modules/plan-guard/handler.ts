@@ -11,12 +11,17 @@ import { isNonProjectRoot } from '../../shared/authoring-root';
 import { isExistingProjectMode, readEffectiveState } from '../../shared/state';
 import { capabilityProfileForProject } from '../../shared/capabilities';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { resolveToolScope } from '../../shared/tool-scope';
+import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scope';
 import { INSTALL_RE, allowsNextjs, forbiddenForStack } from './forbidden';
 
 export function libraryAllowlistGate(ctx: Ctx): HookResult {
   const scope = resolveToolScope(ctx);
   if (scope.standsDown) return noop();
+  const unresolvedMember = workspaceMemberRefusal(scope);
+  if (unresolvedMember) {
+    return deny(unresolvedMember.reason,
+      { denyId: unresolvedMember.denyId, denyTarget: unresolvedMember.denyTarget });
+  }
   const projectRoot = scope.projectRoot;
   if (pluginUseDeclined(projectRoot)) return noop();
   // The plugin authoring repo has a null-stack state that would fall into the

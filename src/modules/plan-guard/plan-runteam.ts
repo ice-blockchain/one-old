@@ -46,6 +46,18 @@ type Block = (name: string, fallback: string, vars?: Vars) => string;
 export interface RunTeamArgs {
   host?: string;
   projectRoot: string;
+  /**
+   * The Traffic One WORKSPACE MEMBER this write anchored to, or '' when the
+   * project is not a member of a workspace (every project that exists today).
+   *
+   * Carried rather than re-derived because plan-write already holds it, and
+   * recorded in the claim-debug row rather than branched on: `projectRoot`
+   * alone cannot say whether a root is a member of a workspace or a standalone
+   * project, so without it the one question a multi-member run needs to answer
+   * afterwards — which member did this claim resolve in, and was that the
+   * member the call named — is unanswerable from the record.
+   */
+  workspaceMember?: string;
   filePath: string;          // project-relative target path
   state: Rec;
   rawData: unknown;          // raw hook input, for run-claim session identity
@@ -78,6 +90,26 @@ export interface RunTeamArgs {
 //     is ambiguous → null (deny stands).
 // Host parity: this only runs after transcript/agentId resolution fails, so Codex/Claude (which
 // always have a worker transcript or agent_id) resolve earlier and never reach it.
+//
+// MEMBER IDENTITY: this is the ONE path in the gate that MINTS authority rather
+// than checking it — it stakes a role claim for a session that proved nothing
+// about itself, on the strength of where its targets landed. Inside a workspace
+// that is sound only if every root it reads and writes is the MEMBER rather
+// than the container, and it is: `projectRoot` here is already the member,
+// because shared/tool-scope.ts re-anchored the scope to it and refused outright
+// any call that could not name exactly one (the member fence). So the manifest
+// consulted, the onboarding thread tested, and the claim staked are all
+// member-local with no code here, which is the point of doing the re-anchor in
+// the resolver instead of teaching each consumer about workspaces.
+//
+// An earlier revision took the member as a parameter and required it to equal
+// `projectRoot`. That comparison cannot fail: plan-write reads both from one
+// `ToolScopeResolution`, whose projectRoot IS `workspace.member` on that arm.
+// It is removed rather than kept as reassurance — an unfalsifiable guard reads
+// like protection and buys none. The construction it asserted is instead pinned
+// where it is real, on the resolver: see 'a write into a registered member
+// anchors to that member, not the container' in
+// src/shared/__tests__/tool-scope-fence.test.ts.
 function attributeForeignWriteBySpawnScope(
   projectRoot: string,
   state: Rec,
@@ -214,6 +246,12 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     filePaths: writeTargetPaths,
     resolved: Boolean(agentContext),
     role,
+    // Present ONLY inside a workspace, so every existing project's debug record
+    // is byte-identical. Recorded because `projectRoot` alone cannot say whether
+    // a root is a member of a workspace or a standalone project, and the whole
+    // point of a multi-member run is being able to read afterwards which member
+    // a claim was resolved in.
+    ...(args.workspaceMember ? { workspaceMember: args.workspaceMember } : {}),
     runId: agentContext && agentContext.runId != null ? String(agentContext.runId) : null,
     ...(unresolvedDiagnosis ? { unresolved: unresolvedDiagnosis } : {}),
   });

@@ -78,6 +78,7 @@ function measure(c: Case, config: RootTestConfig): Measured {
         cwd: project,
         caseFolder,
         env,
+        members: [], // a single-project case
         host: 'pure-node',
         testCase: c,
         spec: { id: delegationAssertion.id },

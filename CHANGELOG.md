@@ -36,6 +36,7 @@ publication date.**
 
 ### Deny prose — what a refusal says
 
+- P4 workspace foundation, torn-root residuals, deny-id tiering census (`a5bb395c`)
 - Require positive workspace membership before deleting nested project state (`d3462aad`)
 - Make silent refusals speak, and stop Cursor's enforcement hooks failing open (`05cb6c87`)
 - Harden state legibility, clock skew, and consent boundaries (`9b7e547e`)
@@ -44,6 +45,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P4 workspace foundation, torn-root residuals, deny-id tiering census (`a5bb395c`)
 - Require positive workspace membership before deleting nested project state (`d3462aad`)
 - Unify native detection, and make three instruments tell the truth (`798a6808`)
 - Make silent refusals speak, and stop Cursor's enforcement hooks failing open (`05cb6c87`)

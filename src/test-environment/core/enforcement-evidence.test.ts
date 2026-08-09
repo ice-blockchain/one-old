@@ -46,6 +46,7 @@ function context(
     cwd,
     caseFolder: cwd,
     env: {},
+    members: [], // a single-project case
     host,
     testCase: testCase(params),
     spec: { id: assertion.id, params },

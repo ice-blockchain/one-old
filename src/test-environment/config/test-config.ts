@@ -25,6 +25,11 @@ export const ALL_CATEGORIES: Category[] = [
   'run-sim',
   // The false-positive corpus: pure-node, no dist required, no spend.
   'lint-corpus',
+  // A repository CONTAINING several independent projects. Listed here for the
+  // same reason 'run-sim' is: run.ts filters --category values against this
+  // array and silently drops anything missing, which would turn
+  // `--category=workspace` into "run the whole matrix".
+  'workspace',
 ];
 
 export function defaultConfig(): RootTestConfig {

@@ -6,6 +6,7 @@
 
 import * as path from 'path';
 
+import { defaultProjectPrefsPath } from '../../shared/state/local-prefs/prefs-store';
 import type { HostId, RootTestConfig } from './types';
 import {
   readDistRuntimeProof,
@@ -89,6 +90,51 @@ export function buildCaseEnv(
 
   for (const [k, v] of Object.entries(config.envOverrides)) env[k] = v;
 
+  return env;
+}
+
+/**
+ * The environment block for ONE MEMBER of a workspace case.
+ *
+ * THE SEMANTIC COLLAPSE THIS EXISTS TO CLOSE. `buildCaseEnv` pins
+ * `TRAFFIC_ONE_PROJECT_PREFS_PATH` to one file per CASE, and `projectPrefsPath`
+ * (shared/state/local-prefs/prefs-store.ts) returns that path for EVERY cwd it
+ * is asked about. One project per case made that identical to production; N
+ * members do not. In production each member root gets its own bucket —
+ * `<machine dir>/projects/<sha256(realpath(root))>/preferences.json` — so the
+ * consent answer, the host performance/team block and the toolchain stamps of
+ * three members are three files. Sharing one file is not a wiring detail: it is
+ * a world where the last member seeded silently overwrites the other two, and a
+ * harness measuring per-member isolation against it would certify isolation that
+ * does not exist.
+ *
+ * So the path is DERIVED, by production's own `defaultProjectPrefsPath`, from
+ * this member's root — not merely made distinct by appending the member id. A
+ * hand-rolled distinct path would reproduce the count and not the DERIVATION,
+ * and the derivation is the part every production reader re-computes: anything
+ * that resolves a bucket from a root rather than from the variable would then
+ * disagree with the harness while both looked right.
+ *
+ * The variable is still SET rather than deleted, and that is load-bearing:
+ * `withCaseEnv` restores by key, so a member env that merely OMITTED the
+ * variable would inherit whatever an enclosing scope had already applied —
+ * silently reinstating the shared file this function exists to remove.
+ *
+ * `isolateStateHome` off is the one shape where the derivation would name the
+ * maintainer's REAL `~/.traffic-one/projects/<hash>`. A case must never write
+ * there, so that configuration keeps a case-folder path instead and loses only
+ * the bucket spelling — the distinctness, which is what the assertions measure,
+ * is preserved either way.
+ */
+export function memberCaseEnv(
+  base: CaseEnv,
+  caseFolder: string,
+  member: { id: string; root: string },
+): CaseEnv {
+  const env: CaseEnv = { ...base };
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = base.XDG_STATE_HOME
+    ? defaultProjectPrefsPath(member.root, env)
+    : path.join(caseFolder, 'state', 'members', member.id, 'preferences.json');
   return env;
 }
 

@@ -9,10 +9,10 @@ import { isInsidePluginAuthoringRoot } from '../../shared/authoring-root';
 import { writeState } from '../../shared/state/normalize';
 import { modelForRoleHost } from '../../shared/performance';
 import type {
-  Assertion, AssertionContext, AssertionResult, AssertionSpec, Case, CaseRunResult,
+  Assertion, AssertionContext, AssertionResult, AssertionSpec, Case, CaseMemberContext, CaseRunResult,
   HostId, HostRunResult, RootTestConfig,
 } from './types';
-import { buildCaseEnv, withCaseEnv, type CaseEnv } from './env';
+import { buildCaseEnv, memberCaseEnv, withCaseEnv, type CaseEnv } from './env';
 import {
   RUNTIME_PROOF_ENTRY_ENV,
   RUNTIME_PROOF_FILE_ENV,
@@ -20,7 +20,7 @@ import {
 } from './current-dist';
 import { caseConsent, establishCaseConsent, type ConsentFact } from './consent';
 import { runDeclineProbe } from './decline-sim';
-import { materializeFixture } from './fixtures';
+import { isWorkspaceFixture, materializeCaseFixture } from './fixtures';
 import { preseed } from './preseed';
 import { driveOnboarding } from './onboarding-sim';
 import { runSimulatedRun } from './run-sim';
@@ -67,10 +67,34 @@ export async function runCase(
   if (isInsidePluginAuthoringRoot(projectDir)) {
     throw new Error(`project dir ${projectDir} resolved inside the plugin authoring root — state writers would no-op. runsRoot must be outside the repo.`);
   }
-  materializeFixture(projectDir, testCase.fixture);
-  const tmpDir = projectDir;
+  const project = materializeCaseFixture(projectDir, testCase.fixture);
+  const tmpDir = project.root;
 
   const env: CaseEnv = buildCaseEnv(config, caseFolder, distRoot, target);
+
+  // Each member is an ordinary project with its own root and its own environment
+  // — including its own preferences bucket (core/env.ts memberCaseEnv). Built
+  // before any seeding, because consent is recorded per project root and a
+  // member whose answer landed in a shared file would be seeding through the
+  // wrong fence.
+  const members: CaseMemberContext[] = project.members.map((m) => ({
+    id: m.id,
+    cwd: m.root,
+    fixture: m.fixture,
+    probeDir: m.probeDir,
+    probeFile: m.probeFile,
+    env: memberCaseEnv(env, caseFolder, { id: m.id, root: m.root }),
+  }));
+  // Persisted so `--reassert` rebuilds the same member list instead of
+  // re-deriving it from a fixture the config may have changed since.
+  if (members.length > 0) {
+    fs.writeFileSync(path.join(caseFolder, 'members.json'), JSON.stringify(members, null, 2));
+  }
+
+  // A workspace whose container is a bare directory has no root PROJECT: seeding
+  // it would mint a `.traffic-one/` into a container that is meant to own
+  // nothing, which is the exact shape every workspace assertion measures.
+  const rootIsProject = !isWorkspaceFixture(testCase.fixture) || Boolean(testCase.fixture.container);
 
   const consent = caseConsent(testCase.consent);
 
@@ -92,6 +116,13 @@ export async function runCase(
     // The decline direction owns its whole sequence (residue → answer →
     // observation) and must NOT be seeded: "nothing was written" is the claim.
     if (consent === 'decline') return { blocker, seedRefusal: '', consentFact: null };
+
+    // The container of a bare workspace is nobody's project. Consent is an answer
+    // about a PROJECT, and `establishCaseConsent` proves the fence by writing a
+    // probe under `<root>/.traffic-one/` — so answering for the container would
+    // leave the very directory a workspace row asserts is unowned carrying a
+    // state directory. The members answer for themselves below.
+    if (!rootIsProject) return { blocker, seedRefusal: '', consentFact: null };
 
     const consentFact = establishCaseConsent(tmpDir, consent, caseFolder, env);
     if (testCase.scriptedAnswers && testCase.scriptedAnswers.length > 0) {
@@ -135,6 +166,8 @@ export async function runCase(
   if (seeded.consentFact) {
     fs.writeFileSync(path.join(caseFolder, 'consent.json'), JSON.stringify(seeded.consentFact, null, 2));
   }
+
+  const memberRefusal = seedWorkspaceMembers(testCase, members, caseFolder, consent);
 
   if (consent === 'decline') {
     const probe = await withCaseEnvAsync(env, () => runDeclineProbe(tmpDir, caseFolder, env));
@@ -220,12 +253,13 @@ export async function runCase(
   // below) and the contract for an environment it could not construct — not a
   // pass, and not a verdict on the code.
   const specs = assertionSpecsForRun(testCase, target);
-  const results = seeded.seedRefusal
+  const seedRefusal = seeded.seedRefusal || memberRefusal;
+  const results = seedRefusal
     ? specs.map((spec): AssertionResult => ({
       id: spec.id,
       title: assertions.get(spec.id)?.title ?? spec.id,
       status: 'INCONCLUSIVE',
-      detail: seeded.seedRefusal,
+      detail: seedRefusal,
     }))
     : await runAssertions(
       testCase,
@@ -237,6 +271,7 @@ export async function runCase(
       assertions,
       config,
       specs,
+      members,
     );
   if (target !== 'pure-node') {
     hostResult = {
@@ -272,6 +307,70 @@ export async function runCase(
   };
 }
 
+/**
+ * Record consent and pre-complete onboarding for every member of a workspace
+ * case, each inside its OWN environment. Returns the refusal text, or '' when
+ * every member was built.
+ *
+ * The per-member `withCaseEnv` is the whole point: `preseed` and the consent
+ * handlers reach `process.env` through the real source writers, so a member
+ * seeded under the case's env would land its `.one.json` in its own directory
+ * (that one takes a cwd) while its preferences went to the case-wide file (that
+ * one does not). Half-isolated is the shape that looks correct and certifies
+ * nothing.
+ *
+ * A refusal is reported exactly like the single-project seed refusal three
+ * functions up, and for the same measured reason: the world the case names was
+ * never built, so every assertion would report a product failure for one missing
+ * harness step.
+ */
+function seedWorkspaceMembers(
+  testCase: Case,
+  members: readonly CaseMemberContext[],
+  caseFolder: string,
+  consent: ReturnType<typeof caseConsent>,
+): string {
+  if (members.length === 0) return '';
+  if (consent === 'decline') {
+    // Not a silent skip: the decline direction's claim is that NOTHING was
+    // written, and proving it per member needs a per-member decline probe that
+    // does not exist yet. Saying so is what stops a workspace case from being
+    // written with `consent: 'decline'` and quietly measuring the container.
+    return 'blocked-environment: a workspace case cannot yet express the DECLINE direction — '
+      + 'runDeclineProbe answers for one project root, and a workspace needs one probe per member';
+  }
+  const fixture = testCase.fixture;
+  const memberSpecs = isWorkspaceFixture(fixture) ? fixture.members : [];
+  for (const member of members) {
+    const spec = memberSpecs.find((candidate) => candidate.id === member.id);
+    const preSeed = spec?.preSeed ?? testCase.preSeed;
+    const refusal = withCaseEnv(member.env, (): string => {
+      const fact = establishCaseConsent(member.cwd, consent, caseFolder, member.env);
+      const dir = path.join(caseFolder, 'members', member.id);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'consent.json'), JSON.stringify(fact, null, 2));
+      if (!preseed(member.cwd, preSeed)) {
+        return `blocked-environment: the state write fence refused the pre-seed for workspace member \`${member.id}\` `
+          + `at \`${path.join(member.cwd, '.traffic-one', '.one.json')}\`, so this case was measured against a `
+          + 'workspace whose members carry no onboarding state';
+      }
+      return '';
+    });
+    if (refusal) return refusal;
+  }
+  return '';
+}
+
+/** The member list a prior run persisted, for `--reassert`. */
+function readPersistedMembers(caseFolder: string): CaseMemberContext[] {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(caseFolder, 'members.json'), 'utf8')) as unknown;
+    return Array.isArray(raw) ? raw as CaseMemberContext[] : [];
+  } catch {
+    return []; // a single-project run, or a run from before workspace cases existed
+  }
+}
+
 // Run a case's assertions against an already-prepared project dir + host result.
 // Shared by a live run and by reassertCase (re-evaluating a persisted run).
 async function runAssertions(
@@ -284,6 +383,7 @@ async function runAssertions(
   assertions: Map<string, Assertion>,
   config: RootTestConfig,
   specs: AssertionSpec[],
+  members: readonly CaseMemberContext[],
 ): Promise<AssertionResult[]> {
   const results: AssertionResult[] = [];
   for (const spec of specs) {
@@ -300,6 +400,7 @@ async function runAssertions(
       cwd,
       caseFolder,
       env,
+      members,
       host: target,
       testCase,
       spec,
@@ -365,6 +466,7 @@ export async function reassertCase(
     assertions,
     config,
     assertionSpecsForRun(testCase, target),
+    readPersistedMembers(caseFolder),
   );
   return {
     caseId: testCase.id,

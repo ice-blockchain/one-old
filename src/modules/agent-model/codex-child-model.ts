@@ -31,7 +31,7 @@ import { canonicalHost } from '../../shared/model-tiers';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
 import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
 import { ensureRunHostCapability } from '../../shared/host/capabilities';
-import { resolveToolScope } from '../../shared/tool-scope';
+import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scope';
 import { block } from './handler-prose';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 
@@ -107,6 +107,11 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
   // starts here but targets a real project does not inherit this exemption.
   const scope = resolveToolScope(ctx);
   if (scope.standsDown) return noop();
+  const unresolvedMember = workspaceMemberRefusal(scope);
+  if (unresolvedMember) {
+    return deny(unresolvedMember.reason,
+      { denyId: unresolvedMember.denyId, denyTarget: unresolvedMember.denyTarget });
+  }
   const cwd = scope.projectRoot;
   const raw = obj(ctx.input.raw) || {};
   const payload = obj(raw.payload) || {};

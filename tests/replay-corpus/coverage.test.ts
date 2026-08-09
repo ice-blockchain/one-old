@@ -347,6 +347,18 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'verification-contract-scan-gate',
   'verifier-independence-gate',
   'verify-batch-running',
+  // Structurally unreachable from this corpus, and it is the deny's own point.
+  // `workspace-member-unresolved` fires only when the resolved project root
+  // carries `mode: 'workspace'` plus a member registry, and NOTHING writes that
+  // mode — the workspace-onboarding producer is a separate, not-yet-built item,
+  // so no corpus fixture (and no project on any machine) can be in the state
+  // this refuses. The guard ships BEFORE the producer on purpose: shipping them
+  // the other way round leaves a window in which a container exists and every
+  // gate happily operates on it. Driven instead through the real gates in
+  // src/shared/__tests__/tool-scope-fence.test.ts, which builds the workspace
+  // fixture the corpus cannot. Move it here to REACHED the day a corpus case
+  // can onboard a workspace.
+  'workspace-member-unresolved',
 ];
 
 // PreToolUse handlers that CANNOT produce a deny, so they can never appear in
@@ -362,7 +374,13 @@ const NON_DENYING_PRE_TOOL_HANDLERS: Record<string, string> = {
 };
 
 function groupOf(denyId: string): string {
-  if (/^(workspace-boundary|apply-patch|authoring-guard)/.test(denyId)) return 'session guards';
+  // `workspace-member-unresolved` is resolved in shared/tool-scope.ts and
+  // returned by every PreToolUse gate, so it belongs to no single module — it
+  // is grouped with the other workspace/boundary refusals because that is what
+  // a reader scanning the report for "did the boundary family regress?" would
+  // look under. Without the widened prefix it fell through to the catch-all
+  // "plan-guard / static checks", which is simply untrue.
+  if (/^(workspace-|apply-patch|authoring-guard)/.test(denyId)) return 'session guards';
   if (/^one-mcp/.test(denyId)) return 'one-mcp-tool-gate';
   if (/^codex-child-model|^agent-activity/.test(denyId)) return 'agent-model / codex child';
   if (/^(spawn-|cursor-models-capture|absolute-traffic-one-path|subagent-bind|agent-reuse|verifier-independence|opencode-plan-batch|verify-batch|opencode-role-delegate|agent-materialization|performance-|team-confirmation|architect-phase|cursor-exact-model|model-unavailable-choice|model-rotation|cursor-api-limit|model-choice-enable|cursor-failure|cursor-agent-type|opencode-named-agent|kilo-general-agent)/.test(denyId)) return 'agent-model / spawn + model';
