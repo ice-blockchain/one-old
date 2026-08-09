@@ -113,12 +113,38 @@ function listFiles(root: string): string[] {
 // project (a mode-bearing `.one.json` with NO workspace ancestor) resolves to ITSELF
 // and is kept; a monorepo sub-package's stray/leaked state (the packages/ui incident)
 // resolves UP to the enclosing workspace root, so it differs from its own dir and is a
-// deletion candidate. This mirrors nearestWorkspaceRoot/dirDeclaresWorkspace — the same
-// gate isUnclaimedWorkspaceSubPackage uses on the write side.
+// deletion candidate.
+//
+// It asks the resolver a STRICTER question than a gate does, and the asymmetry is the
+// point. `workspaceAuthority: 'membership'` demands that an ancestor's workspace
+// declaration actually CLAIM this directory — some declared pattern matches it, or
+// matches an ancestor of it below the root — before that declaration may move it off
+// its own root. Under the default `declared` authority the mere PRESENCE of a
+// `workspaces` key is enough, which is right for resolution and catastrophic here.
+// MEASURED on the polyglot workspace fixture: a container declaring
+// `workspaces: ['packages/*']` with no `packages/` directory anywhere on disk made
+// three independently onboarded projects — node, Go and Python — climb past their own
+// mode-bearing `.one.json`, and this function reported all three as leaks. The Go and
+// Python members are not npm packages at all and could not have been members of that
+// declaration under any reading of it.
+//
+// So the leniency that is correct one line up is a data-loss bug one line down, and it
+// is the DIRECTION of the failure that separates them. An unreadable or unparseable
+// declaration still anchors resolution — a hook that guesses wrong there mints a stray
+// `.traffic-one` into a sub-package, which the next sweep heals — and grants no
+// deletion authority at all, because a hook that guesses wrong HERE destroys a
+// project's durable memory and nothing heals that. "We could not tell" must never
+// resolve to the irreversible act. That is why the reader in
+// hook/workspace-declaration.ts answers `opaque` rather than guessing, and why every
+// declaration shape it declines lands on the keep side.
+//
+// The membership arm of the resolver's leak rule is untouched, so stray state inside a
+// real repository (the observed mercury/strategies case, which has no npm workspace
+// anywhere in it) is still reported and still healed.
 function isLeakedNestedRoot(projectDir: string): boolean {
   const dir = path.resolve(projectDir);
   try {
-    return resolveProjectRoot(dir) !== dir;
+    return resolveProjectRoot(dir, undefined, { workspaceAuthority: 'membership' }) !== dir;
   } catch {
     return false; // never delete on an indeterminate resolution
   }

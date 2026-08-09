@@ -12,6 +12,7 @@ import { readJson } from '../fsjson';
 import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import { isNativeState } from '../state';
 import { hasStateFile } from '../tool-classify';
+import { workspaceClaimsDescendant } from './workspace-declaration';
 
 // Re-exported so the resolver stays the single import surface for root questions.
 export { dirOwnsProject, projectMembershipRoot } from '../project-membership';
@@ -91,7 +92,36 @@ export function stripStateDirSuffix(dir: string): string {
   return segments.slice(0, idx).join(path.sep) || resolved;
 }
 
-function nearestOnboardedRoot(startDir: string, ceiling?: string): string | null {
+/**
+ * How much authority a workspace DECLARATION carries over a descendant that
+ * holds state of its own.
+ *
+ * `declared` — the historical, deliberately lenient rule: any declaration is
+ * enough to move a descendant off its own root. Correct for RESOLUTION, where
+ * the cost of a false positive is resolving up one level and the cost of a miss
+ * is a stray `.traffic-one` minted into a sub-package (dirDeclaresWorkspace).
+ *
+ * `membership` — the declaration must POSITIVELY claim this descendant: some
+ * declared pattern matches it, or matches an ancestor of it below the root. For
+ * a consumer whose false positive is a DELETION, and only for such a consumer.
+ * Its single caller is shared/retention.ts isLeakedNestedRoot.
+ *
+ * The two modes exist because the safe direction is OPPOSITE for the two
+ * consumers, so no single leniency setting can serve both — see the header of
+ * hook/workspace-declaration.ts for the measurement that forced the split.
+ */
+export type WorkspaceAuthority = 'declared' | 'membership';
+
+// `claimant` is empty in `declared` mode. In `membership` mode it is the
+// directory whose fate is being decided, and a declaration only anchors when it
+// claims that directory — except for the directory ITSELF, which is its own
+// workspace root whenever it declares one.
+function dirAnchorsWorkspaceFor(dir: string, claimant: string): boolean {
+  if (!claimant || path.resolve(dir) === path.resolve(claimant)) return dirDeclaresWorkspace(dir);
+  return workspaceClaimsDescendant(dir, claimant);
+}
+
+function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: WorkspaceAuthority = 'declared'): string | null {
   // The home dir is machine-wide config space (`~/.traffic-one`), never a project
   // root. Stop the walk there (and never above it): a stray mode-bearing
   // `~/.traffic-one/.one.json` — e.g. from running the plugin in `~` once — must
@@ -133,7 +163,12 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string): string | null
       // fixes resolution AND makes isLeakedNestedRoot report it, so the SessionStart
       // retention sweep heals it — no migration needed. A dir that owns a marker is
       // always its own root, so a real repo can never become a cleanup candidate.
-      if (nearestWorkspaceRoot(path.dirname(current), ceiling) === null
+      //
+      // Under `membership` authority the workspace half of this test additionally
+      // requires the ancestor's declaration to CLAIM `current`; the membership half
+      // is untouched, so stray state inside a real repo (mercury/strategies) still
+      // climbs past and still heals.
+      if (nearestWorkspaceRoot(path.dirname(current), ceiling, authority === 'membership' ? current : '') === null
         && (dirOwnsProject(current)
           || projectMembershipRoot(path.dirname(current), ceiling) === null)) return current;
     }
@@ -148,6 +183,14 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string): string | null
 // `workspaces` in package.json, or a pnpm-workspace.yaml. Lenient by design: the
 // cost of a false positive is resolving up one level; the cost of a miss is a
 // stray .traffic-one minted into a sub-package (see resolveProjectRoot below).
+//
+// It never reads the declared PATTERNS, and under `declared` authority it still
+// does not — this is the resolution hot path and it stays at two existsSync
+// calls plus one readJson. The pattern read lives in hook/workspace-declaration.ts
+// and is reached only through `membership` authority, so a directory that claims
+// nothing still anchors resolution exactly as it always has. The invariant that
+// binds the two — a declaration that CLAIMS a descendant is always a declaration
+// — is pinned in ../__tests__/workspace-declaration.test.ts rather than assumed.
 function dirDeclaresWorkspace(dir: string): boolean {
   if (fs.existsSync(path.join(dir, 'pnpm-workspace.yaml')) || fs.existsSync(path.join(dir, 'pnpm-workspace.yml'))) {
     return true;
@@ -162,7 +205,7 @@ function dirDeclaresWorkspace(dir: string): boolean {
 // Nearest ancestor-or-self (within the bounded walk, never above $HOME) that is a
 // workspace root. Used as the project-root anchor when no ONBOARDED root exists
 // yet — e.g. mid-onboarding, before the workspace root has committed `mode`.
-function nearestWorkspaceRoot(startDir: string, ceiling?: string): string | null {
+function nearestWorkspaceRoot(startDir: string, ceiling?: string, claimant = ''): string | null {
   let home = '';
   try { home = path.resolve(os.homedir()); } catch { /* no home → MAX_ROOT_WALK-capped */ }
   const ceil = ceiling ? path.resolve(ceiling) : '';
@@ -171,7 +214,7 @@ function nearestWorkspaceRoot(startDir: string, ceiling?: string): string | null
     if (home && current === home) break;
     if (isMachineConfigRoot(current)) break; // temp/config roots never anchor a workspace
     if (ceil && !isPathWithin(current, ceil)) break; // never anchor above the host workspace root
-    if (dirDeclaresWorkspace(current) && !hasPluginAuthoringMarkers(current)) return current;
+    if (dirAnchorsWorkspaceFor(current, claimant) && !hasPluginAuthoringMarkers(current)) return current;
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
@@ -232,8 +275,13 @@ export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
 // project by two spellings — see the long note above projectRoot() in
 // shared/paths.ts for why that is bounded, and
 // shared/__tests__/path-spelling-contract.test.ts for the pins.
-export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceiling?: string } = {}): string {
+export function resolveProjectRoot(
+  cwd: string,
+  filePath?: unknown,
+  opts: { ceiling?: string; workspaceAuthority?: WorkspaceAuthority } = {},
+): string {
   const ceiling = opts.ceiling ? path.resolve(opts.ceiling) : '';
+  const authority = opts.workspaceAuthority ?? 'declared';
   // Relative targets still resolve against the REAL cwd; only the walk anchors
   // are lifted out of a drifted `.traffic-one/**` cwd (see stripStateDirSuffix).
   const cwdStart = stripStateDirSuffix(cwd);
@@ -246,9 +294,12 @@ export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceil
   // let it re-root resolution to an ancestor. Drop the file hint and resolve from
   // cwd within the workspace.
   if (ceiling && fileStart && !isPathWithin(fileStart, ceiling)) fileStart = '';
-  const onboarded = (fileStart && nearestOnboardedRoot(fileStart, ceiling)) || nearestOnboardedRoot(cwdStart, ceiling);
+  const claimant = (start: string): string => (authority === 'membership' ? start : '');
+  const onboarded = (fileStart && nearestOnboardedRoot(fileStart, ceiling, authority))
+    || nearestOnboardedRoot(cwdStart, ceiling, authority);
   if (onboarded) return onboarded;
-  const workspace = (fileStart && nearestWorkspaceRoot(fileStart, ceiling)) || nearestWorkspaceRoot(cwdStart, ceiling);
+  const workspace = (fileStart && nearestWorkspaceRoot(fileStart, ceiling, claimant(fileStart)))
+    || nearestWorkspaceRoot(cwdStart, ceiling, claimant(cwdStart));
   if (workspace) return workspace;
   // Cursor can run a subagent shell with cwd under its internal metadata tree
   // (for example ~/.cursor/.../terminals), outside workspace_roots. The ceiling
@@ -256,7 +307,7 @@ export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceil
   // to cwd would make Traffic One think this out-of-tree dir is a fresh project.
   if (ceiling && !isPathWithin(path.resolve(cwdStart), ceiling)) {
     if (isOnboardedProjectRoot(ceiling)) return ceiling;
-    const workspaceAtCeiling = nearestWorkspaceRoot(ceiling, ceiling);
+    const workspaceAtCeiling = nearestWorkspaceRoot(ceiling, ceiling, claimant(ceiling));
     if (workspaceAtCeiling) return workspaceAtCeiling;
     return ceiling;
   }

@@ -43,6 +43,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Unify native detection, and make three instruments tell the truth (`798a6808`)
 - Make silent refusals speak, and stop Cursor's enforcement hooks failing open (`05cb6c87`)
 - Make the shipped security checks actually check, and the release checks satisfiable (`22d84e35`)
 - Keep the user's setup prompt out of their repository, and ship the release apparatus (`5aea8d77`)

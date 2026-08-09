@@ -53,7 +53,7 @@ test.after(cleanupReplayTempTrees);
 //     the real handler set on purpose, so it has none.
 //
 // Everything else is fair game and the number below is the floor, not the goal.
-// Reach today: 67 of 199 declared ids (34%), which is 67 of the ~140 that are
+// Reach today: 67 of 201 declared ids (33%), which is 67 of the ~140 that are
 // reachable at all by the definition above (~48%). Every remaining group is
 // named in the printed report's `unreached:` lines and pinned by
 // UNREACHED_DENY_IDS below.
@@ -175,7 +175,7 @@ const REACHED_DENY_IDS: readonly string[] = [
   'workspace-boundary-unresolved-expansion',
 ];
 
-// The mirror image of REACHED_DENY_IDS, and the reason the 128 unreached ids
+// The mirror image of REACHED_DENY_IDS, and the reason the 134 unreached ids
 // are now BOUNDED as well as reported. Sorted; regenerate with the block this
 // test prints.
 //
@@ -185,7 +185,7 @@ const REACHED_DENY_IDS: readonly string[] = [
 // grows. A newly declared id that no case reaches raises the unreached tally
 // silently: the reached COUNT is unchanged, so MIN_DENY_IDS_REACHED still
 // passes, the per-id superset check still passes, and the only trace is one
-// more name in a 127-entry printed list nobody diffs. The corpus's reach then
+// more name in a 134-entry printed list nobody diffs. The corpus's reach then
 // falls as a fraction of the surface while every assertion stays green.
 //
 // So this is a subset check on the unreached set — the unreached set may
@@ -201,6 +201,13 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'agent-reuse-await-codex-meta',
   'agent-reuse-await-cursor-id',
   'agent-reuse-continue',
+  // Strictly behind `agent-reuse-continue` above, which the corpus does not
+  // reach either: both additionally need a LIVE quick-fix agent recorded for
+  // the run AND a spawn carrying a valid `[t1-bounded-scope]` marker. Driven
+  // instead through the real gate in
+  // modules/agent-model/__tests__/scope-regrant.test.ts.
+  'agent-reuse-scope-regrant',
+  'agent-reuse-scope-regrant-refused',
   'architect-memory-baseline-gate',
   'architect-opencode-queue-gate',
   'architect-opencode-queue-policy-gate',

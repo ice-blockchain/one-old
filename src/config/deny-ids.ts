@@ -149,6 +149,29 @@ export const DENY_IDS = [
   'agent-reuse-await-codex-meta',
   'agent-reuse-await-cursor-id',
   'agent-reuse-continue',
+  // Two SPLITS off `agent-reuse-continue`, not a rename of it. All three refuse
+  // the same duplicate spawn, but the question the orchestrator is left holding
+  // is different in each, and `denyId` is the only thing a budget or the
+  // decision log can read it off — the rendered text is resolved from SKILL.md
+  // and interpolates the file list, so it is never a key.
+  //   - `-continue`: nothing about the contract changed. Continue the agent.
+  //   - `-scope-regrant`: the spawn's `[t1-bounded-scope]` marker WAS applied to
+  //     the live agent's WorkUnitContract before the deny. The scope change the
+  //     orchestrator wanted already happened, so re-sending the marker is a
+  //     no-op and `[t1-replace-agent]` would destroy a live agent for nothing.
+  //   - `-scope-regrant-refused`: the same marker was NOT applied — the
+  //     republish was refused and consumed rather than dropped. Its remedy is
+  //     the opposite of the one above (retry once, then work within the OLD
+  //     scope), and merging the two would tell an orchestrator whose widening
+  //     silently failed that it had succeeded.
+  // Both are ESCALATABLE (absent from NEVER_ESCALATED_DENY_IDS, the default),
+  // and each one's prose is written to survive that. `-scope-regrant` renders
+  // only when the envelope hash actually MOVED, so three byte-identical draws
+  // mean an orchestrator re-sending a marker its own text told it not to
+  // re-send. `-scope-regrant-refused` prescribes exactly ONE retry and then
+  // "report BLOCKED", which is what escalation says at three.
+  'agent-reuse-scope-regrant',
+  'agent-reuse-scope-regrant-refused',
   'verifier-independence-gate',
 
   // ── modules/agent-model/gate-enforcement.ts ──────────────────────────────
@@ -545,6 +568,20 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   'run-team-runtime-allowlist-gap',
   'run-team-fallback-taken',
 
+  // Deliberately NOT here: `agent-reuse-scope-regrant` and
+  // `-scope-regrant-refused`, checked against the bar rather than inherited from
+  // their sibling. Lifting either admits a SECOND live agent for the role, which
+  // is the same worst case as lifting `agent-reuse-continue` — a duplicated,
+  // more expensive round — and it is not indistinguishable from a legitimate
+  // outcome: both agents are recorded in the run's agent registry, so the
+  // duplication is legible afterwards. Neither carries the AUTHORITY either. The
+  // widened contract is published by `ensureRunBootstrap`, which hash-verifies
+  // its own write and refuses a widening the maintenance-debt guard forbids; an
+  // override changes nothing about what the child may write, only whether a
+  // duplicate child starts. The compile-time family obligation below covers
+  // `codex-child-model-*` only, so these two are unlisted by choice, not by
+  // omission.
+  //
   // Deliberately NOT here: `onboarding-server-start-timeout`,
   // `-start-timeout-exhausted` and `-start-failed`. All three mean "the local
   // setup wizard could not be started", which is an INFRASTRUCTURE fact about

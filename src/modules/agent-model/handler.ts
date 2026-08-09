@@ -11,7 +11,6 @@ import { obj } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
-import { canonicalHost } from '../../shared/model-tiers';
 import {
   captureClaimDebug,
   ensureCurrentRunId,
@@ -24,7 +23,6 @@ import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
-import {  canonicalHostAgentType } from '../../shared/host/spawn-types';
 import {
   cursorRunPolicyMissingTiers,
   ensureRunModelPolicy,
@@ -32,24 +30,17 @@ import {
   runModelPolicyPath,
 } from '../../shared/run-model-policy';
 import {
-  boundedMaintenanceSourceScope,
   ensureRunBootstrap,
-  pendingMaintenanceDebtSources,
-  readActiveRunBootstrap,
   roleRequiresCompiledAssignment,
 } from '../../shared/run-bootstrap-policy';
 import { readRuntimeAssignments } from '../../shared/architecture-contract';
-import { readRunHostCapability } from '../../shared/host/capabilities';
 
 import {
   ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
   CURSOR_MODELS_CAPTURE_FALLBACK,
   block,
 } from './handler-prose';
-import {
-  quickFixScopeFromSpawn,
-  spawnAgentType,
-} from './spawn-shape';
+import { spawnBootstrapPlan } from './spawn-bootstrap';
 import {
   absoluteTrafficOnePathDeny,
   absoluteTrafficOnePathsOutsideProject,
@@ -266,83 +257,29 @@ export function agentModelGate(ctx: Ctx): HookResult {
     }
     let changed = placeholderPromptFields.length > 0;
     if (subagentTeam && runPolicy) {
-      const rawAgentType = spawnAgentType(toolInput, { includeRoleAlias: false }).trim();
-      const capability = readRunHostCapability(cwd, spawnRunId, ctx.host);
-      if (!capability) {
+      // ONE derivation of the publish inputs, shared with the reuse gate's
+      // quick-fix scope regrant (spawn-bootstrap.ts) — every field feeds the
+      // envelope hash, so two derivations would publish two envelopes for one
+      // spawn.
+      const plan = spawnBootstrapPlan({
+        ctx,
+        cwd,
+        toolInput,
+        role,
+        evidenceSource: roleEvidence.source,
+        runId: spawnRunId,
+        modelPolicyId: runPolicy.policyId,
+        spawnPromptText,
+      });
+      if (plan.kind === 'capability-missing') {
         return deny(
           `traffic-one — spawn blocked: per-run host capability evidence is missing or corrupt for ${ctx.host}. `
           + 'No child was started. Repair the parent run and retry.',
           { denyId: 'spawn-host-capability-missing', denyTarget: spawnRunId },
         );
       }
-      // A spawn that fell back to the host's built-in generic worker (because this
-      // session's accepted-type set predates the materialized agent files) is the
-      // SAME work unit as the typed spawn. Canonicalize it so both paths resolve
-      // the bootstrap the parent already published for this role.
-      const hostAgentType = canonicalHostAgentType(
-        ctx.host,
-        role,
-        rawAgentType,
-        capability?.typedSubagents === true,
-        cwd,
-      );
-      const activeRoleBootstrap = readActiveRunBootstrap(cwd, spawnRunId, role);
-      const activeBoundedMaintenance = activeRoleBootstrap
-        && (
-          (role === 'quick-fix' && activeRoleBootstrap.workUnit.unitId === 'quick-fix:bootstrap')
-          || activeRoleBootstrap.workUnit.unitId === `${role}:bounded-maintenance`
-        )
-        ? activeRoleBootstrap
-        : null;
-      const requestedQuickFixScope = role === 'quick-fix'
-        ? quickFixScopeFromSpawn(toolInput, spawnPromptText)
-        : null;
-      const explicitQuickFixScope = requestedQuickFixScope?.present
-        ? (requestedQuickFixScope.valid ? requestedQuickFixScope : null)
-        : null;
-      // The union of every pending debt's pinned files takes precedence over
-      // the active envelope's scope: `active.json` holds whichever unit's
-      // envelope was published LAST, so a paid child bound from it could only
-      // ever discharge that one debt and the run stayed `fallback-pending`
-      // forever. The union covers the single-debt case identically (union of
-      // one = that debt), and `fallbackContractMatches` admits exactly it.
-      const pendingDebtSources = !requestedQuickFixScope?.present && role !== 'quick-fix'
-        ? pendingMaintenanceDebtSources(cwd, spawnRunId, role)
-        : null;
-      const boundedMaintenanceOutputs = explicitQuickFixScope?.outputs
-        || pendingDebtSources
-        || (!requestedQuickFixScope?.present && activeBoundedMaintenance
-          ? boundedMaintenanceSourceScope(
-              spawnRunId,
-              role,
-              activeBoundedMaintenance.workUnit.outputs,
-            )
-          : undefined)
-        || null;
-      const envelope = ensureRunBootstrap(cwd, spawnRunId, role, state, {
-        host: canonicalHost(ctx.host),
-        hostAgentType,
-        evidenceSource: roleEvidence.source,
-        modelPolicyId: runPolicy.policyId,
-        ...(boundedMaintenanceOutputs
-          ? {
-              boundedOutputs: boundedMaintenanceOutputs,
-              boundedAllowlist: explicitQuickFixScope?.allowlist
-                || pendingDebtSources
-                || (activeBoundedMaintenance
-                  ? boundedMaintenanceSourceScope(
-                      spawnRunId,
-                      role,
-                      activeBoundedMaintenance.workUnit.allowlist,
-                    )
-                  : undefined)
-                || boundedMaintenanceOutputs,
-              boundedAllowlistExclude: explicitQuickFixScope?.exclude
-                || (pendingDebtSources ? [] : activeBoundedMaintenance?.workUnit.allowlistExclude)
-                || [],
-            }
-          : {}),
-      });
+      const boundedMaintenanceOutputs = plan.boundedScope;
+      const envelope = ensureRunBootstrap(cwd, spawnRunId, role, state, plan.options);
       if (!envelope) {
         // Since PLAN_READY may now be accepted with a capability role the
         // compiled contract assigns nothing (roleSkippableWithoutAssignment),

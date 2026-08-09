@@ -26,8 +26,13 @@ import {
 } from './cursor-failures';
 import { cursorAgentPresumedDead } from './cursor-liveness';
 import {
+  AGENT_REUSE_SCOPE_REGRANT_FALLBACK,
+  AGENT_REUSE_SCOPE_REGRANT_REFUSED_FALLBACK,
   block,
 } from './handler-prose';
+import {
+  quickFixScopeRegrant,
+} from './spawn-bootstrap';
 import {
   continuationRecipe,
 } from './spawn-hygiene';
@@ -39,7 +44,10 @@ import {
 import type { GateContext } from './gate-context';
 
 export function reuseReplaceGates(g: GateContext): HookResult | null {
-  const { ctx, cwd, state, raw, toolInput, role, spawnRunId, spawnPromptText } = g;
+  const {
+    ctx, cwd, state, raw, toolInput, role, roleEvidence, runPolicy, subagentTeam,
+    spawnRunId, spawnPromptText,
+  } = g;
   // Cursor startup failures can have no Task postToolUse/subagentStop at all.
   // Reconcile the child transcript now and enforce its persisted role-specific
   // retry even when the failed registry entry was already retired and this Task
@@ -97,6 +105,64 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
         }, `Agent-reuse gate: run ${runId} has a fresh Codex ${role} registry row for ${codexValidation.entry.agentId}, but Traffic One cannot verify that child's role from line-zero session metadata (${codexValidation.reason}). It will not route continuation to an unverified child or start a duplicate. Retry: the reason above names what is being waited on — a child rollout that has not flushed yet, or a registry row another process held while this hook ran — and both clear without your intervention. Use ${REPLACE_AGENT_MARKER} only when the child is genuinely unusable.`),
           { denyId: 'agent-reuse-await-codex-meta', denyTarget: role });
       };
+      // The duplicate spawn is refused either way — a regrant widens the LIVE
+      // agent's contract, it never authorises a second agent. What changes is
+      // what the deny is allowed to say: when the spawn's `[t1-bounded-scope]`
+      // marker legitimately republished the contract, the recovery is "continue
+      // the agent you have, it can now write these files" instead of the
+      // `[t1-replace-agent]` demolition the plain continue deny leaves as the
+      // only route to a scope change. A REFUSED republish is reported as
+      // refused; it is never minted as applied.
+      const continueDeny = (host: string, resumeTarget: string): HookResult => {
+        const recipe = continuationRecipe(host, resumeTarget, role);
+        const regrant = subagentTeam && runPolicy
+          ? quickFixScopeRegrant({
+            ctx,
+            cwd,
+            toolInput,
+            role,
+            evidenceSource: roleEvidence.source,
+            runId,
+            modelPolicyId: runPolicy.policyId,
+            spawnPromptText,
+          }, state)
+          : null;
+        if (regrant) {
+          const files = regrant.files.join(', ');
+          const fileCount = regrant.files.length;
+          if (regrant.status === 'applied') {
+            return deny(block('agent-reuse-scope-regrant', {
+              ROLE: role,
+              RUN_ID: runId,
+              AGENT_ID: resumeTarget,
+              FILE_COUNT: fileCount,
+              FILES: files,
+              CONTINUE_CALL: recipe.call,
+              CONTINUE_TOOL: recipe.tool,
+              MARKER: REPLACE_AGENT_MARKER,
+            }, AGENT_REUSE_SCOPE_REGRANT_FALLBACK),
+            { denyId: 'agent-reuse-scope-regrant', denyTarget: role });
+          }
+          return deny(block('agent-reuse-scope-regrant-refused', {
+            ROLE: role,
+            RUN_ID: runId,
+            AGENT_ID: resumeTarget,
+            FILE_COUNT: fileCount,
+            FILES: files,
+            CONTINUE_CALL: recipe.call,
+            MARKER: REPLACE_AGENT_MARKER,
+          }, AGENT_REUSE_SCOPE_REGRANT_REFUSED_FALLBACK),
+          { denyId: 'agent-reuse-scope-regrant-refused', denyTarget: role });
+        }
+        return deny(block('agent-reuse-continue', {
+          ROLE: role,
+          RUN_ID: runId,
+          AGENT_ID: resumeTarget,
+          MARKER: REPLACE_AGENT_MARKER,
+          CONTINUE_CALL: recipe.call,
+          CONTINUE_TOOL: recipe.tool,
+        }), { denyId: 'agent-reuse-continue', denyTarget: role });
+      };
       const concurrentCursorReplacementDeny = (): HookResult | null => {
         const concurrent = currentLive();
         if (!concurrent) return null;
@@ -108,15 +174,7 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
             MARKER: REPLACE_AGENT_MARKER,
           }), { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
         }
-        const recipe = continuationRecipe('cursor', concurrentResume, role);
-        return deny(block('agent-reuse-continue', {
-          ROLE: role,
-          RUN_ID: runId,
-          AGENT_ID: concurrentResume,
-          MARKER: REPLACE_AGENT_MARKER,
-          CONTINUE_CALL: recipe.call,
-          CONTINUE_TOOL: recipe.tool,
-        }), { denyId: 'agent-reuse-continue', denyTarget: role });
+        return continueDeny('cursor', concurrentResume);
       };
       const explicitResumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
       const resumeToken = explicitResumeToken;
@@ -175,13 +233,7 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
             { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
         }
         if (live && !cursorAwaitingResume && !markerJustified && structuralGround === null) {
-          if (resumeTarget) {
-            const recipe = continuationRecipe(ctx.host, resumeTarget, role);
-            return deny(block('agent-reuse-continue', {
-              ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
-              CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
-            }), { denyId: 'agent-reuse-continue', denyTarget: role });
-          }
+          if (resumeTarget) return continueDeny(ctx.host, resumeTarget);
           return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }),
             { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
         }
@@ -249,11 +301,7 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
                 { denyId: 'agent-reuse-await-cursor-id', denyTarget: role });
             }
           } else {
-            const recipe = continuationRecipe(ctx.host, resumeTarget, role);
-            return deny(block('agent-reuse-continue', {
-              ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
-              CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
-            }), { denyId: 'agent-reuse-continue', denyTarget: role });
+            return continueDeny(ctx.host, resumeTarget);
           }
         }
       }

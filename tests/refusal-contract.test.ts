@@ -327,6 +327,74 @@
 // EXPORTED SURFACE, so a non-fsjson name in either is a straight failure).
 // Seeding a separate resolver leaves that test untouched and load-bearing.
 //
+// ── WHAT MAKES A MODULE AN AUTHORITY, and how each one audits itself ────────
+// There are two writer authorities now and a third can be added the same way,
+// so the entry criterion is written down rather than inferred from the two that
+// exist. A module is an authority when all three hold:
+//   1. it MUTATES the filesystem itself, rather than delegating to a module
+//      that already does — fsjson.ts and machine-sidecar.ts both call the
+//      syscall; state/normalize.ts does not, and is a wrapper the fixpoint
+//      already reaches;
+//   2. its failure answer is DURABLE REFUSAL rather than contention or
+//      absence — `false` (or a union member spelled `'refused'`) that means
+//      THE WRITE DID NOT LAND, so a caller dropping it has dropped the only
+//      report there was. A `null` meaning "someone else holds the lock" is not
+//      this, and admitting one would fire on every lock acquirer in the tree;
+//   3. the answer is the CALLEE'S OWN, produced in the frame that mutates, so
+//      the seed can be decided from that function's text. one-settings.ts fails
+//      this and only this: its raw mutations sit several frames below the
+//      boolean its section writers return, which is why it is a named gap
+//      rather than a third authority.
+// A module that meets 1-3 gets a seed (a name list if its writers are a fixed
+// exported surface, a shape if they are not) plus a completeness pin below. A
+// module that meets none of them is not a writer layer at all, and wiring one
+// in is how these rules would start firing on correct code.
+//
+// EACH AUTHORITY AUDITS ITS OWN MODULE, and the two pins are not the same
+// assertion because the two seeds are not the same kind of thing:
+//   fsjson.ts — a NAME seed, so the pin asks that FSJSON_WRITERS plus
+//     FSJSON_NON_WRITERS equal the module's exported function surface. It
+//     catches an unclassified primitive.
+//   machine-sidecar.ts — a SHAPE seed, so there is no roster to compare
+//     against and the pin asks the sharper question instead: every exported
+//     function that PERFORMS A RAW-FS MUTATION must be admitted by the shape,
+//     and every name excused as a non-writer must be parse-checkably free of
+//     any raw-fs mutation. That second clause is what the fsjson pin cannot
+//     have — a prose reason is only as good as its author — and it means the
+//     exculpation list cannot be used to silence a writer the shape missed.
+// Both fail in the direction that matters: a writer nobody classified does not
+// go quiet, it fails by name.
+//
+// ── TWO HOLES IN THE COLLECTOR, ONE CLOSED AND ONE PINNED ───────────────────
+// The fsjson pin collected only `ts.isFunctionDeclaration`, so `export const
+// writeJsonAtomic = (…): boolean => …` was exported, was a writer, and was in
+// neither list — a hole in the one guard whose entire value is completeness.
+// It is closed: the collector now also reads an exported `const` bound to an
+// arrow, a function expression, or a function TYPE. Nothing in fsjson.ts is
+// spelled that way today, so the lists did not move, and the new arm is held
+// by a fixture rather than by a live instance.
+//
+// Closing it surfaced the OTHER shape an exported const can take, and this one
+// is live. `export const fsjson: FsJson = { readText, readJson, writeJson }`
+// (fsjson.ts:530) re-exports a real writer as an object MEMBER, and rules 2-4
+// key a call on a bare `ts.Identifier` callee — so `x.writeJson(…)` resolves to
+// nothing at all. Measured before deciding what to do about it: across src/ +
+// tests/ there are ZERO member calls whose member name is any of the eight
+// fsjson writers, and the object's only importer is core/context.ts, which
+// feeds it to `Ctx`; the single member call through it anywhere is
+// `ctx.fsjson.readJson(…)` at core/pipeline.ts:121, a READ.
+//
+// So the hole is real and empty, and it is pinned at empty rather than closed
+// by resolution. Closing it properly means answering "what type is `ctx`",
+// which is the type question this whole file is built to avoid — and the
+// heuristic alternative ("any `.writeJson(…)` is a write") would fire on any
+// future object that happens to expose a method by that name, which is the
+// third rejected proxy wearing a hat. The pin costs one whole-tree walk over
+// the files that mention the const, fires the moment the first such call is
+// written, and names the call site. Its false-positive surface is a base
+// expression spelled exactly `fsjson` or `….fsjson` that is NOT this object;
+// there is none today and one would be a deliberately confusing name.
+//
 // ── LIMIT 3, and it is declared rather than half-built ──────────────────────
 // The new layer feeds rules 2 and 3. RULE 4 DOES NOT SEE IT, because rule 4
 // keys a destination on `arguments[0]` — exact for all eight fsjson writers,
@@ -1105,6 +1173,9 @@ const FSJSON_NON_WRITERS: readonly string[] = [
 // `SANCTIONED_RAW_FS_WRITERS` roster would go blind the day someone adds a
 // second sidecar writer and forgets the roster. A shape cannot be forgotten.
 //
+// A shape CAN be outgrown, though, which is what the completeness pins below
+// are for — see WHAT MAKES A MODULE AN AUTHORITY.
+//
 // THE SHAPE, and it is deliberately one shape and not a family:
 //
 //     try { …raw fs mutation…; return true } catch { …; return false }
@@ -1253,8 +1324,15 @@ interface RefusalScanResult {
   /**
    * The subset reaching the RAW-FS layer. Counted separately for the reason
    * `writeJsonDurable` exists in this file: a resolver that goes dark inside a
-   * global floor is a resolver nobody notices. 170 of the 489 writes are these,
+   * global floor is a resolver nobody notices. 125 of the 500 writes are these,
    * so the fsjson half alone would still clear `> 200` on its own.
+   *
+   * That split MOVES, and not only when writes are added: a name both resolvers
+   * reach is attributed to fsjson, so the fsjson fixpoint growing a wrapper
+   * shifts calls out of this bucket without anything going dark. Re-measured
+   * across two commits it went 170/489 -> 125/500 while the SEED census stayed
+   * at exactly 21 functions. So the number here is a measurement with a date on
+   * it; the invariants are the floor below, the per-file pin, and that census.
    */
   readonly rawFsWrites: readonly WriteSite[];
   /** Those whose boolean is dropped in statement position — the proposal's rule 1. */
@@ -2638,12 +2716,19 @@ test('rule 2: no NEW publisher hands back a value after discarding a write refus
     `expected well over 80 discarded write refusals, found ${discarded.length} — the statement-position test is broken`,
   );
 
-  // The SECOND layer's own floor, and it is separate on purpose. 170 of the 489
+  // The SECOND layer's own floor, and it is separate on purpose. 125 of the 500
   // writes reach a raw-fs writer; folded into the global floor above, the whole
   // raw-fs resolver could stop resolving and `> 200` would still pass on the
   // fsjson half alone. That is precisely how the `writeJsonDurable` regression
   // hid, and the lesson was to floor each half of a denominator that can move
   // independently.
+  //
+  // Re-measured rather than copied forward: the pair read 170/489 when the layer
+  // landed and reads 125/500 two commits later, with the shape seed still
+  // admitting exactly the same 21 functions. A name both resolvers reach is
+  // attributed to fsjson, so this bucket shrinks when the fsjson fixpoint grows
+  // — which is why the floor sits far below the count and why the per-file pin
+  // below, not the magnitude, is what catches the layer falling silent.
   assert.ok(
     rawFsWrites.length > 60,
     `expected well over 60 calls reaching a SANCTIONED RAW-FS writer, found ${rawFsWrites.length} — the shape `
@@ -3394,6 +3479,52 @@ test('rule 4 does not consult the raw-fs layer, because argument[0] is not its d
   assert.equal(fsjsonPair.divergentPairs.length, 1, 'rule 4 must still fire on an fsjson pair');
 });
 
+// ── completeness: each authority audits its own module ──────────────────────
+// See WHAT MAKES A MODULE AN AUTHORITY in the header for the entry criterion
+// these two pins enforce, and for why they ask different questions.
+
+/**
+ * Every name `source` exports AS A FUNCTION.
+ *
+ * Both spellings, and the second one is why this is a function rather than the
+ * one-line filter it used to be. `export function f()` was the only shape
+ * collected, so `export const writeJsonAtomic = (…): boolean => …` would have
+ * been an exported writer in neither list, silently — a completeness hole in
+ * the guard whose whole job is completeness. A `const` counts when it is bound
+ * to an arrow or a function expression, or annotated with a function TYPE
+ * (`export const f: (p: string) => boolean = impl`), which covers the
+ * indirection an author reaches for when the implementation is chosen at
+ * module load.
+ *
+ * A `const` bound to an OBJECT is deliberately not a function and not here.
+ * That is fsjson.ts:530, and it is a different hole with its own pin below.
+ */
+function exportedFunctionNames(source: ts.SourceFile): string[] {
+  const names: string[] = [];
+  const isExported = (node: ts.Node): boolean => (
+    (ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Export) !== 0
+  );
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement)) {
+      if (statement.name && isExported(statement)) names.push(statement.name.text);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      // getCombinedModifierFlags walks a VariableDeclaration up to its
+      // statement, so the `export` on the statement is read from the binding.
+      if (!ts.isIdentifier(declaration.name) || !isExported(declaration)) continue;
+      const initializer = declaration.initializer ? unwrapExpression(declaration.initializer) : undefined;
+      const bindsAFunction = Boolean(initializer
+        && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)));
+      if (bindsAFunction || (declaration.type !== undefined && ts.isFunctionTypeNode(declaration.type))) {
+        names.push(declaration.name.text);
+      }
+    }
+  }
+  return names.sort();
+}
+
 test('every function fsjson.ts exports is classified as a writer or as a non-writer', () => {
   const source = ts.createSourceFile(
     FSJSON_MODULE,
@@ -3401,13 +3532,28 @@ test('every function fsjson.ts exports is classified as a writer or as a non-wri
     ts.ScriptTarget.Latest,
     true,
   );
-  const exported = source.statements
-    .filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement)
-      && (ts.getCombinedModifierFlags(statement) & ts.ModifierFlags.Export) !== 0)
-    .map((statement) => statement.name?.text ?? '')
-    .filter((name) => name !== '')
-    .sort();
+  const exported = exportedFunctionNames(source);
   assert.ok(exported.length > 0, 'the parse found fsjson.ts — an empty set would make this vacuous');
+
+  // The `const` arm has no live instance in fsjson.ts, so it is held by a
+  // fixture. Without this the arm could be deleted, or never have worked, and
+  // every assertion below would go on passing — which is the exact failure
+  // mode the arm was added to prevent.
+  const constArm = ts.createSourceFile(
+    path.join(SRC_ROOT, 'shared', '__fsjson-const-fixture__.ts'),
+    'export function writeJson(p: string, v: unknown): boolean { return Boolean(p && v); }\n'
+    + 'export const writeJsonAtomic = (p: string, v: unknown): boolean => writeJson(p, v);\n'
+    + 'export const writeJsonVia: (p: string, v: unknown) => boolean = writeJsonAtomic;\n'
+    + 'const notExported = (p: string): boolean => Boolean(p);\n'
+    + 'export const fsjson = { writeJson };\n',
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  assert.deepEqual(
+    exportedFunctionNames(constArm),
+    ['writeJson', 'writeJsonAtomic', 'writeJsonVia'],
+    'the collector must read an exported const bound to a function, and must not read an object or a local',
+  );
 
   const classified = [...FSJSON_WRITERS, ...FSJSON_NON_WRITERS].sort();
   assert.deepEqual(
@@ -3424,4 +3570,192 @@ test('every function fsjson.ts exports is classified as a writer or as a non-wri
   // excused by its own exculpation, and the union check above cannot see it.
   const overlap = FSJSON_WRITERS.filter((name) => FSJSON_NON_WRITERS.includes(name));
   assert.deepEqual(overlap, [], 'a name cannot be both a writer and a non-writer');
+});
+
+/**
+ * The OTHER shape an exported const can take, pinned at the count it has today.
+ *
+ * `export const fsjson: FsJson = { readText, readJson, writeJson }` re-exports a
+ * real writer as an object MEMBER, and rules 2-4 recognise a write only when the
+ * callee is a bare identifier — so `x.writeJson(…)` reaches no rule at all. The
+ * object is live: core/context.ts hands it to `Ctx`, and core/types.ts#FsJson
+ * documents that member's `false` as a refusal ("a caller whose next step
+ * depends on the write having persisted must branch on this").
+ *
+ * Measured across src/ + tests/ before this was written: ZERO member calls whose
+ * member name is any of the eight writers, and exactly one call through this
+ * object anywhere — `ctx.fsjson.readJson(…)` at core/pipeline.ts:121, a read.
+ * So the hole is empty, and it is pinned at empty rather than resolved: deciding
+ * that `ctx` is a `Ctx` is the type question this file exists to avoid, and the
+ * heuristic version ("any `.writeJson(…)` is a write") is the fourth proxy that
+ * would mis-sort. See the header.
+ *
+ * The failure this prevents is a `ctx.fsjson.writeJson(…)` landing in a handler
+ * and being invisible to every rule here — the same blindness the raw-fs layer
+ * had, through the third door.
+ */
+test('a writer re-exported as an object MEMBER is reached by no call in the tree', () => {
+  const tree = sourceTree();
+  const fsjsonSource = tree.parse(FSJSON_MODULE);
+  assert.ok(fsjsonSource, 'the parse found fsjson.ts');
+
+  // Which exported const objects carry a writer, and under what member name —
+  // read off the module rather than named here, so a writer added to (or taken
+  // out of) that literal moves this guard with it.
+  const carriers = new Map<string, Set<string>>();
+  for (const statement of fsjsonSource.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      // On a VariableDeclaration this walks up to the statement, so the
+      // `export` is read from the binding rather than from the node type.
+      if ((ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Export) === 0) continue;
+      const initializer = unwrapExpression(declaration.initializer);
+      if (!ts.isObjectLiteralExpression(initializer)) continue;
+      const members = new Set<string>();
+      for (const property of initializer.properties) {
+        const name = property.name && ts.isIdentifier(property.name) ? property.name.text : '';
+        // `{ writeJson }` is shorthand — its name IS the writer's name.
+        const shorthand = ts.isShorthandPropertyAssignment(property) ? property.name.text : '';
+        for (const candidate of [name, shorthand]) {
+          if (candidate && FSJSON_WRITERS.includes(candidate)) members.add(candidate);
+        }
+      }
+      if (members.size > 0) carriers.set(declaration.name.text, members);
+    }
+  }
+  assert.deepEqual(
+    [...carriers.keys()],
+    ['fsjson'],
+    'fsjson.ts re-exports its writers through a const object other than `fsjson`, or has stopped re-exporting '
+    + 'them at all. Either way this guard is now aimed at the wrong name — re-derive it before editing anything '
+    + 'else, because it silently passes when it is aimed at nothing',
+  );
+
+  // A call whose base is that const — spelled bare (`fsjson.writeJson`) or as
+  // the last hop of a property access (`ctx.fsjson.writeJson`). Anything else
+  // is an object that merely shares the name, and there is none.
+  const reached: string[] = [];
+  for (const file of [...listTsFiles(SRC_ROOT), ...listTsFiles(TESTS_ROOT)]) {
+    const text = tree.read(file);
+    if (!text || ![...carriers.keys()].some((name) => text.includes(name))) continue;
+    const source = tree.parse(file);
+    if (!source) continue;
+    const relFile = path.relative(REPO_ROOT, file);
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const callee = unwrapExpression(node.expression);
+        if (ts.isPropertyAccessExpression(callee)) {
+          const base = unwrapExpression(callee.expression);
+          const baseName = ts.isIdentifier(base)
+            ? base.text
+            : (ts.isPropertyAccessExpression(base) ? base.name.text : '');
+          if (carriers.get(baseName)?.has(callee.name.text)) {
+            const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+            reached.push(`  ${relFile}:${line} — ${node.getText(source).split('\n')[0]!.trim().slice(0, 100)}`);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+
+  assert.deepEqual(
+    reached,
+    [],
+    `${reached.length} call(s) reach a refusal-carrying writer through the re-exported object rather than through `
+    + 'an imported identifier. Rules 2-4 key a write on a bare identifier callee, so NONE of them can see these — '
+    + 'the refusal is invisible, not merely unchecked. Import the writer directly (`import { writeJson } from '
+    + "'../fsjson'`) and rules 2-4 resolve it as they do everywhere else:\n"
+    + reached.join('\n'),
+  );
+});
+
+/**
+ * The SECOND authority auditing its own module — the shape-seed counterpart to
+ * the fsjson completeness pin above, and a sharper assertion than it can make.
+ *
+ * machine-sidecar.ts is the sanctioned opt-out from the consent write fence
+ * (its :22-42 comment is the "and say so"), which is exactly what made it
+ * invisible here until the raw-fs shape was seeded. The shape has no roster to
+ * compare against, so completeness is asked the other way round: every exported
+ * function that PERFORMS A RAW-FS MUTATION must be admitted by the seed, and
+ * every name excused below must be parse-checkably free of one.
+ *
+ * That second clause is the part the fsjson pin cannot have. There, an
+ * unclassified primitive can be silenced by adding it to FSJSON_NON_WRITERS
+ * with a plausible sentence; here the excuse is checked against the code, so a
+ * mutating function cannot be listed as a non-writer at all. A new sidecar
+ * writer written in a shape the seed does not recognise — `catch { return null }`,
+ * a mutation pushed below a helper — therefore fails by name rather than being
+ * born invisible, which is the whole failure this lane exists for.
+ *
+ * shared/one-settings.ts, the other raw-fs opt-out, is deliberately NOT pinned:
+ * its section writers keep their mutations several frames below the boolean, so
+ * it fails clause 3 of the authority criterion and is a declared gap in the
+ * header rather than a second module for this test.
+ */
+const MACHINE_SIDECAR_MODULE = path.join(SRC_ROOT, 'shared', 'auth', 'machine-sidecar.ts');
+
+/** Exported names in that module that mutate nothing — each checked, not trusted. */
+const MACHINE_SIDECAR_NON_WRITERS: readonly string[] = [
+  'isoNoMs',            // pure: a timestamp format
+  'machineSidecarPath', // pure: path arithmetic
+  'readMachineSidecar', // read
+];
+
+test('every raw-fs mutation machine-sidecar.ts exports is admitted by the shape seed', () => {
+  const tree = sourceTree();
+  const source = tree.parse(MACHINE_SIDECAR_MODULE);
+  assert.ok(source, `the parse found ${path.relative(REPO_ROOT, MACHINE_SIDECAR_MODULE)}`);
+
+  const exported = exportedFunctionNames(source);
+  assert.ok(exported.length > 0, 'an empty exported surface would make every assertion here vacuous');
+
+  const admitted = rawFsRefusalWriterNames(source);
+  const admittedExports = exported.filter((name) => admitted.has(name)).sort();
+  // Non-vacuity, and only that. Deliberately NOT `deepEqual(admittedExports,
+  // ['writeMachineSidecar'])`: a second sidecar writer written in the right
+  // shape is the outcome this pin wants, and failing on it would be the
+  // instrument firing on correct code — the one thing that gets a ratchet
+  // switched off. The completeness check below is what catches a wrong one.
+  assert.ok(
+    admitted.has('writeMachineSidecar'),
+    'the shape seed no longer admits writeMachineSidecar. This module IS the second writer authority; if the seed '
+    + 'stops recognising it, every call site behind it leaves rules 2-3 silently — check the function still reads '
+    + '`try { …fs…; return true } catch { return false }`',
+  );
+
+  assert.deepEqual(
+    exported,
+    [...admittedExports, ...MACHINE_SIDECAR_NON_WRITERS].sort(),
+    'machine-sidecar.ts exports a function that is neither admitted by the raw-fs shape nor listed as a '
+    + 'non-writer. This module is the sanctioned raw-fs opt-out from the consent write fence, so a writer here '
+    + 'that the shape does not admit is INVISIBLE to rules 2 and 3 — not unchecked, unseen. Give it the shape '
+    + '(`try { …fs…; return true } catch { return false }`), or add it to MACHINE_SIDECAR_NON_WRITERS if it '
+    + 'mutates nothing',
+  );
+
+  // The exculpation list is CHECKED rather than believed: a name here must
+  // contain no raw-fs mutation of its own. Without this clause the list is an
+  // off switch for the assertion above, which is how a hand-maintained
+  // exemption stops meaning anything.
+  const namespaces = fsNamespaces(source);
+  const mutating: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name && MACHINE_SIDECAR_NON_WRITERS.includes(node.name.text)
+      && node.body && containsHere(node.body, (child) => isRawFsMutation(child, namespaces))) {
+      mutating.push(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.deepEqual(
+    mutating,
+    [],
+    'a name excused as a machine-sidecar NON-writer performs a raw-fs mutation. It cannot be excused: either it '
+    + 'carries a refusal (give it the shape, and let the seed admit it) or the mutation belongs somewhere else:\n'
+    + mutating.map((name) => `  ${name}`).join('\n'),
+  );
 });

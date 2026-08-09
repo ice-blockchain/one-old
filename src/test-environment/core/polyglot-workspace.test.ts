@@ -5,7 +5,7 @@
 // assertion written after the fact. Nothing here is a correction: rows that
 // describe behaviour a workspace mode will have to move say so by name.
 //
-// `isLeakedNestedRoot` (shared/retention.ts:118) is module-private and has ONE
+// `isLeakedNestedRoot` (shared/retention.ts:144) is module-private and has ONE
 // caller, `listNestedTrafficOneDirs`, which only ever asks about a directory
 // that already holds a `.traffic-one/.one.json`. So it is measured two ways and
 // the difference is deliberate:
@@ -17,7 +17,7 @@
 // an unreachable one.
 //
 // CANONICALITY. The predicate is a STRING compare against its own input, and the
-// resolvers deliberately never realpath their exits (shared/hook/paths.ts:215-234)
+// resolvers deliberately never realpath their exits (shared/hook/paths.ts:258-277)
 // precisely so a project reached by a non-canonical spelling keeps equalling its
 // own directory. Every row below therefore states which spelling it measured:
 // the default rows realpath the temp root so a `/var` vs `/private/var` mismatch
@@ -65,11 +65,16 @@ function readbackFixture(workspace: PolyglotWorkspace, label: string): void {
   assert.deepEqual(failedPreconditions(workspace), [], `FIXTURE [${label}] preconditions`);
 }
 
-/** The body of shared/retention.ts isLeakedNestedRoot, verbatim. */
+/**
+ * The body of shared/retention.ts isLeakedNestedRoot, verbatim — including the
+ * `membership` authority, which is the whole difference between what the sweep
+ * asks and what a gate asks. A copy that dropped it would measure the resolver
+ * and report it as the deleter.
+ */
 function leakedByPredicate(dir: string): boolean {
   const resolved = path.resolve(dir);
   try {
-    return resolveProjectRoot(resolved) !== resolved;
+    return resolveProjectRoot(resolved, undefined, { workspaceAuthority: 'membership' }) !== resolved;
   } catch {
     return false;
   }
@@ -245,19 +250,26 @@ test('polyglot workspace [non-canonical]: a member reached through a symlink sti
 // ── recorded characterizations a workspace mode will have to move ────────────
 
 /**
- * A container `package.json` carrying ANY non-empty `workspaces` array collapses
- * the whole workspace onto the container and marks all three members' state for
- * deletion — even when the glob matches none of them and two of them are not npm
- * packages at all.
+ * A container `package.json` carrying ANY non-empty `workspaces` array still
+ * collapses the whole workspace onto the container for RESOLUTION — even when
+ * the glob matches none of the members and two of them are not npm packages at
+ * all. It no longer marks their state for deletion.
  *
- * `dirDeclaresWorkspace` (hook/paths.ts:151-160) asks only whether the ANCESTOR
- * declares workspaces; it never reads the glob, and never asks what language the
- * member is. The leniency is documented and deliberate — "the cost of a false
- * positive is resolving up one level" — but in this shape the cost is not one
- * level: `isLeakedNestedRoot` turns the same answer into a deletion plan for
- * three independently onboarded projects. Recorded, not corrected.
+ * This row USED to record all three members as planned deletions, and it was
+ * the measurement that forced the split. `dirDeclaresWorkspace`
+ * (hook/paths.ts:182-203) asks only whether the ANCESTOR declares workspaces; it
+ * never reads the glob, and never asks what language the member is. That
+ * leniency is right for resolution — "the cost of a false positive is resolving
+ * up one level" — and was catastrophic once `isLeakedNestedRoot` turned the same
+ * answer into a deletion plan for three independently onboarded projects.
+ *
+ * So the two halves are now asserted SEPARATELY and they deliberately disagree:
+ * resolution still climbs to the container, and the sweep plans nothing. A
+ * change that "fixed" this by making resolution glob-aware would make both rows
+ * say `member.dir`, and would hand back the stray-minting failure the leniency
+ * exists to prevent — so the disagreement below is the contract, not a seam.
  */
-test('polyglot workspace [recorded]: a container `workspaces` glob that matches NO member still collapses all three', () => {
+test('polyglot workspace: a container `workspaces` glob that matches NO member collapses resolution but grants no deletion', () => {
   withWorkspace(
     { ...ONBOARDED_MEMBERS, containerPackageJson: { name: 'workspace', private: true, workspaces: ['packages/*'] } },
     (workspace) => {
@@ -269,17 +281,45 @@ test('polyglot workspace [recorded]: a container `workspaces` glob that matches 
 
       for (const member of workspace.members) {
         assert.equal(resolveProjectRoot(member.dir), workspace.container,
-          `${member.id}: climbs past its own mode-bearing state to the container`);
-        assert.equal(leakedByPredicate(member.dir), true,
-          `${member.id}: and is therefore judged a leaked nested root`);
+          `${member.id}: resolution is UNCHANGED — it still climbs past its own mode-bearing state to the container`);
+        assert.equal(leakedByPredicate(member.dir), false,
+          `${member.id}: but the declaration claims no member, so it carries no deletion authority`);
       }
       assert.deepEqual(
-        plannedNestedLeaks(workspace.container),
-        ['ledger-api/.traffic-one', 'reporting-etl/.traffic-one', 'storefront-web/.traffic-one'],
-        'all three members are planned for deletion by the SessionStart sweep',
+        plannedNestedLeaks(workspace.container), [],
+        'the SessionStart sweep must plan no deletions: `packages/*` matches none of these three, and two of them'
+        + ' (Go, Python) could not be npm workspace members under any reading of that declaration',
       );
     },
   );
+});
+
+/**
+ * The other side of the same coin, and the reason the fix is not "read the
+ * glob": a declaration whose member list cannot be established keeps its
+ * resolution leniency and loses its deletion authority. Failing in opposite
+ * directions for the two consumers is the point — a hook that guesses wrong
+ * about resolution mints a stray `.traffic-one` the next sweep heals, and a
+ * sweep that guesses wrong destroys durable project memory that nothing heals.
+ */
+test('polyglot workspace: an UNPARSEABLE container declaration still anchors resolution and still grants no deletion', () => {
+  withWorkspace(ONBOARDED_MEMBERS, (workspace) => {
+    readbackFixture(workspace, 'unparseable-declaration');
+    // `packages:` holding a MAP rather than a list — a shape the hand-written
+    // reader declines rather than guesses at (no YAML parser may reach the hook
+    // runtime). Written after the readback so the fixture's own assertion that
+    // the container declares no npm workspace still holds.
+    fs.writeFileSync(path.join(workspace.container, 'pnpm-workspace.yaml'), 'packages:\n  foo:\n    bar: 1\n', 'utf8');
+
+    for (const member of workspace.members) {
+      assert.equal(resolveProjectRoot(member.dir), workspace.container,
+        `${member.id}: an unreadable declaration is STILL a declaration, and still anchors resolution`);
+      assert.equal(leakedByPredicate(member.dir), false,
+        `${member.id}: "we could not tell" must never resolve to the irreversible act`);
+    }
+    assert.deepEqual(plannedNestedLeaks(workspace.container), [],
+      'before the split this shape planned all three deletions off a declaration nobody could read');
+  });
 });
 
 /**

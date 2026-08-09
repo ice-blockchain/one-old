@@ -211,6 +211,20 @@ Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{A
 4. Only if that agent is genuinely unusable — {{CONTINUE_TOOL}} errors ("agent not found"/unavailable), or its replies show context exhaustion — re-spawn `{{ROLE}}` with the literal marker `{{MARKER}}` anywhere in the spawn prompt. The gate then allows ONE replacement spawn (same model-tier rules) and records the new agent id automatically.
 <!-- T1BLOCK:END agent-reuse-continue -->
 
+<!-- T1BLOCK:BEGIN agent-reuse-scope-regrant -->
+Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{AGENT_ID}}` — so this second spawn was refused. Its `[t1-bounded-scope]` marker was NOT discarded: run {{RUN_ID}} has no compiled assignments, so for `{{ROLE}}` that marker is the ONLY origin of the bounded contract, and Traffic One republished it. `{{AGENT_ID}}` may now write exactly these {{FILE_COUNT}} file(s): {{FILES}}. The scope change is already in effect, so a second agent was never needed for it.
+1. {{CONTINUE_CALL}} The message carries ONLY what is NEW: the task spec, the exact file paths above, acceptance criteria, and (for fix cycles) the reviewer/tester findings VERBATIM. The agent keeps everything it already read.
+2. Treat the reply exactly like a fresh spawn's final report: the same digest + verdict-token contract, ending with its terminal token and updating `.traffic-one/digests/{{RUN_ID}}/{{ROLE}}.md`.
+3. Do NOT re-send this spawn to apply the same scope again — it is already published and an identical marker changes nothing. To widen it FURTHER, send one more spawn whose `[t1-bounded-scope]` line names the COMPLETE file set you want; each marker REPLACES the scope rather than adding to it. Only if `{{AGENT_ID}}` is genuinely unusable — {{CONTINUE_TOOL}} errors ("agent not found"/unavailable), or its replies show context exhaustion — re-spawn `{{ROLE}}` with the literal marker `{{MARKER}}` and that same scope line.
+<!-- T1BLOCK:END agent-reuse-scope-regrant -->
+
+<!-- T1BLOCK:BEGIN agent-reuse-scope-regrant-refused -->
+Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{AGENT_ID}}` — so this second spawn was refused, and its `[t1-bounded-scope]` marker was refused with it. Traffic One could not republish `{{ROLE}}`'s WorkUnitContract, so the widening did NOT happen: `{{AGENT_ID}}` still holds the scope it started with, and the {{FILE_COUNT}} file(s) you asked for would be denied on every write — {{FILES}}. Do not continue as though the scope had changed.
+1. Re-send this SAME spawn once, unchanged. Publication reads the run's architecture snapshot, its host-capability sidecar and its bootstrap directory, and a concurrent hook holding any of those clears without your intervention.
+2. If the same refusal comes back, no scope change can be published for `{{ROLE}}` in run {{RUN_ID}} at all. Continue the live agent WITHIN THE SCOPE IT ALREADY HAS instead — {{CONTINUE_CALL}} — and give it only work its current contract covers.
+3. Do NOT reach for `{{MARKER}}`: replacing the agent destroys its context and publishes no contract either, so it cannot fix this. If the remaining work genuinely needs the wider scope and step 1 did not clear it, stop and report BLOCKED, quoting this message.
+<!-- T1BLOCK:END agent-reuse-scope-regrant-refused -->
+
 <!-- T1BLOCK:BEGIN agent-reuse-await-cursor-id -->
 Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` Cursor subagent, but Cursor has not exposed a valid Task `resume` UUID for it yet. The recorded `tool_*` id is only the subagentStart tool-call id and cannot resume the agent. Do NOT spawn a replacement and do NOT use `[t1-replace-agent]` unless the existing agent has actually failed or exhausted context. Wait for the current `{{ROLE}}` subagent to finish or produce a child transcript, then retry the same continuation; Traffic One will upgrade the registry to the real Cursor conversation id automatically.
 <!-- T1BLOCK:END agent-reuse-await-cursor-id -->

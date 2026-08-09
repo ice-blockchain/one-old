@@ -66,6 +66,24 @@ export function materializationStampRefusedCause(statePath: string): string {
   return `\n\nWHY THIS REPEATS: the assets were written, but the materialization stamp write to \`${statePath}\` was REFUSED, so nothing on disk records that this project materialized. The command above will converge the assets again and this same deny will be re-issued on the next spawn, indefinitely. Two things refuse that write: an unanswered Traffic One consent question for this project, and a symlink or foreign path planted at that file. Answer the consent question, or clear whatever occupies that path, then retry the spawn.`;
 }
 
+// Verbatim mirrors of the two `agent-reuse-scope-regrant*` SKILL.md blocks.
+// Their older sibling `agent-reuse-continue` ships with NO fallback (pinned in
+// shared/__tests__/skill-block-coverage.test.ts) and renders `''` when the block
+// goes missing — a deny that instructs nothing. These two carry the whole answer
+// to "did my scope change take effect?", so an empty render would leave the
+// orchestrator to guess, which is the one thing the refused arm exists to
+// prevent. `{{VAR}}` here doubles as the fallback's own hole: skillBlock applies
+// the vars to the fallback too, so both spellings render identically.
+export const AGENT_REUSE_SCOPE_REGRANT_FALLBACK = `Agent-reuse gate: run {{RUN_ID}} already has a LIVE \`{{ROLE}}\` agent — id \`{{AGENT_ID}}\` — so this second spawn was refused. Its \`[t1-bounded-scope]\` marker was NOT discarded: run {{RUN_ID}} has no compiled assignments, so for \`{{ROLE}}\` that marker is the ONLY origin of the bounded contract, and Traffic One republished it. \`{{AGENT_ID}}\` may now write exactly these {{FILE_COUNT}} file(s): {{FILES}}. The scope change is already in effect, so a second agent was never needed for it.
+1. {{CONTINUE_CALL}} The message carries ONLY what is NEW: the task spec, the exact file paths above, acceptance criteria, and (for fix cycles) the reviewer/tester findings VERBATIM. The agent keeps everything it already read.
+2. Treat the reply exactly like a fresh spawn's final report: the same digest + verdict-token contract, ending with its terminal token and updating \`.traffic-one/digests/{{RUN_ID}}/{{ROLE}}.md\`.
+3. Do NOT re-send this spawn to apply the same scope again — it is already published and an identical marker changes nothing. To widen it FURTHER, send one more spawn whose \`[t1-bounded-scope]\` line names the COMPLETE file set you want; each marker REPLACES the scope rather than adding to it. Only if \`{{AGENT_ID}}\` is genuinely unusable — {{CONTINUE_TOOL}} errors ("agent not found"/unavailable), or its replies show context exhaustion — re-spawn \`{{ROLE}}\` with the literal marker \`{{MARKER}}\` and that same scope line.`;
+
+export const AGENT_REUSE_SCOPE_REGRANT_REFUSED_FALLBACK = `Agent-reuse gate: run {{RUN_ID}} already has a LIVE \`{{ROLE}}\` agent — id \`{{AGENT_ID}}\` — so this second spawn was refused, and its \`[t1-bounded-scope]\` marker was refused with it. Traffic One could not republish \`{{ROLE}}\`'s WorkUnitContract, so the widening did NOT happen: \`{{AGENT_ID}}\` still holds the scope it started with, and the {{FILE_COUNT}} file(s) you asked for would be denied on every write — {{FILES}}. Do not continue as though the scope had changed.
+1. Re-send this SAME spawn once, unchanged. Publication reads the run's architecture snapshot, its host-capability sidecar and its bootstrap directory, and a concurrent hook holding any of those clears without your intervention.
+2. If the same refusal comes back, no scope change can be published for \`{{ROLE}}\` in run {{RUN_ID}} at all. Continue the live agent WITHIN THE SCOPE IT ALREADY HAS instead — {{CONTINUE_CALL}} — and give it only work its current contract covers.
+3. Do NOT reach for \`{{MARKER}}\`: replacing the agent destroys its context and publishes no contract either, so it cannot fix this. If the remaining work genuinely needs the wider scope and step 1 did not clear it, stop and report BLOCKED, quoting this message.`;
+
 export function isPlanBatchGatedRole(role: string): boolean {
   return PLAN_BATCH_GATED_ROLES.has(role);
 }
