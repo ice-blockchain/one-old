@@ -366,6 +366,88 @@ function recordAmbiguity(out: StackDetection, frameworks: readonly string[], evi
   out.evidence.push(evidence);
 }
 
+// ── native toolchains ────────────────────────────────────────────────────────
+// ONE marker table and ONE precedence for "which native framework is at this
+// root", read by BOTH native detectors: the root chain in
+// `detectStackFromCodebase` below, and `detectedNativeFramework`
+// (capabilities/detect-backend.ts), which is the one the capability profile
+// actually consumes.
+//
+// They used to carry separate tables in different orders — flutter › swift ›
+// kotlin with react-native bolted on afterwards here, react-native › flutter ›
+// swift › kotlin there — and separate marker SETS: `project.pbxproj` counted as
+// Swift evidence there and not here. Measured over the marker space (below), a
+// root holding `project.pbxproj` plus a `react-native` dependency was a
+// confident react-native project to one and — once the tables are the same —
+// a contradiction to the other.
+//
+// The order is outer-to-inner, and that is load-bearing for the detector that
+// must ALWAYS return a framework: a react-native or flutter project CONTAINS a
+// Gradle and an Xcode project, so the wrapper has to be asked about before the
+// platform projects it generates.
+//
+// It is NOT load-bearing for this file, by construction rather than by luck:
+// the chain below resolves a framework only when there is EXACTLY ONE
+// contender, and one contender has no precedence to apply. Two is the ambiguity
+// case, which names both and asserts neither. So the order can only decide an
+// answer this file refuses to give — but it still has to be the SAME order, or
+// the two detectors disagree about which single answer the ambiguity was
+// hiding.
+export interface NativeFrameworkMarkerV1 {
+  framework: string;
+  /** Recorded as evidence when this marker is the only one at its root. */
+  evidence: string;
+  matches: (cwd: string, root: string) => boolean;
+}
+
+function nativeMarkerPath(cwd: string, root: string, rel: string): string {
+  return path.join(cwd, root, rel);
+}
+
+function entryNames(dir: string): string[] {
+  try { return fs.readdirSync(dir); } catch { return []; }
+}
+
+export const NATIVE_FRAMEWORK_MARKERS: readonly NativeFrameworkMarkerV1[] = [
+  {
+    framework: 'react-native-expo',
+    evidence: 'react-native/expo in deps',
+    matches: (cwd, root) => {
+      const deps = dependenciesFromPackage(readJson<Rec>(nativeMarkerPath(cwd, root, 'package.json'), {}));
+      return Boolean(deps.expo || deps['react-native']);
+    },
+  },
+  {
+    framework: 'flutter',
+    evidence: 'Flutter pubspec detected',
+    matches: (cwd, root) => fs.existsSync(nativeMarkerPath(cwd, root, 'pubspec.yaml')),
+  },
+  {
+    framework: 'swift-native',
+    evidence: 'Swift/Xcode project detected',
+    matches: (cwd, root) => fs.existsSync(nativeMarkerPath(cwd, root, 'Package.swift'))
+      || fs.existsSync(nativeMarkerPath(cwd, root, 'project.pbxproj'))
+      || entryNames(nativeMarkerPath(cwd, root, '.')).some((name) => (
+        name.endsWith('.xcodeproj') || name.endsWith('.xcworkspace')
+      )),
+  },
+  {
+    framework: 'kotlin-android',
+    evidence: 'Android/Gradle project detected',
+    matches: (cwd, root) => [
+      'settings.gradle',
+      'settings.gradle.kts',
+      'app/build.gradle',
+      'app/build.gradle.kts',
+    ].some((rel) => fs.existsSync(nativeMarkerPath(cwd, root, rel))),
+  },
+];
+
+/** Every native toolchain claiming `root`, in the shared precedence order. */
+export function nativeFrameworksAt(cwd: string, root = '.'): NativeFrameworkMarkerV1[] {
+  return NATIVE_FRAMEWORK_MARKERS.filter((marker) => marker.matches(cwd, root));
+}
+
 export function detectStackFromCodebase(cwd: string): StackDetection {
   const out: StackDetection = { stack: null, backend: null, frontend: null, realtime: null, evidence: [] };
 
@@ -388,6 +470,18 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
   // `flutter` and dropped the other two in silence — verified by construction,
   // with only 'Flutter pubspec detected' left in the evidence to show for it.
   //
+  // react-native is one of these contenders and not a separate probe run later.
+  // It used to be an arm of the FRONTEND chain below, which had two
+  // consequences, both measured. A root holding `pubspec.yaml`, a `next`
+  // dependency and a `react-native` dependency stamped `flutter` with no
+  // ambiguity recorded at all, because the arm that compares the two probes was
+  // unreachable once a web framework matched. And `next` + `react-native` in
+  // one manifest dropped the native surface entirely — while the same function
+  // reported web+native together for `next` + `pubspec.yaml`, `next` +
+  // `settings.gradle` and `next` + `Package.swift`, since those three resolve
+  // here instead. Web and native are different SURFACES, not competing answers
+  // to one question; the `if/else` was the only thing making them exclusive.
+  //
   // Deliberately NOT the frontend chain's subsumption table, because the
   // relationship is different in kind. Subsumption there is real: an Astro app
   // depends on the UI library it renders, so the inner match is evidence FOR the
@@ -402,49 +496,32 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
   // carrying its inner one; they are two toolchains claiming the same directory.
   // That is genuine ambiguity, so it takes the answer the frontend chain already
   // gives genuine ambiguity: name them, assert nothing, let the caller ask.
-  const rootNativeContenders = [
-    {
-      framework: 'flutter',
-      matches: fs.existsSync(path.join(cwd, 'pubspec.yaml')),
-      evidence: 'Flutter pubspec detected',
-    },
-    {
-      framework: 'swift-native',
-      matches: fs.existsSync(path.join(cwd, 'Package.swift'))
-        || (() => {
-          try {
-            return fs.readdirSync(cwd, { withFileTypes: true }).some((entry) => (
-              entry.name.endsWith('.xcodeproj') || entry.name.endsWith('.xcworkspace')
-            ));
-          } catch {
-            return false;
-          }
-        })(),
-      evidence: 'Swift/Xcode project detected',
-    },
-    {
-      framework: 'kotlin-android',
-      matches: fs.existsSync(path.join(cwd, 'settings.gradle'))
-        || fs.existsSync(path.join(cwd, 'settings.gradle.kts'))
-        || fs.existsSync(path.join(cwd, 'app', 'build.gradle'))
-        || fs.existsSync(path.join(cwd, 'app', 'build.gradle.kts')),
-      evidence: 'Android/Gradle project detected',
-    },
-  ].filter((candidate) => candidate.matches);
+  const rootNativeContenders = nativeFrameworksAt(cwd, '.');
   const rootNativeFrameworks = rootNativeContenders.map((candidate) => candidate.framework);
 
   // Resolved HERE rather than after the manifest chains below, so the order in
   // which this and the Laravel block write `stack`/`frontend` is unchanged.
+  // `frontend: 'none'` is a placeholder for "no web framework seen yet" — the
+  // chains below overwrite it when they find one, which is what lets a project
+  // report a web and a native surface at once.
   if (rootNativeContenders.length === 1) {
     out.stack = 'custom-frontend';
     out.frontend = 'none';
     out.mobile = { enabled: true, framework: rootNativeFrameworks[0]!, source: 'explicit' };
     out.evidence.push(rootNativeContenders[0]!.evidence);
   } else if (rootNativeContenders.length > 1) {
+    // A real React Native project has no root `pubspec.yaml` and a real Flutter
+    // project has no `react-native` dependency, so react-native beside another
+    // root marker is disagreement rather than containment — the same verdict as
+    // any other pair, but it earns its own sentence because the two markers are
+    // read from different files and the evidence has to say so.
+    const contested = rootNativeFrameworks.filter((framework) => framework !== 'react-native-expo');
     recordAmbiguity(
       out,
       rootNativeFrameworks,
-      `competing native toolchains at the project root (${rootNativeFrameworks.join(', ')}) → no stack derived; ask instead of guessing`,
+      contested.length < rootNativeFrameworks.length
+        ? `the package manifest names react-native/expo while the project root holds ${contested.join(', ')} → no stack derived; ask instead of guessing`
+        : `competing native toolchains at the project root (${rootNativeFrameworks.join(', ')}) → no stack derived; ask instead of guessing`,
     );
   }
 
@@ -463,7 +540,10 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
     return out;
   }
 
-  const isNative = Boolean(deps.expo || deps['react-native']);
+  // Read off the shared table rather than re-spelling `deps.expo || deps
+  // ['react-native']`: the root native step above already asked exactly this
+  // question, and two spellings of one predicate is how the two detectors drifted.
+  const isNative = rootNativeFrameworks.includes('react-native-expo');
   const isReact = Boolean(deps.react);
   const frameworkDetections = [
     { frontend: 'nextjs', matches: Boolean(deps.next), evidence: 'next in deps → apply custom-frontend stack + Next.js provider-first recommendations' },
@@ -512,31 +592,10 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
     out.stack = 'custom-frontend';
     out.frontend = detected.frontend;
     out.evidence.push(detected.evidence);
-  } else if (isNative) {
-    // The root manifests and the package manifest are two independent probes of
-    // the SAME surface, and this arm used to overwrite whatever the root chain
-    // had already resolved without comparing them: `pubspec.yaml` + a
-    // `react-native` dependency reported `react-native-expo` while the evidence
-    // array still read 'Flutter pubspec detected', so the answer and its own
-    // stated reason disagreed. A real React Native project has no root
-    // `pubspec.yaml` and a real Flutter project has no `react-native`
-    // dependency, so this is disagreement rather than containment — the same
-    // ambiguity the root chain reports, reached through a second probe.
-    const contested = rootNativeFrameworks.filter((framework) => framework !== 'react-native-expo');
-    if (contested.length === 0) {
-      out.stack = 'custom-frontend';
-      out.frontend = 'none';
-      out.mobile = { enabled: true, framework: 'react-native-expo', source: 'explicit' };
-      out.evidence.push('react-native/expo in deps');
-    } else {
-      delete out.mobile;
-      recordAmbiguity(
-        out,
-        [...contested, 'react-native-expo'],
-        `the package manifest names react-native/expo while the project root holds ${contested.join(', ')} → no stack derived; ask instead of guessing`,
-      );
-    }
-  } else if (isReact) {
+  } else if (isReact && !isNative) {
+    // react is a required peer of react-native, so a native project must not
+    // acquire a web frontend from it. The native surface itself was already
+    // resolved by the root step above.
     out.stack = deps['@supabase/supabase-js'] || deps['@supabase/ssr'] ? 'default' : 'custom-backend';
     out.frontend = 'react-vite';
     out.evidence.push('react in deps');

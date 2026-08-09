@@ -639,6 +639,161 @@ test('maintenance: a senior implementer with NO bounded contract is still refuse
   });
 });
 
+// --- run-team-maintenance-contract: the remedy must match the CAUSE and the
+// ADDRESSEE. Same defect and same fix as run-team-not-subagent above.
+//
+// Measured over this arm's whole branching space (bounded contract
+// present/absent/wrong-unit × one/several/mixed uncovered targets × role ×
+// pending-fallback-debt, plus the unresolved parent): NINE cells rendered ONE
+// text. A bound senior implementer whose hash-valid contract simply missed one
+// task-related file read the same bytes as an unattributed parent write, was
+// told the contract did not exist, was told about a `quick-fix` contract while
+// being a senior, and was given exactly one action — "publish the parent-owned
+// contract" — which only the parent can take. That is the incident: a bounded
+// worker meets a file it must write, and the deny has no exit for it.
+//
+// These rows pin the DISCRIMINATION and the ACTIONABILITY, not the wording.
+
+// Helper: the substring every arm must NOT contain, because it is the action the
+// child cannot perform. Kept as one constant so a future re-wording that
+// reintroduces it fails here rather than in a live run. CASE-INSENSITIVE by
+// measurement: the case-sensitive version SURVIVED a mutation that reinstated
+// the sentence at the start of a clause ("Publish the parent-owned contract…"),
+// which is the likeliest way it would come back.
+const PARENT_ONLY_ORDER = /publish the parent-owned contract before retrying/i;
+
+test('maintenance: an uncovered target names the exact paths and the digest the child CAN write', () => {
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      currentRunId: 'MNT3',
+      lifecycle: { phase: 'maintenance', completedAt: '2026-08-01T18:36:01Z' },
+    });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-backend', { parentSessionId: 'orchestrator' }));
+    const bounded = ensureRunBootstrap(dir, 'MNT3', 'senior-backend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-maintenance-preflight',
+      modelPolicyId: 'policy-maintenance',
+      boundedOutputs: ['server/modules/trades/trade.controller.js'],
+      boundedAllowlist: ['server/modules/trades/trade.controller.js'],
+    });
+    assert.ok(bounded);
+    const denied = String(gate(dir, state, 'server/modules/trades/trade.model.js', rawFor(THREAD)));
+
+    // The CAUSE is stated correctly: the contract EXISTS and is hash-valid.
+    assert.match(denied, /bounded maintenance WorkUnit is hash-valid but does not cover/);
+    // The exact uncovered path, so neither side has to guess which file it was.
+    assert.match(denied, /server\/modules\/trades\/trade\.model\.js/);
+    // The ACTION, and it is one THIS addressee can take: its own digest, which
+    // the work-unit compiler puts inside every bounded contract. Named exactly.
+    assert.match(denied, /write your digest \(`\.traffic-one\/digests\/MNT3\/backend\.md`\)/);
+    assert.match(denied, /verdict `BLOCKED`/);
+    // And the two dead ends are named as dead ends rather than left to be tried.
+    assert.match(denied, /retrying this write, and moving it to a path you do own, are both dead ends/);
+    assert.doesNotMatch(denied, PARENT_ONLY_ORDER);
+    // It must not promise a widening: `ensureRunBootstrap` refuses every widened
+    // set while the role owes a delegated unit, and the spawn gate honours
+    // `[t1-bounded-scope]` for `quick-fix` only — so a re-spawn recipe here
+    // would name a path that does not work.
+    assert.doesNotMatch(denied, /re-issue the SAME .* spawn/i);
+    assert.doesNotMatch(denied, /t1-bounded-scope/,
+      'the child arm must not print a marker only the parent can use');
+  });
+});
+
+test('maintenance: a MIXED write names only the uncovered subset, not the covered target', () => {
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      currentRunId: 'MNT4',
+      lifecycle: { phase: 'maintenance', completedAt: '2026-08-01T18:36:01Z' },
+    });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    assert.ok(ensureRunBootstrap(dir, 'MNT4', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-maintenance-preflight',
+      modelPolicyId: 'policy-maintenance',
+      boundedOutputs: ['src/pages/Pricing.tsx'],
+      boundedAllowlist: ['src/pages/Pricing.tsx'],
+    }));
+    const denied = String(gate(dir, state, 'src/pages/Pricing.tsx', rawFor(THREAD), {
+      writeTargetPaths: ['src/pages/Pricing.tsx', 'src/pages/Checkout.tsx'],
+      featureTargetPaths: ['src/pages/Pricing.tsx', 'src/pages/Checkout.tsx'],
+    }));
+    assert.match(denied, /does not cover: `src\/pages\/Checkout\.tsx`/);
+    assert.doesNotMatch(denied, /does not cover:[^.]*Pricing/,
+      'a covered target must not be reported as uncovered — that is what sent the reader looking for a second problem');
+  });
+});
+
+test('maintenance: the three causes render THREE distinct texts, each ending in its own addressee\'s action', () => {
+  // The non-collapse assertion. Before this change all three of these were
+  // byte-identical, which is why the child population had no exit.
+  const renders: string[] = [];
+
+  // (i) bounded contract present, target uncovered → the CHILD's digest report.
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      currentRunId: 'MNT5',
+      lifecycle: { phase: 'maintenance', completedAt: '2026-08-01T18:36:01Z' },
+    });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    assert.ok(ensureRunBootstrap(dir, 'MNT5', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-maintenance-preflight',
+      modelPolicyId: 'policy-maintenance',
+      boundedOutputs: ['src/pages/Pricing.tsx'],
+      boundedAllowlist: ['src/pages/Pricing.tsx'],
+    }));
+    renders.push(String(gate(dir, state, 'src/pages/Checkout.tsx', rawFor(THREAD))));
+  });
+
+  // (ii) bound child, NOTHING published → still the child's digest report, but
+  // the cause is the absent contract and the remedy names who must publish it.
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      currentRunId: 'MNT6',
+      lifecycle: { phase: 'maintenance', completedAt: '2026-08-01T18:36:01Z' },
+    });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    renders.push(String(gate(dir, state, 'src/pages/Checkout.tsx', rawFor(THREAD))));
+  });
+
+  // (iii) nothing resolved → the PARENT arm, and its action is the bounded
+  // spawn, which is measurably the one that works (agent-model publishes the
+  // envelope from that marker).
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      currentRunId: 'MNT7',
+      lifecycle: { phase: 'maintenance', completedAt: '2026-08-01T18:36:01Z' },
+    });
+    renders.push(String(gate(dir, state, 'src/pages/Checkout.tsx', {})));
+  });
+
+  assert.equal(new Set(renders).size, 3,
+    `three causes must render three distinct texts, got ${new Set(renders).size}`);
+  // Every arm keeps the stem (the cause-independent fact) …
+  for (const render of renders) {
+    assert.match(render, /maintenance writes fail closed/);
+    assert.doesNotMatch(render, PARENT_ONLY_ORDER);
+    // … and the noun is no longer `quick-fix` when the addressee is not one.
+    assert.doesNotMatch(render, /bounded quick-fix WorkUnitContract/);
+  }
+  // The size assertion above is what licenses these non-null assertions: three
+  // DISTINCT renders cannot come from fewer than three entries.
+  assert.match(renders[0]!, /hash-valid but does not cover/);
+  assert.match(renders[1]!, /No bounded WorkUnitContract is published for `senior-frontend`/);
+  assert.match(renders[2]!, /No per-agent run claim resolved/);
+  assert.match(renders[2]!, /\[t1-bounded-scope:/,
+    'the parent arm names the marker the runtime actually publishes a bounded contract from');
+});
+
 // --- run-team-not-subagent: the remedy must match the CAUSE. ---
 //
 // Resolution collapses at least three causes into one `null`, and the child

@@ -28,7 +28,7 @@ Versions come from `package.json` as it stood at each commit; this repository
 publishes no git tags. **Dates are the newest commit in each section, not a
 publication date.**
 
-## 1.0.52 — 2026-08-08
+## 1.0.52 — 2026-08-09
 
 ### Agent-visible content — what your agents are told
 
@@ -36,12 +36,15 @@ publication date.**
 
 ### Deny prose — what a refusal says
 
+- Make silent refusals speak, and stop Cursor's enforcement hooks failing open (`05cb6c87`)
 - Harden state legibility, clock skew, and consent boundaries (`9b7e547e`)
 - fix: report write refusals instead of silently reporting success (`199dcb19`)
 - feature: auto detect stack if missing (`b48153d4`)
 
 ### Runtime — what the product does
 
+- Make silent refusals speak, and stop Cursor's enforcement hooks failing open (`05cb6c87`)
+- Make the shipped security checks actually check, and the release checks satisfiable (`22d84e35`)
 - Keep the user's setup prompt out of their repository, and ship the release apparatus (`5aea8d77`)
 - Give backend framework wiring a compiled home, and make role ownership catch containment (`3307e571`)
 - Bound UI-impact escalation to intrinsic evidence, and close the refusal instrument's raw-fs blind spot (`c856357d`)

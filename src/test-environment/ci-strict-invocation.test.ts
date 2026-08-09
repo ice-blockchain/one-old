@@ -18,7 +18,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { assertion as delegationAssertion } from './assertions/opencode-delegation.assert';
 import { ALL_HOSTS, defaultConfig } from './config/test-config';
+import { casesRunningAssertion } from './core/case-selection';
 import { UsageError, applyFlags, excludedHostNotes, parseFlags } from './core/flags';
 import { releaseResultFailed } from './core/result-policy';
 import {
@@ -26,7 +28,7 @@ import {
   selectedManualCertificationHosts,
 } from './manual-host-certification';
 import { writeReport } from './reporting/aggregate-report';
-import type { CaseRunResult } from './core/types';
+import type { Assertion, CaseRunResult } from './core/types';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const WORKFLOWS = path.join(REPO_ROOT, '.github', 'workflows');
@@ -205,6 +207,55 @@ test('the plugin:check composite is executed by CI under its own name, and is no
       defined!.includes(half),
       `plugin:check no longer runs ${half} (it is "${defined}"), so the CI step named after it proves less than it says`,
     );
+  }
+});
+
+// A coverage floor is only a floor over the run it was keyed to.
+// config/cases/delegation-channel.test.ts seeds and measures every case a
+// DEFAULT run reaches, which is the right question for `npm test` and says
+// nothing about CI: a workflow that narrows `--category=` or `--case=` can
+// deselect the measured case and leave that floor green while the job it is
+// supposed to protect stops exercising the channel entirely.
+//
+// So this asks the same question of the command lines actually committed. It
+// does not re-seed anything — it compares SELECTION, which is the only thing a
+// workflow flag can change — and it asks casesRunningAssertion(), the same
+// selector the floor uses, so the two cannot drift about what "reachable" means.
+//
+// Generalizes as written: any assertion added to CHANNEL_FLOORS is covered on
+// every committed invocation without touching this test.
+const CHANNEL_FLOORS: { assertion: Pick<Assertion, 'id' | 'appliesTo'>; floor: string }[] = [
+  { assertion: delegationAssertion, floor: 'config/cases/delegation-channel.test.ts' },
+];
+
+test('every committed CI test:env invocation still reaches the cases the coverage floors measure', () => {
+  const invocations = workflowInvocations();
+  assert.ok(invocations.length > 0, 'no `run: npm run test:env` step found under .github/workflows');
+
+  for (const { assertion, floor } of CHANNEL_FLOORS) {
+    const measured = casesRunningAssertion(assertion, defaultConfig()).map((c) => c.id);
+    // Guards the guard: if the default population is empty this test would pass
+    // vacuously for every invocation, and the floor itself is what should report
+    // that — so fail here naming the floor rather than certifying nothing.
+    assert.ok(
+      measured.length > 0,
+      `no case reaches the \`${assertion.id}\` assertion on a default run, so this test is vacuous.`
+      + ` ${floor} is the file that owns that failure; fix it there.`,
+    );
+
+    for (const { file, argv } of invocations) {
+      const config = applyFlags(defaultConfig(), parseFlags(argv));
+      const reached = new Set(casesRunningAssertion(assertion, config).map((c) => c.id));
+      const dropped = measured.filter((id) => !reached.has(id));
+      assert.deepEqual(
+        dropped,
+        [],
+        `${file}: npm run test:env -- ${argv.join(' ')} does not reach [${dropped.join(', ')}],`
+        + ` the case(s) ${floor} seeds and measures for the \`${assertion.id}\` channel.\n`
+        + 'That floor is keyed to a DEFAULT run, so it stays green while this job stops exercising the channel.\n'
+        + 'FIX: widen the invocation, or move the floor onto the narrowed run — do not delete this assertion.',
+      );
+    }
   }
 });
 

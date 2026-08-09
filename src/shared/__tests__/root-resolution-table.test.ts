@@ -28,11 +28,15 @@
 // (isMachineConfigRoot's symlink-resolved compare, nearestOnboardedRoot's $HOME
 // break, and the whole "resolveProjectRoot never realpaths" contract) can only
 // be wrong when the input is NOT canonical. `canonicalRoot: false` opts a row
-// out of that realpath so it measures `mkdtempSync`'s own `/var/folders/…`
-// spelling. Those rows are marked `[non-canonical]` in their incident text and
-// each carries a readback proving the root really is non-canonical, so a machine
-// where `os.tmpdir()` is already real fails them as FIXTURE errors rather than
-// passing vacuously. The canonicalization CONTRACT itself (which resolver
+// out of that realpath: the runner builds it an explicit `alias -> real` symlink
+// and hands the row the alias. Those rows are marked `[non-canonical]` in their
+// incident text and each carries a readback proving the root really is a second
+// spelling of one inode, so a fixture that stopped being non-canonical fails as
+// a FIXTURE error rather than passing vacuously. Building the symlink ourselves
+// is what makes the rows portable — an earlier version leaned on `mkdtempSync`
+// returning macOS's `/var/folders/…` alias of `/private/var/folders/…`, which
+// FIXTURE-failed all four rows on the ubuntu half of the CI matrix, where `/tmp`
+// is already canonical. The canonicalization CONTRACT itself (which resolver
 // realpaths and which does not, and why) lives in path-spelling-contract.test.ts.
 
 import { test } from 'node:test';
@@ -595,7 +599,7 @@ const ROWS: readonly Row[] = [
         env: { HOME: root },
         readback: [
           ['the fixture root is NOT canonical', () => root === fs.realpathSync(root), false],
-          ['…and its canonical spelling is a different string', () => fs.realpathSync(root).endsWith(root), true],
+          ['…but names the same inode as its canonical spelling', () => fs.statSync(root).ino === fs.statSync(fs.realpathSync(root)).ino, true],
           ['os.homedir() honours the non-canonical $HOME', () => os.homedir(), root],
           ['the machine-config dir carries a stray onboarded state', () => JSON.parse(fs.readFileSync(path.join(hostState, '.traffic-one', '.one.json'), 'utf8')).mode, 'new-project'],
         ],
@@ -648,7 +652,7 @@ const ROWS: readonly Row[] = [
         expected: root,
         readback: [
           ['the fixture root is NOT canonical', () => root === fs.realpathSync(root), false],
-          ['the expected root carries the non-canonical prefix', () => root.startsWith(path.sep + 'private'), false],
+          ['the expected root is the alias, and its realpath is a sibling of it', () => path.dirname(fs.realpathSync(root)) === path.dirname(root), true],
           ['the sub-package state DOES carry a mode (it looks like a root)', () => JSON.parse(fs.readFileSync(path.join(ui, '.traffic-one', '.one.json'), 'utf8')).mode, 'new-project'],
           ['the root declares workspaces', () => JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).workspaces.length > 0, true],
         ],
@@ -707,8 +711,14 @@ const ROWS: readonly Row[] = [
 // stopping at whichever happens to run first.
 for (const row of ROWS) {
   test(`root resolution [${row.id}]`, () => {
-    const created = fs.mkdtempSync(path.join(os.tmpdir(), TMP_PREFIX));
-    const root = row.canonicalRoot === false ? created : fs.realpathSync(created);
+    const created = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), TMP_PREFIX)));
+    let root = created;
+    if (row.canonicalRoot === false) {
+      const real = path.join(created, 'real');
+      fs.mkdirSync(real);
+      root = path.join(created, 'alias');
+      fs.symlinkSync(real, root);
+    }
     const saved: Record<string, string | undefined> = {};
     try {
       const layout = row.build(root);

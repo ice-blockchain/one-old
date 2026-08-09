@@ -13,6 +13,7 @@ import type { CaseRunResult, HostId, RootTestConfig } from './core/types';
 import { defaultConfig } from './config/test-config';
 import { UsageError, applyFlags, excludedHostNotes, parseFlags, type Flags } from './core/flags';
 import { ALL_CASES } from './config/cases';
+import { caseSelectedByRun } from './core/case-selection';
 import { discoverAssertions } from './assertions/registry';
 import { preflight } from './core/preflight';
 import { buildAndInstall, cleanupBuildInstall, type BuildResult } from './core/build-and-install';
@@ -72,9 +73,7 @@ function printManualCertifications(
 function selectRuns(config: RootTestConfig): PlannedRun[] {
   const runs: PlannedRun[] = [];
   for (const c of ALL_CASES) {
-    if (!config.enabledCategories.includes(c.category)) continue;
-    if (config.caseFilter && !config.caseFilter.includes(c.id)) continue;
-    if (c.layer === 'host-e2e' && !config.includeHostE2E) continue;
+    if (!caseSelectedByRun(c, config)) continue;
 
     // run-sim keeps the 'pure-node' TARGET on purpose: aggregate-report skips
     // exactly that id before indexing HOST_CAPABILITIES, so a new target id

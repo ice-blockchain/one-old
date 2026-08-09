@@ -185,5 +185,5 @@ export function applyUseChoice(
 ): void {
   recordPluginUseChoice(cwd, true, 'command', env);
   const seedArg = argv.find((a) => a.startsWith('--seed-prompt='));
-  if (seedArg) seedOriginalPrompt(cwd, seedArg.slice('--seed-prompt='.length));
+  if (seedArg) seedOriginalPrompt(cwd, seedArg.slice('--seed-prompt='.length), env);
 }

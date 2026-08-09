@@ -179,6 +179,52 @@ test('the --use yes path records nothing on an enclosed sub-directory, and the f
   });
 });
 
+// The `--use` path threads an explicit `env` into `recordPluginUseChoice`, so
+// everything it calls afterwards has to read the same one. `seedOriginalPrompt`
+// did not take an env at all, and the store it writes is ADDRESSED BY ENV —
+// TRAFFIC_ONE_PROJECT_PREFS_PATH, HOME and XDG_STATE_HOME all select the
+// preferences file — so the yes and the seed resolved two different stores.
+//
+// The two settings of ask-first are the same divergence with different damage,
+// and both were MEASURED against the unthreaded code rather than reasoned about:
+// with the question ON the seed is refused outright, by a fence consulting a
+// store where no answer was recorded (named=consent only, ambient=absent); with
+// it OFF the fence opens and the prompt is written to the OTHER file
+// (named=consent, ambient=prompt), leaving a preference and the consent
+// authorising it in two stores that never see each other. They are one test()
+// each rather than a loop, because a loop aborts at the first failing setting
+// and the second shape would never report.
+
+/** The named store gets both the yes and the seed; the ambient one gets neither. */
+function assertSeedFollowsConsent(ctx: EnclosedCase, askFirst: string): void {
+  process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = askFirst;
+  const ambient = ctx.usePrefs(`ambient-${askFirst}`);
+  const named = path.join(ctx.base, `named-${askFirst}.json`);
+  const env = { ...process.env, TRAFFIC_ONE_PROJECT_PREFS_PATH: named };
+  const carries = (file: string): boolean =>
+    fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('billing dashboard');
+
+  applyUseChoice(ctx.repo, ['--use', ctx.repo, '--seed-prompt=build a billing dashboard with charts'], env);
+
+  // Fixture guards: the two stores really are distinct, and the consent reached
+  // the named one — without this pair the case could pass on a single file, or
+  // pass because the yes was refused and there was never anything to follow.
+  assert.notEqual(named, ambient, 'fixture guard: the stores are two files');
+  assert.equal(readPluginUseChoice(ctx.repo, env)?.enabled, true,
+    'fixture guard: the yes was recorded in the store the caller named');
+
+  assert.equal(carries(ambient), false, 'nothing reaches the store the caller did not name');
+  assert.ok(carries(named), "the seed follows the consent into the caller's store");
+}
+
+test('the --use seed follows the caller env with the use-plugin question ON', () => {
+  withEnclosedSubdirectory((ctx) => { assertSeedFollowsConsent(ctx, '1'); });
+});
+
+test('the --use seed follows the caller env with the use-plugin question OFF', () => {
+  withEnclosedSubdirectory((ctx) => { assertSeedFollowsConsent(ctx, '0'); });
+});
+
 // ── CALLER 3: applyReconsiderChoice ──────────────────────────────────────────
 //
 // VERDICT: left alone, and the reason is structural rather than a judgement

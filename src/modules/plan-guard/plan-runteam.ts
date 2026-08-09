@@ -274,9 +274,58 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
         exclude: maintenanceBootstrap.workUnit.allowlistExclude,
       }
       : null;
-    if (!boundedScope || !writeTargetPaths.every((target) => matchesScope(target, boundedScope))) {
+    const uncovered = boundedScope
+      ? writeTargetPaths.filter((target) => !matchesScope(target, boundedScope))
+      : [];
+    if (!boundedScope || uncovered.length > 0) {
+      // ONE render for NINE causes, spanning two addressees with two different
+      // available actions — measured over this arm's whole branching space
+      // (bounded contract present|absent|wrong-unit × one|several|mixed
+      // uncovered targets × role × pending-fallback-debt, plus the unresolved
+      // parent). A bound child whose contract simply MISSED one task-related
+      // file read the same bytes as an unattributed parent write: the cause was
+      // stated as "no contract" when the contract existed and was hash-valid,
+      // the noun was `quick-fix` while the addressee was a senior implementer,
+      // "No unattributed or legacy-scope write was made" was false of it on
+      // both counts, and the only prescribed action — publish the parent-owned
+      // contract — is one the addressee cannot take. Observed as the incident
+      // this arm exists for: a bounded senior-backend denied on a
+      // task-related model file its allowlist never listed, with nothing to go
+      // on. Same defect class the three preceding lanes fixed on
+      // `run-team-not-subagent`, and the same remedy: the CAUSE clause and the
+      // REMEDY are built here, per addressee, and every arm ends in an action
+      // its own addressee can perform.
+      //
+      // NOT branched on the pending fallback debt, deliberately. The debt
+      // (fallbackContractMatches) refuses every WIDENED envelope for the role,
+      // so it changes whether a widening is possible — but the action available
+      // to the reader is the same either way, and one sentence true in both
+      // cases costs nothing while a fourth arm would multiply this render space
+      // for a fact that moves nothing. It is also why no arm below prescribes a
+      // widening: measured, `ensureRunBootstrap` returns null for any widened
+      // set while the debt is pending, and a senior role's bounded envelope
+      // originates from that debt in the first place (agent-model/handler.ts
+      // honours `[t1-bounded-scope]` for `quick-fix` only), so a printed
+      // "re-spawn with a wider scope" recipe would name a path that does not
+      // work.
+      const targets = writeTargetPaths.join(', ') || filePath || '(no write target resolved)';
+      // The digest is inside every bounded contract by construction
+      // (run-bootstrap-policy/work-unit.ts appends it to outputs AND allowlist),
+      // and a `.traffic-one/digests/` write is neither feature source nor a
+      // build artifact, so this gate stands down on it with or without an
+      // envelope. Naming the exact path is what makes the report an action
+      // rather than an aspiration.
+      const digestPath = maintenanceBootstrap?.workUnit.allowlist
+        .find((entry) => entry.startsWith('.traffic-one/digests/'));
+      const digestClause = digestPath ? ` (\`${digestPath}\`)` : '';
+      const recovery = uncovered.length > 0
+        ? `\`${acRole}\`'s bounded maintenance WorkUnit is hash-valid but does not cover: \`${uncovered.join(', ')}\`. No write was applied. The contract is parent-published and pinned, so you cannot widen it, and while this run still owes a delegated OpenCode unit for this role the runtime refuses ANY widened contract for it — retrying this write, and moving it to a path you do own, are both dead ends. Finish every deliverable your CURRENT contract already covers, then write your digest${digestClause} with verdict \`BLOCKED\` naming exactly \`${uncovered.join(', ')}\` as outside your bounded scope. That report is the whole available action here and it is a complete answer: the orchestrator turns it into its own bounded task for those paths once this unit is delivered and settled.`
+        : acRole
+          ? `No bounded WorkUnitContract is published for \`${acRole}\` in run ${stateRunId || '<unknown>'}, so nothing authorizes this write and none was applied. Do not retry it and do not move it to another path — only the parent can publish that contract, and no maintenance write of yours can be authorized until it does. Write your digest${digestClause} with verdict \`BLOCKED\` naming \`${targets}\` and saying no bounded contract covers it, then stop.`
+          : `No per-agent run claim resolved for this write, so it was attributed to nobody and none was applied. Do not edit owned implementation source from here. Spawn the maintenance worker that should own it — a \`quick-fix\` subagent carrying ONE prompt line \`[t1-bounded-scope: {"outputs":[${writeTargetPaths.slice(0, 4).map((target) => `"${target}"`).join(', ') || '"<exact repo-relative paths>"'}]}]\` naming every exact repo-relative file the task may create or modify — and let that child make the edit; the runtime publishes its bounded contract from that line.`;
       return deny(block('run-team-maintenance-contract',
-        'Run-team enforcement gate: maintenance writes fail closed without a hash-valid runtime assignment or a bounded quick-fix WorkUnitContract. No unattributed or legacy-scope write was made; publish the parent-owned contract before retrying.'));
+        `Run-team enforcement gate: maintenance writes fail closed without a hash-valid runtime assignment or a bounded WorkUnitContract covering every requested output. ${recovery}`,
+        { ROLE: acRole || 'this role', TARGETS: targets, RECOVERY: recovery }));
     }
     return null;
   }

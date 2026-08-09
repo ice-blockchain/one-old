@@ -90,8 +90,30 @@ export function truncateSeedPrompt(prompt: string): string {
  * (see the scope note on `writeState`). A caller whose subject IS a local
  * preference has to write the store directly, and `mergeProjectPrefs` reports by
  * throwing, which the `catch` below already accepts.
+ *
+ * ── WHY `env` IS A PARAMETER ────────────────────────────────────────────────
+ *
+ * onboarding-wait's `--use` handler threads an explicit `env` into
+ * `recordPluginUseChoice` and then calls this function, so binding the readers
+ * below to `process.env` would have the consent write and the fence check that
+ * reads it back consult two different environments. The divergence is not
+ * abstract: `mergeProjectPrefs` routes through `detectHost(env)`, so the seed
+ * could land in a different host's bucket from the answer that authorised it,
+ * and `projectWritesPermitted` would ask a different question than the one just
+ * recorded. Every caller that has no env of its own keeps the default and is
+ * unaffected.
+ *
+ * `patchState` below takes no env and is not threaded, because there is nothing
+ * to thread it to: the fsjson write chokepoint has no env parameter anywhere in
+ * its surface, so the `uiLibrary` write resolves under the ambient environment
+ * for every caller in the tree. That is a property of the write layer, not of
+ * this function, and closing it here would only look closed.
  */
-export function seedOriginalPrompt(cwd: string, prompt: string): void {
+export function seedOriginalPrompt(
+  cwd: string,
+  prompt: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   const text = (prompt || '').trim();
   if (!text) return;
   if (!qualifiesAsSeedPrompt(text)) return;
@@ -103,7 +125,7 @@ export function seedOriginalPrompt(cwd: string, prompt: string): void {
   // this line the first prompt of a project the user then DECLINES would be
   // recorded anyway — and no decline can reclaim it, because
   // removeDeclinedProjectArtifacts must never touch the per-user dir.
-  if (!projectWritesPermitted(cwd)) return;
+  if (!projectWritesPermitted(cwd, env)) return;
   // Ahead of the guards below, which are the things a `{}` fallback turns into
   // "no seed yet". `absent` deliberately proceeds: a project with no `.one.json`
   // is the brand-new one this function exists for.
@@ -115,7 +137,7 @@ export function seedOriginalPrompt(cwd: string, prompt: string): void {
   // this function's contract. readEffectiveState merges the per-user store back
   // in, and also rescues a value still embedded in a not-yet-scrubbed
   // `.one.json`, so an existing project mid-migration is not re-seeded either.
-  const state = readEffectiveState(cwd);
+  const state = readEffectiveState(cwd, env);
   // Seed for EVERY mode (was new-project-only): the onboarding-wait runner reads
   // `originalPrompt` after SETUP_COMPLETE to emit the maintenance-triage routing
   // for the continued request — existing codebases are exactly where that
@@ -125,7 +147,7 @@ export function seedOriginalPrompt(cwd: string, prompt: string): void {
   try {
     mergeProjectPrefs(cwd, {
       originalPrompt: text,
-    });
+    }, env);
     // `uiLibrary` is a stack fact the materializer reads from shared state, not a
     // local preference, so it stays in `.one.json` — through `patchState`, which
     // re-reads the base inside the state lock instead of republishing a snapshot

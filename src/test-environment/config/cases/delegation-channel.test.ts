@@ -25,6 +25,14 @@
 // depending on `test:env` having been run. It is deliberately not a count
 // compared to a magic number: the two directions below are each derived by
 // running the product, and each names its own cause.
+//
+// SCOPE: this floor is keyed to the DEFAULT run. A committed workflow that
+// narrows `--category=` or `--case=` could deselect the very case measured here
+// and leave this file green, so the complement — every committed CI invocation
+// still reaches this population — lives in ci-strict-invocation.test.ts, which is
+// the file that reads workflow command lines instead of restating them. Both ask
+// casesRunningAssertion(), so the two cannot disagree about what "reachable"
+// means.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,20 +43,11 @@ import * as path from 'path';
 import { openCodeDelegationActive } from '../../../shared/performance';
 import { readEffectiveState } from '../../../shared/state';
 import { assertion as delegationAssertion } from '../../assertions/opencode-delegation.assert';
-import { assertionSpecsForRun } from '../../core/case-runner';
-import { caseConsent } from '../../core/consent';
+import { casesRunningAssertion } from '../../core/case-selection';
 import { buildCaseEnv, withCaseEnv } from '../../core/env';
 import { preseed } from '../../core/preseed';
 import type { AssertionContext, AssertionResult, AssertionStatus, Case, RootTestConfig } from '../../core/types';
 import { defaultConfig } from '../test-config';
-import { ALL_CASES } from './index';
-
-// The conditions run.ts's selectRuns() applies to reach a case with no --e2e and
-// no filters. Restated rather than imported because run.ts calls main() at module
-// load, so importing it from a unit test would start a real harness run.
-function reachedByDefaultRun(c: Case, config: RootTestConfig): boolean {
-  return config.enabledCategories.includes(c.category) && c.layer !== 'host-e2e';
-}
 
 interface Measured {
   caseId: string;
@@ -102,15 +101,7 @@ function measure(c: Case, config: RootTestConfig): Measured {
 // on a default `npm run test:env`, each one seeded and measured for real.
 function inventory(): Measured[] {
   const config = defaultConfig();
-  const population = ALL_CASES.filter((c) => (
-    reachedByDefaultRun(c, config)
-    // A declined case is never seeded ("nothing was written" is its claim), so
-    // measuring one would report an unseeded project as a delegation answer.
-    && caseConsent(c.consent) === 'use'
-    && assertionSpecsForRun(c, 'pure-node').some((spec) => spec.id === delegationAssertion.id)
-    && delegationAssertion.appliesTo(c)
-  ));
-  return population.map((c) => measure(c, config));
+  return casesRunningAssertion(delegationAssertion, config).map((c) => measure(c, config));
 }
 
 function roll(measured: Measured[]): string {

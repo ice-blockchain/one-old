@@ -1,18 +1,21 @@
 // src/shared/capabilities/detect-backend.ts
 // Backend/native detection and per-stack state defaults.
 
-import * as path from 'path';
 import { obj, type Rec } from '../obj';
+
+// Imported from the artifacts module rather than the `../detection` barrel: the
+// barrel imports `../capabilities`, so going through it would close a cycle.
+// `artifacts` itself imports nothing from here.
+import { NATIVE_FRAMEWORK_MARKERS, nativeFrameworksAt } from '../detection/artifacts';
 
 import {
   composerPackages,
   exists,
-  packageDependencies,
   safeNames,
   stringField,
 } from './fs-probe';
 import { frontendArtifactsPresent } from './web-roots';
-import { candidateWebRoots, prefixed } from './fs-probe';
+import { candidateWebRoots } from './fs-probe';
 
 export function detectedBackend(cwd: string, state: Rec): string {
   const configured = stringField(state, 'backend', 'none');
@@ -60,36 +63,56 @@ interface NativeFrameworkDetectionV1 {
   root: string;
 }
 
+/**
+ * The native detector the capability profile consumes. It reads the same marker
+ * table and the same precedence as the root chain in
+ * `detectStackFromCodebase` — see `NATIVE_FRAMEWORK_MARKERS` for why one table
+ * and one order, and for the proof that the order can only decide answers the
+ * other site refuses to give.
+ *
+ * Two differences from that site remain, both deliberate, and both stated here
+ * because they are what makes the two answer differently on real trees:
+ *
+ * 1. SEARCH SPACE. This walks `candidateWebRoots`; the stamp reads the project
+ *    root only. A monorepo whose Flutter app lives at `apps/mobile` is
+ *    `flutter` here and undetectable there. Neither side can adopt the other's:
+ *    this one has to return a ROOT (every path in `nativeProfile` is prefixed
+ *    with it), while widening the stamp would hand a `confirmed: true`,
+ *    force-only-correctable answer to evidence from a subdirectory.
+ *
+ * 2. REFUSAL. The stamp may answer "two toolchains, I cannot tell"; this must
+ *    return something, because a profile is compiled on every invocation. So on
+ *    a contradictory root it takes the precedence order's winner where the
+ *    stamp names both and declines. That asymmetry is safe only because the
+ *    stamp's refusal is what routes the project to the tech-detect step, and
+ *    the answer the user gives there arrives as `configured` below and wins
+ *    over everything this function probes.
+ */
 export function detectedNativeFramework(cwd: string, state: Rec): NativeFrameworkDetectionV1 {
   const mobile = obj(state.mobile);
   const configured = stringField(mobile, 'framework', 'none');
   const roots = candidateWebRoots(cwd);
-  const dependencySets = roots.map((root) => ({ root, deps: packageDependencies(cwd, root) }));
-  const reactNative = dependencySets.find(({ deps }) => Boolean(deps.expo || deps['react-native']));
-  const flutter = roots.find((root) => exists(cwd, prefixed(root, 'pubspec.yaml')));
-  const swift = roots.find((root) => (
-    exists(cwd, prefixed(root, 'Package.swift'))
-    || exists(cwd, prefixed(root, 'project.pbxproj'))
-    || safeNames(path.join(cwd, root)).some((name) => name.endsWith('.xcodeproj') || name.endsWith('.xcworkspace'))
-  ));
-  const kotlin = roots.find((root) => (
-    exists(cwd, prefixed(root, 'settings.gradle'))
-    || exists(cwd, prefixed(root, 'settings.gradle.kts'))
-    || exists(cwd, prefixed(root, 'app/build.gradle'))
-    || exists(cwd, prefixed(root, 'app/build.gradle.kts'))
-  ));
+  // One pass per root; the table is then queried framework-major so precedence
+  // beats proximity — an outer react-native app must not lose to the Gradle
+  // project a nearer candidate root happens to hold.
+  const frameworksByRoot = roots.map((root) => ({
+    root,
+    frameworks: nativeFrameworksAt(cwd, root).map((marker) => marker.framework),
+  }));
+  const rootFor = (framework: string): string | undefined => (
+    frameworksByRoot.find((candidate) => candidate.frameworks.includes(framework))?.root
+  );
+
   if (configured !== 'none') {
-    if (configured === 'react-native-expo' && reactNative) return { framework: configured, root: reactNative.root };
-    if (configured === 'flutter' && flutter) return { framework: configured, root: flutter };
-    if (configured === 'swift-native' && swift) return { framework: configured, root: swift };
-    if (configured === 'kotlin-android' && kotlin) return { framework: configured, root: kotlin };
+    const configuredRoot = rootFor(configured);
+    if (configuredRoot) return { framework: configured, root: configuredRoot };
     const conventional = roots.find((root) => /(?:^|\/)(?:mobile|native|ios|android)$/.test(root));
     return { framework: configured, root: conventional || '.' };
   }
-  if (reactNative) return { framework: 'react-native-expo', root: reactNative.root };
-  if (flutter) return { framework: 'flutter', root: flutter };
-  if (swift) return { framework: 'swift-native', root: swift };
-  if (kotlin) return { framework: 'kotlin-android', root: kotlin };
+  for (const marker of NATIVE_FRAMEWORK_MARKERS) {
+    const root = rootFor(marker.framework);
+    if (root) return { framework: marker.framework, root };
+  }
   return { framework: 'none', root: '.' };
 }
 
