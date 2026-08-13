@@ -115,10 +115,10 @@ test('all exhausted-model mutators stand down in plugin authoring roots', () => 
 // reachable and heavily exercised, but no row planted a shape that could not be
 // read. These are that row.
 //
-// Driven at this call site with the bound reverted to `fs.readFileSync`
-// (.tmp/bounded3/p3-drive.out, load 3.65 of 10 cpus): a FIFO at the lock path
-// killed at 8 008 ms, a symlink to `/dev/zero` killed at 8 058 ms, a clean lock
-// answering in 9 ms. With the bound: 501 ms and 4 ms, both returning.
+// Driven at this call site with the bound reverted to `fs.readFileSync` (load
+// 3.65 of 10 cpus): a FIFO at the lock path killed at 8 008 ms, a symlink to
+// `/dev/zero` killed at 8 058 ms, a clean lock answering in 9 ms. With the
+// bound: 501 ms and 4 ms, both returning.
 //
 // IN A CHILD under SIGKILL for the reason the workspace-declaration rows give:
 // a blocking open holds the runner's own event loop, so `--test-timeout` could
@@ -305,7 +305,7 @@ test('exhausted-models: a DANGLING symlink at the lock does not SPIN the recorde
   // THIS ROW USED TO CLAIM IT WAS "the one that fails if a future edit puts a
   // `continue` back". IT IS NOT, and the false version is recorded rather than
   // quietly corrected because it is the kind of claim a maintainer relies on
-  // while deleting the thing it names. MEASURED (.tmp/bounded4b, mutation
+  // while deleting the thing it names. MEASURED (mutation
   // M4-EXH-DEADLINE-REVERT): with the `continue` restored, this row stays GREEN.
   // The reason is the OTHER fix in the same function — `lstatSync` SUCCEEDS on a
   // dangling link where `statSync` threw ENOENT, so the reclaim branch now
@@ -349,9 +349,9 @@ test('exhausted-models: an AGED DIRECTORY at the lock does not SPIN — the row 
   //
   // Four instant syscalls, no progress, and a lock that cannot be cleared: a
   // spin if the catch re-enters the loop above the deadline test. DRIVEN both
-  // ways (.tmp/bounded4b/spin-ageddir.out): the deadline in place returns the
-  // busy fallback in 3 316 ms; with the `continue` restored the child was
-  // SIGKILLed by its parent at 8 040 ms having produced nothing.
+  // ways: the deadline in place returns the busy fallback in 3 316 ms; with the
+  // `continue` restored the child was SIGKILLed by its parent at 8 040 ms having
+  // produced nothing.
   //
   // Not clone-deliverable as such — git can carry a tree at this path, but the
   // lock lives under `.traffic-one/runs/`, so a local writer is the arrival

@@ -87,9 +87,9 @@ export function copyTreeStrict(source: string, destination: string): void {
   // REFUSED FROM THE `lstat`, BEFORE ANY `open`, and then AGAIN on the descriptor.
   // Both halves are load-bearing and for different reasons. Without the first,
   // a unix socket reaches `copyRegularFile`'s `openSync` and node answers with
-  // `Unknown system error -102` (ENOTSUP) — DRIVEN, `.tmp/bounded6/p3-taxonomy.json`
-  // arm `dir-with-socket` — a throw that names neither the kind nor the remedy, and
-  // an errno string is not something a caller can be asked to interpret. Without
+  // `Unknown system error -102` (ENOTSUP) — DRIVEN, arm `dir-with-socket` — a throw
+  // that names neither the kind nor the remedy, and an errno string is not something
+  // a caller can be asked to interpret. Without
   // the second, the name could be substituted between the two calls by anybody who
   // can write in the directory, so the kind test that DECIDES stays on the
   // descriptor `copyRegularFile` opened; the `lstat` only supplies the word for

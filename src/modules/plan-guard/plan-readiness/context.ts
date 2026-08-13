@@ -225,7 +225,7 @@ export function existsAny(projectRoot: string, relPaths: string[]): boolean {
  * reached from agent-model/gate-enforcement.ts and
  * plan-guard/build-orchestration-directive.ts, both hook paths): a FIFO
  * SIGKILLed the call at 12 018 ms with the planted path as the last read,
- * against a 1.9 s regular-file control (.tmp/bounded-reads, load 9.54 of 10).
+ * against a 1.9 s regular-file control (load 9.54 of 10).
  *
  * A non-regular file joins `null` where every read failure already was, and
  * that is the fail-CLOSED direction here: `hasRealContent` reads `null` as

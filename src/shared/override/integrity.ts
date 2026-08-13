@@ -176,9 +176,9 @@ export const OVERRIDE_MINT_COUNTER_UNVERIFIABLE_CHECK = 'override-mint-counter-u
  * EVIDENCE rather than as forgiveness.
  *
  * ── Why it exists ────────────────────────────────────────────────────────────
- * MEASURED (.tmp/override7/p1-wipe.ts), from a project reconciled after three
- * mints, with the acknowledgement pinning `verified/3`: `rm -rf` the bucket AND
- * delete this project's one key from `overrideMints`, and every witness reads
+ * MEASURED, from a project reconciled after three mints, with the
+ * acknowledgement pinning `verified/3`: `rm -rf` the bucket AND delete this
+ * project's one key from `overrideMints`, and every witness reads
  * `absent/absent/0` while the signed statement that the counter stood at 3 is
  * still sitting in the same file. Certification came back CLEAR, because
  * nothing compared the two. Both values were already in hand — one read of

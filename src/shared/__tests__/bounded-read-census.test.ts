@@ -214,11 +214,11 @@ const LOADABLE = /\.[cm]?[jt]sx?$/;
  * exactly that: `__fixtures__` added to the first clause, and the
  * `skill-fallbacks.generated.ts` suffix test generalised to
  * /\.generated\.[cm]?tsx?$/ — the tidy-up a second generated file invites — each
- * hid a planted unbounded read with the whole suite GREEN
- * (.tmp/bounded6b/mutants.jsonl, arms `P5-ISTESTSOURCE-FIXTURES`,
- * `P5-ISTESTSOURCE-GENERATED`). Both red now, against the literal listing in
- * 'WHICH FILES, recomputed from a LISTING this census's own predicates cannot
- * move', which is the only assertion here that does not call this function.
+ * hid a planted unbounded read with the whole suite GREEN (arms
+ * `P5-ISTESTSOURCE-FIXTURES`, `P5-ISTESTSOURCE-GENERATED`). Both red now, against
+ * the literal listing in 'WHICH FILES, recomputed from a LISTING this census's own
+ * predicates cannot move', which is the only assertion here that does not call
+ * this function.
  */
 function isTestSource(absolute: string): boolean {
   const segments = path.relative(SRC_ROOT, absolute).split(path.sep);
@@ -290,10 +290,10 @@ function listSources(dir: string, out: string[] = []): string[] {
  *   FILESYSTEM names: `src/hooks/*-entry.ts`, every runtime `module.json`
  *   entry (trap 3), `src/adapters/**`, `core/registry.ts`, `core/pipeline.ts`,
  *   and every `src/runners/<id>/index.{ts,mts,cts}`. 563 of this tree's 569
- *   production files, measured (.tmp/bounded5/reach-probe.json). No edit to
- *   `isProduction` can remove a file from it, because `isProduction` is not
- *   consulted to build it — the entry list comes from `readdir` and the rest
- *   comes from the import graph, which is what `require` will actually load.
+ *   production files, measured. No edit to `isProduction` can remove a file
+ *   from it, because `isProduction` is not consulted to build it — the entry
+ *   list comes from `readdir` and the rest comes from the import graph, which
+ *   is what `require` will actually load.
  *
  *   THE FILTER — `listSources` minus tests, minus the four non-production
  *   roots. It contributes the six files no entry reaches (three of them
@@ -455,14 +455,13 @@ interface Bindings {
  *   another file, a barrel re-export, a dependency handed in at construction —
  *   because those all still end in a call named `readFileSync`.
  *
- * THE COST WAS MEASURED BEFORE IT WAS ADOPTED, on this tree
- * (.tmp/bounded4/nameonly.txt): 36 calls in production source are spelled like a
- * path read; the resolver flags 16; of the other 20, eighteen are calls this file
- * already proves bounded (a write-only open, an `fstat`-guarded descriptor) and
- * exactly TWO are not fs at all — `coverage.open(dir, rel)` in two plan-guard
- * scanners, a method on a parameter with a local type. Two false positives is
- * what the stronger question costs here, and both are excluded by the proof
- * below rather than by a name in a list.
+ * THE COST WAS MEASURED BEFORE IT WAS ADOPTED, on this tree: 36 calls in
+ * production source are spelled like a path read; the resolver flags 16; of the
+ * other 20, eighteen are calls this file already proves bounded (a write-only
+ * open, an `fstat`-guarded descriptor) and exactly TWO are not fs at all —
+ * `coverage.open(dir, rel)` in two plan-guard scanners, a method on a parameter
+ * with a local type. Two false positives is what the stronger question costs
+ * here, and both are excluded by the proof below rather than by a name in a list.
  */
 /** The leftmost identifier of a receiver chain — `a` in `a.b.c`, null otherwise. */
 function rootOf(expression: ts.Expression): ts.Identifier | null {
@@ -712,7 +711,7 @@ function enclosesCall(declaration: ts.Node, at: ts.Node): boolean {
  * it standing here — and it laundered corpus row B14 (an fs handed in from another
  * module) with two lines of unrelated code: declare `function unrelated(io: Local)`
  * beside it and `io.readFileSync(p)` in the next function is cleared. DRIVEN
- * before the fix (`.tmp/bounded6b/p4-corpus.json`, arm `M6`): 0 sites.
+ * before the fix (arm `M6`): 0 sites.
  *
  * So the declaration must ENCLOSE THE CALL, which is what the language means by a
  * name being in scope. `at` is the call site and it is not optional.
@@ -855,9 +854,9 @@ function resolveReadApi(callee: ts.Expression, bindings: Bindings, sf: ts.Source
   // file — and it looks like nothing in review, because the nested helper is
   // unrelated by construction. That is the defect round 2 fixed for the `fstat`
   // guard and round 3 fixed for the `flags` binding, in this file, with both fixes
-  // named in the comments a few lines from here. DRIVEN before the fix
-  // (`.tmp/bounded6b/p4-corpus.json`, arm `M1`): the same read that reds on its own
-  // returns 0 sites once an unrelated function declares `readFileSync` privately.
+  // named in the comments a few lines from here. DRIVEN before the fix (arm `M1`):
+  // the same read that reds on its own returns 0 sites once an unrelated function
+  // declares `readFileSync` privately.
   //
   // A VARIABLE declaration counts too, and that half is an over-flag rather than an
   // escape: `const readFileSync = (p: string) => p.length` is as much a local
@@ -883,7 +882,7 @@ function resolveReadApi(callee: ts.Expression, bindings: Bindings, sf: ts.Source
   // `deps.io`, which this file cannot see and TypeScript would not agree it had
   // been told. FALSIFIED, ROUND 6b: the walk took the LEFTMOST identifier of the
   // chain, so one annotated dependency object cleared every read hung off it at any
-  // depth (`.tmp/bounded6b/p4-corpus.json`, arm `M5`: 0 sites).
+  // depth (arm `M5`: 0 sites).
   if (ts.isIdentifier(receiver) && provablyNotFs(receiver, bindings, sf, callee)) return null;
   return name;
 }
@@ -1158,8 +1157,8 @@ function unboundedSitesIn(file: string, text: string): Site[] {
  * `lib.js.ts`, finds nothing, and the resolver answered "not a local import" —
  * with the result that `lighthouse/lib.ts` and `lighthouse/cli-args.ts`, the two
  * files carrying the census's own DRIVEN HANG rows, were reachable from no entry
- * point at all. Measured before the fix (.tmp/bounded5/reach-probe.json): they sat
- * in a six-file residue; after it, four files.
+ * point at all. Measured before the fix: they sat in a six-file residue; after it,
+ * four files.
  *
  * The trap-3 readback could not catch this because it names three files and all
  * three are `.ts`. So the mapping is stated for every emitted extension, not for
@@ -1359,11 +1358,11 @@ function loadableClosure(): Set<string> {
  * which is the half of round 4 its peer took apart. The only thing gating a
  * reason was `reason.trim().length >= 20`, so the peer excused a planted
  * unbounded read with the reason `'xxxxxxxxxxxxxxxxxxxxxx'` and the census said
- * nothing (arm I6, reproduced: `.tmp/bounded5/p1-pre/I6.tap`, 6 pass 0 fail). I
- * added the sharper arm: a reason reading `DRIVEN BOUNDED: this path is
- * machine-owned so nobody will ever plant a FIFO at it` — round 3's exact failure
- * mode, wearing round 4's vocabulary — was ALSO admitted (I8, same result). A
- * taxonomy in a docblock cannot refuse anything.
+ * nothing (arm I6, reproduced: 6 pass 0 fail). I added the sharper arm: a reason
+ * reading `DRIVEN BOUNDED: this path is machine-owned so nobody will ever plant a
+ * FIFO at it` — round 3's exact failure mode, wearing round 4's vocabulary — was
+ * ALSO admitted (I8, same result). A taxonomy in a docblock cannot refuse
+ * anything.
  *
  * So `kind` is a typed field the compiler checks, and each kind owes EVIDENCE A
  * READER CAN RE-RUN, asserted below:
@@ -1410,9 +1409,8 @@ interface Excuse {
  * Round 4 asserted `residue <= 20` while standing at 15, i.e. it shipped FIVE
  * SITES OF PREPAID HEADROOM, and the peer spent them: a new production file with
  * five unbounded reads plus one `EXCUSED` row left the census GREEN (arm I4,
- * reproduced at `.tmp/bounded5/p1-pre/I4.tap`). A ceiling with slack is an
- * invitation, and round 3's failure mode — 67 rows of argument — is writable
- * again five sites at a time.
+ * reproduced). A ceiling with slack is an invitation, and round 3's failure mode
+ * — 67 rows of argument — is writable again five sites at a time.
  *
  * The other direction was open too, which the peer did not measure and I did: a
  * REAL CONVERSION that removes a row and leaves the number alone was also GREEN
@@ -1455,7 +1453,7 @@ const EXCUSED: readonly Excuse[] = [
   // drove the hostile object AS THE SOURCE. Both callers passed a DIRECTORY, and
   // that is a different function of node. Re-driven on v26.5.0, one child per arm
   // under a 6 000 ms parent SIGKILL, `uncaughtException` handler installed
-  // (.tmp/bounded6/p3-taxonomy.json, driver `p3-taxonomy.mjs`):
+  // (driver `p3-taxonomy.mjs`):
   //
   //   source IS a FIFO             → throws ERR_FS_CP_FIFO_PIPE   (the round-4 arm)
   //   dir CONTAINING a FIFO        → RETURNS SUCCESS in 3 ms, destination MISSING it
@@ -1485,7 +1483,7 @@ const EXCUSED: readonly Excuse[] = [
   // The row that STAYS is bounded for a reason nobody had written down: its
   // `filter` throws on ANY symlink, which is also what stops the walk before the
   // abort. Re-driven through the real function, same driver, `impl=cacheFilter`.
-  { file: 'src/runners/doctor/codex-hook-schema.ts', sites: 1, kind: 'driven-bounded', reason: 'copyCacheWithoutSymlinks: cpSync of the plugin cache under <$HOME>/.codex, RE-DRIVEN through the real function in round 6 (.tmp/bounded6/p3-taxonomy.json, impl=cacheFilter), and RE-RUNNABLE at src/shared/__tests__/copy-tree-taxonomy.test.ts, which drives the real function per shape in its own child under a parent SIGKILL. It never blocks and never omits: a FIFO or socket INSIDE the tree throws (ERR_INTERNAL_ASSERTION on v26.5.0 — a node-internal message, but thrown and catchable, not the silent omission plain cpSync gives), a FIFO as the source throws ERR_FS_CP_FIFO_PIPE, and EVERY symlink — including the a->b->a loop that ABORTS plain cpSync with SIGABRT — hits this call\'s own filter refusal first, which is the bound and was never the stated reason. Control: an ordinary directory copies through the same call in 20 ms with the entry present. Cost class is the shim\'s, not the wrappers\': a host-owned install cache under $HOME that no pull request can deliver' },
+  { file: 'src/runners/doctor/codex-hook-schema.ts', sites: 1, kind: 'driven-bounded', reason: 'copyCacheWithoutSymlinks: cpSync of the plugin cache under <$HOME>/.codex, RE-DRIVEN through the real function in round 6 (impl=cacheFilter), and RE-RUNNABLE at src/shared/__tests__/copy-tree-taxonomy.test.ts, which drives the real function per shape in its own child under a parent SIGKILL. It never blocks and never omits: a FIFO or socket INSIDE the tree throws (ERR_INTERNAL_ASSERTION on v26.5.0 — a node-internal message, but thrown and catchable, not the silent omission plain cpSync gives), a FIFO as the source throws ERR_FS_CP_FIFO_PIPE, and EVERY symlink — including the a->b->a loop that ABORTS plain cpSync with SIGABRT — hits this call\'s own filter refusal first, which is the bound and was never the stated reason. Control: an ordinary directory copies through the same call in 20 ms with the entry present. Cost class is the shim\'s, not the wrappers\': a host-owned install cache under $HOME that no pull request can deliver' },
 
   // ── THE ESM RUNNER: CONVERTED IN ROUND 7, AND ALL THREE ROWS ARE GONE ───────
   //
@@ -1501,12 +1499,11 @@ const EXCUSED: readonly Excuse[] = [
   // bound onto the fd where `isDescriptorStream` can see it.
   //
   // RE-DRIVEN BEFORE AND AFTER, one child per (site, shape) under a parent SIGKILL
-  // at 8 000 ms, plus the stream through the REAL preview server
-  // (.tmp/lhbound/results-before.json, results-after.json, results-s7-*.json):
-  // the six sync sites sat in `open(2)` at 8 006-8 017 ms on a FIFO and
-  // 8 031-8 055 ms on a symlink to /dev/zero, and answer in 239-783 ms now, with
-  // every control still parsing (`run-abc`, `app-deadbeef`, `bid-12345`, `pnpm`,
-  // the contract's 77/1234/2345/99/0.05, and `true` for output: 'export').
+  // at 8 000 ms, plus the stream through the REAL preview server: the six sync
+  // sites sat in `open(2)` at 8 006-8 017 ms on a FIFO and 8 031-8 055 ms on a
+  // symlink to /dev/zero, and answer in 239-783 ms now, with every control still
+  // parsing (`run-abc`, `app-deadbeef`, `bid-12345`, `pnpm`, the contract's
+  // 77/1234/2345/99/0.05, and `true` for output: 'export').
   //
   // THE STREAM ROW WAS RIGHT ABOUT THE HANG AND SILENT ABOUT ITS REACH, which is
   // worth recording because the next reader will otherwise price it wrong.
@@ -1529,13 +1526,13 @@ const EXCUSED: readonly Excuse[] = [
   //                 'src/runners/lighthouse'
   //
   // DRIVEN, with the project the error actually comes from
-  // (.tmp/bounded4b/lh-arm1-emit.out, `npx tsc -p tsconfig.lighthouse.build.json`,
-  // both with and without `--noEmit`). The citation this row carried before was
+  // (`npx tsc -p tsconfig.lighthouse.build.json`, both with and without
+  // `--noEmit`). The citation this row carried before was
   // `-p src/runners/lighthouse`, which cannot produce TS6059 because there is no
   // tsconfig at that path — it answers TS5057. The claim was right and the way to
   // reproduce it was not, which is the same defect as a wrong reason: the next
-  // round runs the command, sees a different error, and cannot tell which part
-  // was wrong.
+  // round runs the command, sees a different error, and cannot tell which part was
+  // wrong.
   //
   // THE ROWS ALSO SAID THE CONVERSION WAS A BUILD CHANGE. THAT IS FALSE, and it
   // is false in the direction that leaves four measured hangs standing — the same
@@ -1543,10 +1540,9 @@ const EXCUSED: readonly Excuse[] = [
   // paragraph at a time. This census admits any open PROVED BOUNDED BY ITS FLAGS,
   // so a fifteen-line reader inside the bundle — `O_RDONLY|O_NONBLOCK` plus an
   // `fstat` on the descriptor, importing nothing but `node:fs` — satisfies it with
-  // no build change at all. DRIVEN in a copy (.tmp/bounded4b/mutant,
-  // lh-arm2-emit.out and lh-remedy.out): it compiles clean under that exact build
-  // config, and the two hangs below become 61 ms and 57 ms while the controls
-  // still answer `true` and `r1`.
+  // no build change at all. DRIVEN in a copy: it compiles clean under that exact
+  // build config, and the two hangs below become 61 ms and 57 ms while the
+  // controls still answer `true` and `r1`.
   //
   // The rows were then held one more round on the ground that the remedy is a
   // SECOND COPY of the two refusals, which is the thing this file's leaf exists to
@@ -1611,8 +1607,7 @@ test('every unbounded read of a PATH in production source is EXCUSED with a reas
   // `isProduction` dropped `src/modules`, `src/hooks`, `src/shared/state` or
   // `src/core` while a planted unbounded read sat inside the dropped subtree, and
   // the census stayed GREEN on all four (reproduced, plus `src/adapters` and
-  // `src/config`: `.tmp/bounded5/p2-pre/results.json`, arms C1/C3-C7 GREEN
-  // against control C2 RED).
+  // `src/config`: arms C1/C3-C7 GREEN against control C2 RED).
   //
   // So the floor is DERIVED and the containment is asserted rather than the count.
   // Every file the runtime can load from an entry point the filesystem names must
@@ -1694,9 +1689,9 @@ test('every unbounded read of a PATH in production source is EXCUSED with a reas
     'the derived floor no longer reaches every production root, so the entry enumeration lost a door');
 
   // The FILTER still contributes, and this is the honest statement of what: the
-  // files no entry reaches. Four today (.tmp/bounded5/reach-probe.json), all
-  // production, none of them loadable from any entry the filesystem names — which
-  // is why the census stays a UNION rather than becoming the closure.
+  // files no entry reaches. Four today, all production, none of them loadable
+  // from any entry the filesystem names — which is why the census stays a UNION
+  // rather than becoming the closure.
   assert.ok(files.length > 400, `FIXTURE expected the whole production tree, found ${files.length} files`);
   assert.equal(files.some((f) => f.endsWith(`${path.sep}retention.ts`)), true,
     'FIXTURE retention.ts is production source');
@@ -1770,7 +1765,7 @@ test('every unbounded read of a PATH in production source is EXCUSED with a reas
   // walked through it with `'xxxxxxxxxxxxxxxxxxxxxx'`; I walked through it again
   // with `DRIVEN BOUNDED: this path is machine-owned so nobody will ever plant a
   // FIFO at it`, which is round 3's failure mode wearing round 4's vocabulary
-  // (arms I6 and I8, both GREEN before this: `.tmp/bounded5/p1-pre/`).
+  // (arms I6 and I8, both GREEN before this).
   //
   // Each kind owes a fact a reader can RE-RUN. Not a grammar — the honest reasons
   // above are prose and must stay writable — a MINIMUM: what refused, how long it
@@ -1971,8 +1966,8 @@ interface Spelling {
    * unbounded one in another, and the mutant that reverts the scoping to
    * file-wide SWAPS which of the two is flagged rather than flagging neither —
    * so the site count stays at one and an arm that only counted sites SURVIVED
-   * the mutation. Measured, not reasoned about: mutation M2 in
-   * .tmp/bounded4/mut-a.txt came back `fail=0` before this field existed.
+   * the mutation. Measured, not reasoned about: mutation M2 came back `fail=0`
+   * before this field existed.
    */
   readonly at?: number;
   /**
@@ -2058,7 +2053,7 @@ const SPELLINGS: readonly Spelling[] = [
   // two EXEMPTIONS take to clearing one, plus the two shapes where the read NAME
   // survives only as a key. Every row is compilable TypeScript with a real read in
   // it, and every one returned ZERO SITES against the shipped scanner before the
-  // change beside it (DRIVEN: `.tmp/bounded6b/p4-corpus.json`).
+  // change beside it (DRIVEN).
   //
   // PROVENANCE IS MARKED, and it is not decoration. `[peer]` rows were enumerated
   // by the round-5 peer review this round answers; `[mine]` rows I derived from the
@@ -2402,9 +2397,8 @@ test('every read this repo EMITS AS SOURCE is enumerated with its BOUND — a st
   // is measured rather than assumed. Mutation P1-FSTAT-DROP (the flags kept, the
   // kind test deleted from the emitted string) left this file's PROSE full of the
   // words `fstatSync` and `isFile()` — so a check over the file text passed the
-  // mutant, and only the driven suite killed it (.tmp/bounded6/mut-P1-FSTAT-DROP.tap:
-  // 2 of 9 failed, this test not among them). What the emitting FUNCTION returns
-  // cannot be satisfied by a comment.
+  // mutant, and only the driven suite killed it (2 of 9 failed, this test not among
+  // them). What the emitting FUNCTION returns cannot be satisfied by a comment.
   const emittedBound = emittedBoundedReadSource('probeFs');
   assert.match(emittedBound, /O_NONBLOCK/,
     'the EMITTED bound no longer passes O_NONBLOCK, so an open of a FIFO with no writer waits for one');
@@ -2496,8 +2490,7 @@ test('WHICH FILES, recomputed from a LISTING this census\'s own predicates canno
   // level the last attack used, and the round-5 peer walked one level down again:
   // a recomputation that calls `isTestSource` and `listSources` CANNOT SEE A CHANGE
   // TO `isTestSource` OR `listSources`. Measured, three arms, each ONE LINE plus a
-  // planted unbounded read, all GREEN against the shipped selector
-  // (.tmp/bounded6b/mutants.jsonl):
+  // planted unbounded read, all GREEN against the shipped selector:
   //
   //   `isTestSource`'s generated-file clause generalised from the one emitted file
   //   to /\.generated\.[cm]?tsx?$/ — the obvious tidy-up the moment a SECOND

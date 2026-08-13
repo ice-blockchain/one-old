@@ -162,11 +162,10 @@ test('workspace declaration: an UNREADABLE declaration file is opaque, and is st
 // exercises the catch. A FIFO and a device node do not throw: they never
 // return, so the catch that reports them "unreadable" is unreachable prose.
 //
-// DRIVEN AT THIS CALL SITE before the bound (.tmp/bounded3/p1-before.txt, one
-// child per shape under a parent `spawnSync({timeout: 8000, killSignal:
-// 'SIGKILL'})`, load 2.54 of 10 cpus): a FIFO killed at 8 012 ms, a symlink to
-// `/dev/zero` killed at 8 057 ms, a regular file answering in 0 ms. After:
-// both answer `opaque` in 0 ms.
+// DRIVEN AT THIS CALL SITE before the bound (one child per shape under a parent
+// `spawnSync({timeout: 8000, killSignal: 'SIGKILL'})`, load 2.54 of 10 cpus): a
+// FIFO killed at 8 012 ms, a symlink to `/dev/zero` killed at 8 057 ms, a
+// regular file answering in 0 ms. After: both answer `opaque` in 0 ms.
 //
 // `pnpm-workspace.yaml` is a TRACKED path — git records a committed symlink as
 // mode 120000 — so the hostile object arrives on an ordinary clone, with no

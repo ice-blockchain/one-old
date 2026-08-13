@@ -41,11 +41,11 @@ function snapshotPath(cwd: string, runId: string): string {
  * `restorePlanOpenCodeDelegateBlock` — which read the same path with a bare
  * `fs.readFileSync`. MEASURED with only the first half bounded: the plan gate
  * still SIGKILLed at 12 017 ms on a FIFO and 12 085 ms on a symlink to
- * `/dev/zero`, with the planted path as the last logged read (.tmp/bounded-reads,
- * load 7.23 → 10.07 of 10 cpus). Bounding one of two readers of the same path
- * on the same expression is not bounding the path; it is moving the block one
- * call to the right, and a boundary drawn by MODULE would have missed this
- * because the second reader lives under `shared/`.
+ * `/dev/zero`, with the planted path as the last logged read (load 7.23 → 10.07
+ * of 10 cpus). Bounding one of two readers of the same path on the same
+ * expression is not bounding the path; it is moving the block one call to the
+ * right, and a boundary drawn by MODULE would have missed this because the
+ * second reader lives under `shared/`.
  *
  * THREE STATES, not `string | null`, because the caller below writes. See
  * `restorePlanOpenCodeDelegateBlock`: absent licenses CREATING plan.md from the

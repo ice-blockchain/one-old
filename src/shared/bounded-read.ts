@@ -27,7 +27,7 @@
 // fsjson.ts's adoption is what the second version was written for, and it stays
 // here because it is the measurement: `readText` and `readJsonResult` were the
 // THIRD pair of structurally identical bare readers, planted with the same FIFO
-// and hung the same way (DRIVEN, .tmp/fsjson-bounded, load 7.05 → 7.33: a FIFO
+// and hung the same way (DRIVEN, load 7.05 → 7.33: a FIFO
 // at `.traffic-one/.one.json` SIGKILLed `readJsonResult` at 12 014 ms and
 // `readText` at 12 011 ms, a symlink to `/dev/zero` SIGKILLed at 20 151 ms,
 // against a 0 ms regular-file control).
@@ -168,11 +168,11 @@ const OWNER_READ_FLAGS = REGULAR_READ_FLAGS | (fs.constants.O_NOFOLLOW || 0);
  *   single acquisition run 25 s and 60 s without returning, fresh and aged, and
  *   through BOTH of that file's readers.
  *
- *   one-settings.ts (.tmp/override8/p1-drive.mjs, load 13.60 → 21.62, one child
- *   per case under a 12 000 ms SIGKILL) — a FIFO at `owner-deadbeef.json` in the
- *   lock directory hung `withMachineFileLock` at the override ledger path and
- *   `updateOneSettings` alike, with the stray-beside-it variant (which routes
- *   the read through `reapAbandonedLock` instead of the strict reader) hanging
+ *   one-settings.ts (load 13.60 → 21.62, one child per case under a 12 000 ms
+ *   SIGKILL) — a FIFO at `owner-deadbeef.json` in the lock directory hung
+ *   `withMachineFileLock` at the override ledger path and `updateOneSettings`
+ *   alike, with the stray-beside-it variant (which routes the read through
+ *   `reapAbandonedLock` instead of the strict reader) hanging
  *   too: four cases, four SIGKILLs at 12 000 ms, against controls of 2 ms
  *   (plain), 7 ms and 14 ms (dead-pid owner). `traffic-one override` never
  *   returns there, no timeout fires, nothing is logged, and every
@@ -361,7 +361,7 @@ const NOT_REGULAR_ERRNO = 'not-a-regular-file';
  * and the split this reader owes it is presence from absence.
  *
  * MEASURED at the reads it replaces, one shape per child process under a hard
- * alarm (.tmp/fsjson-bounded, load 7.05-7.33 of 10 cpus): a FIFO at
+ * alarm (load 7.05-7.33 of 10 cpus): a FIFO at
  * `.traffic-one/.one.json` hung `readJsonResult` (SIGKILL at 12 014 ms) and
  * `readText` (12 011 ms), and a symlink to `/dev/zero` hung `readJsonResult`
  * (20 151 ms), against a 0 ms control on a regular file. Those are hook-path

@@ -4319,9 +4319,8 @@ test('Cursor spawn observations preserve concurrent subagentStart records', asyn
   // cannot tell a refused writer from a lost record, and a hold that outlived the
   // budget of whichever writer arrived first therefore presented as this row's
   // exact symptom — one role in the store, both children exited 0 — with the
-  // store behaving precisely as documented. Reproduced deliberately
-  // (.tmp/contention/lostupdate.mjs, `held`): architect refused at 2013 ms,
-  // stored ['senior-backend'].
+  // store behaving precisely as documented. Reproduced deliberately (arm
+  // `held`): architect refused at 2013 ms, stored ['senior-backend'].
   const source = [
     "const fsx = require('fs');",
     "const { recordCursorSpawnObservation } = require('./src/shared/state/run-agent/index.ts');",

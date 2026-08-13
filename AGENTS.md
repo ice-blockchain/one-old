@@ -115,7 +115,7 @@ best-effort, fall through to all-hosts when they miss, and are overridable with
 Every scratch file an agent authors goes under
 
 ```
-/Users/work/code/github.com/ice-blockchain/one/.tmp/<lane>/
+<repo-root>/.tmp/<lane>/
 ```
 
 and nowhere else: probe scripts, mutation-test copies, measurement drivers,

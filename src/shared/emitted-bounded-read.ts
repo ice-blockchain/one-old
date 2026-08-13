@@ -21,12 +21,12 @@
 // `<project>/.traffic-one/.one.json` — and git stores a symlink as a mode-120000
 // blob, so `.traffic-one/.one.json -> /dev/zero` arrives through an ordinary pull
 // request and materialises on `git clone` with no local process. DRIVEN, both
-// wrappers, one arm per child under a parent SIGKILL at 8 000 ms
-// (.tmp/bounded6/p1-before*.json, node v26.5.0, load 2.94): symlink to /dev/zero
-// SIGKILL at 8 068 ms (opencode) and 8 064 ms (kilo), FIFO SIGKILL at 8 017 ms
-// both, against controls of 408 ms and 687 ms end to end (30 ms and 45 ms inside
-// the child). That is a host plugin load that never returns, which is the outcome
-// this whole class is ranked below failing closed.
+// wrappers, one arm per child under a parent SIGKILL at 8 000 ms (node v26.5.0,
+// load 2.94): symlink to /dev/zero SIGKILL at 8 068 ms (opencode) and 8 064 ms
+// (kilo), FIFO SIGKILL at 8 017 ms both, against controls of 408 ms and 687 ms
+// end to end (30 ms and 45 ms inside the child). That is a host plugin load that
+// never returns, which is the outcome this whole class is ranked below failing
+// closed.
 //
 // ONE EMITTED HELPER RATHER THAN FOUR HAND-WRITTEN GUARDS, and the reason is the
 // lane's own history rather than tidiness: `bounded-read.ts` exists because the

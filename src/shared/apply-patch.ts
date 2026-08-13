@@ -343,10 +343,10 @@ function readCurrent(
     // DRIVEN THROUGH `planWriteGate` ITSELF, both sides, one shape per child
     // under a parent that SIGKILLs at 20 000 ms — a deadline inside the hanging
     // process cannot fire, which is measured three times over in this round
-    // (.tmp/bounded2/gate-{before,after}-*.txt, load 4.61 → 4.20 of 10 cpus).
-    // The payload is a PreToolUse `apply_patch` envelope over a temp project,
-    // built to the same shape `plan-guard/__tests__/plan-write.test.ts` builds,
-    // so the hostile object is reached the way a tool call reaches it:
+    // (load 4.61 → 4.20 of 10 cpus). The payload is a PreToolUse `apply_patch`
+    // envelope over a temp project, built to the same shape
+    // `plan-guard/__tests__/plan-write.test.ts` builds, so the hostile object
+    // is reached the way a tool call reaches it:
     //   BEFORE (bare read)   a FIFO at the patch target SIGKILLed at 20 019 ms
     //                        and a `symlink -> /dev/zero` at 20 098 ms, both
     //                        after printing that they had entered the gate.
@@ -362,12 +362,12 @@ function readCurrent(
     // a reader has to be able to audit. It read "DRIVEN through the real gate
     // path ... a FIFO at the patch target SIGKILLed at 12 009 ms and a symlink
     // to `/dev/zero` at 12 042 ms, against a regular-file control that returned
-    // in 13 ms". Those three figures are real and they are still on disk
-    // (.tmp/bounded2/before-apply-*.txt), but the driver that produced them
-    // called `parseApplyPatch(patch, { baseDir })` DIRECTLY — the unit, one
-    // frame below the gate, with the stand-down, consent and structural-parse
-    // checks never executed. "The real gate path" described the call the peer
-    // had traced by reading, not the call that had been run.
+    // in 13 ms". Those three figures are real and they are still on disk, but
+    // the driver that produced them called `parseApplyPatch(patch, { baseDir })`
+    // DIRECTLY — the unit, one frame below the gate, with the stand-down,
+    // consent and structural-parse checks never executed. "The real gate path"
+    // described the call the peer had traced by reading, not the call that had
+    // been run.
     //
     // AND THE SHIPPED PIN INHERITS THAT DISTINCTION, stated here rather than
     // left implied: `__tests__/apply-patch.test.ts` drives `parseApplyPatch` in

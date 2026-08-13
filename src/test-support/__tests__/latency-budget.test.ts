@@ -170,7 +170,7 @@ test('a breach the machine caused through the FILESYSTEM is not billed to the co
 });
 
 test('a filesystem the machine IS delivering cannot excuse a blocking regression', () => {
-  // Measured through the live instrument (.tmp/harness/regression-probe.ts):
+  // Measured through the live instrument:
   // 45 fsync'd 4 KB writes injected into a readFileSync-shaped section, on a
   // quiet machine, three runs — wall p95 268.99/290.43/346.93 ms, cpu p95
   // ~12 ms, cpu delivery 98-100% and FILESYSTEM delivery 100% every time.
@@ -344,17 +344,16 @@ test('the filesystem reference responds to filesystem waiting and the arithmetic
   //    conditions: the ABSOLUTE bound is one-sided (ambient contention can only
   //    push the figure further down, so a busy machine strengthens it) and the
   //    RELATIVE one is what says the injection rather than the ambient state did
-  //    it. RE-MEASURED (.tmp/harness5/ab-probe.ts) — the figure that used to be
-  //    here cited 110 runs in two campaigns and was not reproducible: 6 runs
-  //    idle and 8 under 10 spinners plus 3 fsync workers, on 10 cores. Idle, the
-  //    injected leg spanned 0.007-0.019 against a control of 0.994-1.000. Loaded,
-  //    the injected leg spanned 0.021-0.028 — steady, because the injection
-  //    dominates it — while the CONTROL spanned 0.074-1.000, so the worst
-  //    observed draw of the ratio was 0.291 against the 0.5 threshold and the
-  //    absolute bound had 5.4x to spare. That 0.074 control draw is why the
-  //    ratio is not tighter: ambient filesystem traffic depresses the control
-  //    leg too, and a threshold that assumed a quiet control would be the same
-  //    mistake in a new place.
+  //    it. RE-MEASURED — the figure that used to be here cited 110 runs in two
+  //    campaigns and was not reproducible: 6 runs idle and 8 under 10 spinners
+  //    plus 3 fsync workers, on 10 cores. Idle, the injected leg spanned
+  //    0.007-0.019 against a control of 0.994-1.000. Loaded, the injected leg
+  //    spanned 0.021-0.028 — steady, because the injection dominates it — while
+  //    the CONTROL spanned 0.074-1.000, so the worst observed draw of the ratio
+  //    was 0.291 against the 0.5 threshold and the absolute bound had 5.4x to
+  //    spare. That 0.074 control draw is why the ratio is not tighter: ambient
+  //    filesystem traffic depresses the control leg too, and a threshold that
+  //    assumed a quiet control would be the same mistake in a new place.
   assert.ok(
     starved.ioDelivered() <= 0.15,
     `injecting a wait into every reference read did not depress the filesystem figure — ${numbers}`,

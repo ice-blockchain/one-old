@@ -136,10 +136,10 @@ export function readWorkspaceDeclaration(dir: string): WorkspaceDeclaration {
     // "The declaration exists and we cannot see through it", inside a `catch`
     // around a bare `fs.readFileSync` — a catch that CANNOT RUN for the two
     // shapes that matter, because the read it guards never returns to throw.
-    // DRIVEN at this call site (.tmp/bounded3/p1-before.txt, load 2.54 of 10
-    // cpus, one child per shape under a parent SIGKILL at 8 000 ms): a FIFO at
-    // `pnpm-workspace.yaml` was killed at 8 012 ms and a committed symlink to
-    // `/dev/zero` at 8 057 ms, against a regular file answering in 0 ms. Both
+    // DRIVEN at this call site (load 2.54 of 10 cpus, one child per shape under
+    // a parent SIGKILL at 8 000 ms): a FIFO at `pnpm-workspace.yaml` was killed
+    // at 8 012 ms and a committed symlink to `/dev/zero` at 8 057 ms, against a
+    // regular file answering in 0 ms. Both
     // arrive through an ordinary `git clone` — git records a link as mode
     // 120000 — and `hook/paths.ts:149` calls `workspaceClaimsDescendant`, whose
     // first statement is this function, on the resolver every hook entry runs.

@@ -1522,8 +1522,7 @@ test('projectOwnedGitignore returns the owner bytes and none of Traffic One\'s',
 // DRIVEN before the fix, one shape per child under a 12 000 ms SIGKILL alarm:
 // a committed `.gitignore -> /dev/zero` SIGKILLed `projectOwnedGitignore` at
 // 12 070 ms (round-1 peer) and at 12 090 ms re-driven against a byte-verified
-// copy carrying the bare read; after, `null` in 161 ms
-// (.tmp/bounded2/{before,after}-owned-devzero.txt). `ensureProjectGitignore`
+// copy carrying the bare read; after, `null` in 161 ms. `ensureProjectGitignore`
 // seventy lines below this function was ALREADY safe — it opens O_RDWR and
 // fstat-guards before reading — so one file both knew the rule and broke it.
 //

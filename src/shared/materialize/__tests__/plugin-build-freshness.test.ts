@@ -3,11 +3,11 @@
 // number.
 //
 // `isMaterialized(state)` compares `state.materializedVersion` against
-// package.json's version. Measured on this repo (`.tmp/content-hash/
-// measure-bumps.mjs`): 11 of the last 14 non-merge commits that changed the
-// emitted content tree carried no bump — 10 of 14 counting only `rules/**` and
-// `skills-catalog/**`, the two trees materialization actually copies. HEAD is a
-// live instance: `skills-catalog/traffic-one-doctor/SKILL.md` gained 97 lines
+// package.json's version. Measured on this repo: 11 of the last 14 non-merge
+// commits that changed the emitted content tree carried no bump — 10 of 14
+// counting only `rules/**` and `skills-catalog/**`, the two trees
+// materialization actually copies. HEAD is a live instance:
+// `skills-catalog/traffic-one-doctor/SKILL.md` gained 97 lines
 // after the v1.0.52 release commit while package.json still reads 1.0.52. So
 // the short circuit in materializeProjectIfNeeded fired on an upgrade, the
 // project kept the old bytes, and doctor called it healthy.

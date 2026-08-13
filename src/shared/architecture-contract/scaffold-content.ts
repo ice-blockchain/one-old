@@ -907,8 +907,7 @@ function createGitignore(absolute: string, content: string): boolean {
  * rather than tidiness about types. The bare `fs.readFileSync` this replaces
  * hung on a committed `.gitignore -> /dev/zero`: SIGKILL at 12 070 ms (round-1
  * peer) and at 12 090 ms re-driven here against a byte-verified copy carrying
- * the bare read, versus `null` in 161 ms after (.tmp/bounded2/
- * {before,after}-owned-devzero.txt, load 3.34 → 3.52 of 10 cpus)
+ * the bare read, versus `null` in 161 ms after (load 3.34 → 3.52 of 10 cpus)
  * — and the obvious repair, folding a shape we cannot read into the `''` the
  * `catch` already returns, would have been WORSE than the hang it removes.
  * `greenfieldEvidence` answers TRUE on empty bytes, so `''` means "the project

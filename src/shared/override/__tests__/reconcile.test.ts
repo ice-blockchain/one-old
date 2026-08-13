@@ -255,8 +255,8 @@ test('a signed acknowledgement floors the counter a deleted key would otherwise 
   // It cannot: `recordOverrideMint` takes `max(current + 1, visibleDistinctMints)`
   // and an attacker with no key writes BOTH — deleting this project's entry from
   // `overrideMints` zeroes the first, and the ledger is a file in the bucket.
-  // Measured in .tmp/override6/lapse.ts across four shapes; the sharpest is that
-  // they can land the counter on any number they choose.
+  // Measured across four shapes; the sharpest is that they can land the counter
+  // on any number they choose.
   //
   // The ledger cannot bound a counter against someone who writes the ledger. The
   // ACKNOWLEDGEMENT can, because removing it costs them the forgiveness they
@@ -777,9 +777,9 @@ function dropAcknowledgements(): void {
 }
 
 test('a wipe that leaves the acknowledgement behind is contradicted by it; a wipe that takes it is a clean install', async () => {
-  // THE MEASUREMENT THAT MOVED THIS FILE'S RULING (.tmp/override7/p1-wipe.ts,
-  // reproduced here as the two arms below). A project reconciled after three
-  // mints carries a signed statement that its counter stood at `verified/3`.
+  // THE MEASUREMENT THAT MOVED THIS FILE'S RULING (reproduced here as the two
+  // arms below). A project reconciled after three mints carries a signed
+  // statement that its counter stood at `verified/3`.
   // `rm -rf` the bucket and delete this project's one key from `overrideMints`,
   // and every witness reads the clean install — while the statement
   // contradicting that reading is sitting in the same file. Certification came

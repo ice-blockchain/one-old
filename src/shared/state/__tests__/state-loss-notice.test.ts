@@ -287,8 +287,8 @@ test('recovery, ordinary project: git restores the pointer and the bounds do NOT
   const notice = stateLossNotice(dir);
   assert.ok(notice);
   // The command is addressed to the human, who is not gated. An agent running it
-  // is refused in every state — measured in `.tmp/treewipe/armK.json` and pinned
-  // by the actor-split tests below.
+  // is refused in every state — measured, and pinned by the actor-split tests
+  // below.
   assert.match(notice!, /THE USER, in their own terminal, is not gated by any of this: `git restore \.traffic-one`/);
   git(dir, ['restore', '.traffic-one']);
 
@@ -337,10 +337,10 @@ test('with no committed pointer the notice offers no restore it cannot deliver',
 });
 
 // ─── the actor split, which is the whole point of the recovery clause ────────
-// Measured through the real PreToolUse pipeline in `.tmp/treewipe/armK.test.ts`
-// (verdict matrix in armK.json): with the pointer absent or blank, every git
-// restore spelling is refused for an AGENT by the onboarding gate, and the
-// whole-directory restore is refused even on an intact project by the plan gate.
+// Measured through the real PreToolUse pipeline, as a verdict matrix: with the
+// pointer absent or blank, every git restore spelling is refused for an AGENT by
+// the onboarding gate, and the whole-directory restore is refused even on an
+// intact project by the plan gate.
 // A human in their own terminal never meets PreToolUse. So the notice must not
 // hand the agent a command it will be denied.
 

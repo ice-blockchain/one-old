@@ -126,14 +126,14 @@ test('parseApplyPatch treats Delete File as path-only, including binary targets'
 // before the read so a case that never reached the code cannot pass quietly.
 //
 //   AT THE UNIT, `parseApplyPatch(patch, { baseDir })`, 12 000 ms SIGKILL alarm
-//   (.tmp/bounded2/before-apply-*.txt, load 30.58 → 32.24 of 10 cpus):
+//   (load 30.58 → 32.24 of 10 cpus):
 //     FIFO at the Update File target             SIGKILL 12 009 ms
 //     symlink to /dev/zero at the same target    SIGKILL 12 042 ms
 //     regular file (control)                     returned 13 ms
 //   after: 196 ms and 49 ms, both REFUSED by name, control still `ok` in 10 ms.
 //
 //   AT THE GATE, `planWriteGate` over a PreToolUse `apply_patch` envelope,
-//   20 000 ms SIGKILL (.tmp/bounded2/gate-*.txt, load 4.61 → 4.20 of 10 cpus):
+//   20 000 ms SIGKILL (load 4.61 → 4.20 of 10 cpus):
 //     FIFO                                       SIGKILL 20 019 ms
 //     symlink to /dev/zero                       SIGKILL 20 098 ms
 //   after: both DENY in 4 ms with `apply-patch-reconstruction-failed`; the
@@ -193,13 +193,12 @@ function reconstructInChild(baseDir: string, label: string): { ok: boolean; erro
     'process.stdout.write(JSON.stringify(parseApplyPatch(process.argv[4], { baseDir: process.argv[3] })));',
   ].join('\n'), 'utf8');
 
-  // SIGKILL rather than spawnSync's default SIGTERM. DRIVEN
-  // (.tmp/bounded3/p4-sigterm.out, load 2.56 of 10 cpus) against a child
-  // blocked in `open(2)` on a FIFO that had registered a SIGTERM handler: with
-  // the default, spawnSync's own 3 000 ms timeout expired and spawnSync STILL
-  // NEVER RETURNED — the outer deadline had to SIGKILL it at 15 006 ms, and the
-  // blocked child survived as an orphan holding the FIFO open. With
-  // `killSignal: 'SIGKILL'`, 3 004 ms and the child reaped.
+  // SIGKILL rather than spawnSync's default SIGTERM. DRIVEN (load 2.56 of 10
+  // cpus) against a child blocked in `open(2)` on a FIFO that had registered a
+  // SIGTERM handler: with the default, spawnSync's own 3 000 ms timeout expired
+  // and spawnSync STILL NEVER RETURNED — the outer deadline had to SIGKILL it at
+  // 15 006 ms, and the blocked child survived as an orphan holding the FIFO open.
+  // With `killSignal: 'SIGKILL'`, 3 004 ms and the child reaped.
   //
   // So the deadline was never enforced from outside this process: a signal the
   // child can decline leaves the parent waiting on `waitpid`, which is the same

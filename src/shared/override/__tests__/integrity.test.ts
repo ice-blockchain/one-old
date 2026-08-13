@@ -263,14 +263,13 @@ test('a mint held off by another mint writes nothing at all, and recovers when t
   // process can observe it. The take-back removes our line BY ID rather than by
   // truncating, so that a concurrent mint's line survives — and by-id alone did
   // not deliver that, because the removal is a read-modify-write and an
-  // O_APPEND lands between its two halves. MEASURED across two real processes
-  // in `.tmp/override6/interleave.ts`: with the writers unserialised the
-  // concurrent mint's genuinely signed line is destroyed, its snapshot is left
-  // behind, `override-snapshot-orphaned` fires and the whole project loses
-  // `verified`; forcing the same interleaving one read earlier reaches the same
-  // block by a second route, the concurrent mint counting our doomed line and
-  // signing the counter one ahead of the lines that remain. Both are clear with
-  // the transaction below.
+  // O_APPEND lands between its two halves. MEASURED across two real processes:
+  // with the writers unserialised the concurrent mint's genuinely signed line is
+  // destroyed, its snapshot is left behind, `override-snapshot-orphaned` fires and
+  // the whole project loses `verified`; forcing the same interleaving one read
+  // earlier reaches the same block by a second route, the concurrent mint counting
+  // our doomed line and signing the counter one ahead of the lines that remain.
+  // Both are clear with the transaction below.
   //
   // WHAT THIS TEST CAN SEE without a second process: while a lock this process
   // may not take is held, the mint does not write. That is the observable

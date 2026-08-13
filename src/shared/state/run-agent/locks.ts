@@ -55,12 +55,12 @@ function readOwnedLock(filePath: string): OwnerSentinel {
     // `readOwnerEntry`, not a bare read, and this is the file whose own errno
     // split that leaf was MODELLED on — the eighth copy of the owner-file shape,
     // one import away from it, and the last of them still reading bare. DRIVEN
-    // before the change (.tmp/bounded4): a FIFO at `<lockDir>/.owner-*.json`
-    // SIGKILLed `withOwnedDirLock` at 8 004 ms and a symlink to `/dev/zero` at
-    // 8 076 ms, against a 318 ms regular-file control. O_NOFOLLOW is the right
-    // refusal here for the reason the leaf's docblock gives: every owner file is
-    // written by this protocol under a random token name, so a link at that name
-    // can only be another lock's evidence answering for this one.
+    // before the change: a FIFO at `<lockDir>/.owner-*.json` SIGKILLed
+    // `withOwnedDirLock` at 8 004 ms and a symlink to `/dev/zero` at 8 076 ms,
+    // against a 318 ms regular-file control. O_NOFOLLOW is the right refusal
+    // here for the reason the leaf's docblock gives: every owner file is written
+    // by this protocol under a random token name, so a link at that name can only
+    // be another lock's evidence answering for this one.
     raw = readOwnerEntry(filePath);
   } catch (error) {
     // Every errno but ENOENT is a sentinel that is THERE and unreadable, which
@@ -244,15 +244,14 @@ function acquireOwnedDirLock(
       // then return null if the budget is spent`, converts a reclaim that
       // outlives the budget into "the obstacle is GONE and the caller is told the
       // mutation did not happen". DRIVEN, deterministically, in a child with the
-      // deadline enforced by the parent (.tmp/bounded5/p3-pre.json,
-      // `timeoutMs 0`): `held false`, `ran false`, **stale lock REMOVED**. At the
-      // 250 ms budget of `state/__tests__/future-skew-locks.test.ts` that is a
-      // coin flip under concurrency — the reclaim is a read, two unlinks and an
-      // rmdir — and it is why that suite's `a dead owner stamped in the PAST is
-      // reclaimed (the control)` row went red 2 of 9 concurrent runs with this
-      // repair and 0 of 9 without it (measured by the round-4 peer, reproduced
-      // here). Round 4 recorded that red as somebody else's clock flake. It was
-      // this file's.
+      // deadline enforced by the parent (`timeoutMs 0`): `held false`,
+      // `ran false`, **stale lock REMOVED**. At the 250 ms budget of
+      // `state/__tests__/future-skew-locks.test.ts` that is a coin flip under
+      // concurrency — the reclaim is a read, two unlinks and an rmdir — and it is
+      // why that suite's `a dead owner stamped in the PAST is reclaimed (the
+      // control)` row went red 2 of 9 concurrent runs with this repair and 0 of 9
+      // without it (measured by the round-4 peer, reproduced here). Round 4
+      // recorded that red as somebody else's clock flake. It was this file's.
       //
       // So a SUCCESSFUL reclaim buys exactly ONE more attempt past the deadline,
       // once. That is not a return to the unbounded `continue`, and the
@@ -264,14 +263,13 @@ function acquireOwnedDirLock(
       // throw, the aged DIRECTORY at the sentinel path whose unlink raises EPERM,
       // a live holder) and still returns null at the deadline. And `once` bounds
       // the one case where a reclaim can keep succeeding: a CONCURRENT RECREATOR
-      // re-planting an aged dead-pid lock. DRIVEN against exactly that
-      // (.tmp/bounded5/p3-post.json, a child re-planting the lock in a tight
-      // loop): with `timeoutMs 0` the single grace attempt wins the directory and
-      // the call RETURNS (1 530 ms wall, no signal); at `timeoutMs 250` it
-      // returns REFUSING, because the recreator's lock is fresh and a reclaim
-      // that removes nothing cannot buy the retry. Termination is the claim here,
-      // not the verdict — either answer is bounded, which is what the round-4
-      // repair was for.
+      // re-planting an aged dead-pid lock. DRIVEN against exactly that (a child
+      // re-planting the lock in a tight loop): with `timeoutMs 0` the single
+      // grace attempt wins the directory and the call RETURNS (1 530 ms wall, no
+      // signal); at `timeoutMs 250` it returns REFUSING, because the recreator's
+      // lock is fresh and a reclaim that removes nothing cannot buy the retry.
+      // Termination is the claim here, not the verdict — either answer is
+      // bounded, which is what the round-4 repair was for.
       const reclaimed = reclaimStaleOwnedDirLock(lockDir, staleMs);
       if (Date.now() >= deadline) {
         if (!reclaimed || reclaimGraceUsed) return null;

@@ -150,8 +150,7 @@ export function writeFileNoFollow(absolute: string, text: string, mode: 'truncat
  * waits for one forever. So the twin of a write that cannot be redirected was
  * still a read that could never return — measured at three structurally
  * identical readers elsewhere in this tree (bounded-read.ts), and at this
- * module's own gate paths at 12 023 ms and 12 080 ms to SIGKILL
- * (.tmp/bounded-reads).
+ * module's own gate paths at 12 023 ms and 12 080 ms to SIGKILL.
  *
  * The two flags do different jobs and neither substitutes for the other:
  *   O_NOFOLLOW  refuses a link AT the name — whose bytes answer.

@@ -835,12 +835,12 @@ test('the declined refusals are still refused, and still disclosed', () => {
     // itself, which every rule above can read.
     //
     // The SYMLINK is the row where operand roles are the shallow reason and the
-    // decline is load-bearing, measured in `.tmp/wd10/symlink-price.ts`: with the
-    // link in place, `rm -f latest-run/run.json`, `truncate -s 0
-    // latest-run/run.json` and `find -L latest-run -name run.json -delete` are
-    // all `noop` and all destroy the sidecar (census 15 -> 14, and a content
-    // change for the truncate), because a path through the link spells no
-    // `.traffic-one` literal for either rule to judge. Permitting the link buys
+    // decline is load-bearing, measured: with the link in place,
+    // `rm -f latest-run/run.json`, `truncate -s 0 latest-run/run.json` and
+    // `find -L latest-run -name run.json -delete` are all `noop` and all destroy
+    // the sidecar (census 15 -> 14, and a content change for the truncate),
+    // because a path through the link spells no `.traffic-one` literal for
+    // either rule to judge. Permitting the link buys
     // a laundering route for every command after it. A per-verb operand role
     // would fix the over-refusal and open that route in the same move, so this
     // one should stay refused even when `cd` and `cp` get their roles.
@@ -866,11 +866,11 @@ test('the declined refusals are still refused, and still disclosed', () => {
  * verbatim to the spelling it conceded was refused.
  *
  * Round 10 corrected the BEHAVIOUR rather than the claim, for a reason that is
- * measured rather than aesthetic (`.tmp/wd10/home-quad.ts`): with HOME pointed
- * away from the fixture the tilde row destroys nothing, but with HOME pointing
- * AT the project it erases all 15 files, and `~+` needs no assumption about HOME
- * at all — it is `$PWD`. A rule that reads a tilde head as a path is a rule that
- * has guessed the value of a variable it does not hold.
+ * measured rather than aesthetic: with HOME pointed away from the fixture the
+ * tilde row destroys nothing, but with HOME pointing AT the project it erases
+ * all 15 files, and `~+` needs no assumption about HOME at all — it is `$PWD`. A
+ * rule that reads a tilde head as a path is a rule that has guessed the value of
+ * a variable it does not hold.
  *
  * The price is stated in the prose and it is the same one `$HOME` already
  * carried: a deletion of ANOTHER project's runs tree is refused too. That costs

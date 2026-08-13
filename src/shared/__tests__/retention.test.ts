@@ -2198,7 +2198,7 @@ test('an illegible policy input announces the remedy that fits THAT file', () =>
 });
 
 // ── a transient errno is not a broken file, and must not be given an `rm` ─────
-// Under descriptor exhaustion (reproduced in a .tmp driver at 61,417 held
+// Under descriptor exhaustion (reproduced in a driver at 61,417 held
 // descriptors) `readJsonResult` returns `unreadable` with EMFILE for a
 // BYTE-PERFECT `retention.json`, and this notice announced the suspension plus
 // ``run `rm -f '<path>'` `` — a destructive action named for a condition that is
@@ -4450,8 +4450,8 @@ test('an UNSTATTABLE mint-stamp directory is protected WITHOUT taking a keepRuns
       // at all: the stat failed on the directory's OWN mode, so "no timestamp this
       // host can trust ... `touch` the paths" describes a reading that was never
       // taken, and the `touch` it prescribes SUCCEEDS while changing nothing (driven
-      // and measured: .tmp/ret15/remedy-before.txt). The true disclosure is the one
-      // about the directory, and it now carries a command that runs.
+      // and measured). The true disclosure is the one about the directory, and it
+      // now carries a command that runs.
       const disclosure = plan.notices.find((notice) => notice.includes(stray));
       assert.ok(disclosure,
         'and a notice names it — the orphan TTL\'s `unknown` arm is what makes this permanent, so the disclosure '
@@ -4720,7 +4720,7 @@ test('with runs/ ITSELF unenterable the sidecar bytes are retained AND the sweep
 // mode table uses, five of these roots plan nothing at any mode, and "obey the
 // remedy, then re-measure" cannot tell a restored enumeration from an empty
 // directory. Measured with that gap present, four arms reported a broken promise
-// that was a fixture artefact (.tmp/ret15/remedy-before.txt).
+// that was a fixture artefact.
 const T1 = '.traffic' + '-one';
 
 /**
@@ -4787,8 +4787,8 @@ interface RemedyArm {
 // `plant` chmods a directory it just created, so every arm on it is a directory
 // with a bad bit. Round 15 reported the "printed a command that cannot be run"
 // class closed on the strength of that axis, and the class had three more
-// inhabitants (.tmp/ret16/probe-rootkind.txt, every printed command executed
-// through /bin/sh and the sweep re-run, load 18.29):
+// inhabitants (every printed command executed through /bin/sh and the sweep
+// re-run, load 18.29):
 //
 //   a SYMLINK whose target's parent is unsearchable
 //        3 notices, 3 commands, ALL THREE failing `No such file or directory`,
@@ -4867,13 +4867,13 @@ const STATE_ROOT_KINDS: readonly RootKind[] = [
     // lands in the same class and got the same sentence — but it is not circular,
     // it ends at a REAL TREE, and here that tree is this project's own state.
     //
-    // MEASURED (.tmp/ret17b/probe-current.txt A3, load 2.93) with `digests/`
-    // replaced by a 60-hop chain over this project's digests: 4 entries behind it
-    // BEFORE the `rm -rf` the notice prints and 4 AFTER it. The removal takes the
-    // LINK; what it pointed at stays on disk, now referenced by nothing and
-    // reachable by no rule. Under the sentence that shipped, the notice said
-    // "nothing of this project's can be inside what is there now" — so a reader was
-    // told the opposite of what is true and acted on it.
+    // MEASURED (arm A3, load 2.93) with `digests/` replaced by a 60-hop chain over
+    // this project's digests: 4 entries behind it BEFORE the `rm -rf` the notice
+    // prints and 4 AFTER it. The removal takes the LINK; what it pointed at stays
+    // on disk, now referenced by nothing and reachable by no rule. Under the
+    // sentence that shipped, the notice said "nothing of this project's can be
+    // inside what is there now" — so a reader was told the opposite of what is true
+    // and acted on it.
     //
     // Sixty hops rather than a stub: SYMLOOP_MAX is what refuses, and a chain the
     // host WOULD follow is simply a working symlink and tests nothing.
@@ -5303,14 +5303,14 @@ for (const arm of REMEDY_ARMS) {
           // catches "printed a command and then said there is none", and it is not
           // symmetry for its own sake — it is the state the chmod-unreachable
           // REPAIR arm reaches, which is the arm added to stop a decline resting on
-          // a false reason. MEASURED before this row existed
-          // (.tmp/ret17b/probe-current.txt B, load 2.93): with the state root a
-          // symlink to an unsearchable parent, the notice printed
-          // `chmod u+rx '<project>/away-root'`; running it SUCCEEDED, notices went
-          // 3 -> 0 and the plan 0 -> 21 — and the same notice closed "there is no
-          // command here to run for either, for the reason given above". A reader
-          // who believes the last sentence does not run the line, and this notice
-          // reaches an LLM as instructions through retentionAdvisory.
+          // a false reason. MEASURED before this row existed (arm B, load 2.93):
+          // with the state root a symlink to an unsearchable parent, the notice
+          // printed `chmod u+rx '<project>/away-root'`; running it SUCCEEDED,
+          // notices went 3 -> 0 and the plan 0 -> 21 — and the same notice closed
+          // "there is no command here to run for either, for the reason given
+          // above". A reader who believes the last sentence does not run the line,
+          // and this notice reaches an LLM as instructions through
+          // retentionAdvisory.
           //
           // The phrase is the WHOLE-NOTICE denial only. "NOTHING PRINTED HERE COULD
           // REPAIR IT" is deliberately not in this list: it names its own path, so
@@ -5449,8 +5449,7 @@ test('no arm in the remedy property joins as a NO-OP, and the ones that do are n
 // matters: it is what kills a mutant that pastes one class's sentence onto
 // another, which "the right sentence is in there somewhere" cannot do.
 //
-// REACHING THE TWO CLASSES NO ARM REACHED, both measured before being pinned
-// (.tmp/ret16/probe-classes.txt, .tmp/ret16/probe-opaque.txt):
+// REACHING THE TWO CLASSES NO ARM REACHED, both measured before being pinned:
 //
 //   transient  REAL DESCRIPTOR EXHAUSTION. 61,416 descriptors opened until the
 //              kernel refused, then the sweep, then all of them closed. This is
@@ -5484,12 +5483,12 @@ const OUTLOOK_SENTENCE: Readonly<Record<string, RegExp>> = {
   // is ['ENOTDIR', 'ELOOP']: a regular file resolves and has nothing inside it, so
   // "nothing of this project's can be inside what is there now" is true of it; a
   // link this host will not follow does not resolve, and what it ends at is a real
-  // tree this sweep never reached. MEASURED (.tmp/ret17b/probe-current.txt A3):
-  // 4 of this project's digest entries behind a 60-hop chain, and 4 still there
-  // after the `rm -rf` the notice printed. The one sentence over both errnos was
-  // the last surviving clause of the not-a-directory falsehood, and it contradicted
-  // the remedy sentence two lines above it in the same notice, which already said
-  // this sweep did not know what was behind the link.
+  // tree this sweep never reached. MEASURED (arm A3): 4 of this project's digest
+  // entries behind a 60-hop chain, and 4 still there after the `rm -rf` the notice
+  // printed. The one sentence over both errnos was the last surviving clause of the
+  // not-a-directory falsehood, and it contradicted the remedy sentence two lines
+  // above it in the same notice, which already said this sweep did not know what
+  // was behind the link.
   kindUnresolved: /What cannot be RESOLVED comes back under the rules/,
   transient: /What failed on an errno about THIS PROCESS is still there/,
   opaque: /What failed on an errno this notice cannot classify is kept meanwhile/,
@@ -5764,11 +5763,10 @@ test('the UNAGED `touch` list is gated by RUNNABILITY, not only by rendering', (
   // reaches it. A directory at 0o400 LISTS and does not SEARCH, so the listing that
   // finds the artefacts succeeds while every stat under it fails EACCES, which is
   // this notice's own second cause ("a stat this process is not allowed to make").
-  // MEASURED before the gate reached this site (.tmp/ret17b/probe-unaged.txt, load
-  // 1.42): 4 artefacts, 4 `touch` commands printed, 0 of them ran — all four
-  // "Permission denied" — and the notice came back BYTE-IDENTICAL on the next
-  // sweep. The notice already named the true remedy in prose and printed the one
-  // that could not run.
+  // MEASURED before the gate reached this site (load 1.42): 4 artefacts, 4 `touch`
+  // commands printed, 0 of them ran — all four "Permission denied" — and the notice
+  // came back BYTE-IDENTICAL on the next sweep. The notice already named the true
+  // remedy in prose and printed the one that could not run.
   withAwkwardProject((dir) => {
     remedyFixture(dir);
     const holder = path.join(dir, T1, 'reports', 'lighthouse');
@@ -5908,12 +5906,12 @@ test('an `rm -rf` on an unfollowable link says what it takes, and does not claim
 // LOOP, the read of `<root>/retention.json` fails ENOTDIR / ELOOP — neither of
 // which is a MODE_BIT errno, which was the only condition under which this notice
 // asked where the fault really was — so it printed `rm -f <root>/retention.json`.
-// MEASURED (.tmp/ret16/probe-rootkind.txt): `Not a directory` and `Too many levels
-// of symbolic links`. The property above catches the failing command; this row
-// catches the half the property cannot see, which is whether the replacement
-// SENTENCE names the thing that is actually wrong. A no-command notice satisfies
-// EXPLAINS by matching one phrase, so the walk that finds the obstacle could be
-// deleted and every row would stay green with a vaguer sentence.
+// MEASURED: `Not a directory` and `Too many levels of symbolic links`. The
+// property above catches the failing command; this row catches the half the
+// property cannot see, which is whether the replacement SENTENCE names the thing
+// that is actually wrong. A no-command notice satisfies EXPLAINS by matching one
+// phrase, so the walk that finds the obstacle could be deleted and every row would
+// stay green with a vaguer sentence.
 for (const [kind, errno, plant] of [
   ['a regular FILE', 'ENOTDIR', (root: string) => fs.writeFileSync(root, 'not a directory', 'utf8')],
   ['a symlink LOOP', 'ELOOP', (root: string) => fs.symlinkSync(root, root)],
@@ -6078,8 +6076,8 @@ test('the product\'s own rendering executes verbatim under a project name that n
 // row asserts is therefore not only WHICH notices fire but which sentences must be
 // ABSENT — the false-sentence half is the one this lane keeps shipping.
 //
-// MEASURED BEFORE THE FIX, same fixture, ten modes (.tmp/ret14/mode-census.ts, load
-// 2.86 of 10 CPUs) — the two defects this table now holds shut:
+// MEASURED BEFORE THE FIX, same fixture, ten modes (load 2.86 of 10 CPUs) — the
+// two defects this table now holds shut:
 //   0o111 / 0o100  readdir EACCES, every evidence stat OK: the run directories are
 //                  invisible to the pruning loop and to the orphan TTL, 320 KB →
 //                  320 KB, five of five surviving, `planned: 0` still at +400 days,
@@ -6102,9 +6100,8 @@ test('the product\'s own rendering executes verbatim under a project name that n
 // reclaimed, which is exactly what the first run of the census driver did.
 //
 // AND THE TABLE IS DRIVEN, four arms on a copy of the tree with each half of the fix
-// reverted in turn (.tmp/ret14/arm.ts, both fence suites per arm, 129 rows executed
-// every time, load 5.13-6.16 of 10 CPUs). A pin over ten modes is worth what it
-// fails on:
+// reverted in turn (both fence suites per arm, 129 rows executed every time, load
+// 5.13-6.16 of 10 CPUs). A pin over ten modes is worth what it fails on:
 //   `listRoot` swallows EACCES again, as round 13's listing did
 //                                     KILLED 4 rows: 0o000, 0o100, 0o111, 0o200 —
 //                                     the leak and its three neighbours
@@ -6195,12 +6192,12 @@ const RUNS_MODE_TABLE: readonly RunsModeRow[] = [
     // legible from `digests/`, `fix-cycles/` and `reports/qa/` — `collectRunIds`
     // unions exactly those — and a removal BY NAME needs no listing of the parent at
     // all, only the write and search bits ON it. MEASURED across the write bit,
-    // which this table did not vary (.tmp/ret15/name-removal-out.txt, uid 502, load
-    // 8.01 of 10 CPUs): at 0o100 and 0o111 an `rm -rf runs/<id>` is refused EACCES
-    // and the ruling holds for the reason given, but at 0o300 and 0o311 — same
-    // readdir EACCES, same successful evidence stats, same `planned: 9` unchanged at
-    // +400 days — the removal SUCCEEDS and the history the sweep is keeping forever
-    // was reclaimable by a name it already held. Hence the 0o300 row below.
+    // which this table did not vary (uid 502, load 8.01 of 10 CPUs): at 0o100 and
+    // 0o111 an `rm -rf runs/<id>` is refused EACCES and the ruling holds for the
+    // reason given, but at 0o300 and 0o311 — same readdir EACCES, same successful
+    // evidence stats, same `planned: 9` unchanged at +400 days — the removal
+    // SUCCEEDS and the history the sweep is keeping forever was reclaimable by a
+    // name it already held. Hence the 0o300 row below.
     //
     // STILL DECLINED, on the narrower reason: nothing the sweep PRINTS is false in
     // that state (the notice names `runs/` and the remedy `chmod u+rx` unlocks it,

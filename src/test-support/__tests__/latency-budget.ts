@@ -196,9 +196,9 @@ export const SELF_CHECK_LABEL = 'live filesystem reference (starved)';
  * MS. A 12 ms ceiling is 1.03x that, i.e. no margin at all against the term
  * most likely to breach it, and the 9.19 ms "worst loaded draw" is that same
  * signature rather than an independent one. Re-measured here on the patched
- * section (.tmp/harness6/corridor-probe.ts, 10 cores, Node 26, 60 samples per
- * run, 8 idle + 6 loaded runs): a single sample of 12.28 ms CPU appeared idle
- * and one of 65.18 ms under load — both ABOVE the old ceiling.
+ * section (10 cores, Node 26, 60 samples per run, 8 idle + 6 loaded runs): a
+ * single sample of 12.28 ms CPU appeared idle and one of 65.18 ms under load —
+ * both ABOVE the old ceiling.
  *
  * So the ceiling is calibrated against 11.7 ms, and the wall side is moved with
  * it (the wait doubles to 12 ms, three waits per 12-read sample, ~36 ms of
@@ -371,9 +371,8 @@ const IO_REFERENCE_BYTES = 4096;
  * a perfectly healthy machine. That is not a corner case, it is the ordinary
  * state of this repo's own parallel suite.
  *
- * MEASURED (.tmp/harness/io-delivery-probe.mjs, 10-core macOS, a
- * readFileSync-dominated section, against twelve real test files running as
- * peer processes — the shape `npm test` produces):
+ * MEASURED (10-core macOS, a readFileSync-dominated section, against twelve
+ * real test files running as peer processes — the shape `npm test` produces):
  *
  *   idle, 5 runs            cpu delivered 1.00      io delivered 1.00
  *   12 peer processes       cpu delivered 1.00 x6   io delivered 0.75-1.00
@@ -402,9 +401,8 @@ const IO_REFERENCE_BYTES = 4096;
  * window where no burst happened to land, or be starved during a burst while
  * the samples around it were fine.
  *
- * Measured (.tmp/harness/tail-vs-mean-probe.mjs — replicates burst() exactly
- * but records each burst separately; readFileSync section, 24 peer processes,
- * six runs):
+ * Measured (a probe replicating burst() exactly but recording each burst
+ * separately; readFileSync section, 24 peer processes, six runs):
  *
  *   per-burst MEDIAN delivery      cpu 1.00, io 1.00 — in all six runs
  *   worst single burst             cpu 0.01-1.00, io 0.02-0.25

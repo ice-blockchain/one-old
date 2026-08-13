@@ -308,7 +308,7 @@ test('both SessionStart headers carry the banner, so neither route is silent', (
   const source = fs.readFileSync(file, 'utf8');
   // LIVE CODE ONLY. A commented-out call matches the same regex, and a mutant
   // that commented one out survived this row until the trim check was added
-  // (measured: M7, .tmp/materialize2 campaign).
+  // (measured: mutant M7).
   const calls = source.split('\n')
     .map((line) => line.trim())
     .filter((line) => /^header \+= roleContractBanner\(cwd, state\);$/.test(line));

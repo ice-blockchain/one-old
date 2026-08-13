@@ -146,12 +146,12 @@ test('the third excused cpSync row is bounded by its FILTER, which is what stops
   // directory copies through the same call with the entry present") and this suite
   // did not drive one, so both refusals below were satisfied by ANY refusal.
   // MEASURED: with the filter's condition forced true — a cache copy that refuses
-  // everything, copying nothing at all — this suite stayed 5 pass / 0 fail
-  // (.tmp/bounded6b/mut-P3B-FILTER-ALWAYS.tap), with the mutated branch proven to
-  // have run (the refusal message is its own, and the destination came back EMPTY
-  // where the live call copies `ordinary.txt`). A refusal with nothing to compare it
-  // to measures nothing — the census says exactly that to every `driven-bounded`
-  // row, and the arm enforcing it did not obey it.
+  // everything, copying nothing at all — this suite stayed 5 pass / 0 fail, with
+  // the mutated branch proven to have run (the refusal message is its own, and the
+  // destination came back EMPTY where the live call copies `ordinary.txt`). A
+  // refusal with nothing to compare it to measures nothing — the census says
+  // exactly that to every `driven-bounded` row, and the arm enforcing it did not
+  // obey it.
   const control = drive('control', 'cacheFilter');
   assert.equal(control.signal, null, 'the control must not be killed');
   assert.equal(control.arm.threw, null,

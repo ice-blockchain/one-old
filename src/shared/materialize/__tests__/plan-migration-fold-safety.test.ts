@@ -864,10 +864,10 @@ test('MAJOR B: a FIFO at a candidate path is refused rather than opened, which w
     ].join('\n'));
 
     // SIGKILL rather than spawnSync's default SIGTERM: the default does not
-    // enforce this deadline. DRIVEN (.tmp/bounded3/p4-sigterm.out) against a
-    // child blocked in `open(2)` on a FIFO — with the default, spawnSync's own
-    // timeout expired and spawnSync never returned, leaving an orphan holding
-    // the FIFO; with SIGKILL it returned on the deadline and the child died.
+    // enforce this deadline. DRIVEN against a child blocked in `open(2)` on a
+    // FIFO — with the default, spawnSync's own timeout expired and spawnSync
+    // never returned, leaving an orphan holding the FIFO; with SIGKILL it
+    // returned on the deadline and the child died.
     const run = spawnSync(process.execPath, ['--import', 'tsx', child, path.join(__dirname, '..', 'plan-migration.ts'), dir], {
       encoding: 'utf8',
       timeout: 30_000,

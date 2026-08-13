@@ -371,9 +371,9 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     //
     // Not retried here and not waited on: the caller has already spent the whole
     // 2 s budget, and a second attempt just moves the same cliff further out
-    // while holding a spawn hook open. Measured at .tmp/spawnstore/ — 0 refusals
-    // in 562 barrier-synchronised writer attempts from 2- to 64-way contention,
-    // worst single acquisition 1851 ms at 32 writers — so reaching this branch
+    // while holding a spawn hook open. Measured — 0 refusals in 562
+    // barrier-synchronised writer attempts from 2- to 64-way contention, worst
+    // single acquisition 1851 ms at 32 writers — so reaching this branch
     // takes a holder that WEDGES, not a queue that is long, and the bound is what
     // keeps a wedged holder from hanging the spawn instead.
     if (!recordedCursorStart && tier && expectedModel && requestedModel && parentSession) {

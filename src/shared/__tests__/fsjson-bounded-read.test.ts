@@ -2,10 +2,9 @@
 // fsjson's two readers are BOUNDED, and a shape that cannot be read is PRESENCE
 // with a named errno — never absence, and never the arm that carries bytes.
 //
-// THE DEFECT, DRIVEN BEFORE IT WAS FIXED (.tmp/fsjson-bounded/repro.mjs, one
-// shape per child process under a hard SIGKILL alarm, load 7.05-7.33 of 10 cpus,
-// the resolved path printed by the child so a case that never reached the code
-// could not pass quietly):
+// THE DEFECT, DRIVEN BEFORE IT WAS FIXED (one shape per child process under a
+// hard SIGKILL alarm, load 7.05-7.33 of 10 cpus, the resolved path printed by
+// the child so a case that never reached the code could not pass quietly):
 //
 //   FIFO at `<project>/.traffic-one/.one.json`  readJsonResult  SIGKILL 12 014 ms
 //   FIFO at the same path                       readText        SIGKILL 12 011 ms

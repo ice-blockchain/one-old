@@ -78,11 +78,10 @@ export const ONE_SETTINGS_LOCK_TIMEOUT_MS = 500;
  * outlast the deadline a second holder was given to wait for it. That refuses
  * an honest concurrent mint by arithmetic rather than by contention policy: no
  * amount of patience helps, because the hold is structurally longer than the
- * wait. MEASURED (.tmp/override7/p5-lock.ts, load average 36–48, 1ms sampling
- * of the lock directory from another process): the ledger hold is 85–145 ms
- * uncontended over 5 samples, and 534–561 ms over 3 samples when the nested
- * settings write runs to its own deadline — already past the 500 ms a waiter
- * had.
+ * wait. MEASURED (load average 36–48, 1ms sampling of the lock directory from
+ * another process): the ledger hold is 85–145 ms uncontended over 5 samples,
+ * and 534–561 ms over 3 samples when the nested settings write runs to its own
+ * deadline — already past the 500 ms a waiter had.
  *
  * FOUR TIMES, not "bigger": the hold is bounded by one inner deadline plus the
  * reads and writes around it, so the outer budget has to clear that bound with
@@ -230,11 +229,11 @@ function rawSchemaError(raw: Record<string, unknown> | null): string | null {
  * THE SETTINGS FILE IS READ WITH THE SAME BOUND AS THE LOCK, and it needed it
  * for the same reason at a place no lock protects: this read runs BEFORE
  * `updateOneSettings` takes anything, so a FIFO planted at `one.json` hung every
- * write on the machine with the hardened lock still untouched — DRIVEN
- * (.tmp/override8/p1-drive.mjs, load 27.19): `updateOneSettings` SIGKILLed at
- * 12 068 ms, against a 7 ms control. The planting capability is identical to the
- * lock directory's, because it IS the same directory: anything that can write
- * under the machine dir can write both names.
+ * write on the machine with the hardened lock still untouched — DRIVEN (load
+ * 27.19): `updateOneSettings` SIGKILLed at 12 068 ms, against a 7 ms control.
+ * The planting capability is identical to the lock directory's, because it IS
+ * the same directory: anything that can write under the machine dir can write
+ * both names.
  *
  * `readRegularFile`, not `readOwnerEntry` — a symlink here is FOLLOWED, and the
  * asymmetry is deliberate. An owner file is a record this protocol wrote at a
@@ -559,11 +558,11 @@ function acquireSettingsLock(filePath: string, timeoutMs: number): SettingsLock 
         // guard is this protocol's one behavioural change since it was ported.
         // What an OOM-kill or a SIGKILL leaves is a lock whose holder is
         // provably gone and whose stamp is SECONDS old, and the staleness floor
-        // refused it for the rest of its ten-second window: MEASURED
-        // (.tmp/override7/p5-lock.ts) — with a dead owner and a 2s-old stamp an
-        // honest override mint was refused in 656 ms, and the identical fixture
-        // at 30s succeeded in 329 ms. Ten seconds of refusing every settings
-        // write on this machine, for a holder nobody has to guess about.
+        // refused it for the rest of its ten-second window: MEASURED — with a
+        // dead owner and a 2s-old stamp an honest override mint was refused in
+        // 656 ms, and the identical fixture at 30s succeeded in 329 ms. Ten
+        // seconds of refusing every settings write on this machine, for a holder
+        // nobody has to guess about.
         //
         // The age was never what protected a holder; `ownerLiveness` is, and it
         // still governs — a pid that answers `kill(pid, 0)` keeps its lock at

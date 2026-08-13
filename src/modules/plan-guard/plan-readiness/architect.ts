@@ -132,13 +132,12 @@ export function openCodeQueuePolicyErrors(content: string): string[] {
  * The bare `fs.readFileSync` these replace had no bound at all on two shapes,
  * and this is the file that MEASURED it: a FIFO at `.traffic-one/plan.md`
  * SIGKILLed `planReadinessViolations` at 12 023 ms and a symlink to `/dev/zero`
- * at 12 080 ms (.tmp/bounded-reads, load 9.54 of 10 cpus, one child per shape
- * under a hard alarm, the planted path logged as the last read before the
- * hang) — against a regular-file control that returned
- * `architect-opencode-queue-gate` in 2.4 s. That is a PreToolUse hook, so the
- * outcome is the one this codebase ranks below failing closed: no deny, no
- * timeout, nothing logged, the editor session wedged until somebody finds the
- * process.
+ * at 12 080 ms (load 9.54 of 10 cpus, one child per shape under a hard alarm,
+ * the planted path logged as the last read before the hang) — against a
+ * regular-file control that returned `architect-opencode-queue-gate` in 2.4 s.
+ * That is a PreToolUse hook, so the outcome is the one this codebase ranks below
+ * failing closed: no deny, no timeout, nothing logged, the editor session wedged
+ * until somebody finds the process.
  *
  * `null` — something is there and it is not a regular file — is deliberately
  * folded into each caller's existing catch arm rather than into "the plan is

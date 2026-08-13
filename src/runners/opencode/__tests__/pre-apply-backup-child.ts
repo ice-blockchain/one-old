@@ -70,7 +70,7 @@ const mkfifo = (at: string): string | null => {
   // A BLANK REASON IS A SKIP NOBODY CAN ACT ON. `made.stderr` is `''`, not
   // null, when the tool refuses quietly — `??` keeps the empty string and the
   // suite then prints `# SKIP no FIFO available: mkfifo unavailable: `, which is
-  // what a `mkfifo` stub that exits 1 produces (driven, .tmp/bounded6b/p6-stub.tap).
+  // what a `mkfifo` stub that exits 1 produces (driven).
   const said = (made.stderr ?? '').trim() || made.error?.message || '';
   return `mkfifo unavailable: exit ${String(made.status)}${made.signal ? ` signal ${made.signal}` : ''}`
     + `${said ? ` — ${said}` : ''}`;

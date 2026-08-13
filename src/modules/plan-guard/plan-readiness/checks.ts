@@ -45,7 +45,7 @@ import {
  * waits for a writer forever and a symlink to `/dev/zero` answers a read as
  * long as anybody keeps asking; MEASURED through this module's own gate entry
  * point at `.traffic-one/plan.md`, both shapes took SIGKILL at 12 023 ms and
- * 12 080 ms with no deny, no timeout and nothing logged (.tmp/bounded-reads).
+ * 12 080 ms with no deny, no timeout and nothing logged.
  *
  * IT THROWS for a non-regular object rather than answering, and that is the
  * whole reason it is a helper instead of a bare `readRegularFile` at each site.

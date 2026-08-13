@@ -1027,8 +1027,8 @@ function notAFileRemedy(removal: string): string {
  * gitnexus bootstrap (runners/gitnexus/bootstrap-env.ts `backupConflicts`), it
  * copies exactly CONFLICT_PATHS — `AGENTS.md`, `CLAUDE.md`, `.claude/skills`
  * (config/gitnexus.ts) — and all three live OUTSIDE `.traffic-one`. MEASURED
- * (.tmp/backupclaim/probe-out.txt, CLAIM1) on a project carrying all three beside
- * a state root: the snapshot tree is those three paths and nothing else, twice.
+ * (CLAIM1) on a project carrying all three beside a state root: the snapshot
+ * tree is those three paths and nothing else, twice.
  * So the one sentence in this notice offering help sent the reader to a directory
  * that cannot hold what they were sent for, and — this being a retention notice —
  * said it to an LLM through retentionAdvisory and SessionStart.
@@ -1099,11 +1099,11 @@ function pointerCopies(file: string): string {
  *
  * `rm -f <file>` and "repair its JSON" are both actions ON THE FILE, and a read
  * that failed EACCES may have failed because of a DIRECTORY above it, in which case
- * neither is executable. MEASURED (.tmp/ret15/remedy-before.txt) at `.traffic-one`
- * 0o000: three commands printed across the three notices, and all three failed —
- * the two chmods the RETAINED notice printed (the blocker) and this notice's
- * `rm -f <…>/retention.json`, "Permission denied". So the file-shaped remedy is
- * conditional on the file being reachable, and the condition is measurable.
+ * neither is executable. MEASURED at `.traffic-one` 0o000: three commands
+ * printed across the three notices, and all three failed — the two chmods the
+ * RETAINED notice printed (the blocker) and this notice's
+ * `rm -f <…>/retention.json`, "Permission denied". So the file-shaped remedy
+ * is conditional on the file being reachable, and the condition is measurable.
  *
  * It reuses blameDirectory rather than repeating the walk, which is the same
  * argument TRANSIENT_REMEDY makes about two callers of one sentence: two copies of
@@ -1125,10 +1125,10 @@ function announceSuspension(
     ? 'every retention cap is off'
     : 'the run-history caps are off (the backup and Lighthouse caps are unaffected — neither number lives here)';
   // ── THE REMOVAL WAS OFFERED WHENEVER THE PATH COULD BE SPELLED ──────────────
-  // MEASURED with `.traffic-one` at 0o555 and a corrupt `retention.json`
-  // (.tmp/ret17/probe-product.txt B, load 3.35): an `lstat` of the FILE succeeds, so
-  // the nameability gate this round-16 arm added answered TRUE, and the notice
-  // printed `rm -f '<…>/retention.json'` — which FAILS "Permission denied", because
+  // MEASURED with `.traffic-one` at 0o555 and a corrupt `retention.json` (arm B,
+  // load 3.35): an `lstat` of the FILE succeeds, so the nameability gate
+  // this round-16 arm added answered TRUE, and the notice printed
+  // `rm -f '<…>/retention.json'` — which FAILS "Permission denied", because
   // `unlink` needs the write bit on the DIRECTORY and 0o555 does not carry it. The
   // notice came back byte-identical. That is the "prints a command that cannot be
   // run" class at an ordinary mode bit on the parent, which is the axis round 16
@@ -1160,12 +1160,12 @@ function announceSuspension(
   // The condition used to be exactly MODE_BIT_ERRNOS, which is the set of ways a
   // DIRECTORY refuses a reader — and says nothing about a directory that is not a
   // directory. MEASURED with `.traffic-one` itself a regular FILE and again as a
-  // symlink LOOP (.tmp/ret16/probe-rootkind.txt): the read fails ENOTDIR / ELOOP,
-  // this walk was never asked, and the notice printed
-  // `rm -f <…>/.traffic-one/retention.json` — which fails `Not a directory` and
-  // `Too many levels of symbolic links` respectively. Two more printed commands
-  // that cannot be run at all, in the class round 15 reported closed, and neither
-  // is reachable by varying the modes of paths INSIDE a state root.
+  // symlink LOOP: the read fails ENOTDIR / ELOOP, this walk was never asked, and
+  // the notice printed `rm -f <…>/.traffic-one/retention.json` — which fails
+  // `Not a directory` and `Too many levels of symbolic links` respectively. Two
+  // more printed commands that cannot be run at all, in the class round 15
+  // reported closed, and neither is reachable by varying the modes of paths INSIDE
+  // a state root.
   //
   // So the question asked is the one that decides it: can any verb NAME the file?
   // `rm` acts on the entry, so an `lstat` is exactly the capability it needs.
@@ -1275,10 +1275,10 @@ function announceUnagedArtefacts(unaged: readonly string[], notices?: string[]):
   // (agentRunnableCommand → REMEDY_PROBE) reached three sites and not this one, so
   // `touch` was declared a remedy verb, given a probe validated against
   // /usr/bin/touch in 28 cells, and then never asked here. MEASURED end to end
-  // (.tmp/ret17b/probe-unaged.txt, load 1.42), on an ordinary permission bit and
-  // no exotic flag at all — `reports/lighthouse/` at 0o400, which LISTS and does
-  // not SEARCH, so the listing that found the artefacts succeeds and every stat
-  // under it fails EACCES, which is this notice's own second cause:
+  // (load 1.42), on an ordinary permission bit and no exotic flag at all —
+  // `reports/lighthouse/` at 0o400, which LISTS and does not SEARCH, so the
+  // listing that found the artefacts succeeds and every stat under it fails
+  // EACCES, which is this notice's own second cause:
   //
   //   artefacts in the UNAGED list        4
   //   `touch` commands printed            4
@@ -1390,7 +1390,7 @@ function announceUnagedArtefacts(unaged: readonly string[], notices?: string[]):
  * MEASURED before that attribution existed, at `runs/` 0o400, 0o444 and 0o600 (read
  * but no search): BOTH notices fired about the same four run directories, UNAGED
  * telling the user to `touch` four paths one line above this notice saying there was
- * nothing here to `touch` (.tmp/ret14/mode-census.ts).
+ * nothing here to `touch`.
  *
  * WHAT EACH CLAUSE IS TRUE OF, since that is the property five rounds of this lane
  * have got wrong and it is now a suite artefact (see the permission-bit table in
@@ -1410,8 +1410,8 @@ function announceUnagedArtefacts(unaged: readonly string[], notices?: string[]):
  * AND WHAT NO CLAUSE SAYS ANY MORE: that `.traffic-one` "keeps growing". Two rules
  * sit outside the run-cap guard by design, and MEASURED at `runs/` 0o000 with
  * backups and Lighthouse reports over cap, they reclaim 6 paths in the same sweep
- * that printed that sentence (.tmp/ret14/m2-shapes.ts). The claim is now scoped to
- * the directories named, where it is what the plan shows.
+ * that printed that sentence. The claim is now scoped to the directories named,
+ * where it is what the plan shows.
  */
 interface UnreachableStateDirs {
   /**
@@ -1479,7 +1479,7 @@ interface UnreachableStateDirs {
  *
  * MEASURED on the state this lane's own fence drives (rootKindArms builds the
  * relocation target as `path.join(dir, 'away-…')` — INSIDE the project directory),
- * .tmp/ret17/probe-product2.txt section C, load 6.79:
+ * section C, load 6.79:
  *
  *   the link resolves to        <project>/away-root/moved   — inside the project
  *   commands printed            0
@@ -1559,23 +1559,23 @@ function unreachableRemedies(
     // ── "AND EVERY OTHER VERB THIS NOTICE KNOWS WOULD TOO" WAS FALSE FOR HALF OF
     // THEM, and it contradicted the docblock of the predicate written to gate it.
     // MEASURED at the entry the notice names, each verb on its own fresh tree so an
-    // earlier one cannot decide a later one (.tmp/ret17/probe-product2.txt, E):
-    // `chmod` FAILED "No such file or directory", `touch` FAILED "Permission
-    // denied", `rm -f` SUCCESS, `rm -rf` SUCCESS. `rm` acts on the ENTRY and the
-    // entry is perfectly nameable. So the true statement is a DECISION and is said
-    // as one — an `rm` here destroys the only reference to this project's state —
-    // and not an impossibility the filesystem disagrees with.
+    // earlier one cannot decide a later one (section E): `chmod` FAILED "No such
+    // file or directory", `touch` FAILED "Permission denied", `rm -f` SUCCESS,
+    // `rm -rf` SUCCESS. `rm` acts on the ENTRY and the entry is perfectly
+    // nameable. So the true statement is a DECISION and is said as one — an `rm`
+    // here destroys the only reference to this project's state — and not an
+    // impossibility the filesystem disagrees with.
     const rmIsPossible = ' An `rm` on that entry itself WOULD succeed, and this notice will not print one:'
       + ' removing it destroys the only reference to this project\'s state.';
     if (repair.kind === 'repair') {
       // AND THIS ARM COMMANDS, which the round that wrote it did not record — so
       // the outlook two lines below it closed with "there is no command here to run
       // for either", one line under the command it prints. MEASURED on the state
-      // this same arm serves (.tmp/ret17b/probe-current.txt B, load 2.93): the
-      // notice printed `chmod u+rx '<project>/away-root'`, that command SUCCEEDED,
-      // notices went 3 → 0 and the plan 0 → 21 — under a sentence saying no command
-      // was there. `commanded` is what the promise is composed from, so a site that
-      // prints and does not record is a site that contradicts itself in one notice.
+      // this same arm serves (arm B, load 2.93): the notice printed
+      // `chmod u+rx '<project>/away-root'`, that command SUCCEEDED, notices went
+      // 3 → 0 and the plan 0 → 21 — under a sentence saying no command was there.
+      // `commanded` is what the promise is composed from, so a site that prints
+      // and does not record is a site that contradicts itself in one notice.
       commanded.add('mode');
       sentences.push(`${agentVisiblePath(root.dir)} refused this process (${root.errno}) and a \`chmod\` ON IT`
         + ' cannot help: that entry is a SYMLINK, and `chmod` follows a link rather than changing it, so it acts on'
@@ -1597,10 +1597,10 @@ function unreachableRemedies(
       // NOT A LINK, and this is the arm the old resolution-only predicate could not
       // produce at all: an ordinary directory, resolving perfectly well, whose mode
       // this process may not change. `chflags uchg` is the measured instance (round
-      // 16's review, re-derived at .tmp/ret17/probe-product.txt A) and the causes
-      // below are offered to the READER as things to look for — the VERDICT comes
-      // from the attempt in REMEDY_PROBE, not from this list, which is why a cause
-      // nobody listed cannot make this sentence wrong.
+      // 16's review, re-derived at arm A) and the causes below are offered to the
+      // READER as things to look for — the VERDICT comes from the attempt in
+      // REMEDY_PROBE, not from this list, which is why a cause nobody listed
+      // cannot make this sentence wrong.
       sentences.push(`${agentVisiblePath(root.dir)} refused this process (${root.errno}) and NOTHING PRINTED HERE`
         + ' COULD REPAIR IT: that entry is an ordinary directory that resolves perfectly well, and this sweep'
         + ' asked the filesystem whether a `chmod` on it would succeed and was told NO. A mode bit is therefore'
@@ -1638,7 +1638,7 @@ function unreachableRemedies(
   // ['ENOTDIR', 'ELOOP'] and the two do not behave alike. MEASURED with the
   // counterfactual `chmod` the sentence asserts about actually executed, and the
   // entries behind the path counted before and after the printed `rm -rf`
-  // (.tmp/ret17/probe-product2.txt D1–D3, load 6.79):
+  // (arms D1–D3, load 6.79):
   //
   //   digests/ a regular FILE       ENOTDIR  `chmod u+rx` SUCCESS       — true
   //   digests/ a symlink LOOP       ELOOP    `chmod u+rx` FAILED,
@@ -1689,9 +1689,9 @@ function unreachableRemedies(
     // AND THE REMOVAL ITSELF CAN BE REFUSED, which nothing here asked before.
     // MEASURED: with `.traffic-one` at 0o555 the printed `rm -rf` fails "Permission
     // denied"; with the entry carrying `uchg` it fails "Operation not permitted";
-    // in both the notice came back byte-identical (.tmp/ret17/probe-product2.txt
-    // G, H). The second question is asked of the kernel too, so the reason names
-    // what refused rather than guessing which of the two it was.
+    // in both the notice came back byte-identical (arms G, H). The second question
+    // is asked of the kernel too, so the reason names what refused rather than
+    // guessing which of the two it was.
     const parentRefuses = ((): boolean => {
       try { fs.accessSync(path.dirname(root.dir), fs.constants.W_OK | fs.constants.X_OK); return false; } catch { return true; }
     })();
@@ -1740,7 +1740,7 @@ function unreachableRemedies(
  * That is the NOT-A-DIRECTORY sentence, and `faultClass` has four values, so it
  * was also the closing sentence on `transient` and `opaque` faults. MEASURED
  * under real descriptor exhaustion (61,416 descriptors held until `open` refused
- * with EMFILE, .tmp/ret16/probe-classes.txt, load 9.80) the RETAINED notice ended:
+ * with EMFILE, load 9.80) the RETAINED notice ended:
  *
  *   "…/backups, …/reports/lighthouse could not be listed because of an errno
  *    about THIS PROCESS rather than about the directory (EMFILE, EMFILE). That
@@ -1799,11 +1799,11 @@ function unreachableOutlook(
     // not know whether anything of yours is behind it". This sentence then closed
     // the SAME NOTICE with "nothing of this project's can be inside what is there
     // now" — a contradiction two lines apart, and the second one is the one a
-    // reader meets last. MEASURED (.tmp/ret17b/probe-current.txt A3, load 2.93):
-    // `digests/` replaced by a 60-hop symlink CHAIN ending at this project's own
-    // digests, ELOOP exactly as a loop answers, **4 of this project's digest
-    // entries behind it before the printed `rm -rf` and 4 after it** — the removal
-    // takes the link and orphans them, under a sentence saying they cannot exist.
+    // reader meets last. MEASURED (arm A3, load 2.93): `digests/` replaced by a
+    // 60-hop symlink CHAIN ending at this project's own digests, ELOOP exactly as a
+    // loop answers, **4 of this project's digest entries behind it before the
+    // printed `rm -rf` and 4 after it** — the removal takes the link and orphans
+    // them, under a sentence saying they cannot exist.
     //
     // A CHAIN IS NOT A LOOP and that is why the axis missed it: it is not circular,
     // it resolves to a real tree, and the only thing wrong with it is that it is
@@ -1947,14 +1947,13 @@ function announceUnreachableStateDirs(state: UnreachableStateDirs, notices?: str
  * reclamation that cannot happen, in a notice printed one line from the SUSPENDED
  * notice that names the real cause.
  *
- * MEASURED (.tmp/ret15/remedy-before.txt, corrupt `retention.json` + `backups/`
- * 0o000, dry runs only so no apply sweep confounds the delta): the same notice with
- * the same promise, and obeying its `chmod` alone moves the plan 0 → 0, where the
- * legible control moves 0 → 2. Recorded rather than reworded away because the
- * comment at the `unlistable` declaration asserted this state does not exist ("A
- * SUSPENSION collects nothing here because it takes no listing it acts on"), which
- * is why nobody looked: two rules sit BELOW the suspension guard and call listRoot
- * unconditionally.
+ * MEASURED (corrupt `retention.json` + `backups/` 0o000, dry runs only so no apply
+ * sweep confounds the delta): the same notice with the same promise, and obeying
+ * its `chmod` alone moves the plan 0 → 0, where the legible control moves 0 → 2.
+ * Recorded rather than reworded away because the comment at the `unlistable`
+ * declaration asserted this state does not exist ("A SUSPENSION collects nothing
+ * here because it takes no listing it acts on"), which is why nobody looked: two
+ * rules sit BELOW the suspension guard and call listRoot unconditionally.
  *
  * THE TWO SUSPENSIONS DIFFER AND THE SCOPED SENTENCE IS THE TRUE ONE. An illegible
  * `retention.json` takes all four caps, so nothing at all is reclaimed by restoring
@@ -2240,7 +2239,7 @@ function listDirs(root: string): string[] {
  * runs with sidecars, aged once-markers, backups and Lighthouse pairs over cap,
  * aged debug logs), the read bit taken off ONE root at a time at 0o111 — still
  * traversable, so no evidence read is disturbed — against a control planning 28
- * actions (.tmp/ret14/list-sites.ts, load 5.59 of 10 CPUs):
+ * actions (load 5.59 of 10 CPUs):
  *
  *   runs                 28 → 24 planned, 0 notices
  *   digests              28 → 26, 0 notices        fix-cycles     → 26, 0 notices
@@ -2343,11 +2342,11 @@ interface UnreachableRoot {
  * `chmod` on paths whose own modes were `0o755`.
  *
  * MEASURED, by executing exactly the command the notice printed and re-measuring
- * the plan (.tmp/ret15/remedy-before.txt, 18 arms, uid 502): at `runs/<id>` 0o000
- * the printed `chmod u+rx <runs>/<id>/debug` FAILS with permission denied; at
- * `reports/` 0o000 both printed chmods fail; at `.traffic-one` 0o000 all three
- * printed commands fail, including the `rm -f` the SUSPENDED notice beside it
- * prints. Five of eighteen arms printed a command that could not be run at all.
+ * the plan (18 arms, uid 502): at `runs/<id>` 0o000 the printed
+ * `chmod u+rx <runs>/<id>/debug` FAILS with permission denied; at `reports/` 0o000
+ * both printed chmods fail; at `.traffic-one` 0o000 all three printed commands
+ * fail, including the `rm -f` the SUSPENDED notice beside it prints. Five of
+ * eighteen arms printed a command that could not be run at all.
  *
  * DERIVING USER-FACING ADVICE FROM A LIST BUILT FOR ANOTHER JOB IS THE STRUCTURAL
  * MISTAKE, and it is worth naming as one rather than fixing as an instance: the
@@ -2408,9 +2407,8 @@ function listErrno(dir: string): string | null {
  * no mention of this type. Meanwhile `touch` sat in this union with a probe below
  * validated against /usr/bin/touch, and ZERO call sites asking it — so the UNAGED
  * list printed four `touch` commands at a `reports/lighthouse/` of 0o400, none of
- * which ran, under a notice that came back byte-identical
- * (.tmp/ret17b/probe-unaged.txt). A claimed fence is worse than an absent one: it
- * is why nobody looked.
+ * which ran, under a notice that came back byte-identical. A claimed fence is
+ * worse than an absent one: it is why nobody looked.
  *
  * The row exists now — "every verb this file can PRINT goes through the
  * runnability gate" — and it asserts what is actually checkable rather than what
@@ -2433,7 +2431,7 @@ type RemedyVerb = 'chmod u+rx' | 'rm -f' | 'rm -rf' | 'touch';
  * Round 16 closed three addresses with it and reported the "prints a command that
  * cannot be run" class closed. It was not. Measured since, each one a printed
  * command executed through /bin/sh with the sweep re-run either side
- * (.tmp/ret17/probe-product.txt, .tmp/ret17/probe-product2.txt, load 3.35–6.79):
+ * (load 3.35–6.79):
  *
  *   backups/ at 0o000 AND `chflags uchg`   `stat` SUCCEEDS, so the old predicate
  *     — Finder's "Locked" checkbox, what   answered TRUE. Notice printed
@@ -2464,11 +2462,11 @@ type RemedyVerb = 'chmod u+rx' | 'rm -f' | 'rm -rf' | 'touch';
  * never asked. It needs no exotic flag to reach, either: `reports/lighthouse/` at
  * an ordinary 0o400 LISTS and does not SEARCH, so the listing that finds the
  * artefacts succeeds while every stat under it fails EACCES — this notice's own
- * second cause. Driven (.tmp/ret17b/probe-unaged.txt, load 1.42): 4 artefacts,
- * 4 `touch` commands printed, 0 of them ran, notice BYTE-IDENTICAL on the next
- * sweep; and 1 of 1 at `debug/` 0o400. announceUnagedArtefacts asks now, and the
- * fence row named in RemedyVerb's docblock is what makes a fifth omission red
- * rather than wait for someone to drive its address.
+ * second cause. Driven (load 1.42): 4 artefacts, 4 `touch` commands printed, 0 of
+ * them ran, notice BYTE-IDENTICAL on the next sweep; and 1 of 1 at `debug/` 0o400.
+ * announceUnagedArtefacts asks now, and the fence row named in RemedyVerb's
+ * docblock is what makes a fifth omission red rather than wait for someone to
+ * drive its address.
  *
  * SIX ADDRESSES WERE KNOWN AND FOUR MORE WERE FOUND BY HAND IN ONE SESSION, three
  * of them here and one by the review. A space where two independent hands each find
@@ -2483,8 +2481,8 @@ type RemedyVerb = 'chmod u+rx' | 'rm -f' | 'rm -rf' | 'touch';
  * ── WHAT EACH PROBE ASKS, AND WHY IT IS SAFE TO ASK IN A DRY RUN ─────────────
  * Every probe is a call the kernel authorizes exactly as the command does and then
  * performs NO change. Measured per obstacle against the real verb, 28 cells
- * (.tmp/ret17/probe-product2.txt, section I): the probe and `/bin/chmod`,
- * `/bin/rm`, `/usr/bin/touch` agree on all 28.
+ * (section I): the probe and `/bin/chmod`, `/bin/rm`, `/usr/bin/touch` agree on
+ * all 28.
  *
  *   `chmod u+rx`  `chmod(target, the mode it already has)`. chmod's authorization
  *                 is "are you the owner", which does not depend on the bits
@@ -2672,12 +2670,12 @@ function directoryFault(dir: string, projectDir: string): UnreachableRoot | null
  * errnos at two other sites (TRANSIENT_READ_ERRNOS, NOT_A_FILE_ERRNO) and says
  * there, in writing, that a read failure is not one fact.
  *
- * MEASURED (.tmp/ret15/remedy-before.txt): with `runs/` replaced by a REGULAR FILE
- * the notice printed `chmod u+rx <runs>`, which SUCCEEDS and moves the plan 2 → 2
- * where a real directory plans 14 — a remedy that reports success and changes
- * nothing, which is the worst of the three failure shapes because the reader has
- * no signal at all. With `runs/` a symlink LOOP the same `chmod` fails "No such
- * file or directory".
+ * MEASURED: with `runs/` replaced by a REGULAR FILE the notice printed
+ * `chmod u+rx <runs>`, which SUCCEEDS and moves the plan 2 → 2 where a real
+ * directory plans 14 — a remedy that reports success and changes nothing, which
+ * is the worst of the three failure shapes because the reader has no signal at
+ * all. With `runs/` a symlink LOOP the same `chmod` fails "No such file or
+ * directory".
  *
  * THE FALLBACK IS THE HONEST ONE, and that is the whole point of writing it as an
  * enumeration: an errno this file has not thought about lands in `opaque`, where
@@ -3059,13 +3057,13 @@ function listNestedTrafficOneDirs(cwd: string, notices?: string[]): string[] {
  * boundary nobody sees, and `'\n'` is the joiner THE PRODUCT ITSELF USES
  * (materialize/cursor-agents.ts `out.join('\n')`, asserted from that source by the
  * driver rather than remembered). THIRTY-FIVE rows on FIVE paths — `.one.json`,
- * `digests`, `manifest.json`, `reports/qa` and `runs` (.tmp/ret15/prose-census.ts,
- * load 13.71 of 10 CPUs). It was THIRTY-FOUR until the window's left edge was
- * snapped to a word boundary in the live census (see authoringContext in
- * __tests__/materialized-entries.test.ts) and this channel was re-run to match: the
- * thirty-fifth row is `runs :: src/test-environment/core/run-sim/index.ts`, whose
- * verb the fixed offset opened inside. Nothing is lost by the snap under this
- * reading, and the five paths asserted to have no row still have none.
+ * `digests`, `manifest.json`, `reports/qa` and `runs` (load 13.71 of 10 CPUs). It
+ * was THIRTY-FOUR until the window's left edge was snapped to a word boundary in
+ * the live census (see authoringContext in __tests__/materialized-entries.test.ts)
+ * and this channel was re-run to match: the thirty-fifth row is
+ * `runs :: src/test-environment/core/run-sim/index.ts`, whose verb the fixed
+ * offset opened inside. Nothing is lost by the snap under this reading, and the
+ * five paths asserted to have no row still have none.
  *
  * The same driver over the same corpus, for the neighbouring readings, so the spread
  * is on the record rather than in a disagreement between rounds:
@@ -3118,20 +3116,19 @@ function listNestedTrafficOneDirs(cwd: string, notices?: string[]): string[] {
  *
  *   "recomputing the LIVE census with each verb's word boundary checked against the
  *    full document instead of against the slice answers 44 rows either way, with
- *    ZERO manufactured matches to discard (.tmp/ret14/window-boundary.ts). The hole
- *    is real and today it is empty, which is why AUTHORING_WINDOW is left alone
- *    rather than snapped to a word boundary: the change would move a pinned literal
- *    for no row."
+ *    ZERO manufactured matches to discard. The hole is real and today it is empty,
+ *    which is why AUTHORING_WINDOW is left alone rather than snapped to a word
+ *    boundary: the change would move a pinned literal for no row."
  *
  * Manufactured POSITIVES were the half it checked, and that half is the SAFE one: a
  * spurious row keeps a name OUT of the recognised table, and a name out of the table
  * is a file that survives. The same missing boundary manufactures NEGATIVES, where a
  * missed row is how a name gets admitted on a census that could not see the
- * instruction. Re-measured in both directions over the 224 shipped documents
- * (.tmp/ret15/census-boundary-out.txt): 44 rows shipped, 46 snapped, 0 rows only the
- * shipped window finds, 2 it MISSES — one of them on `fix-cycles`, a RECOGNISED
- * path. The window is snapped now (authoringContext), both censuses re-run, and the
- * empty half is intact under the new reading.
+ * instruction. Re-measured in both directions over the 224 shipped
+ * documents: 44 rows shipped, 46 snapped, 0 rows only the shipped window finds, 2
+ * it MISSES — one of them on `fix-cycles`, a RECOGNISED path. The window is
+ * snapped now (authoringContext), both censuses re-run, and the empty half is
+ * intact under the new reading.
  *
  * WHAT DOES NOT MOVE, across all three readings and both instruments: every path in
  * the set already carries a census row from a shipped DOCUMENT, so no path moves
@@ -3324,7 +3321,7 @@ function listNestedTrafficOneDirs(cwd: string, notices?: string[]): string[] {
  *         holder killed mid-hold leaves exactly `<lock>` — no `skills/`, no token
  *         sibling, no materialization anywhere. DRIVEN over four shapes against a
  *         mutant that admits the name through EPHEMERAL_LOCKS
- *         (.tmp/retention13/p2-drive.ts, load 4.40 of 10 CPUs):
+ *         (load 4.40 of 10 CPUs):
  *           `.one.json` + lock only    pristine 1 planned entry, REDUCED, root
  *                                      survives holding the lock; MUTANT one
  *                                      `<WHOLE ROOT>` action, ZERO notices, root
@@ -3355,11 +3352,11 @@ function listNestedTrafficOneDirs(cwd: string, notices?: string[]): string[] {
  *         alone (`.one.json.report-id.lock.<token>.pending`/`.released` and nothing
  *         else) reaches the leftover without taking the name space, and no one had
  *         ruled it out. It moves no verdict, and that is a measurement rather than
- *         an argument — driven as exactly that widening (.tmp/ret14/arm.ts), it is
- *         REFUSED by "the heal's partition is derived from the fixture's own
- *         listing", the pin that exists for names no enumeration can see, with both
- *         `<token>` siblings admitted 2/2 under an execution probe so the kill is on
- *         the widening and not on an absent fixture. The first spelling of that arm
+ *         an argument — driven as exactly that widening, it is REFUSED by "the
+ *         heal's partition is derived from the fixture's own listing", the pin
+ *         that exists for names no enumeration can see, with both `<token>`
+ *         siblings admitted 2/2 under an execution probe so the kill is on the
+ *         widening and not on an absent fixture. The first spelling of that arm
  *         matched nothing at all — `[0-9a-z]+` crosses neither the `-` nor the dots
  *         in `report-id.lock.<hex>` — and survived 129/129 with ZERO admits on 181
  *         executions of the branch it edited: a widening that widens nothing, and
@@ -3687,7 +3684,7 @@ function descendRecognition(dir: string, node: RecognitionNode, rel: string): De
  * and no readdir failure that is not also an rmSync failure has been
  * constructed" — and it is now settled, but NOT in the column that argument was
  * about. Measured at two kinds of pressure, one branch per cell so no call is
- * helped by the one before it (.tmp driver this round, 61,417 held descriptors):
+ * helped by the one before it (driver this round, 61,417 held descriptors):
  *
  *                          readdir      rmSync -r        rmSync on a sibling
  *                          the branch   that branch      FILE (`.one.json`)
@@ -4220,7 +4217,7 @@ interface RunKeepSet {
    * several lines earlier and which no window could ever evict. MEASURED on a fresh
    * project whose only run is the current one, `runs/` 0o000: `planned 0 removed 0
    * keep 1` and a notice reserving "1 run id" whose fate was never in question
-   * (.tmp/ret14/m2-shapes.ts, load 4.10 of 10 CPUs).
+   * (load 4.10 of 10 CPUs).
    *
    * So it counts ids the reservation CHANGED something for, and the notice's
    * reservation sentence is printed only when it is non-zero. The count rather than
@@ -4309,7 +4306,7 @@ function keepRunIds(
   //     a window. MEASURED at `keepRuns: 1` with five genuine runs holding a 32 KB
   //     payload in each of those three directories: 480 KB → 192 KB with 9 sidecar
   //     removals when `runs/` is readable, and 0 of the 9 planned when it is not
-  //     (.tmp/retention13/p1-drive.ts, load 5.71 of 10 CPUs).
+  //     (load 5.71 of 10 CPUs).
   //   "it is announced — the UNAGED notice names the directory and the remedy" —
   //     TRUE ONLY where the id's OWN `runs/<id>` is the unreadable thing, which is
   //     the shape this arm was written against: there the orphan TTL walks `runs/`,
@@ -4501,8 +4498,7 @@ function isOlderThan(filePath: string, ttlMs: number, nowMs: number, unaged: str
  *
  * THE REALISED LOSS DOES NOT LAND TODAY, and the price is UNDETERMINED rather
  * than zero. DRIVEN on the real shape (`chmod 0o000` on a run directory holding a
- * genuine `architecture-v1.json`, .tmp/retention11/chmod-drive.ts, load 16.64
- * before / 18.74 after):
+ * genuine `architecture-v1.json`, load 16.64 before / 18.74 after):
  *
  *   before  PLAN 1 action — "abandoned before architecture compilation and older
  *           than 3 days" — and ZERO notices. APPLY removed 0 / failed 1, with the
@@ -4563,12 +4559,12 @@ function entryPresence(filePath: string): EntryPresence {
  * The first two clauses are true and the third is FALSE, and the state it is false
  * in is one `chmod` from the state it was written to explain. MEASURED at `runs/`
  * 0o111 and 0o100, five runs holding 64 KB each with 32 KB in each of three sidecar
- * directories, `keepRuns: 1` (.tmp/ret14/mode-census.ts, load 2.86 of 10 CPUs):
- * `readdir` EACCES, every evidence stat OK, so nothing reserved and nothing to
- * explain — and the run directories therefore invisible to the pruning loop and to
- * the orphan TTL, 320 KB → 320 KB, five of five surviving, `planned: 0` still at
- * +400 days, `removed: 9` reported as success on the sidecars alone, ZERO notices
- * and a null advisory. Permanent and silent, which is the shape the header of this
+ * directories, `keepRuns: 1` (load 2.86 of 10 CPUs): `readdir` EACCES, every
+ * evidence stat OK, so nothing reserved and nothing to explain — and the run
+ * directories therefore invisible to the pruning loop and to the orphan TTL,
+ * 320 KB → 320 KB, five of five surviving, `planned: 0` still at +400 days,
+ * `removed: 9` reported as success on the sidecars alone, ZERO notices and a
+ * null advisory. Permanent and silent, which is the shape the header of this
  * file calls its worst failure mode — reached through the OTHER bit.
  *
  * `entryPresence(runsDir)` IS STILL NOT THIS QUESTION, and asking it there would be
@@ -4769,13 +4765,12 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number, dry
       //
       // ASKED OF THE FILESYSTEM, not of `runs/` by name. The guard here was
       // `runsUnenterable === null`, which is the question "is the parent I thought
-      // of the cause?" — true at `runs/` 0o400/0o444/0o600, where it was measured
-      // (.tmp/ret14/mode-census.ts), and false one level down. MEASURED at
-      // `runs/<id>` 0o000 with `runs/` healthy: the contradiction came straight
-      // back, UNAGED naming the run directory to `touch` beside RETAINED saying
-      // there was nothing a `touch` would change, and the `touch` it printed
-      // SUCCEEDED while changing nothing about a stat that fails on the
-      // directory's own mode (.tmp/ret15/remedy-before.txt). directoryFault
+      // of the cause?" — true at `runs/` 0o400/0o444/0o600, where it was measured,
+      // and false one level down. MEASURED at `runs/<id>` 0o000 with `runs/`
+      // healthy: the contradiction came straight back, UNAGED naming the run
+      // directory to `touch` beside RETAINED saying there was nothing a `touch`
+      // would change, and the `touch` it printed SUCCEEDED while changing nothing
+      // about a stat that fails on the directory's own mode. directoryFault
       // answers for whatever level actually holds the fault, and `null` — the run
       // directory reads fine — is what leaves the entry in UNAGED, where a stat
       // that failed for the FILE's own reasons belongs.
@@ -4996,10 +4991,9 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
  * ── WHO ACTUALLY READS IT, MEASURED, BECAUSE THIS DOCBLOCK SAID OTHERWISE ─────
  * The sentence above used to open "as ONE block a host can put in front of a
  * user". Driven end to end through the real hook on a materialized project with
- * `runs/` at 0o111 (.tmp/peer-ret14/p2.ts): the SessionStart payload is
- * `kind=context`, 1852 bytes, `systemMessage: **null**`, with this advisory as the
- * prefix of the context — and a second consecutive session carries it byte for
- * byte again. So:
+ * `runs/` at 0o111: the SessionStart payload is `kind=context`, 1852 bytes,
+ * `systemMessage: **null**`, with this advisory as the prefix of the context —
+ * and a second consecutive session carries it byte for byte again. So:
  *
  *   IT REACHES THE MODEL, NOT THE HUMAN. `systemMessage` is the only human-visible
  *   channel a hook has and no retention notice uses it; the user sees this text

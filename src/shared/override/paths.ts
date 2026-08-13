@@ -21,14 +21,13 @@
 // acknowledgement — relocated while the bucket holding the ledger, the snapshots
 // and the install key did not.
 //
-// WHAT THAT COST, DRIVEN end to end (.tmp/override8/p4-split.ts, load 11.31)
-// rather than derived: an orphan snapshot, reconciled, verdict CLEAR
-// (`checks: []`, one reconciliation on record, counter `verified`). Relocate the
-// settings file and nothing else — no file moved, no byte changed —
-// `override-snapshot-orphaned` comes back, reconciliations reads 0 and the
-// counter reads `absent`. A project that WAS reconciled reads as never
-// reconciled, and `verified` is refused for every run in it, for as long as the
-// variable is set.
+// WHAT THAT COST, DRIVEN end to end (load 11.31) rather than derived: an orphan
+// snapshot, reconciled, verdict CLEAR (`checks: []`, one reconciliation on
+// record, counter `verified`). Relocate the settings file and nothing else — no
+// file moved, no byte changed — `override-snapshot-orphaned` comes back,
+// reconciliations reads 0 and the counter reads `absent`. A project that WAS
+// reconciled reads as never reconciled, and `verified` is refused for every run
+// in it, for as long as the variable is set.
 //
 // THE RESIDUAL, stated because it is the reason the old spelling looked safe: a
 // relocated bucket is exempt from the consent fence only while its path holds no

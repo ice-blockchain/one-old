@@ -880,10 +880,10 @@ test('the residue the retention header prices is recomputed here, not recited th
   //     buys the direction neither predecessor had: a name added to the header and
   //     not to this list reds too.
   //
-  // MEASURED, five arms on a copy of the tree (.tmp/ret14/arm.ts, both suites of this
-  // fence per arm, load 8.46-15.10 of 10 CPUs). Reachability is the first column
-  // because a survivor on a fixture that never ran is an absent fixture, not an
-  // equivalence — every arm ran all 129 rows, and the baseline with no edit is green:
+  // MEASURED, five arms on a copy of the tree (both suites of this fence per arm,
+  // load 8.46-15.10 of 10 CPUs). Reachability is the first column because a
+  // survivor on a fixture that never ran is an absent fixture, not an equivalence —
+  // every arm ran all 129 rows, and the baseline with no edit is green:
   //   129 rows  `.one.json.corrupt` deleted from BOTH enumerations, prose left
   //             standing            KILLED (set equality). This is the arm that
   //             survived 118/118 against the windowed predecessor.
@@ -1215,12 +1215,12 @@ test('the heal\'s partition is derived from the fixture\'s own listing, not from
 // regex, AUTHORING_VERB and 60-character window) run over the string literals of all
 // 685 non-test `.ts` files under `src/`, joined with `'\n'` — the joiner the product
 // itself prints them with: THIRTY-FOUR rows, on FIVE paths — `.one.json`, `digests`,
-// `manifest.json`, `reports/qa` and `runs` (.tmp/ret14/census.ts, load 3.56 of 10
-// CPUs). NOT ONE is a live admission failure: every one of those five paths already
-// carries a census row from a shipped document, so no path moves from no-row to row,
-// and the FIVE paths asserted to have no row at all (`.codegraph-build-lock`,
-// `.once`, `.opencode-heal-lock`, `backups`, `runs/.once`) pick up nothing here
-// either — which is the half that would have mattered.
+// `manifest.json`, `reports/qa` and `runs` (load 3.56 of 10 CPUs). NOT ONE is a
+// live admission failure: every one of those five paths already carries a census
+// row from a shipped document, so no path moves from no-row to row, and the FIVE
+// paths asserted to have no row at all (`.codegraph-build-lock`, `.once`,
+// `.opencode-heal-lock`, `backups`, `runs/.once`) pick up nothing here either —
+// which is the half that would have mattered.
 //
 // THIS PARAGRAPH SAID "27 rows, on FOUR paths … (a peer instrument answered 32 …)"
 // for three rounds, and both numbers and the path count were wrong. The four-path
@@ -1473,10 +1473,10 @@ const AUTHORING_WINDOW = 60;
  *    empty, which is why AUTHORING_WINDOW is left alone rather than snapped to a
  *    word boundary: the change would move a pinned literal for no row."
  *
- * MEASURED over the 224 shipped documents (.tmp/ret15/census-boundary-out.txt),
- * both directions this time: 44 rows as shipped, 46 snapped, 0 rows only the
- * shipped window finds, and 2 it MISSES — `.one.json :: PRIVACY.md` on "pointing
- * at", and `fix-cycles :: …/prompt-templates.md` on "paste". The second is on a
+ * MEASURED over the 224 shipped documents, both directions this time: 44 rows as
+ * shipped, 46 snapped, 0 rows only the shipped window finds, and 2 it MISSES —
+ * `.one.json :: PRIVACY.md` on "pointing at", and
+ * `fix-cycles :: …/prompt-templates.md` on "paste". The second is on a
  * RECOGNISED path whose row set is pinned as a literal below, so the pin was two
  * rows short of what its own instrument reports honestly. Four mentions carry a
  * verb the shipped window cuts in half; two of them are the rows above and two

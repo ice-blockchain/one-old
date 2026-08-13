@@ -6,10 +6,10 @@
 // and it had already been repaired ONE FILE OVER. state/project-state-lock.ts
 // closed it for the canonical project state lock; one-settings.ts carries the
 // same protocol, ported twice, and every one of its readers still called bare
-// `readFileSync`. DRIVEN before the repair (.tmp/override8/p1-drive.mjs, one
-// child per case under a hard 12 000 ms SIGKILL, load 12.98 → 27.44, the
-// resolved settings path asserted in the child's own output so a case that
-// landed on a different one.json is discarded rather than counted):
+// `readFileSync`. DRIVEN before the repair (one child per case under a hard
+// 12 000 ms SIGKILL, load 12.98 → 27.44, the resolved settings path asserted in
+// the child's own output so a case that landed on a different one.json is
+// discarded rather than counted):
 //
 //   withMachineFileLock at the real override ledger path
 //     plain                        2 ms        held

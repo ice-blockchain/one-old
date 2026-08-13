@@ -119,8 +119,8 @@ export function parseJson<T = unknown>(text: string, fallback: T): T {
  * BOUNDED (shared/bounded-read.ts), and the bare `readFileSync` this replaces is
  * why. `open(O_RDONLY)` on a FIFO waits for a writer forever and a character
  * device answers a read as long as anybody keeps asking, so a planted object at
- * any path this reads made a HOOK never return — driven at `.traffic-one/.one.json`
- * (.tmp/fsjson-bounded): SIGKILL at 12 011 ms here, 12 014 ms through
+ * any path this reads made a HOOK never return — driven at
+ * `.traffic-one/.one.json`: SIGKILL at 12 011 ms here, 12 014 ms through
  * `readJsonResult`, 20 151 ms for a symlink to `/dev/zero`, against a 0 ms
  * control. An unbounded loop cannot even be reported, which is the one outcome
  * this codebase ranks below failing closed.

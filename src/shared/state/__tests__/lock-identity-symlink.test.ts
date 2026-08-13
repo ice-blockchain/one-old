@@ -282,11 +282,10 @@ function acquireInChild(cwd: string, label: string): ChildAcquisition {
   ].join('\n'), 'utf8');
 
   // SIGKILL rather than spawnSync's default SIGTERM: a signal the child may
-  // decline does not enforce a deadline at all. DRIVEN
-  // (.tmp/bounded3/p4-sigterm.out): with the default, spawnSync's own 3 000 ms
-  // timeout expired and spawnSync never returned — the parent waits in
-  // `waitpid` while the child stays blocked in `open(2)` — against 3 004 ms and
-  // a reaped child with `killSignal: 'SIGKILL'`.
+  // decline does not enforce a deadline at all. DRIVEN: with the default,
+  // spawnSync's own 3 000 ms timeout expired and spawnSync never returned — the
+  // parent waits in `waitpid` while the child stays blocked in `open(2)` —
+  // against 3 004 ms and a reaped child with `killSignal: 'SIGKILL'`.
   const run = spawnSync(process.execPath, ['--import', 'tsx', driver, PROJECT_STATE_LOCK_MODULE, cwd], {
     encoding: 'utf8',
     timeout: CHILD_TIMEOUT_MS,

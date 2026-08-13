@@ -341,8 +341,8 @@ function withNestedShellBodies(command: string): string {
 // written down at `VISIBLE_WRITE_TARGET_RE`: that module names per-target write
 // PATHS, so it drops `.traffic-one/runs` (a directory, and the most destructive
 // target there is) precisely because this module enumerates what lives under it
-// and names those files instead. Measured across every corpus row in
-// `.tmp/wd7`: the unification moved zero rows in either direction.
+// and names those files instead. Measured across every corpus row: the
+// unification moved zero rows in either direction.
 
 // Bounds on the enumeration below. A run directory holds a handful of sidecars;
 // these exist so a pathological tree cannot turn one hook into a filesystem walk.

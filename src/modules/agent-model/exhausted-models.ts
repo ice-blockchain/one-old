@@ -199,12 +199,12 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
           // aged, and `aged && (!holder || …)` short-circuits the pid check the
           // docblock below credits with protecting a live holder: the lock was
           // STOLEN in 154 ms while the same link to the same live holder stamped
-          // NOW was refused in 816 ms (driven by the round-3 peer,
-          // .tmp/peer-bounded3/report.md rows 371-372; its summary row quotes
-          // 95 ms, which that report's own line 512 attributes to arms that
-          // threw `body is not a function`). `lstatSync` dates the LINK, which
-          // is the object at this path and the only one whose age this protocol
-          // wrote. Both polarities are pinned in __tests__/exhausted-models.test.ts.
+          // NOW was refused in 816 ms (driven by the round-3 peer, rows 371-372;
+          // its summary row quotes 95 ms, which that report's own line 512
+          // attributes to arms that threw `body is not a function`). `lstatSync`
+          // dates the LINK, which is the object at this path and the only one
+          // whose age this protocol wrote. Both polarities are pinned in
+          // __tests__/exhausted-models.test.ts.
           : trustworthyAgeSince(fs.lstatSync(lockPath).mtimeMs, Date.now());
         // A stamp ahead of now makes `Date.now() - at` negative, and a negative
         // age is never `> STALE`, so a lock whose holder is provably dead could

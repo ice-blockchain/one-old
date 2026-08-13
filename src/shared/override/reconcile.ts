@@ -100,7 +100,7 @@
 // `max(current + 1, visibleDistinctMints)`, the deletion zeroes `current`, and
 // the next honest mint re-signs the counter from whatever the ledger shows.
 //
-// MEASURED (.tmp/override6/lapse.ts), from three honest mints at a verified 3:
+// MEASURED, from three honest mints at a verified 3:
 // deleting the key alone yields 4, because the ledger still shows three mints
 // and floors it — but deleting the key AND cutting the ledger to one line yields
 // 2, junk at the ledger path yields 1, and planting N-1 genuine lines lands the
@@ -133,9 +133,9 @@
 //
 // THE WORD "TOTAL" IS THE CORRECTION, and it is the whole of what round 7
 // changed here. Round 6 wrote step 3 about "the bucket", and the code was not
-// checking the difference: MEASURED (.tmp/override7/p1-wipe.ts, and the two-arm
-// test in __tests__/reconcile.test.ts), from a project reconciled after three
-// mints, with the acknowledgement pinning `verified/3`:
+// checking the difference: MEASURED (the two-arm test in
+// __tests__/reconcile.test.ts), from a project reconciled after three mints,
+// with the acknowledgement pinning `verified/3`:
 //
 //   rm -rf the bucket + delete `overrideMints[projectKey]`   → CLEAR  (was)
 //   …the same, plus delete `overrideReconciliations[projectKey]`  → CLEAR
@@ -377,8 +377,8 @@ export function readOverrideReconciliations(
  * `recordOverrideMint` computes `max(current + 1, visibleDistinctMints)`, and an
  * attacker with no key writes BOTH arguments: deleting this project's entry from
  * `overrideMints` (a deletion, not a forgery) zeroes the first, and the ledger
- * is a file in a directory they can write. MEASURED (.tmp/override6/lapse.ts),
- * from three honest mints and a verified counter of 3:
+ * is a file in a directory they can write. MEASURED, from three honest mints and
+ * a verified counter of 3:
  *
  *   delete the counter key, mint            → verified 4   (the ledger floors it)
  *   delete it AND cut the ledger to 1 line  → verified 2   (backwards, from 4)
@@ -396,10 +396,10 @@ export function readOverrideReconciliations(
  * An attacker who cannot read one file. That is a real population — accidents,
  * and the agent that reasons its way to "I'll just write the counter myself" —
  * and it is NOT the population the bucket-writing attacker belongs to.
- * MEASURED (.tmp/override7/p2-key.ts): the install key is mode 0600 and it sits
- * INSIDE the 0700 `overrides/` root that the same attacker already writes, one
- * directory above the bucket whose ledger they are editing. From three honest
- * mints, a verified counter of 3 and an acknowledgement pinning 3:
+ * MEASURED: the install key is mode 0600 and it sits INSIDE the 0700
+ * `overrides/` root that the same attacker already writes, one directory above
+ * the bucket whose ledger they are editing. From three honest mints, a verified
+ * counter of 3 and an acknowledgement pinning 3:
  *
  *   read install-key                                   → 64 hex, no privileges
  *   replace the acknowledgement, forgiveness intact,   → floor 3 → 1

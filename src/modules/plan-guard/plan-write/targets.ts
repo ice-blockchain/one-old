@@ -167,10 +167,10 @@ export function reconstructTextEdit(
     // returns this same string, so for a shape that is already hostile when the
     // stat runs, the line below never executes — MEASURED by instrumenting
     // `openSync` on the real `fs` module: it fires for a regular file and never
-    // fires for a FIFO or a symlink to `/dev/zero` (.tmp/bounded-reads,
-    // trace2-*.txt). The consequence is worth stating rather than leaving for
-    // the next reader to discover: no mutant of `bounded-read.ts` can be killed
-    // at THIS call site, because no mutant of it is reached here.
+    // fires for a FIFO or a symlink to `/dev/zero`. The consequence is worth
+    // stating rather than leaving for the next reader to discover: no mutant of
+    // `bounded-read.ts` can be killed at THIS call site, because no mutant of it
+    // is reached here.
     //
     // What the bounded read is actually load-bearing for here is the narrower
     // half of the same hazard — the object being SWAPPED between the stat and

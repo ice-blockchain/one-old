@@ -11,12 +11,12 @@
 // `globalTrafficOneDir` — which `overrideRoot` used directly — reads
 // XDG_STATE_HOME › HOME only.
 //
-// DRIVEN (.tmp/override8/p4-split.ts, load 11.31): an orphan snapshot,
-// reconciled, verdict CLEAR. Set TRAFFIC_ONE_STATE_PATH — nothing moved, no byte
-// changed, a variable README documents and six test files use — and
-// `override-snapshot-orphaned` came back with `reconciliations: 0` and the
-// counter reading `absent`. A project that WAS reconciled read as never
-// reconciled, and `verified` was refused for every run in it.
+// DRIVEN (load 11.31): an orphan snapshot, reconciled, verdict CLEAR. Set
+// TRAFFIC_ONE_STATE_PATH — nothing moved, no byte changed, a variable README
+// documents and six test files use — and `override-snapshot-orphaned` came back
+// with `reconciliations: 0` and the counter reading `absent`. A project that WAS
+// reconciled read as never reconciled, and `verified` was refused for every run
+// in it.
 //
 // The first cell is the one that reds on a regression; the second states the
 // invariant a future second resolver would break; the third pins that the
